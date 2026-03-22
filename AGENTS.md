@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Own Protocol is a permissionless protocol for fully collateralised tokenized real-world asset (RWA) exposure onchain. Users mint composable ERC20 eTokens (eTSLA, eGOLD, eTLT) by paying USDC. LPs lock collateral in vaults and earn fees/spread. Built on Base (Ethereum L2) with Foundry.
+Own Protocol is a permissionless protocol for fully collateralised tokenized real-world asset (RWA) exposure onchain. Users mint composable ERC20 eTokens (eTSLA, eGOLD, eTLT) by depositing collateral. The protocol supports multiple collateral types (USDC, aUSDC, ETH, stETH), each with its own public vault. Multiple LPs deposit into vaults and receive ERC-4626 shares representing their proportional ownership. Vault managers handle offchain hedging for their delegated LPs. Built on Base (Ethereum L2) with Foundry.
 
 This is a production DeFi protocol that will hold millions of dollars. Every line of code must be written with that assumption.
 
@@ -48,31 +48,37 @@ forge script script/Deploy.s.sol --rpc-url $BASE_SEPOLIA_RPC --broadcast --verif
 
 ## Architecture
 
-See `docs/Own_Protocol_Vision.docx` for full product vision and `docs/Own_Protocol_MVP_PRD.docx` for MVP spec.
+See `docs/Own_Protocol_Vision.md` for full product vision and `docs/Own_Protocol_MVP_PRD.md` for MVP spec.
+
+### High-Level Architecture
+
+The protocol is organised around per-collateral-type vaults, each serving multiple LPs and supporting multiple vault managers. Specific contract files and structure will be defined as implementation progresses. The key architectural components are:
+
+**One vault per collateral type:**
+- USDC vault — accepts USDC deposits
+- aUSDC vault — accepts aUSDC deposits (yield-bearing; ERC-4626 share price naturally appreciates as aUSDC accrues interest)
+- ETH vault — accepts ETH deposits
+- stETH vault — uses wstETH internally (wraps stETH on deposit, unwraps on withdrawal) to avoid rebasing transfer rounding issues. ERC-4626 share price naturally appreciates as stETH accrues staking yield.
+
+**Public vaults with multiple LPs:**
+- All vaults are public. Any LP can deposit collateral into any vault.
+- ERC-4626 is used for LP share accounting. LPs receive vault shares proportional to their deposit. Share price increases as yield accrues (for aUSDC, stETH vaults) and as spread revenue is distributed.
+
+**Vault managers (multiple per vault):**
+- Multiple vault managers can register with each vault.
+- LPs delegate to a chosen vault manager via mutual agreement: the LP sets their preferred manager, and the manager accepts the delegation.
+- LPs can also be their own vault manager (self-delegation).
+- Vault managers handle offchain hedging for their delegated LPs. There is no onchain hedging mechanism.
+- Each vault manager can opt in/out of non-market-hour execution and set their own custom spread for off-hours.
+
+**eTokens:**
+- Each vault supports minting/redeeming a set of whitelisted assets (eTSLA, eGOLD, etc.).
+- eTokens are standard ERC20 + ERC-2612 (Permit).
+
+**Oracle:**
+- Signed oracle price feeds verified onchain (ECDSA). MVP uses a single protocol-operated signer.
 
 ```
-src/
-├── core/                    # Core protocol logic
-│   ├── OwnVault.sol         # Singleton vault: collateral, mint, redeem, liquidation
-│   ├── eToken.sol           # ERC20 + Permit per asset (eTSLA, eGOLD, etc.)
-│   └── AssetRegistry.sol    # Whitelisted assets, eToken deployment, oracle config
-├── oracle/
-│   ├── IOracleVerifier.sol  # Generic oracle interface (all oracle types implement this)
-│   └── SignedOracleVerifier.sol  # MVP: ECDSA-signed price feed verification
-├── periphery/
-│   ├── VaultManager.sol     # Curator controls: spreads, halt, buffer management
-│   ├── LiquidationEngine.sol # Health checks, DEX collateral liquidation
-│   └── WETHRouter.sol       # (Post-MVP) Native ETH wrapping
-├── libraries/
-│   └── OwnMath.sol          # Shared math: fee calculation, collateral ratio, safe ops
-└── interfaces/              # All interfaces — one per contract
-    ├── IOwnVault.sol
-    ├── IeToken.sol
-    ├── IAssetRegistry.sol
-    ├── IOracleVerifier.sol
-    ├── IVaultManager.sol
-    └── ILiquidationEngine.sol
-
 test/
 ├── unit/                    # Isolated contract tests (mocked dependencies)
 ├── integration/             # Multi-contract flow tests (real dependencies)
@@ -132,8 +138,8 @@ script/
 - Private/internal state: `_underscorePrefixed` (e.g., `_assetConfigs`)
 - Constants: `UPPER_SNAKE_CASE` (e.g., `MAX_SPREAD_BPS`, `PRECISION`)
 - Immutables: `UPPER_SNAKE_CASE` for true constants, `camelCase` if constructor-set
-- Events: `PascalCase` past tense (e.g., `AssetMinted`, `VaultLiquidated`)
-- Errors: `PascalCase` descriptive (e.g., `InsufficientBuffer`, `StalePrice`, `Unauthorized`)
+- Events: `PascalCase` past tense (e.g., `AssetMinted`, `CollateralDeposited`)
+- Errors: `PascalCase` descriptive (e.g., `InsufficientCollateral`, `StalePrice`, `Unauthorized`)
 - Structs: `PascalCase` (e.g., `AssetConfig`, `VaultState`)
 - Enums: `PascalCase` (e.g., `VaultStatus { Active, Halted }`)
 
@@ -143,7 +149,7 @@ script/
 
 **ReentrancyGuard**: Use OpenZeppelin's `ReentrancyGuard` on every function that transfers tokens or ETH. Even if you think CEI is sufficient — belt and suspenders.
 
-**Access Control**: Use explicit `modifier`s, not inline `require(msg.sender == X)`. Define clear roles: `onlyCurator`, `onlyVault`, `onlyRegistry`.
+**Access Control**: Use explicit `modifier`s, not inline `require(msg.sender == X)`. Define clear roles: `onlyVaultManager`, `onlyVault`, `onlyRegistry`, `onlyAdmin`.
 
 **Safe Token Transfers**: Always use OpenZeppelin `SafeERC20` for `transfer`, `transferFrom`, `approve`. Never use raw `.transfer()` or `.call()` for ERC20.
 
@@ -169,7 +175,7 @@ script/
 - Use `constant` for compile-time constants
 - Pack related storage variables (e.g., `uint128 amount; uint64 timestamp; uint8 status;` fits one slot)
 - Prefer `mapping` over `array` when you don't need iteration
-- Use custom errors (`error InsufficientBuffer()`) instead of revert strings — saves ~50 gas per revert
+- Use custom errors (`error InsufficientCollateral()`) instead of revert strings — saves ~50 gas per revert
 - Cache storage reads in memory when used more than once in a function
 - Use `calldata` instead of `memory` for external function array/struct parameters that aren't modified
 - Avoid `sload` in loops — read once, loop in memory, write back
@@ -182,7 +188,7 @@ Use OpenZeppelin Contracts v5.x via Foundry's git submodule system. Keep depende
 ```
 lib/
 ├── forge-std/              # Foundry test utilities (Test, console, Vm)
-├── openzeppelin-contracts/ # v5.x: ERC20, SafeERC20, ECDSA, ReentrancyGuard, Math, Ownable
+├── openzeppelin-contracts/ # v5.x: ERC20, ERC4626, SafeERC20, ECDSA, ReentrancyGuard, Math, Ownable
 └── (no other dependencies unless explicitly discussed)
 ```
 
@@ -199,9 +205,9 @@ Do NOT add dependencies without discussion. Every dependency is attack surface. 
 
 ### Unit Tests (`test/unit/`)
 
-- One test file per contract: `OwnVault.t.sol`, `eToken.t.sol`, etc.
+- One test file per contract
 - Mock external dependencies. Unit tests should not depend on other protocol contracts.
-- Test naming: `test_functionName_condition_expectedResult()` (e.g., `test_mint_insufficientBuffer_reverts()`)
+- Test naming: `test_functionName_condition_expectedResult()` (e.g., `test_mint_insufficientCollateral_reverts()`)
 - Use `setUp()` for common state. Each test should be independent.
 - Use Foundry cheatcodes: `vm.prank()`, `vm.expectRevert()`, `vm.expectEmit()`, `vm.warp()`, `vm.deal()`
 - Test boundary values: `0`, `1`, `type(uint256).max`, minimum amounts, exact threshold values
@@ -209,40 +215,43 @@ Do NOT add dependencies without discussion. Every dependency is attack surface. 
 
 ### Integration Tests (`test/integration/`)
 
-- Test complete flows: LP deposits collateral → minter mints → minter redeems → LP withdraws
+- Test complete flows: LP deposits collateral → LP receives vault shares → minter mints eToken → minter redeems → LP withdraws
 - Use real contract instances (not mocks)
-- Test multi-actor scenarios: multiple minters, multiple assets, concurrent operations
+- Test multi-actor scenarios: multiple LPs, multiple vault managers, multiple minters, multiple assets, concurrent operations
+- Test delegation flows: LP delegates to vault manager, vault manager accepts, vault manager handles parameters
 - Test state transitions: active → halted → active
 
 ### Invariant Tests (`test/invariant/`)
 
 - Define protocol invariants that must ALWAYS hold:
   - `totalETokenSupply * price <= totalCollateral * collateralRatio` (solvency)
-  - `vault.usdcBuffer + vault.collateral >= totalNotional * minRatio` (health)
-  - `sum(all eToken supplies) == sum(vault.mintedNotional for each asset)` (accounting)
+  - `sum(LP vault shares) == vault.totalSupply()` (ERC-4626 accounting)
+  - `sum(all eToken supplies) == sum(vault.mintedNotional for each asset)` (eToken accounting)
   - `eToken.totalSupply() >= 0` (no negative supply — sounds obvious, test it)
   - After any operation: `vault health factor >= 1.0` OR `vault is halted`
+  - `sum(delegated LP shares per manager) == total delegated shares` (delegation accounting)
+  - Spread applied is always >= `minSpread` (spread floor invariant)
 - Use Foundry's invariant testing framework with handler contracts
-- Handler contracts should exercise: mint, redeem, addCollateral, withdrawBuffer, liquidate, setSpread, haltVault
+- Handler contracts should exercise: deposit, withdraw, mint eToken, redeem eToken, delegate to vault manager, set spread, halt vault
 - Run with `forge test --fuzz-runs 10000` for pre-audit
 
 ### Fork Tests (`test/fork/`)
 
 - Fork Base mainnet to test against real Uniswap pools, real USDC, real price feeds
 - Use `vm.createFork()` and `vm.selectFork()`
-- Test liquidation flow with real DEX liquidity
-- Test with real token decimals and edge cases (USDC = 6 decimals, WETH = 18)
+- Test with real token decimals and edge cases (USDC = 6 decimals, WETH = 18, aUSDC = 6, stETH = 18)
+- Test wstETH wrapping/unwrapping in the stETH vault
 
 ### Test Helpers (`test/helpers/`)
 
 - `BaseTest.sol`: Common setup, token deployments, utility functions
 - `MockERC20.sol`: Configurable decimals mock token
 - `MockOracleVerifier.sol`: Returns configurable prices, can simulate staleness
-- `Actors.sol`: Predefined addresses for minter, curator, liquidator, attacker
+- `Actors.sol`: Predefined addresses for minter, vaultManager, lp, admin, attacker
 
 ### What "good coverage" means
 
-- Line coverage > 95% for core contracts (`OwnVault`, `LiquidationEngine`)
+- Line coverage > 95% for core contracts
 - Branch coverage > 90% for core contracts
 - 100% coverage on all revert paths
 - Invariant test campaigns with 10,000+ runs passing
@@ -252,13 +261,38 @@ Do NOT add dependencies without discussion. Every dependency is attack surface. 
 Contracts should implement or be compatible with these standards where applicable:
 
 - **ERC-20 + ERC-2612 (Permit)**: eToken. Use OpenZeppelin's `ERC20Permit`. Enables single-tx mint flows.
-- **ERC-4626**: Consider for vault share accounting if/when public vaults with multiple LPs are added (post-MVP). Not needed for single-LP MVP.
-- **ERC-7540 (Async Vaults)**: Design pattern for non-market-hours redemption queue (post-MVP). Keep the interface compatible.
-- **ERC-7575 (Multi-Asset Vaults)**: Relevant for multi-collateral vaults (post-MVP). The eToken being external to the vault is already ERC-7575 aligned.
-- **ERC-7535 (Native Asset Vaults)**: For ETH collateral vaults (post-MVP). Use via WETHRouter periphery.
+- **ERC-4626 (Tokenized Vaults)**: Used for LP share accounting in all vaults. Each vault is an ERC-4626 vault where the underlying asset is the collateral type (USDC, aUSDC, WETH, wstETH). Share price naturally appreciates for yield-bearing collateral (aUSDC, stETH) and as spread revenue is distributed.
+- **ERC-7540 (Async Vaults)**: Design pattern for non-market-hours redemption queue (future consideration). Keep the interface compatible.
+- **ERC-7575 (Multi-Asset Vaults)**: Relevant for multi-collateral vaults (future consideration). The eToken being external to the vault is already ERC-7575 aligned.
+- **ERC-7535 (Native Asset Vaults)**: For ETH collateral vaults (future consideration). Use via a router periphery contract.
 - **EIP-712 (Typed Structured Data)**: Used in oracle signed price messages. Follow the standard for domain separator and type hashing.
 
 When implementing, reference the EIP directly. Do not rely on memory — check the spec.
+
+## Spread Model
+
+The protocol uses a unified spread model. There is no separate protocol fee — all revenue comes through the spread.
+
+### How it works
+
+- **`minSpread`**: Protocol-enforced floor (e.g., 0.3% = 30 BPS). Guarantees minimum protocol revenue on every mint/redeem.
+- **Market hours**: spread = `minSpread`. All vault managers execute at the same spread.
+- **Non-market hours**: spread = `max(minSpread, managerCustomSpread)`. Each vault manager independently opts in or out of non-market-hour execution and sets their own custom spread for off-hours.
+- **Routing during off-hours**: Minters are routed to the best available price (lowest spread) among vault managers willing to execute. Available liquidity per manager during off-hours is determined by their delegated LPs' proportional share of the vault.
+
+### Spread revenue split
+
+Spread revenue is split three ways:
+- A portion goes to the protocol
+- A portion goes to the vault manager
+- A portion goes to the LPs (reflected in vault share price appreciation)
+
+### Key constants
+
+- Spread: defined in BPS (basis points). `10000` = 100%.
+- `minSpread`: protocol-enforced floor, set by admin (e.g., 30 BPS = 0.3%)
+- Precision constant: `1e18` for price math, `10000` (BPS) for spread math
+- USDC: 6 decimals. aUSDC: 6 decimals. ETH/WETH: 18 decimals. stETH/wstETH: 18 decimals. eTokens: 18 decimals. Prices: 18 decimals. Always be explicit about decimal conversions.
 
 ## Security Vulnerability Checklist
 
@@ -275,10 +309,12 @@ Before any PR to `main`, mentally (or actually) run through this list for every 
 - [ ] Event emission: every state change emits an event? (Needed for off-chain indexing and auditing)
 - [ ] Storage collision: no variable shadowing between inherited contracts?
 - [ ] Signature replay: `chainId` + `contractAddress` in signed messages? Nonce if applicable?
+- [ ] ERC-4626 compliance: share/asset conversion rounding correct? Deposit/withdraw/mint/redeem all consistent?
+- [ ] wstETH wrapping: wrap/unwrap handled correctly? No stETH rounding dust left behind?
 
 ## Commit & PR Conventions
 
-- Commit messages: `type(scope): description` (e.g., `feat(vault): add mint with signed price`, `test(vault): add insufficient buffer revert test`, `fix(oracle): check staleness before signer recovery`)
+- Commit messages: `type(scope): description` (e.g., `feat(vault): add mint with signed price`, `test(vault): add insufficient collateral revert test`, `fix(oracle): check staleness before signer recovery`)
 - Types: `feat`, `fix`, `test`, `refactor`, `docs`, `chore`
 - Every PR must: compile (`forge build`), pass all tests (`forge test`), be formatted (`forge fmt --check`)
 - No PR should mix feature code and refactoring — keep them separate
@@ -292,26 +328,24 @@ Before any PR to `main`, mentally (or actually) run through this list for every 
 
 ## Project-Specific Context
 
-### Key Financial Constants
+### Trust Model
 
-- Protocol fee: 0.1% = 10 BPS
-- Spread: 10-50 BPS (market hours), 100-300 BPS (non-market hours), set by curator
-- USDC: 6 decimals. Prices: 18 decimals. eTokens: 18 decimals. Always be explicit about decimal conversions.
-- Precision constant: `1e18` for price math, `10000` (BPS) for fee/spread math
-
-### Trust Model (MVP)
-
-- Oracle signer: trusted (protocol-operated). Single signer for MVP, M-of-N later.
-- Curator: trusted. Manages vault parameters and offchain hedging. LP is the curator in MVP.
-- Protocol admin: multisig. Can whitelist assets, halt vaults, set fee parameters.
-- Minters: untrusted. Treat all minter input as adversarial.
-- Liquidation bots: untrusted. Anyone can call liquidate. Incentivised by reward.
+- **Oracle signer**: Trusted (protocol-operated). Single signer for MVP, M-of-N later.
+- **Vault managers**: Semi-trusted. Multiple vault managers can register per vault. They manage spread parameters for their delegated LPs and handle offchain hedging. LPs choose which vault manager to delegate to (or self-delegate). Vault managers cannot access LP collateral directly — only the vault contract controls funds.
+- **Protocol admin**: Multisig. Can whitelist assets, halt vaults, set `minSpread`, register/deregister vault managers.
+- **LPs**: Deposit collateral into public vaults. Delegate to a vault manager of their choice. Can withdraw their proportional share at any time (subject to utilisation limits).
+- **Minters**: Untrusted. Treat all minter input as adversarial.
 
 ### Decimal Handling
 
 ```
-USDC amount (6 decimals) → price (18 decimals) → eToken amount (18 decimals)
-eTokenAmount = usdcAmount * 1e18 / price * decimalFactor
+Collateral amount → price (18 decimals) → eToken amount (18 decimals)
+
+For USDC/aUSDC (6 decimals):
+eTokenAmount = collateralAmount * 1e18 / price * decimalFactor
+
+For ETH/stETH (18 decimals):
+eTokenAmount = collateralAmount * 1e18 / price
 ```
 
 Always use `Math.mulDiv` for these conversions. Never do `a * b / c` — use `mulDiv(a, b, c)`.
@@ -324,16 +358,17 @@ When asked to do a security review, follow this process for every contract in `s
 
 Scan in this order. Stop and report any finding immediately.
 
-1. **Reentrancy**: State changes after external calls (token transfers, DEX swaps). Verify CEI compliance and ReentrancyGuard usage.
+1. **Reentrancy**: State changes after external calls (token transfers). Verify CEI compliance and ReentrancyGuard usage.
 2. **Oracle manipulation**: Signed price validation, staleness checks, replay protection (chainId + contract address in signed message).
-3. **Access control**: Missing modifiers on state-changing functions, unprotected initialisers, privilege escalation paths.
-4. **Arithmetic**: Rounding direction (protocol-favorable vs user-favorable), precision loss in mulDiv chains, unsafe casting between uint sizes.
-5. **Token handling**: Missing SafeERC20, decimal mismatch between USDC (6) and eToken (18), fee-on-transfer edge cases.
-6. **Liquidation**: Can liquidation be sandwiched? Can it be griefed (DoS)? Does partial liquidation leave vault in worse state?
-7. **Front-running**: Mint/redeem with stale price, sandwich attacks on collateral sales.
+3. **Access control**: Missing modifiers on state-changing functions, unprotected initialisers, privilege escalation paths. Check vault manager delegation logic for unauthorized actions.
+4. **Arithmetic**: Rounding direction (protocol-favorable vs user-favorable), precision loss in mulDiv chains, unsafe casting between uint sizes. Check ERC-4626 share/asset conversions.
+5. **Token handling**: Missing SafeERC20, decimal mismatch between collateral types and eTokens, wstETH wrapping edge cases.
+6. **Delegation logic**: Can a vault manager act on behalf of LPs who have not delegated to them? Can delegation be manipulated?
+7. **Front-running**: Mint/redeem with stale price, sandwich attacks on vault deposits/withdrawals.
 8. **DoS**: Unbounded loops, block gas limit, single-actor griefing (e.g., dust amounts blocking operations).
 9. **Flash loan**: Can flash-minted tokens manipulate vault health or oracle prices?
 10. **Signature replay**: Cross-chain, cross-contract, nonce handling for signed oracle prices.
+11. **ERC-4626 compliance**: Inflation attack on vault shares? Correct rounding in all conversion functions?
 
 ### Severity Definitions
 
@@ -403,13 +438,15 @@ When asked to write invariant tests for a contract:
 
 These must ALWAYS hold, regardless of operation sequence:
 
-- **Solvency**: total collateral value >= total minted notional \* min collateral ratio
-- **Accounting**: eToken totalSupply matches vault's tracked minted amount per asset
-- **Buffer**: USDC buffer balance matches expected (mints add, redemptions subtract, curator withdrawals subtract)
+- **Solvency**: total collateral value >= total minted notional * min collateral ratio
+- **ERC-4626 Accounting**: sum of all LP vault shares == vault.totalSupply(); vault.totalAssets() >= sum of all deposits minus withdrawals (accounting for yield)
+- **eToken Accounting**: eToken totalSupply matches vault's tracked minted amount per asset
+- **Delegation**: sum of delegated shares across all vault managers <= vault.totalSupply(); each LP is delegated to at most one vault manager
 - **Health**: vault health factor >= 1.0 OR vault is halted
-- **Fees**: accumulated fees only increase (never decrease except on withdrawal)
+- **Spread floor**: spread applied on any mint/redeem >= `minSpread`
 - **Access**: only authorised roles can call privileged functions
 - **Supply**: sum of all eToken holder balances == eToken.totalSupply() for every asset
+- **wstETH**: stETH vault's wstETH balance == total deposited stETH (converted to wstETH) minus total withdrawn
 
 ### Handler Contract Pattern
 
@@ -418,19 +455,37 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
     OwnVault vault;
 
     // Ghost variables for invariant checking
+    uint256 public ghost_totalDeposited;
+    uint256 public ghost_totalWithdrawn;
     uint256 public ghost_totalMinted;
     uint256 public ghost_totalRedeemed;
 
-    function mint(uint256 amount, uint256 priceIndex) external {
+    function deposit(uint256 amount) external {
         amount = bound(amount, 1e6, 1_000_000e6); // 1 USDC to 1M USDC
+        // ... prank as LP, approve, call vault.deposit()
+        ghost_totalDeposited += amount;
+    }
+
+    function withdraw(uint256 shares) external {
+        shares = bound(shares, 1, vault.balanceOf(lp));
+        // ... prank as LP, call vault.redeem()
+        ghost_totalWithdrawn += shares;
+    }
+
+    function mintEToken(uint256 amount, uint256 priceIndex) external {
+        amount = bound(amount, 1e6, 1_000_000e6);
         // ... setup signed price, prank as minter, call vault.mint()
         ghost_totalMinted += amount;
     }
 
-    function redeem(uint256 amount) external {
+    function redeemEToken(uint256 amount) external {
         amount = bound(amount, 1, eToken.totalSupply());
         // ... setup signed price, prank as minter, call vault.redeem()
         ghost_totalRedeemed += amount;
+    }
+
+    function delegateToManager(uint256 managerIndex) external {
+        // ... prank as LP, call vault.delegateTo(manager)
     }
 }
 ```
@@ -478,9 +533,12 @@ slither src/ --config-file slither.config.json
 - [ ] ReentrancyGuard on functions that make external calls after state changes
 - [ ] SafeERC20 used for all token transfers
 - [ ] Rounding direction commented and correct (protocol-favorable where applicable)
-- [ ] Decimal conversions explicit and tested (USDC 6 decimals, eToken 18 decimals, price 18 decimals)
+- [ ] Decimal conversions explicit and tested (USDC/aUSDC 6 decimals, ETH/stETH 18 decimals, eToken 18 decimals, price 18 decimals)
 - [ ] No storage variable shadowing between inherited contracts
 - [ ] Events emitted for every state change (needed for off-chain indexing)
+- [ ] ERC-4626 share/asset conversions tested for rounding correctness
+- [ ] wstETH wrap/unwrap logic tested for edge cases and rounding dust
+- [ ] Vault manager delegation logic tested for authorization edge cases
 
 ### Report Format
 
