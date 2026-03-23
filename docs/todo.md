@@ -61,13 +61,14 @@ _Shared test infrastructure. Built before any contract tests._
 
 _One test file per contract. Mocked dependencies. Written BEFORE implementations._
 
-- 🔲 `test/unit/EToken.t.sol` — ERC20 compliance, permit, mint/burn access control, admin name/symbol update, rewards-per-share accumulator, transfer reward settlement
-- 🔲 `test/unit/OwnMarket.t.sol` — Place order (market/limit), claim (full/partial), confirm with oracle price, cancel, deadline expiry, directed vs open orders, partial fill logic, stablecoin routing, cross-vault claims
-- 🔲 `test/unit/OwnVault.t.sol` — ERC-4626 deposit/withdraw, async withdrawal queue (request/cancel/fulfill FIFO), health factor, utilization tracking, halt/unhalt, wind-down, yield-bearing share price
-- 🔲 `test/unit/VaultManager.t.sol` — Registration, spread setting (>= minSpread), exposure caps, accepted stablecoins, off-market toggles, delegation (propose/accept/remove), self-delegation
-- 🔲 `test/unit/AssetRegistry.t.sol` — Add/remove assets, active vs legacy tokens, collateral params, admin access control
-- 🔲 `test/unit/OracleVerifier.t.sol` — Signature verification, staleness rejection, deviation check, sequence number enforcement, chain ID validation, signer rotation
-- 🔲 `test/unit/LiquidationEngine.t.sol` — Tier 1 (eToken liquidation, partial, reward), Tier 3 (DEX sale fallback), health restoration check, redemption deadline trigger
+- ✅ `test/unit/EToken.t.sol` — ERC20 compliance, permit, mint/burn access control, admin name/symbol update, rewards-per-share accumulator, transfer reward settlement
+- ✅ `test/unit/OwnMarket.t.sol` — Place order (market/limit), claim (full/partial), confirm with oracle price, cancel, deadline expiry, directed vs open orders, partial fill logic, stablecoin routing, cross-vault claims
+- ✅ `test/unit/OwnVault.t.sol` — ERC-4626 deposit/withdraw, async withdrawal queue (request/cancel/fulfill FIFO), health factor, utilization tracking, halt/unhalt, wind-down, yield-bearing share price
+- ✅ `test/unit/VaultManager.t.sol` — Registration, spread setting (>= minSpread), exposure caps, accepted stablecoins, off-market toggles, delegation (propose/accept/remove), self-delegation
+- ✅ `test/unit/AssetRegistry.t.sol` — Add/remove assets, active vs legacy tokens, collateral params, admin access control
+- ✅ `test/unit/OracleVerifier.t.sol` — Signature verification, staleness rejection, deviation check, sequence number enforcement, chain ID validation, signer rotation
+- ✅ `test/unit/LiquidationEngine.t.sol` — Tier 1 (eToken liquidation, partial, reward), Tier 3 (DEX sale fallback), health restoration check, redemption deadline trigger
+- ✅ `test/unit/PaymentTokenRegistry.t.sol` — Add/remove payment tokens, whitelist checks, admin access control
 
 ---
 
