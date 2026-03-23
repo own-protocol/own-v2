@@ -66,6 +66,11 @@ interface IVaultManager {
     /// @param vm Vault manager address.
     event DelegationRemoved(address indexed lp, address indexed vm);
 
+    /// @notice Emitted when a VM pauses or resumes participation.
+    /// @param vm     Vault manager address.
+    /// @param active Whether the VM is now active.
+    event VMActiveStatusUpdated(address indexed vm, bool active);
+
     // ──────────────────────────────────────────────────────────
     //  Errors
     // ──────────────────────────────────────────────────────────
@@ -99,6 +104,9 @@ interface IVaultManager {
 
     /// @notice Invalid spread value (e.g. exceeds BPS).
     error InvalidSpread();
+
+    /// @notice The VM is not active (paused).
+    error VMNotActive(address vm);
 
     // ──────────────────────────────────────────────────────────
     //  VM registration
@@ -137,6 +145,14 @@ interface IVaultManager {
     /// @param asset   Asset ticker.
     /// @param enabled Whether to enable off-market execution for this asset.
     function setAssetOffMarketEnabled(bytes32 asset, bool enabled) external;
+
+    /// @notice Pause or resume the caller's participation in order claiming.
+    /// @dev When inactive, the VM cannot claim new orders but existing claims
+    ///      and delegations remain intact.
+    /// @param active Whether the VM should be active.
+    function setVMActive(
+        bool active
+    ) external;
 
     // ──────────────────────────────────────────────────────────
     //  Delegation
@@ -216,4 +232,11 @@ interface IVaultManager {
     /// @param asset Asset ticker.
     /// @return True if off-market execution is enabled.
     function isAssetOffMarketEnabled(address vm, bytes32 asset) external view returns (bool);
+
+    /// @notice Return all LP addresses currently delegated to a vault manager.
+    /// @param vm Vault manager address.
+    /// @return lps Array of delegated LP addresses.
+    function getDelegatedLPs(
+        address vm
+    ) external view returns (address[] memory lps);
 }

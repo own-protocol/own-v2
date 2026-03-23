@@ -31,14 +31,15 @@
 
 _Interface-first development. Define all external APIs, events, errors, and structs before writing tests or implementations._
 
-- 🔲 `IEToken` — ERC20 + ERC2612 Permit + admin-updatable name/symbol + rewards-per-share (dividends) + mint/burn restricted to order system
-- 🔲 `IOwnMarket` — Order placement (mint/redeem), claim, confirm, cancel, deadline enforcement. Order struct (user, vm, orderType, priceType, asset, stablecoin, amount, slippage, limitPrice, deadline, allowPartialFill, preferredVM, status)
-- 🔲 `IOwnVault` — ERC-4626 vault for LP collateral. Deposit, async withdrawal queue (request/cancel/fulfill), delegation, health tracking, utilization, halt/unhalt, wind-down
-- 🔲 `IVaultManager` — Registration, spread setting, exposure caps, accepted stablecoins, off-market toggles, delegation accept/reject
-- 🔲 `IAssetRegistry` — Asset whitelisting, active/legacy token tracking, collateral parameters per asset
-- 🔲 `IOracleVerifier` — Price verification (signature, staleness, deviation, sequence), signer management, per-asset config
-- 🔲 `ILiquidationEngine` — Tier 1 liquidation (eToken-based), Tier 3 fallback (DEX sale), health checks, reward distribution
-- 🔲 `IPaymentTokenRegistry` — Whitelisted payment token (stablecoin) management
+- ✅ `Types.sol` — Shared enums, structs, constants (`src/interfaces/types/Types.sol`)
+- ✅ `IEToken` — ERC20 + ERC2612 Permit + admin-updatable name/symbol + rewards-per-share (dividends) + mint/burn restricted to order system
+- ✅ `IOwnMarket` — Order placement (mint/redeem), claim, confirm, cancel, deadline enforcement
+- ✅ `IOwnVault` — ERC-4626 vault for LP collateral. Deposit, async withdrawal queue (request/cancel/fulfill), health tracking, utilization, halt/unhalt (vault-wide + per-asset), wind-down
+- ✅ `IVaultManager` — Registration, spread setting, exposure caps, accepted payment tokens, off-market toggles, delegation (propose/accept/remove), VM pause/resume
+- ✅ `IAssetRegistry` — Asset whitelisting, active/legacy token tracking, collateral parameters per asset
+- ✅ `IOracleVerifier` — Price verification (signature, staleness, deviation, sequence), signer management, per-asset config
+- ✅ `ILiquidationEngine` — Tier 1 liquidation (eToken-based), Tier 3 fallback (DEX sale + expired redemption), health checks, reward distribution
+- ✅ `IPaymentTokenRegistry` — Whitelisted payment token (stablecoin) management
 
 ---
 

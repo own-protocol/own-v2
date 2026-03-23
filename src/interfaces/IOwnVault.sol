@@ -47,6 +47,15 @@ interface IOwnVault is IERC4626 {
     /// @notice Emitted when the vault is unhalted.
     event VaultUnhalted();
 
+    /// @notice Emitted when a specific asset is halted on this vault.
+    /// @param asset  Asset ticker.
+    /// @param reason Short identifier for the halt reason.
+    event AssetHalted(bytes32 indexed asset, bytes32 indexed reason);
+
+    /// @notice Emitted when a specific asset is unhalted on this vault.
+    /// @param asset Asset ticker.
+    event AssetUnhalted(bytes32 indexed asset);
+
     /// @notice Emitted when the vault enters wind-down mode.
     event WindDownInitiated();
 
@@ -99,6 +108,9 @@ interface IOwnVault is IERC4626 {
 
     /// @notice A zero address was provided.
     error ZeroAddress();
+
+    /// @notice The asset is halted on this vault.
+    error AssetIsHalted(bytes32 asset);
 
     // ──────────────────────────────────────────────────────────
     //  Async withdrawal queue
@@ -153,6 +165,25 @@ interface IOwnVault is IERC4626 {
 
     /// @notice Unhalt the vault and resume normal operations.
     function unhalt() external;
+
+    /// @notice Halt a specific asset on this vault (e.g. due to oracle staleness).
+    /// @dev Only the halted asset's orders are blocked; other assets continue.
+    /// @param asset  Asset ticker.
+    /// @param reason Short identifier for the halt reason.
+    function haltAsset(bytes32 asset, bytes32 reason) external;
+
+    /// @notice Unhalt a specific asset on this vault.
+    /// @param asset Asset ticker.
+    function unhaltAsset(
+        bytes32 asset
+    ) external;
+
+    /// @notice Check whether a specific asset is halted on this vault.
+    /// @param asset Asset ticker.
+    /// @return True if the asset is halted.
+    function isAssetHalted(
+        bytes32 asset
+    ) external view returns (bool);
 
     /// @notice Initiate vault wind-down. No new deposits or orders; existing
     ///         positions must be unwound.

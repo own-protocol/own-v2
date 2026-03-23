@@ -135,17 +135,14 @@ struct WithdrawalRequest {
 /// @param minCollateralRatio    Minimum collateral ratio in BPS (e.g. 11_000 = 110%).
 /// @param liquidationThreshold  Ratio below which liquidation is triggered, in BPS.
 /// @param liquidationReward     Liquidator discount in BPS.
-/// @param maxStaleness          Max oracle price age in seconds.
-/// @param maxDeviation          Max price deviation from last known, in BPS.
 /// @param active                Whether the asset is active for new orders.
+/// @dev Oracle config (staleness, deviation) lives in IOracleVerifier as the single source of truth.
 struct AssetConfig {
     address activeToken;
     address[] legacyTokens;
     uint256 minCollateralRatio;
     uint256 liquidationThreshold;
     uint256 liquidationReward;
-    uint256 maxStaleness;
-    uint256 maxDeviation;
     bool active;
 }
 
