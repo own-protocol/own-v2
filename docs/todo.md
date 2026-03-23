@@ -76,14 +76,14 @@ _One test file per contract. Mocked dependencies. Written BEFORE implementations
 
 _Make the tests pass. Nothing more._
 
-- 🔲 `src/tokens/EToken.sol` — ERC20 + Permit + admin-updatable name/symbol + rewards-per-share
-- 🔲 `src/core/OwnMarket.sol` — Order escrow + claim marketplace
-- 🔲 `src/core/OwnVault.sol` — ERC-4626 security vault with async withdrawal queue
-- 🔲 `src/core/VaultManager.sol` — VM registration, delegation, spread/exposure management
-- 🔲 `src/core/AssetRegistry.sol` — Asset whitelisting and token tracking
-- 🔲 `src/core/OracleVerifier.sol` — Signed price verification
-- 🔲 `src/core/LiquidationEngine.sol` — Three-tier liquidation
-- 🔲 `src/core/PaymentTokenRegistry.sol` — Payment token (stablecoin) whitelisting
+- ✅ `src/tokens/EToken.sol` — ERC20 + Permit + admin-updatable name/symbol + rewards-per-share
+- ✅ `src/core/OwnMarket.sol` — Order escrow + claim marketplace
+- ✅ `src/core/OwnVault.sol` — ERC-4626 security vault with async withdrawal queue
+- ✅ `src/core/VaultManager.sol` — VM registration, delegation, spread/exposure management
+- ✅ `src/core/AssetRegistry.sol` — Asset whitelisting and token tracking
+- ✅ `src/core/OracleVerifier.sol` — Signed price verification
+- ✅ `src/core/LiquidationEngine.sol` — Three-tier liquidation (stub — needs vault integration)
+- ✅ `src/core/PaymentTokenRegistry.sol` — Payment token (stablecoin) whitelisting
 - 🔲 `src/periphery/WETHRouter.sol` — ETH ↔ WETH wrapping for ETH vault deposits
 - 🔲 `src/periphery/WstETHRouter.sol` — stETH ↔ wstETH wrapping for stETH vault deposits
 

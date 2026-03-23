@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {BaseTest} from "../helpers/BaseTest.sol";
-import {Actors} from "../helpers/Actors.sol";
-import {IPaymentTokenRegistry} from "../../src/interfaces/IPaymentTokenRegistry.sol";
 import {PaymentTokenRegistry} from "../../src/core/PaymentTokenRegistry.sol";
+import {IPaymentTokenRegistry} from "../../src/interfaces/IPaymentTokenRegistry.sol";
+import {Actors} from "../helpers/Actors.sol";
+import {BaseTest} from "../helpers/BaseTest.sol";
 
 /// @title PaymentTokenRegistry Unit Tests
 /// @notice Tests whitelist add/remove, access control, duplicate/not-found errors,
@@ -131,7 +131,9 @@ contract PaymentTokenRegistryTest is BaseTest {
     //  Fuzz
     // ──────────────────────────────────────────────────────────
 
-    function testFuzz_addRemove_roundtrip(address token) public {
+    function testFuzz_addRemove_roundtrip(
+        address token
+    ) public {
         vm.assume(token != address(0));
 
         vm.startPrank(Actors.ADMIN);

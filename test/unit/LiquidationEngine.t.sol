@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {BaseTest} from "../helpers/BaseTest.sol";
-import {Actors} from "../helpers/Actors.sol";
-import {MockERC20} from "../helpers/MockERC20.sol";
-import {ILiquidationEngine} from "../../src/interfaces/ILiquidationEngine.sol";
 import {LiquidationEngine} from "../../src/core/LiquidationEngine.sol";
+import {ILiquidationEngine} from "../../src/interfaces/ILiquidationEngine.sol";
 import {PRECISION} from "../../src/interfaces/types/Types.sol";
+import {Actors} from "../helpers/Actors.sol";
+import {BaseTest} from "../helpers/BaseTest.sol";
+import {MockERC20} from "../helpers/MockERC20.sol";
 
 /// @title LiquidationEngine Unit Tests
 /// @notice Tests Tier 1 (eToken) liquidation, Tier 3 (DEX) fallback,
@@ -30,12 +30,7 @@ contract LiquidationEngineTest is BaseTest {
         vm.label(address(eTSLAToken), "eTSLA");
 
         vm.prank(Actors.ADMIN);
-        liquidationEngine = new LiquidationEngine(
-            Actors.ADMIN,
-            address(oracle),
-            mockAssetRegistry,
-            address(dex)
-        );
+        liquidationEngine = new LiquidationEngine(Actors.ADMIN, address(oracle), mockAssetRegistry, address(dex));
         vm.label(address(liquidationEngine), "LiquidationEngine");
 
         _setOraclePrice(TSLA, TSLA_PRICE);

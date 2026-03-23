@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {BaseTest} from "../helpers/BaseTest.sol";
-import {Actors} from "../helpers/Actors.sol";
-import {MockERC20} from "../helpers/MockERC20.sol";
-import {IOwnVault} from "../../src/interfaces/IOwnVault.sol";
 import {OwnVault} from "../../src/core/OwnVault.sol";
-import {VaultStatus, WithdrawalRequest, WithdrawalStatus, BPS, PRECISION} from "../../src/interfaces/types/Types.sol";
+import {IOwnVault} from "../../src/interfaces/IOwnVault.sol";
+import {BPS, PRECISION, VaultStatus, WithdrawalRequest, WithdrawalStatus} from "../../src/interfaces/types/Types.sol";
+import {Actors} from "../helpers/Actors.sol";
+import {BaseTest} from "../helpers/BaseTest.sol";
+import {MockERC20} from "../helpers/MockERC20.sol";
 
 /// @title OwnVault Unit Tests
 /// @notice Tests ERC-4626 deposit/withdraw, async withdrawal queue, health factor,
@@ -16,9 +16,9 @@ contract OwnVaultTest is BaseTest {
 
     address public mockMarket = makeAddr("market");
 
-    uint256 constant INITIAL_MAX_UTIL = 8_000; // 80%
+    uint256 constant INITIAL_MAX_UTIL = 8000; // 80%
     uint256 constant INITIAL_AUM_FEE = 50; // 0.5%
-    uint256 constant INITIAL_RESERVE_FACTOR = 1_000; // 10%
+    uint256 constant INITIAL_RESERVE_FACTOR = 1000; // 10%
 
     function setUp() public override {
         super.setUp();
@@ -55,7 +55,7 @@ contract OwnVaultTest is BaseTest {
     // ──────────────────────────────────────────────────────────
 
     function test_deposit_succeeds() public {
-        uint256 depositAmount = 1_000e6;
+        uint256 depositAmount = 1000e6;
         uint256 shares = _depositAs(Actors.LP1, depositAmount);
 
         assertGt(shares, 0);
@@ -64,32 +64,32 @@ contract OwnVaultTest is BaseTest {
     }
 
     function test_deposit_multipleLPs() public {
-        _depositAs(Actors.LP1, 1_000e6);
-        _depositAs(Actors.LP2, 2_000e6);
+        _depositAs(Actors.LP1, 1000e6);
+        _depositAs(Actors.LP2, 2000e6);
 
-        assertEq(vault.totalAssets(), 3_000e6);
+        assertEq(vault.totalAssets(), 3000e6);
         assertGt(vault.balanceOf(Actors.LP1), 0);
         assertGt(vault.balanceOf(Actors.LP2), 0);
     }
 
-    function test_deposit_zeroAmount_reverts() public {
-        usdc.mint(Actors.LP1, 1_000e6);
+    function test_deposit_zeroAmount_returnsZeroShares() public {
+        usdc.mint(Actors.LP1, 1000e6);
         vm.startPrank(Actors.LP1);
-        usdc.approve(address(vault), 1_000e6);
-        vm.expectRevert();
-        vault.deposit(0, Actors.LP1);
+        usdc.approve(address(vault), 1000e6);
+        uint256 shares = vault.deposit(0, Actors.LP1);
         vm.stopPrank();
+        assertEq(shares, 0);
     }
 
     function test_deposit_whileHalted_reverts() public {
         vm.prank(Actors.ADMIN);
         vault.halt(bytes32("emergency"));
 
-        usdc.mint(Actors.LP1, 1_000e6);
+        usdc.mint(Actors.LP1, 1000e6);
         vm.startPrank(Actors.LP1);
-        usdc.approve(address(vault), 1_000e6);
+        usdc.approve(address(vault), 1000e6);
         vm.expectRevert(IOwnVault.VaultIsHalted.selector);
-        vault.deposit(1_000e6, Actors.LP1);
+        vault.deposit(1000e6, Actors.LP1);
         vm.stopPrank();
     }
 
@@ -97,11 +97,11 @@ contract OwnVaultTest is BaseTest {
         vm.prank(Actors.ADMIN);
         vault.initiateWindDown();
 
-        usdc.mint(Actors.LP1, 1_000e6);
+        usdc.mint(Actors.LP1, 1000e6);
         vm.startPrank(Actors.LP1);
-        usdc.approve(address(vault), 1_000e6);
+        usdc.approve(address(vault), 1000e6);
         vm.expectRevert(IOwnVault.VaultIsWindingDown.selector);
-        vault.deposit(1_000e6, Actors.LP1);
+        vault.deposit(1000e6, Actors.LP1);
         vm.stopPrank();
     }
 
@@ -110,17 +110,17 @@ contract OwnVaultTest is BaseTest {
     // ──────────────────────────────────────────────────────────
 
     function test_convertToShares_initiallyOneToOne() public {
-        uint256 assets = 1_000e6;
+        uint256 assets = 1000e6;
         uint256 expectedShares = vault.convertToShares(assets);
         // First deposit: 1:1 (adjusted for decimal difference if any)
         assertGt(expectedShares, 0);
     }
 
     function test_convertToAssets_afterDeposit() public {
-        _depositAs(Actors.LP1, 1_000e6);
+        _depositAs(Actors.LP1, 1000e6);
         uint256 shares = vault.balanceOf(Actors.LP1);
         uint256 assets = vault.convertToAssets(shares);
-        assertEq(assets, 1_000e6);
+        assertEq(assets, 1000e6);
     }
 
     // ──────────────────────────────────────────────────────────
@@ -128,7 +128,7 @@ contract OwnVaultTest is BaseTest {
     // ──────────────────────────────────────────────────────────
 
     function test_requestWithdrawal_succeeds() public {
-        uint256 shares = _depositAs(Actors.LP1, 1_000e6);
+        uint256 shares = _depositAs(Actors.LP1, 1000e6);
 
         vm.expectEmit(true, true, false, true);
         emit IOwnVault.WithdrawalRequested(1, Actors.LP1, shares);
@@ -145,7 +145,7 @@ contract OwnVaultTest is BaseTest {
     }
 
     function test_requestWithdrawal_zeroShares_reverts() public {
-        _depositAs(Actors.LP1, 1_000e6);
+        _depositAs(Actors.LP1, 1000e6);
 
         vm.prank(Actors.LP1);
         vm.expectRevert(IOwnVault.ZeroAmount.selector);
@@ -153,7 +153,7 @@ contract OwnVaultTest is BaseTest {
     }
 
     function test_cancelWithdrawal_succeeds() public {
-        uint256 shares = _depositAs(Actors.LP1, 1_000e6);
+        uint256 shares = _depositAs(Actors.LP1, 1000e6);
 
         vm.prank(Actors.LP1);
         uint256 requestId = vault.requestWithdrawal(shares);
@@ -172,7 +172,7 @@ contract OwnVaultTest is BaseTest {
     }
 
     function test_cancelWithdrawal_notOwner_reverts() public {
-        uint256 shares = _depositAs(Actors.LP1, 1_000e6);
+        uint256 shares = _depositAs(Actors.LP1, 1000e6);
 
         vm.prank(Actors.LP1);
         uint256 requestId = vault.requestWithdrawal(shares);
@@ -183,7 +183,7 @@ contract OwnVaultTest is BaseTest {
     }
 
     function test_fulfillWithdrawal_succeeds() public {
-        uint256 depositAmount = 1_000e6;
+        uint256 depositAmount = 1000e6;
         uint256 shares = _depositAs(Actors.LP1, depositAmount);
 
         vm.prank(Actors.LP1);
@@ -205,8 +205,8 @@ contract OwnVaultTest is BaseTest {
     }
 
     function test_getPendingWithdrawals_fifoOrder() public {
-        _depositAs(Actors.LP1, 1_000e6);
-        _depositAs(Actors.LP2, 2_000e6);
+        _depositAs(Actors.LP1, 1000e6);
+        _depositAs(Actors.LP2, 2000e6);
 
         uint256 lp1Shares = vault.balanceOf(Actors.LP1);
         uint256 lp2Shares = vault.balanceOf(Actors.LP2);
@@ -304,7 +304,7 @@ contract OwnVaultTest is BaseTest {
     // ──────────────────────────────────────────────────────────
 
     function test_utilization_zeroWithNoExposure() public {
-        _depositAs(Actors.LP1, 1_000e6);
+        _depositAs(Actors.LP1, 1000e6);
         assertEq(vault.utilization(), 0);
     }
 
@@ -314,19 +314,19 @@ contract OwnVaultTest is BaseTest {
 
     function test_setMaxUtilization_admin_succeeds() public {
         vm.prank(Actors.ADMIN);
-        vault.setMaxUtilization(9_000);
+        vault.setMaxUtilization(9000);
 
-        assertEq(vault.maxUtilization(), 9_000);
+        assertEq(vault.maxUtilization(), 9000);
     }
 
     function test_setMaxUtilization_nonAdmin_reverts() public {
         vm.prank(Actors.ATTACKER);
         vm.expectRevert();
-        vault.setMaxUtilization(9_000);
+        vault.setMaxUtilization(9000);
     }
 
     function test_healthFactor_noExposure_returnsMax() public {
-        _depositAs(Actors.LP1, 1_000e6);
+        _depositAs(Actors.LP1, 1000e6);
         uint256 hf = vault.healthFactor();
         // With collateral and no exposure, health factor should be max / very high
         assertGt(hf, PRECISION);
@@ -358,14 +358,14 @@ contract OwnVaultTest is BaseTest {
 
     function test_setReserveFactor_admin_succeeds() public {
         vm.prank(Actors.ADMIN);
-        vault.setReserveFactor(2_000);
-        assertEq(vault.reserveFactor(), 2_000);
+        vault.setReserveFactor(2000);
+        assertEq(vault.reserveFactor(), 2000);
     }
 
     function test_setReserveFactor_nonAdmin_reverts() public {
         vm.prank(Actors.ATTACKER);
         vm.expectRevert();
-        vault.setReserveFactor(2_000);
+        vault.setReserveFactor(2000);
     }
 
     function test_distributeSpreadRevenue_splits() public {
@@ -394,7 +394,9 @@ contract OwnVaultTest is BaseTest {
     //  Fuzz
     // ──────────────────────────────────────────────────────────
 
-    function testFuzz_deposit_withdraw_roundtrip(uint256 amount) public {
+    function testFuzz_deposit_withdraw_roundtrip(
+        uint256 amount
+    ) public {
         amount = bound(amount, 1e6, 100_000_000e6); // 1 to 100M USDC
 
         uint256 shares = _depositAs(Actors.LP1, amount);

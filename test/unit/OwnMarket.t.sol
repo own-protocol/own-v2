@@ -1,20 +1,17 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {BaseTest} from "../helpers/BaseTest.sol";
-import {Actors} from "../helpers/Actors.sol";
-import {MockERC20} from "../helpers/MockERC20.sol";
-import {IOwnMarket} from "../../src/interfaces/IOwnMarket.sol";
+import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {OwnMarket} from "../../src/core/OwnMarket.sol";
+import {IOwnMarket} from "../../src/interfaces/IOwnMarket.sol";
+
+import {AssetConfig} from "../../src/interfaces/types/Types.sol";
 import {
-    Order,
-    ClaimInfo,
-    OrderStatus,
-    OrderType,
-    PriceType,
-    BPS,
-    PRECISION
+    BPS, ClaimInfo, Order, OrderStatus, OrderType, PRECISION, PriceType
 } from "../../src/interfaces/types/Types.sol";
+import {Actors} from "../helpers/Actors.sol";
+import {BaseTest} from "../helpers/BaseTest.sol";
+import {MockERC20} from "../helpers/MockERC20.sol";
 
 /// @title OwnMarket Unit Tests
 /// @notice Tests order placement (mint/redeem, market/limit, directed/open),
@@ -25,13 +22,13 @@ import {
 ///      and PaymentTokenRegistry are mocked via interfaces.
 contract OwnMarketTest is BaseTest {
     OwnMarket public market;
+    AssetRegistry public assetReg;
 
     MockERC20 public eTSLAToken;
 
     // Mock contract addresses acting as dependencies
     address public mockVaultManager = makeAddr("vaultManager");
     address public mockVault = makeAddr("vault");
-    address public mockAssetRegistry = makeAddr("assetRegistry");
     address public mockPaymentRegistry = makeAddr("paymentRegistry");
 
     uint256 constant DEFAULT_DEADLINE = 1 days;
@@ -42,14 +39,22 @@ contract OwnMarketTest is BaseTest {
         eTSLAToken = new MockERC20("Own TSLA", "eTSLA", 18);
         vm.label(address(eTSLAToken), "eTSLA");
 
+        // Deploy real AssetRegistry and register TSLA
+        vm.startPrank(Actors.ADMIN);
+        assetReg = new AssetRegistry(Actors.ADMIN);
+        AssetConfig memory config = AssetConfig({
+            activeToken: address(eTSLAToken),
+            legacyTokens: new address[](0),
+            minCollateralRatio: 11_000,
+            liquidationThreshold: 10_500,
+            liquidationReward: 500,
+            active: true
+        });
+        assetReg.addAsset(TSLA, address(eTSLAToken), config);
+        vm.stopPrank();
+
         vm.prank(Actors.ADMIN);
-        market = new OwnMarket(
-            Actors.ADMIN,
-            address(oracle),
-            mockVaultManager,
-            mockAssetRegistry,
-            mockPaymentRegistry
-        );
+        market = new OwnMarket(Actors.ADMIN, address(oracle), mockVaultManager, address(assetReg), mockPaymentRegistry);
         vm.label(address(market), "OwnMarket");
 
         // Setup default oracle price
@@ -64,10 +69,7 @@ contract OwnMarketTest is BaseTest {
         return block.timestamp + DEFAULT_DEADLINE;
     }
 
-    function _placeMintOrder(
-        address minter,
-        uint256 stablecoinAmount
-    ) internal returns (uint256 orderId) {
+    function _placeMintOrder(address minter, uint256 stablecoinAmount) internal returns (uint256 orderId) {
         usdc.mint(minter, stablecoinAmount);
         vm.startPrank(minter);
         usdc.approve(address(market), stablecoinAmount);
@@ -85,10 +87,7 @@ contract OwnMarketTest is BaseTest {
         vm.stopPrank();
     }
 
-    function _placeRedeemOrder(
-        address minter,
-        uint256 eTokenAmount
-    ) internal returns (uint256 orderId) {
+    function _placeRedeemOrder(address minter, uint256 eTokenAmount) internal returns (uint256 orderId) {
         eTSLAToken.mint(minter, eTokenAmount);
         vm.startPrank(minter);
         eTSLAToken.approve(address(market), eTokenAmount);
@@ -111,7 +110,7 @@ contract OwnMarketTest is BaseTest {
     // ──────────────────────────────────────────────────────────
 
     function test_placeMintOrder_succeeds() public {
-        uint256 amount = 1_000e6;
+        uint256 amount = 1000e6;
         usdc.mint(Actors.MINTER1, amount);
 
         vm.startPrank(Actors.MINTER1);
@@ -121,15 +120,7 @@ contract OwnMarketTest is BaseTest {
         emit IOwnMarket.OrderPlaced(1, Actors.MINTER1, uint8(OrderType.Mint), TSLA, amount);
 
         uint256 orderId = market.placeMintOrder(
-            TSLA,
-            address(usdc),
-            amount,
-            PriceType.Market,
-            100,
-            _defaultDeadline(),
-            true,
-            address(0),
-            _emptyPriceData()
+            TSLA, address(usdc), amount, PriceType.Market, 100, _defaultDeadline(), true, address(0), _emptyPriceData()
         );
         vm.stopPrank();
 
@@ -151,14 +142,22 @@ contract OwnMarketTest is BaseTest {
     }
 
     function test_placeMintOrder_limitOrder() public {
-        uint256 amount = 1_000e6;
+        uint256 amount = 1000e6;
         usdc.mint(Actors.MINTER1, amount);
 
         vm.startPrank(Actors.MINTER1);
         usdc.approve(address(market), amount);
 
         uint256 orderId = market.placeMintOrder(
-            TSLA, address(usdc), amount, PriceType.Limit, 240e18, _defaultDeadline(), false, address(0), _emptyPriceData()
+            TSLA,
+            address(usdc),
+            amount,
+            PriceType.Limit,
+            240e18,
+            _defaultDeadline(),
+            false,
+            address(0),
+            _emptyPriceData()
         );
         vm.stopPrank();
 
@@ -169,7 +168,7 @@ contract OwnMarketTest is BaseTest {
     }
 
     function test_placeMintOrder_directedOrder() public {
-        uint256 amount = 1_000e6;
+        uint256 amount = 1000e6;
         usdc.mint(Actors.MINTER1, amount);
 
         vm.startPrank(Actors.MINTER1);
@@ -193,7 +192,7 @@ contract OwnMarketTest is BaseTest {
     }
 
     function test_placeMintOrder_pastDeadline_reverts() public {
-        uint256 amount = 1_000e6;
+        uint256 amount = 1000e6;
         usdc.mint(Actors.MINTER1, amount);
 
         vm.startPrank(Actors.MINTER1);
@@ -245,19 +244,19 @@ contract OwnMarketTest is BaseTest {
     // ──────────────────────────────────────────────────────────
 
     function test_claimOrder_fullClaim_succeeds() public {
-        uint256 orderId = _placeMintOrder(Actors.MINTER1, 1_000e6);
+        uint256 orderId = _placeMintOrder(Actors.MINTER1, 1000e6);
 
         vm.expectEmit(true, true, true, true);
-        emit IOwnMarket.OrderClaimed(orderId, 1, Actors.VM1, 1_000e6);
+        emit IOwnMarket.OrderClaimed(orderId, 1, Actors.VM1, 1000e6);
 
         vm.prank(Actors.VM1);
-        uint256 claimId = market.claimOrder(orderId, 1_000e6);
+        uint256 claimId = market.claimOrder(orderId, 1000e6);
 
         assertEq(claimId, 1);
 
         ClaimInfo memory claim = market.getClaim(claimId);
         assertEq(claim.vm, Actors.VM1);
-        assertEq(claim.amount, 1_000e6);
+        assertEq(claim.amount, 1000e6);
         assertFalse(claim.confirmed);
 
         Order memory order = market.getOrder(orderId);
@@ -265,7 +264,7 @@ contract OwnMarketTest is BaseTest {
     }
 
     function test_claimOrder_partialClaim_succeeds() public {
-        uint256 orderId = _placeMintOrder(Actors.MINTER1, 1_000e6);
+        uint256 orderId = _placeMintOrder(Actors.MINTER1, 1000e6);
 
         vm.prank(Actors.VM1);
         market.claimOrder(orderId, 600e6);
@@ -276,22 +275,20 @@ contract OwnMarketTest is BaseTest {
     }
 
     function test_claimOrder_exceedsRemaining_reverts() public {
-        uint256 orderId = _placeMintOrder(Actors.MINTER1, 1_000e6);
+        uint256 orderId = _placeMintOrder(Actors.MINTER1, 1000e6);
 
         vm.prank(Actors.VM1);
-        vm.expectRevert(
-            abi.encodeWithSelector(IOwnMarket.AmountExceedsRemaining.selector, orderId, 1_001e6, 1_000e6)
-        );
-        market.claimOrder(orderId, 1_001e6);
+        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.AmountExceedsRemaining.selector, orderId, 1001e6, 1000e6));
+        market.claimOrder(orderId, 1001e6);
     }
 
     function test_claimOrder_partialFillNotAllowed_reverts() public {
         // Place order with allowPartialFill = false
-        usdc.mint(Actors.MINTER1, 1_000e6);
+        usdc.mint(Actors.MINTER1, 1000e6);
         vm.startPrank(Actors.MINTER1);
-        usdc.approve(address(market), 1_000e6);
+        usdc.approve(address(market), 1000e6);
         uint256 orderId = market.placeMintOrder(
-            TSLA, address(usdc), 1_000e6, PriceType.Market, 100, _defaultDeadline(), false, address(0), _emptyPriceData()
+            TSLA, address(usdc), 1000e6, PriceType.Market, 100, _defaultDeadline(), false, address(0), _emptyPriceData()
         );
         vm.stopPrank();
 
@@ -303,11 +300,11 @@ contract OwnMarketTest is BaseTest {
 
     function test_claimOrder_directedOrder_wrongVM_reverts() public {
         // Place directed order to VM1
-        usdc.mint(Actors.MINTER1, 1_000e6);
+        usdc.mint(Actors.MINTER1, 1000e6);
         vm.startPrank(Actors.MINTER1);
-        usdc.approve(address(market), 1_000e6);
+        usdc.approve(address(market), 1000e6);
         uint256 orderId = market.placeMintOrder(
-            TSLA, address(usdc), 1_000e6, PriceType.Market, 100, _defaultDeadline(), true, Actors.VM1, _emptyPriceData()
+            TSLA, address(usdc), 1000e6, PriceType.Market, 100, _defaultDeadline(), true, Actors.VM1, _emptyPriceData()
         );
         vm.stopPrank();
 
@@ -316,24 +313,22 @@ contract OwnMarketTest is BaseTest {
         vm.expectRevert(
             abi.encodeWithSelector(IOwnMarket.DirectedOrderWrongVM.selector, orderId, Actors.VM1, Actors.VM2)
         );
-        market.claimOrder(orderId, 1_000e6);
+        market.claimOrder(orderId, 1000e6);
     }
 
     function test_claimOrder_expiredOrder_reverts() public {
-        uint256 orderId = _placeMintOrder(Actors.MINTER1, 1_000e6);
+        uint256 orderId = _placeMintOrder(Actors.MINTER1, 1000e6);
 
         // Warp past deadline
         vm.warp(block.timestamp + DEFAULT_DEADLINE + 1);
 
         vm.prank(Actors.VM1);
-        vm.expectRevert(
-            abi.encodeWithSelector(IOwnMarket.OrderExpiredError.selector, orderId, block.timestamp - 1)
-        );
-        market.claimOrder(orderId, 1_000e6);
+        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.OrderExpiredError.selector, orderId, block.timestamp - 1));
+        market.claimOrder(orderId, 1000e6);
     }
 
     function test_claimOrder_zeroAmount_reverts() public {
-        uint256 orderId = _placeMintOrder(Actors.MINTER1, 1_000e6);
+        uint256 orderId = _placeMintOrder(Actors.MINTER1, 1000e6);
 
         vm.prank(Actors.VM1);
         vm.expectRevert(IOwnMarket.ZeroAmount.selector);
@@ -345,10 +340,10 @@ contract OwnMarketTest is BaseTest {
     // ──────────────────────────────────────────────────────────
 
     function test_confirmOrder_mint_succeeds() public {
-        uint256 orderId = _placeMintOrder(Actors.MINTER1, 1_000e6);
+        uint256 orderId = _placeMintOrder(Actors.MINTER1, 1000e6);
 
         vm.prank(Actors.VM1);
-        uint256 claimId = market.claimOrder(orderId, 1_000e6);
+        uint256 claimId = market.claimOrder(orderId, 1000e6);
 
         vm.expectEmit(true, true, true, false);
         emit IOwnMarket.OrderConfirmed(orderId, claimId, Actors.VM1, TSLA_PRICE, 0, 0);
@@ -365,10 +360,10 @@ contract OwnMarketTest is BaseTest {
     }
 
     function test_confirmOrder_nonClaimVM_reverts() public {
-        uint256 orderId = _placeMintOrder(Actors.MINTER1, 1_000e6);
+        uint256 orderId = _placeMintOrder(Actors.MINTER1, 1000e6);
 
         vm.prank(Actors.VM1);
-        uint256 claimId = market.claimOrder(orderId, 1_000e6);
+        uint256 claimId = market.claimOrder(orderId, 1000e6);
 
         // VM2 tries to confirm VM1's claim
         vm.prank(Actors.VM2);
@@ -377,10 +372,10 @@ contract OwnMarketTest is BaseTest {
     }
 
     function test_confirmOrder_alreadyConfirmed_reverts() public {
-        uint256 orderId = _placeMintOrder(Actors.MINTER1, 1_000e6);
+        uint256 orderId = _placeMintOrder(Actors.MINTER1, 1000e6);
 
         vm.prank(Actors.VM1);
-        uint256 claimId = market.claimOrder(orderId, 1_000e6);
+        uint256 claimId = market.claimOrder(orderId, 1000e6);
 
         vm.prank(Actors.VM1);
         market.confirmOrder(claimId, _emptyPriceData());
@@ -395,7 +390,7 @@ contract OwnMarketTest is BaseTest {
     // ──────────────────────────────────────────────────────────
 
     function test_cancelOrder_returnsEscrowedStablecoins() public {
-        uint256 orderId = _placeMintOrder(Actors.MINTER1, 1_000e6);
+        uint256 orderId = _placeMintOrder(Actors.MINTER1, 1000e6);
 
         vm.expectEmit(true, true, false, false);
         emit IOwnMarket.OrderCancelled(orderId, Actors.MINTER1);
@@ -403,7 +398,7 @@ contract OwnMarketTest is BaseTest {
         vm.prank(Actors.MINTER1);
         market.cancelOrder(orderId);
 
-        assertEq(usdc.balanceOf(Actors.MINTER1), 1_000e6);
+        assertEq(usdc.balanceOf(Actors.MINTER1), 1000e6);
         assertEq(usdc.balanceOf(address(market)), 0);
 
         Order memory order = market.getOrder(orderId);
@@ -411,7 +406,7 @@ contract OwnMarketTest is BaseTest {
     }
 
     function test_cancelOrder_partiallyClaimedReturnsUnclaimed() public {
-        uint256 orderId = _placeMintOrder(Actors.MINTER1, 1_000e6);
+        uint256 orderId = _placeMintOrder(Actors.MINTER1, 1000e6);
 
         vm.prank(Actors.VM1);
         market.claimOrder(orderId, 600e6);
@@ -424,7 +419,7 @@ contract OwnMarketTest is BaseTest {
     }
 
     function test_cancelOrder_notOwner_reverts() public {
-        uint256 orderId = _placeMintOrder(Actors.MINTER1, 1_000e6);
+        uint256 orderId = _placeMintOrder(Actors.MINTER1, 1000e6);
 
         vm.prank(Actors.ATTACKER);
         vm.expectRevert(abi.encodeWithSelector(IOwnMarket.OnlyOrderOwner.selector, orderId, Actors.ATTACKER));
@@ -432,15 +427,13 @@ contract OwnMarketTest is BaseTest {
     }
 
     function test_cancelOrder_fullyClaimed_reverts() public {
-        uint256 orderId = _placeMintOrder(Actors.MINTER1, 1_000e6);
+        uint256 orderId = _placeMintOrder(Actors.MINTER1, 1000e6);
 
         vm.prank(Actors.VM1);
-        market.claimOrder(orderId, 1_000e6);
+        market.claimOrder(orderId, 1000e6);
 
         vm.prank(Actors.MINTER1);
-        vm.expectRevert(
-            abi.encodeWithSelector(IOwnMarket.OrderNotOpen.selector, orderId, OrderStatus.FullyClaimed)
-        );
+        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.OrderNotOpen.selector, orderId, OrderStatus.FullyClaimed));
         market.cancelOrder(orderId);
     }
 
@@ -449,7 +442,7 @@ contract OwnMarketTest is BaseTest {
     // ──────────────────────────────────────────────────────────
 
     function test_expireOrder_afterDeadline_succeeds() public {
-        uint256 orderId = _placeMintOrder(Actors.MINTER1, 1_000e6);
+        uint256 orderId = _placeMintOrder(Actors.MINTER1, 1000e6);
 
         vm.warp(block.timestamp + DEFAULT_DEADLINE + 1);
 
@@ -462,15 +455,13 @@ contract OwnMarketTest is BaseTest {
         assertEq(uint256(order.status), uint256(OrderStatus.Expired));
 
         // Escrowed stablecoins returned
-        assertEq(usdc.balanceOf(Actors.MINTER1), 1_000e6);
+        assertEq(usdc.balanceOf(Actors.MINTER1), 1000e6);
     }
 
     function test_expireOrder_beforeDeadline_reverts() public {
-        uint256 orderId = _placeMintOrder(Actors.MINTER1, 1_000e6);
+        uint256 orderId = _placeMintOrder(Actors.MINTER1, 1000e6);
 
-        vm.expectRevert(
-            abi.encodeWithSelector(IOwnMarket.DeadlineNotReached.selector, orderId, _defaultDeadline())
-        );
+        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.DeadlineNotReached.selector, orderId, _defaultDeadline()));
         market.expireOrder(orderId);
     }
 
@@ -489,7 +480,7 @@ contract OwnMarketTest is BaseTest {
     }
 
     function test_getOrderClaims_returnsClaims() public {
-        uint256 orderId = _placeMintOrder(Actors.MINTER1, 1_000e6);
+        uint256 orderId = _placeMintOrder(Actors.MINTER1, 1000e6);
 
         vm.prank(Actors.VM1);
         market.claimOrder(orderId, 500e6);
@@ -502,17 +493,17 @@ contract OwnMarketTest is BaseTest {
     }
 
     function test_getOpenOrders_returnsOpenOnly() public {
-        _placeMintOrder(Actors.MINTER1, 1_000e6);
-        _placeMintOrder(Actors.MINTER2, 2_000e6);
+        _placeMintOrder(Actors.MINTER1, 1000e6);
+        _placeMintOrder(Actors.MINTER2, 2000e6);
 
         uint256[] memory openOrders = market.getOpenOrders(TSLA);
         assertEq(openOrders.length, 2);
     }
 
     function test_getUserOrders_returnsUserOrders() public {
-        _placeMintOrder(Actors.MINTER1, 1_000e6);
+        _placeMintOrder(Actors.MINTER1, 1000e6);
         _placeMintOrder(Actors.MINTER1, 500e6);
-        _placeMintOrder(Actors.MINTER2, 2_000e6);
+        _placeMintOrder(Actors.MINTER2, 2000e6);
 
         uint256[] memory m1Orders = market.getUserOrders(Actors.MINTER1);
         assertEq(m1Orders.length, 2);
@@ -525,7 +516,9 @@ contract OwnMarketTest is BaseTest {
     //  Fuzz
     // ──────────────────────────────────────────────────────────
 
-    function testFuzz_placeMintOrder_anyAmount(uint256 amount) public {
+    function testFuzz_placeMintOrder_anyAmount(
+        uint256 amount
+    ) public {
         amount = bound(amount, 1, type(uint128).max);
 
         usdc.mint(Actors.MINTER1, amount);

@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {BaseTest} from "../helpers/BaseTest.sol";
-import {Actors} from "../helpers/Actors.sol";
-import {IAssetRegistry} from "../../src/interfaces/IAssetRegistry.sol";
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
+import {IAssetRegistry} from "../../src/interfaces/IAssetRegistry.sol";
 import {AssetConfig} from "../../src/interfaces/types/Types.sol";
+import {Actors} from "../helpers/Actors.sol";
+import {BaseTest} from "../helpers/BaseTest.sol";
 
 /// @title AssetRegistry Unit Tests
 /// @notice Tests asset whitelisting, configuration, deactivation, token migration,
@@ -28,7 +28,9 @@ contract AssetRegistryTest is BaseTest {
     //  Helpers
     // ──────────────────────────────────────────────────────────
 
-    function _defaultConfig(address token) internal pure returns (AssetConfig memory) {
+    function _defaultConfig(
+        address token
+    ) internal pure returns (AssetConfig memory) {
         return AssetConfig({
             activeToken: token,
             legacyTokens: new address[](0),

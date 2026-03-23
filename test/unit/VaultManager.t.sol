@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {BaseTest} from "../helpers/BaseTest.sol";
-import {Actors} from "../helpers/Actors.sol";
-import {IVaultManager} from "../../src/interfaces/IVaultManager.sol";
 import {VaultManager} from "../../src/core/VaultManager.sol";
-import {VMConfig, BPS} from "../../src/interfaces/types/Types.sol";
+import {IVaultManager} from "../../src/interfaces/IVaultManager.sol";
+import {BPS, VMConfig} from "../../src/interfaces/types/Types.sol";
+import {Actors} from "../helpers/Actors.sol";
+import {BaseTest} from "../helpers/BaseTest.sol";
 
 /// @title VaultManager Unit Tests
 /// @notice Tests registration, spread/exposure config, delegation lifecycle,
@@ -100,9 +100,7 @@ contract VaultManagerTest is BaseTest {
         vmManager.registerVM(mockVault);
 
         vm.prank(Actors.VM1);
-        vm.expectRevert(
-            abi.encodeWithSelector(IVaultManager.SpreadBelowMinimum.selector, 10, DEFAULT_MIN_SPREAD)
-        );
+        vm.expectRevert(abi.encodeWithSelector(IVaultManager.SpreadBelowMinimum.selector, 10, DEFAULT_MIN_SPREAD));
         vmManager.setSpread(10); // below 30 bps min
     }
 
@@ -280,9 +278,7 @@ contract VaultManagerTest is BaseTest {
         vmManager.registerVM(mockVault);
 
         vm.prank(Actors.VM1);
-        vm.expectRevert(
-            abi.encodeWithSelector(IVaultManager.DelegationNotProposed.selector, Actors.LP1, Actors.VM1)
-        );
+        vm.expectRevert(abi.encodeWithSelector(IVaultManager.DelegationNotProposed.selector, Actors.LP1, Actors.VM1));
         vmManager.acceptDelegation(Actors.LP1);
     }
 
@@ -399,7 +395,9 @@ contract VaultManagerTest is BaseTest {
     //  Fuzz
     // ──────────────────────────────────────────────────────────
 
-    function testFuzz_setSpread_aboveMinimum(uint256 spread) public {
+    function testFuzz_setSpread_aboveMinimum(
+        uint256 spread
+    ) public {
         spread = bound(spread, DEFAULT_MIN_SPREAD, BPS);
 
         vm.prank(Actors.VM1);

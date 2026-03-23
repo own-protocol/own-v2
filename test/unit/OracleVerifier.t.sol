@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {BaseTest} from "../helpers/BaseTest.sol";
-import {Actors} from "../helpers/Actors.sol";
-import {IOracleVerifier} from "../../src/interfaces/IOracleVerifier.sol";
 import {OracleVerifier} from "../../src/core/OracleVerifier.sol";
-import {PRECISION, BPS} from "../../src/interfaces/types/Types.sol";
+import {IOracleVerifier} from "../../src/interfaces/IOracleVerifier.sol";
+import {BPS, PRECISION} from "../../src/interfaces/types/Types.sol";
+import {Actors} from "../helpers/Actors.sol";
+import {BaseTest} from "../helpers/BaseTest.sol";
+
 import {MessageHashUtils} from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 
 /// @title OracleVerifier Unit Tests
@@ -23,6 +24,9 @@ contract OracleVerifierTest is BaseTest {
 
     function setUp() public override {
         super.setUp();
+
+        // Warp to a realistic timestamp so staleness math doesn't underflow
+        vm.warp(1_000_000);
 
         signer = vm.addr(SIGNER_PK);
 
@@ -49,9 +53,8 @@ contract OracleVerifierTest is BaseTest {
         bool marketOpen,
         uint256 sequenceNumber
     ) internal view returns (bytes memory) {
-        bytes32 messageHash = keccak256(
-            abi.encode(asset, price, timestamp, marketOpen, sequenceNumber, block.chainid, address(verifier))
-        );
+        bytes32 messageHash =
+            keccak256(abi.encode(asset, price, timestamp, marketOpen, sequenceNumber, block.chainid, address(verifier)));
         bytes32 ethSignedHash = MessageHashUtils.toEthSignedMessageHash(messageHash);
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(SIGNER_PK, ethSignedHash);
         return abi.encode(price, timestamp, marketOpen, sequenceNumber, v, r, s);
@@ -81,7 +84,7 @@ contract OracleVerifierTest is BaseTest {
     function test_verifyPrice_marketClosed_returnsCorrectFlag() public {
         bytes memory priceData = _signPrice(ASSET, 250e18, block.timestamp, false, 1);
 
-        (, , bool marketOpen) = verifier.verifyPrice(ASSET, priceData);
+        (,, bool marketOpen) = verifier.verifyPrice(ASSET, priceData);
 
         assertFalse(marketOpen);
     }
@@ -343,7 +346,9 @@ contract OracleVerifierTest is BaseTest {
     //  Fuzz
     // ──────────────────────────────────────────────────────────
 
-    function testFuzz_verifyPrice_validPrices(uint256 price) public {
+    function testFuzz_verifyPrice_validPrices(
+        uint256 price
+    ) public {
         price = bound(price, 1, type(uint128).max);
         bytes memory priceData = _signPrice(ASSET, price, block.timestamp, true, 1);
 
