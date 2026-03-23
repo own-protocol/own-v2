@@ -6,77 +6,121 @@
 
 ## 1. MVP Scope
 
-The MVP delivers a multi-collateral, public vault system with vault manager delegation for tokenized RWA exposure on Base.
+The MVP delivers an order-based protocol for tokenized RWA exposure on Base, with an escrow + claim marketplace, multi-collateral vaults as security pools, and vault manager delegation.
 
 ### 1.1 What's In
 
-- Multiple vaults, one per collateral type: USDC, aUSDC, ETH (as WETH), stETH (as wstETH internally)
+- Order-based minting and redemption via escrow + claim marketplace
+- Market orders (with slippage) and limit orders
+- Multi-stablecoin support for minters (USDC, USDT, USDS, etc.) — protocol whitelists accepted stablecoins, VMs set which they accept
+- Multiple vaults, one per LP collateral type: USDC, aUSDC, ETH (as WETH), stETH (as wstETH internally)
 - All vaults are public — multiple LPs deposit collateral, receive ERC-4626 shares
+- Vaults act as insurance/guarantee pools — LP collateral is trustless security for pending orders
 - Vault manager registration and LP delegation (mutual agreement)
-- LPs can be their own vault manager
-- Instant mint during market hours at oracle price + minSpread
-- Non-market hours: vault managers opt-in with custom spreads, minters routed to best price
-- Unified spread model (no separate fee — minSpread acts as revenue floor)
+- LPs can be their own vault manager (same interface, same infrastructure requirements)
+- Unified spread model — VMs set their own spreads (>= minSpread floor), no separate protocol fee
 - Spread revenue split: protocol / vault manager / LPs
 - Offchain hedging by vault managers (no onchain hedging)
-- eTokens as standard ERC20 + Permit per asset
+- eTokens as standard ERC20 + Permit per asset, with admin-updatable name/symbol
+- Dividends via rewards-per-share accumulator (for dividend-paying assets like eTLT)
 - Signed oracle price feeds (protocol-operated for MVP)
-- Liquidation engine for vault health
-- Vault halt mechanism
-- stETH vault wraps to wstETH on deposit, unwraps on withdrawal (avoids rebasing rounding issues)
+- Three-tier liquidation (eToken-based, organic LP deposit, DEX fallback)
+- Vault halt mechanism (per-asset and vault-wide)
+- Async LP withdrawal queue (ERC-7540 pattern)
+- stETH vault wraps to wstETH on deposit, unwraps on withdrawal
 - aUSDC vault — yield accrues naturally via ERC-4626 share price increase
 
 ### 1.2 What's Out (Post-MVP)
 
-- ZK proof attestation for offchain positions
+- Signed intents for atomic single-tx execution
+- ZK proof attestation for offchain hedge positions
 - Multi-signer oracle (M-of-N)
 - Pyth / Chainlink oracle integration
 - Morpho looping integration
-- Token split migration contract
 - Governance and fee parameter voting
 - Cross-chain deployment
 - Permissionless asset listing
+- Insurance fund from protocol spread revenue
 
 ---
 
 ## 2. Architecture Overview
 
-The protocol is organized around a set of core components that coordinate to enable minting, redemption, LP management, and vault health enforcement. Contract names and file structure are determined during implementation; what follows describes the logical responsibilities and interactions.
+The protocol is an order-based system with an escrow + claim marketplace. Minters pay in stablecoins, which go to vault managers for offchain hedge execution. LP collateral in vaults acts as trustless onchain security. Contract names and file structure are determined during implementation; what follows describes the logical responsibilities and interactions.
 
 ### Core Components
 
-- **Collateral Vaults** — One ERC-4626 vault per collateral type. Holds pooled LP collateral and tracks shares. For yield-bearing assets (aUSDC, stETH/wstETH), the share price increases automatically as the underlying balance grows, so LPs receive accrued yield on withdrawal without any claim step.
+- **Order Escrow** — Holds minter stablecoins (for mints) or eTokens (for redeems) in escrow until a vault manager claims and fulfills the order. Supports market orders (with slippage), limit orders, directed orders (specific VM), open orders (any VM), and partial fills.
 
-- **eTokens** — One ERC20 + EIP-2612 Permit token per synthetic asset (eTSLA, eGOLD, etc.). Mint and burn authority is restricted to the vault system. eTokens are freely transferable and composable with external DeFi.
+- **Collateral Vaults** — One ERC-4626 vault per LP collateral type. Holds pooled LP collateral as trustless security/guarantee for all pending orders. Vaults are NOT fund-flow intermediaries — minter stablecoins go to VMs via escrow, not through vaults. For yield-bearing assets (aUSDC, stETH/wstETH), the share price increases automatically as the underlying balance grows.
 
-- **Asset Registry** — A whitelisted asset list maintained by the protocol admin. Maps each ticker to its eToken address, oracle configuration, and collateral parameters.
+- **eTokens** — One ERC20 + EIP-2612 Permit token per synthetic asset (eTSLA, eGOLD, etc.). Mint and burn authority is restricted to the order system. eTokens are freely transferable and composable with external DeFi. Name and symbol are admin-updatable (stored as `string storage`) to support stock split token transitions. For dividend-paying assets, includes a rewards-per-share accumulator.
+
+- **Asset Registry** — A whitelisted asset list maintained by the protocol admin. Maps each ticker to its active eToken address, oracle configuration, and collateral parameters. Tracks active vs legacy tokens (for post-split transitions).
 
 - **Oracle Verification** — Accepts signed price data, verifies the signer, enforces staleness bounds, and exposes a generic interface so future backends (Pyth, Chainlink, multi-signer) can be swapped in without changing downstream consumers.
 
-- **Vault Manager Layer** — Handles manager registration, LP-to-manager delegation, spread configuration, and non-market-hour participation signaling.
+- **Vault Manager Layer** — Handles manager registration, LP-to-manager delegation, spread configuration, exposure caps, and stablecoin acceptance settings.
 
-- **Liquidation Engine** — Monitors vault health ratios, triggers partial collateral liquidation via DEX when health drops below threshold, and pays liquidator rewards.
+- **Liquidation Engine** — Monitors vault health ratios, triggers partial collateral liquidation when health drops below threshold, and pays liquidator rewards.
 
 ### Key Interactions
 
-**Mint**
-Minter submits collateral-equivalent value together with a signed oracle price. The vault verifies the price signature and staleness, calculates the eToken amount after applying the spread, mints eTokens to the minter, and absorbs the collateral into the pool.
+**Mint (Order-Based)**
+1. Minter places a mint order: deposits stablecoins into escrow, specifies asset (eTSLA), price parameters (slippage or limit price), `allowPartialFill`, and optional `preferredVM`.
+2. Any eligible VM calls `claimOrder()` to accept the order (full or partial). Stablecoins are released to the claiming VM.
+3. VM buys the hedge offchain using the minter's stablecoins.
+4. VM confirms execution onchain by submitting a signed oracle price.
+5. Protocol verifies the execution price is within the minter's slippage tolerance.
+6. eTokens are minted to the minter.
+7. LP collateral in the vault acts as trustless security throughout.
 
-**Redeem**
-Minter burns eTokens and provides a signed oracle price. The vault calculates the collateral payout after spread. If the buffer is sufficient the payout is immediate; if not, the liquidation engine sells collateral on a DEX to cover the shortfall.
+**Redeem (Order-Based)**
+1. Minter places a redeem order: eTokens are held in escrow, specifies price parameters.
+2. VM claims the order, unwinds the hedge offchain, and sends stablecoins to the minter.
+3. VM confirms execution with a signed oracle price.
+4. Protocol verifies, burns the escrowed eTokens.
+5. **Deadline enforcement**: if VM doesn't execute within the deadline, LP collateral is sold to pay the minter.
 
 **LP Deposit**
-LP deposits collateral into the vault and receives ERC-4626 shares proportional to the current share price.
+LP deposits collateral into the vault and receives ERC-4626 shares proportional to the current share price. LP collateral acts as security for the protocol's outstanding exposure.
 
-**LP Withdrawal**
-LP burns shares and receives proportional collateral, subject to utilization and buffer constraints. If the vault is heavily utilized, withdrawals may be partially fulfilled or queued.
+**LP Withdrawal (Async)**
+LP submits a withdrawal request that enters a FIFO queue. The request is fulfilled when utilization allows (remaining collateral must still cover the minimum ratio for outstanding exposure). LPs can cancel pending requests at any time.
 
 **Delegation**
 LP sets a preferred vault manager. The vault manager accepts the delegation. From that point the manager is responsible for offchain hedging of the exposure attributable to that LP's share.
 
 ---
 
-## 3. Vault Manager Model
+## 3. Escrow + Claim Marketplace
+
+The escrow + claim marketplace is the core execution mechanism. It replaces protocol-assigned order routing with open competition among VMs.
+
+### How It Works
+
+- Orders sit in protocol escrow. All VMs can see them.
+- VMs call `claimOrder(orderId, amount)` to accept an order (full or partial claim).
+- First VM to claim gets priority (competitive — faster bots win).
+- Large orders can be claimed in portions by multiple VMs independently.
+- Each VM confirms their portion independently with a signed oracle price.
+- eTokens are minted in tranches as each VM confirms.
+
+### Order Modes
+
+- **Open orders**: `preferredVM = address(0)`. Any eligible VM can claim.
+- **Directed orders**: `preferredVM = <vmAddress>`. Only the specified VM can claim.
+- **Cross-vault competition**: VMs from different vaults (e.g., USDC vault, ETH vault) can claim the same order. The security backing comes from whichever vault the claiming VM belongs to.
+
+### Partial Fills
+
+- Users set `allowPartialFill: true/false` on each order.
+- If true: available VMs claim what they can; unfilled remainder is returned to the user.
+- If false: order must be fully claimable or it is rejected.
+
+---
+
+## 4. Vault Manager Model
 
 Multiple vault managers can register on any vault. The relationship between LPs and vault managers is based on mutual agreement:
 
@@ -84,47 +128,60 @@ Multiple vault managers can register on any vault. The relationship between LPs 
 2. Vault manager accepts the delegation.
 3. The delegation is now active; the manager is responsible for offchain hedging of the LP's proportional exposure.
 
-LPs may also act as their own vault manager, in which case no external delegation is required.
+LPs may also act as their own vault manager. Self-managing LPs register as a VM with the same interface and are expected to run the same infrastructure (bots, monitoring, offchain hedge execution).
 
 ### Vault Manager Responsibilities
 
+- Claiming and fulfilling mint/redeem orders via the escrow marketplace
 - Offchain hedging for delegated LPs' exposure
-- Setting a non-market-hour spread (opt-in per manager)
-- Managing risk for their delegated portion of the vault
+- Setting their own spread (must be >= minSpread)
+- Managing exposure within their self-set caps
+- Confirming order execution with signed oracle prices
 
 ### Vault Manager Onchain State
 
 | Field | Type | Description |
 |---|---|---|
-| `isActiveOffMarket` | `bool` | Whether the manager accepts mints/redeems outside market hours |
-| `offMarketSpread` | `uint` | Custom spread applied during non-market hours (must be >= minSpread) |
-| Delegated LP shares | mapping | Tracks which LPs have delegated and their proportional share |
+| `spread` | `uint` | VM's posted spread in BPS (must be >= minSpread) |
+| `maxExposure` | `uint` | Max USD notional the VM is willing to hedge |
+| `maxOffMarketExposure` | `uint` | Max exposure during off-market hours (typically lower) |
+| `currentExposure` | `uint` | Tracked on claim/confirm — current outstanding notional |
+| `acceptedStablecoins` | `mapping` | Which stablecoins this VM accepts for orders |
+| `assetOffMarketEnabled` | `mapping` | Per-asset toggle for off-hours execution |
+| Delegated LP shares | `mapping` | Tracks which LPs have delegated and their proportional share |
 
 ---
 
-## 4. Spread Model (Unified)
+## 5. Spread & Slippage Model
 
-There is no separate protocol fee. Everything is captured through a single spread applied on every mint and redeem.
+### Spread (VM-Side)
 
-### Parameters
+There is no separate protocol fee. All revenue comes through the spread.
 
-- **`minSpread`** — Protocol-enforced floor (e.g., 30 BPS). Guarantees minimum revenue on every operation. Set by the protocol admin.
+- Each VM sets their own spread onchain (in BPS). Must be >= `minSpread` (protocol-enforced floor).
+- The spread is known upfront before the user places an order.
+- Applied at execution on the oracle price:
+  - **Mint**: user pays `oraclePrice * (1 + vmSpread)` per eToken
+  - **Redeem**: user receives `oraclePrice * (1 - vmSpread)` per eToken
+- VMs compete on spread — lower spreads attract more orders.
+- VMs adjust their own spreads based on market conditions, risk, and hedging costs.
 
-### Market Hours Behavior
+### Slippage (User-Side, Market Orders Only)
 
-- Spread equals `minSpread`.
-- Fully pooled liquidity: any mint or redeem hits the unified vault pool.
+- Maximum oracle price movement tolerance between order placement and execution.
+- Protects the user against price moving during async execution.
+- Verification at confirmation: `|executionOraclePrice - placementOraclePrice| / placementOraclePrice <= slippage`
+- Slippage is **separate from spread** — spread is the cost of service (known upfront), slippage is price risk tolerance.
 
-### Non-Market Hours Behavior
+### Limit Orders
 
-- Spread equals `max(minSpread, managerCustomSpread)`.
-- Each vault manager independently opts in or out of non-market execution.
-- Willing managers expose their delegated LPs' proportional share of the pool.
-- Minters are routed to the best-priced (lowest spread) manager first; overflow routes to the next cheapest manager, and so on.
+- User sets an exact execution price. No slippage parameter.
+- VM can only confirm when the oracle price matches (or is better than) the limit price.
+- Order stays open until filled, cancelled, or expired.
 
 ### Revenue Distribution
 
-Spread revenue is split three ways according to a configurable ratio:
+Spread revenue from each order is split three ways according to a configurable ratio:
 
 | Recipient | Description |
 |---|---|
@@ -134,9 +191,14 @@ Spread revenue is split three ways according to a configurable ratio:
 
 The split percentages are set at the protocol level and may differ by vault type.
 
+### Protocol Controls
+
+- **`minSpread`**: Protocol-enforced floor. No VM can set a spread below this. Guarantees minimum protocol revenue.
+- **`maxUtilization`**: Hard cap per vault. When vault utilization exceeds this threshold, VMs from that vault cannot claim new orders. Protects against insufficient security coverage.
+
 ---
 
-## 5. Collateral & Yield-Bearing Assets
+## 6. Collateral & Yield-Bearing Assets
 
 | Collateral | Vault Asset | Yield | Notes |
 |---|---|---|---|
@@ -153,32 +215,36 @@ stETH is a rebasing token: holder balances change daily as staking rewards are d
 
 ---
 
-## 6. Oracle Design (MVP)
+## 7. Oracle Design (MVP)
 
 The MVP uses a pull-based, signed price feed operated by the protocol team.
 
 ### Flow
 
-1. Protocol oracle service signs `(asset, price, timestamp)` with a known private key.
-2. Minter or bot submits the signed price data as a transaction parameter.
-3. The onchain oracle verifier checks the signature, confirms the signer is authorized, and enforces a staleness bound (e.g., price must be no older than 60 seconds).
-4. If valid, the price is forwarded to the vault for mint/redeem calculation.
+1. Protocol oracle service signs `(asset, price, timestamp, sequenceNumber)` with a known private key.
+2. VM submits the signed price data when confirming an order.
+3. The onchain oracle verifier checks the signature, confirms the signer is authorized, enforces staleness bounds, validates the sequence number, and checks price deviation.
+4. If valid, the price is used for order confirmation and eToken minting/burning.
 
 ### Interface
 
-The oracle verification layer exposes a generic interface that accepts a price payload and returns a validated price. This abstraction allows future backends (Pyth, Chainlink, multi-signer M-of-N) to be integrated without modifying vault or mint logic.
+The oracle verification layer exposes a generic interface that accepts a price payload and returns a validated price. This abstraction allows future backends (Pyth, Chainlink, multi-signer M-of-N) to be integrated without modifying order or vault logic.
 
-### Staleness & Safety
+### Safety Mechanisms
 
-- Maximum price age is a configurable parameter per asset.
-- If no valid price is available, mint operations revert.
-- Redemptions may use the last known valid price within a wider staleness window to avoid trapping user funds.
+| Mechanism | Description |
+|---|---|
+| Staleness bounds | Per-asset max price age (stocks: 60s, gold: 120s, treasuries: 300s) |
+| Price deviation | Per-asset max movement from last known price (eTSLA: 10%, eGOLD: 5%, eTLT: 3%) |
+| Sequence numbers | Monotonically increasing per asset; prevents replaying older valid prices |
+| Chain ID + contract | Included in signed message; prevents cross-chain and cross-contract replay |
+| Signer rotation | Admin can rotate the signer address without redeploying contracts |
 
 ---
 
-## 7. Vault Health & Liquidation
+## 8. Vault Health & Liquidation
 
-Each vault maintains a collateral ratio defined as the total collateral value divided by the total outstanding eToken liability. Health parameters vary by collateral risk profile:
+Each vault maintains a collateral ratio defined as the total LP collateral value divided by the total outstanding eToken exposure. Health parameters vary by collateral risk profile:
 
 | Collateral | Min Ratio | Liquidation Threshold | Liquidation Reward |
 |---|---|---|---|
@@ -187,92 +253,195 @@ Each vault maintains a collateral ratio defined as the total collateral value di
 | ETH / WETH | 200% | 155% | 5-10% |
 | stETH / wstETH | 210% | 160% | 5-10% |
 
-### Liquidation Process
+### Liquidation — Three Tiers
 
-1. A bot or keeper monitors vault health ratios offchain.
-2. When the collateral ratio drops below the liquidation threshold, anyone can trigger a partial liquidation.
-3. The liquidation engine sells a portion of vault collateral on a DEX (e.g., Uniswap) to bring the ratio back above the minimum.
-4. The liquidator receives a reward (percentage of liquidated collateral) as incentive.
+**Tier 1: Liquidator Provides eTokens (Primary)**
+1. When the collateral ratio drops below the liquidation threshold, anyone can trigger a partial liquidation.
+2. Liquidator provides eTokens by calling `liquidate(asset, eTokenAmount)`.
+3. The vault burns the eTokens (reducing outstanding exposure).
+4. The vault sends the liquidator equivalent LP collateral at a discount (liquidation reward).
+5. Partial only — enough to restore the ratio above the minimum.
 
-Liquidations are always partial — only enough collateral is sold to restore health. Full vault liquidation is not supported in the MVP.
+**Tier 2: New LP Deposits (Organic)**
+- When a vault is distressed, the ERC-4626 share price drops (totalAssets/totalSupply).
+- New LPs deposit at the depressed share price, increasing vault collateral and restoring the ratio.
+- High utilization produces higher yield per LP share, naturally attracting new deposits.
+
+**Tier 3: Vault Sells Collateral on DEX (Fallback)**
+- If Tier 1 and 2 do not restore health within a time window, the vault can sell LP collateral on a DEX.
+- Also triggered on redemption deadline expiry — if a VM fails to fulfill a redemption within the deadline, LP collateral is sold to pay the minter.
 
 ---
 
-## 8. Vault Halt Conditions
+## 9. Vault Halt Conditions
 
-A vault can be halted under the following conditions:
+### Triggers
 
-- **Health failure** — Collateral ratio drops below a critical threshold and liquidation alone cannot restore it.
-- **Oracle staleness** — No valid price update has been received within the maximum allowed window.
-- **Vault-manager-initiated** — A vault manager requests a halt for their delegated portion (e.g., hedging failure).
-- **Admin emergency** — Protocol admin triggers an emergency halt.
+| Trigger | Initiator | Scope |
+|---|---|---|
+| Health failure (ratio < critical) | Automatic | Entire vault |
+| Oracle staleness | Automatic | Per asset |
+| Price deviation circuit breaker | Automatic | Per asset |
+| VM request | Vault Manager | VM's participation only |
+| Admin emergency | Admin | Any vault or protocol-wide |
 
 ### Behavior When Halted
 
-- No new mints are accepted.
+- No new orders are accepted.
+- Pending orders can be cancelled by users (stablecoins returned).
 - Redemptions continue to function (users must be able to exit).
 - Liquidation continues to function (health must be recoverable).
 - LP withdrawals continue subject to utilization constraints.
 
 The halt is lifted by the protocol admin once the triggering condition is resolved.
 
----
+### Wind-Down (Nuclear Option)
 
-## 9. Edge Cases
-
-### Insufficient Redemption Buffer
-
-If the vault does not hold enough idle collateral to fulfill a redemption, the liquidation engine sells collateral on a DEX. If DEX liquidity is insufficient, the redemption is partially fulfilled and the remainder is queued.
-
-### Vault Manager Disappearance
-
-Collateral remains locked onchain regardless of vault manager availability. If a manager goes offline, their delegated LPs' funds are still safe in the vault. LPs can re-delegate to a different manager or act as their own manager. Non-market-hour minting through the absent manager is simply unavailable.
-
-### Oracle Manipulation Mitigations
-
-- Signed prices are verified against a known signer set.
-- Staleness bounds reject stale or replayed prices.
-- Price deviation checks reject updates that diverge excessively from the last known price within a short window.
-- The MVP oracle is protocol-operated, reducing the attack surface to key compromise (mitigated by key rotation and monitoring).
-
-### Flash Loan Resistance
-
-- Minting and redemption use externally signed prices, not onchain AMM prices, so flash-loan-driven price manipulation is ineffective.
-- ERC-4626 share price is based on actual vault balances, not spot DEX rates.
-- Deposits and withdrawals in the same transaction can be restricted if needed.
-
-### LP Exit Constraints
-
-- LPs cannot withdraw collateral that is actively backing outstanding eToken liabilities beyond the minimum ratio.
-- Withdrawal requests that would push the vault below its minimum collateral ratio are rejected or partially fulfilled.
-- In extreme utilization scenarios, LPs may need to wait for redemptions to free collateral before withdrawing.
+- Admin marks vault as "winding down."
+- No new orders accepted, no new LP deposits.
+- VMs must execute pending orders or return stablecoins to users.
+- All remaining eTokens are redeemable at oracle price.
+- After all eTokens are redeemed, LPs withdraw remaining collateral.
+- Vault is decommissioned.
 
 ---
 
-## 10. Extension Points
+## 10. Edge Cases
+
+### 10.1 Buffer Management
+
+**Small orders**: VMs maintain pre-hedged buffer offchain. VM bots auto-confirm small orders in ~2 seconds from buffer. No buffer management issue.
+
+**Large orders**: Standard async flow. VM receives stablecoins to execute offchain.
+
+**VM exposure cap**: Each VM sets `maxExposure` onchain. When reached, the VM cannot claim new orders. Protocol has an optional `protocolMaxExposurePerVM` that can cap any single VM (available but not required to be set).
+
+### 10.2 Market Closed
+
+Same order model applies. VMs can execute during off-hours (pre/post-market, futures, etc.) at their own spread based on their risk and hedging model. The protocol does not restrict when VMs execute.
+
+- `maxOffMarketExposure` per VM (typically lower than market-hours cap).
+- Per-asset off-hours toggle per VM.
+- If the user's slippage is exceeded by execution time, the order is unfulfilled and stablecoins are returned.
+- Redemption deadline enforcement is always active regardless of market hours.
+
+### 10.3 LP Exit — Async Withdrawal
+
+LPs submit withdrawal requests that enter a FIFO queue (ERC-7540 pattern). Requests are fulfilled when utilization allows — remaining collateral must cover the minimum ratio for outstanding exposure.
+
+- LPs can cancel pending requests at any time.
+- On fulfillment: burn shares, transfer collateral, reduce delegation to VM, emit event.
+- High utilization naturally produces higher yield per LP share, attracting new LP deposits and lowering utilization over time (organic equilibrium).
+
+### 10.4 Liquidation
+
+See Section 8 for the three-tier liquidation mechanism. Additional notes:
+
+- Liquidation is always partial — only enough to restore the ratio above minimum.
+- Liquidators can bootstrap by self-minting eTokens (deposit collateral → mint at oracle + spread → liquidate for discounted collateral → profit if discount > spread).
+- Redemption deadline expiry triggers Tier 3 (LP collateral sold to pay the minter).
+
+### 10.5 Bad Debt (Collateral < Liabilities)
+
+LPs bear loss first — their collateral is the security layer they signed up to provide.
+
+1. Liquidation (all tiers) sells LP collateral to reduce outstanding exposure.
+2. LP share price drops as collateral is liquidated.
+3. If still undercollateralized after all liquidation avenues are exhausted:
+   - Vault auto-halts at `criticalRatio` (e.g., 100% for stablecoins, 120% for volatile assets).
+   - Remaining redemptions are paid proportionally: `payout = eTokenAmount * (totalCollateral / totalLiabilities)`.
+   - Bad debt socializes to eToken holders for the remaining shortfall.
+4. Post-MVP: an insurance fund from the protocol's share of spread revenue provides a first-loss tranche.
+
+### 10.6 Oracle Manipulation
+
+- ECDSA signature verification against a known protocol signer.
+- Per-asset staleness bounds reject stale prices.
+- Price deviation checks reject prices that move too much from the last known value.
+- Monotonic sequence numbers prevent replaying older valid prices.
+- Chain ID and contract address are included in the signed message for replay prevention.
+- Admin can rotate the signer address without redeploying.
+- VM order confirmations are verified: the execution oracle price must be within the user's slippage parameters.
+
+### 10.7 Pool Pause / Halt
+
+See Section 9 for triggers, behavior, and wind-down procedures. Additional notes:
+
+- Per-asset halt: if one asset's oracle is stale, only that asset's orders are halted. Other assets continue.
+- VM-level pause: a VM can opt out of order routing without triggering a vault-wide halt. Their delegated LPs' collateral remains safe.
+- Unhalt preconditions: vault health must be restored and the oracle must be providing valid prices.
+
+### 10.8 Stock Splits — Soft Migration
+
+- Old eToken continues to trade at pre-split price (e.g., eTSLA at $300 before a 3:1 split).
+- Admin renames the old token (e.g., "eTSLA" → "eTSLA-legacy-1") via admin-updatable `name()`/`symbol()`.
+- A new eToken deploys as "eTSLA" at the post-split price ($100) and takes the primary name.
+- The asset registry tracks which token is the active version per asset.
+- Old tokens remain valid and redeemable at the pre-split price.
+- Migration is organic — users redeem old tokens over time as they exit positions. There is no arbitrage incentive (the economic value is identical pre/post).
+- No forced migration, no friction for existing holders or DeFi positions.
+- Oracle serves prices for both old and new tokens during the transition period.
+- For reverse splits: same approach — old tokens at old price, new mints at new price.
+
+### 10.9 Dividends — Rewards-Per-Share Accumulator
+
+- Uses the standard staking rewards pattern (Synthetix/MasterChef).
+- VM receives the actual dividend offchain (they hold the real hedge) and deposits equivalent stablecoins into the reward contract.
+- `rewardsPerShare += dividendAmount / totalSupply`
+- Any holder can claim at any time: `claimable = balance * (rewardsPerShare - userLastRewardsPerShare)`
+- Pending rewards are auto-settled on every transfer (both sender and receiver).
+- No snapshot needed. No double-claim possible. No claim deadline.
+- eTSLA: no dividends (TSLA does not pay dividends). eGOLD: no dividends. eTLT: monthly dividends (~4% yield).
+- DeFi composability: tokens held in Uniswap pools or other contracts accrue rewards to the contract address. Unclaimed rewards stay in the reward pool for MVP.
+
+### 10.10 VM Default / Disappearance
+
+- LP collateral remains safe onchain regardless of VM availability.
+- If a VM goes offline, their delegated LPs can re-delegate to a different VM or register as their own VM.
+- Pending orders claimed by the absent VM: if confirmation deadline passes, LP collateral is sold to pay the user (Tier 3 liquidation).
+- Unclaimed open orders can be claimed by other VMs.
+
+### 10.11 Flash Loan Resistance
+
+- Minting: stablecoins exit to VM via escrow. They cannot be recovered in the same transaction, so flash-borrowed stablecoins cannot be repaid.
+- Redemption: eTokens are burned. Flash-borrowed eTokens cannot be returned.
+- The only flash-loan-enabled use case is healthy DEX arbitrage (mint + sell on DEX, or buy on DEX + redeem), which is beneficial for price alignment.
+
+---
+
+## 11. Extension Points
 
 The following capabilities are explicitly out of scope for the MVP but the architecture is designed to accommodate them:
 
+- **Signed intents** — Atomic single-transaction execution (user signs EIP-712 intent, VM fills in one tx). Deferred to Phase 2 for UX optimization.
 - **Multi-signer oracle** — M-of-N signature verification for price feeds, reducing single-point-of-failure risk.
 - **ZK attestation** — Zero-knowledge proofs of offchain hedging positions, enabling trustless verification of vault manager behavior.
 - **Morpho looping** — Integration with Morpho to loop collateral for leveraged yield strategies within vaults.
 - **Cross-chain deployment** — Deploying vaults and eTokens on additional L2s and L1s with bridged oracle data.
 - **Permissionless asset listing** — Allowing anyone to propose new synthetic assets via governance rather than admin whitelisting.
 - **Governance** — Onchain governance for fee parameters, asset listing, collateral ratios, and protocol upgrades.
+- **Insurance fund** — A portion of protocol spread revenue funds a first-loss insurance pool for bad debt events.
 
 ---
 
-## 11. Key Technical Decisions
+## 12. Key Technical Decisions
 
 | Decision | Choice | Rationale |
 |---|---|---|
+| Execution model | Order-based with escrow + claim marketplace | Bridges onchain/offchain gap correctly; VMs compete openly; flash-loan resistant; supports async and near-instant execution |
 | Share standard | ERC-4626 | Industry-standard tokenized vault interface; composable with aggregators and yield tooling; automatic yield capture for rebasing/accruing assets |
-| Fee model | Unified spread (no separate protocol fee) | Simpler UX, single parameter to reason about, minSpread guarantees revenue floor |
-| Vault manager model | Delegation with mutual agreement | Lets LPs choose their risk manager; managers compete on spread and reputation; LPs retain self-management option |
+| Fee model | Unified spread (no separate protocol fee) | Simpler UX, single parameter, minSpread guarantees revenue floor, VMs compete on spread |
+| Vault role | Insurance/guarantee pool | LP collateral is security, not fund-flow intermediary; minter stablecoins go directly to VMs |
+| Vault manager model | Delegation with mutual agreement | LPs choose their risk manager; managers compete on spread and reputation; LPs retain self-management option |
+| Order routing | Escrow + claim (open marketplace) | No protocol routing logic needed; VMs self-select; cross-vault competition; handles splits organically |
+| Spread vs slippage | Separated | Spread = cost of service (VM-set, known upfront). Slippage = price movement tolerance (user-set). Clean separation of concerns. |
+| Minter payment | Any whitelisted stablecoin | VMs set which they accept; routing filters by token; maximizes accessibility |
 | stETH handling | Wrap to wstETH internally | Avoids rebasing rounding errors in share accounting; yield still accrues via exchange rate |
 | aUSDC handling | Hold aUSDC directly | ERC-4626 totalAssets() naturally reflects accrued Aave yield without additional accounting |
 | Oracle (MVP) | Protocol-signed, pull-based | Fastest path to audit-ready; generic interface ensures future Pyth/Chainlink integration is non-breaking |
-| Collateral per vault | One collateral type per vault | Simplifies accounting, risk parameterization, and liquidation logic; multi-collateral vaults deferred |
-| Liquidation | Partial, DEX-based, bot-triggered | Capital-efficient; does not require protocol-held reserve; incentivized via liquidator reward |
-| Non-market routing | Best-price-first across opted-in managers | Competitive dynamics drive spreads down; minters get best available price |
+| Collateral per vault | One collateral type per vault | Simplifies accounting, risk parameterization, and liquidation logic |
+| Liquidation | Three-tier: eToken-based, organic LP, DEX fallback | Covers all scenarios; primary mechanism directly reduces liabilities; organic mechanism provides natural recovery |
+| Stock splits | Soft migration with admin-updatable token name | No forced migration; no supply changes; old tokens stay valid; composability preserved |
+| Dividends | Rewards-per-share accumulator | No snapshots needed; transfer-safe; standard proven pattern; works for continuous accrual |
+| LP withdrawal | Async queue (ERC-7540) | Handles high-utilization scenarios gracefully; FIFO fairness; cancellable |
 | Target chain | Base | Low gas costs, Coinbase ecosystem alignment, strong DeFi liquidity for USDC and ETH pairs |
