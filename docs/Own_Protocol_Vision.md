@@ -111,9 +111,9 @@ Own Protocol supports multiple LP collateral types from day one:
 
 ### Redeeming (Order-Based)
 
-1. Minter submits eTokens for redemption with price parameters
+1. Minter submits eTokens for redemption with price parameters and desired stablecoin for payout
 2. eTokens are held in protocol escrow (not burned yet)
-3. VM claims the order, unwinds the hedge offchain
+3. VM claims the order (must accept the requested stablecoin), unwinds the hedge offchain
 4. VM sends stablecoins to the minter and confirms with a signed oracle price
 5. Protocol verifies, burns the escrowed eTokens
 6. If the VM misses the deadline, LP collateral is sold to pay the minter

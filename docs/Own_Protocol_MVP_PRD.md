@@ -76,8 +76,8 @@ The protocol is an order-based system with an escrow + claim marketplace. Minter
 7. LP collateral in the vault acts as trustless security throughout.
 
 **Redeem (Order-Based)**
-1. Minter places a redeem order: eTokens are held in escrow, specifies price parameters.
-2. VM claims the order, unwinds the hedge offchain, and sends stablecoins to the minter.
+1. Minter places a redeem order: eTokens are held in escrow, specifies price parameters and desired stablecoin for payout.
+2. VM claims the order (must accept the requested stablecoin), unwinds the hedge offchain, and sends the requested stablecoins to the minter.
 3. VM confirms execution with a signed oracle price.
 4. Protocol verifies, burns the escrowed eTokens.
 5. **Deadline enforcement**: if VM doesn't execute within the deadline, LP collateral is sold to pay the minter.
