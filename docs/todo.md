@@ -84,8 +84,8 @@ _Make the tests pass. Nothing more._
 - ✅ `src/core/OracleVerifier.sol` — Signed price verification
 - ✅ `src/core/LiquidationEngine.sol` — Three-tier liquidation (stub — needs vault integration)
 - ✅ `src/core/PaymentTokenRegistry.sol` — Payment token (stablecoin) whitelisting
-- 🔲 `src/periphery/WETHRouter.sol` — ETH ↔ WETH wrapping for ETH vault deposits
-- 🔲 `src/periphery/WstETHRouter.sol` — stETH ↔ wstETH wrapping for stETH vault deposits
+- ✅ `src/periphery/WETHRouter.sol` — ETH ↔ WETH wrapping for ETH vault deposits
+- ✅ `src/periphery/WstETHRouter.sol` — stETH ↔ wstETH wrapping for stETH vault deposits
 
 ---
 
