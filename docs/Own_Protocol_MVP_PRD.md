@@ -18,8 +18,8 @@ The MVP delivers an order-based protocol for tokenized RWA exposure on Base, wit
 - Vaults act as insurance/guarantee pools — LP collateral is trustless security for pending orders
 - Vault manager registration and LP delegation (mutual agreement)
 - LPs can be their own vault manager (same interface, same infrastructure requirements)
-- Unified spread model — VMs set their own spreads (>= minSpread floor), no separate protocol fee
-- Spread revenue split: protocol / vault manager / LPs
+- Unified spread model — VMs set their own spreads (>= minSpread floor), spread revenue split between VMs and LPs
+- Protocol revenue via AUM fee on vault collateral (~0.5%/yr) + reserve factor on LP spread earnings (~10%), both configurable
 - Offchain hedging by vault managers (no onchain hedging)
 - eTokens as standard ERC20 + Permit per asset, with admin-updatable name/symbol
 - Dividends via rewards-per-share accumulator (for dividend-paying assets like eTLT)
@@ -181,20 +181,29 @@ There is no separate protocol fee. All revenue comes through the spread.
 
 ### Revenue Distribution
 
-Spread revenue from each order is split three ways according to a configurable ratio:
+Spread revenue from each order is split between VMs and LPs. The protocol earns separately via AUM fee and reserve factor — it does not take a direct cut of the spread.
 
-| Recipient | Description |
-|---|---|
-| Protocol | Platform revenue, controlled by protocol admin |
-| Vault Manager | Compensation for hedging and risk management |
-| LPs | Return on deposited collateral beyond any native yield |
+| Recipient | Source | Description |
+|---|---|---|
+| Vault Manager | Spread (VM portion) | VM keeps their portion of spread revenue to cover hedging costs. VM receives full minter stablecoins — their spread portion is the profit margin after hedging. |
+| LPs | Spread (LP portion) | Remaining spread revenue accrues to the vault, increasing LP share price. |
+| Protocol | AUM fee | Annual fee on total vault collateral (~0.5%/yr default). Deducted continuously from `totalAssets()`. Steady revenue tied to TVL. |
+| Protocol | Reserve factor | Percentage of LP spread earnings (~10% default). Skimmed from the LP portion before it accrues to the vault. Variable revenue tied to volume. |
 
-The split percentages are set at the protocol level and may differ by vault type.
+**AUM fee implementation**: On every vault interaction (deposit, withdraw, claim, liquidation), the protocol calculates elapsed time since last fee accrual and deducts the proportional fee from `totalAssets()` to a protocol treasury address. Similar to Yearn's management fee.
+
+**Reserve factor implementation**: When a VM confirms an order, the spread revenue attributable to LPs is calculated. The reserve factor percentage is deducted and sent to the protocol treasury. The remainder accrues to the vault. Similar to Aave's reserve factor and Uniswap's fee switch.
+
+Both `aumFee` and `reserveFactor` are configurable by the protocol admin and can be updated at any time. They may differ per vault type.
+
+**LP net earnings** = native yield (aUSDC/wstETH) + spread earnings after reserve factor - AUM fee.
 
 ### Protocol Controls
 
-- **`minSpread`**: Protocol-enforced floor. No VM can set a spread below this. Guarantees minimum protocol revenue.
+- **`minSpread`**: Protocol-enforced floor. No VM can set a spread below this. Guarantees minimum spread on every order.
 - **`maxUtilization`**: Hard cap per vault. When vault utilization exceeds this threshold, VMs from that vault cannot claim new orders. Protects against insufficient security coverage.
+- **`aumFee`**: Annual fee on vault collateral (default: 50 BPS / 0.5%). Configurable per vault.
+- **`reserveFactor`**: Percentage of LP spread earnings taken by protocol (default: 10%). Configurable per vault.
 
 ---
 
@@ -217,18 +226,50 @@ stETH is a rebasing token: holder balances change daily as staking rewards are d
 
 ## 7. Oracle Design (MVP)
 
-The MVP uses a pull-based, signed price feed operated by the protocol team.
+The MVP uses a pull-based, signed price feed operated by the protocol team. The oracle verifier is a **verification layer**, not a price feed — VMs submit prices, and the verifier checks validity.
 
 ### Flow
 
-1. Protocol oracle service signs `(asset, price, timestamp, sequenceNumber)` with a known private key.
-2. VM submits the signed price data when confirming an order.
-3. The onchain oracle verifier checks the signature, confirms the signer is authorized, enforces staleness bounds, validates the sequence number, and checks price deviation.
-4. If valid, the price is used for order confirmation and eToken minting/burning.
+1. Protocol oracle service fetches prices from market data providers and signs `(asset, price, timestamp, sequenceNumber, marketOpen, chainId, contractAddress)` with a known ECDSA private key.
+2. VM receives signed price data from the oracle service (via API or websocket).
+3. VM submits the signed price data onchain when confirming an order.
+4. The onchain oracle verifier recovers the signer via ECDSA, checks authorization, enforces staleness bounds, validates the sequence number, checks price deviation, and extracts market status.
+5. If valid, the verified price and market status are returned to OwnMarket for order confirmation.
 
-### Interface
+### Market Status
 
-The oracle verification layer exposes a generic interface that accepts a price payload and returns a validated price. This abstraction allows future backends (Pyth, Chainlink, multi-signer M-of-N) to be integrated without modifying order or vault logic.
+The oracle includes a per-asset `marketOpen` boolean in every signed price update. This allows OwnMarket to enforce different rules based on market state:
+
+- **Market open**: VMs use their standard spread. Standard exposure caps apply.
+- **Market closed**: VMs use their off-market spread (typically wider). `maxOffMarketExposure` caps apply. Per-asset off-hours toggles are checked.
+
+Market hours differ by asset class (equities, commodities, bonds), so `marketOpen` is per-asset and determined by the oracle service.
+
+### Backend-Agnostic Interface
+
+The oracle verifier exposes a generic interface where `priceData` is opaque bytes — each backend implementation interprets it differently:
+
+```
+verifyPrice(bytes32 asset, bytes calldata priceData) → (price, timestamp, marketOpen)
+```
+
+Downstream contracts (OwnMarket, LiquidationEngine) only call `verifyPrice()` and receive a validated result. They never know or care what backend produced the data. This allows swapping backends without modifying any downstream contracts.
+
+### Backend Implementations
+
+| Backend | MVP? | priceData contents | Trust model |
+|---|---|---|---|
+| In-house signed oracle | Yes | price, timestamp, sequenceNumber, marketOpen, signature | Protocol-operated signer |
+| Chainlink | Post-MVP | Asset identifier (reads from feed contract) | Chainlink node network |
+| Pyth | Post-MVP | Pyth update data (Pyth verifies internally) | Pyth validator network |
+| Multi-signer M-of-N | Post-MVP | price, timestamp, sequenceNumber, marketOpen, signature[] | M-of-N independent signers |
+| Composite (multi-backend) | Post-MVP | Multiple backend payloads | Cross-checks between backends for extra safety |
+
+To switch backends: deploy a new verifier contract implementing the interface, admin updates the verifier address in OwnMarket. No changes to OwnMarket, OwnVault, or LiquidationEngine.
+
+### Why In-House Oracle for RWAs
+
+Standard DeFi oracles (Chainlink, Pyth) have gaps for RWA price feeds: they may not update during off-market hours, may lack feeds for all listed assets, and have heartbeat intervals (1-60 min) that are too slow for tight spreads. The in-house oracle provides sub-second updates, off-market pricing, and permissionless asset coverage. Post-MVP, Chainlink/Pyth can serve as a validation layer alongside the in-house oracle (composite approach).
 
 ### Safety Mechanisms
 
@@ -239,6 +280,7 @@ The oracle verification layer exposes a generic interface that accepts a price p
 | Sequence numbers | Monotonically increasing per asset; prevents replaying older valid prices |
 | Chain ID + contract | Included in signed message; prevents cross-chain and cross-contract replay |
 | Signer rotation | Admin can rotate the signer address without redeploying contracts |
+| Market status | Per-asset marketOpen boolean; enables differentiated on/off-market behavior |
 
 ---
 
@@ -430,7 +472,7 @@ The following capabilities are explicitly out of scope for the MVP but the archi
 |---|---|---|
 | Execution model | Order-based with escrow + claim marketplace | Bridges onchain/offchain gap correctly; VMs compete openly; flash-loan resistant; supports async and near-instant execution |
 | Share standard | ERC-4626 | Industry-standard tokenized vault interface; composable with aggregators and yield tooling; automatic yield capture for rebasing/accruing assets |
-| Fee model | Unified spread (no separate protocol fee) | Simpler UX, single parameter, minSpread guarantees revenue floor, VMs compete on spread |
+| Fee model | Spread (VM + LP) + AUM fee + reserve factor | Spread goes to VMs and LPs. Protocol earns via AUM fee (TVL-based, steady) and reserve factor (volume-based, variable). VM hedge capital untouched. Inspired by Aave reserve factor + Yearn management fee. |
 | Vault role | Insurance/guarantee pool | LP collateral is security, not fund-flow intermediary; minter stablecoins go directly to VMs |
 | Vault manager model | Delegation with mutual agreement | LPs choose their risk manager; managers compete on spread and reputation; LPs retain self-management option |
 | Order routing | Escrow + claim (open marketplace) | No protocol routing logic needed; VMs self-select; cross-vault competition; handles splits organically |
@@ -438,7 +480,7 @@ The following capabilities are explicitly out of scope for the MVP but the archi
 | Minter payment | Any whitelisted stablecoin | VMs set which they accept; routing filters by token; maximizes accessibility |
 | stETH handling | Wrap to wstETH internally | Avoids rebasing rounding errors in share accounting; yield still accrues via exchange rate |
 | aUSDC handling | Hold aUSDC directly | ERC-4626 totalAssets() naturally reflects accrued Aave yield without additional accounting |
-| Oracle (MVP) | Protocol-signed, pull-based | Fastest path to audit-ready; generic interface ensures future Pyth/Chainlink integration is non-breaking |
+| Oracle (MVP) | Protocol-signed, pull-based, with market status | Fastest path to audit-ready; includes per-asset marketOpen boolean; backend-agnostic interface (opaque priceData bytes) ensures future Pyth/Chainlink/multi-signer integration is non-breaking |
 | Collateral per vault | One collateral type per vault | Simplifies accounting, risk parameterization, and liquidation logic |
 | Liquidation | Three-tier: eToken-based, organic LP, DEX fallback | Covers all scenarios; primary mechanism directly reduces liabilities; organic mechanism provides natural recovery |
 | Stock splits | Soft migration with admin-updatable token name | No forced migration; no supply changes; old tokens stay valid; composability preserved |
