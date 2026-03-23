@@ -105,6 +105,205 @@ _Multi-contract flow tests with real dependencies (no mocks)._
 
 ---
 
+## Phase 5b: Contract Wiring & Gap Fixes
+
+_Cross-contract integration, missing validations, and stub replacements identified during integration test audit. Each item includes updating existing unit/integration tests to cover the new behavior._
+
+### 5b.1 — OwnMarket.confirmOrder(): Core execution logic (CRITICAL)
+
+_Currently `confirmOrder()` only records the oracle price and marks confirmed. It must execute the actual mint/redeem._
+
+- 🔲 Calculate eToken amount: `stablecoinAmount * decimalFactor / (executionPrice * (1 + vmSpread / BPS))` for mints
+- 🔲 Call `EToken.mint(minter, eTokenAmount)` for mint orders on confirm
+- 🔲 Call `EToken.burn(address(this), eTokenAmount)` for redeem orders on confirm (eTokens escrowed in market)
+- 🔲 Calculate spread revenue: `stablecoinAmount * vmSpread / BPS` (split per AGENTS.md model)
+- 🔲 Call `vault.distributeSpreadRevenue(lpPortion)` to increase vault share price
+- 🔲 Emit `OrderConfirmed` with real `eTokenAmount` and `spreadAmount` (currently emits 0s)
+- 🔲 Update unit tests in `OwnMarket.t.sol` for the new confirmOrder logic
+- 🔲 Update integration tests to assert eToken balances after confirm
+
+### 5b.2 — OwnMarket.confirmOrder(): Price validation (HIGH)
+
+_No slippage or limit price checks exist. A VM could confirm at any price._
+
+- 🔲 Market orders: validate `|executionPrice - placementPrice| / placementPrice <= slippage`
+- 🔲 Limit orders (mint): validate `executionPrice <= limitPrice` (user pays at most limitPrice)
+- 🔲 Limit orders (redeem): validate `executionPrice >= limitPrice` (user receives at least limitPrice)
+- 🔲 Add unit tests for slippage exceeded revert
+- 🔲 Add unit tests for limit price not met revert
+
+### 5b.3 — OwnMarket.claimOrder(): Validation checks (HIGH)
+
+_claimOrder performs no cross-contract validation. Any address can claim any open order._
+
+- 🔲 Validate `assetRegistry.isActiveAsset(order.asset)` — reject claims on inactive assets
+- 🔲 Validate `paymentRegistry.isWhitelisted(order.stablecoin)` — reject if stablecoin delisted
+- 🔲 Validate `vaultManager.isPaymentTokenAccepted(msg.sender, order.stablecoin)` — VM must accept the stablecoin
+- 🔲 Validate VM is registered and active: `vaultManager.getVMConfig(msg.sender).registered && .active`
+- 🔲 Validate per-asset halt: `!vault.isAssetHalted(order.asset)`
+- 🔲 Set `claim.vault` to the VM's vault address via `vaultManager.getVMVault(msg.sender)` (currently address(0))
+- 🔲 Add unit tests for each new revert condition
+- 🔲 Update integration tests to cover validation scenarios
+
+### 5b.4 — OwnMarket.claimOrder(): Exposure & utilization checks (HIGH)
+
+_No exposure cap or utilization enforcement exists. VMs can over-leverage without limit._
+
+- 🔲 Calculate claim notional: `claimAmount * executionPrice / decimalFactor` (for exposure tracking)
+- 🔲 Validate `vm.currentExposure + claimNotional <= vm.maxExposure` (or `maxOffMarketExposure` during off-hours)
+- 🔲 Validate vault utilization won't exceed `vault.maxUtilization()` after this claim
+- 🔲 Call `vaultManager.updateExposure(msg.sender, int256(claimNotional))` on claim
+- 🔲 Call `vaultManager.updateExposure(vm, -int256(claimNotional))` on confirm (for redeems)
+- 🔲 Add unit tests for exposure cap exceeded revert
+- 🔲 Add unit tests for max utilization exceeded revert
+
+### 5b.5 — OwnMarket: Redeem cancel/expiry eToken refund (HIGH)
+
+_cancelOrder() and expireOrder() only refund stablecoins for Mint orders. Redeem orders lose escrowed eTokens._
+
+- 🔲 In `cancelOrder()`: return escrowed eTokens for Redeem orders (`eToken.transfer(user, refundAmount)`)
+- 🔲 In `expireOrder()`: return escrowed eTokens for Redeem orders
+- 🔲 Add unit tests for redeem cancel eToken refund
+- 🔲 Add unit tests for redeem expiry eToken refund
+- 🔲 Update integration test `RedeemFlow.t.sol` (currently documents the gap with comments)
+
+### 5b.6 — OwnMarket: Order placement validation (MEDIUM)
+
+_No validation that asset is active or stablecoin is whitelisted when placing orders._
+
+- 🔲 In `placeMintOrder()`: validate `assetRegistry.isActiveAsset(asset)`
+- 🔲 In `placeMintOrder()`: validate `paymentRegistry.isWhitelisted(stablecoin)`
+- 🔲 In `placeRedeemOrder()`: validate `assetRegistry.isActiveAsset(asset)`
+- 🔲 In `placeRedeemOrder()`: validate `paymentRegistry.isWhitelisted(stablecoin)`
+- 🔲 Add unit tests for inactive asset revert and non-whitelisted stablecoin revert
+
+### 5b.7 — OwnVault: Exposure tracking (CRITICAL)
+
+_`_totalExposure` state variable exists but is never updated. No setter method. Health factor and utilization always return trivial values._
+
+- 🔲 Add `updateExposure(int256 delta) external onlyMarket` to OwnVault
+- 🔲 Increment `_totalExposure` when mint orders are confirmed (called by market)
+- 🔲 Decrement `_totalExposure` when redeem orders are confirmed
+- 🔲 Decrement `_totalExposure` when liquidations occur
+- 🔲 Emit `UtilizationUpdated` event (declared in IOwnVault but never emitted)
+- 🔲 Add unit tests for exposure update, health factor calculation, utilization calculation
+- 🔲 Update integration tests to verify health/utilization after order flows
+
+### 5b.8 — OwnVault: Utilization-gated withdrawals (MEDIUM)
+
+_LP withdrawals don't check if withdrawal would push vault below safety threshold._
+
+- 🔲 In `fulfillWithdrawal()`: check that post-withdrawal health factor stays >= 1.0
+- 🔲 In standard ERC-4626 `withdraw()`/`redeem()`: check utilization limits
+- 🔲 `maxWithdraw()`/`maxRedeem()`: return available amount considering utilization
+- 🔲 Add unit tests for withdrawal blocked by utilization
+
+### 5b.9 — OwnVault: AUM fee auto-accrual (LOW)
+
+_AUM fees only accrue when `accrueAumFee()` is explicitly called._
+
+- 🔲 Call `_accrueAumFee()` at the start of `deposit()`, `withdraw()`, `redeem()`, `fulfillWithdrawal()`
+- 🔲 Add unit tests for fee accrual on deposit/withdraw
+
+### 5b.10 — LiquidationEngine: Replace all stubs (CRITICAL)
+
+_All core functions are hardcoded stubs. No vault integration._
+
+- 🔲 Replace `_getHealthFactor()`: call `IOwnVault(vault).healthFactor()`
+- 🔲 Replace `_isLiquidatable()`: compare health factor against asset liquidation threshold from AssetRegistry
+- 🔲 Replace `_getMaxLiquidatable()`: calculate amount needed to restore health above minCollateralRatio
+- 🔲 `liquidate()`: burn liquidator's eTokens, transfer collateral from vault + liquidation reward
+- 🔲 `dexLiquidate()`: pull collateral from vault, execute DEX swap, return stablecoins
+- 🔲 `liquidateExpiredRedemption()`: integrate with OwnMarket for expired redeem orders, pay user from vault
+- 🔲 Add vault reference / mapping so engine can call vault methods
+- 🔲 Add unit tests for each liquidation tier with real health factor drops
+- 🔲 Update integration test `LiquidationFlow.t.sol` to test actual liquidation scenarios
+
+### 5b.11 — VaultManager.updateExposure(): Underflow protection (MEDIUM)
+
+_Negative delta cast to uint256 can underflow if exposure tracking gets out of sync._
+
+- 🔲 Add underflow protection: `if (uint256(-delta) > currentExposure) revert ExposureUnderflow()`
+- 🔲 Add unit test for underflow scenario
+
+### 5b.12 — OwnMarket: Market hours / off-market enforcement (HIGH)
+
+_PRD §7 & §10.2: Oracle returns `marketOpen` boolean but OwnMarket ignores it entirely. Off-market caps and per-asset toggles are never checked._
+
+- 🔲 In `claimOrder()`: retrieve `marketOpen` from oracle (or last known state)
+- 🔲 When `!marketOpen`: enforce `vm.maxOffMarketExposure` instead of `vm.maxExposure`
+- 🔲 When `!marketOpen`: check `vaultManager.isAssetOffMarketEnabled(vm, asset)` — revert if disabled
+- 🔲 Add unit tests for off-market claim blocked when toggle is off
+- 🔲 Add unit tests for off-market exposure cap enforcement
+
+### 5b.13 — OwnMarket: Vault halt blocks new orders (HIGH)
+
+_PRD §9: When a vault is halted, no new orders should be accepted for assets backed by that vault. Currently OwnMarket has no vault awareness._
+
+- 🔲 In `claimOrder()`: resolve VM's vault via `vaultManager.getVMVault(msg.sender)`, check `vault.vaultStatus() != Halted`
+- 🔲 In `claimOrder()`: check `!vault.isAssetHalted(order.asset)` (per-asset halt)
+- 🔲 Errors `MarketHalted` and `AssetNotActive` are declared in IOwnMarket but never used — wire them in
+- 🔲 Add unit tests for claim blocked when vault is halted
+- 🔲 Add unit tests for claim blocked when specific asset is halted
+- 🔲 Update integration test `HaltFlow.t.sol` to verify orders rejected during halt
+
+### 5b.14 — OwnMarket: Spread-adjusted eToken calculation (CRITICAL)
+
+_PRD §5: Mint price = `oraclePrice * (1 + vmSpread)`, Redeem price = `oraclePrice * (1 - vmSpread)`. This determines how many eTokens a minter gets/burns. Currently no spread math exists._
+
+- 🔲 In `confirmOrder()` for Mint: `effectivePrice = executionPrice * (BPS + vmSpread) / BPS`
+- 🔲 eToken amount for mint: `eTokenAmount = stablecoinAmount * 10^(18 - stablecoinDecimals) * PRECISION / effectivePrice`
+- 🔲 In `confirmOrder()` for Redeem: `effectivePrice = executionPrice * (BPS - vmSpread) / BPS`
+- 🔲 Stablecoin payout for redeem: `payout = eTokenAmount * effectivePrice / PRECISION / 10^(18 - stablecoinDecimals)`
+- 🔲 Spread revenue = difference between oracle price and effective price applied to claim amount
+- 🔲 VM keeps their stablecoin (profit margin from spread); LP portion sent to `vault.distributeSpreadRevenue()`
+- 🔲 Handle decimal conversions correctly: USDC/USDT (6 dec) vs USDS (18 dec) vs eTokens (18 dec) vs prices (18 dec)
+- 🔲 Add comprehensive unit tests with exact decimal math for each stablecoin type
+
+### 5b.15 — OwnVault: Auto-halt on critical health (MEDIUM)
+
+_PRD §9 & §10.5: Vault should auto-halt when health drops below critical ratio. Currently halt is only manual._
+
+- 🔲 Define `criticalRatio` parameter per vault (e.g., 100% for stablecoins, 120% for volatile)
+- 🔲 Check health after exposure updates; auto-halt if below critical
+- 🔲 Add unit tests for automatic halt trigger
+
+### 5b.16 — OwnMarket.expireOrder(): Trigger Tier 3 liquidation for redeems (HIGH)
+
+_PRD §2 & §10.10: If VM doesn't execute a redeem within deadline, LP collateral is sold to pay the minter. Currently `expireOrder()` just marks Expired._
+
+- 🔲 In `expireOrder()` for Redeem orders: call `liquidationEngine.liquidateExpiredRedemption(orderId, ...)`
+- 🔲 Transfer stablecoin payout to the minter from liquidation proceeds
+- 🔲 Burn escrowed eTokens for the fulfilled portion
+- 🔲 Add integration with LiquidationEngine reference in OwnMarket
+- 🔲 Add unit tests for redeem deadline → liquidation → minter payout
+
+### 5b.17 — OwnVault: LP withdrawal reduces VM delegation tracking (LOW)
+
+_PRD §10.3: On fulfillment — burn shares, transfer collateral, reduce delegation to VM. Currently delegation accounting is independent of withdrawals._
+
+- 🔲 When LP shares are burned via withdrawal, signal VaultManager to adjust delegation proportions
+- 🔲 Add event for delegation proportion change on withdrawal
+
+### 5b.18 — OwnMarket: Emit PartialFillCompleted event (LOW)
+
+_Event declared in IOwnMarket but never emitted._
+
+- 🔲 Emit `PartialFillCompleted` in `claimOrder()` when order becomes `PartiallyClaimed`
+- 🔲 Add unit test verifying event emission
+
+### 5b.19 — OwnMarket: `vaultManager` immutable is address(0) (HIGH)
+
+_The OwnMarket constructor accepts `vaultManager_` but it was deployed with `address(0)` in integration tests because of circular dependency (market needs vaultMgr, vaultMgr needs market). This means all VaultManager calls from OwnMarket would revert._
+
+- 🔲 Resolve the circular dependency: either make `vaultManager` settable post-deploy (admin setter), or deploy with a two-phase initialization pattern
+- 🔲 Same issue exists for LiquidationEngine reference — OwnMarket has no reference to it at all
+- 🔲 Add `liquidationEngine` address to OwnMarket (needed for `expireOrder` Tier 3)
+- 🔲 Add admin setter functions: `setVaultManager(address)`, `setLiquidationEngine(address)`
+- 🔲 Add unit tests for initialization and admin setters
+
+---
+
 ## Phase 6: Invariant Tests
 
 _Stateful fuzz tests. Protocol invariants that must always hold._
