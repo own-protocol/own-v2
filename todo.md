@@ -38,7 +38,7 @@ _Interface-first development. Define all external APIs, events, errors, and stru
 - 🔲 `IAssetRegistry` — Asset whitelisting, active/legacy token tracking, collateral parameters per asset
 - 🔲 `IOracleVerifier` — Price verification (signature, staleness, deviation, sequence), signer management, per-asset config
 - 🔲 `ILiquidationEngine` — Tier 1 liquidation (eToken-based), Tier 3 fallback (DEX sale), health checks, reward distribution
-- 🔲 `IStablecoinRegistry` — Whitelisted stablecoins management
+- 🔲 `IPaymentTokenRegistry` — Whitelisted payment token (stablecoin) management
 
 ---
 
@@ -81,7 +81,7 @@ _Make the tests pass. Nothing more._
 - 🔲 `src/core/AssetRegistry.sol` — Asset whitelisting and token tracking
 - 🔲 `src/core/OracleVerifier.sol` — Signed price verification
 - 🔲 `src/core/LiquidationEngine.sol` — Three-tier liquidation
-- 🔲 `src/core/StablecoinRegistry.sol` — Stablecoin whitelisting
+- 🔲 `src/core/PaymentTokenRegistry.sol` — Payment token (stablecoin) whitelisting
 - 🔲 `src/periphery/WETHRouter.sol` — ETH ↔ WETH wrapping for ETH vault deposits
 - 🔲 `src/periphery/WstETHRouter.sol` — stETH ↔ wstETH wrapping for stETH vault deposits
 
