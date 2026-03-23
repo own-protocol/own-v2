@@ -1,11 +1,19 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {BaseTest} from "../helpers/BaseTest.sol";
 import {Actors} from "../helpers/Actors.sol";
+import {BaseTest} from "../helpers/BaseTest.sol";
 
-import {AssetConfig, BPS, ClaimInfo, Order, OrderStatus, OrderType, PRECISION, PriceType} from
-    "../../src/interfaces/types/Types.sol";
+import {
+    AssetConfig,
+    BPS,
+    ClaimInfo,
+    Order,
+    OrderStatus,
+    OrderType,
+    PRECISION,
+    PriceType
+} from "../../src/interfaces/types/Types.sol";
 
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {OwnMarket} from "../../src/core/OwnMarket.sol";
@@ -68,13 +76,8 @@ contract RedeemFlowTest is BaseTest {
         assetRegistry = new AssetRegistry(Actors.ADMIN);
         paymentRegistry = new PaymentTokenRegistry(Actors.ADMIN);
 
-        market = new OwnMarket(
-            Actors.ADMIN,
-            address(oracle),
-            address(0),
-            address(assetRegistry),
-            address(paymentRegistry)
-        );
+        market =
+            new OwnMarket(Actors.ADMIN, address(oracle), address(0), address(assetRegistry), address(paymentRegistry));
 
         vaultMgr = new VaultManager(Actors.ADMIN, address(market), MIN_SPREAD);
 
@@ -299,15 +302,7 @@ contract RedeemFlowTest is BaseTest {
         eTSLA.approve(address(market), ETOKEN_AMOUNT);
 
         uint256 orderId = market.placeRedeemOrder(
-            TSLA,
-            address(usdc),
-            ETOKEN_AMOUNT,
-            PriceType.Market,
-            100,
-            deadline,
-            false,
-            address(0),
-            _emptyPriceData()
+            TSLA, address(usdc), ETOKEN_AMOUNT, PriceType.Market, 100, deadline, false, address(0), _emptyPriceData()
         );
         vm.stopPrank();
 
@@ -386,15 +381,7 @@ contract RedeemFlowTest is BaseTest {
         eTSLA.approve(address(market), ETOKEN_AMOUNT);
 
         uint256 orderId = market.placeRedeemOrder(
-            TSLA,
-            address(usdc),
-            ETOKEN_AMOUNT,
-            PriceType.Market,
-            100,
-            deadline,
-            false,
-            address(0),
-            _emptyPriceData()
+            TSLA, address(usdc), ETOKEN_AMOUNT, PriceType.Market, 100, deadline, false, address(0), _emptyPriceData()
         );
         vm.stopPrank();
 
