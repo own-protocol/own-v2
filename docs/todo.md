@@ -47,13 +47,13 @@ _Interface-first development. Define all external APIs, events, errors, and stru
 
 _Shared test infrastructure. Built before any contract tests._
 
-- 🔲 `BaseTest.sol` — Common setup, token deployments, actor addresses, utility functions
-- 🔲 `MockERC20.sol` — Configurable decimals mock token (for stablecoins, collateral)
-- 🔲 `MockWstETH.sol` — Mock wstETH with configurable exchange rate
-- 🔲 `MockAUSDC.sol` — Mock aUSDC with configurable rebasing
-- 🔲 `MockOracleVerifier.sol` — Returns configurable prices, simulates staleness/deviation
-- 🔲 `MockDEX.sol` — Mock Uniswap for Tier 3 liquidation testing
-- 🔲 `Actors.sol` — Predefined addresses (minter, lp1, lp2, vm1, vm2, admin, liquidator, attacker)
+- ✅ `BaseTest.sol` — Common setup, token deployments, actor addresses, utility functions
+- ✅ `MockERC20.sol` — Configurable decimals mock token (for stablecoins, collateral)
+- ✅ `MockWstETH.sol` — Mock wstETH with configurable exchange rate
+- ✅ `MockAUSDC.sol` — Mock aUSDC with configurable rebasing
+- ✅ `MockOracleVerifier.sol` — Returns configurable prices, simulates staleness/deviation
+- ✅ `MockDEX.sol` — Mock Uniswap for Tier 3 liquidation testing
+- ✅ `Actors.sol` — Predefined addresses (minter, lp1, lp2, vm1, vm2, admin, liquidator, attacker)
 
 ---
 
