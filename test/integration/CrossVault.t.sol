@@ -38,9 +38,9 @@ contract CrossVaultTest is BaseTest {
         assetRegistry = new AssetRegistry(Actors.ADMIN);
         paymentRegistry = new PaymentTokenRegistry(Actors.ADMIN);
 
-        market =
-            new OwnMarket(Actors.ADMIN, address(oracle), address(0), address(assetRegistry), address(paymentRegistry));
+        market = new OwnMarket(Actors.ADMIN, address(oracle), address(assetRegistry), address(paymentRegistry));
         vaultMgr = new VaultManager(Actors.ADMIN, address(market), 30);
+        market.setVaultManager(address(vaultMgr));
 
         // USDC vault
         usdcVault = new OwnVault(

@@ -25,6 +25,21 @@ contract LiquidationEngine is ILiquidationEngine, ReentrancyGuard {
     address public immutable dex;
 
     // ──────────────────────────────────────────────────────────
+    //  State
+    // ──────────────────────────────────────────────────────────
+
+    address public market;
+
+    // ──────────────────────────────────────────────────────────
+    //  Modifiers
+    // ──────────────────────────────────────────────────────────
+
+    modifier onlyAdmin() {
+        if (msg.sender != admin) revert Unauthorized();
+        _;
+    }
+
+    // ──────────────────────────────────────────────────────────
     //  Constructor
     // ──────────────────────────────────────────────────────────
 
@@ -33,6 +48,20 @@ contract LiquidationEngine is ILiquidationEngine, ReentrancyGuard {
         oracle = IOracleVerifier(oracle_);
         assetRegistry = assetRegistry_;
         dex = dex_;
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Admin — post-deploy wiring
+    // ──────────────────────────────────────────────────────────
+
+    /// @inheritdoc ILiquidationEngine
+    function setMarket(
+        address market_
+    ) external onlyAdmin {
+        if (market != address(0)) revert AlreadyInitialized();
+        if (market_ == address(0)) revert ZeroAddressNotAllowed();
+        market = market_;
+        emit MarketSet(market_);
     }
 
     // ──────────────────────────────────────────────────────────

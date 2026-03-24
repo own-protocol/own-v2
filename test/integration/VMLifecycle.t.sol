@@ -39,9 +39,9 @@ contract VMLifecycleTest is BaseTest {
         assetRegistry = new AssetRegistry(Actors.ADMIN);
         paymentRegistry = new PaymentTokenRegistry(Actors.ADMIN);
 
-        market =
-            new OwnMarket(Actors.ADMIN, address(oracle), address(0), address(assetRegistry), address(paymentRegistry));
+        market = new OwnMarket(Actors.ADMIN, address(oracle), address(assetRegistry), address(paymentRegistry));
         vaultMgr = new VaultManager(Actors.ADMIN, address(market), MIN_SPREAD);
+        market.setVaultManager(address(vaultMgr));
 
         usdcVault = new OwnVault(
             address(usdc), "Own USDC Vault", "oUSDC", Actors.ADMIN, address(market), Actors.FEE_RECIPIENT, 8000, 0, 1000

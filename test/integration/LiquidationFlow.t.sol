@@ -40,15 +40,16 @@ contract LiquidationFlowTest is BaseTest {
         assetRegistry = new AssetRegistry(Actors.ADMIN);
         paymentRegistry = new PaymentTokenRegistry(Actors.ADMIN);
 
-        market =
-            new OwnMarket(Actors.ADMIN, address(oracle), address(0), address(assetRegistry), address(paymentRegistry));
+        market = new OwnMarket(Actors.ADMIN, address(oracle), address(assetRegistry), address(paymentRegistry));
         vaultMgr = new VaultManager(Actors.ADMIN, address(market), 30);
+        liquidationEngine = new LiquidationEngine(Actors.ADMIN, address(oracle), address(assetRegistry), address(dex));
+        market.setVaultManager(address(vaultMgr));
+        market.setLiquidationEngine(address(liquidationEngine));
+        liquidationEngine.setMarket(address(market));
 
         usdcVault = new OwnVault(
             address(usdc), "Own USDC Vault", "oUSDC", Actors.ADMIN, address(market), Actors.FEE_RECIPIENT, 8000, 0, 1000
         );
-
-        liquidationEngine = new LiquidationEngine(Actors.ADMIN, address(oracle), address(assetRegistry), address(dex));
 
         eTSLA = new EToken("Own Tesla", "eTSLA", TSLA, Actors.ADMIN, address(market), address(usdc));
 

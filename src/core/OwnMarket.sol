@@ -2,13 +2,27 @@
 pragma solidity 0.8.28;
 
 import {IAssetRegistry} from "../interfaces/IAssetRegistry.sol";
+import {IEToken} from "../interfaces/IEToken.sol";
 import {IOracleVerifier} from "../interfaces/IOracleVerifier.sol";
 import {IOwnMarket} from "../interfaces/IOwnMarket.sol";
+import {IVaultManager} from "../interfaces/IVaultManager.sol";
 
-import {BPS, ClaimInfo, Order, OrderStatus, OrderType, PRECISION, PriceType} from "../interfaces/types/Types.sol";
+import {
+    BPS,
+    ClaimInfo,
+    Order,
+    OrderStatus,
+    OrderType,
+    PRECISION,
+    PriceType,
+    VMConfig
+} from "../interfaces/types/Types.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 /// @title OwnMarket — Order escrow and claim marketplace
 /// @notice Core execution mechanism: minters place orders in escrow, VMs claim
@@ -23,13 +37,15 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
 
     address public immutable admin;
     IOracleVerifier public immutable oracle;
-    address public immutable vaultManager;
     IAssetRegistry public immutable assetRegistry;
     address public immutable paymentRegistry;
 
     // ──────────────────────────────────────────────────────────
     //  State
     // ──────────────────────────────────────────────────────────
+
+    address public vaultManager;
+    address public liquidationEngine;
 
     uint256 private _nextOrderId = 1;
     uint256 private _nextClaimId = 1;
@@ -41,21 +57,47 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
     mapping(address => uint256[]) private _userOrders; // user → orderIds
 
     // ──────────────────────────────────────────────────────────
+    //  Modifiers
+    // ──────────────────────────────────────────────────────────
+
+    modifier onlyAdmin() {
+        if (msg.sender != admin) revert Unauthorized();
+        _;
+    }
+
+    // ──────────────────────────────────────────────────────────
     //  Constructor
     // ──────────────────────────────────────────────────────────
 
-    constructor(
-        address admin_,
-        address oracle_,
-        address vaultManager_,
-        address assetRegistry_,
-        address paymentRegistry_
-    ) {
+    constructor(address admin_, address oracle_, address assetRegistry_, address paymentRegistry_) {
         admin = admin_;
         oracle = IOracleVerifier(oracle_);
-        vaultManager = vaultManager_;
         assetRegistry = IAssetRegistry(assetRegistry_);
         paymentRegistry = paymentRegistry_;
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Admin — post-deploy wiring
+    // ──────────────────────────────────────────────────────────
+
+    /// @inheritdoc IOwnMarket
+    function setVaultManager(
+        address vaultManager_
+    ) external onlyAdmin {
+        if (vaultManager != address(0)) revert AlreadyInitialized();
+        if (vaultManager_ == address(0)) revert ZeroAddressNotAllowed();
+        vaultManager = vaultManager_;
+        emit VaultManagerSet(vaultManager_);
+    }
+
+    /// @inheritdoc IOwnMarket
+    function setLiquidationEngine(
+        address liquidationEngine_
+    ) external onlyAdmin {
+        if (liquidationEngine != address(0)) revert AlreadyInitialized();
+        if (liquidationEngine_ == address(0)) revert ZeroAddressNotAllowed();
+        liquidationEngine = liquidationEngine_;
+        emit LiquidationEngineSet(liquidationEngine_);
     }
 
     // ──────────────────────────────────────────────────────────
@@ -226,10 +268,26 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         // Verify oracle price
         (uint256 executionPrice,,) = oracle.verifyPrice(order.asset, priceData);
 
+        // Get VM configuration for spread
+        VMConfig memory vmConfig = IVaultManager(vaultManager).getVMConfig(msg.sender);
+        uint256 vmSpread = vmConfig.spread;
+
+        // Resolve VM's vault
+        claim.vault = IVaultManager(vaultManager).getVMVault(msg.sender);
         claim.executionPrice = executionPrice;
         claim.confirmed = true;
 
-        // Check if all claims for this order are confirmed
+        // Execute mint or redeem with spread-adjusted pricing
+        uint256 eTokenAmount;
+        uint256 spreadAmount;
+
+        if (order.orderType == OrderType.Mint) {
+            (eTokenAmount, spreadAmount) = _executeMint(order, claim, executionPrice, vmSpread);
+        } else {
+            (eTokenAmount, spreadAmount) = _executeRedeem(order, claim, executionPrice, vmSpread);
+        }
+
+        // Update order status
         bool allConfirmed = _allClaimsConfirmed(claim.orderId);
         if (allConfirmed) {
             order.status = OrderStatus.Confirmed;
@@ -237,7 +295,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
             order.status = OrderStatus.PartiallyConfirmed;
         }
 
-        emit OrderConfirmed(claim.orderId, claimId, msg.sender, executionPrice, 0, 0);
+        emit OrderConfirmed(claim.orderId, claimId, msg.sender, executionPrice, eTokenAmount, spreadAmount);
     }
 
     // ──────────────────────────────────────────────────────────
@@ -336,7 +394,67 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
     }
 
     // ──────────────────────────────────────────────────────────
-    //  Internal
+    //  Internal — order execution
+    // ──────────────────────────────────────────────────────────
+
+    /// @dev Execute a mint confirmation: compute spread-adjusted eToken amount and mint to user.
+    /// @return eTokenAmount eTokens minted to the user.
+    /// @return spreadAmount Spread revenue in stablecoin terms.
+    function _executeMint(
+        Order storage order,
+        ClaimInfo storage claim,
+        uint256 executionPrice,
+        uint256 vmSpread
+    ) private returns (uint256 eTokenAmount, uint256 spreadAmount) {
+        // Effective price includes spread: user pays more per eToken
+        uint256 effectivePrice = Math.mulDiv(executionPrice, BPS + vmSpread, BPS);
+
+        // Scale stablecoin amount to 18 decimals, then divide by effective price
+        uint256 decimals = IERC20Metadata(order.stablecoin).decimals();
+        uint256 decimalScaler = 10 ** (18 - decimals);
+        eTokenAmount = Math.mulDiv(claim.amount * decimalScaler, PRECISION, effectivePrice);
+
+        // Mint eTokens to the minter
+        address eToken = assetRegistry.getActiveToken(order.asset);
+        IEToken(eToken).mint(order.user, eTokenAmount);
+
+        // Spread revenue in stablecoin terms (VM keeps all for MVP)
+        spreadAmount = Math.mulDiv(claim.amount, vmSpread, BPS + vmSpread);
+    }
+
+    /// @dev Execute a redeem confirmation: compute stablecoin payout, transfer from VM, burn eTokens.
+    /// @return eTokenAmount eTokens burned from escrow.
+    /// @return spreadAmount Spread revenue in stablecoin terms.
+    function _executeRedeem(
+        Order storage order,
+        ClaimInfo storage claim,
+        uint256 executionPrice,
+        uint256 vmSpread
+    ) private returns (uint256 eTokenAmount, uint256 spreadAmount) {
+        // Effective price includes spread: user receives less per eToken
+        uint256 effectivePrice = Math.mulDiv(executionPrice, BPS - vmSpread, BPS);
+
+        // Calculate stablecoin payout from eToken amount at effective price
+        uint256 decimals = IERC20Metadata(order.stablecoin).decimals();
+        uint256 decimalScaler = 10 ** (18 - decimals);
+        uint256 stablecoinPayout = Math.mulDiv(claim.amount, effectivePrice, PRECISION * decimalScaler);
+
+        // VM sends stablecoins directly to the minter
+        IERC20(order.stablecoin).safeTransferFrom(claim.vm, order.user, stablecoinPayout);
+
+        // Burn escrowed eTokens
+        address eToken = assetRegistry.getActiveToken(order.asset);
+        IEToken(eToken).burn(address(this), claim.amount);
+
+        eTokenAmount = claim.amount;
+
+        // Spread = value at oracle price minus what user received
+        uint256 valueAtOraclePrice = Math.mulDiv(claim.amount, executionPrice, PRECISION * decimalScaler);
+        spreadAmount = valueAtOraclePrice - stablecoinPayout;
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Internal — helpers
     // ──────────────────────────────────────────────────────────
 
     function _allClaimsConfirmed(

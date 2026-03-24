@@ -23,6 +23,7 @@ import {VaultManager} from "../../src/core/VaultManager.sol";
 import {EToken} from "../../src/tokens/EToken.sol";
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 /// @title RedeemFlow Integration Test
 /// @notice Tests the full redemption lifecycle with real contract instances:
@@ -76,10 +77,9 @@ contract RedeemFlowTest is BaseTest {
         assetRegistry = new AssetRegistry(Actors.ADMIN);
         paymentRegistry = new PaymentTokenRegistry(Actors.ADMIN);
 
-        market =
-            new OwnMarket(Actors.ADMIN, address(oracle), address(0), address(assetRegistry), address(paymentRegistry));
-
+        market = new OwnMarket(Actors.ADMIN, address(oracle), address(assetRegistry), address(paymentRegistry));
         vaultMgr = new VaultManager(Actors.ADMIN, address(market), MIN_SPREAD);
+        market.setVaultManager(address(vaultMgr));
 
         usdcVault = new OwnVault(
             address(usdc),
@@ -158,6 +158,15 @@ contract RedeemFlowTest is BaseTest {
         eTSLA.mint(Actors.MINTER1, ETOKEN_AMOUNT);
     }
 
+    /// @dev Fund a VM with USDC and approve OwnMarket for redeem payout.
+    function _fundVMForRedeem(address vmAddr, uint256 eTokenAmount) private {
+        // Fund generously: eTokenAmount at oracle price (no spread deduction, so always enough)
+        uint256 maxPayout = Math.mulDiv(eTokenAmount, TSLA_PRICE, PRECISION * 1e12);
+        _fundUSDC(vmAddr, maxPayout);
+        vm.prank(vmAddr);
+        usdc.approve(address(market), maxPayout);
+    }
+
     // ══════════════════════════════════════════════════════════
     //  Test: Full redeem flow — market order
     // ══════════════════════════════════════════════════════════
@@ -205,7 +214,11 @@ contract RedeemFlowTest is BaseTest {
         assertEq(claim.vm, Actors.VM1);
         assertEq(claim.amount, ETOKEN_AMOUNT);
 
-        // VM1 confirms (in full flow, VM would send stablecoins to minter)
+        // VM1 must have stablecoins to pay minter on confirm
+        _fundVMForRedeem(Actors.VM1, ETOKEN_AMOUNT);
+
+        uint256 minterBalanceBefore = usdc.balanceOf(Actors.MINTER1);
+
         vm.prank(Actors.VM1);
         market.confirmOrder(claimId, _emptyPriceData());
 
@@ -215,6 +228,11 @@ contract RedeemFlowTest is BaseTest {
         claim = market.getClaim(claimId);
         assertTrue(claim.confirmed);
         assertEq(claim.executionPrice, TSLA_PRICE);
+
+        // Minter should have received stablecoins
+        assertGt(usdc.balanceOf(Actors.MINTER1), minterBalanceBefore);
+        // eTokens should be burned from escrow
+        assertEq(eTSLA.balanceOf(address(market)), 0);
     }
 
     // ══════════════════════════════════════════════════════════
@@ -244,11 +262,14 @@ contract RedeemFlowTest is BaseTest {
         assertEq(order.limitPrice, limitPrice);
         assertEq(order.slippage, 0);
 
-        // VM claims and confirms
-        vm.startPrank(Actors.VM1);
+        // VM claims
+        vm.prank(Actors.VM1);
         uint256 claimId = market.claimOrder(orderId, ETOKEN_AMOUNT);
+
+        // Fund VM for redeem payout and confirm
+        _fundVMForRedeem(Actors.VM1, ETOKEN_AMOUNT);
+        vm.prank(Actors.VM1);
         market.confirmOrder(claimId, _emptyPriceData());
-        vm.stopPrank();
 
         assertEq(uint8(market.getOrder(orderId).status), uint8(OrderStatus.Confirmed));
     }
@@ -360,10 +381,12 @@ contract RedeemFlowTest is BaseTest {
 
         assertEq(uint8(market.getOrder(orderId).status), uint8(OrderStatus.FullyClaimed));
 
-        // Both confirm
+        // Fund both VMs for payout, then confirm
+        _fundVMForRedeem(Actors.VM1, halfAmount);
         vm.prank(Actors.VM1);
         market.confirmOrder(claimId1, _emptyPriceData());
 
+        _fundVMForRedeem(Actors.VM2, halfAmount);
         vm.prank(Actors.VM2);
         market.confirmOrder(claimId2, _emptyPriceData());
 
@@ -458,12 +481,21 @@ contract RedeemFlowTest is BaseTest {
         Order memory order = market.getOrder(orderId);
         assertEq(order.stablecoin, address(usdt));
 
-        // VM claims and confirms
-        vm.startPrank(Actors.VM1);
+        // VM claims
+        vm.prank(Actors.VM1);
         uint256 claimId = market.claimOrder(orderId, ETOKEN_AMOUNT);
+
+        // Fund VM with USDT for payout
+        uint256 maxPayout = Math.mulDiv(ETOKEN_AMOUNT, TSLA_PRICE, PRECISION * 1e12);
+        _fundUSDT(Actors.VM1, maxPayout);
+        vm.prank(Actors.VM1);
+        usdt.approve(address(market), maxPayout);
+
+        vm.prank(Actors.VM1);
         market.confirmOrder(claimId, _emptyPriceData());
-        vm.stopPrank();
 
         assertEq(uint8(market.getOrder(orderId).status), uint8(OrderStatus.Confirmed));
+        // Minter received USDT
+        assertGt(usdt.balanceOf(Actors.MINTER1), 0);
     }
 }

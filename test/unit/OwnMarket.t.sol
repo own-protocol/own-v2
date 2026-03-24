@@ -5,13 +5,23 @@ import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {OwnMarket} from "../../src/core/OwnMarket.sol";
 import {IOwnMarket} from "../../src/interfaces/IOwnMarket.sol";
 
+import {IVaultManager} from "../../src/interfaces/IVaultManager.sol";
 import {AssetConfig} from "../../src/interfaces/types/Types.sol";
 import {
-    BPS, ClaimInfo, Order, OrderStatus, OrderType, PRECISION, PriceType
+    BPS,
+    ClaimInfo,
+    Order,
+    OrderStatus,
+    OrderType,
+    PRECISION,
+    PriceType,
+    VMConfig
 } from "../../src/interfaces/types/Types.sol";
+
 import {Actors} from "../helpers/Actors.sol";
 import {BaseTest} from "../helpers/BaseTest.sol";
 import {MockERC20} from "../helpers/MockERC20.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 /// @title OwnMarket Unit Tests
 /// @notice Tests order placement (mint/redeem, market/limit, directed/open),
@@ -32,6 +42,7 @@ contract OwnMarketTest is BaseTest {
     address public mockPaymentRegistry = makeAddr("paymentRegistry");
 
     uint256 constant DEFAULT_DEADLINE = 1 days;
+    uint256 constant VM_SPREAD = 30; // 30 BPS = 0.3%
 
     function setUp() public override {
         super.setUp();
@@ -53,8 +64,10 @@ contract OwnMarketTest is BaseTest {
         assetReg.addAsset(TSLA, address(eTSLAToken), config);
         vm.stopPrank();
 
-        vm.prank(Actors.ADMIN);
-        market = new OwnMarket(Actors.ADMIN, address(oracle), mockVaultManager, address(assetReg), mockPaymentRegistry);
+        vm.startPrank(Actors.ADMIN);
+        market = new OwnMarket(Actors.ADMIN, address(oracle), address(assetReg), mockPaymentRegistry);
+        market.setVaultManager(mockVaultManager);
+        vm.stopPrank();
         vm.label(address(market), "OwnMarket");
 
         // Setup default oracle price
@@ -103,6 +116,19 @@ contract OwnMarketTest is BaseTest {
             _emptyPriceData()
         );
         vm.stopPrank();
+    }
+
+    function _mockVaultManager(address vmAddr, uint256 spread) internal {
+        VMConfig memory config = VMConfig({
+            spread: spread,
+            maxExposure: 0,
+            maxOffMarketExposure: 0,
+            currentExposure: 0,
+            registered: true,
+            active: true
+        });
+        vm.mockCall(mockVaultManager, abi.encodeCall(IVaultManager.getVMConfig, (vmAddr)), abi.encode(config));
+        vm.mockCall(mockVaultManager, abi.encodeCall(IVaultManager.getVMVault, (vmAddr)), abi.encode(mockVault));
     }
 
     // ──────────────────────────────────────────────────────────
@@ -340,13 +366,12 @@ contract OwnMarketTest is BaseTest {
     // ──────────────────────────────────────────────────────────
 
     function test_confirmOrder_mint_succeeds() public {
+        _mockVaultManager(Actors.VM1, VM_SPREAD);
+
         uint256 orderId = _placeMintOrder(Actors.MINTER1, 1000e6);
 
         vm.prank(Actors.VM1);
         uint256 claimId = market.claimOrder(orderId, 1000e6);
-
-        vm.expectEmit(true, true, true, false);
-        emit IOwnMarket.OrderConfirmed(orderId, claimId, Actors.VM1, TSLA_PRICE, 0, 0);
 
         vm.prank(Actors.VM1);
         market.confirmOrder(claimId, _emptyPriceData());
@@ -354,12 +379,18 @@ contract OwnMarketTest is BaseTest {
         ClaimInfo memory claim = market.getClaim(claimId);
         assertTrue(claim.confirmed);
         assertEq(claim.executionPrice, TSLA_PRICE);
+        assertEq(claim.vault, mockVault);
 
         Order memory order = market.getOrder(orderId);
         assertEq(uint256(order.status), uint256(OrderStatus.Confirmed));
+
+        // Minter should have received eTokens
+        assertGt(eTSLAToken.balanceOf(Actors.MINTER1), 0);
     }
 
     function test_confirmOrder_nonClaimVM_reverts() public {
+        _mockVaultManager(Actors.VM1, VM_SPREAD);
+
         uint256 orderId = _placeMintOrder(Actors.MINTER1, 1000e6);
 
         vm.prank(Actors.VM1);
@@ -372,6 +403,8 @@ contract OwnMarketTest is BaseTest {
     }
 
     function test_confirmOrder_alreadyConfirmed_reverts() public {
+        _mockVaultManager(Actors.VM1, VM_SPREAD);
+
         uint256 orderId = _placeMintOrder(Actors.MINTER1, 1000e6);
 
         vm.prank(Actors.VM1);
@@ -383,6 +416,182 @@ contract OwnMarketTest is BaseTest {
         vm.prank(Actors.VM1);
         vm.expectRevert(abi.encodeWithSelector(IOwnMarket.ClaimAlreadyConfirmed.selector, claimId));
         market.confirmOrder(claimId, _emptyPriceData());
+    }
+
+    function test_confirmOrder_mint_usdc_6dec_exactMath() public {
+        _mockVaultManager(Actors.VM1, VM_SPREAD);
+
+        // 250 USDC for TSLA at $250, spread 30 BPS
+        uint256 stablecoinAmount = 250e6;
+        uint256 orderId = _placeMintOrder(Actors.MINTER1, stablecoinAmount);
+
+        vm.prank(Actors.VM1);
+        uint256 claimId = market.claimOrder(orderId, stablecoinAmount);
+
+        vm.prank(Actors.VM1);
+        market.confirmOrder(claimId, _emptyPriceData());
+
+        // effectivePrice = 250e18 * 10030 / 10000 = 250.75e18
+        uint256 effectivePrice = Math.mulDiv(TSLA_PRICE, BPS + VM_SPREAD, BPS);
+        // eTokenAmount = 250e6 * 1e12 * 1e18 / effectivePrice
+        uint256 expectedETokens = Math.mulDiv(stablecoinAmount * 1e12, PRECISION, effectivePrice);
+
+        assertEq(eTSLAToken.balanceOf(Actors.MINTER1), expectedETokens);
+        // Should be ~0.997 eTSLA
+        assertGt(expectedETokens, 0.996e18);
+        assertLt(expectedETokens, 0.998e18);
+    }
+
+    function test_confirmOrder_mint_usds_18dec_exactMath() public {
+        _mockVaultManager(Actors.VM1, VM_SPREAD);
+
+        // Place order with 18-decimal stablecoin (USDS)
+        uint256 stablecoinAmount = 250e18;
+        usds.mint(Actors.MINTER1, stablecoinAmount);
+        vm.startPrank(Actors.MINTER1);
+        usds.approve(address(market), stablecoinAmount);
+        uint256 orderId = market.placeMintOrder(
+            TSLA,
+            address(usds),
+            stablecoinAmount,
+            PriceType.Market,
+            100,
+            _defaultDeadline(),
+            true,
+            address(0),
+            _emptyPriceData()
+        );
+        vm.stopPrank();
+
+        vm.prank(Actors.VM1);
+        uint256 claimId = market.claimOrder(orderId, stablecoinAmount);
+
+        vm.prank(Actors.VM1);
+        market.confirmOrder(claimId, _emptyPriceData());
+
+        // effectivePrice = 250e18 * 10030 / 10000 = 250.75e18
+        uint256 effectivePrice = Math.mulDiv(TSLA_PRICE, BPS + VM_SPREAD, BPS);
+        // For 18-dec stablecoin: decimalScaler = 1, eTokenAmount = 250e18 * 1e18 / effectivePrice
+        uint256 expectedETokens = Math.mulDiv(stablecoinAmount, PRECISION, effectivePrice);
+
+        assertEq(eTSLAToken.balanceOf(Actors.MINTER1), expectedETokens);
+    }
+
+    function test_confirmOrder_redeem_usdc_6dec_exactMath() public {
+        _mockVaultManager(Actors.VM1, VM_SPREAD);
+
+        // Redeem 1 eTSLA for USDC
+        uint256 eTokenAmount = 1e18;
+        uint256 orderId = _placeRedeemOrder(Actors.MINTER1, eTokenAmount);
+
+        vm.prank(Actors.VM1);
+        uint256 claimId = market.claimOrder(orderId, eTokenAmount);
+
+        // VM must send stablecoins to minter via transferFrom
+        // effectivePrice = 250e18 * 9970 / 10000 = 249.25e18
+        uint256 effectivePrice = Math.mulDiv(TSLA_PRICE, BPS - VM_SPREAD, BPS);
+        uint256 expectedPayout = Math.mulDiv(eTokenAmount, effectivePrice, PRECISION * 1e12);
+
+        // Fund VM with stablecoins and approve market
+        usdc.mint(Actors.VM1, expectedPayout);
+        vm.prank(Actors.VM1);
+        usdc.approve(address(market), expectedPayout);
+
+        vm.prank(Actors.VM1);
+        market.confirmOrder(claimId, _emptyPriceData());
+
+        // Minter should have received stablecoins
+        assertEq(usdc.balanceOf(Actors.MINTER1), expectedPayout);
+        // Should be ~$249.25
+        assertEq(expectedPayout, 249_250_000);
+        // eTokens should be burned from escrow
+        assertEq(eTSLAToken.balanceOf(address(market)), 0);
+    }
+
+    function test_confirmOrder_redeem_usds_18dec_exactMath() public {
+        _mockVaultManager(Actors.VM1, VM_SPREAD);
+
+        // Place redeem order with 18-dec stablecoin
+        uint256 eTokenAmount = 1e18;
+        eTSLAToken.mint(Actors.MINTER1, eTokenAmount);
+        vm.startPrank(Actors.MINTER1);
+        eTSLAToken.approve(address(market), eTokenAmount);
+        uint256 orderId = market.placeRedeemOrder(
+            TSLA,
+            address(usds),
+            eTokenAmount,
+            PriceType.Market,
+            100,
+            _defaultDeadline(),
+            true,
+            address(0),
+            _emptyPriceData()
+        );
+        vm.stopPrank();
+
+        vm.prank(Actors.VM1);
+        uint256 claimId = market.claimOrder(orderId, eTokenAmount);
+
+        uint256 effectivePrice = Math.mulDiv(TSLA_PRICE, BPS - VM_SPREAD, BPS);
+        // decimalScaler = 1 for 18-dec, so PRECISION * decimalScaler = PRECISION
+        uint256 expectedPayout = Math.mulDiv(eTokenAmount, effectivePrice, PRECISION);
+
+        usds.mint(Actors.VM1, expectedPayout);
+        vm.prank(Actors.VM1);
+        usds.approve(address(market), expectedPayout);
+
+        vm.prank(Actors.VM1);
+        market.confirmOrder(claimId, _emptyPriceData());
+
+        assertEq(usds.balanceOf(Actors.MINTER1), expectedPayout);
+        assertEq(expectedPayout, 249.25e18);
+    }
+
+    function test_confirmOrder_mint_emitsCorrectValues() public {
+        _mockVaultManager(Actors.VM1, VM_SPREAD);
+
+        uint256 stablecoinAmount = 250e6;
+        uint256 orderId = _placeMintOrder(Actors.MINTER1, stablecoinAmount);
+
+        vm.prank(Actors.VM1);
+        uint256 claimId = market.claimOrder(orderId, stablecoinAmount);
+
+        uint256 effectivePrice = Math.mulDiv(TSLA_PRICE, BPS + VM_SPREAD, BPS);
+        uint256 expectedETokens = Math.mulDiv(stablecoinAmount * 1e12, PRECISION, effectivePrice);
+        uint256 expectedSpread = Math.mulDiv(stablecoinAmount, VM_SPREAD, BPS + VM_SPREAD);
+
+        vm.expectEmit(true, true, true, true);
+        emit IOwnMarket.OrderConfirmed(orderId, claimId, Actors.VM1, TSLA_PRICE, expectedETokens, expectedSpread);
+
+        vm.prank(Actors.VM1);
+        market.confirmOrder(claimId, _emptyPriceData());
+    }
+
+    function test_confirmOrder_redeem_burnsETokens() public {
+        _mockVaultManager(Actors.VM1, VM_SPREAD);
+
+        uint256 eTokenAmount = 2e18;
+        uint256 orderId = _placeRedeemOrder(Actors.MINTER1, eTokenAmount);
+        uint256 escrowBalance = eTSLAToken.balanceOf(address(market));
+        assertEq(escrowBalance, eTokenAmount);
+
+        vm.prank(Actors.VM1);
+        uint256 claimId = market.claimOrder(orderId, eTokenAmount);
+
+        uint256 effectivePrice = Math.mulDiv(TSLA_PRICE, BPS - VM_SPREAD, BPS);
+        uint256 payout = Math.mulDiv(eTokenAmount, effectivePrice, PRECISION * 1e12);
+
+        usdc.mint(Actors.VM1, payout);
+        vm.prank(Actors.VM1);
+        usdc.approve(address(market), payout);
+
+        uint256 supplyBefore = eTSLAToken.totalSupply();
+
+        vm.prank(Actors.VM1);
+        market.confirmOrder(claimId, _emptyPriceData());
+
+        assertEq(eTSLAToken.balanceOf(address(market)), 0);
+        assertEq(eTSLAToken.totalSupply(), supplyBefore - eTokenAmount);
     }
 
     // ──────────────────────────────────────────────────────────
@@ -533,5 +742,89 @@ contract OwnMarketTest is BaseTest {
         Order memory order = market.getOrder(orderId);
         assertEq(order.amount, amount);
         assertEq(usdc.balanceOf(address(market)), amount);
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Admin setters
+    // ──────────────────────────────────────────────────────────
+
+    function test_setVaultManager_success() public {
+        OwnMarket freshMarket = new OwnMarket(Actors.ADMIN, address(oracle), address(assetReg), mockPaymentRegistry);
+        address newVM = makeAddr("newVaultManager");
+
+        vm.prank(Actors.ADMIN);
+        freshMarket.setVaultManager(newVM);
+        assertEq(freshMarket.vaultManager(), newVM);
+    }
+
+    function test_setVaultManager_emitsEvent() public {
+        OwnMarket freshMarket = new OwnMarket(Actors.ADMIN, address(oracle), address(assetReg), mockPaymentRegistry);
+        address newVM = makeAddr("newVaultManager");
+
+        vm.expectEmit(true, false, false, false);
+        emit IOwnMarket.VaultManagerSet(newVM);
+        vm.prank(Actors.ADMIN);
+        freshMarket.setVaultManager(newVM);
+    }
+
+    function test_setVaultManager_notAdmin_reverts() public {
+        OwnMarket freshMarket = new OwnMarket(Actors.ADMIN, address(oracle), address(assetReg), mockPaymentRegistry);
+
+        vm.prank(Actors.ATTACKER);
+        vm.expectRevert(IOwnMarket.Unauthorized.selector);
+        freshMarket.setVaultManager(makeAddr("vm"));
+    }
+
+    function test_setVaultManager_zeroAddress_reverts() public {
+        OwnMarket freshMarket = new OwnMarket(Actors.ADMIN, address(oracle), address(assetReg), mockPaymentRegistry);
+
+        vm.prank(Actors.ADMIN);
+        vm.expectRevert(IOwnMarket.ZeroAddressNotAllowed.selector);
+        freshMarket.setVaultManager(address(0));
+    }
+
+    function test_setVaultManager_alreadySet_reverts() public {
+        // market already has vaultManager set in setUp
+        vm.prank(Actors.ADMIN);
+        vm.expectRevert(IOwnMarket.AlreadyInitialized.selector);
+        market.setVaultManager(makeAddr("anotherVM"));
+    }
+
+    function test_setLiquidationEngine_success() public {
+        address newLE = makeAddr("liquidationEngine");
+
+        vm.prank(Actors.ADMIN);
+        market.setLiquidationEngine(newLE);
+        assertEq(market.liquidationEngine(), newLE);
+    }
+
+    function test_setLiquidationEngine_emitsEvent() public {
+        address newLE = makeAddr("liquidationEngine");
+
+        vm.expectEmit(true, false, false, false);
+        emit IOwnMarket.LiquidationEngineSet(newLE);
+        vm.prank(Actors.ADMIN);
+        market.setLiquidationEngine(newLE);
+    }
+
+    function test_setLiquidationEngine_notAdmin_reverts() public {
+        vm.prank(Actors.ATTACKER);
+        vm.expectRevert(IOwnMarket.Unauthorized.selector);
+        market.setLiquidationEngine(makeAddr("le"));
+    }
+
+    function test_setLiquidationEngine_zeroAddress_reverts() public {
+        vm.prank(Actors.ADMIN);
+        vm.expectRevert(IOwnMarket.ZeroAddressNotAllowed.selector);
+        market.setLiquidationEngine(address(0));
+    }
+
+    function test_setLiquidationEngine_alreadySet_reverts() public {
+        vm.prank(Actors.ADMIN);
+        market.setLiquidationEngine(makeAddr("le1"));
+
+        vm.prank(Actors.ADMIN);
+        vm.expectRevert(IOwnMarket.AlreadyInitialized.selector);
+        market.setLiquidationEngine(makeAddr("le2"));
     }
 }

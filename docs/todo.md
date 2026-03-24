@@ -109,12 +109,12 @@ _Multi-contract flow tests with real dependencies (no mocks)._
 
 _Resolve circular dependencies and missing cross-contract references so the protocol can actually function end-to-end._
 
-- 🔲 Resolve OwnMarket ↔ VaultManager circular dependency: make `vaultManager` settable post-deploy (admin setter) or use two-phase initialization
-- 🔲 Add `liquidationEngine` address to OwnMarket (needed for `expireOrder` Tier 3)
-- 🔲 Add admin setter functions to OwnMarket: `setVaultManager(address)`, `setLiquidationEngine(address)`
-- 🔲 Add vault reference/mapping to LiquidationEngine so engine can call vault methods
-- 🔲 Add unit tests for initialization and admin setters
-- 🔲 Update integration test deployment scripts to wire contracts correctly
+- ✅ Resolve OwnMarket ↔ VaultManager circular dependency: `vaultManager` is now a state variable with one-time admin setter (removed from constructor)
+- ✅ Add `liquidationEngine` address to OwnMarket with one-time admin setter
+- ✅ Add admin setter functions to OwnMarket: `setVaultManager(address)`, `setLiquidationEngine(address)`
+- ✅ Add `market` reference to LiquidationEngine with one-time admin setter (`setMarket(address)`)
+- ✅ Add unit tests for initialization and admin setters (OwnMarket: 10 tests, LiquidationEngine: 5 tests)
+- ✅ Update integration test deployment scripts to wire contracts correctly (all 9 integration test files updated)
 
 ---
 
@@ -124,34 +124,34 @@ _`confirmOrder()` is the heart of the protocol. Currently it only records the or
 
 ### Spread-adjusted eToken calculation (PRD §5)
 
-- 🔲 Mint: `effectivePrice = executionPrice * (BPS + vmSpread) / BPS`
-- 🔲 eToken amount: `eTokenAmount = stablecoinAmount * 10^(18 - stablecoinDecimals) * PRECISION / effectivePrice`
-- 🔲 Redeem: `effectivePrice = executionPrice * (BPS - vmSpread) / BPS`
-- 🔲 Stablecoin payout: `payout = eTokenAmount * effectivePrice / PRECISION / 10^(18 - stablecoinDecimals)`
-- 🔲 Handle decimal conversions: USDC/USDT (6 dec) vs USDS (18 dec) vs eTokens (18 dec) vs prices (18 dec)
-- 🔲 Use `Math.mulDiv` for all cross-multiplication — never `a * b / c`
+- ✅ Mint: `effectivePrice = Math.mulDiv(executionPrice, BPS + vmSpread, BPS)`
+- ✅ eToken amount: `Math.mulDiv(claim.amount * decimalScaler, PRECISION, effectivePrice)` — rounds down (protocol-favorable)
+- ✅ Redeem: `effectivePrice = Math.mulDiv(executionPrice, BPS - vmSpread, BPS)`
+- ✅ Stablecoin payout: `Math.mulDiv(claim.amount, effectivePrice, PRECISION * decimalScaler)` — rounds down (protocol-favorable)
+- ✅ Handle decimal conversions: USDC/USDT (6 dec) vs USDS (18 dec) vs eTokens (18 dec) vs prices (18 dec)
+- ✅ Use `Math.mulDiv` for all cross-multiplication — never `a * b / c`
 
 ### Mint/burn execution
 
-- 🔲 Call `EToken.mint(minter, eTokenAmount)` for mint orders on confirm
-- 🔲 Call `EToken.burn(address(this), eTokenAmount)` for redeem orders on confirm (eTokens escrowed in market)
+- ✅ Call `EToken.mint(minter, eTokenAmount)` for mint orders on confirm
+- ✅ Call `EToken.burn(address(this), eTokenAmount)` for redeem orders on confirm (eTokens escrowed in market)
 
 ### Redeem stablecoin payout
 
-- 🔲 For redeem confirmations: verify VM has sent stablecoins to the minter (or transfer from escrow) — currently no stablecoin transfer to user on redeem confirm
+- ✅ For redeem confirmations: `safeTransferFrom(vm, minter, stablecoinPayout)` — VM must pre-approve OwnMarket
 
 ### Spread revenue distribution
 
-- 🔲 Calculate spread revenue: difference between oracle price and effective price
-- 🔲 VM keeps their stablecoin profit margin from spread
-- 🔲 LP portion sent to `vault.distributeSpreadRevenue()`
-- 🔲 Emit `OrderConfirmed` with real `eTokenAmount` and `spreadAmount` (currently emits 0s)
+- ✅ Calculate spread revenue: `Math.mulDiv(claim.amount, vmSpread, BPS + vmSpread)` for mint, `valueAtOracle - payout` for redeem
+- ✅ VM keeps their stablecoin profit margin from spread (full spread for MVP — LP distribution deferred)
+- 🔲 LP portion sent to `vault.distributeSpreadRevenue()` — deferred: requires VM/LP split ratio design and stablecoin/vault asset matching
+- ✅ Emit `OrderConfirmed` with real `eTokenAmount` and `spreadAmount`
 
 ### Tests
 
-- 🔲 Update unit tests in `OwnMarket.t.sol` for new confirmOrder logic
-- 🔲 Add comprehensive unit tests with exact decimal math for each stablecoin type (6 dec, 18 dec)
-- 🔲 Update integration tests to assert eToken balances after confirm
+- ✅ Update unit tests in `OwnMarket.t.sol` for new confirmOrder logic (7 new tests)
+- ✅ Add comprehensive unit tests with exact decimal math for each stablecoin type (6 dec, 18 dec)
+- ✅ Update integration tests to assert eToken balances after confirm and stablecoin payouts on redeem
 
 ---
 

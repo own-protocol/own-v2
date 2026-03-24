@@ -4,7 +4,10 @@ pragma solidity 0.8.28;
 import {Actors} from "../helpers/Actors.sol";
 import {BaseTest} from "../helpers/BaseTest.sol";
 
-import {AssetConfig, Order, OrderStatus, OrderType, PriceType} from "../../src/interfaces/types/Types.sol";
+import {
+    AssetConfig, BPS, Order, OrderStatus, OrderType, PRECISION, PriceType
+} from "../../src/interfaces/types/Types.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {OwnMarket} from "../../src/core/OwnMarket.sol";
@@ -38,9 +41,9 @@ contract MultiStablecoinTest is BaseTest {
         assetRegistry = new AssetRegistry(Actors.ADMIN);
         paymentRegistry = new PaymentTokenRegistry(Actors.ADMIN);
 
-        market =
-            new OwnMarket(Actors.ADMIN, address(oracle), address(0), address(assetRegistry), address(paymentRegistry));
+        market = new OwnMarket(Actors.ADMIN, address(oracle), address(assetRegistry), address(paymentRegistry));
         vaultMgr = new VaultManager(Actors.ADMIN, address(market), 30);
+        market.setVaultManager(address(vaultMgr));
 
         usdcVault = new OwnVault(
             address(usdc), "Own USDC Vault", "oUSDC", Actors.ADMIN, address(market), Actors.FEE_RECIPIENT, 8000, 0, 1000
@@ -343,12 +346,20 @@ contract MultiStablecoinTest is BaseTest {
         assertEq(order.stablecoin, address(usdt), "redeem requests USDT");
         assertEq(uint8(order.orderType), uint8(OrderType.Redeem));
 
-        // VM claims and confirms
-        vm.startPrank(Actors.VM1);
+        // VM claims
+        vm.prank(Actors.VM1);
         uint256 claimId = market.claimOrder(orderId, 20e18);
+
+        // Fund VM with USDT for redeem payout
+        uint256 maxPayout = Math.mulDiv(20e18, TSLA_PRICE, PRECISION * 1e12);
+        _fundUSDT(Actors.VM1, maxPayout);
+        vm.prank(Actors.VM1);
+        usdt.approve(address(market), maxPayout);
+
+        vm.prank(Actors.VM1);
         market.confirmOrder(claimId, _emptyPriceData());
-        vm.stopPrank();
 
         assertEq(uint8(market.getOrder(orderId).status), uint8(OrderStatus.Confirmed));
+        assertGt(usdt.balanceOf(Actors.MINTER1), 0, "minter received USDT");
     }
 }

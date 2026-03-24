@@ -76,6 +76,29 @@ interface ILiquidationEngine {
     /// @notice No viable DEX route exists for the swap.
     error NoSlippageRoute();
 
+    /// @notice Caller is not the admin.
+    error Unauthorized();
+
+    /// @notice A zero address was provided.
+    error ZeroAddressNotAllowed();
+
+    /// @notice The address has already been initialized.
+    error AlreadyInitialized();
+
+    /// @notice Emitted when the market address is set.
+    /// @param market OwnMarket contract address.
+    event MarketSet(address indexed market);
+
+    // ──────────────────────────────────────────────────────────
+    //  Admin functions
+    // ──────────────────────────────────────────────────────────
+
+    /// @notice Set the OwnMarket contract address. Can only be called once by the admin.
+    /// @param market_ OwnMarket contract address.
+    function setMarket(
+        address market_
+    ) external;
+
     // ──────────────────────────────────────────────────────────
     //  Tier 1 — Liquidator provides eTokens
     // ──────────────────────────────────────────────────────────

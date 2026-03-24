@@ -95,4 +95,42 @@ contract LiquidationEngineTest is BaseTest {
         // No exposure = max health
         assertGe(hf, PRECISION);
     }
+
+    // ──────────────────────────────────────────────────────────
+    //  Admin setters
+    // ──────────────────────────────────────────────────────────
+
+    function test_setMarket_success() public {
+        vm.prank(Actors.ADMIN);
+        liquidationEngine.setMarket(mockMarket);
+        assertEq(liquidationEngine.market(), mockMarket);
+    }
+
+    function test_setMarket_emitsEvent() public {
+        vm.expectEmit(true, false, false, false);
+        emit ILiquidationEngine.MarketSet(mockMarket);
+        vm.prank(Actors.ADMIN);
+        liquidationEngine.setMarket(mockMarket);
+    }
+
+    function test_setMarket_notAdmin_reverts() public {
+        vm.prank(Actors.ATTACKER);
+        vm.expectRevert(ILiquidationEngine.Unauthorized.selector);
+        liquidationEngine.setMarket(mockMarket);
+    }
+
+    function test_setMarket_zeroAddress_reverts() public {
+        vm.prank(Actors.ADMIN);
+        vm.expectRevert(ILiquidationEngine.ZeroAddressNotAllowed.selector);
+        liquidationEngine.setMarket(address(0));
+    }
+
+    function test_setMarket_alreadySet_reverts() public {
+        vm.prank(Actors.ADMIN);
+        liquidationEngine.setMarket(mockMarket);
+
+        vm.prank(Actors.ADMIN);
+        vm.expectRevert(ILiquidationEngine.AlreadyInitialized.selector);
+        liquidationEngine.setMarket(makeAddr("anotherMarket"));
+    }
 }

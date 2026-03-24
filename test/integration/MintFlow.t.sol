@@ -23,6 +23,7 @@ import {VaultManager} from "../../src/core/VaultManager.sol";
 import {EToken} from "../../src/tokens/EToken.sol";
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 /// @title MintFlow Integration Test
 /// @notice Tests the full minting lifecycle with real contract instances:
@@ -75,20 +76,12 @@ contract MintFlowTest is BaseTest {
         assetRegistry = new AssetRegistry(Actors.ADMIN);
         paymentRegistry = new PaymentTokenRegistry(Actors.ADMIN);
 
-        // 2. Deploy market (needs oracle, vaultManager, registries — deploy vaultMgr with placeholder, then market)
-        //    Market must be deployed before VaultManager since VM constructor needs market address.
-        //    We use a two-step approach: deploy market with a temporary vaultMgr address, then deploy real one.
-        //    Actually, both need each other. We'll deploy market first, then vaultMgr with market address.
-        market = new OwnMarket(
-            Actors.ADMIN,
-            address(oracle), // MockOracleVerifier from BaseTest
-            address(0), // vaultManager — will be set if market supports it; for now this is the immutable reference
-            address(assetRegistry),
-            address(paymentRegistry)
-        );
+        // 2. Deploy market first, then VaultManager (which needs market address), then wire back
+        market = new OwnMarket(Actors.ADMIN, address(oracle), address(assetRegistry), address(paymentRegistry));
 
-        // 3. Deploy VaultManager with market address
+        // 3. Deploy VaultManager with market address, then wire into market
         vaultMgr = new VaultManager(Actors.ADMIN, address(market), MIN_SPREAD);
+        market.setVaultManager(address(vaultMgr));
 
         // 4. Deploy USDC vault
         usdcVault = new OwnVault(
@@ -249,6 +242,8 @@ contract MintFlowTest is BaseTest {
         assertFalse(claim.confirmed);
 
         // Step 3: VM1 confirms with oracle price
+        assertEq(eTSLA.balanceOf(Actors.MINTER1), 0, "minter has no eTokens before confirm");
+
         vm.prank(Actors.VM1);
         market.confirmOrder(claimId, _emptyPriceData());
 
@@ -260,6 +255,12 @@ contract MintFlowTest is BaseTest {
         // Verify order status is Confirmed
         order = market.getOrder(orderId);
         assertEq(uint8(order.status), uint8(OrderStatus.Confirmed));
+
+        // Verify minter received eTokens with correct spread-adjusted amount
+        uint256 effectivePrice = Math.mulDiv(TSLA_PRICE, BPS + DEFAULT_SPREAD, BPS);
+        uint256 expectedETokens = Math.mulDiv(MINT_AMOUNT * 1e12, PRECISION, effectivePrice);
+        assertEq(eTSLA.balanceOf(Actors.MINTER1), expectedETokens, "minter received correct eTokens");
+        assertGt(expectedETokens, 0, "eToken amount is non-zero");
     }
 
     // ══════════════════════════════════════════════════════════
@@ -308,6 +309,11 @@ contract MintFlowTest is BaseTest {
 
         ClaimInfo memory claim = market.getClaim(claimId);
         assertTrue(claim.confirmed);
+
+        // Verify minter received eTokens
+        uint256 effectivePrice = Math.mulDiv(TSLA_PRICE, BPS + DEFAULT_SPREAD, BPS);
+        uint256 expectedETokens = Math.mulDiv(MINT_AMOUNT * 1e12, PRECISION, effectivePrice);
+        assertEq(eTSLA.balanceOf(Actors.MINTER1), expectedETokens, "minter received eTokens");
     }
 
     // ══════════════════════════════════════════════════════════
@@ -384,6 +390,11 @@ contract MintFlowTest is BaseTest {
         // Verify claims
         uint256[] memory claimIds = market.getOrderClaims(orderId);
         assertEq(claimIds.length, 2);
+
+        // Verify minter received eTokens from both partial fills
+        uint256 effectivePrice = Math.mulDiv(TSLA_PRICE, BPS + DEFAULT_SPREAD, BPS);
+        uint256 expectedPerHalf = Math.mulDiv(halfAmount * 1e12, PRECISION, effectivePrice);
+        assertEq(eTSLA.balanceOf(Actors.MINTER1), expectedPerHalf * 2, "minter received eTokens from both fills");
     }
 
     // ══════════════════════════════════════════════════════════
@@ -655,6 +666,10 @@ contract MintFlowTest is BaseTest {
         assertEq(uint8(market.getOrder(tslaOrderId).status), uint8(OrderStatus.Confirmed));
         assertEq(uint8(market.getOrder(goldOrderId).status), uint8(OrderStatus.Confirmed));
 
+        // Verify minter received eTokens for both assets
+        assertGt(eTSLA.balanceOf(Actors.MINTER1), 0, "minter received eTSLA");
+        assertGt(eGOLD.balanceOf(Actors.MINTER1), 0, "minter received eGOLD");
+
         // Verify user orders list
         uint256[] memory userOrders = market.getUserOrders(Actors.MINTER1);
         assertEq(userOrders.length, 2);
@@ -793,6 +808,12 @@ contract MintFlowTest is BaseTest {
 
         // VM received all stablecoins
         assertEq(usdc.balanceOf(Actors.VM1), MINT_AMOUNT * 2);
+
+        // Both minters received eTokens
+        uint256 effectivePrice = Math.mulDiv(TSLA_PRICE, BPS + DEFAULT_SPREAD, BPS);
+        uint256 expectedETokens = Math.mulDiv(MINT_AMOUNT * 1e12, PRECISION, effectivePrice);
+        assertEq(eTSLA.balanceOf(Actors.MINTER1), expectedETokens, "minter1 received eTokens");
+        assertEq(eTSLA.balanceOf(Actors.MINTER2), expectedETokens, "minter2 received eTokens");
     }
 
     // ══════════════════════════════════════════════════════════
