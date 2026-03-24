@@ -81,25 +81,35 @@ _Goal: The primary user flows work end-to-end with proper validation. An LP depo
 
 _Goal: Vaults enforce economic safety. Exposure tracked per VM and per vault. Utilization caps prevent over-leverage. LP withdrawals respect utilization. Market hours enforced._
 
-### 2.1 Vault exposure tracking
+### 2.1 Vault exposure & health — dynamic price-based calculation
 
-- 🔲 Call `vault.updateExposure(+delta)` when mint orders are confirmed (notional = claimAmount \* executionPrice / PRECISION)
-- 🔲 Call `vault.updateExposure(-delta)` when redeem orders are confirmed
-- 🔲 `updateExposure(int256 delta) external onlyMarket` on OwnVault
+_Exposure and collateral value are both functions of live oracle prices, not static counters. A simple `+delta`/`-delta` on mint/redeem is insufficient because: (a) asset price changes alter total exposure (`Σ eToken.totalSupply(asset) × currentPrice(asset)`), and (b) collateral price changes alter collateral value for non-stablecoin vaults (WETH, wstETH)._
+
+- 🔲 Track which assets each vault backs (vault → asset set mapping)
+- 🔲 Compute `totalExposure` dynamically: `Σ eToken.totalSupply(asset) × oraclePrice(asset)` for all assets the vault backs
+- 🔲 Compute `collateralValueUSD` dynamically: `totalAssets() × oraclePrice(collateral)` for non-stablecoin vaults (WETH, wstETH); for stablecoin vaults (USDC, aUSDC) use 1:1 or a stablecoin oracle
+- 🔲 `healthFactor()` and `utilization()` must use live oracle prices for both sides of the ratio
+- 🔲 Decide oracle query pattern: on-demand (query oracle in view functions) vs. keeper-updated cache with staleness bounds
 - 🔲 Emit `UtilizationUpdated` event in OwnVault (declared but never emitted)
+- 🔲 Handle decimal normalization: asset prices (18 decimals), collateral amounts (6 or 18 decimals depending on vault type), eToken supply (18 decimals)
 
 ### 2.2 VM exposure enforcement
 
-- 🔲 In `claimOrder()`: calculate claim notional, validate `currentExposure + notional <= maxExposure`
-- 🔲 Call `vaultManager.updateExposure(vm, +delta)` on claim
-- 🔲 Call `vaultManager.updateExposure(vm, -delta)` on redeem confirm
-- 🔲 Underflow protection in `VaultManager.updateExposure()`: cap at 0
+_VM exposure also depends on live asset prices, not just accounting deltas. VM's `currentExposure` should reflect the current USD value of all eTokens minted through that VM._
+
+- 🔲 Track per-VM asset quantities (VM → asset → eToken amount minted through that VM)
+- 🔲 Compute VM `currentExposure` dynamically: `Σ vmMintedAmount(asset) × oraclePrice(asset)`
+- 🔲 In `claimOrder()`: validate `currentExposure + claimNotional <= maxExposure`
+- 🔲 Update per-VM asset quantities on mint confirm (`+amount`) and redeem confirm (`-amount`)
+- 🔲 Underflow protection: cap at 0
 
 ### 2.3 Vault utilization enforcement
 
-- 🔲 In `claimOrder()`: check vault utilization won't exceed `vault.maxUtilization()` after claim
-- 🔲 In `fulfillWithdrawal()`: check post-withdrawal utilization stays within bounds
-- 🔲 `maxWithdraw()`/`maxRedeem()`: return available amount considering utilization
+_Utilization = totalExposure / collateralValueUSD — both sides are price-dependent. Utilization checks must use live prices._
+
+- 🔲 In `claimOrder()`: check vault utilization (using live prices) won't exceed `vault.maxUtilization()` after claim
+- 🔲 In `fulfillWithdrawal()`: check post-withdrawal utilization (using live prices) stays within bounds
+- 🔲 `maxWithdraw()`/`maxRedeem()`: return available amount considering utilization at current prices
 - 🔲 Vault halt check in `claimOrder()`: `vault.vaultStatus() != Halted`
 - 🔲 Per-asset halt check: `!vault.isAssetHalted(order.asset)`
 
@@ -115,7 +125,10 @@ _Goal: Vaults enforce economic safety. Exposure tracked per VM and per vault. Ut
 - 🔲 Unit tests for withdrawal blocked by utilization
 - 🔲 Unit tests for off-market claim blocked, off-market exposure cap
 - 🔲 Unit tests for vault halt / asset halt blocking claims
+- 🔲 Unit tests for health/utilization changing due to asset price movement (no mint/redeem, just price change)
+- 🔲 Unit tests for health/utilization changing due to collateral price movement (WETH/wstETH vaults)
 - 🔲 Integration tests verifying health/utilization after full order flows
+- 🔲 Integration tests: vault becomes undercollateralized purely from price movement (no user action)
 
 ---
 
