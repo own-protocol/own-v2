@@ -1,0 +1,12 @@
+{
+  "enabledPlugins": {
+    "building-secure-contracts@trailofbits": true,
+    "audit-context-building@trailofbits": true,
+    "spec-to-code-compliance@trailofbits": true,
+    "differential-review@trailofbits": true,
+    "static-analysis@trailofbits": true,
+    "entry-point-analyzer@trailofbits": true,
+    "variant-analysis@trailofbits": true,
+    "second-opinion@trailofbits": true
+  }
+}

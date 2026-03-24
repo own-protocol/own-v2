@@ -30,4 +30,6 @@ Thumbs.db
 *.swo
 
 # Claude Code
-.claude/
+.claude/*
+!.claude/commands/
+!.claude/settings.json
