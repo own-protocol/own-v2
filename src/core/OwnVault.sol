@@ -2,7 +2,9 @@
 pragma solidity 0.8.28;
 
 import {IOwnVault} from "../interfaces/IOwnVault.sol";
+import {IProtocolRegistry} from "../interfaces/IProtocolRegistry.sol";
 import {BPS, PRECISION, VaultStatus, WithdrawalRequest, WithdrawalStatus} from "../interfaces/types/Types.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
 import {ERC20, IERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {ERC4626} from "@openzeppelin/contracts/token/ERC20/extensions/ERC4626.sol";
@@ -22,14 +24,8 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     //  Immutables
     // ──────────────────────────────────────────────────────────
 
-    /// @notice Protocol admin.
-    address public immutable admin;
-
-    /// @notice OwnMarket contract (restricted caller for distributeSpreadRevenue).
-    address public immutable market;
-
-    /// @inheritdoc IOwnVault
-    address public immutable override treasury;
+    /// @notice Protocol registry for resolving all contract addresses.
+    IProtocolRegistry public immutable registry;
 
     // ──────────────────────────────────────────────────────────
     //  Vault status
@@ -68,12 +64,12 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     // ──────────────────────────────────────────────────────────
 
     modifier onlyAdmin() {
-        require(msg.sender == admin, "OwnVault: not admin");
+        require(msg.sender == Ownable(address(registry)).owner(), "OwnVault: not admin");
         _;
     }
 
     modifier onlyMarket() {
-        require(msg.sender == market, "OwnVault: not market");
+        require(msg.sender == registry.market(), "OwnVault: not market");
         _;
     }
 
@@ -90,9 +86,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     /// @param asset_         Underlying collateral ERC-20.
     /// @param name_          Vault share name.
     /// @param symbol_        Vault share symbol.
-    /// @param admin_         Protocol admin.
-    /// @param market_        OwnMarket address.
-    /// @param treasury_      Protocol treasury for fee collection.
+    /// @param registry_      ProtocolRegistry contract address.
     /// @param maxUtilBps     Initial max utilization in BPS.
     /// @param aumFeeBps      Initial AUM fee in BPS.
     /// @param reserveFactBps Initial reserve factor in BPS.
@@ -100,16 +94,12 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
         address asset_,
         string memory name_,
         string memory symbol_,
-        address admin_,
-        address market_,
-        address treasury_,
+        address registry_,
         uint256 maxUtilBps,
         uint256 aumFeeBps,
         uint256 reserveFactBps
     ) ERC4626(IERC20(asset_)) ERC20(name_, symbol_) {
-        admin = admin_;
-        market = market_;
-        treasury = treasury_;
+        registry = IProtocolRegistry(registry_);
         _maxUtilization = maxUtilBps;
         _aumFee = aumFeeBps;
         _reserveFactor = reserveFactBps;
@@ -364,8 +354,9 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
         uint256 lpPortion = totalRevenue - protocolPortion;
 
         if (protocolPortion > 0) {
-            IERC20(asset()).safeTransfer(treasury, protocolPortion);
-            emit ReserveFactorCollected(protocolPortion, treasury);
+            address _treasury = registry.treasury();
+            IERC20(asset()).safeTransfer(_treasury, protocolPortion);
+            emit ReserveFactorCollected(protocolPortion, _treasury);
         }
 
         // lpPortion stays in vault → increases totalAssets() → increases share price
@@ -391,8 +382,9 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
         uint256 feeAmount = assets.mulDiv(_aumFee * elapsed, BPS * 365 days);
         if (feeAmount == 0) return;
 
-        IERC20(asset()).safeTransfer(treasury, feeAmount);
-        emit AumFeeCollected(feeAmount, treasury);
+        address _treasury = registry.treasury();
+        IERC20(asset()).safeTransfer(_treasury, feeAmount);
+        emit AumFeeCollected(feeAmount, _treasury);
     }
 
     /// @dev Remove a request ID from the pending list (swap-and-pop).

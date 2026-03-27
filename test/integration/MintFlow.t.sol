@@ -76,21 +76,26 @@ contract MintFlowTest is BaseTest {
         assetRegistry = new AssetRegistry(Actors.ADMIN);
         paymentRegistry = new PaymentTokenRegistry(Actors.ADMIN);
 
-        // 2. Deploy market first, then VaultManager (which needs market address), then wire back
-        market = new OwnMarket(Actors.ADMIN, address(oracle), address(assetRegistry), address(paymentRegistry));
+        // 2. Register infrastructure in registry
+        protocolRegistry.setAddress(protocolRegistry.ORACLE_VERIFIER(), address(oracle));
+        protocolRegistry.setAddress(protocolRegistry.ASSET_REGISTRY(), address(assetRegistry));
+        protocolRegistry.setAddress(protocolRegistry.PAYMENT_TOKEN_REGISTRY(), address(paymentRegistry));
+        protocolRegistry.setAddress(protocolRegistry.TREASURY(), Actors.FEE_RECIPIENT);
 
-        // 3. Deploy VaultManager with market address, then wire into market
-        vaultMgr = new VaultManager(Actors.ADMIN, address(market), MIN_SPREAD);
-        market.setVaultManager(address(vaultMgr));
+        // 3. Deploy contracts with registry
+        market = new OwnMarket(address(protocolRegistry));
+        vaultMgr = new VaultManager(Actors.ADMIN, address(protocolRegistry), MIN_SPREAD);
 
-        // 4. Deploy USDC vault
+        // 4. Register market and vault manager
+        protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
+        protocolRegistry.setAddress(protocolRegistry.VAULT_MANAGER(), address(vaultMgr));
+
+        // 5. Deploy USDC vault
         usdcVault = new OwnVault(
             address(usdc),
             "Own USDC Vault",
             "oUSDC",
-            Actors.ADMIN,
-            address(market),
-            Actors.FEE_RECIPIENT,
+            address(protocolRegistry),
             MAX_UTIL_BPS,
             AUM_FEE_BPS,
             RESERVE_FACTOR_BPS
@@ -110,12 +115,12 @@ contract MintFlowTest is BaseTest {
     function _configureAssets() private {
         vm.startPrank(Actors.ADMIN);
 
-        // Deploy eTSLA token — market is the orderSystem (minter/burner)
-        eTSLA = new EToken("Own Tesla", "eTSLA", TSLA, Actors.ADMIN, address(market), address(usdc));
+        // Deploy eTSLA token
+        eTSLA = new EToken("Own Tesla", "eTSLA", TSLA, address(protocolRegistry), address(usdc));
         vm.label(address(eTSLA), "eTSLA");
 
         // Deploy eGOLD token
-        eGOLD = new EToken("Own Gold", "eGOLD", GOLD, Actors.ADMIN, address(market), address(usdc));
+        eGOLD = new EToken("Own Gold", "eGOLD", GOLD, address(protocolRegistry), address(usdc));
         vm.label(address(eGOLD), "eGOLD");
 
         // Register TSLA in asset registry

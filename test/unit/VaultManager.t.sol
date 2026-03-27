@@ -21,8 +21,10 @@ contract VaultManagerTest is BaseTest {
     function setUp() public override {
         super.setUp();
 
-        vm.prank(Actors.ADMIN);
-        vmManager = new VaultManager(Actors.ADMIN, mockMarket, DEFAULT_MIN_SPREAD);
+        vm.startPrank(Actors.ADMIN);
+        protocolRegistry.setAddress(protocolRegistry.MARKET(), mockMarket);
+        vmManager = new VaultManager(Actors.ADMIN, address(protocolRegistry), DEFAULT_MIN_SPREAD);
+        vm.stopPrank();
         vm.label(address(vmManager), "VaultManager");
     }
 

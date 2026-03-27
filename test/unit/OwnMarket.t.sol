@@ -65,8 +65,11 @@ contract OwnMarketTest is BaseTest {
         vm.stopPrank();
 
         vm.startPrank(Actors.ADMIN);
-        market = new OwnMarket(Actors.ADMIN, address(oracle), address(assetReg), mockPaymentRegistry);
-        market.setVaultManager(mockVaultManager);
+        protocolRegistry.setAddress(protocolRegistry.ORACLE_VERIFIER(), address(oracle));
+        protocolRegistry.setAddress(protocolRegistry.ASSET_REGISTRY(), address(assetReg));
+        protocolRegistry.setAddress(protocolRegistry.PAYMENT_TOKEN_REGISTRY(), mockPaymentRegistry);
+        protocolRegistry.setAddress(protocolRegistry.VAULT_MANAGER(), mockVaultManager);
+        market = new OwnMarket(address(protocolRegistry));
         vm.stopPrank();
         vm.label(address(market), "OwnMarket");
 
@@ -744,87 +747,4 @@ contract OwnMarketTest is BaseTest {
         assertEq(usdc.balanceOf(address(market)), amount);
     }
 
-    // ──────────────────────────────────────────────────────────
-    //  Admin setters
-    // ──────────────────────────────────────────────────────────
-
-    function test_setVaultManager_success() public {
-        OwnMarket freshMarket = new OwnMarket(Actors.ADMIN, address(oracle), address(assetReg), mockPaymentRegistry);
-        address newVM = makeAddr("newVaultManager");
-
-        vm.prank(Actors.ADMIN);
-        freshMarket.setVaultManager(newVM);
-        assertEq(freshMarket.vaultManager(), newVM);
-    }
-
-    function test_setVaultManager_emitsEvent() public {
-        OwnMarket freshMarket = new OwnMarket(Actors.ADMIN, address(oracle), address(assetReg), mockPaymentRegistry);
-        address newVM = makeAddr("newVaultManager");
-
-        vm.expectEmit(true, false, false, false);
-        emit IOwnMarket.VaultManagerSet(newVM);
-        vm.prank(Actors.ADMIN);
-        freshMarket.setVaultManager(newVM);
-    }
-
-    function test_setVaultManager_notAdmin_reverts() public {
-        OwnMarket freshMarket = new OwnMarket(Actors.ADMIN, address(oracle), address(assetReg), mockPaymentRegistry);
-
-        vm.prank(Actors.ATTACKER);
-        vm.expectRevert(IOwnMarket.Unauthorized.selector);
-        freshMarket.setVaultManager(makeAddr("vm"));
-    }
-
-    function test_setVaultManager_zeroAddress_reverts() public {
-        OwnMarket freshMarket = new OwnMarket(Actors.ADMIN, address(oracle), address(assetReg), mockPaymentRegistry);
-
-        vm.prank(Actors.ADMIN);
-        vm.expectRevert(IOwnMarket.ZeroAddressNotAllowed.selector);
-        freshMarket.setVaultManager(address(0));
-    }
-
-    function test_setVaultManager_alreadySet_reverts() public {
-        // market already has vaultManager set in setUp
-        vm.prank(Actors.ADMIN);
-        vm.expectRevert(IOwnMarket.AlreadyInitialized.selector);
-        market.setVaultManager(makeAddr("anotherVM"));
-    }
-
-    function test_setLiquidationEngine_success() public {
-        address newLE = makeAddr("liquidationEngine");
-
-        vm.prank(Actors.ADMIN);
-        market.setLiquidationEngine(newLE);
-        assertEq(market.liquidationEngine(), newLE);
-    }
-
-    function test_setLiquidationEngine_emitsEvent() public {
-        address newLE = makeAddr("liquidationEngine");
-
-        vm.expectEmit(true, false, false, false);
-        emit IOwnMarket.LiquidationEngineSet(newLE);
-        vm.prank(Actors.ADMIN);
-        market.setLiquidationEngine(newLE);
-    }
-
-    function test_setLiquidationEngine_notAdmin_reverts() public {
-        vm.prank(Actors.ATTACKER);
-        vm.expectRevert(IOwnMarket.Unauthorized.selector);
-        market.setLiquidationEngine(makeAddr("le"));
-    }
-
-    function test_setLiquidationEngine_zeroAddress_reverts() public {
-        vm.prank(Actors.ADMIN);
-        vm.expectRevert(IOwnMarket.ZeroAddressNotAllowed.selector);
-        market.setLiquidationEngine(address(0));
-    }
-
-    function test_setLiquidationEngine_alreadySet_reverts() public {
-        vm.prank(Actors.ADMIN);
-        market.setLiquidationEngine(makeAddr("le1"));
-
-        vm.prank(Actors.ADMIN);
-        vm.expectRevert(IOwnMarket.AlreadyInitialized.selector);
-        market.setLiquidationEngine(makeAddr("le2"));
-    }
 }

@@ -5,6 +5,7 @@ import {IAssetRegistry} from "../interfaces/IAssetRegistry.sol";
 import {IEToken} from "../interfaces/IEToken.sol";
 import {IOracleVerifier} from "../interfaces/IOracleVerifier.sol";
 import {IOwnMarket} from "../interfaces/IOwnMarket.sol";
+import {IProtocolRegistry} from "../interfaces/IProtocolRegistry.sol";
 import {IVaultManager} from "../interfaces/IVaultManager.sol";
 
 import {
@@ -35,17 +36,12 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
     //  Immutables
     // ──────────────────────────────────────────────────────────
 
-    address public immutable admin;
-    IOracleVerifier public immutable oracle;
-    IAssetRegistry public immutable assetRegistry;
-    address public immutable paymentRegistry;
+    /// @notice Protocol registry for resolving all contract addresses.
+    IProtocolRegistry public immutable registry;
 
     // ──────────────────────────────────────────────────────────
     //  State
     // ──────────────────────────────────────────────────────────
-
-    address public vaultManager;
-    address public liquidationEngine;
 
     uint256 private _nextOrderId = 1;
     uint256 private _nextClaimId = 1;
@@ -57,47 +53,12 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
     mapping(address => uint256[]) private _userOrders; // user → orderIds
 
     // ──────────────────────────────────────────────────────────
-    //  Modifiers
-    // ──────────────────────────────────────────────────────────
-
-    modifier onlyAdmin() {
-        if (msg.sender != admin) revert Unauthorized();
-        _;
-    }
-
-    // ──────────────────────────────────────────────────────────
     //  Constructor
     // ──────────────────────────────────────────────────────────
 
-    constructor(address admin_, address oracle_, address assetRegistry_, address paymentRegistry_) {
-        admin = admin_;
-        oracle = IOracleVerifier(oracle_);
-        assetRegistry = IAssetRegistry(assetRegistry_);
-        paymentRegistry = paymentRegistry_;
-    }
-
-    // ──────────────────────────────────────────────────────────
-    //  Admin — post-deploy wiring
-    // ──────────────────────────────────────────────────────────
-
-    /// @inheritdoc IOwnMarket
-    function setVaultManager(
-        address vaultManager_
-    ) external onlyAdmin {
-        if (vaultManager != address(0)) revert AlreadyInitialized();
-        if (vaultManager_ == address(0)) revert ZeroAddressNotAllowed();
-        vaultManager = vaultManager_;
-        emit VaultManagerSet(vaultManager_);
-    }
-
-    /// @inheritdoc IOwnMarket
-    function setLiquidationEngine(
-        address liquidationEngine_
-    ) external onlyAdmin {
-        if (liquidationEngine != address(0)) revert AlreadyInitialized();
-        if (liquidationEngine_ == address(0)) revert ZeroAddressNotAllowed();
-        liquidationEngine = liquidationEngine_;
-        emit LiquidationEngineSet(liquidationEngine_);
+    /// @param registry_ ProtocolRegistry contract address.
+    constructor(address registry_) {
+        registry = IProtocolRegistry(registry_);
     }
 
     // ──────────────────────────────────────────────────────────
@@ -120,7 +81,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         if (deadline <= block.timestamp) revert InvalidDeadline();
 
         // Get placement price from oracle
-        (uint256 placementPrice,,) = oracle.verifyPrice(asset, priceData);
+        (uint256 placementPrice,,) = IOracleVerifier(registry.oracleVerifier()).verifyPrice(asset, priceData);
 
         // Escrow stablecoins
         IERC20(stablecoin).safeTransferFrom(msg.sender, address(this), stablecoinAmount);
@@ -167,10 +128,10 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         if (deadline <= block.timestamp) revert InvalidDeadline();
 
         // Get placement price from oracle
-        (uint256 placementPrice,,) = oracle.verifyPrice(asset, priceData);
+        (uint256 placementPrice,,) = IOracleVerifier(registry.oracleVerifier()).verifyPrice(asset, priceData);
 
         // Escrow eTokens
-        address eToken = assetRegistry.getActiveToken(asset);
+        address eToken = IAssetRegistry(registry.assetRegistry()).getActiveToken(asset);
         IERC20(eToken).safeTransferFrom(msg.sender, address(this), eTokenAmount);
 
         orderId = _nextOrderId++;
@@ -266,14 +227,15 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         Order storage order = _orders[claim.orderId];
 
         // Verify oracle price
-        (uint256 executionPrice,,) = oracle.verifyPrice(order.asset, priceData);
+        (uint256 executionPrice,,) = IOracleVerifier(registry.oracleVerifier()).verifyPrice(order.asset, priceData);
 
         // Get VM configuration for spread
-        VMConfig memory vmConfig = IVaultManager(vaultManager).getVMConfig(msg.sender);
+        address _vaultManager = registry.vaultManager();
+        VMConfig memory vmConfig = IVaultManager(_vaultManager).getVMConfig(msg.sender);
         uint256 vmSpread = vmConfig.spread;
 
         // Resolve VM's vault
-        claim.vault = IVaultManager(vaultManager).getVMVault(msg.sender);
+        claim.vault = IVaultManager(_vaultManager).getVMVault(msg.sender);
         claim.executionPrice = executionPrice;
         claim.confirmed = true;
 
@@ -415,7 +377,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         eTokenAmount = Math.mulDiv(claim.amount * decimalScaler, PRECISION, effectivePrice);
 
         // Mint eTokens to the minter
-        address eToken = assetRegistry.getActiveToken(order.asset);
+        address eToken = IAssetRegistry(registry.assetRegistry()).getActiveToken(order.asset);
         IEToken(eToken).mint(order.user, eTokenAmount);
 
         // Spread revenue in stablecoin terms (VM keeps all for MVP)
@@ -443,7 +405,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         IERC20(order.stablecoin).safeTransferFrom(claim.vm, order.user, stablecoinPayout);
 
         // Burn escrowed eTokens
-        address eToken = assetRegistry.getActiveToken(order.asset);
+        address eToken = IAssetRegistry(registry.assetRegistry()).getActiveToken(order.asset);
         IEToken(eToken).burn(address(this), claim.amount);
 
         eTokenAmount = claim.amount;

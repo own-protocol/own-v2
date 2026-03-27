@@ -3,7 +3,9 @@ pragma solidity 0.8.28;
 
 import {ILiquidationEngine} from "../interfaces/ILiquidationEngine.sol";
 import {IOracleVerifier} from "../interfaces/IOracleVerifier.sol";
+import {IProtocolRegistry} from "../interfaces/IProtocolRegistry.sol";
 import {PRECISION} from "../interfaces/types/Types.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
@@ -19,49 +21,21 @@ contract LiquidationEngine is ILiquidationEngine, ReentrancyGuard {
     //  Immutables
     // ──────────────────────────────────────────────────────────
 
-    address public immutable admin;
-    IOracleVerifier public immutable oracle;
-    address public immutable assetRegistry;
+    /// @notice Protocol registry for resolving all contract addresses.
+    IProtocolRegistry public immutable registry;
+
+    /// @notice DEX address for Tier 3 liquidation swaps.
     address public immutable dex;
-
-    // ──────────────────────────────────────────────────────────
-    //  State
-    // ──────────────────────────────────────────────────────────
-
-    address public market;
-
-    // ──────────────────────────────────────────────────────────
-    //  Modifiers
-    // ──────────────────────────────────────────────────────────
-
-    modifier onlyAdmin() {
-        if (msg.sender != admin) revert Unauthorized();
-        _;
-    }
 
     // ──────────────────────────────────────────────────────────
     //  Constructor
     // ──────────────────────────────────────────────────────────
 
-    constructor(address admin_, address oracle_, address assetRegistry_, address dex_) {
-        admin = admin_;
-        oracle = IOracleVerifier(oracle_);
-        assetRegistry = assetRegistry_;
+    /// @param registry_ ProtocolRegistry contract address.
+    /// @param dex_      DEX address for liquidation swaps.
+    constructor(address registry_, address dex_) {
+        registry = IProtocolRegistry(registry_);
         dex = dex_;
-    }
-
-    // ──────────────────────────────────────────────────────────
-    //  Admin — post-deploy wiring
-    // ──────────────────────────────────────────────────────────
-
-    /// @inheritdoc ILiquidationEngine
-    function setMarket(
-        address market_
-    ) external onlyAdmin {
-        if (market != address(0)) revert AlreadyInitialized();
-        if (market_ == address(0)) revert ZeroAddressNotAllowed();
-        market = market_;
-        emit MarketSet(market_);
     }
 
     // ──────────────────────────────────────────────────────────
@@ -82,7 +56,7 @@ contract LiquidationEngine is ILiquidationEngine, ReentrancyGuard {
         if (eTokenAmount > maxLiq) revert ExcessiveLiquidation(eTokenAmount, maxLiq);
 
         // Verify price
-        (uint256 price,,) = oracle.verifyPrice(asset, priceData);
+        (uint256 price,,) = IOracleVerifier(registry.oracleVerifier()).verifyPrice(asset, priceData);
 
         // Calculate collateral to transfer (eTokens * price + reward)
         // Simplified: will be refined when vault integration is complete
@@ -107,7 +81,7 @@ contract LiquidationEngine is ILiquidationEngine, ReentrancyGuard {
         if (!_isLiquidatable(vault)) revert VaultHealthy(vault, _getHealthFactor(vault));
 
         // Verify price
-        oracle.verifyPrice(asset, priceData);
+        IOracleVerifier(registry.oracleVerifier()).verifyPrice(asset, priceData);
 
         // DEX swap would happen here
         stablecoinReceived = 0;

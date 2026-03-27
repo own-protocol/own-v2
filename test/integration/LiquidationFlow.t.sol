@@ -40,18 +40,27 @@ contract LiquidationFlowTest is BaseTest {
         assetRegistry = new AssetRegistry(Actors.ADMIN);
         paymentRegistry = new PaymentTokenRegistry(Actors.ADMIN);
 
-        market = new OwnMarket(Actors.ADMIN, address(oracle), address(assetRegistry), address(paymentRegistry));
-        vaultMgr = new VaultManager(Actors.ADMIN, address(market), 30);
-        liquidationEngine = new LiquidationEngine(Actors.ADMIN, address(oracle), address(assetRegistry), address(dex));
-        market.setVaultManager(address(vaultMgr));
-        market.setLiquidationEngine(address(liquidationEngine));
-        liquidationEngine.setMarket(address(market));
+        // Register infrastructure in registry
+        protocolRegistry.setAddress(protocolRegistry.ORACLE_VERIFIER(), address(oracle));
+        protocolRegistry.setAddress(protocolRegistry.ASSET_REGISTRY(), address(assetRegistry));
+        protocolRegistry.setAddress(protocolRegistry.PAYMENT_TOKEN_REGISTRY(), address(paymentRegistry));
+        protocolRegistry.setAddress(protocolRegistry.TREASURY(), Actors.FEE_RECIPIENT);
+
+        // Deploy contracts with registry
+        market = new OwnMarket(address(protocolRegistry));
+        vaultMgr = new VaultManager(Actors.ADMIN, address(protocolRegistry), 30);
+        liquidationEngine = new LiquidationEngine(address(protocolRegistry), address(dex));
+
+        // Register market, vault manager, and liquidation engine
+        protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
+        protocolRegistry.setAddress(protocolRegistry.VAULT_MANAGER(), address(vaultMgr));
+        protocolRegistry.setAddress(protocolRegistry.LIQUIDATION_ENGINE(), address(liquidationEngine));
 
         usdcVault = new OwnVault(
-            address(usdc), "Own USDC Vault", "oUSDC", Actors.ADMIN, address(market), Actors.FEE_RECIPIENT, 8000, 0, 1000
+            address(usdc), "Own USDC Vault", "oUSDC", address(protocolRegistry), 8000, 0, 1000
         );
 
-        eTSLA = new EToken("Own Tesla", "eTSLA", TSLA, Actors.ADMIN, address(market), address(usdc));
+        eTSLA = new EToken("Own Tesla", "eTSLA", TSLA, address(protocolRegistry), address(usdc));
 
         AssetConfig memory config = AssetConfig({
             activeToken: address(eTSLA),
@@ -168,9 +177,7 @@ contract LiquidationFlowTest is BaseTest {
     // ══════════════════════════════════════════════════════════
 
     function test_liquidation_contractWiring() public view {
-        assertEq(liquidationEngine.admin(), Actors.ADMIN);
-        assertEq(address(liquidationEngine.oracle()), address(oracle));
-        assertEq(liquidationEngine.assetRegistry(), address(assetRegistry));
+        assertEq(address(liquidationEngine.registry()), address(protocolRegistry));
         assertEq(liquidationEngine.dex(), address(dex));
     }
 }

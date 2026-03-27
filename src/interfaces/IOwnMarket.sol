@@ -127,41 +127,6 @@ interface IOwnMarket {
     /// @notice The payment token is not whitelisted.
     error PaymentTokenNotWhitelisted(address token);
 
-    /// @notice Caller is not the admin.
-    error Unauthorized();
-
-    /// @notice A zero address was provided.
-    error ZeroAddressNotAllowed();
-
-    /// @notice The address has already been initialized.
-    error AlreadyInitialized();
-
-    /// @notice Emitted when the vault manager address is set.
-    /// @param vaultManager New vault manager address.
-    event VaultManagerSet(address indexed vaultManager);
-
-    /// @notice Emitted when the liquidation engine address is set.
-    /// @param liquidationEngine New liquidation engine address.
-    event LiquidationEngineSet(address indexed liquidationEngine);
-
-    // ──────────────────────────────────────────────────────────
-    //  Admin functions
-    // ──────────────────────────────────────────────────────────
-
-    /// @notice Set the VaultManager contract address. Can only be called once
-    ///         by the admin to resolve the circular deployment dependency.
-    /// @param vaultManager_ VaultManager contract address.
-    function setVaultManager(
-        address vaultManager_
-    ) external;
-
-    /// @notice Set the LiquidationEngine contract address. Can only be called
-    ///         once by the admin.
-    /// @param liquidationEngine_ LiquidationEngine contract address.
-    function setLiquidationEngine(
-        address liquidationEngine_
-    ) external;
-
     // ──────────────────────────────────────────────────────────
     //  Order placement
     // ──────────────────────────────────────────────────────────

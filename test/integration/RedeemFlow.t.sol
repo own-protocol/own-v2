@@ -77,17 +77,25 @@ contract RedeemFlowTest is BaseTest {
         assetRegistry = new AssetRegistry(Actors.ADMIN);
         paymentRegistry = new PaymentTokenRegistry(Actors.ADMIN);
 
-        market = new OwnMarket(Actors.ADMIN, address(oracle), address(assetRegistry), address(paymentRegistry));
-        vaultMgr = new VaultManager(Actors.ADMIN, address(market), MIN_SPREAD);
-        market.setVaultManager(address(vaultMgr));
+        // Register infrastructure in registry
+        protocolRegistry.setAddress(protocolRegistry.ORACLE_VERIFIER(), address(oracle));
+        protocolRegistry.setAddress(protocolRegistry.ASSET_REGISTRY(), address(assetRegistry));
+        protocolRegistry.setAddress(protocolRegistry.PAYMENT_TOKEN_REGISTRY(), address(paymentRegistry));
+        protocolRegistry.setAddress(protocolRegistry.TREASURY(), Actors.FEE_RECIPIENT);
+
+        // Deploy contracts with registry
+        market = new OwnMarket(address(protocolRegistry));
+        vaultMgr = new VaultManager(Actors.ADMIN, address(protocolRegistry), MIN_SPREAD);
+
+        // Register market and vault manager
+        protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
+        protocolRegistry.setAddress(protocolRegistry.VAULT_MANAGER(), address(vaultMgr));
 
         usdcVault = new OwnVault(
             address(usdc),
             "Own USDC Vault",
             "oUSDC",
-            Actors.ADMIN,
-            address(market),
-            Actors.FEE_RECIPIENT,
+            address(protocolRegistry),
             MAX_UTIL_BPS,
             50,
             1000
@@ -105,7 +113,7 @@ contract RedeemFlowTest is BaseTest {
     function _configureAssets() private {
         vm.startPrank(Actors.ADMIN);
 
-        eTSLA = new EToken("Own Tesla", "eTSLA", TSLA, Actors.ADMIN, address(market), address(usdc));
+        eTSLA = new EToken("Own Tesla", "eTSLA", TSLA, address(protocolRegistry), address(usdc));
         vm.label(address(eTSLA), "eTSLA");
 
         AssetConfig memory tslaConfig = AssetConfig({

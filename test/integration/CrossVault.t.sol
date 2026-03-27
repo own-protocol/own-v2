@@ -38,21 +38,31 @@ contract CrossVaultTest is BaseTest {
         assetRegistry = new AssetRegistry(Actors.ADMIN);
         paymentRegistry = new PaymentTokenRegistry(Actors.ADMIN);
 
-        market = new OwnMarket(Actors.ADMIN, address(oracle), address(assetRegistry), address(paymentRegistry));
-        vaultMgr = new VaultManager(Actors.ADMIN, address(market), 30);
-        market.setVaultManager(address(vaultMgr));
+        // Register infrastructure in registry
+        protocolRegistry.setAddress(protocolRegistry.ORACLE_VERIFIER(), address(oracle));
+        protocolRegistry.setAddress(protocolRegistry.ASSET_REGISTRY(), address(assetRegistry));
+        protocolRegistry.setAddress(protocolRegistry.PAYMENT_TOKEN_REGISTRY(), address(paymentRegistry));
+        protocolRegistry.setAddress(protocolRegistry.TREASURY(), Actors.FEE_RECIPIENT);
+
+        // Deploy contracts with registry
+        market = new OwnMarket(address(protocolRegistry));
+        vaultMgr = new VaultManager(Actors.ADMIN, address(protocolRegistry), 30);
+
+        // Register market and vault manager
+        protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
+        protocolRegistry.setAddress(protocolRegistry.VAULT_MANAGER(), address(vaultMgr));
 
         // USDC vault
         usdcVault = new OwnVault(
-            address(usdc), "Own USDC Vault", "oUSDC", Actors.ADMIN, address(market), Actors.FEE_RECIPIENT, 8000, 0, 1000
+            address(usdc), "Own USDC Vault", "oUSDC", address(protocolRegistry), 8000, 0, 1000
         );
 
         // WETH vault
         wethVault = new OwnVault(
-            address(weth), "Own WETH Vault", "oWETH", Actors.ADMIN, address(market), Actors.FEE_RECIPIENT, 8000, 0, 1000
+            address(weth), "Own WETH Vault", "oWETH", address(protocolRegistry), 8000, 0, 1000
         );
 
-        eTSLA = new EToken("Own Tesla", "eTSLA", TSLA, Actors.ADMIN, address(market), address(usdc));
+        eTSLA = new EToken("Own Tesla", "eTSLA", TSLA, address(protocolRegistry), address(usdc));
 
         AssetConfig memory config = AssetConfig({
             activeToken: address(eTSLA),

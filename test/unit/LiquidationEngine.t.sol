@@ -21,7 +21,6 @@ contract LiquidationEngineTest is BaseTest {
     address public mockVault = makeAddr("vault");
     address public mockMarket = makeAddr("market");
     address public mockAssetRegistry = makeAddr("assetRegistry");
-    address public mockVaultManager = makeAddr("vaultManager");
 
     function setUp() public override {
         super.setUp();
@@ -29,8 +28,12 @@ contract LiquidationEngineTest is BaseTest {
         eTSLAToken = new MockERC20("Own TSLA", "eTSLA", 18);
         vm.label(address(eTSLAToken), "eTSLA");
 
-        vm.prank(Actors.ADMIN);
-        liquidationEngine = new LiquidationEngine(Actors.ADMIN, address(oracle), mockAssetRegistry, address(dex));
+        vm.startPrank(Actors.ADMIN);
+        protocolRegistry.setAddress(protocolRegistry.ORACLE_VERIFIER(), address(oracle));
+        protocolRegistry.setAddress(protocolRegistry.ASSET_REGISTRY(), mockAssetRegistry);
+        protocolRegistry.setAddress(protocolRegistry.MARKET(), mockMarket);
+        liquidationEngine = new LiquidationEngine(address(protocolRegistry), address(dex));
+        vm.stopPrank();
         vm.label(address(liquidationEngine), "LiquidationEngine");
 
         _setOraclePrice(TSLA, TSLA_PRICE);
@@ -96,41 +99,4 @@ contract LiquidationEngineTest is BaseTest {
         assertGe(hf, PRECISION);
     }
 
-    // ──────────────────────────────────────────────────────────
-    //  Admin setters
-    // ──────────────────────────────────────────────────────────
-
-    function test_setMarket_success() public {
-        vm.prank(Actors.ADMIN);
-        liquidationEngine.setMarket(mockMarket);
-        assertEq(liquidationEngine.market(), mockMarket);
-    }
-
-    function test_setMarket_emitsEvent() public {
-        vm.expectEmit(true, false, false, false);
-        emit ILiquidationEngine.MarketSet(mockMarket);
-        vm.prank(Actors.ADMIN);
-        liquidationEngine.setMarket(mockMarket);
-    }
-
-    function test_setMarket_notAdmin_reverts() public {
-        vm.prank(Actors.ATTACKER);
-        vm.expectRevert(ILiquidationEngine.Unauthorized.selector);
-        liquidationEngine.setMarket(mockMarket);
-    }
-
-    function test_setMarket_zeroAddress_reverts() public {
-        vm.prank(Actors.ADMIN);
-        vm.expectRevert(ILiquidationEngine.ZeroAddressNotAllowed.selector);
-        liquidationEngine.setMarket(address(0));
-    }
-
-    function test_setMarket_alreadySet_reverts() public {
-        vm.prank(Actors.ADMIN);
-        liquidationEngine.setMarket(mockMarket);
-
-        vm.prank(Actors.ADMIN);
-        vm.expectRevert(ILiquidationEngine.AlreadyInitialized.selector);
-        liquidationEngine.setMarket(makeAddr("anotherMarket"));
-    }
 }

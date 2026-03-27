@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 pragma solidity 0.8.28;
 
+import {IProtocolRegistry} from "../interfaces/IProtocolRegistry.sol";
 import {IVaultManager} from "../interfaces/IVaultManager.sol";
 import {BPS, VMConfig} from "../interfaces/types/Types.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
@@ -17,8 +18,8 @@ contract VaultManager is IVaultManager, Ownable {
     /// @notice Protocol-enforced minimum spread in BPS.
     uint256 public override minSpread;
 
-    /// @notice Authorised OwnMarket contract (only caller for updateExposure).
-    address public immutable market;
+    /// @notice Protocol registry for resolving all contract addresses.
+    IProtocolRegistry public immutable registry;
 
     /// @dev VM address → configuration.
     mapping(address => VMConfig) private _vmConfigs;
@@ -54,7 +55,7 @@ contract VaultManager is IVaultManager, Ownable {
     }
 
     modifier onlyMarket() {
-        require(msg.sender == market, "VaultManager: caller is not market");
+        require(msg.sender == registry.market(), "VaultManager: caller is not market");
         _;
     }
 
@@ -63,10 +64,10 @@ contract VaultManager is IVaultManager, Ownable {
     // ──────────────────────────────────────────────────────────
 
     /// @param admin_       Protocol admin.
-    /// @param market_      OwnMarket contract address.
+    /// @param registry_    ProtocolRegistry contract address.
     /// @param minSpread_   Initial minimum spread in BPS.
-    constructor(address admin_, address market_, uint256 minSpread_) Ownable(admin_) {
-        market = market_;
+    constructor(address admin_, address registry_, uint256 minSpread_) Ownable(admin_) {
+        registry = IProtocolRegistry(registry_);
         minSpread = minSpread_;
     }
 

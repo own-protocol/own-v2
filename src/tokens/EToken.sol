@@ -2,7 +2,9 @@
 pragma solidity 0.8.28;
 
 import {IEToken} from "../interfaces/IEToken.sol";
+import {IProtocolRegistry} from "../interfaces/IProtocolRegistry.sol";
 import {PRECISION} from "../interfaces/types/Types.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {ERC20, IERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {ERC20Permit} from "@openzeppelin/contracts/token/ERC20/extensions/ERC20Permit.sol";
 import {IERC20Permit} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Permit.sol";
@@ -27,11 +29,8 @@ contract EToken is ERC20, ERC20Permit, IEToken {
     /// @notice ERC-20 token used for dividend payouts.
     address public immutable override rewardToken;
 
-    /// @notice Protocol admin (can update name/symbol).
-    address public immutable admin;
-
-    /// @notice Order system address (only caller allowed to mint/burn).
-    address public immutable orderSystem;
+    /// @notice Protocol registry for resolving all contract addresses.
+    IProtocolRegistry public immutable registry;
 
     // ──────────────────────────────────────────────────────────
     //  Mutable metadata (stock-split renaming)
@@ -58,12 +57,12 @@ contract EToken is ERC20, ERC20Permit, IEToken {
     // ──────────────────────────────────────────────────────────
 
     modifier onlyOrderSystem() {
-        if (msg.sender != orderSystem) revert Unauthorized();
+        if (msg.sender != registry.market()) revert Unauthorized();
         _;
     }
 
     modifier onlyAdmin() {
-        if (msg.sender != admin) revert Unauthorized();
+        if (msg.sender != Ownable(address(registry)).owner()) revert Unauthorized();
         _;
     }
 
@@ -74,22 +73,19 @@ contract EToken is ERC20, ERC20Permit, IEToken {
     /// @param name_        Initial token name.
     /// @param symbol_      Initial token symbol.
     /// @param ticker_      Asset ticker (bytes32).
-    /// @param admin_       Protocol admin address.
-    /// @param orderSystem_ Order system address (mint/burn caller).
+    /// @param registry_    ProtocolRegistry contract address.
     /// @param rewardToken_ ERC-20 token for dividend payouts.
     constructor(
         string memory name_,
         string memory symbol_,
         bytes32 ticker_,
-        address admin_,
-        address orderSystem_,
+        address registry_,
         address rewardToken_
     ) ERC20(name_, symbol_) ERC20Permit(name_) {
-        if (admin_ == address(0) || orderSystem_ == address(0)) revert ZeroAddress();
+        if (registry_ == address(0)) revert ZeroAddress();
 
         ticker = ticker_;
-        admin = admin_;
-        orderSystem = orderSystem_;
+        registry = IProtocolRegistry(registry_);
         rewardToken = rewardToken_;
         _name = name_;
         _symbol = symbol_;

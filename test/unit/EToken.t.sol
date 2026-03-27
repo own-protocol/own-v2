@@ -26,9 +26,11 @@ contract ETokenTest is BaseTest {
         rewardToken = new MockERC20("Reward USDC", "rUSDC", 6);
         vm.label(address(rewardToken), "rewardToken");
 
-        // Deploy EToken: admin deploys, orderSystem is the market contract
-        vm.prank(Actors.ADMIN);
-        eToken = new EToken(NAME, SYMBOL, TICKER, Actors.ADMIN, address(this), address(rewardToken));
+        // Register this test contract as the MARKET (orderSystem) in registry
+        vm.startPrank(Actors.ADMIN);
+        protocolRegistry.setAddress(protocolRegistry.MARKET(), address(this));
+        vm.stopPrank();
+        eToken = new EToken(NAME, SYMBOL, TICKER, address(protocolRegistry), address(rewardToken));
         vm.label(address(eToken), "eTSLA");
     }
 

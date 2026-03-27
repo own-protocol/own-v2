@@ -251,8 +251,4 @@ interface IOwnVault is IERC4626 {
     function setReserveFactor(
         uint256 factorBps
     ) external;
-
-    /// @notice Return the protocol treasury address.
-    /// @return The treasury address.
-    function treasury() external view returns (address);
 }

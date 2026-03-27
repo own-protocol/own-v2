@@ -45,24 +45,32 @@ contract DividendFlowTest is BaseTest {
         assetRegistry = new AssetRegistry(Actors.ADMIN);
         paymentRegistry = new PaymentTokenRegistry(Actors.ADMIN);
 
-        market = new OwnMarket(Actors.ADMIN, address(oracle), address(assetRegistry), address(paymentRegistry));
-        vaultMgr = new VaultManager(Actors.ADMIN, address(market), 30);
-        market.setVaultManager(address(vaultMgr));
+        // Register infrastructure in registry
+        protocolRegistry.setAddress(protocolRegistry.ORACLE_VERIFIER(), address(oracle));
+        protocolRegistry.setAddress(protocolRegistry.ASSET_REGISTRY(), address(assetRegistry));
+        protocolRegistry.setAddress(protocolRegistry.PAYMENT_TOKEN_REGISTRY(), address(paymentRegistry));
+        protocolRegistry.setAddress(protocolRegistry.TREASURY(), Actors.FEE_RECIPIENT);
+
+        // Deploy contracts with registry
+        market = new OwnMarket(address(protocolRegistry));
+        vaultMgr = new VaultManager(Actors.ADMIN, address(protocolRegistry), 30);
+
+        // Register market and vault manager
+        protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
+        protocolRegistry.setAddress(protocolRegistry.VAULT_MANAGER(), address(vaultMgr));
 
         usdcVault = new OwnVault(
             address(usdc),
             "Own USDC Vault",
             "oUSDC",
-            Actors.ADMIN,
-            address(market),
-            Actors.FEE_RECIPIENT,
+            address(protocolRegistry),
             8000,
             50,
             1000
         );
 
         // eTSLA with USDC as reward token (for dividends)
-        eTSLA = new EToken("Own Tesla", "eTSLA", TSLA, Actors.ADMIN, address(market), address(usdc));
+        eTSLA = new EToken("Own Tesla", "eTSLA", TSLA, address(protocolRegistry), address(usdc));
 
         AssetConfig memory config = AssetConfig({
             activeToken: address(eTSLA),
@@ -262,7 +270,7 @@ contract DividendFlowTest is BaseTest {
         // Deploy a fresh eToken with no supply
         vm.prank(Actors.ADMIN);
         EToken freshToken =
-            new EToken("Fresh", "eFRESH", bytes32("FRESH"), Actors.ADMIN, address(market), address(usdc));
+            new EToken("Fresh", "eFRESH", bytes32("FRESH"), address(protocolRegistry), address(usdc));
 
         _fundUSDC(Actors.VM1, 100e6);
         vm.startPrank(Actors.VM1);

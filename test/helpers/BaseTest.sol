@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
+import {ProtocolRegistry} from "../../src/core/ProtocolRegistry.sol";
 import {BPS, PRECISION} from "../../src/interfaces/types/Types.sol";
 import {Actors} from "./Actors.sol";
 import {MockAUSDC} from "./MockAUSDC.sol";
@@ -43,6 +44,9 @@ contract BaseTest is Test {
     // ──────────────────────────────────────────────────────────
     //  Mock infrastructure
     // ──────────────────────────────────────────────────────────
+
+    /// @notice Protocol registry (deployed with Actors.ADMIN as owner).
+    ProtocolRegistry public protocolRegistry;
 
     /// @notice Mock oracle verifier.
     MockOracleVerifier public oracle;
@@ -148,6 +152,8 @@ contract BaseTest is Test {
     function _deployMockInfrastructure() private {
         oracle = new MockOracleVerifier();
         dex = new MockDEX();
+        vm.prank(Actors.ADMIN);
+        protocolRegistry = new ProtocolRegistry(Actors.ADMIN, 2 days);
     }
 
     function _labelActors() private {
@@ -173,6 +179,7 @@ contract BaseTest is Test {
         vm.label(address(wstETH), "wstETH");
         vm.label(address(oracle), "oracle");
         vm.label(address(dex), "DEX");
+        vm.label(address(protocolRegistry), "ProtocolRegistry");
     }
 
     function _setDefaultPrices() private {

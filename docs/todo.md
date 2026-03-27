@@ -29,9 +29,9 @@ _Goal: All core protocol mechanics work end-to-end. Fee model, oracle, LP exits,
 
 _Single gov-upgradable contract that stores all protocol contract addresses. All other contracts reference this instead of storing individual addresses._
 
-- 🔲 `IProtocolRegistry` interface — getters for all protocol contracts (OracleVerifier, FeeCalculator, FeeAccrual, Market, VaultManager, LiquidationEngine, AssetRegistry, PaymentTokenRegistry)
-- 🔲 `ProtocolRegistry` implementation — admin-controlled address setters with timelock for critical changes (oracle, fee calculator)
-- 🔲 Refactor existing contracts to read addresses from ProtocolRegistry instead of immutable/stored references
+- ✅ `IProtocolRegistry` interface — getters for all protocol contracts (OracleVerifier, FeeCalculator, FeeAccrual, Market, VaultManager, LiquidationEngine, AssetRegistry, PaymentTokenRegistry, Treasury)
+- ✅ `ProtocolRegistry` implementation — admin-controlled address setters with timelock for all changes, immediate first-time init when slot is address(0)
+- ✅ Refactor existing contracts to read addresses from ProtocolRegistry instead of immutable/stored references
 - 🔲 Unit tests for ProtocolRegistry (address setting, access control, timelock)
 
 ### 1.2 Fee Model — Per-Asset Mint & Redemption Fees

@@ -23,18 +23,19 @@ contract OwnVaultTest is BaseTest {
     function setUp() public override {
         super.setUp();
 
-        vm.prank(Actors.ADMIN);
+        vm.startPrank(Actors.ADMIN);
+        protocolRegistry.setAddress(protocolRegistry.MARKET(), mockMarket);
+        protocolRegistry.setAddress(protocolRegistry.TREASURY(), Actors.FEE_RECIPIENT);
         vault = new OwnVault(
             address(usdc),
             "Own USDC Vault",
             "oUSDC",
-            Actors.ADMIN,
-            mockMarket,
-            Actors.FEE_RECIPIENT,
+            address(protocolRegistry),
             INITIAL_MAX_UTIL,
             INITIAL_AUM_FEE,
             INITIAL_RESERVE_FACTOR
         );
+        vm.stopPrank();
         vm.label(address(vault), "OwnVault-USDC");
     }
 
@@ -387,7 +388,7 @@ contract OwnVaultTest is BaseTest {
     }
 
     function test_treasury_returnsCorrectAddress() public view {
-        assertEq(vault.treasury(), Actors.FEE_RECIPIENT);
+        assertEq(protocolRegistry.treasury(), Actors.FEE_RECIPIENT);
     }
 
     // ──────────────────────────────────────────────────────────
