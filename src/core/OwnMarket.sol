@@ -52,6 +52,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
     mapping(uint256 => uint256[]) private _orderClaims; // orderId → claimIds
     mapping(bytes32 => uint256[]) private _openOrders; // asset → orderIds
     mapping(address => uint256[]) private _userOrders; // user → orderIds
+    mapping(uint256 => uint256) private _claimMintFees; // claimId → escrowed mint fee amount
 
     // ──────────────────────────────────────────────────────────
     //  Constructor
@@ -212,9 +213,14 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
 
         _orderClaims[orderId].push(claimId);
 
-        // For mint orders, release stablecoins to VM
+        // For mint orders, calculate fee, hold it in escrow, release net to VM
         if (order.orderType == OrderType.Mint) {
-            IERC20(order.stablecoin).safeTransfer(msg.sender, amount);
+            uint256 feeBps = IFeeCalculator(registry.feeCalculator()).getMintFee(order.asset, amount);
+            // Round fee up (protocol-favorable)
+            uint256 feeAmount = Math.mulDiv(amount, feeBps, BPS, Math.Rounding.Ceil);
+            _claimMintFees[claimId] = feeAmount;
+
+            IERC20(order.stablecoin).safeTransfer(msg.sender, amount - feeAmount);
         }
 
         emit OrderClaimed(orderId, claimId, msg.sender, amount);
@@ -372,16 +378,12 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         uint256 executionPrice,
         uint256 vmSpread
     ) private returns (uint256 eTokenAmount, uint256 spreadAmount) {
-        // Deduct protocol fee from stablecoin amount before eToken calculation.
-        // VM received claim.amount stablecoins at claim time; fee is pulled back from VM.
-        uint256 feeBps = IFeeCalculator(registry.feeCalculator()).getMintFee(order.asset, claim.amount);
-        // Round fee up (protocol-favorable)
-        uint256 feeAmount = Math.mulDiv(claim.amount, feeBps, BPS, Math.Rounding.Ceil);
+        // Fee was held in escrow at claim time — transfer it to FeeAccrual now
+        uint256 feeAmount = _claimMintFees[claim.claimId];
         uint256 netAmount = claim.amount - feeAmount;
 
-        // Pull fee from VM and send to FeeAccrual
         if (feeAmount > 0) {
-            IERC20(order.stablecoin).safeTransferFrom(claim.vm, registry.feeAccrual(), feeAmount);
+            IERC20(order.stablecoin).safeTransfer(registry.feeAccrual(), feeAmount);
             emit FeeCollected(claim.orderId, claim.claimId, order.stablecoin, feeAmount);
         }
 

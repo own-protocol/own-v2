@@ -755,24 +755,25 @@ contract OwnMarketTest is BaseTest {
         uint256 stablecoinAmount = 1000e6; // 1000 USDC
         uint256 orderId = _placeMintOrder(Actors.MINTER1, stablecoinAmount);
 
-        vm.prank(Actors.VM1);
-        uint256 claimId = market.claimOrder(orderId, stablecoinAmount);
-
-        // VM must approve market to pull the fee back
-        vm.prank(Actors.VM1);
-        usdc.approve(address(market), type(uint256).max);
-
-        vm.prank(Actors.VM1);
-        market.confirmOrder(claimId, _emptyPriceData());
-
         // Fee = ceil(1000e6 * 50 / 10000) = 5e6 (5 USDC)
         uint256 expectedFee = Math.mulDiv(stablecoinAmount, 50, BPS, Math.Rounding.Ceil);
         assertEq(expectedFee, 5e6);
 
-        // FeeAccrual should have received the fee
-        assertEq(usdc.balanceOf(mockFeeAccrual), expectedFee);
+        vm.prank(Actors.VM1);
+        uint256 claimId = market.claimOrder(orderId, stablecoinAmount);
 
-        // Minter eTokens should be computed from net amount (1000 - 5 = 995 USDC)
+        // VM receives net amount at claim time; fee held in market escrow
+        assertEq(usdc.balanceOf(Actors.VM1), stablecoinAmount - expectedFee);
+        assertEq(usdc.balanceOf(address(market)), expectedFee);
+
+        vm.prank(Actors.VM1);
+        market.confirmOrder(claimId, _emptyPriceData());
+
+        // Fee transferred from escrow to FeeAccrual on confirm
+        assertEq(usdc.balanceOf(mockFeeAccrual), expectedFee);
+        assertEq(usdc.balanceOf(address(market)), 0);
+
+        // Minter eTokens computed from net amount (1000 - 5 = 995 USDC)
         uint256 netAmount = stablecoinAmount - expectedFee;
         uint256 effectivePrice = Math.mulDiv(TSLA_PRICE, BPS + VM_SPREAD, BPS);
         uint256 expectedETokens = Math.mulDiv(netAmount * 1e12, PRECISION, effectivePrice);
@@ -807,10 +808,6 @@ contract OwnMarketTest is BaseTest {
 
         vm.prank(Actors.VM1);
         uint256 claimId = market.claimOrder(orderId, stablecoinAmount);
-
-        // VM must approve market to pull the fee back
-        vm.prank(Actors.VM1);
-        usdc.approve(address(market), type(uint256).max);
 
         uint256 expectedFee = Math.mulDiv(stablecoinAmount, 100, BPS, Math.Rounding.Ceil);
 
@@ -928,10 +925,6 @@ contract OwnMarketTest is BaseTest {
 
         vm.prank(Actors.VM1);
         uint256 claimId = market.claimOrder(orderId, stablecoinAmount);
-
-        // VM approves market to pull fee
-        vm.prank(Actors.VM1);
-        usdc.approve(address(market), type(uint256).max);
 
         vm.prank(Actors.VM1);
         market.confirmOrder(claimId, _emptyPriceData());
