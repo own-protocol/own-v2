@@ -28,7 +28,11 @@ contract WETHRouterTest is BaseTest {
         mockWeth = new MockWETH();
         vm.label(address(mockWeth), "MockWETH");
 
-        // Deploy a WETH vault
+        // Deploy the router first so we can use its address as the bound VM
+        router = new WETHRouter(address(mockWeth));
+        vm.label(address(router), "WETHRouter");
+
+        // Deploy a WETH vault with router as the bound VM (router calls deposit directly)
         vm.startPrank(Actors.ADMIN);
         protocolRegistry.setAddress(protocolRegistry.MARKET(), mockMarket);
         protocolRegistry.setAddress(protocolRegistry.TREASURY(), Actors.FEE_RECIPIENT);
@@ -37,16 +41,12 @@ contract WETHRouterTest is BaseTest {
             "Own WETH Vault",
             "oWETH",
             address(protocolRegistry),
+            address(router), // bound VM is the router (it calls deposit directly)
             8000, // 80% max util
-            50, // 0.5% AUM fee
-            1000 // 10% reserve factor
+            50 // 0.5% AUM fee
         );
         vm.stopPrank();
         vm.label(address(vault), "OwnVault-WETH");
-
-        // Deploy the router
-        router = new WETHRouter(address(mockWeth));
-        vm.label(address(router), "WETHRouter");
     }
 
     // ──────────────────────────────────────────────────────────

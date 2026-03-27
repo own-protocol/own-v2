@@ -48,7 +48,7 @@ contract LiquidationFlowTest is BaseTest {
 
         // Deploy contracts with registry
         market = new OwnMarket(address(protocolRegistry));
-        vaultMgr = new VaultManager(Actors.ADMIN, address(protocolRegistry), 30);
+        vaultMgr = new VaultManager(Actors.ADMIN, address(protocolRegistry));
         liquidationEngine = new LiquidationEngine(address(protocolRegistry), address(dex));
 
         // Register market, vault manager, and liquidation engine
@@ -56,7 +56,8 @@ contract LiquidationFlowTest is BaseTest {
         protocolRegistry.setAddress(protocolRegistry.VAULT_MANAGER(), address(vaultMgr));
         protocolRegistry.setAddress(protocolRegistry.LIQUIDATION_ENGINE(), address(liquidationEngine));
 
-        usdcVault = new OwnVault(address(usdc), "Own USDC Vault", "oUSDC", address(protocolRegistry), 8000, 0, 1000);
+        usdcVault =
+            new OwnVault(address(usdc), "Own USDC Vault", "oUSDC", address(protocolRegistry), Actors.VM1, 8000, 0);
 
         eTSLA = new EToken("Own Tesla", "eTSLA", TSLA, address(protocolRegistry), address(usdc));
 
@@ -69,9 +70,9 @@ contract LiquidationFlowTest is BaseTest {
 
         vm.label(address(liquidationEngine), "LiquidationEngine");
 
-        // LP deposits collateral
-        _fundUSDC(Actors.LP1, LP_DEPOSIT);
-        vm.startPrank(Actors.LP1);
+        // LP deposits collateral (via VM1)
+        _fundUSDC(Actors.VM1, LP_DEPOSIT);
+        vm.startPrank(Actors.VM1);
         usdc.approve(address(usdcVault), LP_DEPOSIT);
         usdcVault.deposit(LP_DEPOSIT, Actors.LP1);
         vm.stopPrank();

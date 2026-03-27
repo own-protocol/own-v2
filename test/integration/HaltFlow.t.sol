@@ -45,13 +45,14 @@ contract HaltFlowTest is BaseTest {
 
         // Deploy contracts with registry
         market = new OwnMarket(address(protocolRegistry));
-        vaultMgr = new VaultManager(Actors.ADMIN, address(protocolRegistry), 30);
+        vaultMgr = new VaultManager(Actors.ADMIN, address(protocolRegistry));
 
         // Register market and vault manager
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
         protocolRegistry.setAddress(protocolRegistry.VAULT_MANAGER(), address(vaultMgr));
 
-        usdcVault = new OwnVault(address(usdc), "Own USDC Vault", "oUSDC", address(protocolRegistry), 8000, 50, 1000);
+        usdcVault =
+            new OwnVault(address(usdc), "Own USDC Vault", "oUSDC", address(protocolRegistry), Actors.VM1, 8000, 50);
 
         eTSLA = new EToken("Own Tesla", "eTSLA", TSLA, address(protocolRegistry), address(usdc));
 
@@ -62,9 +63,9 @@ contract HaltFlowTest is BaseTest {
 
         vm.stopPrank();
 
-        // LP deposits
-        _fundUSDC(Actors.LP1, LP_DEPOSIT);
-        vm.startPrank(Actors.LP1);
+        // LP deposits (via VM1)
+        _fundUSDC(Actors.VM1, LP_DEPOSIT);
+        vm.startPrank(Actors.VM1);
         usdc.approve(address(usdcVault), LP_DEPOSIT);
         usdcVault.deposit(LP_DEPOSIT, Actors.LP1);
         vm.stopPrank();
@@ -81,8 +82,8 @@ contract HaltFlowTest is BaseTest {
         assertEq(uint8(usdcVault.vaultStatus()), uint8(VaultStatus.Halted));
 
         // Deposits should revert when halted
-        _fundUSDC(Actors.LP2, 1000e6);
-        vm.startPrank(Actors.LP2);
+        _fundUSDC(Actors.VM1, 1000e6);
+        vm.startPrank(Actors.VM1);
         usdc.approve(address(usdcVault), 1000e6);
         vm.expectRevert(abi.encodeWithSignature("VaultIsHalted()"));
         usdcVault.deposit(1000e6, Actors.LP2);
@@ -114,9 +115,9 @@ contract HaltFlowTest is BaseTest {
         assertEq(uint8(usdcVault.vaultStatus()), uint8(VaultStatus.Active));
         vm.stopPrank();
 
-        // Deposits work again
-        _fundUSDC(Actors.LP2, 1000e6);
-        vm.startPrank(Actors.LP2);
+        // Deposits work again (via VM1)
+        _fundUSDC(Actors.VM1, 1000e6);
+        vm.startPrank(Actors.VM1);
         usdc.approve(address(usdcVault), 1000e6);
         usdcVault.deposit(1000e6, Actors.LP2);
         vm.stopPrank();
@@ -179,9 +180,9 @@ contract HaltFlowTest is BaseTest {
         assertEq(usdcVault.maxDeposit(Actors.LP1), 0);
         assertEq(usdcVault.maxMint(Actors.LP1), 0);
 
-        // Deposits revert
-        _fundUSDC(Actors.LP2, 1000e6);
-        vm.startPrank(Actors.LP2);
+        // Deposits revert (via VM1)
+        _fundUSDC(Actors.VM1, 1000e6);
+        vm.startPrank(Actors.VM1);
         usdc.approve(address(usdcVault), 1000e6);
         vm.expectRevert(abi.encodeWithSignature("VaultIsWindingDown()"));
         usdcVault.deposit(1000e6, Actors.LP2);
@@ -257,9 +258,9 @@ contract HaltFlowTest is BaseTest {
 
         vm.stopPrank();
 
-        // Deposits work after cycle
-        _fundUSDC(Actors.LP2, 1000e6);
-        vm.startPrank(Actors.LP2);
+        // Deposits work after cycle (via VM1)
+        _fundUSDC(Actors.VM1, 1000e6);
+        vm.startPrank(Actors.VM1);
         usdc.approve(address(usdcVault), 1000e6);
         usdcVault.deposit(1000e6, Actors.LP2);
         vm.stopPrank();

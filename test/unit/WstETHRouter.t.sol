@@ -28,20 +28,20 @@ contract WstETHRouterTest is BaseTest {
         vm.startPrank(Actors.ADMIN);
         protocolRegistry.setAddress(protocolRegistry.MARKET(), mockMarket);
         protocolRegistry.setAddress(protocolRegistry.TREASURY(), Actors.FEE_RECIPIENT);
+        // Deploy the router first so we can set it as the vault's VM
+        router = new WstETHRouter(address(wstETH), address(stETH));
+
+        // Deploy a wstETH vault with router as the bound VM (router calls deposit directly)
         vault = new OwnVault(
             address(wstETH),
             "Own wstETH Vault",
             "owstETH",
             address(protocolRegistry),
+            address(router), // bound VM is the router (it calls deposit directly)
             8000, // 80% max util
-            50, // 0.5% AUM fee
-            1000 // 10% reserve factor
+            50 // 0.5% AUM fee
         );
         vm.stopPrank();
-        vm.label(address(vault), "OwnVault-wstETH");
-
-        // Deploy the router
-        router = new WstETHRouter(address(wstETH), address(stETH));
         vm.label(address(router), "WstETHRouter");
     }
 

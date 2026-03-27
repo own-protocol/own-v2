@@ -3,10 +3,10 @@ pragma solidity 0.8.28;
 
 import {VMConfig} from "./types/Types.sol";
 
-/// @title IVaultManager — Vault manager registration, delegation, and configuration
+/// @title IVaultManager — Vault manager registration and configuration
 /// @notice Manages the lifecycle of vault managers: registration with a vault,
-///         spread and exposure settings, stablecoin acceptance, per-asset
-///         off-market toggles, and the LP → VM delegation flow (propose / accept).
+///         exposure settings, stablecoin acceptance, and per-asset off-market toggles.
+///         Each VM is bound 1:1 to a single vault.
 interface IVaultManager {
     // ──────────────────────────────────────────────────────────
     //  Events
@@ -22,11 +22,11 @@ interface IVaultManager {
     /// @param vault Vault address.
     event VaultManagerDeregistered(address indexed vm, address indexed vault);
 
-    /// @notice Emitted when a VM updates their spread.
-    /// @param vm        Vault manager address.
-    /// @param oldSpread Previous spread in BPS.
-    /// @param newSpread New spread in BPS.
-    event SpreadUpdated(address indexed vm, uint256 oldSpread, uint256 newSpread);
+    /// @notice Emitted when a VM creates a new vault (future use).
+    /// @param vm         Vault manager address.
+    /// @param vault      Vault address.
+    /// @param collateral Collateral token address.
+    event VaultCreated(address indexed vm, address indexed vault, address indexed collateral);
 
     /// @notice Emitted when a VM updates their exposure caps.
     /// @param vm                   Vault manager address.
@@ -51,21 +51,6 @@ interface IVaultManager {
     /// @param enabled Whether off-market execution is enabled.
     event AssetOffMarketToggled(address indexed vm, bytes32 indexed asset, bool enabled);
 
-    /// @notice Emitted when an LP proposes delegation to a VM.
-    /// @param lp LP address.
-    /// @param vm Target vault manager.
-    event DelegationProposed(address indexed lp, address indexed vm);
-
-    /// @notice Emitted when a VM accepts an LP's delegation proposal.
-    /// @param lp LP address.
-    /// @param vm Vault manager address.
-    event DelegationAccepted(address indexed lp, address indexed vm);
-
-    /// @notice Emitted when a delegation is removed.
-    /// @param lp LP address.
-    /// @param vm Vault manager address.
-    event DelegationRemoved(address indexed lp, address indexed vm);
-
     /// @notice Emitted when a VM pauses or resumes participation.
     /// @param vm     Vault manager address.
     /// @param active Whether the VM is now active.
@@ -81,8 +66,11 @@ interface IVaultManager {
     /// @notice The vault manager is not registered.
     error VMNotRegistered(address vm);
 
-    /// @notice The spread is below the protocol-enforced minimum.
-    error SpreadBelowMinimum(uint256 spread, uint256 minSpread);
+    /// @notice The vault already has a VM bound to it.
+    error VMAlreadyHasVault(address vm);
+
+    /// @notice The vault is already bound to another VM.
+    error VaultAlreadyHasVM(address vault);
 
     /// @notice The VM's current exposure exceeds its cap.
     error ExposureCapExceeded(address vm, uint256 currentExposure, uint256 maxExposure);
@@ -90,20 +78,8 @@ interface IVaultManager {
     /// @notice The VM does not accept the given payment token.
     error PaymentTokenNotAccepted(address vm, address token);
 
-    /// @notice No delegation proposal exists from this LP to this VM.
-    error DelegationNotProposed(address lp, address vm);
-
-    /// @notice The LP is already delegated to a VM.
-    error AlreadyDelegated(address lp);
-
-    /// @notice The LP is not delegated to the given VM.
-    error NotDelegatedToVM(address lp, address vm);
-
     /// @notice A zero address was provided.
     error ZeroAddress();
-
-    /// @notice Invalid spread value (e.g. exceeds BPS).
-    error InvalidSpread();
 
     /// @notice The VM is not active (paused).
     error VMNotActive(address vm);
@@ -113,6 +89,7 @@ interface IVaultManager {
     // ──────────────────────────────────────────────────────────
 
     /// @notice Register the caller as a vault manager for a specific vault.
+    /// @dev Enforces 1:1 binding between VMs and vaults.
     /// @param vault Vault address to register with.
     function registerVM(
         address vault
@@ -124,12 +101,6 @@ interface IVaultManager {
     // ──────────────────────────────────────────────────────────
     //  VM configuration
     // ──────────────────────────────────────────────────────────
-
-    /// @notice Set the caller's spread. Must be >= minSpread.
-    /// @param spreadBps Spread in basis points.
-    function setSpread(
-        uint256 spreadBps
-    ) external;
 
     /// @notice Set the caller's exposure caps.
     /// @param maxExposure          Max USD notional (18 decimals).
@@ -147,31 +118,11 @@ interface IVaultManager {
     function setAssetOffMarketEnabled(bytes32 asset, bool enabled) external;
 
     /// @notice Pause or resume the caller's participation in order claiming.
-    /// @dev When inactive, the VM cannot claim new orders but existing claims
-    ///      and delegations remain intact.
+    /// @dev When inactive, the VM cannot claim new orders but existing claims remain intact.
     /// @param active Whether the VM should be active.
     function setVMActive(
         bool active
     ) external;
-
-    // ──────────────────────────────────────────────────────────
-    //  Delegation
-    // ──────────────────────────────────────────────────────────
-
-    /// @notice LP proposes delegation to a vault manager.
-    /// @param vm Target vault manager address.
-    function proposeDelegation(
-        address vm
-    ) external;
-
-    /// @notice VM accepts an LP's delegation proposal.
-    /// @param lp LP address whose proposal to accept.
-    function acceptDelegation(
-        address lp
-    ) external;
-
-    /// @notice LP removes their active delegation.
-    function removeDelegation() external;
 
     // ──────────────────────────────────────────────────────────
     //  Exposure tracking (restricted caller — OwnMarket)
@@ -183,22 +134,8 @@ interface IVaultManager {
     function updateExposure(address vm, int256 delta) external;
 
     // ──────────────────────────────────────────────────────────
-    //  Admin functions
-    // ──────────────────────────────────────────────────────────
-
-    /// @notice Set the protocol-enforced minimum spread.
-    /// @param minSpreadBps Minimum spread in basis points.
-    function setMinSpread(
-        uint256 minSpreadBps
-    ) external;
-
-    // ──────────────────────────────────────────────────────────
     //  View functions
     // ──────────────────────────────────────────────────────────
-
-    /// @notice Return the protocol-enforced minimum spread.
-    /// @return Minimum spread in BPS.
-    function minSpread() external view returns (uint256);
 
     /// @notice Return the full configuration for a vault manager.
     /// @param vm Vault manager address.
@@ -214,11 +151,11 @@ interface IVaultManager {
         address vm
     ) external view returns (address vault);
 
-    /// @notice Return the VM an LP has delegated to.
-    /// @param lp LP address.
-    /// @return vm The delegated vault manager (address(0) if none).
-    function getDelegatedVM(
-        address lp
+    /// @notice Return the VM bound to a specific vault (reverse lookup).
+    /// @param vault Vault address.
+    /// @return vm The vault manager address (address(0) if none).
+    function getVaultVM(
+        address vault
     ) external view returns (address vm);
 
     /// @notice Check whether a VM accepts a specific payment token.
@@ -232,11 +169,4 @@ interface IVaultManager {
     /// @param asset Asset ticker.
     /// @return True if off-market execution is enabled.
     function isAssetOffMarketEnabled(address vm, bytes32 asset) external view returns (bool);
-
-    /// @notice Return all LP addresses currently delegated to a vault manager.
-    /// @param vm Vault manager address.
-    /// @return lps Array of delegated LP addresses.
-    function getDelegatedLPs(
-        address vm
-    ) external view returns (address[] memory lps);
 }

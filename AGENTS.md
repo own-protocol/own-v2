@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Own Protocol is a permissionless protocol for fully collateralised tokenized real-world asset (RWA) exposure onchain. Users mint composable ERC20 eTokens (eTSLA, eGOLD, eTLT) by placing orders in an escrow + claim marketplace. Minters pay in any supported stablecoin (USDC, USDT, USDS) — stablecoins go to vault managers (VMs) for offchain hedge execution. LP collateral in vaults (USDC, aUSDC, ETH, stETH) acts as trustless onchain security. Multiple LPs deposit into vaults and receive ERC-4626 shares. VMs compete openly to claim and fulfill orders. Built on Base (Ethereum L2) with Foundry.
+Own Protocol is a permissionless protocol for fully collateralised tokenized real-world asset (RWA) exposure onchain. Users mint composable ERC20 eTokens (eTSLA, eGOLD, eTLT) by placing orders in an escrow + claim marketplace. Minters pay in any supported stablecoin (USDC, USDT, USDS) — stablecoins go to vault managers (VMs) for offchain hedge execution. LP collateral in vaults (USDC, aUSDC, ETH, stETH) acts as trustless onchain security. Multiple LPs deposit into vaults and receive ERC-4626 shares. VMs across different vaults compete openly to claim and fulfill orders. Built on Base (Ethereum L2) with Foundry.
 
 This is a production DeFi protocol that will hold millions of dollars. Every line of code must be written with that assumption.
 
@@ -52,7 +52,7 @@ See `docs/Own_Protocol_Vision.md` for full product vision and `docs/Own_Protocol
 
 ### High-Level Architecture
 
-The protocol is organised around an order-based escrow + claim marketplace, per-collateral-type security vaults, and multiple competing vault managers. Specific contract files and structure will be defined as implementation progresses. The key architectural components are:
+The protocol is organised around an order-based escrow + claim marketplace, per-collateral-type security vaults, and vault managers. Specific contract files and structure will be defined as implementation progresses. The key architectural components are:
 
 **Order Escrow + Claim Marketplace:**
 - Minters place orders (market with slippage, or limit price) depositing stablecoins into escrow.
@@ -71,15 +71,15 @@ The protocol is organised around an order-based escrow + claim marketplace, per-
 
 **Public vaults with multiple LPs:**
 - All vaults are public. Any LP can deposit collateral into any vault.
-- ERC-4626 is used for LP share accounting. LPs receive vault shares proportional to their deposit. Share price increases as yield accrues (for aUSDC, stETH vaults) and as spread revenue is distributed.
+- LP deposits use an async request/accept queue. LP requests deposit, VM accepts, shares are minted.
+- ERC-4626 is used for LP share accounting. LPs receive vault shares proportional to their deposit. Share price increases as yield accrues (for aUSDC, stETH vaults) and as fee revenue is distributed.
+- LPs can also be their own vault manager (LP creates a vault with themselves as VM and can deposit directly).
 - LP withdrawals use an async FIFO queue (ERC-7540 pattern), fulfilled when utilization allows.
 
-**Vault managers (multiple per vault):**
-- Multiple vault managers can register with each vault.
-- LPs delegate to a chosen vault manager via mutual agreement: the LP sets their preferred manager, and the manager accepts the delegation.
-- LPs can also be their own vault manager (self-delegation, same interface, same infrastructure requirements).
+**Vault managers (1:1 per vault):**
+- Each vault has exactly one vault manager (1:1 binding). VMs create their vault.
 - Vault managers claim orders from the escrow marketplace and execute offchain hedging. There is no onchain hedging mechanism.
-- Each vault manager sets their own spread (>= minSpread), exposure caps, accepted stablecoins, and per-asset off-hours toggles.
+- Each vault manager sets exposure caps, accepted stablecoins, and per-asset off-hours toggles.
 
 **eTokens:**
 - Each asset has one active eToken (eTSLA, eGOLD, etc.) plus possible legacy tokens from stock splits.
@@ -157,7 +157,7 @@ script/
 - Functions: `camelCase` (e.g., `mintAsset`, `getHealthFactor`)
 - State variables: `camelCase` (e.g., `totalCollateral`)
 - Private/internal state: `_underscorePrefixed` (e.g., `_assetConfigs`)
-- Constants: `UPPER_SNAKE_CASE` (e.g., `MAX_SPREAD_BPS`, `PRECISION`)
+- Constants: `UPPER_SNAKE_CASE` (e.g., `MAX_FEE_BPS`, `PRECISION`)
 - Immutables: `UPPER_SNAKE_CASE` for true constants, `camelCase` if constructor-set
 - Events: `PascalCase` past tense (e.g., `AssetMinted`, `CollateralDeposited`)
 - Errors: `PascalCase` descriptive (e.g., `InsufficientCollateral`, `StalePrice`, `Unauthorized`)
@@ -239,7 +239,7 @@ Do NOT add dependencies without discussion. Every dependency is attack surface. 
 - Test complete flows: LP deposits collateral → LP receives vault shares → minter mints eToken → minter redeems → LP withdraws
 - Use real contract instances (not mocks)
 - Test multi-actor scenarios: multiple LPs, multiple vault managers, multiple minters, multiple assets, concurrent operations
-- Test delegation flows: LP delegates to vault manager, vault manager accepts, vault manager handles parameters
+- Test async deposit flows: LP requests deposit, VM accepts, shares minted
 - Test state transitions: active → halted → active
 
 ### Invariant Tests (`test/invariant/`)
@@ -250,10 +250,8 @@ Do NOT add dependencies without discussion. Every dependency is attack surface. 
   - `sum(all eToken supplies) == sum(vault.mintedNotional for each asset)` (eToken accounting)
   - `eToken.totalSupply() >= 0` (no negative supply — sounds obvious, test it)
   - After any operation: `vault health factor >= 1.0` OR `vault is halted`
-  - `sum(delegated LP shares per manager) == total delegated shares` (delegation accounting)
-  - Spread applied is always >= `minSpread` (spread floor invariant)
 - Use Foundry's invariant testing framework with handler contracts
-- Handler contracts should exercise: deposit, withdraw, mint eToken, redeem eToken, delegate to vault manager, set spread, halt vault
+- Handler contracts should exercise: deposit, withdraw, mint eToken, redeem eToken, halt vault
 - Run with `forge test --fuzz-runs 10000` for pre-audit
 
 ### Fork Tests (`test/fork/`)
@@ -282,7 +280,7 @@ Do NOT add dependencies without discussion. Every dependency is attack surface. 
 Contracts should implement or be compatible with these standards where applicable:
 
 - **ERC-20 + ERC-2612 (Permit)**: eToken. Use OpenZeppelin's `ERC20Permit`. Enables single-tx mint flows.
-- **ERC-4626 (Tokenized Vaults)**: Used for LP share accounting in all vaults. Each vault is an ERC-4626 vault where the underlying asset is the collateral type (USDC, aUSDC, WETH, wstETH). Share price naturally appreciates for yield-bearing collateral (aUSDC, stETH) and as spread revenue is distributed.
+- **ERC-4626 (Tokenized Vaults)**: Used for LP share accounting in all vaults. Each vault is an ERC-4626 vault where the underlying asset is the collateral type (USDC, aUSDC, WETH, wstETH). Share price naturally appreciates for yield-bearing collateral (aUSDC, stETH) and as fee revenue is distributed.
 - **ERC-7540 (Async Vaults)**: Design pattern for non-market-hours redemption queue (future consideration). Keep the interface compatible.
 - **ERC-7575 (Multi-Asset Vaults)**: Relevant for multi-collateral vaults (future consideration). The eToken being external to the vault is already ERC-7575 aligned.
 - **ERC-7535 (Native Asset Vaults)**: For ETH collateral vaults (future consideration). Use via a router periphery contract.
@@ -292,9 +290,9 @@ When implementing, reference the EIP directly. Do not rely on memory — check t
 
 ## Fee Model & Slippage
 
-The protocol charges per-asset mint and redemption fees. Spread is the VM's margin, not protocol/LP revenue. Fees and slippage are cleanly separated concepts.
+The protocol charges per-asset mint and redemption fees. Fees are the sole protocol revenue. Fees and slippage are cleanly separated concepts.
 
-### Mint & Redemption Fees (Protocol/LP revenue)
+### Mint & Redemption Fees (Protocol revenue)
 
 - Per-asset fees based on the asset's `volatilityLevel` (1=low, 2=medium, 3=high).
 - Each asset's fee is set independently depending on volatility.
@@ -303,21 +301,15 @@ The protocol charges per-asset mint and redemption fees. Spread is the VM's marg
 - Applied at confirmation:
   - Mint: fee deducted from stablecoin amount before eToken calculation.
   - Redeem: fee deducted from stablecoin payout.
-- All fees accrue in `FeeAccrual` contract.
+- All fees are collected by the `FeeAccrual` contract.
 
 ### Fee Distribution
 
 Fees are split three ways:
 - **Protocol share**: set by governance (e.g., 20%). Goes to protocol treasury.
-- **LP share**: remainder after protocol share. Reflected in vault share price or claimable.
-- **VM share**: LPs decide how much of their share goes to VMs (can be zero).
-
-### Spread (VM-side, competitive margin)
-
-- Each VM sets their own spread onchain (BPS). Must be >= `minSpread` (protocol floor).
-- Spread is the VM's competitive margin — VMs keep their spread.
-- VMs compete on spread — lower spreads attract more orders.
-- Spread is NOT the protocol/LP revenue mechanism.
+- **LP share**: share of the remainder after protocol cut. Accrues to vault, increasing share price.
+- **VM share**: VM sets their cut of the remainder after protocol share.
+- Parties claim their accrued balance from `FeeAccrual`.
 
 ### Slippage (User-side, market orders only)
 
@@ -336,7 +328,7 @@ Fees are split three ways:
 ### Key Constants
 
 - Fees: defined in BPS (basis points). `10000` = 100%.
-- Precision constant: `1e18` for price math, `10000` (BPS) for fee/spread math.
+- Precision constant: `1e18` for price math, `10000` (BPS) for fee math.
 - USDC: 6 decimals. aUSDC: 6 decimals. ETH/WETH: 18 decimals. stETH/wstETH: 18 decimals. eTokens: 18 decimals. Prices: 18 decimals. Always be explicit about decimal conversions.
 
 ## Protocol Registry
@@ -392,9 +384,9 @@ Before any PR to `main`, mentally (or actually) run through this list for every 
 ### Trust Model
 
 - **Oracle signer**: Trusted (protocol-operated). Single signer for MVP, M-of-N later.
-- **Vault managers**: Semi-trusted. Multiple VMs can register per vault. They claim orders from the escrow marketplace, receive minter stablecoins, execute offchain hedges, and confirm with signed oracle prices. LPs choose which VM to delegate to (or self-delegate). VMs receive minter stablecoins on claim but LP collateral backstops any VM default.
-- **Protocol admin**: Multisig. Can whitelist assets and stablecoins, halt vaults, set `minSpread` and `maxUtilization`, rotate oracle signer, register/deregister vault managers.
-- **LPs**: Deposit collateral into public vaults as trustless security. Delegate to a vault manager of their choice. Submit async withdrawal requests (subject to utilisation limits). LP collateral is at risk if their delegated VM defaults.
+- **Vault managers**: Semi-trusted. Each vault has exactly one VM (1:1 binding). VMs claim orders from the marketplace, receive minter stablecoins, execute offchain hedges, and confirm with oracle prices. VMs receive minter stablecoins on claim but LP collateral backstops any VM default.
+- **Protocol admin**: Multisig. Can whitelist assets and stablecoins, halt vaults, set `maxUtilization`, rotate oracle signer, register/deregister vault managers.
+- **LPs**: Deposit collateral into public vaults as trustless security. Submit async deposit requests (accepted by VM) and async withdrawal requests (subject to utilisation limits). LP collateral is at risk if the vault's VM defaults.
 - **Minters**: Untrusted. Treat all minter input as adversarial. Minters interact via the escrow marketplace, not directly with vaults.
 
 ### Decimal Handling
@@ -421,10 +413,10 @@ Scan in this order. Stop and report any finding immediately.
 
 1. **Reentrancy**: State changes after external calls (token transfers). Verify CEI compliance and ReentrancyGuard usage.
 2. **Oracle manipulation**: Signed price validation, staleness checks, replay protection (chainId + contract address in signed message).
-3. **Access control**: Missing modifiers on state-changing functions, unprotected initialisers, privilege escalation paths. Check vault manager delegation logic for unauthorized actions.
+3. **Access control**: Missing modifiers on state-changing functions, unprotected initialisers, privilege escalation paths. Check vault manager authorization for unauthorized actions.
 4. **Arithmetic**: Rounding direction (protocol-favorable vs user-favorable), precision loss in mulDiv chains, unsafe casting between uint sizes. Check ERC-4626 share/asset conversions.
 5. **Token handling**: Missing SafeERC20, decimal mismatch between collateral types and eTokens, wstETH wrapping edge cases.
-6. **Delegation logic**: Can a vault manager act on behalf of LPs who have not delegated to them? Can delegation be manipulated?
+6. **VM authorization**: Can an unauthorized VM act on a vault? Is the 1:1 VM-vault binding enforced?
 7. **Front-running**: Mint/redeem with stale price, sandwich attacks on vault deposits/withdrawals.
 8. **DoS**: Unbounded loops, block gas limit, single-actor griefing (e.g., dust amounts blocking operations).
 9. **Flash loan**: Can flash-minted tokens manipulate vault health or oracle prices?
@@ -503,10 +495,8 @@ These must ALWAYS hold, regardless of operation sequence:
 - **ERC-4626 Accounting**: sum of all LP vault shares == vault.totalSupply(); vault.totalAssets() >= sum of all deposits minus withdrawals (accounting for yield)
 - **eToken Accounting**: eToken totalSupply matches protocol's tracked outstanding exposure per asset
 - **Escrow Integrity**: stablecoins in escrow + stablecoins released to VMs == total deposited by minters for pending orders; eTokens in escrow == total submitted for pending redemptions
-- **Delegation**: sum of delegated shares across all vault managers <= vault.totalSupply(); each LP is delegated to at most one vault manager
 - **Exposure Caps**: each VM's currentExposure <= maxExposure (and <= maxOffMarketExposure during off-hours)
 - **Health**: vault health factor >= 1.0 OR vault is halted
-- **Spread floor**: VM spread on any claimed order >= `minSpread`
 - **Utilisation cap**: vault utilisation <= `maxUtilization` for new order claims
 - **Access**: only authorised roles can call privileged functions
 - **Supply**: sum of all eToken holder balances == eToken.totalSupply() for every asset
@@ -549,9 +539,6 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
         ghost_totalRedeemed += amount;
     }
 
-    function delegateToManager(uint256 managerIndex) external {
-        // ... prank as LP, call vault.delegateTo(manager)
-    }
 }
 ```
 
@@ -603,7 +590,7 @@ slither src/ --config-file slither.config.json
 - [ ] Events emitted for every state change (needed for off-chain indexing)
 - [ ] ERC-4626 share/asset conversions tested for rounding correctness
 - [ ] wstETH wrap/unwrap logic tested for edge cases and rounding dust
-- [ ] Vault manager delegation logic tested for authorization edge cases
+- [ ] Vault manager authorization logic tested for edge cases
 
 ### Report Format
 

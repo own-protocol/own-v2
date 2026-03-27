@@ -49,12 +49,9 @@ contract MintFlowTest is BaseTest {
     //  Constants
     // ──────────────────────────────────────────────────────────
 
-    uint256 constant DEFAULT_SPREAD = 50; // 50 BPS = 0.5%
-    uint256 constant MIN_SPREAD = 30; // 30 BPS = 0.3%
     uint256 constant MAX_EXPOSURE = 10_000_000e18; // $10M
     uint256 constant MAX_UTIL_BPS = 8000; // 80%
     uint256 constant AUM_FEE_BPS = 50; // 0.5%
-    uint256 constant RESERVE_FACTOR_BPS = 1000; // 10%
     uint256 constant LP_DEPOSIT = 1_000_000e6; // 1M USDC
     uint256 constant MINT_AMOUNT = 10_000e6; // 10k USDC
 
@@ -98,21 +95,15 @@ contract MintFlowTest is BaseTest {
 
         // 3. Deploy contracts with registry
         market = new OwnMarket(address(protocolRegistry));
-        vaultMgr = new VaultManager(Actors.ADMIN, address(protocolRegistry), MIN_SPREAD);
+        vaultMgr = new VaultManager(Actors.ADMIN, address(protocolRegistry));
 
         // 4. Register market and vault manager
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
         protocolRegistry.setAddress(protocolRegistry.VAULT_MANAGER(), address(vaultMgr));
 
-        // 5. Deploy USDC vault
+        // 5. Deploy USDC vault (bound to VM1)
         usdcVault = new OwnVault(
-            address(usdc),
-            "Own USDC Vault",
-            "oUSDC",
-            address(protocolRegistry),
-            MAX_UTIL_BPS,
-            AUM_FEE_BPS,
-            RESERVE_FACTOR_BPS
+            address(usdc), "Own USDC Vault", "oUSDC", address(protocolRegistry), Actors.VM1, MAX_UTIL_BPS, AUM_FEE_BPS
         );
 
         vm.stopPrank();
@@ -158,29 +149,22 @@ contract MintFlowTest is BaseTest {
         vm.stopPrank();
     }
 
-    /// @dev Register VM1, set spread/exposure, accept payment tokens.
+    /// @dev Register VM1, set exposure, accept payment tokens.
     function _configureVaultManager() private {
         // VM1 registers with USDC vault
         vm.startPrank(Actors.VM1);
         vaultMgr.registerVM(address(usdcVault));
-        vaultMgr.setSpread(DEFAULT_SPREAD);
         vaultMgr.setExposureCaps(MAX_EXPOSURE, MAX_EXPOSURE / 2);
         vaultMgr.setPaymentTokenAcceptance(address(usdc), true);
         vaultMgr.setPaymentTokenAcceptance(address(usdt), true);
         vm.stopPrank();
-
-        // LP1 proposes delegation to VM1, VM1 accepts
-        vm.prank(Actors.LP1);
-        vaultMgr.proposeDelegation(Actors.VM1);
-        vm.prank(Actors.VM1);
-        vaultMgr.acceptDelegation(Actors.LP1);
     }
 
-    /// @dev LP1 deposits collateral into the USDC vault.
+    /// @dev LP1 deposits collateral into the USDC vault via VM (onlyVM).
     function _depositLPCollateral() private {
-        _fundUSDC(Actors.LP1, LP_DEPOSIT);
+        _fundUSDC(Actors.VM1, LP_DEPOSIT);
 
-        vm.startPrank(Actors.LP1);
+        vm.startPrank(Actors.VM1);
         usdc.approve(address(usdcVault), LP_DEPOSIT);
         usdcVault.deposit(LP_DEPOSIT, Actors.LP1);
         vm.stopPrank();
@@ -263,9 +247,8 @@ contract MintFlowTest is BaseTest {
         order = market.getOrder(orderId);
         assertEq(uint8(order.status), uint8(OrderStatus.Confirmed));
 
-        // Verify minter received eTokens with correct spread-adjusted amount
-        uint256 effectivePrice = Math.mulDiv(TSLA_PRICE, BPS + DEFAULT_SPREAD, BPS);
-        uint256 expectedETokens = Math.mulDiv(MINT_AMOUNT * 1e12, PRECISION, effectivePrice);
+        // Verify minter received eTokens at oracle price (no spread)
+        uint256 expectedETokens = Math.mulDiv(MINT_AMOUNT * 1e12, PRECISION, TSLA_PRICE);
         assertEq(eTSLA.balanceOf(Actors.MINTER1), expectedETokens, "minter received correct eTokens");
         assertGt(expectedETokens, 0, "eToken amount is non-zero");
     }
@@ -317,26 +300,17 @@ contract MintFlowTest is BaseTest {
         ClaimInfo memory claim = market.getClaim(claimId);
         assertTrue(claim.confirmed);
 
-        // Verify minter received eTokens
-        uint256 effectivePrice = Math.mulDiv(TSLA_PRICE, BPS + DEFAULT_SPREAD, BPS);
-        uint256 expectedETokens = Math.mulDiv(MINT_AMOUNT * 1e12, PRECISION, effectivePrice);
+        // Verify minter received eTokens at oracle price (no spread)
+        uint256 expectedETokens = Math.mulDiv(MINT_AMOUNT * 1e12, PRECISION, TSLA_PRICE);
         assertEq(eTSLA.balanceOf(Actors.MINTER1), expectedETokens, "minter received eTokens");
     }
 
     // ══════════════════════════════════════════════════════════
-    //  Test: Partial fill — two VMs claim portions
+    //  Test: Partial fill — VM claims portions
     // ══════════════════════════════════════════════════════════
 
     function test_fullMintFlow_partialFill() public {
         _fundUSDC(Actors.MINTER1, MINT_AMOUNT);
-
-        // Register VM2
-        vm.startPrank(Actors.VM2);
-        vaultMgr.registerVM(address(usdcVault));
-        vaultMgr.setSpread(DEFAULT_SPREAD);
-        vaultMgr.setExposureCaps(MAX_EXPOSURE, MAX_EXPOSURE / 2);
-        vaultMgr.setPaymentTokenAcceptance(address(usdc), true);
-        vm.stopPrank();
 
         // Minter places open order allowing partial fills
         vm.startPrank(Actors.MINTER1);
@@ -369,17 +343,17 @@ contract MintFlowTest is BaseTest {
         // VM1 received half the stablecoins
         assertEq(usdc.balanceOf(Actors.VM1), halfAmount);
 
-        // VM2 claims second half
-        vm.prank(Actors.VM2);
+        // VM1 claims second half
+        vm.prank(Actors.VM1);
         uint256 claimId2 = market.claimOrder(orderId, halfAmount);
 
         // Verify fully claimed
         order = market.getOrder(orderId);
         assertEq(uint8(order.status), uint8(OrderStatus.FullyClaimed));
         assertEq(order.filledAmount, MINT_AMOUNT);
-        assertEq(usdc.balanceOf(Actors.VM2), halfAmount);
+        assertEq(usdc.balanceOf(Actors.VM1), MINT_AMOUNT);
 
-        // Both VMs confirm
+        // VM1 confirms both claims
         vm.prank(Actors.VM1);
         market.confirmOrder(claimId1, _emptyPriceData());
 
@@ -387,7 +361,7 @@ contract MintFlowTest is BaseTest {
         order = market.getOrder(orderId);
         assertEq(uint8(order.status), uint8(OrderStatus.PartiallyConfirmed));
 
-        vm.prank(Actors.VM2);
+        vm.prank(Actors.VM1);
         market.confirmOrder(claimId2, _emptyPriceData());
 
         // After both confirm, status should be Confirmed
@@ -398,9 +372,8 @@ contract MintFlowTest is BaseTest {
         uint256[] memory claimIds = market.getOrderClaims(orderId);
         assertEq(claimIds.length, 2);
 
-        // Verify minter received eTokens from both partial fills
-        uint256 effectivePrice = Math.mulDiv(TSLA_PRICE, BPS + DEFAULT_SPREAD, BPS);
-        uint256 expectedPerHalf = Math.mulDiv(halfAmount * 1e12, PRECISION, effectivePrice);
+        // Verify minter received eTokens from both partial fills (no spread)
+        uint256 expectedPerHalf = Math.mulDiv(halfAmount * 1e12, PRECISION, TSLA_PRICE);
         assertEq(eTSLA.balanceOf(Actors.MINTER1), expectedPerHalf * 2, "minter received eTokens from both fills");
     }
 
@@ -521,10 +494,19 @@ contract MintFlowTest is BaseTest {
     // ══════════════════════════════════════════════════════════
 
     function test_fullMintFlow_directedOrder_wrongVM_reverts() public {
-        // Register VM2
+        // Register VM2 with a separate vault
+        vm.prank(Actors.ADMIN);
+        OwnVault usdcVault2 = new OwnVault(
+            address(usdc),
+            "Own USDC Vault 2",
+            "oUSDC2",
+            address(protocolRegistry),
+            Actors.VM2,
+            MAX_UTIL_BPS,
+            AUM_FEE_BPS
+        );
         vm.startPrank(Actors.VM2);
-        vaultMgr.registerVM(address(usdcVault));
-        vaultMgr.setSpread(DEFAULT_SPREAD);
+        vaultMgr.registerVM(address(usdcVault2));
         vm.stopPrank();
 
         _fundUSDC(Actors.MINTER1, MINT_AMOUNT);
@@ -816,9 +798,8 @@ contract MintFlowTest is BaseTest {
         // VM received all stablecoins
         assertEq(usdc.balanceOf(Actors.VM1), MINT_AMOUNT * 2);
 
-        // Both minters received eTokens
-        uint256 effectivePrice = Math.mulDiv(TSLA_PRICE, BPS + DEFAULT_SPREAD, BPS);
-        uint256 expectedETokens = Math.mulDiv(MINT_AMOUNT * 1e12, PRECISION, effectivePrice);
+        // Both minters received eTokens at oracle price (no spread)
+        uint256 expectedETokens = Math.mulDiv(MINT_AMOUNT * 1e12, PRECISION, TSLA_PRICE);
         assertEq(eTSLA.balanceOf(Actors.MINTER1), expectedETokens, "minter1 received eTokens");
         assertEq(eTSLA.balanceOf(Actors.MINTER2), expectedETokens, "minter2 received eTokens");
     }
@@ -828,10 +809,19 @@ contract MintFlowTest is BaseTest {
     // ══════════════════════════════════════════════════════════
 
     function test_fullMintFlow_onlyClaimVMCanConfirm() public {
-        // Register VM2
+        // Register VM2 with a separate vault
+        vm.prank(Actors.ADMIN);
+        OwnVault usdcVault2 = new OwnVault(
+            address(usdc),
+            "Own USDC Vault 2",
+            "oUSDC2",
+            address(protocolRegistry),
+            Actors.VM2,
+            MAX_UTIL_BPS,
+            AUM_FEE_BPS
+        );
         vm.startPrank(Actors.VM2);
-        vaultMgr.registerVM(address(usdcVault));
-        vaultMgr.setSpread(DEFAULT_SPREAD);
+        vaultMgr.registerVM(address(usdcVault2));
         vm.stopPrank();
 
         _fundUSDC(Actors.MINTER1, MINT_AMOUNT);

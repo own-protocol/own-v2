@@ -4,7 +4,7 @@ pragma solidity 0.8.28;
 import {Actors} from "../helpers/Actors.sol";
 import {BaseTest} from "../helpers/BaseTest.sol";
 
-import {AssetConfig, BPS, OrderStatus, PriceType, VMConfig} from "../../src/interfaces/types/Types.sol";
+import {AssetConfig, OrderStatus, PriceType, VMConfig} from "../../src/interfaces/types/Types.sol";
 
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {FeeCalculator} from "../../src/core/FeeCalculator.sol";
@@ -15,7 +15,7 @@ import {VaultManager} from "../../src/core/VaultManager.sol";
 import {EToken} from "../../src/tokens/EToken.sol";
 
 /// @title VMLifecycle Integration Test
-/// @notice Tests VM registration, configuration, order claiming, delegation,
+/// @notice Tests VM registration, configuration, order claiming,
 ///         and multi-VM competition with real contract instances.
 contract VMLifecycleTest is BaseTest {
     AssetRegistry public assetRegistry;
@@ -23,11 +23,11 @@ contract VMLifecycleTest is BaseTest {
     VaultManager public vaultMgr;
     OwnMarket public market;
     OwnVault public usdcVault;
+    OwnVault public usdcVault2;
     EToken public eTSLA;
     FeeCalculator public feeCalc;
     address public feeAccrual = makeAddr("feeAccrual");
 
-    uint256 constant MIN_SPREAD = 30;
     uint256 constant MINT_AMOUNT = 10_000e6;
     uint256 constant LP_DEPOSIT = 500_000e6;
 
@@ -61,13 +61,16 @@ contract VMLifecycleTest is BaseTest {
 
         // Deploy contracts with registry
         market = new OwnMarket(address(protocolRegistry));
-        vaultMgr = new VaultManager(Actors.ADMIN, address(protocolRegistry), MIN_SPREAD);
+        vaultMgr = new VaultManager(Actors.ADMIN, address(protocolRegistry));
 
         // Register market and vault manager
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
         protocolRegistry.setAddress(protocolRegistry.VAULT_MANAGER(), address(vaultMgr));
 
-        usdcVault = new OwnVault(address(usdc), "Own USDC Vault", "oUSDC", address(protocolRegistry), 8000, 0, 1000);
+        usdcVault =
+            new OwnVault(address(usdc), "Own USDC Vault", "oUSDC", address(protocolRegistry), Actors.VM1, 8000, 0);
+        usdcVault2 =
+            new OwnVault(address(usdc), "Own USDC Vault 2", "oUSDC2", address(protocolRegistry), Actors.VM2, 8000, 0);
 
         eTSLA = new EToken("Own Tesla", "eTSLA", TSLA, address(protocolRegistry), address(usdc));
 
@@ -78,9 +81,9 @@ contract VMLifecycleTest is BaseTest {
 
         vm.stopPrank();
 
-        // LP deposits collateral
-        _fundUSDC(Actors.LP1, LP_DEPOSIT);
-        vm.startPrank(Actors.LP1);
+        // LP deposits collateral (VM1 must call deposit on behalf of LP)
+        _fundUSDC(Actors.VM1, LP_DEPOSIT);
+        vm.startPrank(Actors.VM1);
         usdc.approve(address(usdcVault), LP_DEPOSIT);
         usdcVault.deposit(LP_DEPOSIT, Actors.LP1);
         vm.stopPrank();
@@ -137,33 +140,6 @@ contract VMLifecycleTest is BaseTest {
     //  Configuration
     // ══════════════════════════════════════════════════════════
 
-    function test_vmSetSpread() public {
-        vm.startPrank(Actors.VM1);
-        vaultMgr.registerVM(address(usdcVault));
-        vaultMgr.setSpread(50);
-        vm.stopPrank();
-
-        assertEq(vaultMgr.getVMConfig(Actors.VM1).spread, 50);
-    }
-
-    function test_vmSetSpread_belowMinimum_reverts() public {
-        vm.startPrank(Actors.VM1);
-        vaultMgr.registerVM(address(usdcVault));
-
-        vm.expectRevert(abi.encodeWithSignature("SpreadBelowMinimum(uint256,uint256)", 20, MIN_SPREAD));
-        vaultMgr.setSpread(20);
-        vm.stopPrank();
-    }
-
-    function test_vmSetSpread_aboveBPS_reverts() public {
-        vm.startPrank(Actors.VM1);
-        vaultMgr.registerVM(address(usdcVault));
-
-        vm.expectRevert(abi.encodeWithSignature("InvalidSpread()"));
-        vaultMgr.setSpread(BPS + 1);
-        vm.stopPrank();
-    }
-
     function test_vmSetExposureCaps() public {
         vm.startPrank(Actors.VM1);
         vaultMgr.registerVM(address(usdcVault));
@@ -215,104 +191,33 @@ contract VMLifecycleTest is BaseTest {
     }
 
     // ══════════════════════════════════════════════════════════
-    //  Delegation
+    //  1:1 vault binding
     // ══════════════════════════════════════════════════════════
 
-    function test_delegation_fullFlow() public {
+    function test_vaultAlreadyHasVM_reverts() public {
         vm.prank(Actors.VM1);
         vaultMgr.registerVM(address(usdcVault));
 
-        // LP proposes
-        vm.prank(Actors.LP1);
-        vaultMgr.proposeDelegation(Actors.VM1);
-
-        // VM accepts
-        vm.prank(Actors.VM1);
-        vaultMgr.acceptDelegation(Actors.LP1);
-
-        assertEq(vaultMgr.getDelegatedVM(Actors.LP1), Actors.VM1);
-        assertEq(vaultMgr.getDelegatedLPs(Actors.VM1).length, 1);
-        assertEq(vaultMgr.getDelegatedLPs(Actors.VM1)[0], Actors.LP1);
-    }
-
-    function test_delegation_alreadyDelegated_reverts() public {
-        vm.prank(Actors.VM1);
-        vaultMgr.registerVM(address(usdcVault));
-
-        vm.prank(Actors.LP1);
-        vaultMgr.proposeDelegation(Actors.VM1);
-        vm.prank(Actors.VM1);
-        vaultMgr.acceptDelegation(Actors.LP1);
-
-        // Register VM2
+        // VM2 tries to register with same vault
         vm.prank(Actors.VM2);
+        vm.expectRevert(abi.encodeWithSignature("VaultAlreadyHasVM(address)", address(usdcVault)));
         vaultMgr.registerVM(address(usdcVault));
-
-        // LP1 tries to propose again while already delegated
-        vm.prank(Actors.LP1);
-        vm.expectRevert(abi.encodeWithSignature("AlreadyDelegated(address)", Actors.LP1));
-        vaultMgr.proposeDelegation(Actors.VM2);
     }
 
-    function test_delegation_notProposed_reverts() public {
+    function test_getVaultVM_returnsVM() public {
         vm.prank(Actors.VM1);
         vaultMgr.registerVM(address(usdcVault));
 
-        // VM tries to accept without LP proposing
-        vm.prank(Actors.VM1);
-        vm.expectRevert(abi.encodeWithSignature("DelegationNotProposed(address,address)", Actors.LP1, Actors.VM1));
-        vaultMgr.acceptDelegation(Actors.LP1);
+        assertEq(vaultMgr.getVaultVM(address(usdcVault)), Actors.VM1);
     }
 
-    function test_delegation_proposeToUnregisteredVM_reverts() public {
-        vm.prank(Actors.LP1);
-        vm.expectRevert(abi.encodeWithSignature("VMNotRegistered(address)", Actors.VM1));
-        vaultMgr.proposeDelegation(Actors.VM1);
-    }
-
-    function test_delegation_multipleLPs() public {
-        vm.prank(Actors.VM1);
+    function test_deregisterVM_clearsVaultVM() public {
+        vm.startPrank(Actors.VM1);
         vaultMgr.registerVM(address(usdcVault));
+        vaultMgr.deregisterVM();
+        vm.stopPrank();
 
-        // LP1 delegates
-        vm.prank(Actors.LP1);
-        vaultMgr.proposeDelegation(Actors.VM1);
-        vm.prank(Actors.VM1);
-        vaultMgr.acceptDelegation(Actors.LP1);
-
-        // LP2 delegates
-        vm.prank(Actors.LP2);
-        vaultMgr.proposeDelegation(Actors.VM1);
-        vm.prank(Actors.VM1);
-        vaultMgr.acceptDelegation(Actors.LP2);
-
-        address[] memory lps = vaultMgr.getDelegatedLPs(Actors.VM1);
-        assertEq(lps.length, 2);
-    }
-
-    function test_delegation_remove_and_redelegate() public {
-        vm.prank(Actors.VM1);
-        vaultMgr.registerVM(address(usdcVault));
-        vm.prank(Actors.VM2);
-        vaultMgr.registerVM(address(usdcVault));
-
-        // Delegate to VM1
-        vm.prank(Actors.LP1);
-        vaultMgr.proposeDelegation(Actors.VM1);
-        vm.prank(Actors.VM1);
-        vaultMgr.acceptDelegation(Actors.LP1);
-
-        // Remove delegation
-        vm.prank(Actors.LP1);
-        vaultMgr.removeDelegation();
-
-        // Redelegate to VM2
-        vm.prank(Actors.LP1);
-        vaultMgr.proposeDelegation(Actors.VM2);
-        vm.prank(Actors.VM2);
-        vaultMgr.acceptDelegation(Actors.LP1);
-
-        assertEq(vaultMgr.getDelegatedVM(Actors.LP1), Actors.VM2);
+        assertEq(vaultMgr.getVaultVM(address(usdcVault)), address(0));
     }
 
     // ══════════════════════════════════════════════════════════
@@ -320,16 +225,14 @@ contract VMLifecycleTest is BaseTest {
     // ══════════════════════════════════════════════════════════
 
     function test_multiVM_competitionForOpenOrder() public {
-        // Register both VMs
+        // Register both VMs with separate vaults (1:1 binding)
         vm.startPrank(Actors.VM1);
         vaultMgr.registerVM(address(usdcVault));
-        vaultMgr.setSpread(50);
         vaultMgr.setPaymentTokenAcceptance(address(usdc), true);
         vm.stopPrank();
 
         vm.startPrank(Actors.VM2);
-        vaultMgr.registerVM(address(usdcVault));
-        vaultMgr.setSpread(40); // VM2 offers better spread
+        vaultMgr.registerVM(address(usdcVault2));
         vaultMgr.setPaymentTokenAcceptance(address(usdc), true);
         vm.stopPrank();
 
@@ -350,7 +253,7 @@ contract VMLifecycleTest is BaseTest {
         );
         vm.stopPrank();
 
-        // VM2 claims half first (better spread)
+        // VM2 claims half first
         vm.prank(Actors.VM2);
         uint256 claimId2 = market.claimOrder(orderId, MINT_AMOUNT / 2);
 
@@ -370,33 +273,14 @@ contract VMLifecycleTest is BaseTest {
     }
 
     // ══════════════════════════════════════════════════════════
-    //  Admin — minSpread
-    // ══════════════════════════════════════════════════════════
-
-    function test_admin_setMinSpread() public {
-        assertEq(vaultMgr.minSpread(), MIN_SPREAD);
-
-        vm.prank(Actors.ADMIN);
-        vaultMgr.setMinSpread(50);
-
-        assertEq(vaultMgr.minSpread(), 50);
-    }
-
-    function test_admin_setMinSpread_onlyOwner() public {
-        vm.prank(Actors.ATTACKER);
-        vm.expectRevert();
-        vaultMgr.setMinSpread(50);
-    }
-
-    // ══════════════════════════════════════════════════════════
     //  Config only if registered
     // ══════════════════════════════════════════════════════════
 
     function test_configOnlyRegistered() public {
-        // Unregistered VM cannot set spread
+        // Unregistered VM cannot set exposure caps
         vm.prank(Actors.VM1);
         vm.expectRevert(abi.encodeWithSignature("VMNotRegistered(address)", Actors.VM1));
-        vaultMgr.setSpread(50);
+        vaultMgr.setExposureCaps(1_000_000e18, 500_000e18);
     }
 
     // ══════════════════════════════════════════════════════════
@@ -407,18 +291,11 @@ contract VMLifecycleTest is BaseTest {
         // 1. Register
         vm.startPrank(Actors.VM1);
         vaultMgr.registerVM(address(usdcVault));
-        vaultMgr.setSpread(50);
         vaultMgr.setExposureCaps(10_000_000e18, 5_000_000e18);
         vaultMgr.setPaymentTokenAcceptance(address(usdc), true);
         vm.stopPrank();
 
-        // 2. LP delegates
-        vm.prank(Actors.LP1);
-        vaultMgr.proposeDelegation(Actors.VM1);
-        vm.prank(Actors.VM1);
-        vaultMgr.acceptDelegation(Actors.LP1);
-
-        // 3. Minter places order
+        // 2. Minter places order
         _fundUSDC(Actors.MINTER1, MINT_AMOUNT);
         vm.startPrank(Actors.MINTER1);
         usdc.approve(address(market), MINT_AMOUNT);
@@ -435,7 +312,7 @@ contract VMLifecycleTest is BaseTest {
         );
         vm.stopPrank();
 
-        // 4. VM claims and confirms
+        // 3. VM claims and confirms
         vm.startPrank(Actors.VM1);
         uint256 claimId = market.claimOrder(orderId, MINT_AMOUNT);
         market.confirmOrder(claimId, _emptyPriceData());
@@ -444,7 +321,7 @@ contract VMLifecycleTest is BaseTest {
         assertEq(uint8(market.getOrder(orderId).status), uint8(OrderStatus.Confirmed));
         assertEq(usdc.balanceOf(Actors.VM1), MINT_AMOUNT);
 
-        // 5. Deregister
+        // 4. Deregister
         vm.prank(Actors.VM1);
         vaultMgr.deregisterVM();
 

@@ -8,22 +8,21 @@ import {Actors} from "../helpers/Actors.sol";
 import {BaseTest} from "../helpers/BaseTest.sol";
 
 /// @title VaultManager Unit Tests
-/// @notice Tests registration, spread/exposure config, delegation lifecycle,
+/// @notice Tests registration, exposure config, 1:1 vault binding,
 ///         payment token acceptance, off-market toggles, and access control.
 contract VaultManagerTest is BaseTest {
     VaultManager public vmManager;
 
     address public mockVault = makeAddr("vault");
+    address public mockVault2 = makeAddr("vault2");
     address public mockMarket = makeAddr("market");
-
-    uint256 constant DEFAULT_MIN_SPREAD = 30; // 0.3%
 
     function setUp() public override {
         super.setUp();
 
         vm.startPrank(Actors.ADMIN);
         protocolRegistry.setAddress(protocolRegistry.MARKET(), mockMarket);
-        vmManager = new VaultManager(Actors.ADMIN, address(protocolRegistry), DEFAULT_MIN_SPREAD);
+        vmManager = new VaultManager(Actors.ADMIN, address(protocolRegistry));
         vm.stopPrank();
         vm.label(address(vmManager), "VaultManager");
     }
@@ -59,6 +58,16 @@ contract VaultManagerTest is BaseTest {
         vmManager.registerVM(address(0));
     }
 
+    function test_registerVM_vaultAlreadyHasVM_reverts() public {
+        vm.prank(Actors.VM1);
+        vmManager.registerVM(mockVault);
+
+        // VM2 tries to register with the same vault
+        vm.prank(Actors.VM2);
+        vm.expectRevert(abi.encodeWithSelector(IVaultManager.VaultAlreadyHasVM.selector, mockVault));
+        vmManager.registerVM(mockVault);
+    }
+
     function test_deregisterVM_succeeds() public {
         vm.startPrank(Actors.VM1);
         vmManager.registerVM(mockVault);
@@ -79,46 +88,34 @@ contract VaultManagerTest is BaseTest {
         vmManager.deregisterVM();
     }
 
+    function test_deregisterVM_clearsVaultVM() public {
+        vm.startPrank(Actors.VM1);
+        vmManager.registerVM(mockVault);
+        vmManager.deregisterVM();
+        vm.stopPrank();
+
+        // Vault should no longer have a VM
+        assertEq(vmManager.getVaultVM(mockVault), address(0));
+
+        // Another VM should now be able to register with the same vault
+        vm.prank(Actors.VM2);
+        vmManager.registerVM(mockVault);
+        assertEq(vmManager.getVaultVM(mockVault), Actors.VM2);
+    }
+
     // ──────────────────────────────────────────────────────────
-    //  Spread
+    //  Vault VM lookup
     // ──────────────────────────────────────────────────────────
 
-    function test_setSpread_succeeds() public {
+    function test_getVaultVM_returnsRegisteredVM() public {
         vm.prank(Actors.VM1);
         vmManager.registerVM(mockVault);
 
-        vm.expectEmit(true, false, false, true);
-        emit IVaultManager.SpreadUpdated(Actors.VM1, 0, 50);
-
-        vm.prank(Actors.VM1);
-        vmManager.setSpread(50); // 0.5%
-
-        VMConfig memory config = vmManager.getVMConfig(Actors.VM1);
-        assertEq(config.spread, 50);
+        assertEq(vmManager.getVaultVM(mockVault), Actors.VM1);
     }
 
-    function test_setSpread_belowMinimum_reverts() public {
-        vm.prank(Actors.VM1);
-        vmManager.registerVM(mockVault);
-
-        vm.prank(Actors.VM1);
-        vm.expectRevert(abi.encodeWithSelector(IVaultManager.SpreadBelowMinimum.selector, 10, DEFAULT_MIN_SPREAD));
-        vmManager.setSpread(10); // below 30 bps min
-    }
-
-    function test_setSpread_notRegistered_reverts() public {
-        vm.prank(Actors.VM1);
-        vm.expectRevert(abi.encodeWithSelector(IVaultManager.VMNotRegistered.selector, Actors.VM1));
-        vmManager.setSpread(50);
-    }
-
-    function test_setSpread_exceedsBPS_reverts() public {
-        vm.prank(Actors.VM1);
-        vmManager.registerVM(mockVault);
-
-        vm.prank(Actors.VM1);
-        vm.expectRevert(IVaultManager.InvalidSpread.selector);
-        vmManager.setSpread(10_001); // > 100%
+    function test_getVaultVM_unregisteredVault_returnsZero() public view {
+        assertEq(vmManager.getVaultVM(mockVault), address(0));
     }
 
     // ──────────────────────────────────────────────────────────
@@ -220,118 +217,6 @@ contract VaultManagerTest is BaseTest {
     }
 
     // ──────────────────────────────────────────────────────────
-    //  Delegation
-    // ──────────────────────────────────────────────────────────
-
-    function test_delegation_fullLifecycle() public {
-        // VM registers
-        vm.prank(Actors.VM1);
-        vmManager.registerVM(mockVault);
-
-        // LP proposes delegation
-        vm.expectEmit(true, true, false, false);
-        emit IVaultManager.DelegationProposed(Actors.LP1, Actors.VM1);
-
-        vm.prank(Actors.LP1);
-        vmManager.proposeDelegation(Actors.VM1);
-
-        // VM accepts
-        vm.expectEmit(true, true, false, false);
-        emit IVaultManager.DelegationAccepted(Actors.LP1, Actors.VM1);
-
-        vm.prank(Actors.VM1);
-        vmManager.acceptDelegation(Actors.LP1);
-
-        // Verify delegation
-        assertEq(vmManager.getDelegatedVM(Actors.LP1), Actors.VM1);
-
-        address[] memory lps = vmManager.getDelegatedLPs(Actors.VM1);
-        assertEq(lps.length, 1);
-        assertEq(lps[0], Actors.LP1);
-    }
-
-    function test_proposeDelegation_vmNotRegistered_reverts() public {
-        vm.prank(Actors.LP1);
-        vm.expectRevert(abi.encodeWithSelector(IVaultManager.VMNotRegistered.selector, Actors.VM1));
-        vmManager.proposeDelegation(Actors.VM1);
-    }
-
-    function test_proposeDelegation_alreadyDelegated_reverts() public {
-        vm.prank(Actors.VM1);
-        vmManager.registerVM(mockVault);
-
-        vm.prank(Actors.VM2);
-        vmManager.registerVM(mockVault);
-
-        vm.prank(Actors.LP1);
-        vmManager.proposeDelegation(Actors.VM1);
-
-        vm.prank(Actors.VM1);
-        vmManager.acceptDelegation(Actors.LP1);
-
-        // LP1 tries to propose to VM2 while delegated to VM1
-        vm.prank(Actors.LP1);
-        vm.expectRevert(abi.encodeWithSelector(IVaultManager.AlreadyDelegated.selector, Actors.LP1));
-        vmManager.proposeDelegation(Actors.VM2);
-    }
-
-    function test_acceptDelegation_noProposal_reverts() public {
-        vm.prank(Actors.VM1);
-        vmManager.registerVM(mockVault);
-
-        vm.prank(Actors.VM1);
-        vm.expectRevert(abi.encodeWithSelector(IVaultManager.DelegationNotProposed.selector, Actors.LP1, Actors.VM1));
-        vmManager.acceptDelegation(Actors.LP1);
-    }
-
-    function test_removeDelegation_succeeds() public {
-        // Setup delegation
-        vm.prank(Actors.VM1);
-        vmManager.registerVM(mockVault);
-
-        vm.prank(Actors.LP1);
-        vmManager.proposeDelegation(Actors.VM1);
-
-        vm.prank(Actors.VM1);
-        vmManager.acceptDelegation(Actors.LP1);
-
-        // LP removes delegation
-        vm.expectEmit(true, true, false, false);
-        emit IVaultManager.DelegationRemoved(Actors.LP1, Actors.VM1);
-
-        vm.prank(Actors.LP1);
-        vmManager.removeDelegation();
-
-        assertEq(vmManager.getDelegatedVM(Actors.LP1), address(0));
-    }
-
-    function test_removeDelegation_notDelegated_reverts() public {
-        vm.prank(Actors.LP1);
-        vm.expectRevert();
-        vmManager.removeDelegation();
-    }
-
-    function test_delegation_multipleLPs() public {
-        vm.prank(Actors.VM1);
-        vmManager.registerVM(mockVault);
-
-        // LP1 delegates
-        vm.prank(Actors.LP1);
-        vmManager.proposeDelegation(Actors.VM1);
-        vm.prank(Actors.VM1);
-        vmManager.acceptDelegation(Actors.LP1);
-
-        // LP2 delegates
-        vm.prank(Actors.LP2);
-        vmManager.proposeDelegation(Actors.VM1);
-        vm.prank(Actors.VM1);
-        vmManager.acceptDelegation(Actors.LP2);
-
-        address[] memory lps = vmManager.getDelegatedLPs(Actors.VM1);
-        assertEq(lps.length, 2);
-    }
-
-    // ──────────────────────────────────────────────────────────
     //  Exposure tracking
     // ──────────────────────────────────────────────────────────
 
@@ -374,41 +259,5 @@ contract VaultManagerTest is BaseTest {
         vm.prank(Actors.ATTACKER);
         vm.expectRevert();
         vmManager.updateExposure(Actors.VM1, int256(100_000e18));
-    }
-
-    // ──────────────────────────────────────────────────────────
-    //  Admin: minSpread
-    // ──────────────────────────────────────────────────────────
-
-    function test_setMinSpread_admin_succeeds() public {
-        vm.prank(Actors.ADMIN);
-        vmManager.setMinSpread(50);
-
-        assertEq(vmManager.minSpread(), 50);
-    }
-
-    function test_setMinSpread_nonAdmin_reverts() public {
-        vm.prank(Actors.ATTACKER);
-        vm.expectRevert();
-        vmManager.setMinSpread(50);
-    }
-
-    // ──────────────────────────────────────────────────────────
-    //  Fuzz
-    // ──────────────────────────────────────────────────────────
-
-    function testFuzz_setSpread_aboveMinimum(
-        uint256 spread
-    ) public {
-        spread = bound(spread, DEFAULT_MIN_SPREAD, BPS);
-
-        vm.prank(Actors.VM1);
-        vmManager.registerVM(mockVault);
-
-        vm.prank(Actors.VM1);
-        vmManager.setSpread(spread);
-
-        VMConfig memory config = vmManager.getVMConfig(Actors.VM1);
-        assertEq(config.spread, spread);
     }
 }

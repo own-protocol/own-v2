@@ -60,17 +60,19 @@ contract CrossVaultTest is BaseTest {
 
         // Deploy contracts with registry
         market = new OwnMarket(address(protocolRegistry));
-        vaultMgr = new VaultManager(Actors.ADMIN, address(protocolRegistry), 30);
+        vaultMgr = new VaultManager(Actors.ADMIN, address(protocolRegistry));
 
         // Register market and vault manager
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
         protocolRegistry.setAddress(protocolRegistry.VAULT_MANAGER(), address(vaultMgr));
 
-        // USDC vault
-        usdcVault = new OwnVault(address(usdc), "Own USDC Vault", "oUSDC", address(protocolRegistry), 8000, 0, 1000);
+        // USDC vault (bound to VM1)
+        usdcVault =
+            new OwnVault(address(usdc), "Own USDC Vault", "oUSDC", address(protocolRegistry), Actors.VM1, 8000, 0);
 
-        // WETH vault
-        wethVault = new OwnVault(address(weth), "Own WETH Vault", "oWETH", address(protocolRegistry), 8000, 0, 1000);
+        // WETH vault (bound to VM2)
+        wethVault =
+            new OwnVault(address(weth), "Own WETH Vault", "oWETH", address(protocolRegistry), Actors.VM2, 8000, 0);
 
         eTSLA = new EToken("Own Tesla", "eTSLA", TSLA, address(protocolRegistry), address(usdc));
 
@@ -84,16 +86,16 @@ contract CrossVaultTest is BaseTest {
         vm.label(address(usdcVault), "USDCVault");
         vm.label(address(wethVault), "WETHVault");
 
-        // LP1 deposits into USDC vault
-        _fundUSDC(Actors.LP1, 500_000e6);
-        vm.startPrank(Actors.LP1);
+        // LP1 deposits into USDC vault (via VM1)
+        _fundUSDC(Actors.VM1, 500_000e6);
+        vm.startPrank(Actors.VM1);
         usdc.approve(address(usdcVault), 500_000e6);
         usdcVault.deposit(500_000e6, Actors.LP1);
         vm.stopPrank();
 
-        // LP2 deposits into WETH vault
-        _fundWETH(Actors.LP2, 100e18);
-        vm.startPrank(Actors.LP2);
+        // LP2 deposits into WETH vault (via VM2)
+        _fundWETH(Actors.VM2, 100e18);
+        vm.startPrank(Actors.VM2);
         weth.approve(address(wethVault), 100e18);
         wethVault.deposit(100e18, Actors.LP2);
         vm.stopPrank();
@@ -101,7 +103,6 @@ contract CrossVaultTest is BaseTest {
         // VM1 registered with USDC vault
         vm.startPrank(Actors.VM1);
         vaultMgr.registerVM(address(usdcVault));
-        vaultMgr.setSpread(50);
         vaultMgr.setExposureCaps(10_000_000e18, 5_000_000e18);
         vaultMgr.setPaymentTokenAcceptance(address(usdc), true);
         vm.stopPrank();
@@ -109,7 +110,6 @@ contract CrossVaultTest is BaseTest {
         // VM2 registered with WETH vault
         vm.startPrank(Actors.VM2);
         vaultMgr.registerVM(address(wethVault));
-        vaultMgr.setSpread(40);
         vaultMgr.setExposureCaps(10_000_000e18, 5_000_000e18);
         vaultMgr.setPaymentTokenAcceptance(address(usdc), true);
         vm.stopPrank();

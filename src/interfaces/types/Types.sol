@@ -48,6 +48,14 @@ enum WithdrawalStatus {
     Cancelled
 }
 
+/// @notice Lifecycle status of an async LP deposit request.
+enum DepositStatus {
+    Pending,
+    Accepted,
+    Rejected,
+    Cancelled
+}
+
 /// @notice Operating state of a collateral vault.
 enum VaultStatus {
     Active,
@@ -142,15 +150,29 @@ struct AssetConfig {
     uint8 volatilityLevel;
 }
 
+/// @notice An async LP deposit request.
+/// @param requestId  Unique request identifier.
+/// @param depositor  Address that initiated the deposit.
+/// @param receiver   Address that will receive vault shares.
+/// @param assets     Amount of collateral deposited.
+/// @param timestamp  When the request was submitted.
+/// @param status     Current request status.
+struct DepositRequest {
+    uint256 requestId;
+    address depositor;
+    address receiver;
+    uint256 assets;
+    uint256 timestamp;
+    DepositStatus status;
+}
+
 /// @notice Onchain state for a registered vault manager.
-/// @param spread               VM's posted spread in BPS (>= minSpread).
 /// @param maxExposure          Max USD notional the VM will hedge (18 decimals).
 /// @param maxOffMarketExposure Max exposure during off-market hours (18 decimals).
 /// @param currentExposure      Current outstanding notional (18 decimals).
 /// @param registered           Whether the VM is registered.
 /// @param active               Whether the VM is currently active.
 struct VMConfig {
-    uint256 spread;
     uint256 maxExposure;
     uint256 maxOffMarketExposure;
     uint256 currentExposure;

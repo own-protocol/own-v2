@@ -38,14 +38,12 @@ interface IOwnMarket {
     /// @param vm            Confirming vault manager.
     /// @param executionPrice Oracle price at execution (18 decimals).
     /// @param eTokenAmount  eTokens minted (Mint) or burned (Redeem).
-    /// @param spreadAmount  Total spread revenue from this confirmation.
     event OrderConfirmed(
         uint256 indexed orderId,
         uint256 indexed claimId,
         address indexed vm,
         uint256 executionPrice,
-        uint256 eTokenAmount,
-        uint256 spreadAmount
+        uint256 eTokenAmount
     );
 
     /// @notice Emitted when a user cancels their order.

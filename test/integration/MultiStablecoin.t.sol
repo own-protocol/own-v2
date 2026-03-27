@@ -26,6 +26,7 @@ contract MultiStablecoinTest is BaseTest {
     VaultManager public vaultMgr;
     OwnMarket public market;
     OwnVault public usdcVault;
+    OwnVault public usdcVault2;
     EToken public eTSLA;
     FeeCalculator public feeCalc;
     address public feeAccrual = makeAddr("feeAccrual");
@@ -63,13 +64,17 @@ contract MultiStablecoinTest is BaseTest {
 
         // Deploy contracts with registry
         market = new OwnMarket(address(protocolRegistry));
-        vaultMgr = new VaultManager(Actors.ADMIN, address(protocolRegistry), 30);
+        vaultMgr = new VaultManager(Actors.ADMIN, address(protocolRegistry));
 
         // Register market and vault manager
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
         protocolRegistry.setAddress(protocolRegistry.VAULT_MANAGER(), address(vaultMgr));
 
-        usdcVault = new OwnVault(address(usdc), "Own USDC Vault", "oUSDC", address(protocolRegistry), 8000, 0, 1000);
+        // Each VM gets its own vault (1:1 binding)
+        usdcVault =
+            new OwnVault(address(usdc), "Own USDC Vault", "oUSDC", address(protocolRegistry), Actors.VM1, 8000, 0);
+        usdcVault2 =
+            new OwnVault(address(usdc), "Own USDC Vault 2", "oUSDC2", address(protocolRegistry), Actors.VM2, 8000, 0);
 
         eTSLA = new EToken("Own Tesla", "eTSLA", TSLA, address(protocolRegistry), address(usdc));
 
@@ -87,7 +92,6 @@ contract MultiStablecoinTest is BaseTest {
         // Register VM1 — accepts USDC and USDT but NOT USDS
         vm.startPrank(Actors.VM1);
         vaultMgr.registerVM(address(usdcVault));
-        vaultMgr.setSpread(50);
         vaultMgr.setExposureCaps(10_000_000e18, 5_000_000e18);
         vaultMgr.setPaymentTokenAcceptance(address(usdc), true);
         vaultMgr.setPaymentTokenAcceptance(address(usdt), true);
@@ -96,17 +100,16 @@ contract MultiStablecoinTest is BaseTest {
 
         // Register VM2 — accepts only USDS
         vm.startPrank(Actors.VM2);
-        vaultMgr.registerVM(address(usdcVault));
-        vaultMgr.setSpread(40);
+        vaultMgr.registerVM(address(usdcVault2));
         vaultMgr.setExposureCaps(10_000_000e18, 5_000_000e18);
         vaultMgr.setPaymentTokenAcceptance(address(usdc), false);
         vaultMgr.setPaymentTokenAcceptance(address(usdt), false);
         vaultMgr.setPaymentTokenAcceptance(address(usds), true);
         vm.stopPrank();
 
-        // LP deposits
-        _fundUSDC(Actors.LP1, 500_000e6);
-        vm.startPrank(Actors.LP1);
+        // LP deposits (VM must call deposit)
+        _fundUSDC(Actors.VM1, 500_000e6);
+        vm.startPrank(Actors.VM1);
         usdc.approve(address(usdcVault), 500_000e6);
         usdcVault.deposit(500_000e6, Actors.LP1);
         vm.stopPrank();

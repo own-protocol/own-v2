@@ -19,6 +19,7 @@ import {
 } from "../../src/interfaces/types/Types.sol";
 
 import {FeeCalculator} from "../../src/core/FeeCalculator.sol";
+import {IFeeAccrual} from "../../src/interfaces/IFeeAccrual.sol";
 import {Actors} from "../helpers/Actors.sol";
 import {BaseTest} from "../helpers/BaseTest.sol";
 import {MockERC20} from "../helpers/MockERC20.sol";
@@ -45,7 +46,6 @@ contract OwnMarketTest is BaseTest {
     address public mockFeeAccrual = makeAddr("feeAccrual");
 
     uint256 constant DEFAULT_DEADLINE = 1 days;
-    uint256 constant VM_SPREAD = 30; // 30 BPS = 0.3%
 
     function setUp() public override {
         super.setUp();
@@ -85,6 +85,9 @@ contract OwnMarketTest is BaseTest {
         market = new OwnMarket(address(protocolRegistry));
         vm.stopPrank();
         vm.label(address(market), "OwnMarket");
+
+        // Mock accrueFee on FeeAccrual (it's a makeAddr, not a real contract)
+        vm.mockCall(mockFeeAccrual, abi.encodeWithSelector(IFeeAccrual.accrueFee.selector), abi.encode());
 
         // Setup default oracle price
         _setOraclePrice(TSLA, TSLA_PRICE);
@@ -134,15 +137,11 @@ contract OwnMarketTest is BaseTest {
         vm.stopPrank();
     }
 
-    function _mockVaultManager(address vmAddr, uint256 spread) internal {
-        VMConfig memory config = VMConfig({
-            spread: spread,
-            maxExposure: 0,
-            maxOffMarketExposure: 0,
-            currentExposure: 0,
-            registered: true,
-            active: true
-        });
+    function _mockVaultManager(
+        address vmAddr
+    ) internal {
+        VMConfig memory config =
+            VMConfig({maxExposure: 0, maxOffMarketExposure: 0, currentExposure: 0, registered: true, active: true});
         vm.mockCall(mockVaultManager, abi.encodeCall(IVaultManager.getVMConfig, (vmAddr)), abi.encode(config));
         vm.mockCall(mockVaultManager, abi.encodeCall(IVaultManager.getVMVault, (vmAddr)), abi.encode(mockVault));
     }
@@ -382,7 +381,7 @@ contract OwnMarketTest is BaseTest {
     // ──────────────────────────────────────────────────────────
 
     function test_confirmOrder_mint_succeeds() public {
-        _mockVaultManager(Actors.VM1, VM_SPREAD);
+        _mockVaultManager(Actors.VM1);
 
         uint256 orderId = _placeMintOrder(Actors.MINTER1, 1000e6);
 
@@ -405,7 +404,7 @@ contract OwnMarketTest is BaseTest {
     }
 
     function test_confirmOrder_nonClaimVM_reverts() public {
-        _mockVaultManager(Actors.VM1, VM_SPREAD);
+        _mockVaultManager(Actors.VM1);
 
         uint256 orderId = _placeMintOrder(Actors.MINTER1, 1000e6);
 
@@ -419,7 +418,7 @@ contract OwnMarketTest is BaseTest {
     }
 
     function test_confirmOrder_alreadyConfirmed_reverts() public {
-        _mockVaultManager(Actors.VM1, VM_SPREAD);
+        _mockVaultManager(Actors.VM1);
 
         uint256 orderId = _placeMintOrder(Actors.MINTER1, 1000e6);
 
@@ -435,9 +434,9 @@ contract OwnMarketTest is BaseTest {
     }
 
     function test_confirmOrder_mint_usdc_6dec_exactMath() public {
-        _mockVaultManager(Actors.VM1, VM_SPREAD);
+        _mockVaultManager(Actors.VM1);
 
-        // 250 USDC for TSLA at $250, spread 30 BPS
+        // 250 USDC for TSLA at $250, no spread
         uint256 stablecoinAmount = 250e6;
         uint256 orderId = _placeMintOrder(Actors.MINTER1, stablecoinAmount);
 
@@ -447,19 +446,16 @@ contract OwnMarketTest is BaseTest {
         vm.prank(Actors.VM1);
         market.confirmOrder(claimId, _emptyPriceData());
 
-        // effectivePrice = 250e18 * 10030 / 10000 = 250.75e18
-        uint256 effectivePrice = Math.mulDiv(TSLA_PRICE, BPS + VM_SPREAD, BPS);
-        // eTokenAmount = 250e6 * 1e12 * 1e18 / effectivePrice
-        uint256 expectedETokens = Math.mulDiv(stablecoinAmount * 1e12, PRECISION, effectivePrice);
+        // eTokenAmount = 250e6 * 1e12 * 1e18 / TSLA_PRICE
+        uint256 expectedETokens = Math.mulDiv(stablecoinAmount * 1e12, PRECISION, TSLA_PRICE);
 
         assertEq(eTSLAToken.balanceOf(Actors.MINTER1), expectedETokens);
-        // Should be ~0.997 eTSLA
-        assertGt(expectedETokens, 0.996e18);
-        assertLt(expectedETokens, 0.998e18);
+        // Should be exactly 1 eTSLA (250 USDC / $250)
+        assertEq(expectedETokens, 1e18);
     }
 
     function test_confirmOrder_mint_usds_18dec_exactMath() public {
-        _mockVaultManager(Actors.VM1, VM_SPREAD);
+        _mockVaultManager(Actors.VM1);
 
         // Place order with 18-decimal stablecoin (USDS)
         uint256 stablecoinAmount = 250e18;
@@ -485,16 +481,14 @@ contract OwnMarketTest is BaseTest {
         vm.prank(Actors.VM1);
         market.confirmOrder(claimId, _emptyPriceData());
 
-        // effectivePrice = 250e18 * 10030 / 10000 = 250.75e18
-        uint256 effectivePrice = Math.mulDiv(TSLA_PRICE, BPS + VM_SPREAD, BPS);
-        // For 18-dec stablecoin: decimalScaler = 1, eTokenAmount = 250e18 * 1e18 / effectivePrice
-        uint256 expectedETokens = Math.mulDiv(stablecoinAmount, PRECISION, effectivePrice);
+        // For 18-dec stablecoin: decimalScaler = 1, eTokenAmount = 250e18 * 1e18 / TSLA_PRICE
+        uint256 expectedETokens = Math.mulDiv(stablecoinAmount, PRECISION, TSLA_PRICE);
 
         assertEq(eTSLAToken.balanceOf(Actors.MINTER1), expectedETokens);
     }
 
     function test_confirmOrder_redeem_usdc_6dec_exactMath() public {
-        _mockVaultManager(Actors.VM1, VM_SPREAD);
+        _mockVaultManager(Actors.VM1);
 
         // Redeem 1 eTSLA for USDC
         uint256 eTokenAmount = 1e18;
@@ -504,9 +498,8 @@ contract OwnMarketTest is BaseTest {
         uint256 claimId = market.claimOrder(orderId, eTokenAmount);
 
         // VM must send stablecoins to minter via transferFrom
-        // effectivePrice = 250e18 * 9970 / 10000 = 249.25e18
-        uint256 effectivePrice = Math.mulDiv(TSLA_PRICE, BPS - VM_SPREAD, BPS);
-        uint256 expectedPayout = Math.mulDiv(eTokenAmount, effectivePrice, PRECISION * 1e12);
+        // payout = 1e18 * TSLA_PRICE / (PRECISION * 1e12) = 250e6
+        uint256 expectedPayout = Math.mulDiv(eTokenAmount, TSLA_PRICE, PRECISION * 1e12);
 
         // Fund VM with stablecoins and approve market
         usdc.mint(Actors.VM1, expectedPayout);
@@ -518,14 +511,14 @@ contract OwnMarketTest is BaseTest {
 
         // Minter should have received stablecoins
         assertEq(usdc.balanceOf(Actors.MINTER1), expectedPayout);
-        // Should be ~$249.25
-        assertEq(expectedPayout, 249_250_000);
+        // Should be exactly $250
+        assertEq(expectedPayout, 250_000_000);
         // eTokens should be burned from escrow
         assertEq(eTSLAToken.balanceOf(address(market)), 0);
     }
 
     function test_confirmOrder_redeem_usds_18dec_exactMath() public {
-        _mockVaultManager(Actors.VM1, VM_SPREAD);
+        _mockVaultManager(Actors.VM1);
 
         // Place redeem order with 18-dec stablecoin
         uint256 eTokenAmount = 1e18;
@@ -548,9 +541,8 @@ contract OwnMarketTest is BaseTest {
         vm.prank(Actors.VM1);
         uint256 claimId = market.claimOrder(orderId, eTokenAmount);
 
-        uint256 effectivePrice = Math.mulDiv(TSLA_PRICE, BPS - VM_SPREAD, BPS);
         // decimalScaler = 1 for 18-dec, so PRECISION * decimalScaler = PRECISION
-        uint256 expectedPayout = Math.mulDiv(eTokenAmount, effectivePrice, PRECISION);
+        uint256 expectedPayout = Math.mulDiv(eTokenAmount, TSLA_PRICE, PRECISION);
 
         usds.mint(Actors.VM1, expectedPayout);
         vm.prank(Actors.VM1);
@@ -560,11 +552,11 @@ contract OwnMarketTest is BaseTest {
         market.confirmOrder(claimId, _emptyPriceData());
 
         assertEq(usds.balanceOf(Actors.MINTER1), expectedPayout);
-        assertEq(expectedPayout, 249.25e18);
+        assertEq(expectedPayout, 250e18);
     }
 
     function test_confirmOrder_mint_emitsCorrectValues() public {
-        _mockVaultManager(Actors.VM1, VM_SPREAD);
+        _mockVaultManager(Actors.VM1);
 
         uint256 stablecoinAmount = 250e6;
         uint256 orderId = _placeMintOrder(Actors.MINTER1, stablecoinAmount);
@@ -572,19 +564,17 @@ contract OwnMarketTest is BaseTest {
         vm.prank(Actors.VM1);
         uint256 claimId = market.claimOrder(orderId, stablecoinAmount);
 
-        uint256 effectivePrice = Math.mulDiv(TSLA_PRICE, BPS + VM_SPREAD, BPS);
-        uint256 expectedETokens = Math.mulDiv(stablecoinAmount * 1e12, PRECISION, effectivePrice);
-        uint256 expectedSpread = Math.mulDiv(stablecoinAmount, VM_SPREAD, BPS + VM_SPREAD);
+        uint256 expectedETokens = Math.mulDiv(stablecoinAmount * 1e12, PRECISION, TSLA_PRICE);
 
         vm.expectEmit(true, true, true, true);
-        emit IOwnMarket.OrderConfirmed(orderId, claimId, Actors.VM1, TSLA_PRICE, expectedETokens, expectedSpread);
+        emit IOwnMarket.OrderConfirmed(orderId, claimId, Actors.VM1, TSLA_PRICE, expectedETokens);
 
         vm.prank(Actors.VM1);
         market.confirmOrder(claimId, _emptyPriceData());
     }
 
     function test_confirmOrder_redeem_burnsETokens() public {
-        _mockVaultManager(Actors.VM1, VM_SPREAD);
+        _mockVaultManager(Actors.VM1);
 
         uint256 eTokenAmount = 2e18;
         uint256 orderId = _placeRedeemOrder(Actors.MINTER1, eTokenAmount);
@@ -594,8 +584,7 @@ contract OwnMarketTest is BaseTest {
         vm.prank(Actors.VM1);
         uint256 claimId = market.claimOrder(orderId, eTokenAmount);
 
-        uint256 effectivePrice = Math.mulDiv(TSLA_PRICE, BPS - VM_SPREAD, BPS);
-        uint256 payout = Math.mulDiv(eTokenAmount, effectivePrice, PRECISION * 1e12);
+        uint256 payout = Math.mulDiv(eTokenAmount, TSLA_PRICE, PRECISION * 1e12);
 
         usdc.mint(Actors.VM1, payout);
         vm.prank(Actors.VM1);
@@ -750,7 +739,7 @@ contract OwnMarketTest is BaseTest {
         vm.prank(Actors.ADMIN);
         feeCalc.setMintFee(2, 50);
 
-        _mockVaultManager(Actors.VM1, VM_SPREAD);
+        _mockVaultManager(Actors.VM1);
 
         uint256 stablecoinAmount = 1000e6; // 1000 USDC
         uint256 orderId = _placeMintOrder(Actors.MINTER1, stablecoinAmount);
@@ -775,14 +764,13 @@ contract OwnMarketTest is BaseTest {
 
         // Minter eTokens computed from net amount (1000 - 5 = 995 USDC)
         uint256 netAmount = stablecoinAmount - expectedFee;
-        uint256 effectivePrice = Math.mulDiv(TSLA_PRICE, BPS + VM_SPREAD, BPS);
-        uint256 expectedETokens = Math.mulDiv(netAmount * 1e12, PRECISION, effectivePrice);
+        uint256 expectedETokens = Math.mulDiv(netAmount * 1e12, PRECISION, TSLA_PRICE);
         assertEq(eTSLAToken.balanceOf(Actors.MINTER1), expectedETokens);
     }
 
     function test_confirmOrder_mint_zeroFee_noTransfer() public {
         // Fees are already zero from setUp
-        _mockVaultManager(Actors.VM1, VM_SPREAD);
+        _mockVaultManager(Actors.VM1);
 
         uint256 stablecoinAmount = 1000e6;
         uint256 orderId = _placeMintOrder(Actors.MINTER1, stablecoinAmount);
@@ -801,7 +789,7 @@ contract OwnMarketTest is BaseTest {
         vm.prank(Actors.ADMIN);
         feeCalc.setMintFee(2, 100); // 1%
 
-        _mockVaultManager(Actors.VM1, VM_SPREAD);
+        _mockVaultManager(Actors.VM1);
 
         uint256 stablecoinAmount = 500e6;
         uint256 orderId = _placeMintOrder(Actors.MINTER1, stablecoinAmount);
@@ -827,7 +815,7 @@ contract OwnMarketTest is BaseTest {
         vm.prank(Actors.ADMIN);
         feeCalc.setRedeemFee(2, 50);
 
-        _mockVaultManager(Actors.VM1, VM_SPREAD);
+        _mockVaultManager(Actors.VM1);
 
         uint256 eTokenAmount = 1e18; // 1 eTSLA
         uint256 orderId = _placeRedeemOrder(Actors.MINTER1, eTokenAmount);
@@ -835,9 +823,8 @@ contract OwnMarketTest is BaseTest {
         vm.prank(Actors.VM1);
         uint256 claimId = market.claimOrder(orderId, eTokenAmount);
 
-        // Calculate gross payout
-        uint256 effectivePrice = Math.mulDiv(TSLA_PRICE, BPS - VM_SPREAD, BPS);
-        uint256 grossPayout = Math.mulDiv(eTokenAmount, effectivePrice, PRECISION * 1e12);
+        // Calculate gross payout at oracle price directly (no spread)
+        uint256 grossPayout = Math.mulDiv(eTokenAmount, TSLA_PRICE, PRECISION * 1e12);
 
         // Fee = ceil(grossPayout * 50 / 10000)
         uint256 expectedFee = Math.mulDiv(grossPayout, 50, BPS, Math.Rounding.Ceil);
@@ -859,7 +846,7 @@ contract OwnMarketTest is BaseTest {
 
     function test_confirmOrder_redeem_zeroFee_noTransfer() public {
         // Fees are already zero from setUp
-        _mockVaultManager(Actors.VM1, VM_SPREAD);
+        _mockVaultManager(Actors.VM1);
 
         uint256 eTokenAmount = 1e18;
         uint256 orderId = _placeRedeemOrder(Actors.MINTER1, eTokenAmount);
@@ -867,8 +854,7 @@ contract OwnMarketTest is BaseTest {
         vm.prank(Actors.VM1);
         uint256 claimId = market.claimOrder(orderId, eTokenAmount);
 
-        uint256 effectivePrice = Math.mulDiv(TSLA_PRICE, BPS - VM_SPREAD, BPS);
-        uint256 expectedPayout = Math.mulDiv(eTokenAmount, effectivePrice, PRECISION * 1e12);
+        uint256 expectedPayout = Math.mulDiv(eTokenAmount, TSLA_PRICE, PRECISION * 1e12);
 
         usdc.mint(Actors.VM1, expectedPayout);
         vm.prank(Actors.VM1);
@@ -886,7 +872,7 @@ contract OwnMarketTest is BaseTest {
         vm.prank(Actors.ADMIN);
         feeCalc.setRedeemFee(2, 100); // 1%
 
-        _mockVaultManager(Actors.VM1, VM_SPREAD);
+        _mockVaultManager(Actors.VM1);
 
         uint256 eTokenAmount = 1e18;
         uint256 orderId = _placeRedeemOrder(Actors.MINTER1, eTokenAmount);
@@ -894,8 +880,7 @@ contract OwnMarketTest is BaseTest {
         vm.prank(Actors.VM1);
         uint256 claimId = market.claimOrder(orderId, eTokenAmount);
 
-        uint256 effectivePrice = Math.mulDiv(TSLA_PRICE, BPS - VM_SPREAD, BPS);
-        uint256 grossPayout = Math.mulDiv(eTokenAmount, effectivePrice, PRECISION * 1e12);
+        uint256 grossPayout = Math.mulDiv(eTokenAmount, TSLA_PRICE, PRECISION * 1e12);
         uint256 expectedFee = Math.mulDiv(grossPayout, 100, BPS, Math.Rounding.Ceil);
 
         usdc.mint(Actors.VM1, grossPayout);
@@ -918,7 +903,7 @@ contract OwnMarketTest is BaseTest {
         vm.prank(Actors.ADMIN);
         feeCalc.setMintFee(2, 30);
 
-        _mockVaultManager(Actors.VM1, VM_SPREAD);
+        _mockVaultManager(Actors.VM1);
 
         uint256 stablecoinAmount = 250e6; // 250 USDC
         uint256 orderId = _placeMintOrder(Actors.MINTER1, stablecoinAmount);
@@ -935,8 +920,7 @@ contract OwnMarketTest is BaseTest {
 
         // Net = 250e6 - 750000 = 249250000 = 249.25 USDC
         uint256 netAmount = stablecoinAmount - expectedFee;
-        uint256 effectivePrice = Math.mulDiv(TSLA_PRICE, BPS + VM_SPREAD, BPS);
-        uint256 expectedETokens = Math.mulDiv(netAmount * 1e12, PRECISION, effectivePrice);
+        uint256 expectedETokens = Math.mulDiv(netAmount * 1e12, PRECISION, TSLA_PRICE);
         assertEq(eTSLAToken.balanceOf(Actors.MINTER1), expectedETokens);
     }
 

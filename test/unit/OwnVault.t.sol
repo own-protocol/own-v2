@@ -3,14 +3,22 @@ pragma solidity 0.8.28;
 
 import {OwnVault} from "../../src/core/OwnVault.sol";
 import {IOwnVault} from "../../src/interfaces/IOwnVault.sol";
-import {BPS, PRECISION, VaultStatus, WithdrawalRequest, WithdrawalStatus} from "../../src/interfaces/types/Types.sol";
+import {
+    BPS,
+    DepositRequest,
+    DepositStatus,
+    PRECISION,
+    VaultStatus,
+    WithdrawalRequest,
+    WithdrawalStatus
+} from "../../src/interfaces/types/Types.sol";
 import {Actors} from "../helpers/Actors.sol";
 import {BaseTest} from "../helpers/BaseTest.sol";
 import {MockERC20} from "../helpers/MockERC20.sol";
 
 /// @title OwnVault Unit Tests
-/// @notice Tests ERC-4626 deposit/withdraw, async withdrawal queue, health factor,
-///         utilization tracking, halt/unhalt, wind-down, and fee management.
+/// @notice Tests ERC-4626 deposit/withdraw, async deposit queue, async withdrawal queue,
+///         health factor, utilization tracking, halt/unhalt, wind-down, and fee management.
 contract OwnVaultTest is BaseTest {
     OwnVault public vault;
 
@@ -18,7 +26,6 @@ contract OwnVaultTest is BaseTest {
 
     uint256 constant INITIAL_MAX_UTIL = 8000; // 80%
     uint256 constant INITIAL_AUM_FEE = 50; // 0.5%
-    uint256 constant INITIAL_RESERVE_FACTOR = 1000; // 10%
 
     function setUp() public override {
         super.setUp();
@@ -31,9 +38,9 @@ contract OwnVaultTest is BaseTest {
             "Own USDC Vault",
             "oUSDC",
             address(protocolRegistry),
+            Actors.VM1,
             INITIAL_MAX_UTIL,
-            INITIAL_AUM_FEE,
-            INITIAL_RESERVE_FACTOR
+            INITIAL_AUM_FEE
         );
         vm.stopPrank();
         vm.label(address(vault), "OwnVault-USDC");
@@ -43,16 +50,18 @@ contract OwnVaultTest is BaseTest {
     //  Helpers
     // ──────────────────────────────────────────────────────────
 
+    /// @dev Deposit as the bound VM (only VM can call deposit directly).
+    ///      Funds VM1 with USDC, VM1 deposits on behalf of LP (receiver).
     function _depositAs(address lp, uint256 amount) internal returns (uint256 shares) {
-        usdc.mint(lp, amount);
-        vm.startPrank(lp);
+        usdc.mint(Actors.VM1, amount);
+        vm.startPrank(Actors.VM1);
         usdc.approve(address(vault), amount);
         shares = vault.deposit(amount, lp);
         vm.stopPrank();
     }
 
     // ──────────────────────────────────────────────────────────
-    //  ERC-4626: deposit
+    //  ERC-4626: deposit (VM only)
     // ──────────────────────────────────────────────────────────
 
     function test_deposit_succeeds() public {
@@ -73,21 +82,21 @@ contract OwnVaultTest is BaseTest {
         assertGt(vault.balanceOf(Actors.LP2), 0);
     }
 
-    function test_deposit_zeroAmount_returnsZeroShares() public {
+    function test_deposit_onlyVM() public {
         usdc.mint(Actors.LP1, 1000e6);
         vm.startPrank(Actors.LP1);
         usdc.approve(address(vault), 1000e6);
-        uint256 shares = vault.deposit(0, Actors.LP1);
+        vm.expectRevert(IOwnVault.OnlyVM.selector);
+        vault.deposit(1000e6, Actors.LP1);
         vm.stopPrank();
-        assertEq(shares, 0);
     }
 
     function test_deposit_whileHalted_reverts() public {
         vm.prank(Actors.ADMIN);
         vault.halt(bytes32("emergency"));
 
-        usdc.mint(Actors.LP1, 1000e6);
-        vm.startPrank(Actors.LP1);
+        usdc.mint(Actors.VM1, 1000e6);
+        vm.startPrank(Actors.VM1);
         usdc.approve(address(vault), 1000e6);
         vm.expectRevert(IOwnVault.VaultIsHalted.selector);
         vault.deposit(1000e6, Actors.LP1);
@@ -98,8 +107,8 @@ contract OwnVaultTest is BaseTest {
         vm.prank(Actors.ADMIN);
         vault.initiateWindDown();
 
-        usdc.mint(Actors.LP1, 1000e6);
-        vm.startPrank(Actors.LP1);
+        usdc.mint(Actors.VM1, 1000e6);
+        vm.startPrank(Actors.VM1);
         usdc.approve(address(vault), 1000e6);
         vm.expectRevert(IOwnVault.VaultIsWindingDown.selector);
         vault.deposit(1000e6, Actors.LP1);
@@ -122,6 +131,137 @@ contract OwnVaultTest is BaseTest {
         uint256 shares = vault.balanceOf(Actors.LP1);
         uint256 assets = vault.convertToAssets(shares);
         assertEq(assets, 1000e6);
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Async deposit queue
+    // ──────────────────────────────────────────────────────────
+
+    function test_requestDeposit_succeeds() public {
+        uint256 depositAmount = 1000e6;
+        usdc.mint(Actors.LP1, depositAmount);
+
+        vm.startPrank(Actors.LP1);
+        usdc.approve(address(vault), depositAmount);
+
+        vm.expectEmit(true, true, false, true);
+        emit IOwnVault.DepositRequested(1, Actors.LP1, Actors.LP1, depositAmount);
+
+        uint256 requestId = vault.requestDeposit(depositAmount, Actors.LP1);
+        vm.stopPrank();
+
+        assertEq(requestId, 1);
+
+        // Assets should be escrowed in vault
+        assertEq(usdc.balanceOf(address(vault)), depositAmount);
+        assertEq(usdc.balanceOf(Actors.LP1), 0);
+
+        DepositRequest memory req = vault.getDepositRequest(requestId);
+        assertEq(req.depositor, Actors.LP1);
+        assertEq(req.receiver, Actors.LP1);
+        assertEq(req.assets, depositAmount);
+        assertEq(uint256(req.status), uint256(DepositStatus.Pending));
+    }
+
+    function test_acceptDeposit_mintsShares() public {
+        // Bootstrap vault with an initial VM deposit to establish share price
+        _depositAs(Actors.LP2, 1000e6);
+
+        uint256 depositAmount = 1000e6;
+        usdc.mint(Actors.LP1, depositAmount);
+
+        vm.startPrank(Actors.LP1);
+        usdc.approve(address(vault), depositAmount);
+        uint256 requestId = vault.requestDeposit(depositAmount, Actors.LP1);
+        vm.stopPrank();
+
+        uint256 expectedShares = vault.previewDeposit(depositAmount);
+
+        vm.expectEmit(true, true, false, true);
+        emit IOwnVault.DepositAccepted(requestId, Actors.LP1, expectedShares);
+
+        vm.prank(Actors.VM1);
+        vault.acceptDeposit(requestId);
+
+        DepositRequest memory req = vault.getDepositRequest(requestId);
+        assertEq(uint256(req.status), uint256(DepositStatus.Accepted));
+
+        // Shares should be minted to receiver
+        assertGt(vault.balanceOf(Actors.LP1), 0);
+        assertEq(vault.totalAssets(), 2000e6); // initial + async deposit
+    }
+
+    function test_rejectDeposit_returnsAssets() public {
+        uint256 depositAmount = 1000e6;
+        usdc.mint(Actors.LP1, depositAmount);
+
+        vm.startPrank(Actors.LP1);
+        usdc.approve(address(vault), depositAmount);
+        uint256 requestId = vault.requestDeposit(depositAmount, Actors.LP1);
+        vm.stopPrank();
+
+        vm.expectEmit(true, true, false, false);
+        emit IOwnVault.DepositRejected(requestId, Actors.LP1);
+
+        vm.prank(Actors.VM1);
+        vault.rejectDeposit(requestId);
+
+        DepositRequest memory req = vault.getDepositRequest(requestId);
+        assertEq(uint256(req.status), uint256(DepositStatus.Rejected));
+
+        // Assets should be returned to depositor
+        assertEq(usdc.balanceOf(Actors.LP1), depositAmount);
+        assertEq(vault.balanceOf(Actors.LP1), 0);
+    }
+
+    function test_cancelDeposit_returnsAssets() public {
+        uint256 depositAmount = 1000e6;
+        usdc.mint(Actors.LP1, depositAmount);
+
+        vm.startPrank(Actors.LP1);
+        usdc.approve(address(vault), depositAmount);
+        uint256 requestId = vault.requestDeposit(depositAmount, Actors.LP1);
+
+        vm.expectEmit(true, true, false, false);
+        emit IOwnVault.DepositCancelled(requestId, Actors.LP1);
+
+        vault.cancelDeposit(requestId);
+        vm.stopPrank();
+
+        DepositRequest memory req = vault.getDepositRequest(requestId);
+        assertEq(uint256(req.status), uint256(DepositStatus.Cancelled));
+
+        // Assets should be returned to depositor
+        assertEq(usdc.balanceOf(Actors.LP1), depositAmount);
+        assertEq(vault.balanceOf(Actors.LP1), 0);
+    }
+
+    function test_acceptDeposit_notVM_reverts() public {
+        uint256 depositAmount = 1000e6;
+        usdc.mint(Actors.LP1, depositAmount);
+
+        vm.startPrank(Actors.LP1);
+        usdc.approve(address(vault), depositAmount);
+        uint256 requestId = vault.requestDeposit(depositAmount, Actors.LP1);
+        vm.stopPrank();
+
+        vm.prank(Actors.ATTACKER);
+        vm.expectRevert(IOwnVault.OnlyVM.selector);
+        vault.acceptDeposit(requestId);
+    }
+
+    function test_cancelDeposit_notDepositor_reverts() public {
+        uint256 depositAmount = 1000e6;
+        usdc.mint(Actors.LP1, depositAmount);
+
+        vm.startPrank(Actors.LP1);
+        usdc.approve(address(vault), depositAmount);
+        uint256 requestId = vault.requestDeposit(depositAmount, Actors.LP1);
+        vm.stopPrank();
+
+        vm.prank(Actors.ATTACKER);
+        vm.expectRevert(abi.encodeWithSelector(IOwnVault.OnlyDepositor.selector, requestId));
+        vault.cancelDeposit(requestId);
     }
 
     // ──────────────────────────────────────────────────────────
@@ -341,10 +481,6 @@ contract OwnVaultTest is BaseTest {
         assertEq(vault.aumFee(), INITIAL_AUM_FEE);
     }
 
-    function test_reserveFactor_initial() public view {
-        assertEq(vault.reserveFactor(), INITIAL_RESERVE_FACTOR);
-    }
-
     function test_setAumFee_admin_succeeds() public {
         vm.prank(Actors.ADMIN);
         vault.setAumFee(100);
@@ -355,36 +491,6 @@ contract OwnVaultTest is BaseTest {
         vm.prank(Actors.ATTACKER);
         vm.expectRevert();
         vault.setAumFee(100);
-    }
-
-    function test_setReserveFactor_admin_succeeds() public {
-        vm.prank(Actors.ADMIN);
-        vault.setReserveFactor(2000);
-        assertEq(vault.reserveFactor(), 2000);
-    }
-
-    function test_setReserveFactor_nonAdmin_reverts() public {
-        vm.prank(Actors.ATTACKER);
-        vm.expectRevert();
-        vault.setReserveFactor(2000);
-    }
-
-    function test_distributeSpreadRevenue_splits() public {
-        _depositAs(Actors.LP1, 10_000e6);
-
-        uint256 revenue = 100e6;
-        usdc.mint(mockMarket, revenue);
-
-        vm.startPrank(mockMarket);
-        usdc.approve(address(vault), revenue);
-        vault.distributeSpreadRevenue(revenue);
-        vm.stopPrank();
-
-        // Reserve factor = 10%, so protocol gets 10, LPs get 90
-        // LP share price should have increased
-        uint256 totalAssets = vault.totalAssets();
-        assertEq(totalAssets, 10_000e6 + 90e6); // 90% to LPs
-        assertEq(usdc.balanceOf(Actors.FEE_RECIPIENT), 10e6); // 10% to treasury
     }
 
     function test_treasury_returnsCorrectAddress() public view {

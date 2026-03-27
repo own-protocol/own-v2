@@ -48,8 +48,6 @@ contract RedeemFlowTest is BaseTest {
     //  Constants
     // ──────────────────────────────────────────────────────────
 
-    uint256 constant DEFAULT_SPREAD = 50;
-    uint256 constant MIN_SPREAD = 30;
     uint256 constant MAX_EXPOSURE = 10_000_000e18;
     uint256 constant MAX_UTIL_BPS = 8000;
     uint256 constant LP_DEPOSIT = 1_000_000e6;
@@ -99,14 +97,15 @@ contract RedeemFlowTest is BaseTest {
 
         // Deploy contracts with registry
         market = new OwnMarket(address(protocolRegistry));
-        vaultMgr = new VaultManager(Actors.ADMIN, address(protocolRegistry), MIN_SPREAD);
+        vaultMgr = new VaultManager(Actors.ADMIN, address(protocolRegistry));
 
         // Register market and vault manager
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
         protocolRegistry.setAddress(protocolRegistry.VAULT_MANAGER(), address(vaultMgr));
 
-        usdcVault =
-            new OwnVault(address(usdc), "Own USDC Vault", "oUSDC", address(protocolRegistry), MAX_UTIL_BPS, 50, 1000);
+        usdcVault = new OwnVault(
+            address(usdc), "Own USDC Vault", "oUSDC", address(protocolRegistry), Actors.VM1, MAX_UTIL_BPS, 50
+        );
 
         vm.stopPrank();
 
@@ -140,20 +139,14 @@ contract RedeemFlowTest is BaseTest {
     function _configureVaultManager() private {
         vm.startPrank(Actors.VM1);
         vaultMgr.registerVM(address(usdcVault));
-        vaultMgr.setSpread(DEFAULT_SPREAD);
         vaultMgr.setExposureCaps(MAX_EXPOSURE, MAX_EXPOSURE / 2);
         vaultMgr.setPaymentTokenAcceptance(address(usdc), true);
         vm.stopPrank();
-
-        vm.prank(Actors.LP1);
-        vaultMgr.proposeDelegation(Actors.VM1);
-        vm.prank(Actors.VM1);
-        vaultMgr.acceptDelegation(Actors.LP1);
     }
 
     function _depositLPCollateral() private {
-        _fundUSDC(Actors.LP1, LP_DEPOSIT);
-        vm.startPrank(Actors.LP1);
+        _fundUSDC(Actors.VM1, LP_DEPOSIT);
+        vm.startPrank(Actors.VM1);
         usdc.approve(address(usdcVault), LP_DEPOSIT);
         usdcVault.deposit(LP_DEPOSIT, Actors.LP1);
         vm.stopPrank();
@@ -353,10 +346,13 @@ contract RedeemFlowTest is BaseTest {
     // ══════════════════════════════════════════════════════════
 
     function test_fullRedeemFlow_partialFill() public {
-        // Register VM2
+        // Register VM2 with a separate vault
+        vm.prank(Actors.ADMIN);
+        OwnVault usdcVault2 = new OwnVault(
+            address(usdc), "Own USDC Vault 2", "oUSDC2", address(protocolRegistry), Actors.VM2, MAX_UTIL_BPS, 50
+        );
         vm.startPrank(Actors.VM2);
-        vaultMgr.registerVM(address(usdcVault));
-        vaultMgr.setSpread(DEFAULT_SPREAD);
+        vaultMgr.registerVM(address(usdcVault2));
         vaultMgr.setPaymentTokenAcceptance(address(usdc), true);
         vm.stopPrank();
 
@@ -430,10 +426,13 @@ contract RedeemFlowTest is BaseTest {
     // ══════════════════════════════════════════════════════════
 
     function test_fullRedeemFlow_directedOrder_wrongVM_reverts() public {
-        // Register VM2
+        // Register VM2 with a separate vault
+        vm.prank(Actors.ADMIN);
+        OwnVault usdcVault2 = new OwnVault(
+            address(usdc), "Own USDC Vault 2", "oUSDC2", address(protocolRegistry), Actors.VM2, MAX_UTIL_BPS, 50
+        );
         vm.startPrank(Actors.VM2);
-        vaultMgr.registerVM(address(usdcVault));
-        vaultMgr.setSpread(DEFAULT_SPREAD);
+        vaultMgr.registerVM(address(usdcVault2));
         vm.stopPrank();
 
         vm.startPrank(Actors.MINTER1);

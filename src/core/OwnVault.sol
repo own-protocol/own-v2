@@ -3,7 +3,15 @@ pragma solidity 0.8.28;
 
 import {IOwnVault} from "../interfaces/IOwnVault.sol";
 import {IProtocolRegistry} from "../interfaces/IProtocolRegistry.sol";
-import {BPS, PRECISION, VaultStatus, WithdrawalRequest, WithdrawalStatus} from "../interfaces/types/Types.sol";
+import {
+    BPS,
+    DepositRequest,
+    DepositStatus,
+    PRECISION,
+    VaultStatus,
+    WithdrawalRequest,
+    WithdrawalStatus
+} from "../interfaces/types/Types.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
 import {ERC20, IERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
@@ -12,10 +20,11 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
-/// @title OwnVault — ERC-4626 collateral vault with async withdrawal and health tracking
-/// @notice Each vault holds one LP collateral type as trustless security for
-///         outstanding eToken exposure. Extends ERC-4626 with an async FIFO
-///         withdrawal queue, health/utilization tracking, and fee management.
+/// @title OwnVault — ERC-4626 collateral vault with async deposit/withdrawal and health tracking
+/// @notice Each vault is bound to a single VM and holds one LP collateral type
+///         as trustless security for outstanding eToken exposure. Extends ERC-4626
+///         with async deposit approval, FIFO withdrawal queue, health/utilization
+///         tracking, and fee management.
 contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     using SafeERC20 for IERC20;
     using Math for uint256;
@@ -26,6 +35,9 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
 
     /// @notice Protocol registry for resolving all contract addresses.
     IProtocolRegistry public immutable registry;
+
+    /// @notice The vault manager (VM) bound to this vault.
+    address public immutable vm;
 
     // ──────────────────────────────────────────────────────────
     //  Vault status
@@ -48,8 +60,15 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     // ──────────────────────────────────────────────────────────
 
     uint256 private _aumFee;
-    uint256 private _reserveFactor;
     uint256 private _lastAumFeeAccrual;
+
+    // ──────────────────────────────────────────────────────────
+    //  Async deposit queue
+    // ──────────────────────────────────────────────────────────
+
+    uint256 private _nextDepositRequestId = 1;
+    mapping(uint256 => DepositRequest) private _depositRequests;
+    uint256[] private _pendingDepositIds;
 
     // ──────────────────────────────────────────────────────────
     //  Async withdrawal queue
@@ -65,6 +84,11 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
 
     modifier onlyAdmin() {
         require(msg.sender == Ownable(address(registry)).owner(), "OwnVault: not admin");
+        _;
+    }
+
+    modifier onlyVM() {
+        if (msg.sender != vm) revert OnlyVM();
         _;
     }
 
@@ -87,41 +111,41 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     /// @param name_          Vault share name.
     /// @param symbol_        Vault share symbol.
     /// @param registry_      ProtocolRegistry contract address.
+    /// @param vm_            Vault manager address bound to this vault.
     /// @param maxUtilBps     Initial max utilization in BPS.
     /// @param aumFeeBps      Initial AUM fee in BPS.
-    /// @param reserveFactBps Initial reserve factor in BPS.
     constructor(
         address asset_,
         string memory name_,
         string memory symbol_,
         address registry_,
+        address vm_,
         uint256 maxUtilBps,
-        uint256 aumFeeBps,
-        uint256 reserveFactBps
+        uint256 aumFeeBps
     ) ERC4626(IERC20(asset_)) ERC20(name_, symbol_) {
         registry = IProtocolRegistry(registry_);
+        vm = vm_;
         _maxUtilization = maxUtilBps;
         _aumFee = aumFeeBps;
-        _reserveFactor = reserveFactBps;
         _lastAumFeeAccrual = block.timestamp;
         _vaultStatus = VaultStatus.Active;
     }
 
     // ──────────────────────────────────────────────────────────
-    //  ERC-4626 overrides (gate deposits on vault status)
+    //  ERC-4626 overrides (gate deposits on vault status + VM)
     // ──────────────────────────────────────────────────────────
 
     function deposit(
         uint256 assets,
         address receiver
-    ) public override(ERC4626, IERC4626) whenActive nonReentrant returns (uint256) {
+    ) public override(ERC4626, IERC4626) whenActive onlyVM nonReentrant returns (uint256) {
         return super.deposit(assets, receiver);
     }
 
     function mint(
         uint256 shares,
         address receiver
-    ) public override(ERC4626, IERC4626) whenActive nonReentrant returns (uint256) {
+    ) public override(ERC4626, IERC4626) whenActive onlyVM nonReentrant returns (uint256) {
         return super.mint(shares, receiver);
     }
 
@@ -139,6 +163,111 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     ) public view override(ERC4626, IERC4626) returns (uint256) {
         if (_vaultStatus == VaultStatus.Halted) return 0;
         return super.maxRedeem(owner);
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Async deposit queue
+    // ──────────────────────────────────────────────────────────
+
+    /// @inheritdoc IOwnVault
+    function requestDeposit(
+        uint256 assets,
+        address receiver
+    ) external whenActive nonReentrant returns (uint256 requestId) {
+        if (assets == 0) revert ZeroAmount();
+
+        // Transfer assets from depositor to vault (escrow)
+        IERC20(asset()).safeTransferFrom(msg.sender, address(this), assets);
+
+        requestId = _nextDepositRequestId++;
+        _depositRequests[requestId] = DepositRequest({
+            requestId: requestId,
+            depositor: msg.sender,
+            receiver: receiver,
+            assets: assets,
+            timestamp: block.timestamp,
+            status: DepositStatus.Pending
+        });
+        _pendingDepositIds.push(requestId);
+
+        emit DepositRequested(requestId, msg.sender, receiver, assets);
+    }
+
+    /// @inheritdoc IOwnVault
+    function acceptDeposit(
+        uint256 requestId
+    ) external onlyVM nonReentrant {
+        DepositRequest storage req = _depositRequests[requestId];
+        if (req.depositor == address(0)) revert DepositRequestNotFound(requestId);
+        if (req.status != DepositStatus.Pending) revert DepositRequestNotPending(requestId);
+
+        // Calculate shares using ERC-4626 preview
+        uint256 shares = previewDeposit(req.assets);
+
+        // Update status
+        req.status = DepositStatus.Accepted;
+
+        // Remove from pending list
+        _removePendingDeposit(requestId);
+
+        // Mint shares to receiver (assets are already in the vault)
+        _mint(req.receiver, shares);
+
+        emit DepositAccepted(requestId, req.depositor, shares);
+    }
+
+    /// @inheritdoc IOwnVault
+    function rejectDeposit(
+        uint256 requestId
+    ) external onlyVM nonReentrant {
+        DepositRequest storage req = _depositRequests[requestId];
+        if (req.depositor == address(0)) revert DepositRequestNotFound(requestId);
+        if (req.status != DepositStatus.Pending) revert DepositRequestNotPending(requestId);
+
+        // Update status
+        req.status = DepositStatus.Rejected;
+
+        // Remove from pending list
+        _removePendingDeposit(requestId);
+
+        // Return escrowed assets to depositor
+        IERC20(asset()).safeTransfer(req.depositor, req.assets);
+
+        emit DepositRejected(requestId, req.depositor);
+    }
+
+    /// @inheritdoc IOwnVault
+    function cancelDeposit(
+        uint256 requestId
+    ) external nonReentrant {
+        DepositRequest storage req = _depositRequests[requestId];
+        if (req.depositor == address(0)) revert DepositRequestNotFound(requestId);
+        if (req.status != DepositStatus.Pending) revert DepositRequestNotPending(requestId);
+        if (msg.sender != req.depositor) revert OnlyDepositor(requestId);
+
+        // Update status
+        req.status = DepositStatus.Cancelled;
+
+        // Remove from pending list
+        _removePendingDeposit(requestId);
+
+        // Return escrowed assets to depositor
+        IERC20(asset()).safeTransfer(req.depositor, req.assets);
+
+        emit DepositCancelled(requestId, req.depositor);
+    }
+
+    /// @inheritdoc IOwnVault
+    function getDepositRequest(
+        uint256 requestId
+    ) external view returns (DepositRequest memory request) {
+        request = _depositRequests[requestId];
+        if (request.depositor == address(0)) revert DepositRequestNotFound(requestId);
+    }
+
+    /// @inheritdoc IOwnVault
+    function getPendingDeposits() external view returns (uint256[] memory requestIds) {
+        return _pendingDepositIds;
     }
 
     // ──────────────────────────────────────────────────────────
@@ -317,11 +446,6 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     }
 
     /// @inheritdoc IOwnVault
-    function reserveFactor() external view returns (uint256) {
-        return _reserveFactor;
-    }
-
-    /// @inheritdoc IOwnVault
     function setAumFee(
         uint256 feeBps
     ) external onlyAdmin {
@@ -329,38 +453,8 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     }
 
     /// @inheritdoc IOwnVault
-    function setReserveFactor(
-        uint256 factorBps
-    ) external onlyAdmin {
-        _reserveFactor = factorBps;
-    }
-
-    /// @inheritdoc IOwnVault
     function accrueAumFee() external {
         _accrueAumFee();
-    }
-
-    /// @inheritdoc IOwnVault
-    function distributeSpreadRevenue(
-        uint256 totalRevenue
-    ) external onlyMarket nonReentrant {
-        if (totalRevenue == 0) return;
-
-        // Transfer revenue from market to vault
-        IERC20(asset()).safeTransferFrom(msg.sender, address(this), totalRevenue);
-
-        // Split: reserve factor to treasury, remainder to LPs (increases share price)
-        uint256 protocolPortion = totalRevenue.mulDiv(_reserveFactor, BPS);
-        uint256 lpPortion = totalRevenue - protocolPortion;
-
-        if (protocolPortion > 0) {
-            address _treasury = registry.treasury();
-            IERC20(asset()).safeTransfer(_treasury, protocolPortion);
-            emit ReserveFactorCollected(protocolPortion, _treasury);
-        }
-
-        // lpPortion stays in vault → increases totalAssets() → increases share price
-        emit SpreadRevenueAccrued(lpPortion, protocolPortion);
     }
 
     // ──────────────────────────────────────────────────────────
@@ -387,7 +481,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
         emit AumFeeCollected(feeAmount, _treasury);
     }
 
-    /// @dev Remove a request ID from the pending list (swap-and-pop).
+    /// @dev Remove a request ID from the pending withdrawal list (swap-and-pop).
     function _removePendingRequest(
         uint256 requestId
     ) private {
@@ -396,6 +490,23 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
             if (_pendingRequestIds[i] == requestId) {
                 _pendingRequestIds[i] = _pendingRequestIds[len - 1];
                 _pendingRequestIds.pop();
+                return;
+            }
+            unchecked {
+                ++i;
+            } // SAFETY: i < len
+        }
+    }
+
+    /// @dev Remove a request ID from the pending deposit list (swap-and-pop).
+    function _removePendingDeposit(
+        uint256 requestId
+    ) private {
+        uint256 len = _pendingDepositIds.length;
+        for (uint256 i; i < len;) {
+            if (_pendingDepositIds[i] == requestId) {
+                _pendingDepositIds[i] = _pendingDepositIds[len - 1];
+                _pendingDepositIds.pop();
                 return;
             }
             unchecked {

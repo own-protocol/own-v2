@@ -1,26 +1,50 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {VaultStatus, WithdrawalRequest} from "./types/Types.sol";
+import {DepositRequest, VaultStatus, WithdrawalRequest} from "./types/Types.sol";
 import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
 
-/// @title IOwnVault — ERC-4626 collateral vault with async withdrawal and health tracking
-/// @notice Each vault holds one LP collateral type (USDC, aUSDC, WETH, wstETH)
-///         as trustless security for outstanding eToken exposure. Extends
-///         ERC-4626 for LP share accounting and adds:
+/// @title IOwnVault — ERC-4626 collateral vault with async deposit/withdrawal and health tracking
+/// @notice Each vault is bound to a single VM and holds one LP collateral type
+///         (USDC, aUSDC, WETH, wstETH) as trustless security for outstanding
+///         eToken exposure. Extends ERC-4626 for LP share accounting and adds:
+///         - Async deposit queue (VM approval pattern).
 ///         - Async withdrawal queue (ERC-7540 FIFO pattern).
 ///         - Health factor and utilization tracking.
 ///         - Halt / unhalt / wind-down mechanisms.
-///         - AUM fee and reserve factor for protocol revenue.
+///         - AUM fee for protocol revenue.
 ///
-/// @dev Standard ERC-4626 `deposit` works normally. `maxWithdraw` / `maxRedeem`
-///      return 0 when utilization prevents instant withdrawal, signalling that
-///      LPs must use `requestWithdrawal` for async exit. This is ERC-4626
-///      compliant per the spec.
+/// @dev Standard ERC-4626 `deposit` / `mint` are restricted to the bound VM.
+///      External LPs use `requestDeposit` for async entry.
+///      `maxWithdraw` / `maxRedeem` return 0 when utilization prevents instant
+///      withdrawal, signalling that LPs must use `requestWithdrawal` for async exit.
 interface IOwnVault is IERC4626 {
     // ──────────────────────────────────────────────────────────
     //  Events
     // ──────────────────────────────────────────────────────────
+
+    /// @notice Emitted when an LP requests an async deposit.
+    /// @param requestId Unique request identifier.
+    /// @param depositor Address that initiated the deposit.
+    /// @param receiver  Address that will receive vault shares.
+    /// @param assets    Amount of collateral deposited.
+    event DepositRequested(uint256 indexed requestId, address indexed depositor, address receiver, uint256 assets);
+
+    /// @notice Emitted when the VM accepts a deposit request.
+    /// @param requestId Unique request identifier.
+    /// @param depositor Address that initiated the deposit.
+    /// @param shares    Number of vault shares minted.
+    event DepositAccepted(uint256 indexed requestId, address indexed depositor, uint256 shares);
+
+    /// @notice Emitted when the VM rejects a deposit request.
+    /// @param requestId Unique request identifier.
+    /// @param depositor Address that initiated the deposit.
+    event DepositRejected(uint256 indexed requestId, address indexed depositor);
+
+    /// @notice Emitted when a depositor cancels their pending deposit request.
+    /// @param requestId Unique request identifier.
+    /// @param depositor Address that initiated the deposit.
+    event DepositCancelled(uint256 indexed requestId, address indexed depositor);
 
     /// @notice Emitted when an LP submits an async withdrawal request.
     /// @param requestId Unique request identifier.
@@ -68,19 +92,12 @@ interface IOwnVault is IERC4626 {
     /// @param treasury Protocol treasury address.
     event AumFeeCollected(uint256 amount, address indexed treasury);
 
-    /// @notice Emitted when the reserve factor is deducted from LP spread earnings.
-    /// @param amount   Protocol's portion of spread earnings.
-    /// @param treasury Protocol treasury address.
-    event ReserveFactorCollected(uint256 amount, address indexed treasury);
-
-    /// @notice Emitted when spread revenue is distributed to the vault and protocol.
-    /// @param lpPortion       Amount accruing to LPs (increases share price).
-    /// @param protocolPortion Amount sent to protocol treasury.
-    event SpreadRevenueAccrued(uint256 lpPortion, uint256 protocolPortion);
-
     // ──────────────────────────────────────────────────────────
     //  Errors
     // ──────────────────────────────────────────────────────────
+
+    /// @notice The caller is not the bound VM.
+    error OnlyVM();
 
     /// @notice The operation is not allowed while the vault is halted.
     error VaultIsHalted();
@@ -103,6 +120,15 @@ interface IOwnVault is IERC4626 {
     /// @notice The caller is not the owner of the withdrawal request.
     error NotRequestOwner(uint256 requestId, address caller);
 
+    /// @notice The deposit request does not exist.
+    error DepositRequestNotFound(uint256 requestId);
+
+    /// @notice The deposit request is not in Pending status.
+    error DepositRequestNotPending(uint256 requestId);
+
+    /// @notice The caller is not the depositor of the deposit request.
+    error OnlyDepositor(uint256 requestId);
+
     /// @notice A zero amount was provided.
     error ZeroAmount();
 
@@ -111,6 +137,56 @@ interface IOwnVault is IERC4626 {
 
     /// @notice The asset is halted on this vault.
     error AssetIsHalted(bytes32 asset);
+
+    // ──────────────────────────────────────────────────────────
+    //  VM binding
+    // ──────────────────────────────────────────────────────────
+
+    /// @notice Return the address of the vault's bound VM.
+    /// @return The VM address.
+    function vm() external view returns (address);
+
+    // ──────────────────────────────────────────────────────────
+    //  Async deposit queue
+    // ──────────────────────────────────────────────────────────
+
+    /// @notice Request an async deposit. Assets are escrowed in the vault until
+    ///         the VM accepts or rejects, or the depositor cancels.
+    /// @param assets   Amount of underlying asset to deposit.
+    /// @param receiver Address that will receive vault shares on acceptance.
+    /// @return requestId The unique request identifier.
+    function requestDeposit(uint256 assets, address receiver) external returns (uint256 requestId);
+
+    /// @notice Accept a pending deposit request. Only callable by the bound VM.
+    /// @param requestId Request identifier.
+    function acceptDeposit(
+        uint256 requestId
+    ) external;
+
+    /// @notice Reject a pending deposit request. Only callable by the bound VM.
+    ///         Returns escrowed assets to the depositor.
+    /// @param requestId Request identifier.
+    function rejectDeposit(
+        uint256 requestId
+    ) external;
+
+    /// @notice Cancel a pending deposit request. Only callable by the original depositor.
+    ///         Returns escrowed assets to the depositor.
+    /// @param requestId Request identifier.
+    function cancelDeposit(
+        uint256 requestId
+    ) external;
+
+    /// @notice Return the details of a deposit request.
+    /// @param requestId Request identifier.
+    /// @return request The deposit request data.
+    function getDepositRequest(
+        uint256 requestId
+    ) external view returns (DepositRequest memory request);
+
+    /// @notice Return all pending deposit request IDs.
+    /// @return requestIds Array of pending request IDs.
+    function getPendingDeposits() external view returns (uint256[] memory requestIds);
 
     // ──────────────────────────────────────────────────────────
     //  Async withdrawal queue
@@ -223,32 +299,13 @@ interface IOwnVault is IERC4626 {
     /// @notice Trigger AUM fee accrual. Called automatically on vault interactions.
     function accrueAumFee() external;
 
-    /// @notice Distribute spread revenue between LPs and the protocol.
-    /// @dev Called by OwnMarket when a VM confirms an order. The reserve
-    ///      factor is deducted and sent to treasury; the remainder increases
-    ///      vault `totalAssets()`.
-    /// @param totalRevenue Total spread revenue in underlying asset.
-    function distributeSpreadRevenue(
-        uint256 totalRevenue
-    ) external;
-
     /// @notice Return the annual AUM fee.
     /// @return Fee in BPS.
     function aumFee() external view returns (uint256);
-
-    /// @notice Return the reserve factor percentage.
-    /// @return Factor in BPS.
-    function reserveFactor() external view returns (uint256);
 
     /// @notice Set the annual AUM fee.
     /// @param feeBps Fee in BPS.
     function setAumFee(
         uint256 feeBps
-    ) external;
-
-    /// @notice Set the reserve factor percentage.
-    /// @param factorBps Factor in BPS.
-    function setReserveFactor(
-        uint256 factorBps
     ) external;
 }

@@ -3,20 +3,17 @@ pragma solidity 0.8.28;
 
 import {IProtocolRegistry} from "../interfaces/IProtocolRegistry.sol";
 import {IVaultManager} from "../interfaces/IVaultManager.sol";
-import {BPS, VMConfig} from "../interfaces/types/Types.sol";
+import {VMConfig} from "../interfaces/types/Types.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
-/// @title VaultManager — VM registration, delegation, and configuration
+/// @title VaultManager — VM registration and configuration
 /// @notice Manages the lifecycle of vault managers: registration with a vault,
-///         spread and exposure settings, stablecoin acceptance, per-asset
-///         off-market toggles, and the LP → VM delegation flow.
+///         exposure settings, stablecoin acceptance, and per-asset off-market toggles.
+///         Each VM is bound 1:1 to a single vault.
 contract VaultManager is IVaultManager, Ownable {
     // ──────────────────────────────────────────────────────────
     //  State
     // ──────────────────────────────────────────────────────────
-
-    /// @notice Protocol-enforced minimum spread in BPS.
-    uint256 public override minSpread;
 
     /// @notice Protocol registry for resolving all contract addresses.
     IProtocolRegistry public immutable registry;
@@ -27,23 +24,14 @@ contract VaultManager is IVaultManager, Ownable {
     /// @dev VM address → registered vault.
     mapping(address => address) private _vmVaults;
 
+    /// @dev Vault address → bound VM (reverse lookup, enforces 1:1).
+    mapping(address => address) private _vaultVMs;
+
     /// @dev VM → payment token → accepted.
     mapping(address => mapping(address => bool)) private _paymentAcceptance;
 
     /// @dev VM → asset → off-market enabled.
     mapping(address => mapping(bytes32 => bool)) private _assetOffMarket;
-
-    /// @dev LP → proposed VM (pending delegation).
-    mapping(address => address) private _delegationProposals;
-
-    /// @dev LP → active delegated VM.
-    mapping(address => address) private _delegatedVM;
-
-    /// @dev VM → array of delegated LPs.
-    mapping(address => address[]) private _delegatedLPs;
-
-    /// @dev LP → index in _delegatedLPs[vm] (1-indexed for non-zero check).
-    mapping(address => uint256) private _lpDelegationIndex;
 
     // ──────────────────────────────────────────────────────────
     //  Modifiers
@@ -65,10 +53,8 @@ contract VaultManager is IVaultManager, Ownable {
 
     /// @param admin_       Protocol admin.
     /// @param registry_    ProtocolRegistry contract address.
-    /// @param minSpread_   Initial minimum spread in BPS.
-    constructor(address admin_, address registry_, uint256 minSpread_) Ownable(admin_) {
+    constructor(address admin_, address registry_) Ownable(admin_) {
         registry = IProtocolRegistry(registry_);
-        minSpread = minSpread_;
     }
 
     // ──────────────────────────────────────────────────────────
@@ -81,16 +67,12 @@ contract VaultManager is IVaultManager, Ownable {
     ) external {
         if (vault == address(0)) revert ZeroAddress();
         if (_vmConfigs[msg.sender].registered) revert VMAlreadyRegistered(msg.sender);
+        if (_vaultVMs[vault] != address(0)) revert VaultAlreadyHasVM(vault);
 
-        _vmConfigs[msg.sender] = VMConfig({
-            spread: 0,
-            maxExposure: 0,
-            maxOffMarketExposure: 0,
-            currentExposure: 0,
-            registered: true,
-            active: true
-        });
+        _vmConfigs[msg.sender] =
+            VMConfig({maxExposure: 0, maxOffMarketExposure: 0, currentExposure: 0, registered: true, active: true});
         _vmVaults[msg.sender] = vault;
+        _vaultVMs[vault] = msg.sender;
 
         emit VaultManagerRegistered(msg.sender, vault);
     }
@@ -101,6 +83,7 @@ contract VaultManager is IVaultManager, Ownable {
 
         _vmConfigs[msg.sender].registered = false;
         _vmConfigs[msg.sender].active = false;
+        delete _vaultVMs[vault];
         delete _vmVaults[msg.sender];
 
         emit VaultManagerDeregistered(msg.sender, vault);
@@ -109,19 +92,6 @@ contract VaultManager is IVaultManager, Ownable {
     // ──────────────────────────────────────────────────────────
     //  VM configuration
     // ──────────────────────────────────────────────────────────
-
-    /// @inheritdoc IVaultManager
-    function setSpread(
-        uint256 spreadBps
-    ) external onlyRegistered {
-        if (spreadBps > BPS) revert InvalidSpread();
-        if (spreadBps < minSpread) revert SpreadBelowMinimum(spreadBps, minSpread);
-
-        uint256 oldSpread = _vmConfigs[msg.sender].spread;
-        _vmConfigs[msg.sender].spread = spreadBps;
-
-        emit SpreadUpdated(msg.sender, oldSpread, spreadBps);
-    }
 
     /// @inheritdoc IVaultManager
     function setExposureCaps(uint256 maxExposure, uint256 maxOffMarketExposure) external onlyRegistered {
@@ -155,58 +125,6 @@ contract VaultManager is IVaultManager, Ownable {
     }
 
     // ──────────────────────────────────────────────────────────
-    //  Delegation
-    // ──────────────────────────────────────────────────────────
-
-    /// @inheritdoc IVaultManager
-    function proposeDelegation(
-        address vm
-    ) external {
-        if (!_vmConfigs[vm].registered) revert VMNotRegistered(vm);
-        if (_delegatedVM[msg.sender] != address(0)) revert AlreadyDelegated(msg.sender);
-
-        _delegationProposals[msg.sender] = vm;
-
-        emit DelegationProposed(msg.sender, vm);
-    }
-
-    /// @inheritdoc IVaultManager
-    function acceptDelegation(
-        address lp
-    ) external onlyRegistered {
-        if (_delegationProposals[lp] != msg.sender) revert DelegationNotProposed(lp, msg.sender);
-
-        delete _delegationProposals[lp];
-        _delegatedVM[lp] = msg.sender;
-
-        _delegatedLPs[msg.sender].push(lp);
-        _lpDelegationIndex[lp] = _delegatedLPs[msg.sender].length; // 1-indexed
-
-        emit DelegationAccepted(lp, msg.sender);
-    }
-
-    /// @inheritdoc IVaultManager
-    function removeDelegation() external {
-        address vm = _delegatedVM[msg.sender];
-        require(vm != address(0), "VaultManager: not delegated");
-
-        // Remove from _delegatedLPs via swap-and-pop
-        uint256 idx = _lpDelegationIndex[msg.sender] - 1;
-        uint256 lastIdx = _delegatedLPs[vm].length - 1;
-
-        if (idx != lastIdx) {
-            address lastLp = _delegatedLPs[vm][lastIdx];
-            _delegatedLPs[vm][idx] = lastLp;
-            _lpDelegationIndex[lastLp] = idx + 1;
-        }
-        _delegatedLPs[vm].pop();
-        delete _lpDelegationIndex[msg.sender];
-        delete _delegatedVM[msg.sender];
-
-        emit DelegationRemoved(msg.sender, vm);
-    }
-
-    // ──────────────────────────────────────────────────────────
     //  Exposure tracking (restricted to OwnMarket)
     // ──────────────────────────────────────────────────────────
 
@@ -219,17 +137,6 @@ contract VaultManager is IVaultManager, Ownable {
         }
 
         emit ExposureUpdated(vm, _vmConfigs[vm].currentExposure);
-    }
-
-    // ──────────────────────────────────────────────────────────
-    //  Admin functions
-    // ──────────────────────────────────────────────────────────
-
-    /// @inheritdoc IVaultManager
-    function setMinSpread(
-        uint256 minSpreadBps
-    ) external onlyOwner {
-        minSpread = minSpreadBps;
     }
 
     // ──────────────────────────────────────────────────────────
@@ -251,10 +158,10 @@ contract VaultManager is IVaultManager, Ownable {
     }
 
     /// @inheritdoc IVaultManager
-    function getDelegatedVM(
-        address lp
+    function getVaultVM(
+        address vault
     ) external view returns (address vm) {
-        return _delegatedVM[lp];
+        return _vaultVMs[vault];
     }
 
     /// @inheritdoc IVaultManager
@@ -265,12 +172,5 @@ contract VaultManager is IVaultManager, Ownable {
     /// @inheritdoc IVaultManager
     function isAssetOffMarketEnabled(address vm, bytes32 asset) external view returns (bool) {
         return _assetOffMarket[vm][asset];
-    }
-
-    /// @inheritdoc IVaultManager
-    function getDelegatedLPs(
-        address vm
-    ) external view returns (address[] memory lps) {
-        return _delegatedLPs[vm];
     }
 }

@@ -16,7 +16,7 @@ import {EToken} from "../../src/tokens/EToken.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 /// @title LPLifecycle Integration Test
-/// @notice Tests LP deposits → delegation → yield → async withdrawal queue → fulfillment.
+/// @notice Tests LP deposits → yield → async withdrawal queue → fulfillment.
 contract LPLifecycleTest is BaseTest {
     AssetRegistry public assetRegistry;
     PaymentTokenRegistry public paymentRegistry;
@@ -46,7 +46,7 @@ contract LPLifecycleTest is BaseTest {
 
         // Deploy contracts with registry
         market = new OwnMarket(address(protocolRegistry));
-        vaultMgr = new VaultManager(Actors.ADMIN, address(protocolRegistry), 30);
+        vaultMgr = new VaultManager(Actors.ADMIN, address(protocolRegistry));
 
         // Register market and vault manager
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
@@ -57,9 +57,9 @@ contract LPLifecycleTest is BaseTest {
             "Own USDC Vault",
             "oUSDC",
             address(protocolRegistry),
+            Actors.VM1,
             8000,
-            0, // no AUM fee for cleaner math
-            1000
+            0 // no AUM fee for cleaner math
         );
 
         eTSLA = new EToken("Own Tesla", "eTSLA", TSLA, address(protocolRegistry), address(usdc));
@@ -74,9 +74,22 @@ contract LPLifecycleTest is BaseTest {
         // Register VM1
         vm.startPrank(Actors.VM1);
         vaultMgr.registerVM(address(usdcVault));
-        vaultMgr.setSpread(50);
         vaultMgr.setExposureCaps(10_000_000e18, 5_000_000e18);
         vaultMgr.setPaymentTokenAcceptance(address(usdc), true);
+        vm.stopPrank();
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Helpers
+    // ──────────────────────────────────────────────────────────
+
+    /// @dev Deposit for LP via VM (deposit is onlyVM).
+    ///      Funds VM1 with USDC, VM1 deposits on behalf of LP (receiver).
+    function _lpDeposit(address lp, uint256 amount) internal returns (uint256 shares) {
+        _fundUSDC(Actors.VM1, amount);
+        vm.startPrank(Actors.VM1);
+        usdc.approve(address(usdcVault), amount);
+        shares = usdcVault.deposit(amount, lp);
         vm.stopPrank();
     }
 
@@ -85,12 +98,7 @@ contract LPLifecycleTest is BaseTest {
     // ══════════════════════════════════════════════════════════
 
     function test_lpDeposit_receivesShares() public {
-        _fundUSDC(Actors.LP1, LP_DEPOSIT);
-
-        vm.startPrank(Actors.LP1);
-        usdc.approve(address(usdcVault), LP_DEPOSIT);
-        uint256 shares = usdcVault.deposit(LP_DEPOSIT, Actors.LP1);
-        vm.stopPrank();
+        uint256 shares = _lpDeposit(Actors.LP1, LP_DEPOSIT);
 
         assertGt(shares, 0, "LP received shares");
         assertEq(usdcVault.balanceOf(Actors.LP1), shares);
@@ -102,19 +110,8 @@ contract LPLifecycleTest is BaseTest {
     // ══════════════════════════════════════════════════════════
 
     function test_multipleLPs_proportionalShares() public {
-        // LP1 deposits 100k
-        _fundUSDC(Actors.LP1, LP_DEPOSIT);
-        vm.startPrank(Actors.LP1);
-        usdc.approve(address(usdcVault), LP_DEPOSIT);
-        uint256 shares1 = usdcVault.deposit(LP_DEPOSIT, Actors.LP1);
-        vm.stopPrank();
-
-        // LP2 deposits 200k
-        _fundUSDC(Actors.LP2, LP_DEPOSIT * 2);
-        vm.startPrank(Actors.LP2);
-        usdc.approve(address(usdcVault), LP_DEPOSIT * 2);
-        uint256 shares2 = usdcVault.deposit(LP_DEPOSIT * 2, Actors.LP2);
-        vm.stopPrank();
+        uint256 shares1 = _lpDeposit(Actors.LP1, LP_DEPOSIT);
+        uint256 shares2 = _lpDeposit(Actors.LP2, LP_DEPOSIT * 2);
 
         // LP2 deposited 2x, should have ~2x shares
         assertApproxEqAbs(shares2, shares1 * 2, 1, "LP2 has 2x shares");
@@ -123,60 +120,15 @@ contract LPLifecycleTest is BaseTest {
     }
 
     // ══════════════════════════════════════════════════════════
-    //  Test: LP delegates to VM
-    // ══════════════════════════════════════════════════════════
-
-    function test_lpDelegation_flow() public {
-        // LP1 proposes delegation to VM1
-        vm.prank(Actors.LP1);
-        vaultMgr.proposeDelegation(Actors.VM1);
-
-        // VM1 accepts
-        vm.prank(Actors.VM1);
-        vaultMgr.acceptDelegation(Actors.LP1);
-
-        // Verify delegation
-        assertEq(vaultMgr.getDelegatedVM(Actors.LP1), Actors.VM1);
-
-        address[] memory lps = vaultMgr.getDelegatedLPs(Actors.VM1);
-        assertEq(lps.length, 1);
-        assertEq(lps[0], Actors.LP1);
-    }
-
-    // ══════════════════════════════════════════════════════════
-    //  Test: LP removes delegation
-    // ══════════════════════════════════════════════════════════
-
-    function test_lpRemovesDelegation() public {
-        // Setup delegation
-        vm.prank(Actors.LP1);
-        vaultMgr.proposeDelegation(Actors.VM1);
-        vm.prank(Actors.VM1);
-        vaultMgr.acceptDelegation(Actors.LP1);
-
-        // LP removes
-        vm.prank(Actors.LP1);
-        vaultMgr.removeDelegation();
-
-        assertEq(vaultMgr.getDelegatedVM(Actors.LP1), address(0));
-        assertEq(vaultMgr.getDelegatedLPs(Actors.VM1).length, 0);
-    }
-
-    // ══════════════════════════════════════════════════════════
     //  Test: Share price appreciates with donated yield
     // ══════════════════════════════════════════════════════════
 
     function test_sharePriceAppreciates() public {
-        // LP1 deposits
-        _fundUSDC(Actors.LP1, LP_DEPOSIT);
-        vm.startPrank(Actors.LP1);
-        usdc.approve(address(usdcVault), LP_DEPOSIT);
-        uint256 shares = usdcVault.deposit(LP_DEPOSIT, Actors.LP1);
-        vm.stopPrank();
+        uint256 shares = _lpDeposit(Actors.LP1, LP_DEPOSIT);
 
         uint256 sharePriceBefore = usdcVault.convertToAssets(1e6); // using 1 share unit
 
-        // Simulate yield: donate USDC directly to vault (e.g., aUSDC interest or spread revenue)
+        // Simulate yield: donate USDC directly to vault (e.g., aUSDC interest)
         uint256 yieldAmount = 10_000e6; // $10k yield
         _fundUSDC(address(usdcVault), yieldAmount);
 
@@ -193,15 +145,12 @@ contract LPLifecycleTest is BaseTest {
     // ══════════════════════════════════════════════════════════
 
     function test_asyncWithdrawal_request() public {
-        _fundUSDC(Actors.LP1, LP_DEPOSIT);
-        vm.startPrank(Actors.LP1);
-        usdc.approve(address(usdcVault), LP_DEPOSIT);
-        uint256 shares = usdcVault.deposit(LP_DEPOSIT, Actors.LP1);
+        uint256 shares = _lpDeposit(Actors.LP1, LP_DEPOSIT);
 
         // Request withdrawal of half shares
         uint256 halfShares = shares / 2;
+        vm.prank(Actors.LP1);
         uint256 requestId = usdcVault.requestWithdrawal(halfShares);
-        vm.stopPrank();
 
         // Shares escrowed in vault
         assertEq(usdcVault.balanceOf(Actors.LP1), shares - halfShares, "shares escrowed");
@@ -224,12 +173,10 @@ contract LPLifecycleTest is BaseTest {
     // ══════════════════════════════════════════════════════════
 
     function test_asyncWithdrawal_fulfill() public {
-        _fundUSDC(Actors.LP1, LP_DEPOSIT);
-        vm.startPrank(Actors.LP1);
-        usdc.approve(address(usdcVault), LP_DEPOSIT);
-        uint256 shares = usdcVault.deposit(LP_DEPOSIT, Actors.LP1);
+        uint256 shares = _lpDeposit(Actors.LP1, LP_DEPOSIT);
+
+        vm.prank(Actors.LP1);
         uint256 requestId = usdcVault.requestWithdrawal(shares);
-        vm.stopPrank();
 
         uint256 usdcBefore = usdc.balanceOf(Actors.LP1);
 
@@ -253,16 +200,15 @@ contract LPLifecycleTest is BaseTest {
     // ══════════════════════════════════════════════════════════
 
     function test_asyncWithdrawal_cancel() public {
-        _fundUSDC(Actors.LP1, LP_DEPOSIT);
-        vm.startPrank(Actors.LP1);
-        usdc.approve(address(usdcVault), LP_DEPOSIT);
-        uint256 shares = usdcVault.deposit(LP_DEPOSIT, Actors.LP1);
+        uint256 shares = _lpDeposit(Actors.LP1, LP_DEPOSIT);
+
+        vm.prank(Actors.LP1);
         uint256 requestId = usdcVault.requestWithdrawal(shares);
 
         assertEq(usdcVault.balanceOf(Actors.LP1), 0, "all shares escrowed");
 
+        vm.prank(Actors.LP1);
         usdcVault.cancelWithdrawal(requestId);
-        vm.stopPrank();
 
         assertEq(usdcVault.balanceOf(Actors.LP1), shares, "shares returned");
 
@@ -276,13 +222,11 @@ contract LPLifecycleTest is BaseTest {
     // ══════════════════════════════════════════════════════════
 
     function test_asyncWithdrawal_cancelOnlyOwner() public {
-        _fundUSDC(Actors.LP1, LP_DEPOSIT);
-        vm.startPrank(Actors.LP1);
-        usdc.approve(address(usdcVault), LP_DEPOSIT);
-        usdcVault.deposit(LP_DEPOSIT, Actors.LP1);
+        _lpDeposit(Actors.LP1, LP_DEPOSIT);
         uint256 lp1Shares = usdcVault.balanceOf(Actors.LP1);
+
+        vm.prank(Actors.LP1);
         uint256 requestId = usdcVault.requestWithdrawal(lp1Shares);
-        vm.stopPrank();
 
         vm.prank(Actors.LP2);
         vm.expectRevert(abi.encodeWithSignature("NotRequestOwner(uint256,address)", requestId, Actors.LP2));
@@ -294,19 +238,8 @@ contract LPLifecycleTest is BaseTest {
     // ══════════════════════════════════════════════════════════
 
     function test_asyncWithdrawal_FIFOQueue() public {
-        // LP1 and LP2 deposit
-        _fundUSDC(Actors.LP1, LP_DEPOSIT);
-        _fundUSDC(Actors.LP2, LP_DEPOSIT);
-
-        vm.startPrank(Actors.LP1);
-        usdc.approve(address(usdcVault), LP_DEPOSIT);
-        usdcVault.deposit(LP_DEPOSIT, Actors.LP1);
-        vm.stopPrank();
-
-        vm.startPrank(Actors.LP2);
-        usdc.approve(address(usdcVault), LP_DEPOSIT);
-        usdcVault.deposit(LP_DEPOSIT, Actors.LP2);
-        vm.stopPrank();
+        _lpDeposit(Actors.LP1, LP_DEPOSIT);
+        _lpDeposit(Actors.LP2, LP_DEPOSIT);
 
         // Both request withdrawals
         uint256 lp1Shares = usdcVault.balanceOf(Actors.LP1);
@@ -346,43 +279,27 @@ contract LPLifecycleTest is BaseTest {
     }
 
     // ══════════════════════════════════════════════════════════
-    //  Test: Full lifecycle — deposit, delegate, earn, withdraw
+    //  Test: Full lifecycle — deposit, earn, withdraw
     // ══════════════════════════════════════════════════════════
 
     function test_fullLPLifecycle() public {
-        // 1. LP deposits
-        _fundUSDC(Actors.LP1, LP_DEPOSIT);
-        vm.startPrank(Actors.LP1);
-        usdc.approve(address(usdcVault), LP_DEPOSIT);
-        uint256 shares = usdcVault.deposit(LP_DEPOSIT, Actors.LP1);
-        vm.stopPrank();
+        // 1. LP deposits via VM
+        uint256 shares = _lpDeposit(Actors.LP1, LP_DEPOSIT);
         assertGt(shares, 0);
 
-        // 2. LP delegates to VM
-        vm.prank(Actors.LP1);
-        vaultMgr.proposeDelegation(Actors.VM1);
-        vm.prank(Actors.VM1);
-        vaultMgr.acceptDelegation(Actors.LP1);
-        assertEq(vaultMgr.getDelegatedVM(Actors.LP1), Actors.VM1);
-
-        // 3. Simulate yield (donate USDC to vault)
+        // 2. Simulate yield (donate USDC to vault)
         uint256 yield_ = 5000e6;
         _fundUSDC(address(usdcVault), yield_);
         assertEq(usdcVault.totalAssets(), LP_DEPOSIT + yield_);
 
-        // 4. LP requests withdrawal of all shares
+        // 3. LP requests withdrawal of all shares
         vm.prank(Actors.LP1);
         uint256 requestId = usdcVault.requestWithdrawal(shares);
 
-        // 5. Withdrawal fulfilled — LP gets deposit + yield (1 wei ERC-4626 rounding)
+        // 4. Withdrawal fulfilled — LP gets deposit + yield (1 wei ERC-4626 rounding)
         uint256 assets = usdcVault.fulfillWithdrawal(requestId);
         assertApproxEqAbs(assets, LP_DEPOSIT + yield_, 1, "LP received deposit + yield");
         assertApproxEqAbs(usdc.balanceOf(Actors.LP1), LP_DEPOSIT + yield_, 1);
-
-        // 6. LP removes delegation
-        vm.prank(Actors.LP1);
-        vaultMgr.removeDelegation();
-        assertEq(vaultMgr.getDelegatedVM(Actors.LP1), address(0));
     }
 
     // ══════════════════════════════════════════════════════════
@@ -390,15 +307,12 @@ contract LPLifecycleTest is BaseTest {
     // ══════════════════════════════════════════════════════════
 
     function test_erc4626_standardWithdraw() public {
-        _fundUSDC(Actors.LP1, LP_DEPOSIT);
-        vm.startPrank(Actors.LP1);
-        usdc.approve(address(usdcVault), LP_DEPOSIT);
-        usdcVault.deposit(LP_DEPOSIT, Actors.LP1);
+        _lpDeposit(Actors.LP1, LP_DEPOSIT);
 
         // Standard ERC-4626 withdraw
         uint256 usdcBefore = usdc.balanceOf(Actors.LP1);
+        vm.prank(Actors.LP1);
         uint256 shares = usdcVault.withdraw(LP_DEPOSIT, Actors.LP1, Actors.LP1);
-        vm.stopPrank();
 
         assertGt(shares, 0);
         assertEq(usdc.balanceOf(Actors.LP1), usdcBefore + LP_DEPOSIT);
@@ -410,14 +324,11 @@ contract LPLifecycleTest is BaseTest {
     // ══════════════════════════════════════════════════════════
 
     function test_erc4626_standardRedeem() public {
-        _fundUSDC(Actors.LP1, LP_DEPOSIT);
-        vm.startPrank(Actors.LP1);
-        usdc.approve(address(usdcVault), LP_DEPOSIT);
-        uint256 shares = usdcVault.deposit(LP_DEPOSIT, Actors.LP1);
+        uint256 shares = _lpDeposit(Actors.LP1, LP_DEPOSIT);
 
         uint256 usdcBefore = usdc.balanceOf(Actors.LP1);
+        vm.prank(Actors.LP1);
         uint256 assets = usdcVault.redeem(shares, Actors.LP1, Actors.LP1);
-        vm.stopPrank();
 
         assertEq(assets, LP_DEPOSIT);
         assertEq(usdc.balanceOf(Actors.LP1), usdcBefore + LP_DEPOSIT);
@@ -428,11 +339,7 @@ contract LPLifecycleTest is BaseTest {
     // ══════════════════════════════════════════════════════════
 
     function test_vaultViewFunctions() public {
-        _fundUSDC(Actors.LP1, LP_DEPOSIT);
-        vm.startPrank(Actors.LP1);
-        usdc.approve(address(usdcVault), LP_DEPOSIT);
-        usdcVault.deposit(LP_DEPOSIT, Actors.LP1);
-        vm.stopPrank();
+        _lpDeposit(Actors.LP1, LP_DEPOSIT);
 
         assertEq(usdcVault.asset(), address(usdc));
         assertEq(usdcVault.totalAssets(), LP_DEPOSIT);
