@@ -59,27 +59,13 @@ contract DividendFlowTest is BaseTest {
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
         protocolRegistry.setAddress(protocolRegistry.VAULT_MANAGER(), address(vaultMgr));
 
-        usdcVault = new OwnVault(
-            address(usdc),
-            "Own USDC Vault",
-            "oUSDC",
-            address(protocolRegistry),
-            8000,
-            50,
-            1000
-        );
+        usdcVault = new OwnVault(address(usdc), "Own USDC Vault", "oUSDC", address(protocolRegistry), 8000, 50, 1000);
 
         // eTSLA with USDC as reward token (for dividends)
         eTSLA = new EToken("Own Tesla", "eTSLA", TSLA, address(protocolRegistry), address(usdc));
 
-        AssetConfig memory config = AssetConfig({
-            activeToken: address(eTSLA),
-            legacyTokens: new address[](0),
-            minCollateralRatio: 11_000,
-            liquidationThreshold: 10_500,
-            liquidationReward: 500,
-            active: true
-        });
+        AssetConfig memory config =
+            AssetConfig({activeToken: address(eTSLA), legacyTokens: new address[](0), active: true, volatilityLevel: 2});
         assetRegistry.addAsset(TSLA, address(eTSLA), config);
         paymentRegistry.addPaymentToken(address(usdc));
 
@@ -269,8 +255,7 @@ contract DividendFlowTest is BaseTest {
     function test_dividendFlow_depositWithZeroSupply_reverts() public {
         // Deploy a fresh eToken with no supply
         vm.prank(Actors.ADMIN);
-        EToken freshToken =
-            new EToken("Fresh", "eFRESH", bytes32("FRESH"), address(protocolRegistry), address(usdc));
+        EToken freshToken = new EToken("Fresh", "eFRESH", bytes32("FRESH"), address(protocolRegistry), address(usdc));
 
         _fundUSDC(Actors.VM1, 100e6);
         vm.startPrank(Actors.VM1);

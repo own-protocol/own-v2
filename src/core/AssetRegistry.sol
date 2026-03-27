@@ -36,7 +36,6 @@ contract AssetRegistry is IAssetRegistry, Ownable {
     function addAsset(bytes32 ticker, address eToken, AssetConfig calldata config) external onlyOwner {
         if (_registered[ticker]) revert AssetAlreadyExists(ticker);
         if (eToken == address(0)) revert ZeroAddress();
-        _validateConfig(config);
 
         _assets[ticker] = config;
         _assets[ticker].activeToken = eToken;
@@ -51,12 +50,9 @@ contract AssetRegistry is IAssetRegistry, Ownable {
     /// @inheritdoc IAssetRegistry
     function updateAssetConfig(bytes32 ticker, AssetConfig calldata config) external onlyOwner {
         if (!_registered[ticker]) revert AssetNotFound(ticker);
-        _validateConfig(config);
 
-        // Preserve activeToken and legacyTokens — only update numeric params
-        _assets[ticker].minCollateralRatio = config.minCollateralRatio;
-        _assets[ticker].liquidationThreshold = config.liquidationThreshold;
-        _assets[ticker].liquidationReward = config.liquidationReward;
+        // Preserve activeToken, legacyTokens, and active — only update configurable params
+        _assets[ticker].volatilityLevel = config.volatilityLevel;
 
         emit AssetUpdated(ticker, _assets[ticker]);
     }
@@ -135,17 +131,5 @@ contract AssetRegistry is IAssetRegistry, Ownable {
         }
 
         return false;
-    }
-
-    // ──────────────────────────────────────────────────────────
-    //  Internal
-    // ──────────────────────────────────────────────────────────
-
-    /// @dev Validate collateral parameters.
-    function _validateConfig(
-        AssetConfig calldata config
-    ) private pure {
-        if (config.minCollateralRatio == 0) revert InvalidCollateralParams();
-        if (config.liquidationThreshold >= config.minCollateralRatio) revert InvalidThresholds();
     }
 }

@@ -132,18 +132,14 @@ struct WithdrawalRequest {
 /// @notice Configuration for a whitelisted asset.
 /// @param activeToken           Address of the current active eToken.
 /// @param legacyTokens          Previous eToken addresses (post-split).
-/// @param minCollateralRatio    Minimum collateral ratio in BPS (e.g. 11_000 = 110%).
-/// @param liquidationThreshold  Ratio below which liquidation is triggered, in BPS.
-/// @param liquidationReward     Liquidator discount in BPS.
 /// @param active                Whether the asset is active for new orders.
+/// @param volatilityLevel       Volatility tier for fee lookup (1=low, 2=medium, 3=high).
 /// @dev Oracle config (staleness, deviation) lives in IOracleVerifier as the single source of truth.
 struct AssetConfig {
     address activeToken;
     address[] legacyTokens;
-    uint256 minCollateralRatio;
-    uint256 liquidationThreshold;
-    uint256 liquidationReward;
     bool active;
+    uint8 volatilityLevel;
 }
 
 /// @notice Onchain state for a registered vault manager.

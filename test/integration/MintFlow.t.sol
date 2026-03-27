@@ -16,6 +16,7 @@ import {
 } from "../../src/interfaces/types/Types.sol";
 
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
+import {FeeCalculator} from "../../src/core/FeeCalculator.sol";
 import {OwnMarket} from "../../src/core/OwnMarket.sol";
 import {OwnVault} from "../../src/core/OwnVault.sol";
 import {PaymentTokenRegistry} from "../../src/core/PaymentTokenRegistry.sol";
@@ -41,6 +42,8 @@ contract MintFlowTest is BaseTest {
     OwnVault public usdcVault;
     EToken public eTSLA;
     EToken public eGOLD;
+    FeeCalculator public feeCalc;
+    address public feeAccrual = makeAddr("feeAccrual");
 
     // ──────────────────────────────────────────────────────────
     //  Constants
@@ -81,6 +84,17 @@ contract MintFlowTest is BaseTest {
         protocolRegistry.setAddress(protocolRegistry.ASSET_REGISTRY(), address(assetRegistry));
         protocolRegistry.setAddress(protocolRegistry.PAYMENT_TOKEN_REGISTRY(), address(paymentRegistry));
         protocolRegistry.setAddress(protocolRegistry.TREASURY(), Actors.FEE_RECIPIENT);
+
+        // Deploy FeeCalculator with zero fees
+        feeCalc = new FeeCalculator(address(protocolRegistry), Actors.ADMIN);
+        feeCalc.setMintFee(1, 0);
+        feeCalc.setMintFee(2, 0);
+        feeCalc.setMintFee(3, 0);
+        feeCalc.setRedeemFee(1, 0);
+        feeCalc.setRedeemFee(2, 0);
+        feeCalc.setRedeemFee(3, 0);
+        protocolRegistry.setAddress(keccak256("FEE_CALCULATOR"), address(feeCalc));
+        protocolRegistry.setAddress(keccak256("FEE_ACCRUAL"), feeAccrual);
 
         // 3. Deploy contracts with registry
         market = new OwnMarket(address(protocolRegistry));
@@ -124,25 +138,13 @@ contract MintFlowTest is BaseTest {
         vm.label(address(eGOLD), "eGOLD");
 
         // Register TSLA in asset registry
-        AssetConfig memory tslaConfig = AssetConfig({
-            activeToken: address(eTSLA),
-            legacyTokens: new address[](0),
-            minCollateralRatio: 11_000, // 110%
-            liquidationThreshold: 10_500, // 105%
-            liquidationReward: 500, // 5%
-            active: true
-        });
+        AssetConfig memory tslaConfig =
+            AssetConfig({activeToken: address(eTSLA), legacyTokens: new address[](0), active: true, volatilityLevel: 2});
         assetRegistry.addAsset(TSLA, address(eTSLA), tslaConfig);
 
         // Register GOLD in asset registry
-        AssetConfig memory goldConfig = AssetConfig({
-            activeToken: address(eGOLD),
-            legacyTokens: new address[](0),
-            minCollateralRatio: 11_000,
-            liquidationThreshold: 10_500,
-            liquidationReward: 500,
-            active: true
-        });
+        AssetConfig memory goldConfig =
+            AssetConfig({activeToken: address(eGOLD), legacyTokens: new address[](0), active: true, volatilityLevel: 2});
         assetRegistry.addAsset(GOLD, address(eGOLD), goldConfig);
 
         vm.stopPrank();

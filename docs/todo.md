@@ -38,15 +38,15 @@ _Single gov-upgradable contract that stores all protocol contract addresses. All
 
 _Replace spread-as-revenue with explicit mint/redeem fees. Fees are per-asset based on volatility level. Fixed for MVP, swappable for dynamic fees later._
 
-- 🔲 Add `volatilityLevel` (uint8) to `AssetConfig` struct in Types.sol
-- 🔲 `IFeeCalculator` interface — `getMintFee(bytes32 asset, uint8 volatilityLevel)` and `getRedeemFee(bytes32 asset, uint8 volatilityLevel)` returning fee in BPS
-- 🔲 `FeeCalculator` implementation — admin-set fixed fee rates per volatility level (MVP: simple mapping volatilityLevel → feeBps)
-- 🔲 Wire fee deduction into `OwnMarket.confirmOrder()`:
-  - Mint: deduct fee from stablecoin amount before eToken calculation
-  - Redeem: deduct fee from stablecoin payout
-- 🔲 Send collected fees to FeeAccrual contract
-- 🔲 Unit tests for FeeCalculator (fee lookup, admin setter, bounds validation)
-- 🔲 Unit tests for fee deduction in OwnMarket (mint fee applied, redeem fee applied, correct amounts transferred)
+- ✅ Add `volatilityLevel` (uint8) to `AssetConfig` struct in Types.sol (removed unused liquidation params)
+- ✅ `IFeeCalculator` interface — `getMintFee(bytes32 asset, uint256 amount)` and `getRedeemFee(bytes32 asset, uint256 amount)` returning fee in BPS (future-proof signature for dynamic fees)
+- ✅ `FeeCalculator` implementation — admin-set fixed fee rates per volatility level (mapping volatilityLevel → feeBps), resolves asset volatility from AssetRegistry
+- ✅ Wire fee deduction into `OwnMarket.confirmOrder()`:
+  - Mint: fee pulled from VM via transferFrom, deducted before eToken calculation
+  - Redeem: fee deducted from stablecoin payout, pulled from VM via transferFrom
+- ✅ Send collected fees to FeeAccrual contract address (via ProtocolRegistry)
+- ✅ Unit tests for FeeCalculator — 20 tests (fee lookup, admin setter, bounds validation, volatility level change)
+- ✅ Unit tests for fee deduction in OwnMarket — 7 tests (mint fee applied, redeem fee applied, correct amounts, events, zero-fee paths)
 
 ### 1.3 Fee Accrual & Distribution
 

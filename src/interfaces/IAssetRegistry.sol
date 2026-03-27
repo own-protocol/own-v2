@@ -45,12 +45,6 @@ interface IAssetRegistry {
     /// @notice The asset is not active for new orders.
     error AssetNotActive(bytes32 ticker);
 
-    /// @notice Invalid collateral parameters were provided.
-    error InvalidCollateralParams();
-
-    /// @notice Liquidation threshold must be below min collateral ratio.
-    error InvalidThresholds();
-
     /// @notice A zero address was provided.
     error ZeroAddress();
 

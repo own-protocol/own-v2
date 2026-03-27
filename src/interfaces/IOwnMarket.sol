@@ -57,6 +57,13 @@ interface IOwnMarket {
     /// @param orderId Expired order.
     event OrderExpired(uint256 indexed orderId);
 
+    /// @notice Emitted when a protocol fee is collected during order confirmation.
+    /// @param orderId    Order identifier.
+    /// @param claimId    Claim identifier.
+    /// @param token      Stablecoin in which the fee is denominated.
+    /// @param feeAmount  Fee amount collected.
+    event FeeCollected(uint256 indexed orderId, uint256 indexed claimId, address indexed token, uint256 feeAmount);
+
     /// @notice Emitted when a partial fill is settled and remaining funds returned.
     /// @param orderId         Order identifier.
     /// @param filledAmount    Total amount that was filled.

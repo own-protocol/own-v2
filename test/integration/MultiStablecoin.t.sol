@@ -10,6 +10,7 @@ import {
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
+import {FeeCalculator} from "../../src/core/FeeCalculator.sol";
 import {OwnMarket} from "../../src/core/OwnMarket.sol";
 import {OwnVault} from "../../src/core/OwnVault.sol";
 import {PaymentTokenRegistry} from "../../src/core/PaymentTokenRegistry.sol";
@@ -26,6 +27,8 @@ contract MultiStablecoinTest is BaseTest {
     OwnMarket public market;
     OwnVault public usdcVault;
     EToken public eTSLA;
+    FeeCalculator public feeCalc;
+    address public feeAccrual = makeAddr("feeAccrual");
 
     uint256 constant MINT_AMOUNT = 5000e6; // 5k (6 decimals for USDC/USDT)
     uint256 constant MINT_AMOUNT_18 = 5000e18; // 5k (18 decimals for USDS)
@@ -47,6 +50,17 @@ contract MultiStablecoinTest is BaseTest {
         protocolRegistry.setAddress(protocolRegistry.PAYMENT_TOKEN_REGISTRY(), address(paymentRegistry));
         protocolRegistry.setAddress(protocolRegistry.TREASURY(), Actors.FEE_RECIPIENT);
 
+        // Deploy FeeCalculator with zero fees
+        feeCalc = new FeeCalculator(address(protocolRegistry), Actors.ADMIN);
+        feeCalc.setMintFee(1, 0);
+        feeCalc.setMintFee(2, 0);
+        feeCalc.setMintFee(3, 0);
+        feeCalc.setRedeemFee(1, 0);
+        feeCalc.setRedeemFee(2, 0);
+        feeCalc.setRedeemFee(3, 0);
+        protocolRegistry.setAddress(keccak256("FEE_CALCULATOR"), address(feeCalc));
+        protocolRegistry.setAddress(keccak256("FEE_ACCRUAL"), feeAccrual);
+
         // Deploy contracts with registry
         market = new OwnMarket(address(protocolRegistry));
         vaultMgr = new VaultManager(Actors.ADMIN, address(protocolRegistry), 30);
@@ -55,20 +69,12 @@ contract MultiStablecoinTest is BaseTest {
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
         protocolRegistry.setAddress(protocolRegistry.VAULT_MANAGER(), address(vaultMgr));
 
-        usdcVault = new OwnVault(
-            address(usdc), "Own USDC Vault", "oUSDC", address(protocolRegistry), 8000, 0, 1000
-        );
+        usdcVault = new OwnVault(address(usdc), "Own USDC Vault", "oUSDC", address(protocolRegistry), 8000, 0, 1000);
 
         eTSLA = new EToken("Own Tesla", "eTSLA", TSLA, address(protocolRegistry), address(usdc));
 
-        AssetConfig memory config = AssetConfig({
-            activeToken: address(eTSLA),
-            legacyTokens: new address[](0),
-            minCollateralRatio: 11_000,
-            liquidationThreshold: 10_500,
-            liquidationReward: 500,
-            active: true
-        });
+        AssetConfig memory config =
+            AssetConfig({activeToken: address(eTSLA), legacyTokens: new address[](0), active: true, volatilityLevel: 2});
         assetRegistry.addAsset(TSLA, address(eTSLA), config);
 
         // Whitelist all three stablecoins

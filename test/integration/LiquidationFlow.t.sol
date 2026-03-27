@@ -56,20 +56,12 @@ contract LiquidationFlowTest is BaseTest {
         protocolRegistry.setAddress(protocolRegistry.VAULT_MANAGER(), address(vaultMgr));
         protocolRegistry.setAddress(protocolRegistry.LIQUIDATION_ENGINE(), address(liquidationEngine));
 
-        usdcVault = new OwnVault(
-            address(usdc), "Own USDC Vault", "oUSDC", address(protocolRegistry), 8000, 0, 1000
-        );
+        usdcVault = new OwnVault(address(usdc), "Own USDC Vault", "oUSDC", address(protocolRegistry), 8000, 0, 1000);
 
         eTSLA = new EToken("Own Tesla", "eTSLA", TSLA, address(protocolRegistry), address(usdc));
 
-        AssetConfig memory config = AssetConfig({
-            activeToken: address(eTSLA),
-            legacyTokens: new address[](0),
-            minCollateralRatio: 11_000,
-            liquidationThreshold: 10_500,
-            liquidationReward: 500,
-            active: true
-        });
+        AssetConfig memory config =
+            AssetConfig({activeToken: address(eTSLA), legacyTokens: new address[](0), active: true, volatilityLevel: 2});
         assetRegistry.addAsset(TSLA, address(eTSLA), config);
         paymentRegistry.addPaymentToken(address(usdc));
 

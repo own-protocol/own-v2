@@ -105,15 +105,21 @@ interface IProtocolRegistry {
 
     /// @notice Execute a pending timelocked change after the delay has elapsed.
     /// @param key The contract slot key to execute.
-    function executeTimelock(bytes32 key) external;
+    function executeTimelock(
+        bytes32 key
+    ) external;
 
     /// @notice Cancel a pending timelocked change.
     /// @param key The contract slot key to cancel.
-    function cancelTimelock(bytes32 key) external;
+    function cancelTimelock(
+        bytes32 key
+    ) external;
 
     /// @notice Returns the pending timelock proposal for a given key.
     /// @param key The contract slot key.
     /// @return newAddr     The proposed new address (address(0) if none).
     /// @return effectiveAt The timestamp after which it can be executed (0 if none).
-    function pendingTimelockOf(bytes32 key) external view returns (address newAddr, uint256 effectiveAt);
+    function pendingTimelockOf(
+        bytes32 key
+    ) external view returns (address newAddr, uint256 effectiveAt);
 }

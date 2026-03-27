@@ -98,5 +98,4 @@ contract LiquidationEngineTest is BaseTest {
         // No exposure = max health
         assertGe(hf, PRECISION);
     }
-
 }

@@ -3,9 +3,10 @@ pragma solidity 0.8.28;
 
 import {ProtocolRegistry} from "../../src/core/ProtocolRegistry.sol";
 import {IProtocolRegistry} from "../../src/interfaces/IProtocolRegistry.sol";
-import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+
 import {Actors} from "../helpers/Actors.sol";
 import {BaseTest} from "../helpers/BaseTest.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
 /// @title ProtocolRegistry Unit Tests
 /// @notice Tests first-time initialization, timelocked updates (propose/execute/cancel),
@@ -444,12 +445,16 @@ contract ProtocolRegistryTest is BaseTest {
     //  Fuzz
     // ══════════════════════════════════════════════════════════
 
-    function testFuzz_setAddress_anyKey(bytes32 key) public {
+    function testFuzz_setAddress_anyKey(
+        bytes32 key
+    ) public {
         vm.prank(Actors.ADMIN);
         reg.setAddress(key, addr1);
     }
 
-    function testFuzz_timelockLifecycle(uint256 delay) public {
+    function testFuzz_timelockLifecycle(
+        uint256 delay
+    ) public {
         delay = bound(delay, 1, 365 days);
 
         ProtocolRegistry customReg = new ProtocolRegistry(Actors.ADMIN, delay);

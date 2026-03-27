@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: BUSL-1.1
 pragma solidity 0.8.28;
 
-import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {IProtocolRegistry} from "../interfaces/IProtocolRegistry.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
 /// @title ProtocolRegistry — Central registry of all protocol contract addresses
 /// @notice Stores addresses of all protocol contracts. Other contracts look up dependencies here
@@ -132,7 +132,9 @@ contract ProtocolRegistry is IProtocolRegistry, Ownable {
     }
 
     /// @inheritdoc IProtocolRegistry
-    function executeTimelock(bytes32 key) external override {
+    function executeTimelock(
+        bytes32 key
+    ) external override {
         TimelockProposal memory proposal = _timelocks[key];
         if (proposal.newAddr == address(0)) revert TimelockNotProposed();
         if (block.timestamp < proposal.effectiveAt) revert TimelockNotReady();
@@ -145,14 +147,18 @@ contract ProtocolRegistry is IProtocolRegistry, Ownable {
     }
 
     /// @inheritdoc IProtocolRegistry
-    function cancelTimelock(bytes32 key) external override onlyOwner {
+    function cancelTimelock(
+        bytes32 key
+    ) external override onlyOwner {
         if (_timelocks[key].newAddr == address(0)) revert TimelockNotProposed();
         delete _timelocks[key];
         emit TimelockCancelled(key);
     }
 
     /// @inheritdoc IProtocolRegistry
-    function pendingTimelockOf(bytes32 key) external view override returns (address newAddr, uint256 effectiveAt) {
+    function pendingTimelockOf(
+        bytes32 key
+    ) external view override returns (address newAddr, uint256 effectiveAt) {
         TimelockProposal memory proposal = _timelocks[key];
         return (proposal.newAddr, proposal.effectiveAt);
     }

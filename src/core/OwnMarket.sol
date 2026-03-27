@@ -3,6 +3,7 @@ pragma solidity 0.8.28;
 
 import {IAssetRegistry} from "../interfaces/IAssetRegistry.sol";
 import {IEToken} from "../interfaces/IEToken.sol";
+import {IFeeCalculator} from "../interfaces/IFeeCalculator.sol";
 import {IOracleVerifier} from "../interfaces/IOracleVerifier.sol";
 import {IOwnMarket} from "../interfaces/IOwnMarket.sol";
 import {IProtocolRegistry} from "../interfaces/IProtocolRegistry.sol";
@@ -57,7 +58,9 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
     // ──────────────────────────────────────────────────────────
 
     /// @param registry_ ProtocolRegistry contract address.
-    constructor(address registry_) {
+    constructor(
+        address registry_
+    ) {
         registry = IProtocolRegistry(registry_);
     }
 
@@ -359,7 +362,8 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
     //  Internal — order execution
     // ──────────────────────────────────────────────────────────
 
-    /// @dev Execute a mint confirmation: compute spread-adjusted eToken amount and mint to user.
+    /// @dev Execute a mint confirmation: deduct protocol fee, compute spread-adjusted
+    ///      eToken amount, and mint to user. Fee is sent to FeeAccrual.
     /// @return eTokenAmount eTokens minted to the user.
     /// @return spreadAmount Spread revenue in stablecoin terms.
     function _executeMint(
@@ -368,23 +372,37 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         uint256 executionPrice,
         uint256 vmSpread
     ) private returns (uint256 eTokenAmount, uint256 spreadAmount) {
+        // Deduct protocol fee from stablecoin amount before eToken calculation.
+        // VM received claim.amount stablecoins at claim time; fee is pulled back from VM.
+        uint256 feeBps = IFeeCalculator(registry.feeCalculator()).getMintFee(order.asset, claim.amount);
+        // Round fee up (protocol-favorable)
+        uint256 feeAmount = Math.mulDiv(claim.amount, feeBps, BPS, Math.Rounding.Ceil);
+        uint256 netAmount = claim.amount - feeAmount;
+
+        // Pull fee from VM and send to FeeAccrual
+        if (feeAmount > 0) {
+            IERC20(order.stablecoin).safeTransferFrom(claim.vm, registry.feeAccrual(), feeAmount);
+            emit FeeCollected(claim.orderId, claim.claimId, order.stablecoin, feeAmount);
+        }
+
         // Effective price includes spread: user pays more per eToken
         uint256 effectivePrice = Math.mulDiv(executionPrice, BPS + vmSpread, BPS);
 
-        // Scale stablecoin amount to 18 decimals, then divide by effective price
+        // Scale net stablecoin amount to 18 decimals, then divide by effective price
         uint256 decimals = IERC20Metadata(order.stablecoin).decimals();
         uint256 decimalScaler = 10 ** (18 - decimals);
-        eTokenAmount = Math.mulDiv(claim.amount * decimalScaler, PRECISION, effectivePrice);
+        eTokenAmount = Math.mulDiv(netAmount * decimalScaler, PRECISION, effectivePrice);
 
         // Mint eTokens to the minter
         address eToken = IAssetRegistry(registry.assetRegistry()).getActiveToken(order.asset);
         IEToken(eToken).mint(order.user, eTokenAmount);
 
-        // Spread revenue in stablecoin terms (VM keeps all for MVP)
-        spreadAmount = Math.mulDiv(claim.amount, vmSpread, BPS + vmSpread);
+        // Spread revenue in stablecoin terms
+        spreadAmount = Math.mulDiv(netAmount, vmSpread, BPS + vmSpread);
     }
 
-    /// @dev Execute a redeem confirmation: compute stablecoin payout, transfer from VM, burn eTokens.
+    /// @dev Execute a redeem confirmation: compute stablecoin payout, deduct protocol fee,
+    ///      transfer from VM, and burn eTokens. Fee is sent to FeeAccrual.
     /// @return eTokenAmount eTokens burned from escrow.
     /// @return spreadAmount Spread revenue in stablecoin terms.
     function _executeRedeem(
@@ -393,26 +411,34 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         uint256 executionPrice,
         uint256 vmSpread
     ) private returns (uint256 eTokenAmount, uint256 spreadAmount) {
+        uint256 precisionWithDecimals = PRECISION * 10 ** (18 - IERC20Metadata(order.stablecoin).decimals());
+
         // Effective price includes spread: user receives less per eToken
-        uint256 effectivePrice = Math.mulDiv(executionPrice, BPS - vmSpread, BPS);
+        uint256 grossPayout =
+            Math.mulDiv(claim.amount, Math.mulDiv(executionPrice, BPS - vmSpread, BPS), precisionWithDecimals);
 
-        // Calculate stablecoin payout from eToken amount at effective price
-        uint256 decimals = IERC20Metadata(order.stablecoin).decimals();
-        uint256 decimalScaler = 10 ** (18 - decimals);
-        uint256 stablecoinPayout = Math.mulDiv(claim.amount, effectivePrice, PRECISION * decimalScaler);
+        // Deduct protocol fee from payout (round fee up — protocol-favorable)
+        uint256 feeAmount = Math.mulDiv(
+            grossPayout,
+            IFeeCalculator(registry.feeCalculator()).getRedeemFee(order.asset, claim.amount),
+            BPS,
+            Math.Rounding.Ceil
+        );
 
-        // VM sends stablecoins directly to the minter
-        IERC20(order.stablecoin).safeTransferFrom(claim.vm, order.user, stablecoinPayout);
+        // VM sends stablecoins: net payout to user, fee to FeeAccrual
+        IERC20(order.stablecoin).safeTransferFrom(claim.vm, order.user, grossPayout - feeAmount);
+        if (feeAmount > 0) {
+            IERC20(order.stablecoin).safeTransferFrom(claim.vm, registry.feeAccrual(), feeAmount);
+            emit FeeCollected(claim.orderId, claim.claimId, order.stablecoin, feeAmount);
+        }
 
         // Burn escrowed eTokens
-        address eToken = IAssetRegistry(registry.assetRegistry()).getActiveToken(order.asset);
-        IEToken(eToken).burn(address(this), claim.amount);
+        IEToken(IAssetRegistry(registry.assetRegistry()).getActiveToken(order.asset)).burn(address(this), claim.amount);
 
         eTokenAmount = claim.amount;
 
-        // Spread = value at oracle price minus what user received
-        uint256 valueAtOraclePrice = Math.mulDiv(claim.amount, executionPrice, PRECISION * decimalScaler);
-        spreadAmount = valueAtOraclePrice - stablecoinPayout;
+        // Spread = value at oracle price minus gross payout (before fee)
+        spreadAmount = Math.mulDiv(claim.amount, executionPrice, precisionWithDecimals) - grossPayout;
     }
 
     // ──────────────────────────────────────────────────────────

@@ -31,14 +31,7 @@ contract AssetRegistryTest is BaseTest {
     function _defaultConfig(
         address token
     ) internal pure returns (AssetConfig memory) {
-        return AssetConfig({
-            activeToken: token,
-            legacyTokens: new address[](0),
-            minCollateralRatio: 11_000, // 110%
-            liquidationThreshold: 10_500, // 105%
-            liquidationReward: 500, // 5%
-            active: true
-        });
+        return AssetConfig({activeToken: token, legacyTokens: new address[](0), active: true, volatilityLevel: 2});
     }
 
     // ──────────────────────────────────────────────────────────
@@ -85,37 +78,6 @@ contract AssetRegistryTest is BaseTest {
         registry.addAsset(TSLA, address(0), config);
     }
 
-    function test_addAsset_invalidThresholds_reverts() public {
-        // liquidationThreshold > minCollateralRatio is invalid
-        AssetConfig memory config = AssetConfig({
-            activeToken: eTSLA,
-            legacyTokens: new address[](0),
-            minCollateralRatio: 10_000, // 100%
-            liquidationThreshold: 11_000, // 110% > 100%
-            liquidationReward: 500,
-            active: true
-        });
-
-        vm.prank(Actors.ADMIN);
-        vm.expectRevert(IAssetRegistry.InvalidThresholds.selector);
-        registry.addAsset(TSLA, eTSLA, config);
-    }
-
-    function test_addAsset_zeroCollateralRatio_reverts() public {
-        AssetConfig memory config = AssetConfig({
-            activeToken: eTSLA,
-            legacyTokens: new address[](0),
-            minCollateralRatio: 0,
-            liquidationThreshold: 0,
-            liquidationReward: 500,
-            active: true
-        });
-
-        vm.prank(Actors.ADMIN);
-        vm.expectRevert(IAssetRegistry.InvalidCollateralParams.selector);
-        registry.addAsset(TSLA, eTSLA, config);
-    }
-
     // ──────────────────────────────────────────────────────────
     //  updateAssetConfig
     // ──────────────────────────────────────────────────────────
@@ -126,13 +88,13 @@ contract AssetRegistryTest is BaseTest {
         vm.startPrank(Actors.ADMIN);
         registry.addAsset(TSLA, eTSLA, config);
 
-        // Update collateral ratio
-        config.minCollateralRatio = 12_000; // 120%
+        // Update volatility level
+        config.volatilityLevel = 3;
         registry.updateAssetConfig(TSLA, config);
         vm.stopPrank();
 
         AssetConfig memory updated = registry.getAssetConfig(TSLA);
-        assertEq(updated.minCollateralRatio, 12_000);
+        assertEq(updated.volatilityLevel, 3);
     }
 
     function test_updateAssetConfig_nonAdmin_reverts() public {
@@ -313,10 +275,8 @@ contract AssetRegistryTest is BaseTest {
 
         AssetConfig memory stored = registry.getAssetConfig(TSLA);
         assertEq(stored.activeToken, eTSLA);
-        assertEq(stored.minCollateralRatio, 11_000);
-        assertEq(stored.liquidationThreshold, 10_500);
-        assertEq(stored.liquidationReward, 500);
         assertTrue(stored.active);
+        assertEq(stored.volatilityLevel, 2);
         assertEq(stored.legacyTokens.length, 0);
     }
 

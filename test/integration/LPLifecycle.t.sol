@@ -64,14 +64,8 @@ contract LPLifecycleTest is BaseTest {
 
         eTSLA = new EToken("Own Tesla", "eTSLA", TSLA, address(protocolRegistry), address(usdc));
 
-        AssetConfig memory config = AssetConfig({
-            activeToken: address(eTSLA),
-            legacyTokens: new address[](0),
-            minCollateralRatio: 11_000,
-            liquidationThreshold: 10_500,
-            liquidationReward: 500,
-            active: true
-        });
+        AssetConfig memory config =
+            AssetConfig({activeToken: address(eTSLA), legacyTokens: new address[](0), active: true, volatilityLevel: 2});
         assetRegistry.addAsset(TSLA, address(eTSLA), config);
         paymentRegistry.addPaymentToken(address(usdc));
 

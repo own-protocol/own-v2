@@ -18,6 +18,7 @@ import {
     VMConfig
 } from "../../src/interfaces/types/Types.sol";
 
+import {FeeCalculator} from "../../src/core/FeeCalculator.sol";
 import {Actors} from "../helpers/Actors.sol";
 import {BaseTest} from "../helpers/BaseTest.sol";
 import {MockERC20} from "../helpers/MockERC20.sol";
@@ -33,6 +34,7 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 contract OwnMarketTest is BaseTest {
     OwnMarket public market;
     AssetRegistry public assetReg;
+    FeeCalculator public feeCalc;
 
     MockERC20 public eTSLAToken;
 
@@ -40,6 +42,7 @@ contract OwnMarketTest is BaseTest {
     address public mockVaultManager = makeAddr("vaultManager");
     address public mockVault = makeAddr("vault");
     address public mockPaymentRegistry = makeAddr("paymentRegistry");
+    address public mockFeeAccrual = makeAddr("feeAccrual");
 
     uint256 constant DEFAULT_DEADLINE = 1 days;
     uint256 constant VM_SPREAD = 30; // 30 BPS = 0.3%
@@ -56,10 +59,8 @@ contract OwnMarketTest is BaseTest {
         AssetConfig memory config = AssetConfig({
             activeToken: address(eTSLAToken),
             legacyTokens: new address[](0),
-            minCollateralRatio: 11_000,
-            liquidationThreshold: 10_500,
-            liquidationReward: 500,
-            active: true
+            active: true,
+            volatilityLevel: 2
         });
         assetReg.addAsset(TSLA, address(eTSLAToken), config);
         vm.stopPrank();
@@ -69,6 +70,18 @@ contract OwnMarketTest is BaseTest {
         protocolRegistry.setAddress(protocolRegistry.ASSET_REGISTRY(), address(assetReg));
         protocolRegistry.setAddress(protocolRegistry.PAYMENT_TOKEN_REGISTRY(), mockPaymentRegistry);
         protocolRegistry.setAddress(protocolRegistry.VAULT_MANAGER(), mockVaultManager);
+
+        // Deploy FeeCalculator with zero fees so existing math tests remain unchanged
+        feeCalc = new FeeCalculator(address(protocolRegistry), Actors.ADMIN);
+        feeCalc.setMintFee(1, 0);
+        feeCalc.setMintFee(2, 0);
+        feeCalc.setMintFee(3, 0);
+        feeCalc.setRedeemFee(1, 0);
+        feeCalc.setRedeemFee(2, 0);
+        feeCalc.setRedeemFee(3, 0);
+        protocolRegistry.setAddress(keccak256("FEE_CALCULATOR"), address(feeCalc));
+        protocolRegistry.setAddress(keccak256("FEE_ACCRUAL"), mockFeeAccrual);
+
         market = new OwnMarket(address(protocolRegistry));
         vm.stopPrank();
         vm.label(address(market), "OwnMarket");
@@ -728,6 +741,216 @@ contract OwnMarketTest is BaseTest {
     //  Fuzz
     // ──────────────────────────────────────────────────────────
 
+    // ──────────────────────────────────────────────────────────
+    //  Fee deduction — mint
+    // ──────────────────────────────────────────────────────────
+
+    function test_confirmOrder_mint_feeDeductedFromStablecoin() public {
+        // Set 50 BPS (0.5%) mint fee for volatility level 2
+        vm.prank(Actors.ADMIN);
+        feeCalc.setMintFee(2, 50);
+
+        _mockVaultManager(Actors.VM1, VM_SPREAD);
+
+        uint256 stablecoinAmount = 1000e6; // 1000 USDC
+        uint256 orderId = _placeMintOrder(Actors.MINTER1, stablecoinAmount);
+
+        vm.prank(Actors.VM1);
+        uint256 claimId = market.claimOrder(orderId, stablecoinAmount);
+
+        // VM must approve market to pull the fee back
+        vm.prank(Actors.VM1);
+        usdc.approve(address(market), type(uint256).max);
+
+        vm.prank(Actors.VM1);
+        market.confirmOrder(claimId, _emptyPriceData());
+
+        // Fee = ceil(1000e6 * 50 / 10000) = 5e6 (5 USDC)
+        uint256 expectedFee = Math.mulDiv(stablecoinAmount, 50, BPS, Math.Rounding.Ceil);
+        assertEq(expectedFee, 5e6);
+
+        // FeeAccrual should have received the fee
+        assertEq(usdc.balanceOf(mockFeeAccrual), expectedFee);
+
+        // Minter eTokens should be computed from net amount (1000 - 5 = 995 USDC)
+        uint256 netAmount = stablecoinAmount - expectedFee;
+        uint256 effectivePrice = Math.mulDiv(TSLA_PRICE, BPS + VM_SPREAD, BPS);
+        uint256 expectedETokens = Math.mulDiv(netAmount * 1e12, PRECISION, effectivePrice);
+        assertEq(eTSLAToken.balanceOf(Actors.MINTER1), expectedETokens);
+    }
+
+    function test_confirmOrder_mint_zeroFee_noTransfer() public {
+        // Fees are already zero from setUp
+        _mockVaultManager(Actors.VM1, VM_SPREAD);
+
+        uint256 stablecoinAmount = 1000e6;
+        uint256 orderId = _placeMintOrder(Actors.MINTER1, stablecoinAmount);
+
+        vm.prank(Actors.VM1);
+        uint256 claimId = market.claimOrder(orderId, stablecoinAmount);
+
+        vm.prank(Actors.VM1);
+        market.confirmOrder(claimId, _emptyPriceData());
+
+        // No fee should be collected
+        assertEq(usdc.balanceOf(mockFeeAccrual), 0);
+    }
+
+    function test_confirmOrder_mint_feeEmitsEvent() public {
+        vm.prank(Actors.ADMIN);
+        feeCalc.setMintFee(2, 100); // 1%
+
+        _mockVaultManager(Actors.VM1, VM_SPREAD);
+
+        uint256 stablecoinAmount = 500e6;
+        uint256 orderId = _placeMintOrder(Actors.MINTER1, stablecoinAmount);
+
+        vm.prank(Actors.VM1);
+        uint256 claimId = market.claimOrder(orderId, stablecoinAmount);
+
+        // VM must approve market to pull the fee back
+        vm.prank(Actors.VM1);
+        usdc.approve(address(market), type(uint256).max);
+
+        uint256 expectedFee = Math.mulDiv(stablecoinAmount, 100, BPS, Math.Rounding.Ceil);
+
+        vm.expectEmit(true, true, true, true);
+        emit IOwnMarket.FeeCollected(orderId, claimId, address(usdc), expectedFee);
+
+        vm.prank(Actors.VM1);
+        market.confirmOrder(claimId, _emptyPriceData());
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Fee deduction — redeem
+    // ──────────────────────────────────────────────────────────
+
+    function test_confirmOrder_redeem_feeDeductedFromPayout() public {
+        // Set 50 BPS (0.5%) redeem fee for volatility level 2
+        vm.prank(Actors.ADMIN);
+        feeCalc.setRedeemFee(2, 50);
+
+        _mockVaultManager(Actors.VM1, VM_SPREAD);
+
+        uint256 eTokenAmount = 1e18; // 1 eTSLA
+        uint256 orderId = _placeRedeemOrder(Actors.MINTER1, eTokenAmount);
+
+        vm.prank(Actors.VM1);
+        uint256 claimId = market.claimOrder(orderId, eTokenAmount);
+
+        // Calculate gross payout
+        uint256 effectivePrice = Math.mulDiv(TSLA_PRICE, BPS - VM_SPREAD, BPS);
+        uint256 grossPayout = Math.mulDiv(eTokenAmount, effectivePrice, PRECISION * 1e12);
+
+        // Fee = ceil(grossPayout * 50 / 10000)
+        uint256 expectedFee = Math.mulDiv(grossPayout, 50, BPS, Math.Rounding.Ceil);
+        uint256 netPayout = grossPayout - expectedFee;
+
+        // Fund VM with enough to cover payout + fee
+        usdc.mint(Actors.VM1, grossPayout);
+        vm.prank(Actors.VM1);
+        usdc.approve(address(market), grossPayout);
+
+        vm.prank(Actors.VM1);
+        market.confirmOrder(claimId, _emptyPriceData());
+
+        // Minter receives net payout
+        assertEq(usdc.balanceOf(Actors.MINTER1), netPayout);
+        // FeeAccrual receives fee
+        assertEq(usdc.balanceOf(mockFeeAccrual), expectedFee);
+    }
+
+    function test_confirmOrder_redeem_zeroFee_noTransfer() public {
+        // Fees are already zero from setUp
+        _mockVaultManager(Actors.VM1, VM_SPREAD);
+
+        uint256 eTokenAmount = 1e18;
+        uint256 orderId = _placeRedeemOrder(Actors.MINTER1, eTokenAmount);
+
+        vm.prank(Actors.VM1);
+        uint256 claimId = market.claimOrder(orderId, eTokenAmount);
+
+        uint256 effectivePrice = Math.mulDiv(TSLA_PRICE, BPS - VM_SPREAD, BPS);
+        uint256 expectedPayout = Math.mulDiv(eTokenAmount, effectivePrice, PRECISION * 1e12);
+
+        usdc.mint(Actors.VM1, expectedPayout);
+        vm.prank(Actors.VM1);
+        usdc.approve(address(market), expectedPayout);
+
+        vm.prank(Actors.VM1);
+        market.confirmOrder(claimId, _emptyPriceData());
+
+        // Minter gets full payout, no fee collected
+        assertEq(usdc.balanceOf(Actors.MINTER1), expectedPayout);
+        assertEq(usdc.balanceOf(mockFeeAccrual), 0);
+    }
+
+    function test_confirmOrder_redeem_feeEmitsEvent() public {
+        vm.prank(Actors.ADMIN);
+        feeCalc.setRedeemFee(2, 100); // 1%
+
+        _mockVaultManager(Actors.VM1, VM_SPREAD);
+
+        uint256 eTokenAmount = 1e18;
+        uint256 orderId = _placeRedeemOrder(Actors.MINTER1, eTokenAmount);
+
+        vm.prank(Actors.VM1);
+        uint256 claimId = market.claimOrder(orderId, eTokenAmount);
+
+        uint256 effectivePrice = Math.mulDiv(TSLA_PRICE, BPS - VM_SPREAD, BPS);
+        uint256 grossPayout = Math.mulDiv(eTokenAmount, effectivePrice, PRECISION * 1e12);
+        uint256 expectedFee = Math.mulDiv(grossPayout, 100, BPS, Math.Rounding.Ceil);
+
+        usdc.mint(Actors.VM1, grossPayout);
+        vm.prank(Actors.VM1);
+        usdc.approve(address(market), grossPayout);
+
+        vm.expectEmit(true, true, true, true);
+        emit IOwnMarket.FeeCollected(orderId, claimId, address(usdc), expectedFee);
+
+        vm.prank(Actors.VM1);
+        market.confirmOrder(claimId, _emptyPriceData());
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Fee deduction — exact math with different decimals
+    // ──────────────────────────────────────────────────────────
+
+    function test_confirmOrder_mint_fee_usdc_6dec_exactMath() public {
+        // Set 30 BPS mint fee
+        vm.prank(Actors.ADMIN);
+        feeCalc.setMintFee(2, 30);
+
+        _mockVaultManager(Actors.VM1, VM_SPREAD);
+
+        uint256 stablecoinAmount = 250e6; // 250 USDC
+        uint256 orderId = _placeMintOrder(Actors.MINTER1, stablecoinAmount);
+
+        vm.prank(Actors.VM1);
+        uint256 claimId = market.claimOrder(orderId, stablecoinAmount);
+
+        // VM approves market to pull fee
+        vm.prank(Actors.VM1);
+        usdc.approve(address(market), type(uint256).max);
+
+        vm.prank(Actors.VM1);
+        market.confirmOrder(claimId, _emptyPriceData());
+
+        // Fee = ceil(250e6 * 30 / 10000) = ceil(750000) = 750000 = 0.75 USDC
+        uint256 expectedFee = Math.mulDiv(stablecoinAmount, 30, BPS, Math.Rounding.Ceil);
+        assertEq(usdc.balanceOf(mockFeeAccrual), expectedFee);
+
+        // Net = 250e6 - 750000 = 249250000 = 249.25 USDC
+        uint256 netAmount = stablecoinAmount - expectedFee;
+        uint256 effectivePrice = Math.mulDiv(TSLA_PRICE, BPS + VM_SPREAD, BPS);
+        uint256 expectedETokens = Math.mulDiv(netAmount * 1e12, PRECISION, effectivePrice);
+        assertEq(eTSLAToken.balanceOf(Actors.MINTER1), expectedETokens);
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Fuzz
+    // ──────────────────────────────────────────────────────────
+
     function testFuzz_placeMintOrder_anyAmount(
         uint256 amount
     ) public {
@@ -746,5 +969,4 @@ contract OwnMarketTest is BaseTest {
         assertEq(order.amount, amount);
         assertEq(usdc.balanceOf(address(market)), amount);
     }
-
 }
