@@ -20,6 +20,11 @@ This document captures the architectural discussions and design decisions from t
 12. [ZK Proofs for Oracle & Utilization](#12-zk-proofs-for-oracle--utilization)
 13. [Pyth & Chainlink for RWA Feeds](#13-pyth--chainlink-for-rwa-feeds)
 14. [forceApprove Pattern](#14-forceapprove-pattern)
+15. [Fee Model: Mint & Redemption Fees](#15-fee-model-mint--redemption-fees-replacing-spread-revenue)
+16. [Fee Accrual & Distribution](#16-fee-accrual--distribution)
+17. [VM Strategy Declaration](#17-vm-strategy-declaration-delta-neutral-vs-short)
+18. [Protocol Registry](#18-protocol-registry-centralized-contract-address-management)
+19. [LP Exit Queue & Redemption Enforcement](#19-lp-exit-queue--redemption-enforcement)
 
 ---
 
@@ -882,6 +887,205 @@ IERC20(weth).forceApprove(address(vault), amount);
 
 ---
 
+## 15. Fee Model: Mint & Redemption Fees (Replacing Spread Revenue)
+
+**Status: Decided**
+
+### The Change
+
+Spread is **no longer** the primary source of revenue for the protocol or LPs. The fundamental problem: when a VM applies a spread on execution price, there is no clean way to track and distribute that spread to the LPs whose collateral backs the trade. The spread goes to the VM as part of their execution, and routing it back to LPs requires complex accounting.
+
+### New Model: Per-Asset Mint & Redemption Fees
+
+The protocol charges a **mint fee** and a **redemption fee** on every order. These fees are:
+
+- **Set independently per asset** based on the asset's volatility profile.
+- **Stored in the asset config** as a volatility level number (1 = low volatile, 2 = medium, 3 = high, etc.) which maps to fee tiers.
+- **Fixed for MVP** — all assets use a static fee based on their volatility level.
+- **Dynamic later** — a swappable fee calculator contract can make fees dynamic based on utilisation, volatility level, market conditions, etc.
+
+### Contract Structure for Swappability
+
+```
+AssetConfig {
+    ...existing fields...
+    uint8 volatilityLevel;    // 1=low, 2=medium, 3=high — determines fee tier
+}
+
+// MVP: simple fixed fee lookup
+IFeeCalculator {
+    function getMintFee(bytes32 asset, uint8 volatilityLevel) → uint256 feeBps;
+    function getRedeemFee(bytes32 asset, uint8 volatilityLevel) → uint256 feeBps;
+}
+```
+
+For MVP, `FeeCalculator` is a simple contract with admin-set fixed fee rates per volatility level. Later, it can be swapped (via the protocol registry) for a `DynamicFeeCalculator` that factors in utilisation, recent volatility, time of day, etc.
+
+### Fee Application
+
+- **Mint**: fee is deducted from the stablecoin amount before eToken calculation. User pays `amount`, protocol takes `amount * mintFeeBps / BPS` as fee, remaining goes to the VM for execution.
+- **Redeem**: fee is deducted from the stablecoin payout. User receives `payout - (payout * redeemFeeBps / BPS)`.
+
+### Spread Still Exists (VM-Side)
+
+VMs still set their own spread for competitive pricing. But spread is the VM's margin — it is NOT the protocol/LP revenue mechanism. VMs keep their spread. Protocol and LP revenue comes from the mint/redeem fee.
+
+---
+
+## 16. Fee Accrual & Distribution
+
+**Status: Decided**
+
+### Fee Accrual Contract
+
+All mint and redemption fees accrue in a dedicated **FeeAccrual** contract. This contract holds collected fees and distributes them according to configured splits.
+
+### Distribution Model
+
+Fees are split three ways:
+
+1. **Protocol share** — set by protocol governance (e.g., 20%). Goes to the protocol treasury.
+2. **LP share** — the remainder after protocol share. Goes to the LP pool backing the trade.
+3. **VM share** — LPs decide how much of THEIR share goes to VMs. Can be zero. This is set at the LP level (or vault level for simplicity in MVP).
+
+```
+totalFee = orderAmount * feeBps / BPS
+protocolFee = totalFee * protocolShareBps / BPS
+lpFee = totalFee - protocolFee
+vmFee = lpFee * vmShareBps / BPS    // vmShareBps set by LPs, can be 0
+lpNet = lpFee - vmFee
+```
+
+### Claiming
+
+- Protocol claims its share to treasury.
+- LPs claim their share (reflected in vault share price or claimable balance).
+- VMs claim their share if any is allocated by the LPs.
+
+---
+
+## 17. VM Strategy Declaration (Delta Neutral vs Short)
+
+**Status: Decided — declare now, enforce later**
+
+### Design
+
+Each VM declares its hedging strategy when registering:
+
+- **Delta neutral** — VM hedges fully, maintaining no net exposure to price movement.
+- **Short position** — VM takes directional risk, not fully hedging.
+
+```solidity
+enum VMStrategy {
+    DeltaNeutral,
+    Short
+}
+
+VMConfig {
+    ...existing fields...
+    VMStrategy strategy;
+}
+```
+
+### MVP Behavior
+
+- VMs set their strategy on registration. It is recorded onchain.
+- **No liquidation of LPs in MVP.** The protocol does not enforce strategy compliance or liquidate LPs based on VM behavior.
+- Strategy declaration is informational for LPs choosing which VM to delegate to.
+
+### Future Enforcement
+
+The architecture is designed so that liquidation logic can be integrated later based on:
+- **Strategy type** — delta neutral VMs have different risk profiles than short VMs.
+- **Collateral type** — WETH-collateral vaults have different liquidation thresholds than USDC vaults.
+- **Delta neutral verification** — via zkTLS-based ZK proofs of offchain asset holdings (see Section 12, Layer 3).
+- **Liquidation triggers** — different triggers for delta neutral (verify hedge exists) vs short (monitor exposure ratio).
+
+The `LiquidationEngine` interface already supports extensibility. Adding strategy-aware liquidation is a matter of deploying a new `LiquidationEngine` implementation.
+
+---
+
+## 18. Protocol Registry (Centralized Contract Address Management)
+
+**Status: Decided**
+
+### Problem
+
+Multiple contracts need references to each other (OwnMarket → OracleVerifier, OwnMarket → VaultManager, etc.). Currently, each contract stores its own references as immutables or admin-set addresses. Upgrading any component (e.g., swapping OracleVerifier) requires updating every consuming contract individually.
+
+### Solution: ProtocolRegistry
+
+A single **ProtocolRegistry** contract that:
+
+1. Stores addresses of all protocol contracts (OwnMarket, VaultManager, OracleVerifier, FeeCalculator, FeeAccrual, LiquidationEngine, AssetRegistry, PaymentTokenRegistry, etc.).
+2. Is governance-upgradable (timelock + admin multisig).
+3. All other contracts reference `ProtocolRegistry` to look up addresses.
+
+```solidity
+interface IProtocolRegistry {
+    function getOracleVerifier() external view returns (address);
+    function getFeeCalculator() external view returns (address);
+    function getFeeAccrual() external view returns (address);
+    function getMarket() external view returns (address);
+    function getVaultManager() external view returns (address);
+    function getLiquidationEngine() external view returns (address);
+    function getAssetRegistry() external view returns (address);
+    function getPaymentTokenRegistry() external view returns (address);
+    // ... other protocol contracts
+}
+```
+
+### Benefits
+
+- **Single point of upgrade**: Swap OracleVerifier by updating one address in ProtocolRegistry. All consumers automatically use the new one.
+- **Future Pyth/Chainlink transition**: Deploy a PythOracleVerifier implementing `IOracleVerifier`, update ProtocolRegistry. Done.
+- **Fee calculator swapping**: Deploy DynamicFeeCalculator, update ProtocolRegistry. All fee lookups now use the new logic.
+- **Governance protection**: ProtocolRegistry changes go through timelock, giving users time to react.
+
+### Gas Consideration
+
+Each cross-contract call adds one extra SLOAD (reading the address from registry). This is ~2100 gas — negligible on Base L2.
+
+---
+
+## 19. LP Exit Queue & Redemption Enforcement
+
+**Status: Decided**
+
+### LP Exit Queue
+
+All LP withdrawals are queued with a **protocol-level wait period**:
+
+- LP calls `requestWithdrawal(shares)`.
+- Request enters FIFO queue with a mandatory wait period (e.g., 7 days, set at protocol level).
+- After the wait period, the withdrawal can be fulfilled if utilisation allows.
+- Wait period is configurable by governance via ProtocolRegistry or vault config.
+
+This wait period serves multiple purposes:
+- Prevents bank-run scenarios.
+- Gives VMs time to unwind positions.
+- Allows the protocol to manage utilisation smoothly.
+
+### LP Collateral Liquidation: Redemption Enforcement
+
+The **only** scenario where LP collateral is forcibly liquidated:
+
+1. A user places a **redeem order**.
+2. A VM **claims** the order (commits to fulfilling it).
+3. The VM **fails to confirm** (execute) the redemption within a **set duration**.
+4. The market is **open** during that duration (not off-hours).
+5. The execution price set by the user is **valid** (within slippage/limit bounds at current oracle price).
+
+When all conditions are met, the protocol liquidates LP collateral from the VM's backing vault to pay the user. This is the Tier 3 liquidation path — selling vault collateral via DEX to generate stablecoin payout for the user.
+
+### Key Parameters
+
+- `redemptionGracePeriod` — how long a VM has to confirm after claiming (e.g., 4 hours during market hours).
+- `withdrawalWaitPeriod` — mandatory queue time for LP exits (e.g., 7 days).
+- Both are protocol-level parameters, set via governance.
+
+---
+
 ## Appendix: Decision Summary
 
 | Topic | Status | Decision |
@@ -903,3 +1107,9 @@ IERC20(weth).forceApprove(address(vault), amount);
 | ZK oracle | Deferred | Design interfaces now; implement in 1-3 years |
 | Pyth/Chainlink | Decided | Hybrid long-term; own signer for MVP |
 | forceApprove | Decided | Use as safe default in all approvals |
+| Fee model | Decided | Per-asset mint/redeem fees (not spread); fixed for MVP, dynamic later |
+| Fee accrual | Decided | Dedicated FeeAccrual contract; split between protocol, LPs, VMs |
+| VM strategy | Decided | VMs declare delta neutral or short; informational in MVP, enforced later |
+| Protocol registry | Decided | Single gov-upgradable contract holding all protocol addresses |
+| LP exit queue | Decided | Mandatory wait period for all LP withdrawals |
+| LP liquidation | Decided | Only on failed redemption by VM within grace period during market hours |

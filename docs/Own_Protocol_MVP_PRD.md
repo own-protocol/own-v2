@@ -18,8 +18,14 @@ The MVP delivers an order-based protocol for tokenized RWA exposure on Base, wit
 - Vaults act as insurance/guarantee pools — LP collateral is trustless security for pending orders
 - Vault manager registration and LP delegation (mutual agreement)
 - LPs can be their own vault manager (same interface, same infrastructure requirements)
-- Unified spread model — VMs set their own spreads (>= minSpread floor), spread revenue split between VMs and LPs
-- Protocol revenue via AUM fee on vault collateral (~0.5%/yr) + reserve factor on LP spread earnings (~10%), both configurable
+- Per-asset mint & redemption fees based on volatility level — fixed for MVP, swappable for dynamic fees later
+- Fee accrual contract distributing fees to protocol, LPs, and VMs (LP-controlled VM share)
+- VMs set their own spread (>= minSpread floor) as competitive margin; spread is VM profit, not protocol/LP revenue
+- Protocol revenue via mint/redeem fees + AUM fee on vault collateral (~0.5%/yr), both configurable
+- VM strategy declaration (delta neutral or short) — informational in MVP, designed for future enforcement
+- ProtocolRegistry: single gov-upgradable contract holding all protocol contract addresses (enables oracle/fee calculator swapping)
+- Mandatory LP exit wait period (protocol-level, e.g. 7 days) for all withdrawal requests
+- Redemption enforcement: LP collateral liquidated only when VM fails to confirm claimed redemption within grace period during open markets
 - Offchain hedging by vault managers (no onchain hedging)
 - eTokens as standard ERC20 + Permit per asset, with admin-updatable name/symbol
 - Dividends via rewards-per-share accumulator (for dividend-paying assets like eTLT)
@@ -40,7 +46,10 @@ The MVP delivers an order-based protocol for tokenized RWA exposure on Base, wit
 - Governance and fee parameter voting
 - Cross-chain deployment
 - Permissionless asset listing
-- Insurance fund from protocol spread revenue
+- Insurance fund from protocol fee revenue
+- Dynamic fee calculator (utilisation-based, volatility-aware)
+- ZK proof verification for VM delta neutral enforcement
+- LP liquidation based on VM strategy + collateral type
 
 ---
 
@@ -63,6 +72,12 @@ The protocol is an order-based system with an escrow + claim marketplace. Minter
 - **Vault Manager Layer** — Handles manager registration, LP-to-manager delegation, spread configuration, exposure caps, and stablecoin acceptance settings.
 
 - **Liquidation Engine** — Monitors vault health ratios, triggers partial collateral liquidation when health drops below threshold, and pays liquidator rewards.
+
+- **Fee Calculator** — Per-asset fee lookup based on volatility level. MVP uses fixed rates; swappable for a dynamic calculator that factors in utilisation, volatility, and market conditions.
+
+- **Fee Accrual** — Collects all mint/redeem fees and distributes to protocol treasury, LPs, and VMs according to configured splits.
+
+- **Protocol Registry** — Single governance-upgradable contract storing addresses of all protocol contracts. All other contracts look up dependencies here, enabling component swaps (oracle, fee calculator, etc.) by updating a single address.
 
 ### Key Interactions
 
@@ -138,11 +153,21 @@ LPs may also act as their own vault manager. Self-managing LPs register as a VM 
 - Managing exposure within their self-set caps
 - Confirming order execution with signed oracle prices
 
+### VM Strategy Declaration
+
+Each VM declares its hedging strategy on registration:
+
+- **Delta Neutral** — VM hedges fully, maintaining no net exposure to price movement.
+- **Short** — VM takes directional risk, not fully hedging.
+
+In MVP, strategy is informational — LPs use it to choose which VM to delegate to. No enforcement or liquidation based on strategy. Future versions will enforce via ZK proofs of offchain holdings and trigger liquidation based on strategy type, collateral type, and delta neutral status.
+
 ### Vault Manager Onchain State
 
 | Field | Type | Description |
 |---|---|---|
-| `spread` | `uint` | VM's posted spread in BPS (must be >= minSpread) |
+| `strategy` | `enum` | DeltaNeutral or Short — declared on registration |
+| `spread` | `uint` | VM's posted spread in BPS (must be >= minSpread) — VM's competitive margin |
 | `maxExposure` | `uint` | Max USD notional the VM is willing to hedge |
 | `maxOffMarketExposure` | `uint` | Max exposure during off-market hours (typically lower) |
 | `currentExposure` | `uint` | Tracked on claim/confirm — current outstanding notional |
@@ -152,26 +177,52 @@ LPs may also act as their own vault manager. Self-managing LPs register as a VM 
 
 ---
 
-## 5. Spread & Slippage Model
+## 5. Fee Model & Slippage
 
-### Spread (VM-Side)
+### Per-Asset Mint & Redemption Fees (Protocol/LP Revenue)
 
-There is no separate protocol fee. All revenue comes through the spread.
+The protocol charges explicit mint and redemption fees on every order. These are the primary revenue mechanism for the protocol and LPs.
 
-- Each VM sets their own spread onchain (in BPS). Must be >= `minSpread` (protocol-enforced floor).
-- The spread is known upfront before the user places an order.
+- **Per-asset fees** based on the asset's `volatilityLevel` (1=low, 2=medium, 3=high).
+- Each asset's fee is set independently depending on its volatility profile.
+- **MVP**: Fixed fee per volatility level, admin-set in a `FeeCalculator` contract.
+- **Future**: Swappable `DynamicFeeCalculator` that factors in utilisation, volatility, and market conditions.
+- Applied at confirmation:
+  - **Mint**: fee deducted from stablecoin amount before eToken calculation. User pays `amount`, fee is taken, remainder goes to VM for execution.
+  - **Redeem**: fee deducted from stablecoin payout. User receives `payout - fee`.
+
+### Fee Distribution
+
+All collected fees accrue in a dedicated `FeeAccrual` contract and are split three ways:
+
+| Recipient | Source | Description |
+|---|---|---|
+| Protocol | Mint/redeem fee (protocol share) | Governance-set percentage (e.g., 20%) of all fees. Goes to protocol treasury. Steady revenue tied to volume. |
+| LPs | Mint/redeem fee (LP share) | Remainder after protocol share. Reflected in vault share price or claimable. |
+| Vault Manager | Mint/redeem fee (VM share of LP portion) | LPs decide how much of their share goes to VMs. Can be zero. Set per vault. |
+| Protocol | AUM fee | Annual fee on total vault collateral (~0.5%/yr default). Deducted continuously from `totalAssets()`. Steady revenue tied to TVL. |
+
+**AUM fee implementation**: On every vault interaction (deposit, withdraw, claim, liquidation), the protocol calculates elapsed time since last fee accrual and deducts the proportional fee from `totalAssets()` to a protocol treasury address. Similar to Yearn's management fee.
+
+**LP net earnings** = native yield (aUSDC/wstETH) + fee share - AUM fee.
+
+### Spread (VM-Side, Competitive Margin)
+
+VMs still set their own spread onchain. But spread is the VM's competitive margin — VMs keep their spread as profit from hedging, not as protocol/LP revenue.
+
+- Each VM sets their own spread in BPS. Must be >= `minSpread` (protocol-enforced floor).
 - Applied at execution on the oracle price:
   - **Mint**: user pays `oraclePrice * (1 + vmSpread)` per eToken
   - **Redeem**: user receives `oraclePrice * (1 - vmSpread)` per eToken
 - VMs compete on spread — lower spreads attract more orders.
-- VMs adjust their own spreads based on market conditions, risk, and hedging costs.
+- Spread is separate from the protocol fee — fees are the protocol/LP revenue mechanism.
 
 ### Slippage (User-Side, Market Orders Only)
 
 - Maximum oracle price movement tolerance between order placement and execution.
 - Protects the user against price moving during async execution.
 - Verification at confirmation: `|executionOraclePrice - placementOraclePrice| / placementOraclePrice <= slippage`
-- Slippage is **separate from spread** — spread is the cost of service (known upfront), slippage is price risk tolerance.
+- Slippage is **separate from fees and spread** — fees are cost of service, spread is VM margin, slippage is price risk tolerance.
 
 ### Limit Orders
 
@@ -179,31 +230,12 @@ There is no separate protocol fee. All revenue comes through the spread.
 - VM can only confirm when the oracle price matches (or is better than) the limit price.
 - Order stays open until filled, cancelled, or expired.
 
-### Revenue Distribution
-
-Spread revenue from each order is split between VMs and LPs. The protocol earns separately via AUM fee and reserve factor — it does not take a direct cut of the spread.
-
-| Recipient | Source | Description |
-|---|---|---|
-| Vault Manager | Spread (VM portion) | VM keeps their portion of spread revenue to cover hedging costs. VM receives full minter stablecoins — their spread portion is the profit margin after hedging. |
-| LPs | Spread (LP portion) | Remaining spread revenue accrues to the vault, increasing LP share price. |
-| Protocol | AUM fee | Annual fee on total vault collateral (~0.5%/yr default). Deducted continuously from `totalAssets()`. Steady revenue tied to TVL. |
-| Protocol | Reserve factor | Percentage of LP spread earnings (~10% default). Skimmed from the LP portion before it accrues to the vault. Variable revenue tied to volume. |
-
-**AUM fee implementation**: On every vault interaction (deposit, withdraw, claim, liquidation), the protocol calculates elapsed time since last fee accrual and deducts the proportional fee from `totalAssets()` to a protocol treasury address. Similar to Yearn's management fee.
-
-**Reserve factor implementation**: When a VM confirms an order, the spread revenue attributable to LPs is calculated. The reserve factor percentage is deducted and sent to the protocol treasury. The remainder accrues to the vault. Similar to Aave's reserve factor and Uniswap's fee switch.
-
-Both `aumFee` and `reserveFactor` are configurable by the protocol admin and can be updated at any time. They may differ per vault type.
-
-**LP net earnings** = native yield (aUSDC/wstETH) + spread earnings after reserve factor - AUM fee.
-
 ### Protocol Controls
 
-- **`minSpread`**: Protocol-enforced floor. No VM can set a spread below this. Guarantees minimum spread on every order.
-- **`maxUtilization`**: Hard cap per vault. When vault utilization exceeds this threshold, VMs from that vault cannot claim new orders. Protects against insufficient security coverage.
+- **`maxUtilization`**: Hard cap per vault. When vault utilization exceeds this threshold, VMs from that vault cannot claim new orders.
 - **`aumFee`**: Annual fee on vault collateral (default: 50 BPS / 0.5%). Configurable per vault.
-- **`reserveFactor`**: Percentage of LP spread earnings taken by protocol (default: 10%). Configurable per vault.
+- **`withdrawalWaitPeriod`**: Mandatory queue time for LP exits (protocol-level, e.g. 7 days).
+- **`redemptionGracePeriod`**: Time a VM has to confirm a claimed redemption before LP collateral liquidation is triggered.
 
 ---
 
@@ -265,7 +297,16 @@ Downstream contracts (OwnMarket, LiquidationEngine) only call `verifyPrice()` an
 | Multi-signer M-of-N | Post-MVP | price, timestamp, sequenceNumber, marketOpen, signature[] | M-of-N independent signers |
 | Composite (multi-backend) | Post-MVP | Multiple backend payloads | Cross-checks between backends for extra safety |
 
-To switch backends: deploy a new verifier contract implementing the interface, admin updates the verifier address in OwnMarket. No changes to OwnMarket, OwnVault, or LiquidationEngine.
+To switch backends: deploy a new verifier contract implementing the interface, update the address in ProtocolRegistry (single gov-upgradable contract). All consuming contracts read the oracle address from ProtocolRegistry, so no changes to OwnMarket, OwnVault, or LiquidationEngine are needed.
+
+### Signed Utilisation Data
+
+The same oracle signer service also signs utilisation data per vault. This provides accurate, gas-efficient utilisation checks on-chain without iterating over all assets:
+
+- Off-chain service computes `SUM(eToken.totalSupply(asset) * livePrice(asset)) / vaultTotalAssets()` using an indexer.
+- Signs `(vault, utilisationBps, totalExposureUSD, timestamp, sequenceNumber)`.
+- On-chain: one ECDSA verification — constant gas regardless of asset count.
+- On-chain `totalCommittedUSD` running counter serves as a sanity check / circuit breaker against the signed utilisation.
 
 ### Why In-House Oracle for RWAs
 
@@ -367,21 +408,24 @@ Same order model applies. VMs can execute during off-hours (pre/post-market, fut
 - If the user's slippage is exceeded by execution time, the order is unfulfilled and stablecoins are returned.
 - Redemption deadline enforcement is always active regardless of market hours.
 
-### 10.3 LP Exit — Async Withdrawal
+### 10.3 LP Exit — Queued Withdrawal with Wait Period
 
-LPs submit withdrawal requests that enter a FIFO queue (ERC-7540 pattern). Requests are fulfilled when utilization allows — remaining collateral must cover the minimum ratio for outstanding exposure.
+LPs submit withdrawal requests that enter a FIFO queue (ERC-7540 pattern). All withdrawals have a **mandatory wait period** set at the protocol level (e.g., 7 days). After the wait period, requests are fulfilled when utilization allows — remaining collateral must cover the minimum ratio for outstanding exposure.
 
+- **Wait period**: configurable by governance. Prevents bank-run scenarios, gives VMs time to unwind positions.
 - LPs can cancel pending requests at any time.
-- On fulfillment: burn shares, transfer collateral, reduce delegation to VM, emit event.
+- On fulfillment (after wait period): burn shares, transfer collateral, reduce delegation to VM, emit event.
+- Post-withdrawal utilisation check: fulfillment is blocked if it would push the vault below `maxUtilization`.
 - High utilization naturally produces higher yield per LP share, attracting new LP deposits and lowering utilization over time (organic equilibrium).
 
-### 10.4 Liquidation
+### 10.4 Liquidation & Redemption Enforcement
 
 See Section 8 for the three-tier liquidation mechanism. Additional notes:
 
 - Liquidation is always partial — only enough to restore the ratio above minimum.
-- Liquidators can bootstrap by self-minting eTokens (deposit collateral → mint at oracle + spread → liquidate for discounted collateral → profit if discount > spread).
-- Redemption deadline expiry triggers Tier 3 (LP collateral sold to pay the minter).
+- Liquidators can bootstrap by self-minting eTokens (deposit collateral → mint at oracle + fee → liquidate for discounted collateral → profit if discount > fee).
+- **LP collateral liquidation trigger**: The only scenario where LP collateral is forcibly liquidated is when a VM claims a redemption order but fails to confirm it within the `redemptionGracePeriod`, the market is open during that period, and the user's execution price is valid. This triggers Tier 3 — LP collateral is sold via DEX to pay the minter.
+- **No LP liquidation in MVP** for undercollateralisation based on VM strategy or hedge compliance. This is deferred to post-MVP when ZK proof enforcement is available.
 
 ### 10.5 Bad Debt (Collateral < Liabilities)
 
@@ -472,11 +516,11 @@ The following capabilities are explicitly out of scope for the MVP but the archi
 |---|---|---|
 | Execution model | Order-based with escrow + claim marketplace | Bridges onchain/offchain gap correctly; VMs compete openly; flash-loan resistant; supports async and near-instant execution |
 | Share standard | ERC-4626 | Industry-standard tokenized vault interface; composable with aggregators and yield tooling; automatic yield capture for rebasing/accruing assets |
-| Fee model | Spread (VM + LP) + AUM fee + reserve factor | Spread goes to VMs and LPs. Protocol earns via AUM fee (TVL-based, steady) and reserve factor (volume-based, variable). VM hedge capital untouched. Inspired by Aave reserve factor + Yearn management fee. |
+| Fee model | Per-asset mint/redeem fees + AUM fee | Fees based on asset volatility level (fixed for MVP, dynamic later). Split between protocol, LPs, VMs. VMs keep spread as margin. Protocol also earns AUM fee on vault TVL. |
 | Vault role | Insurance/guarantee pool | LP collateral is security, not fund-flow intermediary; minter stablecoins go directly to VMs |
 | Vault manager model | Delegation with mutual agreement | LPs choose their risk manager; managers compete on spread and reputation; LPs retain self-management option |
 | Order routing | Escrow + claim (open marketplace) | No protocol routing logic needed; VMs self-select; cross-vault competition; handles splits organically |
-| Spread vs slippage | Separated | Spread = cost of service (VM-set, known upfront). Slippage = price movement tolerance (user-set). Clean separation of concerns. |
+| Fee vs spread vs slippage | Separated | Fee = protocol/LP revenue (per-asset). Spread = VM competitive margin. Slippage = price movement tolerance (user-set). Clean separation of concerns. |
 | Minter payment | Any whitelisted stablecoin | VMs set which they accept; routing filters by token; maximizes accessibility |
 | stETH handling | Wrap to wstETH internally | Avoids rebasing rounding errors in share accounting; yield still accrues via exchange rate |
 | aUSDC handling | Hold aUSDC directly | ERC-4626 totalAssets() naturally reflects accrued Aave yield without additional accounting |

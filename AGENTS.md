@@ -86,9 +86,18 @@ The protocol is organised around an order-based escrow + claim marketplace, per-
 - eTokens are standard ERC20 + ERC-2612 (Permit) with admin-updatable `name()`/`symbol()`.
 - For dividend-paying assets (eTLT): includes rewards-per-share accumulator.
 
-**Oracle:**
-- Signed oracle price feeds verified onchain (ECDSA). MVP uses a single protocol-operated signer.
+**Oracle & Utilisation:**
+- Signed oracle price feeds and utilisation data verified onchain (ECDSA). MVP uses a protocol-operated signer service.
 - Includes staleness bounds, price deviation checks, and monotonic sequence numbers.
+- On-chain `totalCommittedUSD` counter as sanity check against signed utilisation.
+- OracleVerifier is upgradable via ProtocolRegistry — supports future transition to Pyth, Chainlink, or ZK oracles.
+
+**Fee System:**
+- `FeeCalculator`: per-asset mint/redeem fee lookup based on volatility level. Fixed for MVP, swappable for dynamic fees.
+- `FeeAccrual`: collects all fees, distributes to protocol treasury, LPs, and VMs.
+
+**Protocol Registry:**
+- Single governance-upgradable contract holding all protocol contract addresses. All contracts look up dependencies here.
 
 ```
 test/
@@ -281,45 +290,70 @@ Contracts should implement or be compatible with these standards where applicabl
 
 When implementing, reference the EIP directly. Do not rely on memory — check the spec.
 
-## Spread & Slippage Model
+## Fee Model & Slippage
 
-The protocol uses a unified spread model. There is no separate protocol fee — all revenue comes through the spread. Spread and slippage are cleanly separated concepts.
+The protocol charges per-asset mint and redemption fees. Spread is the VM's margin, not protocol/LP revenue. Fees and slippage are cleanly separated concepts.
 
-### Spread (VM-side)
+### Mint & Redemption Fees (Protocol/LP revenue)
+
+- Per-asset fees based on the asset's `volatilityLevel` (1=low, 2=medium, 3=high).
+- Each asset's fee is set independently depending on volatility.
+- **MVP**: Fixed fee per volatility level (admin-set in `FeeCalculator`).
+- **Future**: Swappable `DynamicFeeCalculator` that factors in utilisation, volatility, market conditions.
+- Applied at confirmation:
+  - Mint: fee deducted from stablecoin amount before eToken calculation.
+  - Redeem: fee deducted from stablecoin payout.
+- All fees accrue in `FeeAccrual` contract.
+
+### Fee Distribution
+
+Fees are split three ways:
+- **Protocol share**: set by governance (e.g., 20%). Goes to protocol treasury.
+- **LP share**: remainder after protocol share. Reflected in vault share price or claimable.
+- **VM share**: LPs decide how much of their share goes to VMs (can be zero).
+
+### Spread (VM-side, competitive margin)
 
 - Each VM sets their own spread onchain (BPS). Must be >= `minSpread` (protocol floor).
-- Spread is known upfront before the user places an order.
-- Applied at execution on the oracle price:
-  - Mint: user pays `oraclePrice * (1 + vmSpread)`
-  - Redeem: user receives `oraclePrice * (1 - vmSpread)`
-- VMs compete on spread — lower spreads attract more orders from the marketplace.
+- Spread is the VM's competitive margin — VMs keep their spread.
+- VMs compete on spread — lower spreads attract more orders.
+- Spread is NOT the protocol/LP revenue mechanism.
 
 ### Slippage (User-side, market orders only)
 
 - Max oracle price movement tolerance between order placement and execution.
 - Protects the user against price moving during async execution.
 - Verification at confirmation: `|executionOraclePrice - placementOraclePrice| / placementOraclePrice <= slippage`
-- Slippage is separate from spread — spread is cost of service, slippage is price risk.
+- Slippage is separate from fees — fees are cost of service, slippage is price risk.
 - Limit orders use exact price instead of slippage.
 
-### Protocol controls
+### Protocol Controls
 
-- **`minSpread`**: Protocol-enforced floor. No VM can go below. Guarantees minimum revenue.
 - **`maxUtilization`**: Hard cap per vault. When exceeded, VMs from that vault can't claim new orders.
+- **`withdrawalWaitPeriod`**: Mandatory queue time for LP exits (protocol-level).
+- **`redemptionGracePeriod`**: Time a VM has to confirm a claimed redemption before LP collateral liquidation is triggered.
 
-### Spread revenue split
+### Key Constants
 
-Spread revenue is split three ways:
-- A portion goes to the protocol
-- A portion goes to the vault manager
-- A portion goes to the LPs (reflected in vault share price appreciation)
-
-### Key constants
-
-- Spread: defined in BPS (basis points). `10000` = 100%.
-- `minSpread`: protocol-enforced floor, set by admin (e.g., 30 BPS = 0.3%)
-- Precision constant: `1e18` for price math, `10000` (BPS) for spread math
+- Fees: defined in BPS (basis points). `10000` = 100%.
+- Precision constant: `1e18` for price math, `10000` (BPS) for fee/spread math.
 - USDC: 6 decimals. aUSDC: 6 decimals. ETH/WETH: 18 decimals. stETH/wstETH: 18 decimals. eTokens: 18 decimals. Prices: 18 decimals. Always be explicit about decimal conversions.
+
+## Protocol Registry
+
+All protocol contracts are registered in a single `ProtocolRegistry` contract. Other contracts look up addresses from this registry instead of storing immutable/admin-set references. This enables:
+- Swapping OracleVerifier (e.g., to Pyth/Chainlink adapter) by updating one address.
+- Swapping FeeCalculator (e.g., to dynamic fees) by updating one address.
+- Governance-controlled upgrades with timelock protection.
+
+## VM Strategy
+
+VMs declare their hedging strategy (DeltaNeutral or Short) on registration. In MVP this is informational. Future versions will enforce strategy compliance via ZK proofs of offchain holdings and trigger liquidation based on strategy type, collateral type, and delta neutral status.
+
+## LP Exits & Liquidation
+
+- **All LP exits are queued** with a mandatory wait period set at protocol level.
+- **LP collateral is liquidated only** when a VM fails to confirm a claimed redemption within the grace period, markets are open, and the user's price is valid. This is the Tier 3 liquidation path.
 
 ## Security Vulnerability Checklist
 
