@@ -63,6 +63,37 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     uint256 private _lastAumFeeAccrual;
 
     // ──────────────────────────────────────────────────────────
+    //  Order fee accrual (Uniswap-style per-vault)
+    // ──────────────────────────────────────────────────────────
+
+    /// @dev Protocol's share of all order fees in BPS.
+    uint256 private _protocolShareBps;
+
+    /// @dev VM's share of the LP+VM remainder in BPS.
+    uint256 private _vmShareBps;
+
+    /// @dev Accrued unclaimed protocol fees per fee token.
+    mapping(address => uint256) private _protocolFees;
+
+    /// @dev Accrued unclaimed VM fees per fee token.
+    mapping(address => uint256) private _vmFees;
+
+    /// @dev Per fee-token cumulative LP rewards-per-share (scaled by PRECISION).
+    mapping(address => uint256) private _lpRewardsPerShare;
+
+    /// @dev Per (account, token) checkpoint — last-seen rewardsPerShare.
+    mapping(address => mapping(address => uint256)) private _lpCheckpoint;
+
+    /// @dev Per (account, token) accrued unclaimed LP fee rewards.
+    mapping(address => mapping(address => uint256)) private _lpAccruedFees;
+
+    /// @dev Registered fee tokens for this vault (max ~3 for MVP).
+    address[] private _rewardTokens;
+
+    /// @dev O(1) lookup: is this token in _rewardTokens?
+    mapping(address => bool) private _isRewardToken;
+
+    // ──────────────────────────────────────────────────────────
     //  Async deposit queue
     // ──────────────────────────────────────────────────────────
 
@@ -107,13 +138,15 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     //  Constructor
     // ──────────────────────────────────────────────────────────
 
-    /// @param asset_         Underlying collateral ERC-20.
-    /// @param name_          Vault share name.
-    /// @param symbol_        Vault share symbol.
-    /// @param registry_      ProtocolRegistry contract address.
-    /// @param vm_            Vault manager address bound to this vault.
-    /// @param maxUtilBps     Initial max utilization in BPS.
-    /// @param aumFeeBps      Initial AUM fee in BPS.
+    /// @param asset_            Underlying collateral ERC-20.
+    /// @param name_             Vault share name.
+    /// @param symbol_           Vault share symbol.
+    /// @param registry_         ProtocolRegistry contract address.
+    /// @param vm_               Vault manager address bound to this vault.
+    /// @param maxUtilBps        Initial max utilization in BPS.
+    /// @param aumFeeBps         Initial AUM fee in BPS.
+    /// @param protocolShareBps_ Initial protocol fee share in BPS.
+    /// @param vmShareBps_       Initial VM fee share (of LP+VM remainder) in BPS.
     constructor(
         address asset_,
         string memory name_,
@@ -121,14 +154,20 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
         address registry_,
         address vm_,
         uint256 maxUtilBps,
-        uint256 aumFeeBps
+        uint256 aumFeeBps,
+        uint256 protocolShareBps_,
+        uint256 vmShareBps_
     ) ERC4626(IERC20(asset_)) ERC20(name_, symbol_) {
+        if (protocolShareBps_ > BPS) revert ShareTooHigh(protocolShareBps_, BPS);
+        if (vmShareBps_ > BPS) revert ShareTooHigh(vmShareBps_, BPS);
         registry = IProtocolRegistry(registry_);
         vm = vm_;
         _maxUtilization = maxUtilBps;
         _aumFee = aumFeeBps;
         _lastAumFeeAccrual = block.timestamp;
         _vaultStatus = VaultStatus.Active;
+        _protocolShareBps = protocolShareBps_;
+        _vmShareBps = vmShareBps_;
     }
 
     // ──────────────────────────────────────────────────────────
@@ -332,6 +371,9 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
         // Remove from pending list
         _removePendingRequest(requestId);
 
+        // Auto-claim any accrued LP fee rewards before exit
+        _claimAllLPRewardsFor(req.owner);
+
         // Burn escrowed shares and transfer assets to owner
         _burn(address(this), shares);
         IERC20(asset()).safeTransfer(req.owner, assets);
@@ -458,7 +500,220 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     }
 
     // ──────────────────────────────────────────────────────────
-    //  Internal
+    //  Order fee accrual & claims
+    // ──────────────────────────────────────────────────────────
+
+    /// @inheritdoc IOwnVault
+    function depositFees(address token, uint256 amount) external onlyMarket {
+        if (amount == 0) return;
+
+        // Pull fee tokens from OwnMarket
+        IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
+
+        // Protocol takes its cut first (round up — protocol-favorable)
+        uint256 protocolAmount = amount.mulDiv(_protocolShareBps, BPS, Math.Rounding.Ceil);
+        uint256 remainder = amount - protocolAmount;
+
+        // VM takes its share of the remainder (round down — LP-favorable)
+        uint256 vmAmount = remainder.mulDiv(_vmShareBps, BPS);
+        uint256 lpAmount = remainder - vmAmount;
+
+        // Accrue protocol and VM balances
+        _protocolFees[token] += protocolAmount;
+        _vmFees[token] += vmAmount;
+
+        // LP share → rewards-per-share accumulator
+        uint256 supply = totalSupply();
+        if (supply == 0) {
+            // No LPs — redirect LP portion to protocol
+            _protocolFees[token] += lpAmount;
+        } else if (lpAmount > 0) {
+            // Rounding: floor — any dust stays for the next deposit
+            _lpRewardsPerShare[token] += lpAmount.mulDiv(PRECISION, supply);
+        }
+
+        // Register reward token if first time
+        if (!_isRewardToken[token]) {
+            _isRewardToken[token] = true;
+            _rewardTokens.push(token);
+        }
+
+        emit FeeDeposited(token, amount, protocolAmount, vmAmount, lpAmount);
+    }
+
+    /// @inheritdoc IOwnVault
+    function setProtocolShareBps(
+        uint256 shareBps
+    ) external onlyAdmin {
+        if (shareBps > BPS) revert ShareTooHigh(shareBps, BPS);
+        uint256 oldShare = _protocolShareBps;
+        _protocolShareBps = shareBps;
+        emit ProtocolShareUpdated(oldShare, shareBps);
+    }
+
+    /// @inheritdoc IOwnVault
+    function setVMShareBps(
+        uint256 shareBps
+    ) external onlyVM {
+        if (shareBps > BPS) revert ShareTooHigh(shareBps, BPS);
+        uint256 oldShare = _vmShareBps;
+        _vmShareBps = shareBps;
+        emit VMShareUpdated(oldShare, shareBps);
+    }
+
+    /// @inheritdoc IOwnVault
+    function protocolShareBps() external view returns (uint256) {
+        return _protocolShareBps;
+    }
+
+    /// @inheritdoc IOwnVault
+    function vmShareBps() external view returns (uint256) {
+        return _vmShareBps;
+    }
+
+    /// @inheritdoc IOwnVault
+    function claimProtocolFees(
+        address token
+    ) external nonReentrant {
+        uint256 amount = _protocolFees[token];
+        if (amount == 0) revert NoFeesToClaim();
+
+        _protocolFees[token] = 0;
+        IERC20(token).safeTransfer(registry.treasury(), amount);
+
+        emit ProtocolFeesClaimed(token, amount);
+    }
+
+    /// @inheritdoc IOwnVault
+    function claimVMFees(
+        address token
+    ) external onlyVM nonReentrant {
+        uint256 amount = _vmFees[token];
+        if (amount == 0) revert NoFeesToClaim();
+
+        _vmFees[token] = 0;
+        IERC20(token).safeTransfer(vm, amount);
+
+        emit VMFeesClaimed(token, amount);
+    }
+
+    /// @inheritdoc IOwnVault
+    function claimLPRewards(
+        address token
+    ) external nonReentrant returns (uint256 amount) {
+        _settleLPReward(msg.sender, token);
+
+        amount = _lpAccruedFees[msg.sender][token];
+        if (amount == 0) revert NoFeesToClaim();
+
+        _lpAccruedFees[msg.sender][token] = 0;
+        IERC20(token).safeTransfer(msg.sender, amount);
+
+        emit LPRewardsClaimed(msg.sender, token, amount);
+    }
+
+    /// @inheritdoc IOwnVault
+    function claimAllLPRewards() external nonReentrant {
+        _claimAllLPRewardsFor(msg.sender);
+    }
+
+    /// @inheritdoc IOwnVault
+    function accruedProtocolFees(
+        address token
+    ) external view returns (uint256) {
+        return _protocolFees[token];
+    }
+
+    /// @inheritdoc IOwnVault
+    function accruedVMFees(
+        address token
+    ) external view returns (uint256) {
+        return _vmFees[token];
+    }
+
+    /// @inheritdoc IOwnVault
+    function claimableLPRewards(address token, address account) external view returns (uint256 amount) {
+        uint256 currentRPS = _lpRewardsPerShare[token];
+        uint256 userPaid = _lpCheckpoint[account][token];
+        // Rounding: floor — protocol keeps dust
+        amount = _lpAccruedFees[account][token] + balanceOf(account).mulDiv(currentRPS - userPaid, PRECISION);
+    }
+
+    /// @inheritdoc IOwnVault
+    function getRewardTokens() external view returns (address[] memory tokens) {
+        return _rewardTokens;
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Internal — LP reward settlement
+    // ──────────────────────────────────────────────────────────
+
+    /// @dev Override _update to settle LP rewards for both sender and receiver
+    ///      before any share balance change. Mirrors the EToken dividend pattern.
+    function _update(address from, address to, uint256 amount) internal override {
+        // Settle BEFORE balance change (pre-transfer balances)
+        // Skip address(0) (mint/burn) and address(this) (vault-escrowed shares)
+        if (from != address(0) && from != address(this)) {
+            _settleLPRewards(from);
+        }
+        if (to != address(0) && to != address(this)) {
+            _settleLPRewards(to);
+        }
+        super._update(from, to, amount);
+    }
+
+    /// @dev Settle pending LP rewards for an account across all registered fee tokens.
+    function _settleLPRewards(
+        address account
+    ) private {
+        uint256 len = _rewardTokens.length;
+        for (uint256 i; i < len;) {
+            _settleLPReward(account, _rewardTokens[i]);
+            unchecked {
+                ++i;
+            } // SAFETY: i < len
+        }
+    }
+
+    /// @dev Settle pending LP rewards for an account for a single fee token.
+    function _settleLPReward(address account, address token) private {
+        uint256 currentRPS = _lpRewardsPerShare[token];
+        uint256 userPaid = _lpCheckpoint[account][token];
+        if (currentRPS > userPaid) {
+            // Rounding: floor — protocol keeps dust
+            uint256 owed = balanceOf(account).mulDiv(currentRPS - userPaid, PRECISION);
+            if (owed > 0) {
+                _lpAccruedFees[account][token] += owed;
+                emit LPRewardsSettled(account, token, owed);
+            }
+            _lpCheckpoint[account][token] = currentRPS;
+        }
+    }
+
+    /// @dev Settle and claim all LP fee rewards for an account. Used by
+    ///      fulfillWithdrawal for auto-claim on LP exit.
+    function _claimAllLPRewardsFor(
+        address account
+    ) private {
+        uint256 len = _rewardTokens.length;
+        for (uint256 i; i < len;) {
+            address token = _rewardTokens[i];
+            _settleLPReward(account, token);
+
+            uint256 amount = _lpAccruedFees[account][token];
+            if (amount > 0) {
+                _lpAccruedFees[account][token] = 0;
+                IERC20(token).safeTransfer(account, amount);
+                emit LPRewardsClaimed(account, token, amount);
+            }
+            unchecked {
+                ++i;
+            } // SAFETY: i < len
+        }
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Internal — AUM fee
     // ──────────────────────────────────────────────────────────
 
     function _accrueAumFee() private {

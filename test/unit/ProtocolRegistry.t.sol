@@ -20,7 +20,6 @@ contract ProtocolRegistryTest is BaseTest {
     bytes32 MARKET_KEY;
     bytes32 ORACLE_VERIFIER_KEY;
     bytes32 FEE_CALCULATOR_KEY;
-    bytes32 FEE_ACCRUAL_KEY;
     bytes32 VAULT_MANAGER_KEY;
     bytes32 LIQUIDATION_ENGINE_KEY;
     bytes32 ASSET_REGISTRY_KEY;
@@ -41,7 +40,6 @@ contract ProtocolRegistryTest is BaseTest {
         MARKET_KEY = reg.MARKET();
         ORACLE_VERIFIER_KEY = reg.ORACLE_VERIFIER();
         FEE_CALCULATOR_KEY = reg.FEE_CALCULATOR();
-        FEE_ACCRUAL_KEY = reg.FEE_ACCRUAL();
         VAULT_MANAGER_KEY = reg.VAULT_MANAGER();
         LIQUIDATION_ENGINE_KEY = reg.LIQUIDATION_ENGINE();
         ASSET_REGISTRY_KEY = reg.ASSET_REGISTRY();
@@ -64,7 +62,6 @@ contract ProtocolRegistryTest is BaseTest {
     function test_constructor_allGettersReturnZero() public view {
         assertEq(reg.oracleVerifier(), address(0));
         assertEq(reg.feeCalculator(), address(0));
-        assertEq(reg.feeAccrual(), address(0));
         assertEq(reg.market(), address(0));
         assertEq(reg.vaultManager(), address(0));
         assertEq(reg.liquidationEngine(), address(0));
@@ -107,7 +104,6 @@ contract ProtocolRegistryTest is BaseTest {
         vm.startPrank(Actors.ADMIN);
         reg.setAddress(ORACLE_VERIFIER_KEY, addr1);
         reg.setAddress(FEE_CALCULATOR_KEY, addr2);
-        reg.setAddress(FEE_ACCRUAL_KEY, addr3);
         reg.setAddress(MARKET_KEY, makeAddr("market"));
         reg.setAddress(VAULT_MANAGER_KEY, makeAddr("vm"));
         reg.setAddress(LIQUIDATION_ENGINE_KEY, makeAddr("le"));
@@ -118,7 +114,6 @@ contract ProtocolRegistryTest is BaseTest {
 
         assertEq(reg.oracleVerifier(), addr1);
         assertEq(reg.feeCalculator(), addr2);
-        assertEq(reg.feeAccrual(), addr3);
         assertEq(reg.market(), makeAddr("market"));
         assertEq(reg.vaultManager(), makeAddr("vm"));
         assertEq(reg.liquidationEngine(), makeAddr("le"));

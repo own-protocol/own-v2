@@ -3,10 +3,11 @@ pragma solidity 0.8.28;
 
 import {IAssetRegistry} from "../interfaces/IAssetRegistry.sol";
 import {IEToken} from "../interfaces/IEToken.sol";
-import {IFeeAccrual} from "../interfaces/IFeeAccrual.sol";
 import {IFeeCalculator} from "../interfaces/IFeeCalculator.sol";
+
 import {IOracleVerifier} from "../interfaces/IOracleVerifier.sol";
 import {IOwnMarket} from "../interfaces/IOwnMarket.sol";
+import {IOwnVault} from "../interfaces/IOwnVault.sol";
 import {IProtocolRegistry} from "../interfaces/IProtocolRegistry.sol";
 import {IVaultManager} from "../interfaces/IVaultManager.sol";
 
@@ -354,7 +355,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
     //  Internal — order execution
     // ──────────────────────────────────────────────────────────
 
-    /// @dev Execute a mint confirmation: transfer escrowed fee to FeeAccrual,
+    /// @dev Execute a mint confirmation: transfer escrowed fee to vault,
     ///      compute eToken amount at oracle price, and mint to user.
     /// @return eTokenAmount eTokens minted to the user.
     function _executeMint(
@@ -362,14 +363,13 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         ClaimInfo storage claim,
         uint256 executionPrice
     ) private returns (uint256 eTokenAmount) {
-        // Fee was held in escrow at claim time — transfer it to FeeAccrual now
+        // Fee was held in escrow at claim time — transfer it to the vault now
         uint256 feeAmount = _claimMintFees[claim.claimId];
         uint256 netAmount = claim.amount - feeAmount;
 
         if (feeAmount > 0) {
-            address feeAccrual = registry.feeAccrual();
-            IERC20(order.stablecoin).safeTransfer(feeAccrual, feeAmount);
-            IFeeAccrual(feeAccrual).accrueFee(claim.vault, claim.vm, feeAmount, order.stablecoin);
+            IERC20(order.stablecoin).safeIncreaseAllowance(claim.vault, feeAmount);
+            IOwnVault(claim.vault).depositFees(order.stablecoin, feeAmount);
             emit FeeCollected(claim.orderId, claim.claimId, order.stablecoin, feeAmount);
         }
 
@@ -404,12 +404,12 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
             Math.Rounding.Ceil
         );
 
-        // VM sends stablecoins: net payout to user, fee to FeeAccrual
+        // VM sends stablecoins: net payout to user, fee to vault
         IERC20(order.stablecoin).safeTransferFrom(claim.vm, order.user, grossPayout - feeAmount);
         if (feeAmount > 0) {
-            address feeAccrual = registry.feeAccrual();
-            IERC20(order.stablecoin).safeTransferFrom(claim.vm, feeAccrual, feeAmount);
-            IFeeAccrual(feeAccrual).accrueFee(claim.vault, claim.vm, feeAmount, order.stablecoin);
+            IERC20(order.stablecoin).safeTransferFrom(claim.vm, address(this), feeAmount);
+            IERC20(order.stablecoin).safeIncreaseAllowance(claim.vault, feeAmount);
+            IOwnVault(claim.vault).depositFees(order.stablecoin, feeAmount);
             emit FeeCollected(claim.orderId, claim.claimId, order.stablecoin, feeAmount);
         }
 

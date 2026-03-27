@@ -92,6 +92,48 @@ interface IOwnVault is IERC4626 {
     /// @param treasury Protocol treasury address.
     event AumFeeCollected(uint256 amount, address indexed treasury);
 
+    /// @notice Emitted when order fees are deposited and split three ways.
+    /// @param token          Fee token address (stablecoin).
+    /// @param totalAmount    Total fee deposited.
+    /// @param protocolAmount Protocol's share.
+    /// @param vmAmount       VM's share.
+    /// @param lpAmount       LP share (into rewards-per-share accumulator).
+    event FeeDeposited(
+        address indexed token, uint256 totalAmount, uint256 protocolAmount, uint256 vmAmount, uint256 lpAmount
+    );
+
+    /// @notice Emitted when protocol fees are claimed.
+    /// @param token  Fee token claimed.
+    /// @param amount Amount transferred to treasury.
+    event ProtocolFeesClaimed(address indexed token, uint256 amount);
+
+    /// @notice Emitted when VM fees are claimed.
+    /// @param token  Fee token claimed.
+    /// @param amount Amount transferred to VM.
+    event VMFeesClaimed(address indexed token, uint256 amount);
+
+    /// @notice Emitted when an LP claims accrued fee rewards.
+    /// @param account LP address.
+    /// @param token   Fee token claimed.
+    /// @param amount  Amount transferred to LP.
+    event LPRewardsClaimed(address indexed account, address indexed token, uint256 amount);
+
+    /// @notice Emitted when LP rewards are settled (checkpoint updated).
+    /// @param account LP address.
+    /// @param token   Fee token settled.
+    /// @param amount  Amount accrued in this settlement.
+    event LPRewardsSettled(address indexed account, address indexed token, uint256 amount);
+
+    /// @notice Emitted when the protocol fee share is updated.
+    /// @param oldShareBps Previous share in BPS.
+    /// @param newShareBps New share in BPS.
+    event ProtocolShareUpdated(uint256 oldShareBps, uint256 newShareBps);
+
+    /// @notice Emitted when the VM fee share is updated.
+    /// @param oldShareBps Previous share in BPS.
+    /// @param newShareBps New share in BPS.
+    event VMShareUpdated(uint256 oldShareBps, uint256 newShareBps);
+
     // ──────────────────────────────────────────────────────────
     //  Errors
     // ──────────────────────────────────────────────────────────
@@ -137,6 +179,12 @@ interface IOwnVault is IERC4626 {
 
     /// @notice The asset is halted on this vault.
     error AssetIsHalted(bytes32 asset);
+
+    /// @notice No fees available to claim.
+    error NoFeesToClaim();
+
+    /// @notice The share exceeds maximum allowed BPS.
+    error ShareTooHigh(uint256 shareBps, uint256 maxBps);
 
     // ──────────────────────────────────────────────────────────
     //  VM binding
@@ -308,4 +356,78 @@ interface IOwnVault is IERC4626 {
     function setAumFee(
         uint256 feeBps
     ) external;
+
+    // ──────────────────────────────────────────────────────────
+    //  Order fee management (Uniswap-style per-vault accrual)
+    // ──────────────────────────────────────────────────────────
+
+    /// @notice Deposit order fees into the vault. Called by OwnMarket on order
+    ///         confirmation. Pulls `amount` of `token` from caller, splits three
+    ///         ways (protocol/VM/LP), and accrues each share.
+    /// @param token Fee token address (stablecoin).
+    /// @param amount Total fee amount.
+    function depositFees(address token, uint256 amount) external;
+
+    /// @notice Set the protocol's share of order fees. Only callable by admin.
+    /// @param shareBps Protocol share in basis points (e.g., 2000 = 20%).
+    function setProtocolShareBps(
+        uint256 shareBps
+    ) external;
+
+    /// @notice Set the VM's share of the LP+VM remainder. Only callable by the bound VM.
+    /// @param shareBps VM share of remainder in basis points.
+    function setVMShareBps(
+        uint256 shareBps
+    ) external;
+
+    /// @notice Return the protocol share in BPS.
+    function protocolShareBps() external view returns (uint256);
+
+    /// @notice Return the VM share in BPS.
+    function vmShareBps() external view returns (uint256);
+
+    /// @notice Claim accrued protocol fees for a token. Transfers to treasury.
+    ///         Callable by anyone.
+    /// @param token Fee token address.
+    function claimProtocolFees(
+        address token
+    ) external;
+
+    /// @notice Claim accrued VM fees for a token. Only callable by the bound VM.
+    /// @param token Fee token address.
+    function claimVMFees(
+        address token
+    ) external;
+
+    /// @notice Claim accrued LP fee rewards for a single token.
+    /// @param token Fee token address.
+    /// @return amount Amount transferred to caller.
+    function claimLPRewards(
+        address token
+    ) external returns (uint256 amount);
+
+    /// @notice Claim accrued LP fee rewards for all registered fee tokens.
+    function claimAllLPRewards() external;
+
+    /// @notice Return accrued unclaimed protocol fees for a token.
+    /// @param token Fee token address.
+    function accruedProtocolFees(
+        address token
+    ) external view returns (uint256);
+
+    /// @notice Return accrued unclaimed VM fees for a token.
+    /// @param token Fee token address.
+    function accruedVMFees(
+        address token
+    ) external view returns (uint256);
+
+    /// @notice Return the claimable LP fee rewards for an account (pending + accrued).
+    /// @param token   Fee token address.
+    /// @param account LP address.
+    /// @return amount Claimable amount.
+    function claimableLPRewards(address token, address account) external view returns (uint256 amount);
+
+    /// @notice Return the list of registered fee reward tokens for this vault.
+    /// @return tokens Array of fee token addresses.
+    function getRewardTokens() external view returns (address[] memory tokens);
 }

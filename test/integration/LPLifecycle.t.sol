@@ -59,7 +59,9 @@ contract LPLifecycleTest is BaseTest {
             address(protocolRegistry),
             Actors.VM1,
             8000,
-            0 // no AUM fee for cleaner math
+            0, // no AUM fee for cleaner math
+            2000,
+            2000
         );
 
         eTSLA = new EToken("Own Tesla", "eTSLA", TSLA, address(protocolRegistry), address(usdc));

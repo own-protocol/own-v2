@@ -42,7 +42,6 @@ contract RedeemFlowTest is BaseTest {
     OwnVault public usdcVault;
     EToken public eTSLA;
     FeeCalculator public feeCalc;
-    address public feeAccrual = makeAddr("feeAccrual");
 
     // ──────────────────────────────────────────────────────────
     //  Constants
@@ -93,7 +92,6 @@ contract RedeemFlowTest is BaseTest {
         feeCalc.setRedeemFee(2, 0);
         feeCalc.setRedeemFee(3, 0);
         protocolRegistry.setAddress(keccak256("FEE_CALCULATOR"), address(feeCalc));
-        protocolRegistry.setAddress(keccak256("FEE_ACCRUAL"), feeAccrual);
 
         // Deploy contracts with registry
         market = new OwnMarket(address(protocolRegistry));
@@ -104,7 +102,15 @@ contract RedeemFlowTest is BaseTest {
         protocolRegistry.setAddress(protocolRegistry.VAULT_MANAGER(), address(vaultMgr));
 
         usdcVault = new OwnVault(
-            address(usdc), "Own USDC Vault", "oUSDC", address(protocolRegistry), Actors.VM1, MAX_UTIL_BPS, 50
+            address(usdc),
+            "Own USDC Vault",
+            "oUSDC",
+            address(protocolRegistry),
+            Actors.VM1,
+            MAX_UTIL_BPS,
+            50,
+            2000,
+            2000
         );
 
         vm.stopPrank();
@@ -349,7 +355,15 @@ contract RedeemFlowTest is BaseTest {
         // Register VM2 with a separate vault
         vm.prank(Actors.ADMIN);
         OwnVault usdcVault2 = new OwnVault(
-            address(usdc), "Own USDC Vault 2", "oUSDC2", address(protocolRegistry), Actors.VM2, MAX_UTIL_BPS, 50
+            address(usdc),
+            "Own USDC Vault 2",
+            "oUSDC2",
+            address(protocolRegistry),
+            Actors.VM2,
+            MAX_UTIL_BPS,
+            50,
+            2000,
+            2000
         );
         vm.startPrank(Actors.VM2);
         vaultMgr.registerVM(address(usdcVault2));
@@ -429,7 +443,15 @@ contract RedeemFlowTest is BaseTest {
         // Register VM2 with a separate vault
         vm.prank(Actors.ADMIN);
         OwnVault usdcVault2 = new OwnVault(
-            address(usdc), "Own USDC Vault 2", "oUSDC2", address(protocolRegistry), Actors.VM2, MAX_UTIL_BPS, 50
+            address(usdc),
+            "Own USDC Vault 2",
+            "oUSDC2",
+            address(protocolRegistry),
+            Actors.VM2,
+            MAX_UTIL_BPS,
+            50,
+            2000,
+            2000
         );
         vm.startPrank(Actors.VM2);
         vaultMgr.registerVM(address(usdcVault2));

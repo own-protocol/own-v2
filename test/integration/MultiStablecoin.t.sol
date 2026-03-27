@@ -29,7 +29,6 @@ contract MultiStablecoinTest is BaseTest {
     OwnVault public usdcVault2;
     EToken public eTSLA;
     FeeCalculator public feeCalc;
-    address public feeAccrual = makeAddr("feeAccrual");
 
     uint256 constant MINT_AMOUNT = 5000e6; // 5k (6 decimals for USDC/USDT)
     uint256 constant MINT_AMOUNT_18 = 5000e18; // 5k (18 decimals for USDS)
@@ -60,7 +59,6 @@ contract MultiStablecoinTest is BaseTest {
         feeCalc.setRedeemFee(2, 0);
         feeCalc.setRedeemFee(3, 0);
         protocolRegistry.setAddress(keccak256("FEE_CALCULATOR"), address(feeCalc));
-        protocolRegistry.setAddress(keccak256("FEE_ACCRUAL"), feeAccrual);
 
         // Deploy contracts with registry
         market = new OwnMarket(address(protocolRegistry));
@@ -71,10 +69,12 @@ contract MultiStablecoinTest is BaseTest {
         protocolRegistry.setAddress(protocolRegistry.VAULT_MANAGER(), address(vaultMgr));
 
         // Each VM gets its own vault (1:1 binding)
-        usdcVault =
-            new OwnVault(address(usdc), "Own USDC Vault", "oUSDC", address(protocolRegistry), Actors.VM1, 8000, 0);
-        usdcVault2 =
-            new OwnVault(address(usdc), "Own USDC Vault 2", "oUSDC2", address(protocolRegistry), Actors.VM2, 8000, 0);
+        usdcVault = new OwnVault(
+            address(usdc), "Own USDC Vault", "oUSDC", address(protocolRegistry), Actors.VM1, 8000, 0, 2000, 2000
+        );
+        usdcVault2 = new OwnVault(
+            address(usdc), "Own USDC Vault 2", "oUSDC2", address(protocolRegistry), Actors.VM2, 8000, 0, 2000, 2000
+        );
 
         eTSLA = new EToken("Own Tesla", "eTSLA", TSLA, address(protocolRegistry), address(usdc));
 

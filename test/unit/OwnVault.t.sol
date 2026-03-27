@@ -40,7 +40,9 @@ contract OwnVaultTest is BaseTest {
             address(protocolRegistry),
             Actors.VM1,
             INITIAL_MAX_UTIL,
-            INITIAL_AUM_FEE
+            INITIAL_AUM_FEE,
+            2000,
+            2000
         );
         vm.stopPrank();
         vm.label(address(vault), "OwnVault-USDC");

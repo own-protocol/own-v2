@@ -61,9 +61,6 @@ interface IProtocolRegistry {
     /// @notice Returns the FeeCalculator contract address.
     function feeCalculator() external view returns (address);
 
-    /// @notice Returns the FeeAccrual contract address.
-    function feeAccrual() external view returns (address);
-
     /// @notice Returns the OwnMarket contract address.
     function market() external view returns (address);
 

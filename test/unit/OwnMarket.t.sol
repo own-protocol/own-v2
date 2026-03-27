@@ -5,6 +5,7 @@ import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {OwnMarket} from "../../src/core/OwnMarket.sol";
 import {IOwnMarket} from "../../src/interfaces/IOwnMarket.sol";
 
+import {IOwnVault} from "../../src/interfaces/IOwnVault.sol";
 import {IVaultManager} from "../../src/interfaces/IVaultManager.sol";
 import {AssetConfig} from "../../src/interfaces/types/Types.sol";
 import {
@@ -19,7 +20,6 @@ import {
 } from "../../src/interfaces/types/Types.sol";
 
 import {FeeCalculator} from "../../src/core/FeeCalculator.sol";
-import {IFeeAccrual} from "../../src/interfaces/IFeeAccrual.sol";
 import {Actors} from "../helpers/Actors.sol";
 import {BaseTest} from "../helpers/BaseTest.sol";
 import {MockERC20} from "../helpers/MockERC20.sol";
@@ -43,8 +43,6 @@ contract OwnMarketTest is BaseTest {
     address public mockVaultManager = makeAddr("vaultManager");
     address public mockVault = makeAddr("vault");
     address public mockPaymentRegistry = makeAddr("paymentRegistry");
-    address public mockFeeAccrual = makeAddr("feeAccrual");
-
     uint256 constant DEFAULT_DEADLINE = 1 days;
 
     function setUp() public override {
@@ -80,14 +78,10 @@ contract OwnMarketTest is BaseTest {
         feeCalc.setRedeemFee(2, 0);
         feeCalc.setRedeemFee(3, 0);
         protocolRegistry.setAddress(keccak256("FEE_CALCULATOR"), address(feeCalc));
-        protocolRegistry.setAddress(keccak256("FEE_ACCRUAL"), mockFeeAccrual);
 
         market = new OwnMarket(address(protocolRegistry));
         vm.stopPrank();
         vm.label(address(market), "OwnMarket");
-
-        // Mock accrueFee on FeeAccrual (it's a makeAddr, not a real contract)
-        vm.mockCall(mockFeeAccrual, abi.encodeWithSelector(IFeeAccrual.accrueFee.selector), abi.encode());
 
         // Setup default oracle price
         _setOraclePrice(TSLA, TSLA_PRICE);
@@ -144,6 +138,8 @@ contract OwnMarketTest is BaseTest {
             VMConfig({maxExposure: 0, maxOffMarketExposure: 0, currentExposure: 0, registered: true, active: true});
         vm.mockCall(mockVaultManager, abi.encodeCall(IVaultManager.getVMConfig, (vmAddr)), abi.encode(config));
         vm.mockCall(mockVaultManager, abi.encodeCall(IVaultManager.getVMVault, (vmAddr)), abi.encode(mockVault));
+        // Mock depositFees on the vault (mockVault is a makeAddr, not a real contract)
+        vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.depositFees.selector), abi.encode());
     }
 
     // ──────────────────────────────────────────────────────────
@@ -758,9 +754,9 @@ contract OwnMarketTest is BaseTest {
         vm.prank(Actors.VM1);
         market.confirmOrder(claimId, _emptyPriceData());
 
-        // Fee transferred from escrow to FeeAccrual on confirm
-        assertEq(usdc.balanceOf(mockFeeAccrual), expectedFee);
-        assertEq(usdc.balanceOf(address(market)), 0);
+        // Fee transferred from escrow to vault via depositFees on confirm
+        // (mockVault is mocked so tokens remain in market with allowance set)
+        assertEq(usdc.allowance(address(market), mockVault), expectedFee);
 
         // Minter eTokens computed from net amount (1000 - 5 = 995 USDC)
         uint256 netAmount = stablecoinAmount - expectedFee;
@@ -782,7 +778,7 @@ contract OwnMarketTest is BaseTest {
         market.confirmOrder(claimId, _emptyPriceData());
 
         // No fee should be collected
-        assertEq(usdc.balanceOf(mockFeeAccrual), 0);
+        assertEq(usdc.balanceOf(mockVault), 0);
     }
 
     function test_confirmOrder_mint_feeEmitsEvent() public {
@@ -840,8 +836,8 @@ contract OwnMarketTest is BaseTest {
 
         // Minter receives net payout
         assertEq(usdc.balanceOf(Actors.MINTER1), netPayout);
-        // FeeAccrual receives fee
-        assertEq(usdc.balanceOf(mockFeeAccrual), expectedFee);
+        // Fee sent to vault via depositFees (mocked, so check allowance)
+        assertEq(usdc.allowance(address(market), mockVault), expectedFee);
     }
 
     function test_confirmOrder_redeem_zeroFee_noTransfer() public {
@@ -865,7 +861,7 @@ contract OwnMarketTest is BaseTest {
 
         // Minter gets full payout, no fee collected
         assertEq(usdc.balanceOf(Actors.MINTER1), expectedPayout);
-        assertEq(usdc.balanceOf(mockFeeAccrual), 0);
+        assertEq(usdc.balanceOf(mockVault), 0);
     }
 
     function test_confirmOrder_redeem_feeEmitsEvent() public {
@@ -916,7 +912,7 @@ contract OwnMarketTest is BaseTest {
 
         // Fee = ceil(250e6 * 30 / 10000) = ceil(750000) = 750000 = 0.75 USDC
         uint256 expectedFee = Math.mulDiv(stablecoinAmount, 30, BPS, Math.Rounding.Ceil);
-        assertEq(usdc.balanceOf(mockFeeAccrual), expectedFee);
+        assertEq(usdc.allowance(address(market), mockVault), expectedFee);
 
         // Net = 250e6 - 750000 = 249250000 = 249.25 USDC
         uint256 netAmount = stablecoinAmount - expectedFee;

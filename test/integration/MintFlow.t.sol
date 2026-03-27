@@ -43,7 +43,6 @@ contract MintFlowTest is BaseTest {
     EToken public eTSLA;
     EToken public eGOLD;
     FeeCalculator public feeCalc;
-    address public feeAccrual = makeAddr("feeAccrual");
 
     // ──────────────────────────────────────────────────────────
     //  Constants
@@ -91,7 +90,6 @@ contract MintFlowTest is BaseTest {
         feeCalc.setRedeemFee(2, 0);
         feeCalc.setRedeemFee(3, 0);
         protocolRegistry.setAddress(keccak256("FEE_CALCULATOR"), address(feeCalc));
-        protocolRegistry.setAddress(keccak256("FEE_ACCRUAL"), feeAccrual);
 
         // 3. Deploy contracts with registry
         market = new OwnMarket(address(protocolRegistry));
@@ -103,7 +101,15 @@ contract MintFlowTest is BaseTest {
 
         // 5. Deploy USDC vault (bound to VM1)
         usdcVault = new OwnVault(
-            address(usdc), "Own USDC Vault", "oUSDC", address(protocolRegistry), Actors.VM1, MAX_UTIL_BPS, AUM_FEE_BPS
+            address(usdc),
+            "Own USDC Vault",
+            "oUSDC",
+            address(protocolRegistry),
+            Actors.VM1,
+            MAX_UTIL_BPS,
+            AUM_FEE_BPS,
+            2000,
+            2000
         );
 
         vm.stopPrank();
@@ -503,7 +509,9 @@ contract MintFlowTest is BaseTest {
             address(protocolRegistry),
             Actors.VM2,
             MAX_UTIL_BPS,
-            AUM_FEE_BPS
+            AUM_FEE_BPS,
+            2000,
+            2000
         );
         vm.startPrank(Actors.VM2);
         vaultMgr.registerVM(address(usdcVault2));
@@ -818,7 +826,9 @@ contract MintFlowTest is BaseTest {
             address(protocolRegistry),
             Actors.VM2,
             MAX_UTIL_BPS,
-            AUM_FEE_BPS
+            AUM_FEE_BPS,
+            2000,
+            2000
         );
         vm.startPrank(Actors.VM2);
         vaultMgr.registerVM(address(usdcVault2));

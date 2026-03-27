@@ -16,7 +16,6 @@ contract ProtocolRegistry is IProtocolRegistry, Ownable {
 
     bytes32 public constant ORACLE_VERIFIER = keccak256("ORACLE_VERIFIER");
     bytes32 public constant FEE_CALCULATOR = keccak256("FEE_CALCULATOR");
-    bytes32 public constant FEE_ACCRUAL = keccak256("FEE_ACCRUAL");
     bytes32 public constant MARKET = keccak256("MARKET");
     bytes32 public constant VAULT_MANAGER = keccak256("VAULT_MANAGER");
     bytes32 public constant LIQUIDATION_ENGINE = keccak256("LIQUIDATION_ENGINE");
@@ -69,11 +68,6 @@ contract ProtocolRegistry is IProtocolRegistry, Ownable {
     /// @inheritdoc IProtocolRegistry
     function feeCalculator() external view override returns (address) {
         return _addresses[FEE_CALCULATOR];
-    }
-
-    /// @inheritdoc IProtocolRegistry
-    function feeAccrual() external view override returns (address) {
-        return _addresses[FEE_ACCRUAL];
     }
 
     /// @inheritdoc IProtocolRegistry

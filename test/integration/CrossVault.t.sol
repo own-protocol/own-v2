@@ -26,7 +26,6 @@ contract CrossVaultTest is BaseTest {
     OwnVault public wethVault;
     EToken public eTSLA;
     FeeCalculator public feeCalc;
-    address public feeAccrual = makeAddr("feeAccrual");
 
     uint256 constant MINT_AMOUNT = 10_000e6;
 
@@ -56,7 +55,6 @@ contract CrossVaultTest is BaseTest {
         feeCalc.setRedeemFee(2, 0);
         feeCalc.setRedeemFee(3, 0);
         protocolRegistry.setAddress(keccak256("FEE_CALCULATOR"), address(feeCalc));
-        protocolRegistry.setAddress(keccak256("FEE_ACCRUAL"), feeAccrual);
 
         // Deploy contracts with registry
         market = new OwnMarket(address(protocolRegistry));
@@ -67,12 +65,14 @@ contract CrossVaultTest is BaseTest {
         protocolRegistry.setAddress(protocolRegistry.VAULT_MANAGER(), address(vaultMgr));
 
         // USDC vault (bound to VM1)
-        usdcVault =
-            new OwnVault(address(usdc), "Own USDC Vault", "oUSDC", address(protocolRegistry), Actors.VM1, 8000, 0);
+        usdcVault = new OwnVault(
+            address(usdc), "Own USDC Vault", "oUSDC", address(protocolRegistry), Actors.VM1, 8000, 0, 2000, 2000
+        );
 
         // WETH vault (bound to VM2)
-        wethVault =
-            new OwnVault(address(weth), "Own WETH Vault", "oWETH", address(protocolRegistry), Actors.VM2, 8000, 0);
+        wethVault = new OwnVault(
+            address(weth), "Own WETH Vault", "oWETH", address(protocolRegistry), Actors.VM2, 8000, 0, 2000, 2000
+        );
 
         eTSLA = new EToken("Own Tesla", "eTSLA", TSLA, address(protocolRegistry), address(usdc));
 
