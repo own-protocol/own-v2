@@ -30,8 +30,8 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 ///         claiming, confirming, cancelling, deadline expiry, partial fills,
 ///         slippage, and access control.
 /// @dev Uses mock dependencies: MockOracleVerifier, MockERC20 for stablecoins,
-///      and a mock eToken. The actual VaultManager, OwnVault, AssetRegistry,
-///      and PaymentTokenRegistry are mocked via interfaces.
+///      and a mock eToken. The actual VaultManager, OwnVault, and AssetRegistry
+///      are mocked via interfaces.
 contract OwnMarketTest is BaseTest {
     OwnMarket public market;
     AssetRegistry public assetReg;
@@ -42,7 +42,6 @@ contract OwnMarketTest is BaseTest {
     // Mock contract addresses acting as dependencies
     address public mockVaultManager = makeAddr("vaultManager");
     address public mockVault = makeAddr("vault");
-    address public mockPaymentRegistry = makeAddr("paymentRegistry");
     uint256 constant DEFAULT_DEADLINE = 1 days;
 
     function setUp() public override {
@@ -66,7 +65,6 @@ contract OwnMarketTest is BaseTest {
         vm.startPrank(Actors.ADMIN);
         protocolRegistry.setAddress(protocolRegistry.ORACLE_VERIFIER(), address(oracle));
         protocolRegistry.setAddress(protocolRegistry.ASSET_REGISTRY(), address(assetReg));
-        protocolRegistry.setAddress(protocolRegistry.PAYMENT_TOKEN_REGISTRY(), mockPaymentRegistry);
         protocolRegistry.setAddress(protocolRegistry.VAULT_MANAGER(), mockVaultManager);
 
         // Deploy FeeCalculator with zero fees so existing math tests remain unchanged

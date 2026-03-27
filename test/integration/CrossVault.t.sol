@@ -10,7 +10,6 @@ import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {FeeCalculator} from "../../src/core/FeeCalculator.sol";
 import {OwnMarket} from "../../src/core/OwnMarket.sol";
 import {OwnVault} from "../../src/core/OwnVault.sol";
-import {PaymentTokenRegistry} from "../../src/core/PaymentTokenRegistry.sol";
 import {VaultManager} from "../../src/core/VaultManager.sol";
 import {EToken} from "../../src/tokens/EToken.sol";
 
@@ -19,7 +18,6 @@ import {EToken} from "../../src/tokens/EToken.sol";
 ///         Security attribution and cross-vault partial fills.
 contract CrossVaultTest is BaseTest {
     AssetRegistry public assetRegistry;
-    PaymentTokenRegistry public paymentRegistry;
     VaultManager public vaultMgr;
     OwnMarket public market;
     OwnVault public usdcVault;
@@ -38,12 +36,10 @@ contract CrossVaultTest is BaseTest {
         vm.startPrank(Actors.ADMIN);
 
         assetRegistry = new AssetRegistry(Actors.ADMIN);
-        paymentRegistry = new PaymentTokenRegistry(Actors.ADMIN);
 
         // Register infrastructure in registry
         protocolRegistry.setAddress(protocolRegistry.ORACLE_VERIFIER(), address(oracle));
         protocolRegistry.setAddress(protocolRegistry.ASSET_REGISTRY(), address(assetRegistry));
-        protocolRegistry.setAddress(protocolRegistry.PAYMENT_TOKEN_REGISTRY(), address(paymentRegistry));
         protocolRegistry.setAddress(protocolRegistry.TREASURY(), Actors.FEE_RECIPIENT);
 
         // Deploy FeeCalculator with zero fees
@@ -79,9 +75,15 @@ contract CrossVaultTest is BaseTest {
         AssetConfig memory config =
             AssetConfig({activeToken: address(eTSLA), legacyTokens: new address[](0), active: true, volatilityLevel: 2});
         assetRegistry.addAsset(TSLA, address(eTSLA), config);
-        paymentRegistry.addPaymentToken(address(usdc));
 
         vm.stopPrank();
+
+        // Add payment tokens at vault level (each VM adds to its own vault)
+        vm.prank(Actors.VM1);
+        usdcVault.addPaymentToken(address(usdc));
+
+        vm.prank(Actors.VM2);
+        wethVault.addPaymentToken(address(usdc));
 
         vm.label(address(usdcVault), "USDCVault");
         vm.label(address(wethVault), "WETHVault");

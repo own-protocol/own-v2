@@ -73,9 +73,6 @@ interface IProtocolRegistry {
     /// @notice Returns the AssetRegistry contract address.
     function assetRegistry() external view returns (address);
 
-    /// @notice Returns the PaymentTokenRegistry contract address.
-    function paymentTokenRegistry() external view returns (address);
-
     /// @notice Returns the protocol treasury address.
     function treasury() external view returns (address);
 

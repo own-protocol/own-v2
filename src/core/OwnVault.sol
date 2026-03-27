@@ -94,6 +94,18 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     mapping(address => bool) private _isRewardToken;
 
     // ──────────────────────────────────────────────────────────
+    //  Payment tokens (per-vault, VM-controlled, max 3)
+    // ──────────────────────────────────────────────────────────
+
+    uint256 private constant MAX_PAYMENT_TOKENS = 3;
+
+    /// @dev Accepted payment tokens for this vault.
+    address[] private _paymentTokens;
+
+    /// @dev O(1) lookup: is this token accepted?
+    mapping(address => bool) private _isPaymentToken;
+
+    // ──────────────────────────────────────────────────────────
     //  Async deposit queue
     // ──────────────────────────────────────────────────────────
 
@@ -642,6 +654,60 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     /// @inheritdoc IOwnVault
     function getRewardTokens() external view returns (address[] memory tokens) {
         return _rewardTokens;
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Payment token management
+    // ──────────────────────────────────────────────────────────
+
+    /// @inheritdoc IOwnVault
+    function addPaymentToken(
+        address token
+    ) external onlyVM {
+        if (token == address(0)) revert ZeroAddress();
+        if (_isPaymentToken[token]) revert PaymentTokenAlreadyAdded(token);
+        if (_paymentTokens.length >= MAX_PAYMENT_TOKENS) revert MaxPaymentTokensReached();
+
+        _isPaymentToken[token] = true;
+        _paymentTokens.push(token);
+
+        emit PaymentTokenAdded(token);
+    }
+
+    /// @inheritdoc IOwnVault
+    function removePaymentToken(
+        address token
+    ) external onlyVM {
+        if (!_isPaymentToken[token]) revert PaymentTokenNotAccepted(token);
+
+        _isPaymentToken[token] = false;
+
+        // Swap-and-pop
+        uint256 len = _paymentTokens.length;
+        for (uint256 i; i < len;) {
+            if (_paymentTokens[i] == token) {
+                _paymentTokens[i] = _paymentTokens[len - 1];
+                _paymentTokens.pop();
+                break;
+            }
+            unchecked {
+                ++i;
+            }
+        }
+
+        emit PaymentTokenRemoved(token);
+    }
+
+    /// @inheritdoc IOwnVault
+    function isPaymentTokenAccepted(
+        address token
+    ) external view returns (bool) {
+        return _isPaymentToken[token];
+    }
+
+    /// @inheritdoc IOwnVault
+    function getPaymentTokens() external view returns (address[] memory tokens) {
+        return _paymentTokens;
     }
 
     // ──────────────────────────────────────────────────────────

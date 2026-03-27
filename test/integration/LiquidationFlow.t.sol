@@ -10,7 +10,6 @@ import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {LiquidationEngine} from "../../src/core/LiquidationEngine.sol";
 import {OwnMarket} from "../../src/core/OwnMarket.sol";
 import {OwnVault} from "../../src/core/OwnVault.sol";
-import {PaymentTokenRegistry} from "../../src/core/PaymentTokenRegistry.sol";
 import {VaultManager} from "../../src/core/VaultManager.sol";
 import {EToken} from "../../src/tokens/EToken.sol";
 
@@ -20,7 +19,6 @@ import {EToken} from "../../src/tokens/EToken.sol";
 ///         behavior (always-healthy vaults) and document expected future behavior.
 contract LiquidationFlowTest is BaseTest {
     AssetRegistry public assetRegistry;
-    PaymentTokenRegistry public paymentRegistry;
     VaultManager public vaultMgr;
     OwnMarket public market;
     OwnVault public usdcVault;
@@ -38,12 +36,10 @@ contract LiquidationFlowTest is BaseTest {
         vm.startPrank(Actors.ADMIN);
 
         assetRegistry = new AssetRegistry(Actors.ADMIN);
-        paymentRegistry = new PaymentTokenRegistry(Actors.ADMIN);
 
         // Register infrastructure in registry
         protocolRegistry.setAddress(protocolRegistry.ORACLE_VERIFIER(), address(oracle));
         protocolRegistry.setAddress(protocolRegistry.ASSET_REGISTRY(), address(assetRegistry));
-        protocolRegistry.setAddress(protocolRegistry.PAYMENT_TOKEN_REGISTRY(), address(paymentRegistry));
         protocolRegistry.setAddress(protocolRegistry.TREASURY(), Actors.FEE_RECIPIENT);
 
         // Deploy contracts with registry
@@ -65,8 +61,12 @@ contract LiquidationFlowTest is BaseTest {
         AssetConfig memory config =
             AssetConfig({activeToken: address(eTSLA), legacyTokens: new address[](0), active: true, volatilityLevel: 2});
         assetRegistry.addAsset(TSLA, address(eTSLA), config);
-        paymentRegistry.addPaymentToken(address(usdc));
 
+        vm.stopPrank();
+
+        // Add payment token at vault level (VM1 is the bound VM)
+        vm.startPrank(Actors.VM1);
+        usdcVault.addPaymentToken(address(usdc));
         vm.stopPrank();
 
         vm.label(address(liquidationEngine), "LiquidationEngine");

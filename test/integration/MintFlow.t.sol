@@ -19,7 +19,6 @@ import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {FeeCalculator} from "../../src/core/FeeCalculator.sol";
 import {OwnMarket} from "../../src/core/OwnMarket.sol";
 import {OwnVault} from "../../src/core/OwnVault.sol";
-import {PaymentTokenRegistry} from "../../src/core/PaymentTokenRegistry.sol";
 import {VaultManager} from "../../src/core/VaultManager.sol";
 import {EToken} from "../../src/tokens/EToken.sol";
 
@@ -36,7 +35,6 @@ contract MintFlowTest is BaseTest {
     // ──────────────────────────────────────────────────────────
 
     AssetRegistry public assetRegistry;
-    PaymentTokenRegistry public paymentRegistry;
     VaultManager public vaultMgr;
     OwnMarket public market;
     OwnVault public usdcVault;
@@ -73,12 +71,10 @@ contract MintFlowTest is BaseTest {
 
         // 1. Deploy registries
         assetRegistry = new AssetRegistry(Actors.ADMIN);
-        paymentRegistry = new PaymentTokenRegistry(Actors.ADMIN);
 
         // 2. Register infrastructure in registry
         protocolRegistry.setAddress(protocolRegistry.ORACLE_VERIFIER(), address(oracle));
         protocolRegistry.setAddress(protocolRegistry.ASSET_REGISTRY(), address(assetRegistry));
-        protocolRegistry.setAddress(protocolRegistry.PAYMENT_TOKEN_REGISTRY(), address(paymentRegistry));
         protocolRegistry.setAddress(protocolRegistry.TREASURY(), Actors.FEE_RECIPIENT);
 
         // Deploy FeeCalculator with zero fees
@@ -116,7 +112,6 @@ contract MintFlowTest is BaseTest {
 
         // Label deployed contracts
         vm.label(address(assetRegistry), "AssetRegistry");
-        vm.label(address(paymentRegistry), "PaymentTokenRegistry");
         vm.label(address(vaultMgr), "VaultManager");
         vm.label(address(market), "OwnMarket");
         vm.label(address(usdcVault), "USDCVault");
@@ -147,11 +142,11 @@ contract MintFlowTest is BaseTest {
         vm.stopPrank();
     }
 
-    /// @dev Whitelist payment tokens (stablecoins).
+    /// @dev Whitelist payment tokens on the vault (per-vault management).
     function _configurePaymentTokens() private {
-        vm.startPrank(Actors.ADMIN);
-        paymentRegistry.addPaymentToken(address(usdc));
-        paymentRegistry.addPaymentToken(address(usdt));
+        vm.startPrank(Actors.VM1);
+        usdcVault.addPaymentToken(address(usdc));
+        usdcVault.addPaymentToken(address(usdt));
         vm.stopPrank();
     }
 

@@ -13,7 +13,6 @@ import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {FeeCalculator} from "../../src/core/FeeCalculator.sol";
 import {OwnMarket} from "../../src/core/OwnMarket.sol";
 import {OwnVault} from "../../src/core/OwnVault.sol";
-import {PaymentTokenRegistry} from "../../src/core/PaymentTokenRegistry.sol";
 import {VaultManager} from "../../src/core/VaultManager.sol";
 import {EToken} from "../../src/tokens/EToken.sol";
 
@@ -22,7 +21,6 @@ import {EToken} from "../../src/tokens/EToken.sol";
 ///         Redeem with chosen stablecoin.
 contract MultiStablecoinTest is BaseTest {
     AssetRegistry public assetRegistry;
-    PaymentTokenRegistry public paymentRegistry;
     VaultManager public vaultMgr;
     OwnMarket public market;
     OwnVault public usdcVault;
@@ -42,12 +40,10 @@ contract MultiStablecoinTest is BaseTest {
         vm.startPrank(Actors.ADMIN);
 
         assetRegistry = new AssetRegistry(Actors.ADMIN);
-        paymentRegistry = new PaymentTokenRegistry(Actors.ADMIN);
 
         // Register infrastructure in registry
         protocolRegistry.setAddress(protocolRegistry.ORACLE_VERIFIER(), address(oracle));
         protocolRegistry.setAddress(protocolRegistry.ASSET_REGISTRY(), address(assetRegistry));
-        protocolRegistry.setAddress(protocolRegistry.PAYMENT_TOKEN_REGISTRY(), address(paymentRegistry));
         protocolRegistry.setAddress(protocolRegistry.TREASURY(), Actors.FEE_RECIPIENT);
 
         // Deploy FeeCalculator with zero fees
@@ -82,11 +78,19 @@ contract MultiStablecoinTest is BaseTest {
             AssetConfig({activeToken: address(eTSLA), legacyTokens: new address[](0), active: true, volatilityLevel: 2});
         assetRegistry.addAsset(TSLA, address(eTSLA), config);
 
-        // Whitelist all three stablecoins
-        paymentRegistry.addPaymentToken(address(usdc));
-        paymentRegistry.addPaymentToken(address(usdt));
-        paymentRegistry.addPaymentToken(address(usds));
+        vm.stopPrank();
 
+        // Add payment tokens at vault level (each VM adds to its own vault)
+        vm.startPrank(Actors.VM1);
+        usdcVault.addPaymentToken(address(usdc));
+        usdcVault.addPaymentToken(address(usdt));
+        usdcVault.addPaymentToken(address(usds));
+        vm.stopPrank();
+
+        vm.startPrank(Actors.VM2);
+        usdcVault2.addPaymentToken(address(usdc));
+        usdcVault2.addPaymentToken(address(usdt));
+        usdcVault2.addPaymentToken(address(usds));
         vm.stopPrank();
 
         // Register VM1 — accepts USDC and USDT but NOT USDS
@@ -258,25 +262,34 @@ contract MultiStablecoinTest is BaseTest {
     //  Test: Payment token registry
     // ══════════════════════════════════════════════════════════
 
-    function test_multiStablecoin_registryWhitelist() public {
-        assertTrue(paymentRegistry.isWhitelisted(address(usdc)));
-        assertTrue(paymentRegistry.isWhitelisted(address(usdt)));
-        assertTrue(paymentRegistry.isWhitelisted(address(usds)));
+    function test_multiStablecoin_vaultPaymentTokens() public {
+        // usdcVault (VM1) accepts all three
+        assertTrue(usdcVault.isPaymentTokenAccepted(address(usdc)));
+        assertTrue(usdcVault.isPaymentTokenAccepted(address(usdt)));
+        assertTrue(usdcVault.isPaymentTokenAccepted(address(usds)));
 
-        address[] memory tokens = paymentRegistry.getPaymentTokens();
+        address[] memory tokens = usdcVault.getPaymentTokens();
         assertEq(tokens.length, 3);
+
+        // usdcVault2 (VM2) also has all three registered
+        assertTrue(usdcVault2.isPaymentTokenAccepted(address(usdc)));
+        assertTrue(usdcVault2.isPaymentTokenAccepted(address(usdt)));
+        assertTrue(usdcVault2.isPaymentTokenAccepted(address(usds)));
+
+        address[] memory tokens2 = usdcVault2.getPaymentTokens();
+        assertEq(tokens2.length, 3);
     }
 
     // ══════════════════════════════════════════════════════════
     //  Test: Remove stablecoin from registry
     // ══════════════════════════════════════════════════════════
 
-    function test_multiStablecoin_removeFromRegistry() public {
-        vm.prank(Actors.ADMIN);
-        paymentRegistry.removePaymentToken(address(usds));
+    function test_multiStablecoin_removeFromVault() public {
+        vm.prank(Actors.VM1);
+        usdcVault.removePaymentToken(address(usds));
 
-        assertFalse(paymentRegistry.isWhitelisted(address(usds)));
-        assertEq(paymentRegistry.getPaymentTokens().length, 2);
+        assertFalse(usdcVault.isPaymentTokenAccepted(address(usds)));
+        assertEq(usdcVault.getPaymentTokens().length, 2);
     }
 
     // ══════════════════════════════════════════════════════════

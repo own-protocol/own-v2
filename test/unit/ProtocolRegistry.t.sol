@@ -23,7 +23,6 @@ contract ProtocolRegistryTest is BaseTest {
     bytes32 VAULT_MANAGER_KEY;
     bytes32 LIQUIDATION_ENGINE_KEY;
     bytes32 ASSET_REGISTRY_KEY;
-    bytes32 PAYMENT_TOKEN_REGISTRY_KEY;
     bytes32 TREASURY_KEY;
 
     address public addr1 = makeAddr("addr1");
@@ -43,7 +42,6 @@ contract ProtocolRegistryTest is BaseTest {
         VAULT_MANAGER_KEY = reg.VAULT_MANAGER();
         LIQUIDATION_ENGINE_KEY = reg.LIQUIDATION_ENGINE();
         ASSET_REGISTRY_KEY = reg.ASSET_REGISTRY();
-        PAYMENT_TOKEN_REGISTRY_KEY = reg.PAYMENT_TOKEN_REGISTRY();
         TREASURY_KEY = reg.TREASURY();
     }
 
@@ -66,7 +64,6 @@ contract ProtocolRegistryTest is BaseTest {
         assertEq(reg.vaultManager(), address(0));
         assertEq(reg.liquidationEngine(), address(0));
         assertEq(reg.assetRegistry(), address(0));
-        assertEq(reg.paymentTokenRegistry(), address(0));
         assertEq(reg.treasury(), address(0));
     }
 
@@ -108,7 +105,6 @@ contract ProtocolRegistryTest is BaseTest {
         reg.setAddress(VAULT_MANAGER_KEY, makeAddr("vm"));
         reg.setAddress(LIQUIDATION_ENGINE_KEY, makeAddr("le"));
         reg.setAddress(ASSET_REGISTRY_KEY, makeAddr("ar"));
-        reg.setAddress(PAYMENT_TOKEN_REGISTRY_KEY, makeAddr("ptr"));
         reg.setAddress(TREASURY_KEY, makeAddr("treasury"));
         vm.stopPrank();
 
@@ -118,7 +114,6 @@ contract ProtocolRegistryTest is BaseTest {
         assertEq(reg.vaultManager(), makeAddr("vm"));
         assertEq(reg.liquidationEngine(), makeAddr("le"));
         assertEq(reg.assetRegistry(), makeAddr("ar"));
-        assertEq(reg.paymentTokenRegistry(), makeAddr("ptr"));
         assertEq(reg.treasury(), makeAddr("treasury"));
     }
 

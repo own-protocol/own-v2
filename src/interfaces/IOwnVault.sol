@@ -134,6 +134,14 @@ interface IOwnVault is IERC4626 {
     /// @param newShareBps New share in BPS.
     event VMShareUpdated(uint256 oldShareBps, uint256 newShareBps);
 
+    /// @notice Emitted when a payment token is added to this vault.
+    /// @param token The accepted payment token address.
+    event PaymentTokenAdded(address indexed token);
+
+    /// @notice Emitted when a payment token is removed from this vault.
+    /// @param token The removed payment token address.
+    event PaymentTokenRemoved(address indexed token);
+
     // ──────────────────────────────────────────────────────────
     //  Errors
     // ──────────────────────────────────────────────────────────
@@ -185,6 +193,15 @@ interface IOwnVault is IERC4626 {
 
     /// @notice The share exceeds maximum allowed BPS.
     error ShareTooHigh(uint256 shareBps, uint256 maxBps);
+
+    /// @notice Maximum payment tokens (3) reached for this vault.
+    error MaxPaymentTokensReached();
+
+    /// @notice The payment token is already accepted by this vault.
+    error PaymentTokenAlreadyAdded(address token);
+
+    /// @notice The payment token is not accepted by this vault.
+    error PaymentTokenNotAccepted(address token);
 
     // ──────────────────────────────────────────────────────────
     //  VM binding
@@ -430,4 +447,31 @@ interface IOwnVault is IERC4626 {
     /// @notice Return the list of registered fee reward tokens for this vault.
     /// @return tokens Array of fee token addresses.
     function getRewardTokens() external view returns (address[] memory tokens);
+
+    // ──────────────────────────────────────────────────────────
+    //  Payment token management (per-vault, VM-controlled, max 3)
+    // ──────────────────────────────────────────────────────────
+
+    /// @notice Add a payment token accepted by this vault. Only callable by the bound VM.
+    /// @param token ERC-20 token address to accept.
+    function addPaymentToken(
+        address token
+    ) external;
+
+    /// @notice Remove a payment token from this vault. Only callable by the bound VM.
+    /// @param token ERC-20 token address to remove.
+    function removePaymentToken(
+        address token
+    ) external;
+
+    /// @notice Check whether a payment token is accepted by this vault.
+    /// @param token The token address to check.
+    /// @return True if the token is accepted.
+    function isPaymentTokenAccepted(
+        address token
+    ) external view returns (bool);
+
+    /// @notice Return all accepted payment tokens for this vault.
+    /// @return tokens Array of accepted token addresses (max 3).
+    function getPaymentTokens() external view returns (address[] memory tokens);
 }
