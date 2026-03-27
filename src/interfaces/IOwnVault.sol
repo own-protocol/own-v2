@@ -444,10 +444,6 @@ interface IOwnVault is IERC4626 {
     /// @return amount Claimable amount.
     function claimableLPRewards(address token, address account) external view returns (uint256 amount);
 
-    /// @notice Return the list of registered fee reward tokens for this vault.
-    /// @return tokens Array of fee token addresses.
-    function getRewardTokens() external view returns (address[] memory tokens);
-
     // ──────────────────────────────────────────────────────────
     //  Payment token management (per-vault, VM-controlled, max 3)
     // ──────────────────────────────────────────────────────────

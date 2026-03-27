@@ -87,14 +87,9 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     /// @dev Per (account, token) accrued unclaimed LP fee rewards.
     mapping(address => mapping(address => uint256)) private _lpAccruedFees;
 
-    /// @dev Registered fee tokens for this vault (max ~3 for MVP).
-    address[] private _rewardTokens;
-
-    /// @dev O(1) lookup: is this token in _rewardTokens?
-    mapping(address => bool) private _isRewardToken;
-
     // ──────────────────────────────────────────────────────────
     //  Payment tokens (per-vault, VM-controlled, max 3)
+    //  Also used as the reward token list for LP fee settlement.
     // ──────────────────────────────────────────────────────────
 
     uint256 private constant MAX_PAYMENT_TOKENS = 3;
@@ -544,12 +539,6 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
             _lpRewardsPerShare[token] += lpAmount.mulDiv(PRECISION, supply);
         }
 
-        // Register reward token if first time
-        if (!_isRewardToken[token]) {
-            _isRewardToken[token] = true;
-            _rewardTokens.push(token);
-        }
-
         emit FeeDeposited(token, amount, protocolAmount, vmAmount, lpAmount);
     }
 
@@ -651,11 +640,6 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
         amount = _lpAccruedFees[account][token] + balanceOf(account).mulDiv(currentRPS - userPaid, PRECISION);
     }
 
-    /// @inheritdoc IOwnVault
-    function getRewardTokens() external view returns (address[] memory tokens) {
-        return _rewardTokens;
-    }
-
     // ──────────────────────────────────────────────────────────
     //  Payment token management
     // ──────────────────────────────────────────────────────────
@@ -732,9 +716,9 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     function _settleLPRewards(
         address account
     ) private {
-        uint256 len = _rewardTokens.length;
+        uint256 len = _paymentTokens.length;
         for (uint256 i; i < len;) {
-            _settleLPReward(account, _rewardTokens[i]);
+            _settleLPReward(account, _paymentTokens[i]);
             unchecked {
                 ++i;
             } // SAFETY: i < len
@@ -761,9 +745,9 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     function _claimAllLPRewardsFor(
         address account
     ) private {
-        uint256 len = _rewardTokens.length;
+        uint256 len = _paymentTokens.length;
         for (uint256 i; i < len;) {
-            address token = _rewardTokens[i];
+            address token = _paymentTokens[i];
             _settleLPReward(account, token);
 
             uint256 amount = _lpAccruedFees[account][token];
