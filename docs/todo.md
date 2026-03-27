@@ -21,6 +21,16 @@ _Completed work archived at `docs/initial-setup-completed.md`. Original backlog 
 
 ---
 
+## Architecture Refactor (completed this cycle)
+
+- ✅ One-VM-per-vault (1:1 binding) — removed multi-VM-per-vault and delegation entirely
+- ✅ Removed spread — fees are the sole protocol revenue mechanism
+- ✅ Async LP deposits — requestDeposit → VM accepts/rejects, LP can cancel
+- ✅ Removed liquidation params from AssetConfig (minCollateralRatio, liquidationThreshold, liquidationReward)
+- ✅ Updated AGENTS.md for new architecture
+
+---
+
 ## Phase 1: Core MVP — Deployment Ready
 
 _Goal: All core protocol mechanics work end-to-end. Fee model, oracle, LP exits, and redemption enforcement are complete. Contracts are deployable to testnet._
@@ -36,15 +46,15 @@ _Single gov-upgradable contract that stores all protocol contract addresses. All
 
 ### 1.2 Fee Model — Per-Asset Mint & Redemption Fees
 
-_Replace spread-as-revenue with explicit mint/redeem fees. Fees are per-asset based on volatility level. Fixed for MVP, swappable for dynamic fees later._
+_Explicit mint/redeem fees based on asset volatility level. Fixed for MVP, swappable for dynamic fees later._
 
 - ✅ Add `volatilityLevel` (uint8) to `AssetConfig` struct in Types.sol (removed unused liquidation params)
 - ✅ `IFeeCalculator` interface — `getMintFee(bytes32 asset, uint256 amount)` and `getRedeemFee(bytes32 asset, uint256 amount)` returning fee in BPS (future-proof signature for dynamic fees)
 - ✅ `FeeCalculator` implementation — admin-set fixed fee rates per volatility level (mapping volatilityLevel → feeBps), resolves asset volatility from AssetRegistry
-- ✅ Wire fee deduction into `OwnMarket.confirmOrder()`:
-  - Mint: fee pulled from VM via transferFrom, deducted before eToken calculation
-  - Redeem: fee deducted from stablecoin payout, pulled from VM via transferFrom
-- ✅ Send collected fees to FeeAccrual contract address (via ProtocolRegistry)
+- ✅ Wire fee deduction into `OwnMarket`:
+  - Mint: fee calculated at claim time, held in escrow, net released to VM. On confirm, escrowed fee transferred to FeeAccrual
+  - Redeem: fee deducted from gross payout at confirm, VM sends net to user + fee to FeeAccrual via transferFrom
+- ✅ OwnMarket calls `FeeAccrual.accrueFee()` after fee transfer for three-way split tracking
 - ✅ Unit tests for FeeCalculator — 20 tests (fee lookup, admin setter, bounds validation, volatility level change)
 - ✅ Unit tests for fee deduction in OwnMarket — 7 tests (mint fee applied, redeem fee applied, correct amounts, events, zero-fee paths)
 
@@ -52,14 +62,14 @@ _Replace spread-as-revenue with explicit mint/redeem fees. Fees are per-asset ba
 
 _Dedicated contract that collects all protocol fees and distributes to protocol, LPs, and VMs._
 
-- 🔲 `IFeeAccrual` interface:
-  - `accrueFee(address vault, address vm, uint256 amount, address token)` — receive fee from OwnMarket
-  - `claimProtocolFees(address token)` — protocol claims its share
-  - `claimLPFees(address vault, address token)` — LP share goes to vault (share price appreciation)
-  - `claimVMFees(address vm, address token)` — VM claims allocated share
+- ✅ `IFeeAccrual` interface:
+  - `accrueFee(address vault, address vm, uint256 amount, address token)` — called by OwnMarket on confirm
+  - `claimProtocolFees(address token)` — transfers protocol share to treasury
+  - `claimLPFees(address vault, address token)` — transfers LP share to vault (share price appreciation)
+  - `claimVMFees(address token)` — VM claims their accrued share
   - `setProtocolShareBps(uint256 bps)` — governance sets protocol's cut
-  - `setVMShareBps(address vault, uint256 bps)` — LPs (or vault governance) set VM share of LP portion
-- 🔲 `FeeAccrual` implementation — track accrued fees per (vault, vm, token), handle three-way split
+  - `setVMShareBps(address vault, uint256 bps)` — vault's VM sets their cut of remainder
+- ✅ `FeeAccrual` implementation — three-way split (protocol ceil, VM floor, LP remainder), onlyMarket for accrueFee
 - 🔲 Unit tests for fee accrual, split calculation, claiming by each party
 - 🔲 Unit tests for edge cases (zero VM share, 100% protocol share, multiple tokens)
 
@@ -68,8 +78,7 @@ _Dedicated contract that collects all protocol fees and distributes to protocol,
 _VMs declare delta neutral or short position. Informational in MVP, designed for future enforcement._
 
 - 🔲 Add `VMStrategy` enum to Types.sol (DeltaNeutral, Short)
-- 🔲 Add `strategy` field to `VMConfig` struct
-- 🔲 Update `VaultManager.registerVM()` to accept strategy parameter
+- 🔲 Add strategy field to VM registration flow
 - 🔲 Emit event on strategy declaration for offchain tracking
 - 🔲 Unit tests for strategy setting and retrieval
 
@@ -136,8 +145,8 @@ _LP collateral is liquidated only when a VM fails to confirm a claimed redemptio
 
 - 🔲 Track which assets each vault backs (vault → asset set mapping)
 - 🔲 Maintain `totalCommittedUSD` running counter (update on mint confirm + redeem confirm)
-- 🔲 Track per-VM asset quantities (VM → asset → minted amount)
-- 🔲 Compute VM `currentExposure` dynamically or via running counter
+- 🔲 Track per-vault asset quantities (vault → asset → minted amount)
+- 🔲 Compute vault `currentExposure` dynamically or via running counter
 - 🔲 In `claimOrder()`: validate VM exposure cap, vault utilisation cap
 - 🔲 Vault halt check + per-asset halt check in `claimOrder()`
 - 🔲 Unit tests for exposure cap, utilisation cap, exposure update on confirm
@@ -157,12 +166,12 @@ _LP collateral is liquidated only when a VM fails to confirm a claimed redemptio
 
 ### 1.15 Integration Tests
 
-- 🔲 Full mint flow with fee deduction: user pays stablecoin → fee accrues → VM receives net → eTokens minted
-- 🔲 Full redeem flow with fee deduction: user submits eTokens → VM confirms → fee deducted → user receives net payout
+- 🔲 Full mint flow with fee deduction: user pays stablecoin → fee held in escrow → VM receives net → eTokens minted at oracle price
+- 🔲 Full redeem flow with fee deduction: user submits eTokens → VM confirms → fee deducted from payout → user receives net
 - 🔲 Fee distribution: protocol claims share, LP share reflected in vault, VM claims share
+- 🔲 Async LP deposit flow: LP requests → VM accepts → shares minted; LP cancels; VM rejects
 - 🔲 LP exit queue: deposit → request withdrawal → wait period → fulfill
 - 🔲 Redemption enforcement: redeem order → VM claims → VM fails to confirm → liquidation → user paid
-- 🔲 VM strategy declaration flow
 - 🔲 ProtocolRegistry upgrade: swap OracleVerifier, verify all consumers use new one
 - 🔲 Update existing integration tests for eToken balance checks, stablecoin payouts, halt checks
 
@@ -186,11 +195,11 @@ _Goal: Protocol is secure, well-tested, and audit-ready._
 ### 2.3 VM Registration Security
 
 - 🔲 Admin approval or vault existence validation for `VaultManager.registerVM()`
-- 🔲 Prevent deregistration with outstanding exposure or active delegations
+- 🔲 Prevent deregistration with outstanding exposure
 
 ### 2.4 Admin Setter Bounds Validation
 
-- 🔲 Bounds on `setMaxUtilization()`, `setAumFee()`, `setReserveFactor()`, fee calculator params
+- 🔲 Bounds on `setMaxUtilization()`, `setAumFee()`, fee calculator params
 - 🔲 Unit tests for each
 
 ### 2.5 Token Safety
@@ -274,9 +283,6 @@ _Goal: High confidence in correctness. Invariants hold under fuzz. Real token in
 - 🔲 ZK proof verification for VM asset holdings (delta neutral enforcement)
 - 🔲 LP liquidation based on VM strategy + collateral type
 - 🔲 Pyth/Chainlink oracle adapter deployment
-- 🔲 LP withdrawal delegation tracking
-- 🔲 VM default / re-delegation
-- 🔲 Delegation enforcement in order flow
 - 🔲 Timelock/delay on admin operations
 - 🔲 Emergency LP withdrawal during extended halts
 - 🔲 Two-step admin transfer
