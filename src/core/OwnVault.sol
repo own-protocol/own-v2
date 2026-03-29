@@ -20,11 +20,10 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
-/// @title OwnVault — ERC-4626 collateral vault with async deposit/withdrawal and health tracking
-/// @notice Each vault is bound to a single VM and holds one LP collateral type
-///         as trustless security for outstanding eToken exposure. Extends ERC-4626
-///         with async deposit approval, FIFO withdrawal queue, health/utilization
-///         tracking, and fee management.
+/// @title OwnVault — ERC-4626 collateral vault with async deposit/withdrawal
+/// @notice Single vault holding ETH (WETH) as collateral to back eToken exposure.
+///         Bound 1:1 to a single VM. Accepts one payment token for fee accrual.
+///         All fees must be flushed before the payment token can be changed.
 contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     using SafeERC20 for IERC20;
     using Math for uint256;
@@ -33,10 +32,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     //  Immutables
     // ──────────────────────────────────────────────────────────
 
-    /// @notice Protocol registry for resolving all contract addresses.
     IProtocolRegistry public immutable registry;
-
-    /// @notice The vault manager (VM) bound to this vault.
     address public immutable vm;
 
     // ──────────────────────────────────────────────────────────
@@ -44,8 +40,6 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     // ──────────────────────────────────────────────────────────
 
     VaultStatus private _vaultStatus;
-
-    /// @dev Per-asset halt status.
     mapping(bytes32 => bool) private _assetHalted;
 
     // ──────────────────────────────────────────────────────────
@@ -56,49 +50,31 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     uint256 private _totalExposure;
 
     // ──────────────────────────────────────────────────────────
-    //  Fees
+    //  Payment token (single, VM-controlled)
     // ──────────────────────────────────────────────────────────
 
-    uint256 private _aumFee;
-    uint256 private _lastAumFeeAccrual;
+    address private _paymentToken;
 
     // ──────────────────────────────────────────────────────────
-    //  Order fee accrual (Uniswap-style per-vault)
+    //  Order fee accrual (single-token, Uniswap-style)
+    //  All fees are denominated in _paymentToken. Token must be
+    //  flushed (protocol + VM claimed) before changing token.
     // ──────────────────────────────────────────────────────────
 
-    /// @dev Protocol's share of all order fees in BPS.
     uint256 private _protocolShareBps;
-
-    /// @dev VM's share of the LP+VM remainder in BPS.
     uint256 private _vmShareBps;
 
-    /// @dev Accrued unclaimed protocol fees per fee token.
-    mapping(address => uint256) private _protocolFees;
+    uint256 private _protocolFees;
+    uint256 private _vmFees;
 
-    /// @dev Accrued unclaimed VM fees per fee token.
-    mapping(address => uint256) private _vmFees;
+    /// @dev Cumulative LP rewards-per-share (scaled by PRECISION).
+    uint256 private _lpRewardsPerShare;
 
-    /// @dev Per fee-token cumulative LP rewards-per-share (scaled by PRECISION).
-    mapping(address => uint256) private _lpRewardsPerShare;
+    /// @dev Per-account checkpoint — last-seen rewardsPerShare.
+    mapping(address => uint256) private _lpCheckpoint;
 
-    /// @dev Per (account, token) checkpoint — last-seen rewardsPerShare.
-    mapping(address => mapping(address => uint256)) private _lpCheckpoint;
-
-    /// @dev Per (account, token) accrued unclaimed LP fee rewards.
-    mapping(address => mapping(address => uint256)) private _lpAccruedFees;
-
-    // ──────────────────────────────────────────────────────────
-    //  Payment tokens (per-vault, VM-controlled, max 3)
-    //  Also used as the reward token list for LP fee settlement.
-    // ──────────────────────────────────────────────────────────
-
-    uint256 private constant MAX_PAYMENT_TOKENS = 3;
-
-    /// @dev Accepted payment tokens for this vault.
-    address[] private _paymentTokens;
-
-    /// @dev O(1) lookup: is this token accepted?
-    mapping(address => bool) private _isPaymentToken;
+    /// @dev Per-account accrued unclaimed LP fee rewards.
+    mapping(address => uint256) private _lpAccruedFees;
 
     // ──────────────────────────────────────────────────────────
     //  Async deposit queue
@@ -145,13 +121,12 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     //  Constructor
     // ──────────────────────────────────────────────────────────
 
-    /// @param asset_            Underlying collateral ERC-20.
+    /// @param asset_            Underlying collateral ERC-20 (WETH).
     /// @param name_             Vault share name.
     /// @param symbol_           Vault share symbol.
     /// @param registry_         ProtocolRegistry contract address.
     /// @param vm_               Vault manager address bound to this vault.
     /// @param maxUtilBps        Initial max utilization in BPS.
-    /// @param aumFeeBps         Initial AUM fee in BPS.
     /// @param protocolShareBps_ Initial protocol fee share in BPS.
     /// @param vmShareBps_       Initial VM fee share (of LP+VM remainder) in BPS.
     constructor(
@@ -161,7 +136,6 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
         address registry_,
         address vm_,
         uint256 maxUtilBps,
-        uint256 aumFeeBps,
         uint256 protocolShareBps_,
         uint256 vmShareBps_
     ) ERC4626(IERC20(asset_)) ERC20(name_, symbol_) {
@@ -170,15 +144,13 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
         registry = IProtocolRegistry(registry_);
         vm = vm_;
         _maxUtilization = maxUtilBps;
-        _aumFee = aumFeeBps;
-        _lastAumFeeAccrual = block.timestamp;
         _vaultStatus = VaultStatus.Active;
         _protocolShareBps = protocolShareBps_;
         _vmShareBps = vmShareBps_;
     }
 
     // ──────────────────────────────────────────────────────────
-    //  ERC-4626 overrides (gate deposits on vault status + VM)
+    //  ERC-4626 overrides
     // ──────────────────────────────────────────────────────────
 
     function deposit(
@@ -195,8 +167,6 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
         return super.mint(shares, receiver);
     }
 
-    /// @dev Standard ERC-4626 withdraw/redeem return 0 max when utilization is high,
-    ///      signalling LPs to use the async queue.
     function maxWithdraw(
         address owner
     ) public view override(ERC4626, IERC4626) returns (uint256) {
@@ -222,7 +192,6 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     ) external whenActive nonReentrant returns (uint256 requestId) {
         if (assets == 0) revert ZeroAmount();
 
-        // Transfer assets from depositor to vault (escrow)
         IERC20(asset()).safeTransferFrom(msg.sender, address(this), assets);
 
         requestId = _nextDepositRequestId++;
@@ -247,16 +216,9 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
         if (req.depositor == address(0)) revert DepositRequestNotFound(requestId);
         if (req.status != DepositStatus.Pending) revert DepositRequestNotPending(requestId);
 
-        // Calculate shares using ERC-4626 preview
         uint256 shares = previewDeposit(req.assets);
-
-        // Update status
         req.status = DepositStatus.Accepted;
-
-        // Remove from pending list
         _removePendingDeposit(requestId);
-
-        // Mint shares to receiver (assets are already in the vault)
         _mint(req.receiver, shares);
 
         emit DepositAccepted(requestId, req.depositor, shares);
@@ -270,13 +232,8 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
         if (req.depositor == address(0)) revert DepositRequestNotFound(requestId);
         if (req.status != DepositStatus.Pending) revert DepositRequestNotPending(requestId);
 
-        // Update status
         req.status = DepositStatus.Rejected;
-
-        // Remove from pending list
         _removePendingDeposit(requestId);
-
-        // Return escrowed assets to depositor
         IERC20(asset()).safeTransfer(req.depositor, req.assets);
 
         emit DepositRejected(requestId, req.depositor);
@@ -291,13 +248,8 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
         if (req.status != DepositStatus.Pending) revert DepositRequestNotPending(requestId);
         if (msg.sender != req.depositor) revert OnlyDepositor(requestId);
 
-        // Update status
         req.status = DepositStatus.Cancelled;
-
-        // Remove from pending list
         _removePendingDeposit(requestId);
-
-        // Return escrowed assets to depositor
         IERC20(asset()).safeTransfer(req.depositor, req.assets);
 
         emit DepositCancelled(requestId, req.depositor);
@@ -312,7 +264,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     }
 
     /// @inheritdoc IOwnVault
-    function getPendingDeposits() external view returns (uint256[] memory requestIds) {
+    function getPendingDeposits() external view returns (uint256[] memory) {
         return _pendingDepositIds;
     }
 
@@ -326,7 +278,6 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     ) external nonReentrant returns (uint256 requestId) {
         if (shares == 0) revert ZeroAmount();
 
-        // Transfer shares from LP to vault (escrow)
         _transfer(msg.sender, address(this), shares);
 
         requestId = _nextRequestId++;
@@ -352,11 +303,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
         require(req.status == WithdrawalStatus.Pending, "OwnVault: not pending");
 
         req.status = WithdrawalStatus.Cancelled;
-
-        // Return escrowed shares
         _transfer(address(this), msg.sender, req.shares);
-
-        // Remove from pending list
         _removePendingRequest(requestId);
 
         emit WithdrawalCancelled(requestId, msg.sender);
@@ -374,14 +321,11 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
         assets = convertToAssets(shares);
 
         req.status = WithdrawalStatus.Fulfilled;
-
-        // Remove from pending list
         _removePendingRequest(requestId);
 
-        // Auto-claim any accrued LP fee rewards before exit
-        _claimAllLPRewardsFor(req.owner);
+        // Auto-claim LP rewards before exit
+        _claimLPRewardsFor(req.owner);
 
-        // Burn escrowed shares and transfer assets to owner
         _burn(address(this), shares);
         IERC20(asset()).safeTransfer(req.owner, assets);
 
@@ -397,7 +341,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     }
 
     /// @inheritdoc IOwnVault
-    function getPendingWithdrawals() external view returns (uint256[] memory requestIds) {
+    function getPendingWithdrawals() external view returns (uint256[] memory) {
         return _pendingRequestIds;
     }
 
@@ -411,9 +355,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     }
 
     /// @inheritdoc IOwnVault
-    function halt(
-        bytes32 reason
-    ) external onlyAdmin {
+    function halt(bytes32 reason) external onlyAdmin {
         _vaultStatus = VaultStatus.Halted;
         emit VaultHalted(reason);
     }
@@ -431,17 +373,13 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     }
 
     /// @inheritdoc IOwnVault
-    function unhaltAsset(
-        bytes32 asset_
-    ) external onlyAdmin {
+    function unhaltAsset(bytes32 asset_) external onlyAdmin {
         _assetHalted[asset_] = false;
         emit AssetUnhalted(asset_);
     }
 
     /// @inheritdoc IOwnVault
-    function isAssetHalted(
-        bytes32 asset_
-    ) external view returns (bool) {
+    function isAssetHalted(bytes32 asset_) external view returns (bool) {
         return _assetHalted[asset_];
     }
 
@@ -463,9 +401,9 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
 
     /// @inheritdoc IOwnVault
     function utilization() external view returns (uint256) {
-        uint256 assets = totalAssets();
-        if (assets == 0) return 0;
-        return _totalExposure.mulDiv(BPS, assets);
+        uint256 assets_ = totalAssets();
+        if (assets_ == 0) return 0;
+        return _totalExposure.mulDiv(BPS, assets_);
     }
 
     /// @inheritdoc IOwnVault
@@ -474,9 +412,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     }
 
     /// @inheritdoc IOwnVault
-    function setMaxUtilization(
-        uint256 maxUtilBps
-    ) external onlyAdmin {
+    function setMaxUtilization(uint256 maxUtilBps) external onlyAdmin {
         _maxUtilization = maxUtilBps;
     }
 
@@ -486,35 +422,14 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     }
 
     // ──────────────────────────────────────────────────────────
-    //  Fee management
-    // ──────────────────────────────────────────────────────────
-
-    /// @inheritdoc IOwnVault
-    function aumFee() external view returns (uint256) {
-        return _aumFee;
-    }
-
-    /// @inheritdoc IOwnVault
-    function setAumFee(
-        uint256 feeBps
-    ) external onlyAdmin {
-        _aumFee = feeBps;
-    }
-
-    /// @inheritdoc IOwnVault
-    function accrueAumFee() external {
-        _accrueAumFee();
-    }
-
-    // ──────────────────────────────────────────────────────────
     //  Order fee accrual & claims
     // ──────────────────────────────────────────────────────────
 
     /// @inheritdoc IOwnVault
     function depositFees(address token, uint256 amount) external onlyMarket {
         if (amount == 0) return;
+        if (token != _paymentToken) revert WrongFeeToken(_paymentToken, token);
 
-        // Pull fee tokens from OwnMarket
         IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
 
         // Protocol takes its cut first (round up — protocol-favorable)
@@ -525,27 +440,22 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
         uint256 vmAmount = remainder.mulDiv(_vmShareBps, BPS);
         uint256 lpAmount = remainder - vmAmount;
 
-        // Accrue protocol and VM balances
-        _protocolFees[token] += protocolAmount;
-        _vmFees[token] += vmAmount;
+        _protocolFees += protocolAmount;
+        _vmFees += vmAmount;
 
         // LP share → rewards-per-share accumulator
         uint256 supply = totalSupply();
         if (supply == 0) {
-            // No LPs — redirect LP portion to protocol
-            _protocolFees[token] += lpAmount;
+            _protocolFees += lpAmount;
         } else if (lpAmount > 0) {
-            // Rounding: floor — any dust stays for the next deposit
-            _lpRewardsPerShare[token] += lpAmount.mulDiv(PRECISION, supply);
+            _lpRewardsPerShare += lpAmount.mulDiv(PRECISION, supply);
         }
 
         emit FeeDeposited(token, amount, protocolAmount, vmAmount, lpAmount);
     }
 
     /// @inheritdoc IOwnVault
-    function setProtocolShareBps(
-        uint256 shareBps
-    ) external onlyAdmin {
+    function setProtocolShareBps(uint256 shareBps) external onlyAdmin {
         if (shareBps > BPS) revert ShareTooHigh(shareBps, BPS);
         uint256 oldShare = _protocolShareBps;
         _protocolShareBps = shareBps;
@@ -553,9 +463,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     }
 
     /// @inheritdoc IOwnVault
-    function setVMShareBps(
-        uint256 shareBps
-    ) external onlyVM {
+    function setVMShareBps(uint256 shareBps) external onlyVM {
         if (shareBps > BPS) revert ShareTooHigh(shareBps, BPS);
         uint256 oldShare = _vmShareBps;
         _vmShareBps = shareBps;
@@ -573,71 +481,54 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     }
 
     /// @inheritdoc IOwnVault
-    function claimProtocolFees(
-        address token
-    ) external nonReentrant {
-        uint256 amount = _protocolFees[token];
+    function claimProtocolFees() external nonReentrant {
+        uint256 amount = _protocolFees;
         if (amount == 0) revert NoFeesToClaim();
 
-        _protocolFees[token] = 0;
-        IERC20(token).safeTransfer(registry.treasury(), amount);
+        _protocolFees = 0;
+        IERC20(_paymentToken).safeTransfer(registry.treasury(), amount);
 
-        emit ProtocolFeesClaimed(token, amount);
+        emit ProtocolFeesClaimed(_paymentToken, amount);
     }
 
     /// @inheritdoc IOwnVault
-    function claimVMFees(
-        address token
-    ) external onlyVM nonReentrant {
-        uint256 amount = _vmFees[token];
+    function claimVMFees() external onlyVM nonReentrant {
+        uint256 amount = _vmFees;
         if (amount == 0) revert NoFeesToClaim();
 
-        _vmFees[token] = 0;
-        IERC20(token).safeTransfer(vm, amount);
+        _vmFees = 0;
+        IERC20(_paymentToken).safeTransfer(vm, amount);
 
-        emit VMFeesClaimed(token, amount);
+        emit VMFeesClaimed(_paymentToken, amount);
     }
 
     /// @inheritdoc IOwnVault
-    function claimLPRewards(
-        address token
-    ) external nonReentrant returns (uint256 amount) {
-        _settleLPReward(msg.sender, token);
+    function claimLPRewards() external nonReentrant returns (uint256 amount) {
+        _settleLPReward(msg.sender);
 
-        amount = _lpAccruedFees[msg.sender][token];
+        amount = _lpAccruedFees[msg.sender];
         if (amount == 0) revert NoFeesToClaim();
 
-        _lpAccruedFees[msg.sender][token] = 0;
-        IERC20(token).safeTransfer(msg.sender, amount);
+        _lpAccruedFees[msg.sender] = 0;
+        IERC20(_paymentToken).safeTransfer(msg.sender, amount);
 
-        emit LPRewardsClaimed(msg.sender, token, amount);
+        emit LPRewardsClaimed(msg.sender, _paymentToken, amount);
     }
 
     /// @inheritdoc IOwnVault
-    function claimAllLPRewards() external nonReentrant {
-        _claimAllLPRewardsFor(msg.sender);
+    function accruedProtocolFees() external view returns (uint256) {
+        return _protocolFees;
     }
 
     /// @inheritdoc IOwnVault
-    function accruedProtocolFees(
-        address token
-    ) external view returns (uint256) {
-        return _protocolFees[token];
+    function accruedVMFees() external view returns (uint256) {
+        return _vmFees;
     }
 
     /// @inheritdoc IOwnVault
-    function accruedVMFees(
-        address token
-    ) external view returns (uint256) {
-        return _vmFees[token];
-    }
-
-    /// @inheritdoc IOwnVault
-    function claimableLPRewards(address token, address account) external view returns (uint256 amount) {
-        uint256 currentRPS = _lpRewardsPerShare[token];
-        uint256 userPaid = _lpCheckpoint[account][token];
-        // Rounding: floor — protocol keeps dust
-        amount = _lpAccruedFees[account][token] + balanceOf(account).mulDiv(currentRPS - userPaid, PRECISION);
+    function claimableLPRewards(address account) external view returns (uint256 amount) {
+        uint256 userPaid = _lpCheckpoint[account];
+        amount = _lpAccruedFees[account] + balanceOf(account).mulDiv(_lpRewardsPerShare - userPaid, PRECISION);
     }
 
     // ──────────────────────────────────────────────────────────
@@ -645,151 +536,67 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     // ──────────────────────────────────────────────────────────
 
     /// @inheritdoc IOwnVault
-    function addPaymentToken(
-        address token
-    ) external onlyVM {
+    function setPaymentToken(address token) external onlyVM {
         if (token == address(0)) revert ZeroAddress();
-        if (_isPaymentToken[token]) revert PaymentTokenAlreadyAdded(token);
-        if (_paymentTokens.length >= MAX_PAYMENT_TOKENS) revert MaxPaymentTokensReached();
+        if (_protocolFees != 0 || _vmFees != 0) revert OutstandingFeesExist();
 
-        _isPaymentToken[token] = true;
-        _paymentTokens.push(token);
+        address oldToken = _paymentToken;
+        _paymentToken = token;
 
-        emit PaymentTokenAdded(token);
+        emit PaymentTokenUpdated(oldToken, token);
     }
 
     /// @inheritdoc IOwnVault
-    function removePaymentToken(
-        address token
-    ) external onlyVM {
-        if (!_isPaymentToken[token]) revert PaymentTokenNotAccepted(token);
-
-        _isPaymentToken[token] = false;
-
-        // Swap-and-pop
-        uint256 len = _paymentTokens.length;
-        for (uint256 i; i < len;) {
-            if (_paymentTokens[i] == token) {
-                _paymentTokens[i] = _paymentTokens[len - 1];
-                _paymentTokens.pop();
-                break;
-            }
-            unchecked {
-                ++i;
-            }
-        }
-
-        emit PaymentTokenRemoved(token);
-    }
-
-    /// @inheritdoc IOwnVault
-    function isPaymentTokenAccepted(
-        address token
-    ) external view returns (bool) {
-        return _isPaymentToken[token];
-    }
-
-    /// @inheritdoc IOwnVault
-    function getPaymentTokens() external view returns (address[] memory tokens) {
-        return _paymentTokens;
+    function paymentToken() external view returns (address) {
+        return _paymentToken;
     }
 
     // ──────────────────────────────────────────────────────────
     //  Internal — LP reward settlement
     // ──────────────────────────────────────────────────────────
 
-    /// @dev Override _update to settle LP rewards for both sender and receiver
-    ///      before any share balance change. Mirrors the EToken dividend pattern.
+    /// @dev Override _update to settle LP rewards before any share balance change.
     function _update(address from, address to, uint256 amount) internal override {
-        // Settle BEFORE balance change (pre-transfer balances)
-        // Skip address(0) (mint/burn) and address(this) (vault-escrowed shares)
         if (from != address(0) && from != address(this)) {
-            _settleLPRewards(from);
+            _settleLPReward(from);
         }
         if (to != address(0) && to != address(this)) {
-            _settleLPRewards(to);
+            _settleLPReward(to);
         }
         super._update(from, to, amount);
     }
 
-    /// @dev Settle pending LP rewards for an account across all registered fee tokens.
-    function _settleLPRewards(
-        address account
-    ) private {
-        uint256 len = _paymentTokens.length;
-        for (uint256 i; i < len;) {
-            _settleLPReward(account, _paymentTokens[i]);
-            unchecked {
-                ++i;
-            } // SAFETY: i < len
-        }
-    }
-
-    /// @dev Settle pending LP rewards for an account for a single fee token.
-    function _settleLPReward(address account, address token) private {
-        uint256 currentRPS = _lpRewardsPerShare[token];
-        uint256 userPaid = _lpCheckpoint[account][token];
+    /// @dev Settle pending LP rewards for an account.
+    function _settleLPReward(address account) private {
+        uint256 currentRPS = _lpRewardsPerShare;
+        uint256 userPaid = _lpCheckpoint[account];
         if (currentRPS > userPaid) {
-            // Rounding: floor — protocol keeps dust
             uint256 owed = balanceOf(account).mulDiv(currentRPS - userPaid, PRECISION);
             if (owed > 0) {
-                _lpAccruedFees[account][token] += owed;
-                emit LPRewardsSettled(account, token, owed);
+                _lpAccruedFees[account] += owed;
             }
-            _lpCheckpoint[account][token] = currentRPS;
+            _lpCheckpoint[account] = currentRPS;
         }
     }
 
-    /// @dev Settle and claim all LP fee rewards for an account. Used by
-    ///      fulfillWithdrawal for auto-claim on LP exit.
-    function _claimAllLPRewardsFor(
-        address account
-    ) private {
-        uint256 len = _paymentTokens.length;
-        for (uint256 i; i < len;) {
-            address token = _paymentTokens[i];
-            _settleLPReward(account, token);
+    /// @dev Settle and claim LP rewards for an account (used by fulfillWithdrawal).
+    function _claimLPRewardsFor(address account) private {
+        _settleLPReward(account);
 
-            uint256 amount = _lpAccruedFees[account][token];
-            if (amount > 0) {
-                _lpAccruedFees[account][token] = 0;
-                IERC20(token).safeTransfer(account, amount);
-                emit LPRewardsClaimed(account, token, amount);
-            }
-            unchecked {
-                ++i;
-            } // SAFETY: i < len
+        uint256 amount = _lpAccruedFees[account];
+        if (amount > 0) {
+            _lpAccruedFees[account] = 0;
+            IERC20(_paymentToken).safeTransfer(account, amount);
+            emit LPRewardsClaimed(account, _paymentToken, amount);
         }
     }
 
     // ──────────────────────────────────────────────────────────
-    //  Internal — AUM fee
+    //  Internal — helpers
     // ──────────────────────────────────────────────────────────
-
-    function _accrueAumFee() private {
-        if (_aumFee == 0) return;
-
-        uint256 elapsed = block.timestamp - _lastAumFeeAccrual;
-        if (elapsed == 0) return;
-
-        _lastAumFeeAccrual = block.timestamp;
-
-        uint256 assets = totalAssets();
-        if (assets == 0) return;
-
-        // Annual fee prorated: fee = assets * aumFee / BPS * elapsed / 365 days
-        uint256 feeAmount = assets.mulDiv(_aumFee * elapsed, BPS * 365 days);
-        if (feeAmount == 0) return;
-
-        address _treasury = registry.treasury();
-        IERC20(asset()).safeTransfer(_treasury, feeAmount);
-        emit AumFeeCollected(feeAmount, _treasury);
-    }
 
     /// @dev Remove a request ID from the pending withdrawal list (swap-and-pop).
-    function _removePendingRequest(
-        uint256 requestId
-    ) private {
+    function _removePendingRequest(uint256 requestId) private {
         uint256 len = _pendingRequestIds.length;
         for (uint256 i; i < len;) {
             if (_pendingRequestIds[i] == requestId) {
@@ -799,14 +606,12 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
             }
             unchecked {
                 ++i;
-            } // SAFETY: i < len
+            }
         }
     }
 
     /// @dev Remove a request ID from the pending deposit list (swap-and-pop).
-    function _removePendingDeposit(
-        uint256 requestId
-    ) private {
+    function _removePendingDeposit(uint256 requestId) private {
         uint256 len = _pendingDepositIds.length;
         for (uint256 i; i < len;) {
             if (_pendingDepositIds[i] == requestId) {
@@ -816,29 +621,27 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
             }
             unchecked {
                 ++i;
-            } // SAFETY: i < len
+            }
         }
     }
 
     // ──────────────────────────────────────────────────────────
     //  Required overrides for diamond inheritance
-    //  (IOwnVault extends IERC4626 → functions exist in both
-    //   ERC4626 and IERC4626, so Solidity requires explicit overrides)
     // ──────────────────────────────────────────────────────────
 
-    function withdraw(
-        uint256 assets,
-        address receiver,
-        address own
-    ) public override(ERC4626, IERC4626) returns (uint256) {
+    function withdraw(uint256 assets, address receiver, address own)
+        public
+        override(ERC4626, IERC4626)
+        returns (uint256)
+    {
         return super.withdraw(assets, receiver, own);
     }
 
-    function redeem(
-        uint256 shares,
-        address receiver,
-        address own
-    ) public override(ERC4626, IERC4626) returns (uint256) {
+    function redeem(uint256 shares, address receiver, address own)
+        public
+        override(ERC4626, IERC4626)
+        returns (uint256)
+    {
         return super.redeem(shares, receiver, own);
     }
 
@@ -846,53 +649,37 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
         return super.totalAssets();
     }
 
-    function convertToShares(
-        uint256 assets
-    ) public view override(ERC4626, IERC4626) returns (uint256) {
+    function convertToShares(uint256 assets) public view override(ERC4626, IERC4626) returns (uint256) {
         return super.convertToShares(assets);
     }
 
-    function convertToAssets(
-        uint256 shares
-    ) public view override(ERC4626, IERC4626) returns (uint256) {
+    function convertToAssets(uint256 shares) public view override(ERC4626, IERC4626) returns (uint256) {
         return super.convertToAssets(shares);
     }
 
-    function maxDeposit(
-        address
-    ) public view override(ERC4626, IERC4626) returns (uint256) {
+    function maxDeposit(address) public view override(ERC4626, IERC4626) returns (uint256) {
         if (_vaultStatus != VaultStatus.Active) return 0;
         return type(uint256).max;
     }
 
-    function maxMint(
-        address
-    ) public view override(ERC4626, IERC4626) returns (uint256) {
+    function maxMint(address) public view override(ERC4626, IERC4626) returns (uint256) {
         if (_vaultStatus != VaultStatus.Active) return 0;
         return type(uint256).max;
     }
 
-    function previewDeposit(
-        uint256 assets
-    ) public view override(ERC4626, IERC4626) returns (uint256) {
+    function previewDeposit(uint256 assets) public view override(ERC4626, IERC4626) returns (uint256) {
         return super.previewDeposit(assets);
     }
 
-    function previewMint(
-        uint256 shares
-    ) public view override(ERC4626, IERC4626) returns (uint256) {
+    function previewMint(uint256 shares) public view override(ERC4626, IERC4626) returns (uint256) {
         return super.previewMint(shares);
     }
 
-    function previewWithdraw(
-        uint256 assets
-    ) public view override(ERC4626, IERC4626) returns (uint256) {
+    function previewWithdraw(uint256 assets) public view override(ERC4626, IERC4626) returns (uint256) {
         return super.previewWithdraw(assets);
     }
 
-    function previewRedeem(
-        uint256 shares
-    ) public view override(ERC4626, IERC4626) returns (uint256) {
+    function previewRedeem(uint256 shares) public view override(ERC4626, IERC4626) returns (uint256) {
         return super.previewRedeem(shares);
     }
 

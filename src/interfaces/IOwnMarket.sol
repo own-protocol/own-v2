@@ -1,72 +1,43 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {ClaimInfo, Order, OrderStatus, PriceType} from "./types/Types.sol";
+import {Order, OrderStatus} from "./types/Types.sol";
 
-/// @title IOwnMarket — Order escrow and claim marketplace
-/// @notice The core execution mechanism for the protocol. Minters place orders
-///         (mint or redeem) that sit in escrow. Vault managers claim orders,
-///         execute offchain hedges, and confirm with signed oracle prices.
-///         Supports market orders (with slippage), limit orders, directed orders
-///         (specific VM), open orders (any VM), partial fills, and cross-vault
-///         VM competition.
+/// @title IOwnMarket — Order escrow and execution marketplace
+/// @notice Users place mint or redeem orders with a price and expiry. The VM
+///         claims orders, executes off-chain hedges, and confirms execution.
+///         Orders execute at the user's set price. Force execution provides
+///         user recourse when the VM fails to confirm or close in time.
 interface IOwnMarket {
     // ──────────────────────────────────────────────────────────
     //  Events
     // ──────────────────────────────────────────────────────────
 
-    /// @notice Emitted when a minter places a new order.
-    /// @param orderId   Unique order identifier.
-    /// @param user      Minter address.
-    /// @param orderType 0 = Mint, 1 = Redeem.
-    /// @param asset     Asset ticker.
-    /// @param amount    Stablecoin amount (Mint) or eToken amount (Redeem).
+    /// @notice Emitted when a user places a new order.
     event OrderPlaced(
         uint256 indexed orderId, address indexed user, uint8 orderType, bytes32 indexed asset, uint256 amount
     );
 
-    /// @notice Emitted when a VM claims a portion (or all) of an order.
-    /// @param orderId Claimed order.
-    /// @param claimId Unique claim identifier.
-    /// @param vm      Vault manager who claimed.
-    /// @param amount  Amount claimed.
-    event OrderClaimed(uint256 indexed orderId, uint256 indexed claimId, address indexed vm, uint256 amount);
+    /// @notice Emitted when the VM claims an order.
+    event OrderClaimed(uint256 indexed orderId, address indexed vm);
 
-    /// @notice Emitted when a VM confirms execution of their claim.
-    /// @param orderId       Order being confirmed.
-    /// @param claimId       Claim being confirmed.
-    /// @param vm            Confirming vault manager.
-    /// @param executionPrice Oracle price at execution (18 decimals).
-    /// @param eTokenAmount  eTokens minted (Mint) or burned (Redeem).
-    event OrderConfirmed(
-        uint256 indexed orderId,
-        uint256 indexed claimId,
-        address indexed vm,
-        uint256 executionPrice,
-        uint256 eTokenAmount
-    );
+    /// @notice Emitted when the VM confirms execution of a claimed order.
+    event OrderConfirmed(uint256 indexed orderId, address indexed vm, uint256 eTokenAmount);
 
-    /// @notice Emitted when a user cancels their order.
-    /// @param orderId Cancelled order.
-    /// @param user    Minter who cancelled.
+    /// @notice Emitted when a user cancels their order (before claim).
     event OrderCancelled(uint256 indexed orderId, address indexed user);
 
-    /// @notice Emitted when an order expires past its deadline.
-    /// @param orderId Expired order.
+    /// @notice Emitted when an unclaimed order expires past its deadline.
     event OrderExpired(uint256 indexed orderId);
 
-    /// @notice Emitted when a protocol fee is collected during order confirmation.
-    /// @param orderId    Order identifier.
-    /// @param claimId    Claim identifier.
-    /// @param token      Stablecoin in which the fee is denominated.
-    /// @param feeAmount  Fee amount collected.
-    event FeeCollected(uint256 indexed orderId, uint256 indexed claimId, address indexed token, uint256 feeAmount);
+    /// @notice Emitted when the VM closes an expired claimed order and returns funds.
+    event OrderClosed(uint256 indexed orderId, address indexed vm);
 
-    /// @notice Emitted when a partial fill is settled and remaining funds returned.
-    /// @param orderId         Order identifier.
-    /// @param filledAmount    Total amount that was filled.
-    /// @param remainingAmount Amount returned to the user.
-    event PartialFillCompleted(uint256 indexed orderId, uint256 filledAmount, uint256 remainingAmount);
+    /// @notice Emitted when a user force-executes after the grace period.
+    event OrderForceExecuted(uint256 indexed orderId, address indexed user, bool priceReachable);
+
+    /// @notice Emitted when a protocol fee is collected during order confirmation.
+    event FeeCollected(uint256 indexed orderId, address indexed token, uint256 feeAmount);
 
     // ──────────────────────────────────────────────────────────
     //  Errors
@@ -76,149 +47,113 @@ interface IOwnMarket {
     error OrderNotFound(uint256 orderId);
 
     /// @notice The order is not in the expected status.
-    error OrderNotOpen(uint256 orderId, OrderStatus currentStatus);
+    error InvalidOrderStatus(uint256 orderId, OrderStatus currentStatus);
 
-    /// @notice The order has passed its deadline.
-    error OrderExpiredError(uint256 orderId, uint256 deadline);
-
-    /// @notice Invalid order type provided.
-    error InvalidOrderType();
-
-    /// @notice Invalid price type provided.
-    error InvalidPriceType();
-
-    /// @notice Execution price exceeds the user's slippage tolerance.
-    error SlippageExceeded(uint256 orderId, uint256 executionPrice, uint256 placementPrice, uint256 slippage);
-
-    /// @notice The oracle price does not meet the limit price.
-    error LimitPriceNotMet(uint256 orderId, uint256 oraclePrice, uint256 limitPrice);
-
-    /// @notice Partial fills are not allowed on this order.
-    error PartialFillNotAllowed(uint256 orderId);
-
-    /// @notice The claim amount exceeds the remaining unfilled amount.
-    error AmountExceedsRemaining(uint256 orderId, uint256 requestedAmount, uint256 remainingAmount);
-
-    /// @notice The VM is not eligible to claim this order.
-    error VMNotEligible(address vm, uint256 orderId);
-
-    /// @notice This is a directed order for a different VM.
-    error DirectedOrderWrongVM(uint256 orderId, address expectedVM, address caller);
+    /// @notice The order has passed its expiry.
+    error OrderExpiredError(uint256 orderId);
 
     /// @notice Only the order owner can perform this action.
-    error OnlyOrderOwner(uint256 orderId, address caller);
+    error OnlyOrderOwner(uint256 orderId);
 
-    /// @notice The claim does not exist.
-    error ClaimNotFound(uint256 claimId);
+    /// @notice The order expiry has not been reached yet.
+    error ExpiryNotReached(uint256 orderId);
 
-    /// @notice The claim has already been confirmed.
-    error ClaimAlreadyConfirmed(uint256 claimId);
+    /// @notice The grace period has not elapsed since claim.
+    error GracePeriodNotElapsed(uint256 orderId);
 
-    /// @notice The order deadline has not been reached yet.
-    error DeadlineNotReached(uint256 orderId, uint256 deadline);
+    /// @notice The claim threshold has not elapsed since placement.
+    error ClaimThresholdNotElapsed(uint256 orderId);
 
     /// @notice A zero amount was provided.
     error ZeroAmount();
 
-    /// @notice The deadline is invalid (e.g. in the past).
-    error InvalidDeadline();
+    /// @notice The expiry timestamp is invalid.
+    error InvalidExpiry();
 
-    /// @notice The asset's market is halted.
-    error MarketHalted(bytes32 asset);
+    /// @notice The price is invalid (zero).
+    error InvalidPrice();
 
     /// @notice The asset is not active in the registry.
     error AssetNotActive(bytes32 asset);
 
-    /// @notice The payment token is not whitelisted.
-    error PaymentTokenNotWhitelisted(address token);
+    /// @notice Only the registered VM can perform this action.
+    error OnlyVM();
 
     // ──────────────────────────────────────────────────────────
     //  Order placement
     // ──────────────────────────────────────────────────────────
 
-    /// @notice Place a mint order. Minter deposits stablecoins into escrow.
-    /// @param asset                Asset ticker (e.g. bytes32("TSLA")).
-    /// @param stablecoin           Payment token address.
-    /// @param stablecoinAmount     Amount of stablecoins to deposit.
-    /// @param priceType            Market or Limit.
-    /// @param slippageOrLimitPrice Slippage in BPS (Market) or limit price in 18 decimals (Limit).
-    /// @param deadline             Order expiry timestamp.
-    /// @param allowPartialFill     Whether partial fills are accepted.
-    /// @param preferredVM          Target VM for directed orders (address(0) for open).
-    /// @param priceData            Oracle price data for recording placement price.
+    /// @notice Place a mint order. User deposits stablecoins into escrow.
+    /// @param asset  Asset ticker (e.g. bytes32("TSLA")).
+    /// @param amount Amount of stablecoins to deposit.
+    /// @param price  Maximum price per eToken the user will pay (18 decimals).
+    /// @param expiry Timestamp after which the order can be expired.
     /// @return orderId The unique order identifier.
-    function placeMintOrder(
-        bytes32 asset,
-        address stablecoin,
-        uint256 stablecoinAmount,
-        PriceType priceType,
-        uint256 slippageOrLimitPrice,
-        uint256 deadline,
-        bool allowPartialFill,
-        address preferredVM,
-        bytes calldata priceData
-    ) external returns (uint256 orderId);
+    function placeMintOrder(bytes32 asset, uint256 amount, uint256 price, uint256 expiry)
+        external
+        returns (uint256 orderId);
 
-    /// @notice Place a redeem order. Minter deposits eTokens into escrow.
-    /// @param asset                Asset ticker.
-    /// @param stablecoin           Desired payout token address.
-    /// @param eTokenAmount         Amount of eTokens to deposit.
-    /// @param priceType            Market or Limit.
-    /// @param slippageOrLimitPrice Slippage in BPS (Market) or limit price in 18 decimals (Limit).
-    /// @param deadline             Order expiry timestamp.
-    /// @param allowPartialFill     Whether partial fills are accepted.
-    /// @param preferredVM          Target VM for directed orders (address(0) for open).
-    /// @param priceData            Oracle price data for recording placement price.
+    /// @notice Place a redeem order. User deposits eTokens into escrow.
+    /// @param asset  Asset ticker.
+    /// @param amount Amount of eTokens to deposit.
+    /// @param price  Minimum price per eToken the user will accept (18 decimals).
+    /// @param expiry Timestamp after which the order can be expired.
     /// @return orderId The unique order identifier.
-    function placeRedeemOrder(
-        bytes32 asset,
-        address stablecoin,
-        uint256 eTokenAmount,
-        PriceType priceType,
-        uint256 slippageOrLimitPrice,
-        uint256 deadline,
-        bool allowPartialFill,
-        address preferredVM,
-        bytes calldata priceData
-    ) external returns (uint256 orderId);
+    function placeRedeemOrder(bytes32 asset, uint256 amount, uint256 price, uint256 expiry)
+        external
+        returns (uint256 orderId);
 
     // ──────────────────────────────────────────────────────────
     //  VM operations
     // ──────────────────────────────────────────────────────────
 
-    /// @notice Claim a portion (or all) of an open order.
-    /// @dev For mints, stablecoins are released to the VM. For redeems, the VM
-    ///      commits to sending stablecoins to the minter on confirmation.
+    /// @notice Claim an open order. Full fill only.
+    ///         Mint: stablecoins (minus escrowed fee) transferred to VM.
+    ///         Redeem: eTokens remain in escrow.
     /// @param orderId Order to claim.
-    /// @param amount  Amount to claim (stablecoin for Mint, eToken for Redeem).
-    /// @return claimId The unique claim identifier.
-    function claimOrder(uint256 orderId, uint256 amount) external returns (uint256 claimId);
+    function claimOrder(
+        uint256 orderId
+    ) external;
 
-    /// @notice Confirm execution of a claim with a signed oracle price.
-    /// @dev For mints: eTokens are minted to the user. For redeems: the protocol
-    ///      verifies the VM has sent stablecoins, then burns the escrowed eTokens.
-    /// @param claimId   Claim to confirm.
-    /// @param priceData Signed oracle price data.
-    function confirmOrder(uint256 claimId, bytes calldata priceData) external;
+    /// @notice Confirm execution of a claimed order at the set price.
+    ///         Mint: eTokens minted to user, escrowed fee deposited to vault.
+    ///         Redeem: VM sends stablecoins to user, eTokens burned, fee deposited to vault.
+    /// @param orderId Order to confirm.
+    function confirmOrder(
+        uint256 orderId
+    ) external;
+
+    /// @notice Close an expired claimed order and return funds to the user.
+    ///         Mint: VM returns stablecoins to user in this transaction, escrowed fee returned.
+    ///         Redeem: eTokens returned to user.
+    /// @param orderId Order to close.
+    function closeOrder(
+        uint256 orderId
+    ) external;
 
     // ──────────────────────────────────────────────────────────
     //  User operations
     // ──────────────────────────────────────────────────────────
 
-    /// @notice Cancel an order. Only the unclaimed portion can be cancelled.
-    ///         Escrowed stablecoins (Mint) or eTokens (Redeem) are returned.
+    /// @notice Cancel an open (unclaimed) order. Returns escrowed funds to user.
     /// @param orderId Order to cancel.
     function cancelOrder(
         uint256 orderId
     ) external;
 
+    /// @notice Force-execute an order after the grace period when the VM has
+    ///         not confirmed or closed. For claimed orders (mint & redeem) and
+    ///         unclaimed redeem orders past the claim threshold.
+    /// @param orderId       Order to force-execute.
+    /// @param ohlcProofData OHLC oracle proof showing whether the set price was reachable.
+    function forceExecute(uint256 orderId, bytes calldata ohlcProofData) external;
+
     // ──────────────────────────────────────────────────────────
-    //  Deadline enforcement
+    //  Permissionless
     // ──────────────────────────────────────────────────────────
 
-    /// @notice Expire an order after its deadline. Callable by anyone.
-    /// @dev For uncompleted redeem orders, triggers Tier 3 liquidation.
-    ///      For uncompleted mint orders, returns escrowed stablecoins.
+    /// @notice Expire an unclaimed order after its expiry. Callable by anyone.
+    ///         Returns escrowed stablecoins (mint) or eTokens (redeem) to user.
     /// @param orderId Order to expire.
     function expireOrder(
         uint256 orderId
@@ -229,36 +164,16 @@ interface IOwnMarket {
     // ──────────────────────────────────────────────────────────
 
     /// @notice Return the full details of an order.
-    /// @param orderId Order identifier.
-    /// @return order The order data.
     function getOrder(
         uint256 orderId
     ) external view returns (Order memory order);
 
-    /// @notice Return the full details of a claim.
-    /// @param claimId Claim identifier.
-    /// @return claim The claim data.
-    function getClaim(
-        uint256 claimId
-    ) external view returns (ClaimInfo memory claim);
-
-    /// @notice Return all claim IDs for an order.
-    /// @param orderId Order identifier.
-    /// @return claimIds Array of claim IDs.
-    function getOrderClaims(
-        uint256 orderId
-    ) external view returns (uint256[] memory claimIds);
-
     /// @notice Return all open order IDs for an asset.
-    /// @param asset Asset ticker.
-    /// @return orderIds Array of open order IDs.
     function getOpenOrders(
         bytes32 asset
     ) external view returns (uint256[] memory orderIds);
 
     /// @notice Return all order IDs for a user.
-    /// @param user Minter address.
-    /// @return orderIds Array of the user's order IDs.
     function getUserOrders(
         address user
     ) external view returns (uint256[] memory orderIds);

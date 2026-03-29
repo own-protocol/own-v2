@@ -4,7 +4,7 @@ pragma solidity 0.8.28;
 import {Actors} from "../helpers/Actors.sol";
 import {BaseTest} from "../helpers/BaseTest.sol";
 
-import {AssetConfig, OrderStatus, PriceType, VMConfig} from "../../src/interfaces/types/Types.sol";
+import {AssetConfig, OrderStatus, VMConfig} from "../../src/interfaces/types/Types.sol";
 
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {FeeCalculator} from "../../src/core/FeeCalculator.sol";
@@ -38,12 +38,10 @@ contract VMLifecycleTest is BaseTest {
 
         assetRegistry = new AssetRegistry(Actors.ADMIN);
 
-        // Register infrastructure in registry
         protocolRegistry.setAddress(protocolRegistry.ORACLE_VERIFIER(), address(oracle));
         protocolRegistry.setAddress(protocolRegistry.ASSET_REGISTRY(), address(assetRegistry));
         protocolRegistry.setAddress(protocolRegistry.TREASURY(), Actors.FEE_RECIPIENT);
 
-        // Deploy FeeCalculator with zero fees
         feeCalc = new FeeCalculator(address(protocolRegistry), Actors.ADMIN);
         feeCalc.setMintFee(1, 0);
         feeCalc.setMintFee(2, 0);
@@ -52,19 +50,14 @@ contract VMLifecycleTest is BaseTest {
         feeCalc.setRedeemFee(2, 0);
         feeCalc.setRedeemFee(3, 0);
         protocolRegistry.setAddress(keccak256("FEE_CALCULATOR"), address(feeCalc));
-        // Deploy contracts with registry
-        market = new OwnMarket(address(protocolRegistry));
+
         vaultMgr = new VaultManager(Actors.ADMIN, address(protocolRegistry));
 
-        // Register market and vault manager
-        protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
-        protocolRegistry.setAddress(protocolRegistry.VAULT_MANAGER(), address(vaultMgr));
-
         usdcVault = new OwnVault(
-            address(usdc), "Own USDC Vault", "oUSDC", address(protocolRegistry), Actors.VM1, 8000, 0, 2000, 2000
+            address(usdc), "Own USDC Vault", "oUSDC", address(protocolRegistry), Actors.VM1, 8000, 2000, 2000
         );
         usdcVault2 = new OwnVault(
-            address(usdc), "Own USDC Vault 2", "oUSDC2", address(protocolRegistry), Actors.VM2, 8000, 0, 2000, 2000
+            address(usdc), "Own USDC Vault 2", "oUSDC2", address(protocolRegistry), Actors.VM2, 8000, 2000, 2000
         );
 
         eTSLA = new EToken("Own Tesla", "eTSLA", TSLA, address(protocolRegistry), address(usdc));
@@ -73,16 +66,19 @@ contract VMLifecycleTest is BaseTest {
             AssetConfig({activeToken: address(eTSLA), legacyTokens: new address[](0), active: true, volatilityLevel: 2});
         assetRegistry.addAsset(TSLA, address(eTSLA), config);
 
+        market = new OwnMarket(address(protocolRegistry), address(usdcVault), 1 days, 6 hours);
+
+        protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
+        protocolRegistry.setAddress(protocolRegistry.VAULT_MANAGER(), address(vaultMgr));
+
         vm.stopPrank();
 
-        // Add payment token at vault level (each VM for its bound vault)
-        vm.startPrank(Actors.VM1);
-        usdcVault.addPaymentToken(address(usdc));
-        vm.stopPrank();
+        // Set payment tokens (single token per vault)
+        vm.prank(Actors.VM1);
+        usdcVault.setPaymentToken(address(usdc));
 
-        vm.startPrank(Actors.VM2);
-        usdcVault2.addPaymentToken(address(usdc));
-        vm.stopPrank();
+        vm.prank(Actors.VM2);
+        usdcVault2.setPaymentToken(address(usdc));
 
         // LP deposits collateral (VM1 must call deposit on behalf of LP)
         _fundUSDC(Actors.VM1, LP_DEPOSIT);
@@ -146,48 +142,20 @@ contract VMLifecycleTest is BaseTest {
     function test_vmSetExposureCaps() public {
         vm.startPrank(Actors.VM1);
         vaultMgr.registerVM(address(usdcVault));
-        vaultMgr.setExposureCaps(5_000_000e18, 2_000_000e18);
+        vaultMgr.setExposureCaps(5_000_000e18);
         vm.stopPrank();
 
         VMConfig memory cfg = vaultMgr.getVMConfig(Actors.VM1);
         assertEq(cfg.maxExposure, 5_000_000e18);
-        assertEq(cfg.maxOffMarketExposure, 2_000_000e18);
-    }
-
-    function test_vmPaymentTokenAcceptance() public {
-        vm.startPrank(Actors.VM1);
-        vaultMgr.registerVM(address(usdcVault));
-        vaultMgr.setPaymentTokenAcceptance(address(usdc), true);
-        vaultMgr.setPaymentTokenAcceptance(address(usdt), false);
-        vm.stopPrank();
-
-        assertTrue(vaultMgr.isPaymentTokenAccepted(Actors.VM1, address(usdc)));
-        assertFalse(vaultMgr.isPaymentTokenAccepted(Actors.VM1, address(usdt)));
-    }
-
-    function test_vmAssetOffMarketToggle() public {
-        vm.startPrank(Actors.VM1);
-        vaultMgr.registerVM(address(usdcVault));
-        vaultMgr.setAssetOffMarketEnabled(TSLA, true);
-        vm.stopPrank();
-
-        assertTrue(vaultMgr.isAssetOffMarketEnabled(Actors.VM1, TSLA));
-
-        vm.prank(Actors.VM1);
-        vaultMgr.setAssetOffMarketEnabled(TSLA, false);
-
-        assertFalse(vaultMgr.isAssetOffMarketEnabled(Actors.VM1, TSLA));
     }
 
     function test_vmActiveToggle() public {
         vm.startPrank(Actors.VM1);
         vaultMgr.registerVM(address(usdcVault));
 
-        // Deactivate
         vaultMgr.setVMActive(false);
         assertFalse(vaultMgr.getVMConfig(Actors.VM1).active);
 
-        // Reactivate
         vaultMgr.setVMActive(true);
         assertTrue(vaultMgr.getVMConfig(Actors.VM1).active);
         vm.stopPrank();
@@ -201,7 +169,6 @@ contract VMLifecycleTest is BaseTest {
         vm.prank(Actors.VM1);
         vaultMgr.registerVM(address(usdcVault));
 
-        // VM2 tries to register with same vault
         vm.prank(Actors.VM2);
         vm.expectRevert(abi.encodeWithSignature("VaultAlreadyHasVM(address)", address(usdcVault)));
         vaultMgr.registerVM(address(usdcVault));
@@ -224,66 +191,13 @@ contract VMLifecycleTest is BaseTest {
     }
 
     // ══════════════════════════════════════════════════════════
-    //  Multi-VM competition for orders
-    // ══════════════════════════════════════════════════════════
-
-    function test_multiVM_competitionForOpenOrder() public {
-        // Register both VMs with separate vaults (1:1 binding)
-        vm.startPrank(Actors.VM1);
-        vaultMgr.registerVM(address(usdcVault));
-        vaultMgr.setPaymentTokenAcceptance(address(usdc), true);
-        vm.stopPrank();
-
-        vm.startPrank(Actors.VM2);
-        vaultMgr.registerVM(address(usdcVault2));
-        vaultMgr.setPaymentTokenAcceptance(address(usdc), true);
-        vm.stopPrank();
-
-        // Minter places open order with partial fills
-        _fundUSDC(Actors.MINTER1, MINT_AMOUNT);
-        vm.startPrank(Actors.MINTER1);
-        usdc.approve(address(market), MINT_AMOUNT);
-        uint256 orderId = market.placeMintOrder(
-            TSLA,
-            address(usdc),
-            MINT_AMOUNT,
-            PriceType.Market,
-            100,
-            block.timestamp + 1 days,
-            true, // partial fill
-            address(0), // open
-            _emptyPriceData()
-        );
-        vm.stopPrank();
-
-        // VM2 claims half first
-        vm.prank(Actors.VM2);
-        uint256 claimId2 = market.claimOrder(orderId, MINT_AMOUNT / 2);
-
-        // VM1 claims other half
-        vm.prank(Actors.VM1);
-        uint256 claimId1 = market.claimOrder(orderId, MINT_AMOUNT / 2);
-
-        // Both confirm
-        vm.prank(Actors.VM2);
-        market.confirmOrder(claimId2, _emptyPriceData());
-        vm.prank(Actors.VM1);
-        market.confirmOrder(claimId1, _emptyPriceData());
-
-        assertEq(uint8(market.getOrder(orderId).status), uint8(OrderStatus.Confirmed));
-        assertEq(usdc.balanceOf(Actors.VM1), MINT_AMOUNT / 2);
-        assertEq(usdc.balanceOf(Actors.VM2), MINT_AMOUNT / 2);
-    }
-
-    // ══════════════════════════════════════════════════════════
     //  Config only if registered
     // ══════════════════════════════════════════════════════════
 
     function test_configOnlyRegistered() public {
-        // Unregistered VM cannot set exposure caps
         vm.prank(Actors.VM1);
         vm.expectRevert(abi.encodeWithSignature("VMNotRegistered(address)", Actors.VM1));
-        vaultMgr.setExposureCaps(1_000_000e18, 500_000e18);
+        vaultMgr.setExposureCaps(1_000_000e18);
     }
 
     // ══════════════════════════════════════════════════════════
@@ -294,8 +208,7 @@ contract VMLifecycleTest is BaseTest {
         // 1. Register
         vm.startPrank(Actors.VM1);
         vaultMgr.registerVM(address(usdcVault));
-        vaultMgr.setExposureCaps(10_000_000e18, 5_000_000e18);
-        vaultMgr.setPaymentTokenAcceptance(address(usdc), true);
+        vaultMgr.setExposureCaps(10_000_000e18);
         vm.stopPrank();
 
         // 2. Minter places order
@@ -303,26 +216,17 @@ contract VMLifecycleTest is BaseTest {
         vm.startPrank(Actors.MINTER1);
         usdc.approve(address(market), MINT_AMOUNT);
         uint256 orderId = market.placeMintOrder(
-            TSLA,
-            address(usdc),
-            MINT_AMOUNT,
-            PriceType.Market,
-            100,
-            block.timestamp + 1 days,
-            false,
-            Actors.VM1,
-            _emptyPriceData()
+            TSLA, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days
         );
         vm.stopPrank();
 
         // 3. VM claims and confirms
         vm.startPrank(Actors.VM1);
-        uint256 claimId = market.claimOrder(orderId, MINT_AMOUNT);
-        market.confirmOrder(claimId, _emptyPriceData());
+        market.claimOrder(orderId);
+        market.confirmOrder(orderId);
         vm.stopPrank();
 
         assertEq(uint8(market.getOrder(orderId).status), uint8(OrderStatus.Confirmed));
-        assertEq(usdc.balanceOf(Actors.VM1), MINT_AMOUNT);
 
         // 4. Deregister
         vm.prank(Actors.VM1);

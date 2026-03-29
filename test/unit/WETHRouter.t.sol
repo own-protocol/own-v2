@@ -43,7 +43,6 @@ contract WETHRouterTest is BaseTest {
             address(protocolRegistry),
             address(router), // bound VM is the router (it calls deposit directly)
             8000, // 80% max util
-            50, // 0.5% AUM fee
             2000,
             2000
         );

@@ -15,8 +15,7 @@ import {EToken} from "../../src/tokens/EToken.sol";
 
 /// @title LiquidationFlow Integration Test
 /// @notice Tests the LiquidationEngine integration with vaults and oracle.
-///         Note: LiquidationEngine is currently a stub. These tests verify current
-///         behavior (always-healthy vaults) and document expected future behavior.
+///         Note: LiquidationEngine is currently a stub.
 contract LiquidationFlowTest is BaseTest {
     AssetRegistry public assetRegistry;
     VaultManager public vaultMgr;
@@ -37,24 +36,22 @@ contract LiquidationFlowTest is BaseTest {
 
         assetRegistry = new AssetRegistry(Actors.ADMIN);
 
-        // Register infrastructure in registry
         protocolRegistry.setAddress(protocolRegistry.ORACLE_VERIFIER(), address(oracle));
         protocolRegistry.setAddress(protocolRegistry.ASSET_REGISTRY(), address(assetRegistry));
         protocolRegistry.setAddress(protocolRegistry.TREASURY(), Actors.FEE_RECIPIENT);
 
-        // Deploy contracts with registry
-        market = new OwnMarket(address(protocolRegistry));
         vaultMgr = new VaultManager(Actors.ADMIN, address(protocolRegistry));
         liquidationEngine = new LiquidationEngine(address(protocolRegistry), address(dex));
 
-        // Register market, vault manager, and liquidation engine
+        usdcVault = new OwnVault(
+            address(usdc), "Own USDC Vault", "oUSDC", address(protocolRegistry), Actors.VM1, 8000, 2000, 2000
+        );
+
+        market = new OwnMarket(address(protocolRegistry), address(usdcVault), 1 days, 6 hours);
+
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
         protocolRegistry.setAddress(protocolRegistry.VAULT_MANAGER(), address(vaultMgr));
         protocolRegistry.setAddress(protocolRegistry.LIQUIDATION_ENGINE(), address(liquidationEngine));
-
-        usdcVault = new OwnVault(
-            address(usdc), "Own USDC Vault", "oUSDC", address(protocolRegistry), Actors.VM1, 8000, 0, 2000, 2000
-        );
 
         eTSLA = new EToken("Own Tesla", "eTSLA", TSLA, address(protocolRegistry), address(usdc));
 
@@ -64,10 +61,9 @@ contract LiquidationFlowTest is BaseTest {
 
         vm.stopPrank();
 
-        // Add payment token at vault level (VM1 is the bound VM)
-        vm.startPrank(Actors.VM1);
-        usdcVault.addPaymentToken(address(usdc));
-        vm.stopPrank();
+        // Set payment token (single token per vault)
+        vm.prank(Actors.VM1);
+        usdcVault.setPaymentToken(address(usdc));
 
         vm.label(address(liquidationEngine), "LiquidationEngine");
 
@@ -79,35 +75,17 @@ contract LiquidationFlowTest is BaseTest {
         vm.stopPrank();
     }
 
-    // ══════════════════════════════════════════════════════════
-    //  Test: Vault is healthy — not liquidatable (stub behavior)
-    // ══════════════════════════════════════════════════════════
-
     function test_liquidation_healthyVault_notLiquidatable() public view {
-        // Current stub always returns false for isLiquidatable
         assertFalse(liquidationEngine.isLiquidatable(address(usdcVault)));
     }
 
-    // ══════════════════════════════════════════════════════════
-    //  Test: Health factor view (stub returns max)
-    // ══════════════════════════════════════════════════════════
-
     function test_liquidation_healthFactor_stub() public view {
-        // Stub always returns max uint256
         assertEq(liquidationEngine.getHealthFactor(address(usdcVault)), type(uint256).max);
     }
-
-    // ══════════════════════════════════════════════════════════
-    //  Test: Max liquidatable (stub returns 0)
-    // ══════════════════════════════════════════════════════════
 
     function test_liquidation_maxLiquidatable_stub() public view {
         assertEq(liquidationEngine.getMaxLiquidatable(address(usdcVault), TSLA), 0);
     }
-
-    // ══════════════════════════════════════════════════════════
-    //  Test: Tier 1 liquidation — reverts when vault is healthy
-    // ══════════════════════════════════════════════════════════
 
     function test_liquidation_tier1_healthyVault_reverts() public {
         vm.prank(Actors.LIQUIDATOR);
@@ -115,19 +93,11 @@ contract LiquidationFlowTest is BaseTest {
         liquidationEngine.liquidate(address(usdcVault), TSLA, 10e18, _emptyPriceData());
     }
 
-    // ══════════════════════════════════════════════════════════
-    //  Test: Tier 1 liquidation — zero amount reverts
-    // ══════════════════════════════════════════════════════════
-
     function test_liquidation_tier1_zeroAmount_reverts() public {
         vm.prank(Actors.LIQUIDATOR);
         vm.expectRevert(abi.encodeWithSignature("ZeroAmount()"));
         liquidationEngine.liquidate(address(usdcVault), TSLA, 0, _emptyPriceData());
     }
-
-    // ══════════════════════════════════════════════════════════
-    //  Test: Tier 3 DEX liquidation — reverts when healthy
-    // ══════════════════════════════════════════════════════════
 
     function test_liquidation_tier3_healthyVault_reverts() public {
         vm.prank(Actors.LIQUIDATOR);
@@ -135,40 +105,22 @@ contract LiquidationFlowTest is BaseTest {
         liquidationEngine.dexLiquidate(address(usdcVault), TSLA, 100e6, _emptyPriceData(), "");
     }
 
-    // ══════════════════════════════════════════════════════════
-    //  Test: Tier 3 DEX liquidation — zero amount reverts
-    // ══════════════════════════════════════════════════════════
-
     function test_liquidation_tier3_zeroAmount_reverts() public {
         vm.prank(Actors.LIQUIDATOR);
         vm.expectRevert(abi.encodeWithSignature("ZeroAmount()"));
         liquidationEngine.dexLiquidate(address(usdcVault), TSLA, 0, _emptyPriceData(), "");
     }
 
-    // ══════════════════════════════════════════════════════════
-    //  Test: Expired redemption liquidation (stub)
-    // ══════════════════════════════════════════════════════════
-
     function test_liquidation_expiredRedemption_stub() public {
-        // Stub returns 0 payout, emits event
         vm.prank(Actors.LIQUIDATOR);
         uint256 payout = liquidationEngine.liquidateExpiredRedemption(1, "", "");
         assertEq(payout, 0);
     }
 
-    // ══════════════════════════════════════════════════════════
-    //  Test: Vault health factor via OwnVault (real contract)
-    // ══════════════════════════════════════════════════════════
-
     function test_liquidation_vaultHealthFactor_noExposure() public view {
-        // OwnVault with 0 exposure returns max health
         assertEq(usdcVault.healthFactor(), type(uint256).max);
         assertEq(usdcVault.utilization(), 0);
     }
-
-    // ══════════════════════════════════════════════════════════
-    //  Test: LiquidationEngine wiring
-    // ══════════════════════════════════════════════════════════
 
     function test_liquidation_contractWiring() public view {
         assertEq(address(liquidationEngine.registry()), address(protocolRegistry));

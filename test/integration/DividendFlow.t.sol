@@ -17,7 +17,7 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 /// @title DividendFlow Integration Test
 /// @notice Tests the rewards-per-share dividend system:
-///         VM deposits dividend → holders claim → transfer settlement → new holder claims.
+///         VM deposits dividend -> holders claim -> transfer settlement -> new holder claims.
 contract DividendFlowTest is BaseTest {
     using Math for uint256;
 
@@ -27,9 +27,9 @@ contract DividendFlowTest is BaseTest {
     OwnVault public usdcVault;
     EToken public eTSLA;
 
-    uint256 constant HOLDER1_AMOUNT = 100e18; // 100 eTSLA
-    uint256 constant HOLDER2_AMOUNT = 50e18; // 50 eTSLA
-    uint256 constant REWARD_AMOUNT = 1500e6; // $1,500 USDC reward
+    uint256 constant HOLDER1_AMOUNT = 100e18;
+    uint256 constant HOLDER2_AMOUNT = 50e18;
+    uint256 constant REWARD_AMOUNT = 1500e6;
 
     function setUp() public override {
         super.setUp();
@@ -42,24 +42,21 @@ contract DividendFlowTest is BaseTest {
 
         assetRegistry = new AssetRegistry(Actors.ADMIN);
 
-        // Register infrastructure in registry
         protocolRegistry.setAddress(protocolRegistry.ORACLE_VERIFIER(), address(oracle));
         protocolRegistry.setAddress(protocolRegistry.ASSET_REGISTRY(), address(assetRegistry));
         protocolRegistry.setAddress(protocolRegistry.TREASURY(), Actors.FEE_RECIPIENT);
 
-        // Deploy contracts with registry
-        market = new OwnMarket(address(protocolRegistry));
         vaultMgr = new VaultManager(Actors.ADMIN, address(protocolRegistry));
 
-        // Register market and vault manager
+        usdcVault = new OwnVault(
+            address(usdc), "Own USDC Vault", "oUSDC", address(protocolRegistry), Actors.VM1, 8000, 2000, 2000
+        );
+
+        market = new OwnMarket(address(protocolRegistry), address(usdcVault), 1 days, 6 hours);
+
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
         protocolRegistry.setAddress(protocolRegistry.VAULT_MANAGER(), address(vaultMgr));
 
-        usdcVault = new OwnVault(
-            address(usdc), "Own USDC Vault", "oUSDC", address(protocolRegistry), Actors.VM1, 8000, 50, 2000, 2000
-        );
-
-        // eTSLA with USDC as reward token (for dividends)
         eTSLA = new EToken("Own Tesla", "eTSLA", TSLA, address(protocolRegistry), address(usdc));
 
         AssetConfig memory config =
@@ -68,60 +65,45 @@ contract DividendFlowTest is BaseTest {
 
         vm.stopPrank();
 
-        // Add payment token at vault level (VM1 is the bound VM)
-        vm.startPrank(Actors.VM1);
-        usdcVault.addPaymentToken(address(usdc));
-        vm.stopPrank();
+        // Set payment token (single token per vault)
+        vm.prank(Actors.VM1);
+        usdcVault.setPaymentToken(address(usdc));
     }
 
-    /// @dev Mint eTokens directly to holders for testing dividends.
     function _mintETokens() private {
         vm.startPrank(address(market));
-        eTSLA.mint(Actors.MINTER1, HOLDER1_AMOUNT); // 100 eTSLA
-        eTSLA.mint(Actors.MINTER2, HOLDER2_AMOUNT); // 50 eTSLA
+        eTSLA.mint(Actors.MINTER1, HOLDER1_AMOUNT);
+        eTSLA.mint(Actors.MINTER2, HOLDER2_AMOUNT);
         vm.stopPrank();
     }
 
-    // ══════════════════════════════════════════════════════════
-    //  Test: Deposit rewards and claim proportionally
-    // ══════════════════════════════════════════════════════════
-
     function test_dividendFlow_depositAndClaim() public {
-        // Deposit rewards (anyone can deposit)
         _fundUSDC(Actors.VM1, REWARD_AMOUNT);
         vm.startPrank(Actors.VM1);
         usdc.approve(address(eTSLA), REWARD_AMOUNT);
         eTSLA.depositRewards(REWARD_AMOUNT);
         vm.stopPrank();
 
-        // Total supply: 150 eTSLA. Holder1 has 100 (2/3), Holder2 has 50 (1/3)
         uint256 totalSupply = eTSLA.totalSupply();
         assertEq(totalSupply, HOLDER1_AMOUNT + HOLDER2_AMOUNT);
 
-        // Check claimable rewards
         uint256 claimable1 = eTSLA.claimableRewards(Actors.MINTER1);
         uint256 claimable2 = eTSLA.claimableRewards(Actors.MINTER2);
 
-        // Holder1 should get ~1000 USDC (100/150 * 1500)
-        // Holder2 should get ~500 USDC (50/150 * 1500)
         uint256 expected1 = REWARD_AMOUNT * HOLDER1_AMOUNT / totalSupply;
         uint256 expected2 = REWARD_AMOUNT * HOLDER2_AMOUNT / totalSupply;
 
         assertEq(claimable1, expected1, "holder1 claimable");
         assertEq(claimable2, expected2, "holder2 claimable");
 
-        // Holder1 claims
         uint256 balBefore = usdc.balanceOf(Actors.MINTER1);
         vm.prank(Actors.MINTER1);
         eTSLA.claimRewards();
         uint256 balAfter = usdc.balanceOf(Actors.MINTER1);
 
         assertEq(balAfter - balBefore, expected1, "holder1 received rewards");
-
-        // After claiming, claimable should be 0
         assertEq(eTSLA.claimableRewards(Actors.MINTER1), 0);
 
-        // Holder2 claims
         balBefore = usdc.balanceOf(Actors.MINTER2);
         vm.prank(Actors.MINTER2);
         eTSLA.claimRewards();
@@ -130,80 +112,57 @@ contract DividendFlowTest is BaseTest {
         assertEq(balAfter - balBefore, expected2, "holder2 received rewards");
     }
 
-    // ══════════════════════════════════════════════════════════
-    //  Test: Transfer settles rewards before transfer
-    // ══════════════════════════════════════════════════════════
-
     function test_dividendFlow_transferSettlement() public {
-        // Deposit rewards
         _fundUSDC(Actors.VM1, REWARD_AMOUNT);
         vm.startPrank(Actors.VM1);
         usdc.approve(address(eTSLA), REWARD_AMOUNT);
         eTSLA.depositRewards(REWARD_AMOUNT);
         vm.stopPrank();
 
-        // Holder1 transfers all tokens to Holder2 BEFORE claiming
         vm.prank(Actors.MINTER1);
         eTSLA.transfer(Actors.MINTER2, HOLDER1_AMOUNT);
 
-        // Holder1's rewards should still be claimable (settled before transfer)
         uint256 totalSupply = HOLDER1_AMOUNT + HOLDER2_AMOUNT;
         uint256 expected1 = REWARD_AMOUNT * HOLDER1_AMOUNT / totalSupply;
 
         uint256 claimable1 = eTSLA.claimableRewards(Actors.MINTER1);
         assertEq(claimable1, expected1, "holder1 rewards preserved after transfer");
 
-        // Holder1 claims
         vm.prank(Actors.MINTER1);
         eTSLA.claimRewards();
         assertEq(usdc.balanceOf(Actors.MINTER1), expected1);
     }
 
-    // ══════════════════════════════════════════════════════════
-    //  Test: New holder gets rewards from subsequent deposits
-    // ══════════════════════════════════════════════════════════
-
     function test_dividendFlow_newHolderClaimsSubsequentRewards() public {
-        // Deposit first round of rewards
         _fundUSDC(Actors.VM1, REWARD_AMOUNT);
         vm.startPrank(Actors.VM1);
         usdc.approve(address(eTSLA), REWARD_AMOUNT);
         eTSLA.depositRewards(REWARD_AMOUNT);
         vm.stopPrank();
 
-        // Holder1 transfers all tokens to LP1 (who had 0 eTokens)
         vm.prank(Actors.MINTER1);
         eTSLA.transfer(Actors.LP1, HOLDER1_AMOUNT);
 
-        // LP1 should NOT have rewards from the first deposit (wasn't a holder then)
-        // But Holder1's rewards were settled on transfer
         uint256 lp1Claimable = eTSLA.claimableRewards(Actors.LP1);
         assertEq(lp1Claimable, 0, "new holder has no rewards from before transfer");
 
-        // Deposit second round of rewards
         _fundUSDC(Actors.VM1, REWARD_AMOUNT);
         vm.startPrank(Actors.VM1);
         usdc.approve(address(eTSLA), REWARD_AMOUNT);
         eTSLA.depositRewards(REWARD_AMOUNT);
         vm.stopPrank();
 
-        // Now LP1 (100 eTSLA) and MINTER2 (50 eTSLA) share the second reward
-        uint256 totalSupply = HOLDER1_AMOUNT + HOLDER2_AMOUNT; // still 150
+        uint256 totalSupply = HOLDER1_AMOUNT + HOLDER2_AMOUNT;
         uint256 expectedLP1 = REWARD_AMOUNT * HOLDER1_AMOUNT / totalSupply;
         uint256 expectedMinter2 = REWARD_AMOUNT * HOLDER2_AMOUNT / totalSupply;
 
         lp1Claimable = eTSLA.claimableRewards(Actors.LP1);
         assertEq(lp1Claimable, expectedLP1, "new holder gets rewards from second deposit");
 
-        // MINTER2 should have rewards from both deposits
         uint256 minter2Claimable = eTSLA.claimableRewards(Actors.MINTER2);
         uint256 minter2FromFirst = REWARD_AMOUNT * HOLDER2_AMOUNT / totalSupply;
         assertEq(minter2Claimable, minter2FromFirst + expectedMinter2, "existing holder accumulates");
     }
-
-    // ══════════════════════════════════════════════════════════
-    //  Test: No double-claim
-    // ══════════════════════════════════════════════════════════
 
     function test_dividendFlow_noDoubleClaim() public {
         _fundUSDC(Actors.VM1, REWARD_AMOUNT);
@@ -212,25 +171,18 @@ contract DividendFlowTest is BaseTest {
         eTSLA.depositRewards(REWARD_AMOUNT);
         vm.stopPrank();
 
-        // Claim once
         vm.prank(Actors.MINTER1);
         eTSLA.claimRewards();
 
-        // Second claim should revert
         vm.prank(Actors.MINTER1);
         vm.expectRevert(abi.encodeWithSignature("NoRewardsToClaim()"));
         eTSLA.claimRewards();
     }
 
-    // ══════════════════════════════════════════════════════════
-    //  Test: Rewards per share tracked correctly
-    // ══════════════════════════════════════════════════════════
-
     function test_dividendFlow_rewardsPerShareAccumulates() public {
         uint256 totalSupply = eTSLA.totalSupply();
         assertEq(eTSLA.rewardsPerShare(), 0);
 
-        // First deposit
         _fundUSDC(Actors.VM1, REWARD_AMOUNT);
         vm.startPrank(Actors.VM1);
         usdc.approve(address(eTSLA), REWARD_AMOUNT);
@@ -240,7 +192,6 @@ contract DividendFlowTest is BaseTest {
         uint256 expectedRPS = REWARD_AMOUNT * PRECISION / totalSupply;
         assertEq(eTSLA.rewardsPerShare(), expectedRPS, "RPS after first deposit");
 
-        // Second deposit
         _fundUSDC(Actors.VM1, REWARD_AMOUNT);
         vm.startPrank(Actors.VM1);
         usdc.approve(address(eTSLA), REWARD_AMOUNT);
@@ -250,12 +201,7 @@ contract DividendFlowTest is BaseTest {
         assertEq(eTSLA.rewardsPerShare(), expectedRPS * 2, "RPS accumulates");
     }
 
-    // ══════════════════════════════════════════════════════════
-    //  Test: Cannot deposit rewards with zero supply
-    // ══════════════════════════════════════════════════════════
-
     function test_dividendFlow_depositWithZeroSupply_reverts() public {
-        // Deploy a fresh eToken with no supply
         vm.prank(Actors.ADMIN);
         EToken freshToken = new EToken("Fresh", "eFRESH", bytes32("FRESH"), address(protocolRegistry), address(usdc));
 
@@ -267,23 +213,14 @@ contract DividendFlowTest is BaseTest {
         vm.stopPrank();
     }
 
-    // ══════════════════════════════════════════════════════════
-    //  Test: Deposit zero rewards reverts
-    // ══════════════════════════════════════════════════════════
-
     function test_dividendFlow_depositZeroRewards_reverts() public {
         vm.expectRevert(abi.encodeWithSignature("ZeroAmount()"));
         eTSLA.depositRewards(0);
     }
 
-    // ══════════════════════════════════════════════════════════
-    //  Test: Multiple reward deposits, claim once gets all
-    // ══════════════════════════════════════════════════════════
-
     function test_dividendFlow_multipleDeposits_singleClaim() public {
         uint256 totalSupply = eTSLA.totalSupply();
 
-        // Three deposits of 500 USDC each
         for (uint256 i; i < 3; i++) {
             _fundUSDC(Actors.VM1, 500e6);
             vm.startPrank(Actors.VM1);
@@ -292,13 +229,7 @@ contract DividendFlowTest is BaseTest {
             vm.stopPrank();
         }
 
-        // Holder1 claims all at once.
-        // Each 500e6 deposit computes rewardsPerShare with floor division,
-        // so 3 deposits accumulate slightly less than 1500e6 * share / total.
         uint256 claimable = eTSLA.claimableRewards(Actors.MINTER1);
-
-        // Holder1 owns 100/150 = 2/3 of supply → expect ~1000 USDC
-        // Allow up to 1000 wei of rounding dust across the 3 deposits
         uint256 idealExpected = 1500e6 * HOLDER1_AMOUNT / totalSupply;
         assertApproxEqAbs(claimable, idealExpected, 1000, "accumulated rewards from multiple deposits");
 

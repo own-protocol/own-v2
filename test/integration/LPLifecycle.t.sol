@@ -15,7 +15,7 @@ import {EToken} from "../../src/tokens/EToken.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 /// @title LPLifecycle Integration Test
-/// @notice Tests LP deposits → yield → async withdrawal queue → fulfillment.
+/// @notice Tests LP deposits -> yield -> async withdrawal queue -> fulfillment.
 contract LPLifecycleTest is BaseTest {
     AssetRegistry public assetRegistry;
     VaultManager public vaultMgr;
@@ -23,7 +23,7 @@ contract LPLifecycleTest is BaseTest {
     OwnVault public usdcVault;
     EToken public eTSLA;
 
-    uint256 constant LP_DEPOSIT = 100_000e6; // 100k USDC
+    uint256 constant LP_DEPOSIT = 100_000e6;
 
     function setUp() public override {
         super.setUp();
@@ -35,18 +35,11 @@ contract LPLifecycleTest is BaseTest {
 
         assetRegistry = new AssetRegistry(Actors.ADMIN);
 
-        // Register infrastructure in registry
         protocolRegistry.setAddress(protocolRegistry.ORACLE_VERIFIER(), address(oracle));
         protocolRegistry.setAddress(protocolRegistry.ASSET_REGISTRY(), address(assetRegistry));
         protocolRegistry.setAddress(protocolRegistry.TREASURY(), Actors.FEE_RECIPIENT);
 
-        // Deploy contracts with registry
-        market = new OwnMarket(address(protocolRegistry));
         vaultMgr = new VaultManager(Actors.ADMIN, address(protocolRegistry));
-
-        // Register market and vault manager
-        protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
-        protocolRegistry.setAddress(protocolRegistry.VAULT_MANAGER(), address(vaultMgr));
 
         usdcVault = new OwnVault(
             address(usdc),
@@ -55,10 +48,14 @@ contract LPLifecycleTest is BaseTest {
             address(protocolRegistry),
             Actors.VM1,
             8000,
-            0, // no AUM fee for cleaner math
-            2000,
-            2000
+            0, // protocolShareBps
+            2000 // vmShareBps
         );
+
+        market = new OwnMarket(address(protocolRegistry), address(usdcVault), 1 days, 6 hours);
+
+        protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
+        protocolRegistry.setAddress(protocolRegistry.VAULT_MANAGER(), address(vaultMgr));
 
         eTSLA = new EToken("Own Tesla", "eTSLA", TSLA, address(protocolRegistry), address(usdc));
 
@@ -68,16 +65,14 @@ contract LPLifecycleTest is BaseTest {
 
         vm.stopPrank();
 
-        // Add payment token at vault level (VM1 is the bound VM)
-        vm.startPrank(Actors.VM1);
-        usdcVault.addPaymentToken(address(usdc));
-        vm.stopPrank();
+        // Set payment token (single token per vault)
+        vm.prank(Actors.VM1);
+        usdcVault.setPaymentToken(address(usdc));
 
         // Register VM1
         vm.startPrank(Actors.VM1);
         vaultMgr.registerVM(address(usdcVault));
-        vaultMgr.setExposureCaps(10_000_000e18, 5_000_000e18);
-        vaultMgr.setPaymentTokenAcceptance(address(usdc), true);
+        vaultMgr.setExposureCaps(10_000_000e18);
         vm.stopPrank();
     }
 
@@ -85,8 +80,6 @@ contract LPLifecycleTest is BaseTest {
     //  Helpers
     // ──────────────────────────────────────────────────────────
 
-    /// @dev Deposit for LP via VM (deposit is onlyVM).
-    ///      Funds VM1 with USDC, VM1 deposits on behalf of LP (receiver).
     function _lpDeposit(address lp, uint256 amount) internal returns (uint256 shares) {
         _fundUSDC(Actors.VM1, amount);
         vm.startPrank(Actors.VM1);
@@ -115,7 +108,6 @@ contract LPLifecycleTest is BaseTest {
         uint256 shares1 = _lpDeposit(Actors.LP1, LP_DEPOSIT);
         uint256 shares2 = _lpDeposit(Actors.LP2, LP_DEPOSIT * 2);
 
-        // LP2 deposited 2x, should have ~2x shares
         assertApproxEqAbs(shares2, shares1 * 2, 1, "LP2 has 2x shares");
         assertEq(usdcVault.totalAssets(), LP_DEPOSIT * 3);
         assertEq(usdcVault.totalSupply(), shares1 + shares2);
@@ -126,18 +118,16 @@ contract LPLifecycleTest is BaseTest {
     // ══════════════════════════════════════════════════════════
 
     function test_sharePriceAppreciates() public {
-        uint256 shares = _lpDeposit(Actors.LP1, LP_DEPOSIT);
+        _lpDeposit(Actors.LP1, LP_DEPOSIT);
 
-        uint256 sharePriceBefore = usdcVault.convertToAssets(1e6); // using 1 share unit
+        uint256 sharePriceBefore = usdcVault.convertToAssets(1e6);
 
-        // Simulate yield: donate USDC directly to vault (e.g., aUSDC interest)
-        uint256 yieldAmount = 10_000e6; // $10k yield
+        uint256 yieldAmount = 10_000e6;
         _fundUSDC(address(usdcVault), yieldAmount);
 
         uint256 sharePriceAfter = usdcVault.convertToAssets(1e6);
         assertGt(sharePriceAfter, sharePriceBefore, "share price increased");
 
-        // LP1 can withdraw more than deposited (1 wei rounding from ERC-4626)
         uint256 maxWithdraw = usdcVault.maxWithdraw(Actors.LP1);
         assertApproxEqAbs(maxWithdraw, LP_DEPOSIT + yieldAmount, 1, "LP can withdraw deposit + yield");
     }
@@ -149,22 +139,18 @@ contract LPLifecycleTest is BaseTest {
     function test_asyncWithdrawal_request() public {
         uint256 shares = _lpDeposit(Actors.LP1, LP_DEPOSIT);
 
-        // Request withdrawal of half shares
         uint256 halfShares = shares / 2;
         vm.prank(Actors.LP1);
         uint256 requestId = usdcVault.requestWithdrawal(halfShares);
 
-        // Shares escrowed in vault
         assertEq(usdcVault.balanceOf(Actors.LP1), shares - halfShares, "shares escrowed");
         assertEq(usdcVault.balanceOf(address(usdcVault)), halfShares, "vault holds escrowed shares");
 
-        // Check request
         WithdrawalRequest memory req = usdcVault.getWithdrawalRequest(requestId);
         assertEq(req.owner, Actors.LP1);
         assertEq(req.shares, halfShares);
         assertEq(uint8(req.status), uint8(WithdrawalStatus.Pending));
 
-        // Pending withdrawals list
         uint256[] memory pending = usdcVault.getPendingWithdrawals();
         assertEq(pending.length, 1);
         assertEq(pending[0], requestId);
@@ -182,18 +168,15 @@ contract LPLifecycleTest is BaseTest {
 
         uint256 usdcBefore = usdc.balanceOf(Actors.LP1);
 
-        // Anyone can fulfill
         uint256 assets = usdcVault.fulfillWithdrawal(requestId);
 
         assertGt(assets, 0, "received assets");
         assertEq(usdc.balanceOf(Actors.LP1), usdcBefore + assets, "LP got USDC");
         assertEq(usdcVault.balanceOf(address(usdcVault)), 0, "escrowed shares burned");
 
-        // Request fulfilled
         WithdrawalRequest memory req = usdcVault.getWithdrawalRequest(requestId);
         assertEq(uint8(req.status), uint8(WithdrawalStatus.Fulfilled));
 
-        // Pending list empty
         assertEq(usdcVault.getPendingWithdrawals().length, 0);
     }
 
@@ -236,14 +219,13 @@ contract LPLifecycleTest is BaseTest {
     }
 
     // ══════════════════════════════════════════════════════════
-    //  Test: FIFO queue — multiple requests fulfilled in order
+    //  Test: FIFO queue
     // ══════════════════════════════════════════════════════════
 
     function test_asyncWithdrawal_FIFOQueue() public {
         _lpDeposit(Actors.LP1, LP_DEPOSIT);
         _lpDeposit(Actors.LP2, LP_DEPOSIT);
 
-        // Both request withdrawals
         uint256 lp1Shares = usdcVault.balanceOf(Actors.LP1);
         vm.prank(Actors.LP1);
         uint256 reqId1 = usdcVault.requestWithdrawal(lp1Shares);
@@ -252,18 +234,15 @@ contract LPLifecycleTest is BaseTest {
         vm.prank(Actors.LP2);
         uint256 reqId2 = usdcVault.requestWithdrawal(lp2Shares);
 
-        // Both in pending
         uint256[] memory pending = usdcVault.getPendingWithdrawals();
         assertEq(pending.length, 2);
 
-        // Fulfill first request
         usdcVault.fulfillWithdrawal(reqId1);
         assertGt(usdc.balanceOf(Actors.LP1), 0);
 
         pending = usdcVault.getPendingWithdrawals();
         assertEq(pending.length, 1);
 
-        // Fulfill second request
         usdcVault.fulfillWithdrawal(reqId2);
         assertGt(usdc.balanceOf(Actors.LP2), 0);
 
@@ -285,33 +264,28 @@ contract LPLifecycleTest is BaseTest {
     // ══════════════════════════════════════════════════════════
 
     function test_fullLPLifecycle() public {
-        // 1. LP deposits via VM
         uint256 shares = _lpDeposit(Actors.LP1, LP_DEPOSIT);
         assertGt(shares, 0);
 
-        // 2. Simulate yield (donate USDC to vault)
         uint256 yield_ = 5000e6;
         _fundUSDC(address(usdcVault), yield_);
         assertEq(usdcVault.totalAssets(), LP_DEPOSIT + yield_);
 
-        // 3. LP requests withdrawal of all shares
         vm.prank(Actors.LP1);
         uint256 requestId = usdcVault.requestWithdrawal(shares);
 
-        // 4. Withdrawal fulfilled — LP gets deposit + yield (1 wei ERC-4626 rounding)
         uint256 assets = usdcVault.fulfillWithdrawal(requestId);
         assertApproxEqAbs(assets, LP_DEPOSIT + yield_, 1, "LP received deposit + yield");
         assertApproxEqAbs(usdc.balanceOf(Actors.LP1), LP_DEPOSIT + yield_, 1);
     }
 
     // ══════════════════════════════════════════════════════════
-    //  Test: ERC-4626 standard withdraw (non-async)
+    //  Test: ERC-4626 standard withdraw
     // ══════════════════════════════════════════════════════════
 
     function test_erc4626_standardWithdraw() public {
         _lpDeposit(Actors.LP1, LP_DEPOSIT);
 
-        // Standard ERC-4626 withdraw
         uint256 usdcBefore = usdc.balanceOf(Actors.LP1);
         vm.prank(Actors.LP1);
         uint256 shares = usdcVault.withdraw(LP_DEPOSIT, Actors.LP1, Actors.LP1);
@@ -348,7 +322,6 @@ contract LPLifecycleTest is BaseTest {
         assertEq(uint8(usdcVault.vaultStatus()), uint8(VaultStatus.Active));
         assertEq(usdcVault.maxUtilization(), 8000);
         assertEq(usdcVault.totalExposure(), 0);
-        // With 0 exposure, health factor is max
         assertEq(usdcVault.healthFactor(), type(uint256).max);
         assertEq(usdcVault.utilization(), 0);
     }

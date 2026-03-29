@@ -7,31 +7,18 @@ import {VMConfig} from "../interfaces/types/Types.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
 /// @title VaultManager — VM registration and configuration
-/// @notice Manages the lifecycle of vault managers: registration with a vault,
-///         exposure settings, stablecoin acceptance, and per-asset off-market toggles.
-///         Each VM is bound 1:1 to a single vault.
+/// @notice Manages VM lifecycle: registration with a vault, exposure caps,
+///         and active status. Each VM is bound 1:1 to a single vault.
 contract VaultManager is IVaultManager, Ownable {
     // ──────────────────────────────────────────────────────────
     //  State
     // ──────────────────────────────────────────────────────────
 
-    /// @notice Protocol registry for resolving all contract addresses.
     IProtocolRegistry public immutable registry;
 
-    /// @dev VM address → configuration.
     mapping(address => VMConfig) private _vmConfigs;
-
-    /// @dev VM address → registered vault.
     mapping(address => address) private _vmVaults;
-
-    /// @dev Vault address → bound VM (reverse lookup, enforces 1:1).
     mapping(address => address) private _vaultVMs;
-
-    /// @dev VM → payment token → accepted.
-    mapping(address => mapping(address => bool)) private _paymentAcceptance;
-
-    /// @dev VM → asset → off-market enabled.
-    mapping(address => mapping(bytes32 => bool)) private _assetOffMarket;
 
     // ──────────────────────────────────────────────────────────
     //  Modifiers
@@ -43,7 +30,7 @@ contract VaultManager is IVaultManager, Ownable {
     }
 
     modifier onlyMarket() {
-        require(msg.sender == registry.market(), "VaultManager: caller is not market");
+        require(msg.sender == registry.market(), "VaultManager: not market");
         _;
     }
 
@@ -51,8 +38,6 @@ contract VaultManager is IVaultManager, Ownable {
     //  Constructor
     // ──────────────────────────────────────────────────────────
 
-    /// @param admin_       Protocol admin.
-    /// @param registry_    ProtocolRegistry contract address.
     constructor(address admin_, address registry_) Ownable(admin_) {
         registry = IProtocolRegistry(registry_);
     }
@@ -69,8 +54,7 @@ contract VaultManager is IVaultManager, Ownable {
         if (_vmConfigs[msg.sender].registered) revert VMAlreadyRegistered(msg.sender);
         if (_vaultVMs[vault] != address(0)) revert VaultAlreadyHasVM(vault);
 
-        _vmConfigs[msg.sender] =
-            VMConfig({maxExposure: 0, maxOffMarketExposure: 0, currentExposure: 0, registered: true, active: true});
+        _vmConfigs[msg.sender] = VMConfig({maxExposure: 0, currentExposure: 0, registered: true, active: true});
         _vmVaults[msg.sender] = vault;
         _vaultVMs[vault] = msg.sender;
 
@@ -94,25 +78,12 @@ contract VaultManager is IVaultManager, Ownable {
     // ──────────────────────────────────────────────────────────
 
     /// @inheritdoc IVaultManager
-    function setExposureCaps(uint256 maxExposure, uint256 maxOffMarketExposure) external onlyRegistered {
+    function setExposureCaps(
+        uint256 maxExposure
+    ) external onlyRegistered {
         _vmConfigs[msg.sender].maxExposure = maxExposure;
-        _vmConfigs[msg.sender].maxOffMarketExposure = maxOffMarketExposure;
 
-        emit ExposureCapsUpdated(msg.sender, maxExposure, maxOffMarketExposure);
-    }
-
-    /// @inheritdoc IVaultManager
-    function setPaymentTokenAcceptance(address token, bool accepted) external onlyRegistered {
-        _paymentAcceptance[msg.sender][token] = accepted;
-
-        emit PaymentTokenAcceptanceUpdated(msg.sender, token, accepted);
-    }
-
-    /// @inheritdoc IVaultManager
-    function setAssetOffMarketEnabled(bytes32 asset, bool enabled) external onlyRegistered {
-        _assetOffMarket[msg.sender][asset] = enabled;
-
-        emit AssetOffMarketToggled(msg.sender, asset, enabled);
+        emit ExposureCapsUpdated(msg.sender, maxExposure);
     }
 
     /// @inheritdoc IVaultManager
@@ -146,31 +117,21 @@ contract VaultManager is IVaultManager, Ownable {
     /// @inheritdoc IVaultManager
     function getVMConfig(
         address vm
-    ) external view returns (VMConfig memory config) {
+    ) external view returns (VMConfig memory) {
         return _vmConfigs[vm];
     }
 
     /// @inheritdoc IVaultManager
     function getVMVault(
         address vm
-    ) external view returns (address vault) {
+    ) external view returns (address) {
         return _vmVaults[vm];
     }
 
     /// @inheritdoc IVaultManager
     function getVaultVM(
         address vault
-    ) external view returns (address vm) {
+    ) external view returns (address) {
         return _vaultVMs[vault];
-    }
-
-    /// @inheritdoc IVaultManager
-    function isPaymentTokenAccepted(address vm, address token) external view returns (bool) {
-        return _paymentAcceptance[vm][token];
-    }
-
-    /// @inheritdoc IVaultManager
-    function isAssetOffMarketEnabled(address vm, bytes32 asset) external view returns (bool) {
-        return _assetOffMarket[vm][asset];
     }
 }

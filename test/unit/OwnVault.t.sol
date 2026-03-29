@@ -25,7 +25,6 @@ contract OwnVaultTest is BaseTest {
     address public mockMarket = makeAddr("market");
 
     uint256 constant INITIAL_MAX_UTIL = 8000; // 80%
-    uint256 constant INITIAL_AUM_FEE = 50; // 0.5%
 
     function setUp() public override {
         super.setUp();
@@ -40,7 +39,6 @@ contract OwnVaultTest is BaseTest {
             address(protocolRegistry),
             Actors.VM1,
             INITIAL_MAX_UTIL,
-            INITIAL_AUM_FEE,
             2000,
             2000
         );
@@ -479,21 +477,7 @@ contract OwnVaultTest is BaseTest {
     //  Fee management
     // ──────────────────────────────────────────────────────────
 
-    function test_aumFee_initial() public view {
-        assertEq(vault.aumFee(), INITIAL_AUM_FEE);
-    }
-
-    function test_setAumFee_admin_succeeds() public {
-        vm.prank(Actors.ADMIN);
-        vault.setAumFee(100);
-        assertEq(vault.aumFee(), 100);
-    }
-
-    function test_setAumFee_nonAdmin_reverts() public {
-        vm.prank(Actors.ATTACKER);
-        vm.expectRevert();
-        vault.setAumFee(100);
-    }
+    // TODO: aumFee tests removed — aumFee no longer exists on OwnVault
 
     function test_treasury_returnsCorrectAddress() public view {
         assertEq(protocolRegistry.treasury(), Actors.FEE_RECIPIENT);

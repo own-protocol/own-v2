@@ -4,7 +4,7 @@ pragma solidity 0.8.28;
 import {Actors} from "../helpers/Actors.sol";
 import {BaseTest} from "../helpers/BaseTest.sol";
 
-import {AssetConfig, BPS, OrderStatus, PriceType, VaultStatus} from "../../src/interfaces/types/Types.sol";
+import {AssetConfig, BPS, OrderStatus, VaultStatus} from "../../src/interfaces/types/Types.sol";
 
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {OwnMarket} from "../../src/core/OwnMarket.sol";
@@ -34,22 +34,20 @@ contract HaltFlowTest is BaseTest {
 
         assetRegistry = new AssetRegistry(Actors.ADMIN);
 
-        // Register infrastructure in registry
         protocolRegistry.setAddress(protocolRegistry.ORACLE_VERIFIER(), address(oracle));
         protocolRegistry.setAddress(protocolRegistry.ASSET_REGISTRY(), address(assetRegistry));
         protocolRegistry.setAddress(protocolRegistry.TREASURY(), Actors.FEE_RECIPIENT);
 
-        // Deploy contracts with registry
-        market = new OwnMarket(address(protocolRegistry));
         vaultMgr = new VaultManager(Actors.ADMIN, address(protocolRegistry));
 
-        // Register market and vault manager
+        usdcVault = new OwnVault(
+            address(usdc), "Own USDC Vault", "oUSDC", address(protocolRegistry), Actors.VM1, 8000, 2000, 2000
+        );
+
+        market = new OwnMarket(address(protocolRegistry), address(usdcVault), 1 days, 6 hours);
+
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
         protocolRegistry.setAddress(protocolRegistry.VAULT_MANAGER(), address(vaultMgr));
-
-        usdcVault = new OwnVault(
-            address(usdc), "Own USDC Vault", "oUSDC", address(protocolRegistry), Actors.VM1, 8000, 50, 2000, 2000
-        );
 
         eTSLA = new EToken("Own Tesla", "eTSLA", TSLA, address(protocolRegistry), address(usdc));
 
@@ -59,10 +57,9 @@ contract HaltFlowTest is BaseTest {
 
         vm.stopPrank();
 
-        // Add payment token at vault level (VM1 is the bound VM)
-        vm.startPrank(Actors.VM1);
-        usdcVault.addPaymentToken(address(usdc));
-        vm.stopPrank();
+        // Set payment token (single token per vault)
+        vm.prank(Actors.VM1);
+        usdcVault.setPaymentToken(address(usdc));
 
         // LP deposits (via VM1)
         _fundUSDC(Actors.VM1, LP_DEPOSIT);
@@ -82,7 +79,6 @@ contract HaltFlowTest is BaseTest {
 
         assertEq(uint8(usdcVault.vaultStatus()), uint8(VaultStatus.Halted));
 
-        // Deposits should revert when halted
         _fundUSDC(Actors.VM1, 1000e6);
         vm.startPrank(Actors.VM1);
         usdc.approve(address(usdcVault), 1000e6);
@@ -116,7 +112,6 @@ contract HaltFlowTest is BaseTest {
         assertEq(uint8(usdcVault.vaultStatus()), uint8(VaultStatus.Active));
         vm.stopPrank();
 
-        // Deposits work again (via VM1)
         _fundUSDC(Actors.VM1, 1000e6);
         vm.startPrank(Actors.VM1);
         usdc.approve(address(usdcVault), 1000e6);
@@ -150,7 +145,7 @@ contract HaltFlowTest is BaseTest {
         usdcVault.haltAsset(TSLA, bytes32("market closed"));
 
         assertTrue(usdcVault.isAssetHalted(TSLA));
-        assertFalse(usdcVault.isAssetHalted(GOLD)); // other assets unaffected
+        assertFalse(usdcVault.isAssetHalted(GOLD));
     }
 
     function test_unhaltAsset_clearsFlag() public {
@@ -181,7 +176,6 @@ contract HaltFlowTest is BaseTest {
         assertEq(usdcVault.maxDeposit(Actors.LP1), 0);
         assertEq(usdcVault.maxMint(Actors.LP1), 0);
 
-        // Deposits revert (via VM1)
         _fundUSDC(Actors.VM1, 1000e6);
         vm.startPrank(Actors.VM1);
         usdc.approve(address(usdcVault), 1000e6);
@@ -201,7 +195,6 @@ contract HaltFlowTest is BaseTest {
     // ══════════════════════════════════════════════════════════
 
     function test_halt_asyncWithdrawalStillRequestable() public {
-        // LP can still request withdrawal when vault is halted (to allow exit)
         vm.prank(Actors.ADMIN);
         usdcVault.halt(bytes32("emergency"));
 
@@ -214,7 +207,6 @@ contract HaltFlowTest is BaseTest {
     }
 
     function test_halt_unhalt_fulfillWithdrawal() public {
-        // Request withdrawal during halt, fulfill after unhalt
         uint256 shares = usdcVault.balanceOf(Actors.LP1);
 
         vm.prank(Actors.ADMIN);
@@ -226,7 +218,6 @@ contract HaltFlowTest is BaseTest {
         vm.prank(Actors.ADMIN);
         usdcVault.unhalt();
 
-        // Fulfill the withdrawal
         uint256 balBefore = usdc.balanceOf(Actors.LP1);
         usdcVault.fulfillWithdrawal(requestId);
         uint256 balAfter = usdc.balanceOf(Actors.LP1);
@@ -235,31 +226,26 @@ contract HaltFlowTest is BaseTest {
     }
 
     // ══════════════════════════════════════════════════════════
-    //  Halt → Unhalt → Halt cycle
+    //  Halt -> Unhalt -> Halt cycle
     // ══════════════════════════════════════════════════════════
 
     function test_haltUnhaltCycle() public {
         vm.startPrank(Actors.ADMIN);
 
-        // First halt
         usdcVault.halt(bytes32("first"));
         assertEq(uint8(usdcVault.vaultStatus()), uint8(VaultStatus.Halted));
 
-        // Unhalt
         usdcVault.unhalt();
         assertEq(uint8(usdcVault.vaultStatus()), uint8(VaultStatus.Active));
 
-        // Second halt
         usdcVault.halt(bytes32("second"));
         assertEq(uint8(usdcVault.vaultStatus()), uint8(VaultStatus.Halted));
 
-        // Unhalt again
         usdcVault.unhalt();
         assertEq(uint8(usdcVault.vaultStatus()), uint8(VaultStatus.Active));
 
         vm.stopPrank();
 
-        // Deposits work after cycle (via VM1)
         _fundUSDC(Actors.VM1, 1000e6);
         vm.startPrank(Actors.VM1);
         usdc.approve(address(usdcVault), 1000e6);

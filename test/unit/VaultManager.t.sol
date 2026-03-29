@@ -9,7 +9,7 @@ import {BaseTest} from "../helpers/BaseTest.sol";
 
 /// @title VaultManager Unit Tests
 /// @notice Tests registration, exposure config, 1:1 vault binding,
-///         payment token acceptance, off-market toggles, and access control.
+///         and access control.
 contract VaultManagerTest is BaseTest {
     VaultManager public vmManager;
 
@@ -127,64 +127,19 @@ contract VaultManagerTest is BaseTest {
         vmManager.registerVM(mockVault);
 
         vm.expectEmit(true, false, false, true);
-        emit IVaultManager.ExposureCapsUpdated(Actors.VM1, 1_000_000e18, 500_000e18);
+        emit IVaultManager.ExposureCapsUpdated(Actors.VM1, 1_000_000e18);
 
         vm.prank(Actors.VM1);
-        vmManager.setExposureCaps(1_000_000e18, 500_000e18);
+        vmManager.setExposureCaps(1_000_000e18);
 
         VMConfig memory config = vmManager.getVMConfig(Actors.VM1);
         assertEq(config.maxExposure, 1_000_000e18);
-        assertEq(config.maxOffMarketExposure, 500_000e18);
     }
 
     function test_setExposureCaps_notRegistered_reverts() public {
         vm.prank(Actors.VM1);
         vm.expectRevert(abi.encodeWithSelector(IVaultManager.VMNotRegistered.selector, Actors.VM1));
-        vmManager.setExposureCaps(1_000_000e18, 500_000e18);
-    }
-
-    // ──────────────────────────────────────────────────────────
-    //  Payment token acceptance
-    // ──────────────────────────────────────────────────────────
-
-    function test_setPaymentTokenAcceptance_succeeds() public {
-        vm.prank(Actors.VM1);
-        vmManager.registerVM(mockVault);
-
-        vm.expectEmit(true, true, false, true);
-        emit IVaultManager.PaymentTokenAcceptanceUpdated(Actors.VM1, address(usdc), true);
-
-        vm.prank(Actors.VM1);
-        vmManager.setPaymentTokenAcceptance(address(usdc), true);
-
-        assertTrue(vmManager.isPaymentTokenAccepted(Actors.VM1, address(usdc)));
-    }
-
-    function test_setPaymentTokenAcceptance_remove() public {
-        vm.startPrank(Actors.VM1);
-        vmManager.registerVM(mockVault);
-        vmManager.setPaymentTokenAcceptance(address(usdc), true);
-        vmManager.setPaymentTokenAcceptance(address(usdc), false);
-        vm.stopPrank();
-
-        assertFalse(vmManager.isPaymentTokenAccepted(Actors.VM1, address(usdc)));
-    }
-
-    // ──────────────────────────────────────────────────────────
-    //  Off-market toggles
-    // ──────────────────────────────────────────────────────────
-
-    function test_setAssetOffMarketEnabled_succeeds() public {
-        vm.prank(Actors.VM1);
-        vmManager.registerVM(mockVault);
-
-        vm.expectEmit(true, true, false, true);
-        emit IVaultManager.AssetOffMarketToggled(Actors.VM1, TSLA, true);
-
-        vm.prank(Actors.VM1);
-        vmManager.setAssetOffMarketEnabled(TSLA, true);
-
-        assertTrue(vmManager.isAssetOffMarketEnabled(Actors.VM1, TSLA));
+        vmManager.setExposureCaps(1_000_000e18);
     }
 
     // ──────────────────────────────────────────────────────────
@@ -225,7 +180,7 @@ contract VaultManagerTest is BaseTest {
         vmManager.registerVM(mockVault);
 
         vm.prank(Actors.VM1);
-        vmManager.setExposureCaps(1_000_000e18, 500_000e18);
+        vmManager.setExposureCaps(1_000_000e18);
 
         // Market updates exposure
         vm.expectEmit(true, false, false, true);
@@ -243,7 +198,7 @@ contract VaultManagerTest is BaseTest {
         vmManager.registerVM(mockVault);
 
         vm.prank(Actors.VM1);
-        vmManager.setExposureCaps(1_000_000e18, 500_000e18);
+        vmManager.setExposureCaps(1_000_000e18);
 
         vm.prank(mockMarket);
         vmManager.updateExposure(Actors.VM1, int256(100_000e18));
