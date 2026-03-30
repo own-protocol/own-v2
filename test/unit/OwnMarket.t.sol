@@ -589,11 +589,22 @@ contract OwnMarketTest is BaseTest {
         // Warp past grace period
         vm.warp(block.timestamp + GRACE_PERIOD + 1);
 
+        // Mock collateral oracle and release for force execution
+        vm.mockCall(
+            mockVault,
+            abi.encodeWithSelector(IOwnVault.collateralOracleAsset.selector),
+            abi.encode(bytes32("ETH"))
+        );
+        vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.releaseCollateral.selector), abi.encode());
+
         vm.expectEmit(true, true, false, true);
         emit IOwnMarket.OrderForceExecuted(orderId, Actors.MINTER1, false);
 
+        // Pass valid ETH price data for collateral conversion
+        bytes memory ethPriceData = abi.encode(uint256(2000e18), uint256(block.timestamp));
+
         vm.prank(Actors.MINTER1);
-        market.forceExecute(orderId, "", "");
+        market.forceExecute(orderId, "", ethPriceData);
 
         Order memory order = market.getOrder(orderId);
         assertEq(uint256(order.status), uint256(OrderStatus.ForceExecuted));

@@ -9,9 +9,6 @@ import {BaseTest} from "../helpers/BaseTest.sol";
 
 import {MessageHashUtils} from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 
-/// @title OracleVerifier Unit Tests
-/// @notice Tests ECDSA signature verification, staleness, deviation, sequence
-///         numbers, chain ID validation, and signer management.
 contract OracleVerifierTest is BaseTest {
     OracleVerifier public verifier;
 
@@ -24,8 +21,6 @@ contract OracleVerifierTest is BaseTest {
 
     function setUp() public override {
         super.setUp();
-
-        // Warp to a realistic timestamp so staleness math doesn't underflow
         vm.warp(1_000_000);
 
         signer = vm.addr(SIGNER_PK);
@@ -35,88 +30,59 @@ contract OracleVerifierTest is BaseTest {
         verifier.addSigner(signer);
         verifier.setAssetOracleConfig(ASSET, MAX_STALENESS, MAX_DEVIATION);
         vm.stopPrank();
-
-        vm.label(address(verifier), "OracleVerifier");
-        vm.label(signer, "signer");
     }
 
     // ──────────────────────────────────────────────────────────
     //  Helpers
     // ──────────────────────────────────────────────────────────
 
-    /// @notice Build a signed price payload matching the expected format.
-    /// @dev The message format: abi.encode(asset, price, timestamp, marketOpen, sequenceNumber, chainId, verifierAddress)
-    function _signPrice(
-        bytes32 asset,
-        uint256 price,
-        uint256 timestamp,
-        bool marketOpen,
-        uint256 sequenceNumber
-    ) internal view returns (bytes memory) {
+    function _signPrice(bytes32 asset, uint256 price, uint256 timestamp) internal view returns (bytes memory) {
         bytes32 messageHash =
-            keccak256(abi.encode(asset, price, timestamp, marketOpen, sequenceNumber, block.chainid, address(verifier)));
+            keccak256(abi.encode(asset, price, timestamp, block.chainid, address(verifier)));
         bytes32 ethSignedHash = MessageHashUtils.toEthSignedMessageHash(messageHash);
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(SIGNER_PK, ethSignedHash);
-        return abi.encode(price, timestamp, marketOpen, sequenceNumber, v, r, s);
+        return abi.encode(price, timestamp, v, r, s);
     }
 
     // ──────────────────────────────────────────────────────────
     //  verifyPrice — happy path
     // ──────────────────────────────────────────────────────────
 
-    function test_verifyPrice_validSignature_succeeds() public {
+    function test_verifyPrice_validSignature_succeeds() public view {
+        bytes memory priceData = _signPrice(ASSET, 250e18, block.timestamp);
+        (uint256 retPrice, uint256 retTs) = verifier.verifyPrice(ASSET, priceData);
+        assertEq(retPrice, 250e18);
+        assertEq(retTs, block.timestamp);
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  updatePrice — stores price and emits event
+    // ──────────────────────────────────────────────────────────
+
+    function test_updatePrice_storesAndEmits() public {
         uint256 price = 250e18;
         uint256 timestamp = block.timestamp;
-        uint256 seq = 1;
-
-        bytes memory priceData = _signPrice(ASSET, price, timestamp, true, seq);
+        bytes memory priceData = _signPrice(ASSET, price, timestamp);
 
         vm.expectEmit(true, false, false, true);
-        emit IOracleVerifier.PriceVerified(ASSET, price, timestamp, true);
+        emit IOracleVerifier.PriceUpdated(ASSET, price, timestamp);
 
-        (uint256 retPrice, uint256 retTs, bool retOpen) = verifier.verifyPrice(ASSET, priceData);
+        verifier.updatePrice(ASSET, priceData);
 
-        assertEq(retPrice, price);
-        assertEq(retTs, timestamp);
-        assertTrue(retOpen);
+        (uint256 storedPrice, uint256 storedTs) = verifier.getPrice(ASSET);
+        assertEq(storedPrice, price);
+        assertEq(storedTs, timestamp);
     }
 
-    function test_verifyPrice_marketClosed_returnsCorrectFlag() public {
-        bytes memory priceData = _signPrice(ASSET, 250e18, block.timestamp, false, 1);
-
-        (,, bool marketOpen) = verifier.verifyPrice(ASSET, priceData);
-
-        assertFalse(marketOpen);
-    }
-
-    function test_verifyPrice_updatesSequenceNumber() public {
-        bytes memory priceData = _signPrice(ASSET, 250e18, block.timestamp, true, 1);
-        verifier.verifyPrice(ASSET, priceData);
-
-        assertEq(verifier.getSequenceNumber(ASSET), 1);
-    }
-
-    function test_verifyPrice_updatesLastPrice() public {
-        bytes memory priceData = _signPrice(ASSET, 250e18, block.timestamp, true, 1);
-        verifier.verifyPrice(ASSET, priceData);
-
-        (uint256 lastPrice, uint256 lastTs) = verifier.getLastPrice(ASSET);
-        assertEq(lastPrice, 250e18);
-        assertEq(lastTs, block.timestamp);
-    }
-
-    function test_verifyPrice_consecutivePrices_succeed() public {
-        bytes memory pd1 = _signPrice(ASSET, 250e18, block.timestamp, true, 1);
-        verifier.verifyPrice(ASSET, pd1);
+    function test_updatePrice_consecutivePrices_succeed() public {
+        verifier.updatePrice(ASSET, _signPrice(ASSET, 250e18, block.timestamp));
 
         vm.warp(block.timestamp + 60);
 
-        bytes memory pd2 = _signPrice(ASSET, 255e18, block.timestamp, true, 2);
-        verifier.verifyPrice(ASSET, pd2);
+        verifier.updatePrice(ASSET, _signPrice(ASSET, 255e18, block.timestamp));
 
-        (uint256 lastPrice,) = verifier.getLastPrice(ASSET);
+        (uint256 lastPrice,) = verifier.getPrice(ASSET);
         assertEq(lastPrice, 255e18);
-        assertEq(verifier.getSequenceNumber(ASSET), 2);
     }
 
     // ──────────────────────────────────────────────────────────
@@ -124,121 +90,102 @@ contract OracleVerifierTest is BaseTest {
     // ──────────────────────────────────────────────────────────
 
     function test_verifyPrice_invalidSigner_reverts() public {
-        // Sign with wrong key
         uint256 wrongPk = 0xDEAD;
         bytes32 messageHash =
-            keccak256(abi.encode(ASSET, 250e18, block.timestamp, true, uint256(1), block.chainid, address(verifier)));
+            keccak256(abi.encode(ASSET, 250e18, block.timestamp, block.chainid, address(verifier)));
         bytes32 ethSignedHash = MessageHashUtils.toEthSignedMessageHash(messageHash);
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(wrongPk, ethSignedHash);
-        bytes memory priceData = abi.encode(250e18, block.timestamp, true, uint256(1), v, r, s);
+        bytes memory priceData = abi.encode(250e18, block.timestamp, v, r, s);
 
         vm.expectRevert(abi.encodeWithSelector(IOracleVerifier.UnauthorizedSigner.selector, vm.addr(wrongPk)));
         verifier.verifyPrice(ASSET, priceData);
     }
 
     function test_verifyPrice_tamperedPrice_reverts() public {
-        // Sign with correct price but submit different price
         bytes32 messageHash =
-            keccak256(abi.encode(ASSET, 250e18, block.timestamp, true, uint256(1), block.chainid, address(verifier)));
+            keccak256(abi.encode(ASSET, 250e18, block.timestamp, block.chainid, address(verifier)));
         bytes32 ethSignedHash = MessageHashUtils.toEthSignedMessageHash(messageHash);
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(SIGNER_PK, ethSignedHash);
+        bytes memory priceData = abi.encode(999e18, block.timestamp, v, r, s);
 
-        // Tamper: submit 999e18 instead of 250e18
-        bytes memory priceData = abi.encode(999e18, block.timestamp, true, uint256(1), v, r, s);
-
-        vm.expectRevert(); // Recovered signer won't match
+        vm.expectRevert();
         verifier.verifyPrice(ASSET, priceData);
     }
 
     // ──────────────────────────────────────────────────────────
-    //  verifyPrice — staleness
+    //  updatePrice — staleness
     // ──────────────────────────────────────────────────────────
 
-    function test_verifyPrice_stalePrice_reverts() public {
+    function test_updatePrice_stalePrice_reverts() public {
         uint256 staleTimestamp = block.timestamp - MAX_STALENESS - 1;
-        bytes memory priceData = _signPrice(ASSET, 250e18, staleTimestamp, true, 1);
+        bytes memory priceData = _signPrice(ASSET, 250e18, staleTimestamp);
 
         vm.expectRevert(
             abi.encodeWithSelector(IOracleVerifier.StalePrice.selector, ASSET, staleTimestamp, MAX_STALENESS)
         );
-        verifier.verifyPrice(ASSET, priceData);
+        verifier.updatePrice(ASSET, priceData);
     }
 
-    function test_verifyPrice_exactStalenessLimit_succeeds() public {
+    function test_updatePrice_exactStalenessLimit_succeeds() public {
         uint256 timestamp = block.timestamp - MAX_STALENESS;
-        bytes memory priceData = _signPrice(ASSET, 250e18, timestamp, true, 1);
+        verifier.updatePrice(ASSET, _signPrice(ASSET, 250e18, timestamp));
 
-        (uint256 retPrice,,) = verifier.verifyPrice(ASSET, priceData);
+        (uint256 retPrice,) = verifier.getPrice(ASSET);
         assertEq(retPrice, 250e18);
     }
 
     // ──────────────────────────────────────────────────────────
-    //  verifyPrice — deviation
+    //  updatePrice — deviation
     // ──────────────────────────────────────────────────────────
 
-    function test_verifyPrice_deviationExceeded_reverts() public {
-        // First price establishes baseline
-        bytes memory pd1 = _signPrice(ASSET, 250e18, block.timestamp, true, 1);
-        verifier.verifyPrice(ASSET, pd1);
+    function test_updatePrice_deviationExceeded_reverts() public {
+        verifier.updatePrice(ASSET, _signPrice(ASSET, 250e18, block.timestamp));
 
         vm.warp(block.timestamp + 60);
 
-        // Price jumps 20% (> 10% max deviation)
         uint256 deviatedPrice = 300e18;
-        bytes memory pd2 = _signPrice(ASSET, deviatedPrice, block.timestamp, true, 2);
+        bytes memory priceData = _signPrice(ASSET, deviatedPrice, block.timestamp);
 
         vm.expectRevert(
             abi.encodeWithSelector(
                 IOracleVerifier.PriceDeviationExceeded.selector, ASSET, deviatedPrice, 250e18, MAX_DEVIATION
             )
         );
-        verifier.verifyPrice(ASSET, pd2);
+        verifier.updatePrice(ASSET, priceData);
     }
 
-    function test_verifyPrice_withinDeviationLimit_succeeds() public {
-        // First price
-        bytes memory pd1 = _signPrice(ASSET, 250e18, block.timestamp, true, 1);
-        verifier.verifyPrice(ASSET, pd1);
+    function test_updatePrice_withinDeviationLimit_succeeds() public {
+        verifier.updatePrice(ASSET, _signPrice(ASSET, 250e18, block.timestamp));
 
         vm.warp(block.timestamp + 60);
 
-        // Price moves 5% (within 10% limit)
-        bytes memory pd2 = _signPrice(ASSET, 262.5e18, block.timestamp, true, 2);
-        (uint256 retPrice,,) = verifier.verifyPrice(ASSET, pd2);
+        verifier.updatePrice(ASSET, _signPrice(ASSET, 262.5e18, block.timestamp));
+
+        (uint256 retPrice,) = verifier.getPrice(ASSET);
         assertEq(retPrice, 262.5e18);
     }
 
-    function test_verifyPrice_firstPrice_skipsDeviationCheck() public {
-        // First price for an asset should succeed regardless of value
-        bytes memory priceData = _signPrice(ASSET, 1_000_000e18, block.timestamp, true, 1);
-        (uint256 retPrice,,) = verifier.verifyPrice(ASSET, priceData);
+    function test_updatePrice_firstPrice_skipsDeviationCheck() public {
+        verifier.updatePrice(ASSET, _signPrice(ASSET, 1_000_000e18, block.timestamp));
+
+        (uint256 retPrice,) = verifier.getPrice(ASSET);
         assertEq(retPrice, 1_000_000e18);
     }
 
     // ──────────────────────────────────────────────────────────
-    //  verifyPrice — sequence numbers
+    //  updatePrice — older timestamp ignored
     // ──────────────────────────────────────────────────────────
 
-    function test_verifyPrice_sameSequenceNumber_reverts() public {
-        bytes memory pd1 = _signPrice(ASSET, 250e18, block.timestamp, true, 1);
-        verifier.verifyPrice(ASSET, pd1);
+    function test_updatePrice_olderTimestamp_ignored() public {
+        verifier.updatePrice(ASSET, _signPrice(ASSET, 250e18, block.timestamp));
 
+        uint256 firstTs = block.timestamp;
         vm.warp(block.timestamp + 60);
 
-        bytes memory pd2 = _signPrice(ASSET, 251e18, block.timestamp, true, 1); // same seq
-        vm.expectRevert(abi.encodeWithSelector(IOracleVerifier.InvalidSequenceNumber.selector, ASSET, 1, 2));
-        verifier.verifyPrice(ASSET, pd2);
-    }
+        verifier.updatePrice(ASSET, _signPrice(ASSET, 251e18, firstTs));
 
-    function test_verifyPrice_lowerSequenceNumber_reverts() public {
-        bytes memory pd1 = _signPrice(ASSET, 250e18, block.timestamp, true, 5);
-        verifier.verifyPrice(ASSET, pd1);
-
-        vm.warp(block.timestamp + 60);
-
-        bytes memory pd2 = _signPrice(ASSET, 251e18, block.timestamp, true, 3); // lower seq
-        vm.expectRevert(abi.encodeWithSelector(IOracleVerifier.InvalidSequenceNumber.selector, ASSET, 3, 6));
-        verifier.verifyPrice(ASSET, pd2);
+        (uint256 retPrice,) = verifier.getPrice(ASSET);
+        assertEq(retPrice, 250e18); // unchanged
     }
 
     // ──────────────────────────────────────────────────────────
@@ -246,25 +193,23 @@ contract OracleVerifierTest is BaseTest {
     // ──────────────────────────────────────────────────────────
 
     function test_verifyPrice_zeroPrice_reverts() public {
-        bytes memory priceData = _signPrice(ASSET, 0, block.timestamp, true, 1);
-
+        bytes memory priceData = _signPrice(ASSET, 0, block.timestamp);
         vm.expectRevert(IOracleVerifier.ZeroPrice.selector);
         verifier.verifyPrice(ASSET, priceData);
     }
 
     // ──────────────────────────────────────────────────────────
-    //  verifyPrice — chain ID and contract address replay
+    //  verifyPrice — chain ID replay
     // ──────────────────────────────────────────────────────────
 
     function test_verifyPrice_wrongChainId_reverts() public {
-        // Sign with wrong chain ID
         bytes32 messageHash =
-            keccak256(abi.encode(ASSET, 250e18, block.timestamp, true, uint256(1), uint256(999), address(verifier)));
+            keccak256(abi.encode(ASSET, 250e18, block.timestamp, uint256(999), address(verifier)));
         bytes32 ethSignedHash = MessageHashUtils.toEthSignedMessageHash(messageHash);
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(SIGNER_PK, ethSignedHash);
-        bytes memory priceData = abi.encode(250e18, block.timestamp, true, uint256(1), v, r, s);
+        bytes memory priceData = abi.encode(250e18, block.timestamp, v, r, s);
 
-        vm.expectRevert(); // Recovered signer won't match due to different message
+        vm.expectRevert();
         verifier.verifyPrice(ASSET, priceData);
     }
 
@@ -280,7 +225,6 @@ contract OracleVerifierTest is BaseTest {
 
         vm.prank(Actors.ADMIN);
         verifier.addSigner(newSigner);
-
         assertTrue(verifier.isSigner(newSigner));
     }
 
@@ -302,7 +246,6 @@ contract OracleVerifierTest is BaseTest {
 
         vm.prank(Actors.ADMIN);
         verifier.removeSigner(signer);
-
         assertFalse(verifier.isSigner(signer));
     }
 
@@ -316,8 +259,7 @@ contract OracleVerifierTest is BaseTest {
         vm.prank(Actors.ADMIN);
         verifier.removeSigner(signer);
 
-        bytes memory priceData = _signPrice(ASSET, 250e18, block.timestamp, true, 1);
-
+        bytes memory priceData = _signPrice(ASSET, 250e18, block.timestamp);
         vm.expectRevert(abi.encodeWithSelector(IOracleVerifier.UnauthorizedSigner.selector, signer));
         verifier.verifyPrice(ASSET, priceData);
     }
@@ -327,13 +269,8 @@ contract OracleVerifierTest is BaseTest {
     // ──────────────────────────────────────────────────────────
 
     function test_setAssetOracleConfig_admin_succeeds() public {
-        bytes32 newAsset = bytes32("GOLD");
-
-        vm.expectEmit(true, false, false, true);
-        emit IOracleVerifier.AssetOracleConfigUpdated(newAsset, 600, 500);
-
         vm.prank(Actors.ADMIN);
-        verifier.setAssetOracleConfig(newAsset, 600, 500);
+        verifier.setAssetOracleConfig(bytes32("GOLD"), 600, 500);
     }
 
     function test_setAssetOracleConfig_nonAdmin_reverts() public {
@@ -346,13 +283,10 @@ contract OracleVerifierTest is BaseTest {
     //  Fuzz
     // ──────────────────────────────────────────────────────────
 
-    function testFuzz_verifyPrice_validPrices(
-        uint256 price
-    ) public {
+    function testFuzz_verifyPrice_validPrices(uint256 price) public view {
         price = bound(price, 1, type(uint128).max);
-        bytes memory priceData = _signPrice(ASSET, price, block.timestamp, true, 1);
-
-        (uint256 retPrice,,) = verifier.verifyPrice(ASSET, priceData);
+        bytes memory priceData = _signPrice(ASSET, price, block.timestamp);
+        (uint256 retPrice,) = verifier.verifyPrice(ASSET, priceData);
         assertEq(retPrice, price);
     }
 }

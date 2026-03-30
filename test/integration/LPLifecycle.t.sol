@@ -310,7 +310,7 @@ contract LPLifecycleTest is BaseTest {
         assertEq(usdcVault.totalAssets(), LP_DEPOSIT);
         assertEq(uint8(usdcVault.vaultStatus()), uint8(VaultStatus.Active));
         assertEq(usdcVault.maxUtilization(), 8000);
-        assertEq(usdcVault.totalExposure(), 0);
+        assertEq(usdcVault.totalExposureUSD(), 0);
         assertEq(usdcVault.healthFactor(), type(uint256).max);
         assertEq(usdcVault.utilization(), 0);
     }

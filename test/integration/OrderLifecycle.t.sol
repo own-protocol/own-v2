@@ -95,6 +95,9 @@ contract OrderLifecycleTest is BaseTest {
         AssetConfig memory tslaConfig =
             AssetConfig({activeToken: address(eTSLA), legacyTokens: new address[](0), active: true, volatilityLevel: 2});
         assetRegistry.addAsset(TSLA, address(eTSLA), tslaConfig);
+        OracleConfig memory tslaOracleConfig =
+            OracleConfig({primaryOracle: address(oracle), secondaryOracle: address(0), pythPriceFeedId: bytes32(0)});
+        assetRegistry.setOracleConfig(TSLA, tslaOracleConfig);
 
         bytes32 ethAsset = bytes32("ETH");
         AssetConfig memory ethConfig =
@@ -115,6 +118,10 @@ contract OrderLifecycleTest is BaseTest {
         vault.setPaymentToken(address(usdc));
         vault.enableAsset(TSLA);
         vm.stopPrank();
+
+        // Initialize asset and collateral valuations so exposure tracking works
+        vault.updateAssetValuation(TSLA);
+        vault.updateCollateralValuation();
     }
 
     function _depositLPCollateral() private {
@@ -241,8 +248,11 @@ contract OrderLifecycleTest is BaseTest {
 
         vm.warp(block.timestamp + GRACE_PERIOD + 1);
 
+        // ETH price data for collateral conversion
+        bytes memory ethPriceData = abi.encode(uint256(ETH_PRICE), uint256(block.timestamp));
+
         vm.prank(Actors.MINTER1);
-        market.forceExecute(orderId, "", "");
+        market.forceExecute(orderId, "", ethPriceData);
 
         Order memory order = market.getOrder(orderId);
         assertEq(uint8(order.status), uint8(OrderStatus.ForceExecuted));
@@ -307,7 +317,7 @@ contract OrderLifecycleTest is BaseTest {
         assertEq(eTSLA.balanceOf(address(market)), 0, "market escrow cleared");
 
         // Verify no exposure was tracked (order was never claimed)
-        assertEq(vault.totalExposure(), 0, "no exposure for unclaimed");
+        assertEq(vault.totalExposureUSD(), 0, "no exposure for unclaimed");
     }
 
     // ══════════════════════════════════════════════════════════
@@ -493,20 +503,20 @@ contract OrderLifecycleTest is BaseTest {
     // ══════════════════════════════════════════════════════════
 
     function test_exposureTracking_claimConfirm() public {
-        assertEq(vault.totalExposure(), 0, "initial exposure = 0");
+        assertEq(vault.totalExposureUSD(), 0, "initial exposure = 0");
 
         uint256 orderId = _placeMint(Actors.MINTER1, MINT_AMOUNT, block.timestamp + 1 days);
 
         vm.prank(Actors.VM1);
         market.claimOrder(orderId);
 
-        uint256 expectedExposure = MINT_AMOUNT; // mint exposure = stablecoin amount
-        assertEq(vault.totalExposure(), expectedExposure, "exposure = mint amount");
+        uint256 expectedExposure = Math.mulDiv(MINT_AMOUNT, TSLA_PRICE, PRECISION);
+        assertEq(vault.totalExposureUSD(), expectedExposure, "exposure = mint amount in USD");
 
         vm.prank(Actors.VM1);
         market.confirmOrder(orderId);
 
-        assertEq(vault.totalExposure(), 0, "exposure back to 0");
+        assertEq(vault.totalExposureUSD(), 0, "exposure back to 0");
     }
 
     // ══════════════════════════════════════════════════════════
@@ -520,7 +530,7 @@ contract OrderLifecycleTest is BaseTest {
         vm.prank(Actors.VM1);
         market.claimOrder(orderId);
 
-        assertEq(vault.totalExposure(), MINT_AMOUNT, "exposure after claim");
+        assertEq(vault.totalExposureUSD(), Math.mulDiv(MINT_AMOUNT, TSLA_PRICE, PRECISION), "exposure after claim");
 
         vm.warp(expiry + 1);
 
@@ -529,7 +539,7 @@ contract OrderLifecycleTest is BaseTest {
         market.closeOrder(orderId);
         vm.stopPrank();
 
-        assertEq(vault.totalExposure(), 0, "exposure back to 0 after close");
+        assertEq(vault.totalExposureUSD(), 0, "exposure back to 0 after close");
     }
 
     // ══════════════════════════════════════════════════════════
@@ -542,14 +552,16 @@ contract OrderLifecycleTest is BaseTest {
         vm.prank(Actors.VM1);
         market.claimOrder(orderId);
 
-        assertEq(vault.totalExposure(), MINT_AMOUNT, "exposure after claim");
+        assertEq(vault.totalExposureUSD(), Math.mulDiv(MINT_AMOUNT, TSLA_PRICE, PRECISION), "exposure after claim");
 
         vm.warp(block.timestamp + GRACE_PERIOD + 1);
 
-        vm.prank(Actors.MINTER1);
-        market.forceExecute(orderId, "", "");
+        bytes memory ethPriceData = abi.encode(uint256(ETH_PRICE), uint256(block.timestamp));
 
-        assertEq(vault.totalExposure(), 0, "exposure back to 0 after force");
+        vm.prank(Actors.MINTER1);
+        market.forceExecute(orderId, "", ethPriceData);
+
+        assertEq(vault.totalExposureUSD(), 0, "exposure back to 0 after force");
     }
 
     // ══════════════════════════════════════════════════════════

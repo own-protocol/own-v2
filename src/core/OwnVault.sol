@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: BUSL-1.1
 pragma solidity 0.8.28;
 
+import {IAssetRegistry} from "../interfaces/IAssetRegistry.sol";
+import {IOracleVerifier} from "../interfaces/IOracleVerifier.sol";
 import {IOwnVault} from "../interfaces/IOwnVault.sol";
 import {IProtocolRegistry} from "../interfaces/IProtocolRegistry.sol";
 import {
@@ -14,6 +16,7 @@ import {
 } from "../interfaces/types/Types.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
+import {Multicall} from "@openzeppelin/contracts/utils/Multicall.sol";
 import {ERC20, IERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {ERC4626} from "@openzeppelin/contracts/token/ERC20/extensions/ERC4626.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
@@ -24,7 +27,7 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 /// @notice Single vault holding ETH (WETH) as collateral to back eToken exposure.
 ///         Bound 1:1 to a single VM. Accepts one payment token for fee accrual.
 ///         All fees must be flushed before the payment token can be changed.
-contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
+contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
     using SafeERC20 for IERC20;
     using Math for uint256;
 
@@ -47,8 +50,25 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     // ──────────────────────────────────────────────────────────
 
     uint256 private _maxUtilization;
-    uint256 private _totalExposure;
     uint256 private _withdrawalWaitPeriod;
+
+    /// @dev Per-asset raw exposure in units (18 decimals).
+    mapping(bytes32 => uint256) private _assetExposure;
+
+    /// @dev Per-asset exposure in USD (18 decimals), updated incrementally.
+    mapping(bytes32 => uint256) private _assetExposureUSD;
+
+    /// @dev Per-asset last known price from oracle (18 decimals).
+    mapping(bytes32 => uint256) private _assetLastPrice;
+
+    /// @dev Per-asset last valuation update timestamp.
+    mapping(bytes32 => uint256) private _assetLastUpdated;
+
+    /// @dev Running total of all per-asset USD exposures. Updated incrementally — never loops.
+    uint256 private _totalExposureUSD;
+
+    /// @dev Collateral value in USD (18 decimals). Updated by keeper or on exposure changes.
+    uint256 private _collateralValueUSD;
 
     // ──────────────────────────────────────────────────────────
     //  Order execution parameters (read by OwnMarket)
@@ -336,12 +356,16 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
         uint256 shares = req.shares;
         assets = convertToAssets(shares);
 
-        // Check that withdrawal won't breach max utilization
-        uint256 assetsAfter = totalAssets() - assets;
-        if (assetsAfter > 0 && _totalExposure > 0) {
-            uint256 utilizationAfter = _totalExposure.mulDiv(BPS, assetsAfter);
-            if (utilizationAfter > _maxUtilization) {
-                revert MaxUtilizationExceeded(utilizationAfter, _maxUtilization);
+        // Check that withdrawal won't breach max utilization (in USD terms)
+        if (_totalExposureUSD > 0 && _collateralValueUSD > 0) {
+            // Estimate collateral value after withdrawal
+            uint256 collateralAfter =
+                _collateralValueUSD - _collateralValueUSD.mulDiv(assets, totalAssets());
+            if (collateralAfter > 0) {
+                uint256 utilizationAfter = _totalExposureUSD.mulDiv(BPS, collateralAfter);
+                if (utilizationAfter > _maxUtilization) {
+                    revert MaxUtilizationExceeded(utilizationAfter, _maxUtilization);
+                }
             }
         }
 
@@ -420,15 +444,14 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
 
     /// @inheritdoc IOwnVault
     function healthFactor() external view returns (uint256) {
-        if (_totalExposure == 0) return type(uint256).max;
-        return totalAssets().mulDiv(PRECISION, _totalExposure);
+        if (_totalExposureUSD == 0) return type(uint256).max;
+        return _collateralValueUSD.mulDiv(PRECISION, _totalExposureUSD);
     }
 
     /// @inheritdoc IOwnVault
     function utilization() external view returns (uint256) {
-        uint256 assets_ = totalAssets();
-        if (assets_ == 0) return 0;
-        return _totalExposure.mulDiv(BPS, assets_);
+        if (_collateralValueUSD == 0) return 0;
+        return _totalExposureUSD.mulDiv(BPS, _collateralValueUSD);
     }
 
     /// @inheritdoc IOwnVault
@@ -442,17 +465,75 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     }
 
     /// @inheritdoc IOwnVault
-    function totalExposure() external view returns (uint256) {
-        return _totalExposure;
+    function totalExposureUSD() external view returns (uint256) {
+        return _totalExposureUSD;
     }
 
     /// @inheritdoc IOwnVault
-    function updateExposure(int256 delta) external onlyMarket {
+    function collateralValueUSD() external view returns (uint256) {
+        return _collateralValueUSD;
+    }
+
+    /// @inheritdoc IOwnVault
+    function assetExposure(bytes32 asset_) external view returns (uint256) {
+        return _assetExposure[asset_];
+    }
+
+    /// @inheritdoc IOwnVault
+    function assetExposureUSD(bytes32 asset_) external view returns (uint256) {
+        return _assetExposureUSD[asset_];
+    }
+
+    /// @inheritdoc IOwnVault
+    function assetLastUpdated(bytes32 asset_) external view returns (uint256) {
+        return _assetLastUpdated[asset_];
+    }
+
+    /// @inheritdoc IOwnVault
+    function updateExposure(bytes32 asset_, int256 delta) external onlyMarket {
+        uint256 lastPrice = _assetLastPrice[asset_];
+
+        // Update raw units
         if (delta > 0) {
-            _totalExposure += uint256(delta);
+            _assetExposure[asset_] += uint256(delta);
         } else if (delta < 0) {
-            _totalExposure -= uint256(-delta);
+            _assetExposure[asset_] -= uint256(-delta);
         }
+
+        // Update USD values using last known price
+        if (lastPrice > 0) {
+            uint256 oldUSD = _assetExposureUSD[asset_];
+            uint256 newUSD = _assetExposure[asset_].mulDiv(lastPrice, PRECISION);
+            _assetExposureUSD[asset_] = newUSD;
+            _totalExposureUSD = _totalExposureUSD - oldUSD + newUSD;
+        }
+
+        // Also refresh collateral value
+        _refreshCollateralValue();
+    }
+
+    /// @inheritdoc IOwnVault
+    function updateAssetValuation(bytes32 asset_) external {
+        address oracleAddr = IAssetRegistry(registry.assetRegistry()).getPrimaryOracle(asset_);
+        if (oracleAddr == address(0)) revert PriceNotAvailable(asset_);
+
+        (uint256 price,) = IOracleVerifier(oracleAddr).getPrice(asset_);
+        if (price == 0) revert PriceNotAvailable(asset_);
+
+        uint256 oldUSD = _assetExposureUSD[asset_];
+        uint256 newUSD = _assetExposure[asset_].mulDiv(price, PRECISION);
+
+        _assetLastPrice[asset_] = price;
+        _assetExposureUSD[asset_] = newUSD;
+        _totalExposureUSD = _totalExposureUSD - oldUSD + newUSD;
+        _assetLastUpdated[asset_] = block.timestamp;
+
+        emit AssetValuationUpdated(asset_, _assetExposure[asset_], newUSD, price);
+    }
+
+    /// @inheritdoc IOwnVault
+    function updateCollateralValuation() external {
+        _refreshCollateralValue();
     }
 
     /// @inheritdoc IOwnVault
@@ -675,6 +756,26 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
             IERC20(_paymentToken).safeTransfer(account, amount);
             emit LPRewardsClaimed(account, _paymentToken, amount);
         }
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Internal — valuation
+    // ──────────────────────────────────────────────────────────
+
+    /// @dev Refresh the collateral value in USD using the collateral oracle.
+    function _refreshCollateralValue() private {
+        bytes32 collatAsset = _collateralOracleAsset;
+        if (collatAsset == bytes32(0)) return;
+
+        address oracleAddr = IAssetRegistry(registry.assetRegistry()).getPrimaryOracle(collatAsset);
+        if (oracleAddr == address(0)) return;
+
+        (uint256 price,) = IOracleVerifier(oracleAddr).getPrice(collatAsset);
+        if (price == 0) return;
+
+        _collateralValueUSD = totalAssets().mulDiv(price, PRECISION);
+
+        emit CollateralValuationUpdated(_collateralValueUSD, price);
     }
 
     // ──────────────────────────────────────────────────────────

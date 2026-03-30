@@ -40,6 +40,8 @@ interface IOwnVault is IERC4626 {
     event PaymentTokenUpdated(address indexed oldToken, address indexed newToken);
     event AssetEnabled(bytes32 indexed asset);
     event AssetDisabled(bytes32 indexed asset);
+    event AssetValuationUpdated(bytes32 indexed asset, uint256 exposureUnits, uint256 exposureUSD, uint256 price);
+    event CollateralValuationUpdated(uint256 collateralValueUSD, uint256 price);
 
     // ──────────────────────────────────────────────────────────
     //  Errors
@@ -67,6 +69,7 @@ interface IOwnVault is IERC4626 {
     error OutstandingFeesExist();
     error WrongFeeToken(address expected, address provided);
     error WithdrawalWaitPeriodNotElapsed(uint256 requestId, uint256 readyAt);
+    error PriceNotAvailable(bytes32 asset);
 
     // ──────────────────────────────────────────────────────────
     //  VM binding
@@ -128,9 +131,11 @@ interface IOwnVault is IERC4626 {
     // ──────────────────────────────────────────────────────────
 
     /// @notice Return the current vault health factor (1e18 = 1.0).
+    ///         healthFactor = collateralValueUSD / totalExposureUSD.
     function healthFactor() external view returns (uint256);
 
     /// @notice Return the current vault utilization in BPS.
+    ///         utilization = totalExposureUSD * BPS / collateralValueUSD.
     function utilization() external view returns (uint256);
 
     function maxUtilization() external view returns (uint256);
@@ -138,16 +143,37 @@ interface IOwnVault is IERC4626 {
 
     /// @notice Return the withdrawal wait period in seconds.
     function withdrawalWaitPeriod() external view returns (uint256);
-
-    /// @notice Set the withdrawal wait period. Only callable by admin.
     function setWithdrawalWaitPeriod(uint256 period) external;
 
-    /// @notice Return the total outstanding eToken exposure backed by this vault (18 decimals).
-    function totalExposure() external view returns (uint256);
+    /// @notice Return the total exposure in USD across all assets (18 decimals).
+    function totalExposureUSD() external view returns (uint256);
 
-    /// @notice Update the vault's current exposure. Only callable by OwnMarket.
-    /// @param delta Signed exposure change (positive = increase, negative = decrease).
-    function updateExposure(int256 delta) external;
+    /// @notice Return the collateral value in USD (18 decimals).
+    function collateralValueUSD() external view returns (uint256);
+
+    /// @notice Return per-asset exposure in raw units (18 decimals).
+    function assetExposure(bytes32 asset) external view returns (uint256);
+
+    /// @notice Return per-asset exposure in USD (18 decimals).
+    function assetExposureUSD(bytes32 asset) external view returns (uint256);
+
+    /// @notice Return the timestamp of the last valuation update for an asset.
+    function assetLastUpdated(bytes32 asset) external view returns (uint256);
+
+    /// @notice Update raw exposure units for an asset. Only callable by OwnMarket.
+    ///         Adjusts per-asset units and per-asset USD value using last known price.
+    /// @param asset Asset ticker.
+    /// @param delta Signed change in raw exposure units.
+    function updateExposure(bytes32 asset, int256 delta) external;
+
+    /// @notice Refresh the USD valuation of an asset using its oracle price.
+    ///         Callable by anyone (keeper pattern). Reads price from the asset's primary oracle.
+    /// @param asset Asset ticker to revalue.
+    function updateAssetValuation(bytes32 asset) external;
+
+    /// @notice Refresh the USD valuation of vault collateral using the collateral oracle.
+    ///         Callable by anyone (keeper pattern).
+    function updateCollateralValuation() external;
 
     // ──────────────────────────────────────────────────────────
     //  Order execution parameters (used by OwnMarket)

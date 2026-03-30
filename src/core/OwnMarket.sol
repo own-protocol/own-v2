@@ -169,7 +169,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
 
         // Update exposure and check utilization
         uint256 exposureDelta = _calculateExposure(order);
-        vaultContract.updateExposure(int256(exposureDelta));
+        vaultContract.updateExposure(order.asset, int256(exposureDelta));
 
         uint256 currentUtil = vaultContract.utilization();
         uint256 maxUtil = vaultContract.maxUtilization();
@@ -197,7 +197,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
 
         // Decrease exposure
         uint256 exposureDelta = _calculateExposure(order);
-        IOwnVault(order.vault).updateExposure(-int256(exposureDelta));
+        IOwnVault(order.vault).updateExposure(order.asset, -int256(exposureDelta));
 
         emit OrderConfirmed(orderId, msg.sender, order.amount);
     }
@@ -228,7 +228,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
 
         // Decrease exposure
         uint256 exposureDelta = _calculateExposure(order);
-        IOwnVault(order.vault).updateExposure(-int256(exposureDelta));
+        IOwnVault(order.vault).updateExposure(order.asset, -int256(exposureDelta));
 
         emit OrderClosed(orderId, msg.sender);
     }
@@ -300,7 +300,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         // Clear exposure if was claimed
         if (isClaimed) {
             uint256 exposureDelta = _calculateExposure(order);
-            vaultContract.updateExposure(-int256(exposureDelta));
+            vaultContract.updateExposure(order.asset, -int256(exposureDelta));
         }
 
         emit OrderForceExecuted(orderId, msg.sender, priceReachable);
@@ -466,7 +466,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         bytes32 collatAsset = IOwnVault(order.vault).collateralOracleAsset();
         address oracleAddr = IAssetRegistry(registry.assetRegistry()).getPrimaryOracle(collatAsset);
         if (oracleAddr == address(0)) revert CollateralOracleNotSet();
-        (uint256 price,,) = IOracleVerifier(oracleAddr).verifyPrice(collatAsset, ethPriceData);
+        (uint256 price,) = IOracleVerifier(oracleAddr).verifyPrice(collatAsset, ethPriceData);
         return Math.mulDiv(usdValue, PRECISION, price);
     }
 
@@ -502,10 +502,10 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         uint256 windowStart = order.claimedAt > 0 ? order.claimedAt : order.createdAt;
         uint256 windowEnd = block.timestamp;
 
-        (uint256 lowPrice, uint256 lowTimestamp,) = oracle.verifyPrice(order.asset, lowPriceData);
+        (uint256 lowPrice, uint256 lowTimestamp) = oracle.verifyPrice(order.asset, lowPriceData);
         if (lowTimestamp < windowStart || lowTimestamp > windowEnd) return false;
 
-        (uint256 highPrice, uint256 highTimestamp,) = oracle.verifyPrice(order.asset, highPriceData);
+        (uint256 highPrice, uint256 highTimestamp) = oracle.verifyPrice(order.asset, highPriceData);
         if (highTimestamp < windowStart || highTimestamp > windowEnd) return false;
 
         if (lowPrice > highPrice) (lowPrice, highPrice) = (highPrice, lowPrice);

@@ -4,8 +4,8 @@ pragma solidity 0.8.28;
 import {IOracleVerifier} from "../../src/interfaces/IOracleVerifier.sol";
 
 /// @title MockOracleVerifier — Configurable oracle for unit tests
-/// @notice Returns preset prices and market-open status. Supports simulating
-///         staleness, deviation failures, and signer checks for negative tests.
+/// @notice Implements the push-model IOracleVerifier interface.
+///         Prices are set directly via test helpers rather than signed data.
 contract MockOracleVerifier is IOracleVerifier {
     // ──────────────────────────────────────────────────────────
     //  State
@@ -14,122 +14,93 @@ contract MockOracleVerifier is IOracleVerifier {
     struct AssetPrice {
         uint256 price;
         uint256 timestamp;
-        bool marketOpen;
     }
 
     mapping(bytes32 => AssetPrice) private _prices;
-    mapping(bytes32 => uint256) private _sequenceNumbers;
     mapping(address => bool) private _signers;
 
-    /// @notice When true, `verifyPrice` always reverts with StalePrice.
     bool public forceStale;
-
-    /// @notice When true, `verifyPrice` always reverts with InvalidSignature.
     bool public forceInvalidSignature;
-
-    /// @notice When true, `verifyPrice` always reverts with PriceDeviationExceeded.
     bool public forceDeviation;
 
     // ──────────────────────────────────────────────────────────
-    //  Test helpers — set prices
+    //  Test helpers — set prices directly
     // ──────────────────────────────────────────────────────────
 
-    /// @notice Set the price that `verifyPrice` will return for an asset.
-    function setPrice(bytes32 asset, uint256 price, uint256 timestamp, bool marketOpen) external {
-        _prices[asset] = AssetPrice(price, timestamp, marketOpen);
+    function setPrice(bytes32 asset, uint256 price, uint256 timestamp) external {
+        _prices[asset] = AssetPrice(price, timestamp);
     }
 
-    /// @notice Convenience: set price with `block.timestamp` and marketOpen=true.
     function setPrice(bytes32 asset, uint256 price) external {
-        _prices[asset] = AssetPrice(price, block.timestamp, true);
+        _prices[asset] = AssetPrice(price, block.timestamp);
     }
 
-    /// @notice Toggle forced staleness revert.
-    function setForceStale(
-        bool value
-    ) external {
-        forceStale = value;
-    }
+    function setForceStale(bool value) external { forceStale = value; }
+    function setForceInvalidSignature(bool value) external { forceInvalidSignature = value; }
+    function setForceDeviation(bool value) external { forceDeviation = value; }
 
-    /// @notice Toggle forced invalid signature revert.
-    function setForceInvalidSignature(
-        bool value
-    ) external {
-        forceInvalidSignature = value;
-    }
+    // ──────────────────────────────────────────────────────────
+    //  IOracleVerifier — push
+    // ──────────────────────────────────────────────────────────
 
-    /// @notice Toggle forced deviation revert.
-    function setForceDeviation(
-        bool value
-    ) external {
-        forceDeviation = value;
+    function updatePriceFeeds(bytes calldata updateData) external payable override {
+        // In mock, decode as (bytes32[] assets, uint256[] prices, uint256[] timestamps)
+        (bytes32[] memory assets, uint256[] memory prices, uint256[] memory timestamps) =
+            abi.decode(updateData, (bytes32[], uint256[], uint256[]));
+
+        for (uint256 i; i < assets.length; i++) {
+            _prices[assets[i]] = AssetPrice(prices[i], timestamps[i]);
+            emit PriceUpdated(assets[i], prices[i], timestamps[i]);
+        }
     }
 
     // ──────────────────────────────────────────────────────────
-    //  IOracleVerifier implementation
+    //  IOracleVerifier — read
     // ──────────────────────────────────────────────────────────
 
-    /// @inheritdoc IOracleVerifier
-    function verifyPrice(
-        bytes32 asset,
-        bytes calldata /* priceData */
-    ) external payable override returns (uint256 price, uint256 timestamp, bool marketOpen) {
+    function getPrice(bytes32 asset) external view override returns (uint256 price, uint256 timestamp) {
         if (forceStale) revert StalePrice(asset, 0, 0);
-        if (forceInvalidSignature) revert InvalidSignature();
-        if (forceDeviation) revert PriceDeviationExceeded(asset, 0, 0, 0);
 
         AssetPrice storage ap = _prices[asset];
-        require(ap.price > 0, "MockOracleVerifier: price not set");
-
-        price = ap.price;
-        timestamp = ap.timestamp;
-        marketOpen = ap.marketOpen;
-
-        _sequenceNumbers[asset]++;
-
-        emit PriceVerified(asset, price, timestamp, marketOpen);
+        if (ap.price == 0) revert PriceNotAvailable(asset);
+        return (ap.price, ap.timestamp);
     }
 
-    /// @inheritdoc IOracleVerifier
-    function addSigner(
-        address signer
-    ) external override {
+    // ──────────────────────────────────────────────────────────
+    //  IOracleVerifier — verify (inline proof for force execution)
+    // ──────────────────────────────────────────────────────────
+
+    function verifyPrice(bytes32 asset, bytes calldata priceData)
+        external
+        view
+        override
+        returns (uint256 price, uint256 timestamp)
+    {
+        if (forceStale) revert StalePrice(asset, 0, 0);
+        if (forceInvalidSignature) revert InvalidSignature();
+
+        // In mock, priceData is just abi.encode(uint256 price, uint256 timestamp)
+        (price, timestamp) = abi.decode(priceData, (uint256, uint256));
+        if (price == 0) revert ZeroPrice();
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  IOracleVerifier — admin (no-op in mock)
+    // ──────────────────────────────────────────────────────────
+
+    function addSigner(address signer) external override {
         _signers[signer] = true;
         emit SignerAdded(signer);
     }
 
-    /// @inheritdoc IOracleVerifier
-    function removeSigner(
-        address signer
-    ) external override {
+    function removeSigner(address signer) external override {
         _signers[signer] = false;
         emit SignerRemoved(signer);
     }
 
-    /// @inheritdoc IOracleVerifier
-    function isSigner(
-        address account
-    ) external view override returns (bool) {
+    function isSigner(address account) external view override returns (bool) {
         return _signers[account];
     }
 
-    /// @inheritdoc IOracleVerifier
-    function setAssetOracleConfig(bytes32 asset, uint256 maxStaleness, uint256 maxDeviation) external override {
-        emit AssetOracleConfigUpdated(asset, maxStaleness, maxDeviation);
-    }
-
-    /// @inheritdoc IOracleVerifier
-    function getLastPrice(
-        bytes32 asset
-    ) external view override returns (uint256 price, uint256 timestamp) {
-        AssetPrice storage ap = _prices[asset];
-        return (ap.price, ap.timestamp);
-    }
-
-    /// @inheritdoc IOracleVerifier
-    function getSequenceNumber(
-        bytes32 asset
-    ) external view override returns (uint256) {
-        return _sequenceNumbers[asset];
-    }
+    function setAssetOracleConfig(bytes32, uint256, uint256) external override {}
 }

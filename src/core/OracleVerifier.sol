@@ -4,14 +4,15 @@ pragma solidity 0.8.28;
 import {IOracleVerifier} from "../interfaces/IOracleVerifier.sol";
 import {BPS} from "../interfaces/types/Types.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {Multicall} from "@openzeppelin/contracts/utils/Multicall.sol";
 import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import {MessageHashUtils} from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 
-/// @title OracleVerifier — Signed oracle price verification (MVP)
-/// @notice Verifies ECDSA-signed price messages from authorised signers.
-///         Enforces staleness bounds, price deviation limits, and monotonic
-///         sequence numbers per asset.
-contract OracleVerifier is IOracleVerifier, Ownable {
+/// @title OracleVerifier — In-house signed oracle with push model
+/// @notice Authorised signers push single-asset price updates via updatePrice().
+///         Batch updates use inherited Multicall. Consumers read cached prices
+///         via getPrice(). verifyPrice() is available for inline proof verification.
+contract OracleVerifier is IOracleVerifier, Ownable, Multicall {
     using ECDSA for bytes32;
     using MessageHashUtils for bytes32;
 
@@ -24,7 +25,7 @@ contract OracleVerifier is IOracleVerifier, Ownable {
         uint256 maxDeviation; // in BPS
     }
 
-    struct LastPrice {
+    struct PriceEntry {
         uint256 price;
         uint256 timestamp;
     }
@@ -33,153 +34,132 @@ contract OracleVerifier is IOracleVerifier, Ownable {
     //  State
     // ──────────────────────────────────────────────────────────
 
-    /// @dev Authorised signers.
     mapping(address => bool) private _signers;
-
-    /// @dev Per-asset oracle configuration.
     mapping(bytes32 => AssetOracleConfig) private _assetConfigs;
-
-    /// @dev Per-asset last verified price.
-    mapping(bytes32 => LastPrice) private _lastPrices;
-
-    /// @dev Per-asset sequence number (last accepted).
-    mapping(bytes32 => uint256) private _sequenceNumbers;
+    mapping(bytes32 => PriceEntry) private _prices;
 
     // ──────────────────────────────────────────────────────────
     //  Constructor
     // ──────────────────────────────────────────────────────────
 
-    /// @param admin Initial owner / admin address.
-    constructor(
-        address admin
-    ) Ownable(admin) {}
+    constructor(address admin) Ownable(admin) {}
 
     // ──────────────────────────────────────────────────────────
-    //  Core function
+    //  Push — update a single asset price
     // ──────────────────────────────────────────────────────────
 
-    /// @inheritdoc IOracleVerifier
-    function verifyPrice(
-        bytes32 asset,
-        bytes calldata priceData
-    ) external payable override returns (uint256 price, uint256 timestamp, bool marketOpen) {
-        // Decode payload
-        uint256 sequenceNumber;
-        {
-            uint8 v;
-            bytes32 r;
-            bytes32 s;
-            (price, timestamp, marketOpen, sequenceNumber, v, r, s) =
-                abi.decode(priceData, (uint256, uint256, bool, uint256, uint8, bytes32, bytes32));
+    /// @notice Push a signed price update for a single asset.
+    ///         Batch updates are done via inherited Multicall.
+    /// @param asset     Asset ticker.
+    /// @param priceData Encoded as (uint256 price, uint256 timestamp, uint8 v, bytes32 r, bytes32 s).
+    function updatePrice(bytes32 asset, bytes calldata priceData) external {
+        (uint256 price, uint256 timestamp, uint8 v, bytes32 r, bytes32 s) =
+            abi.decode(priceData, (uint256, uint256, uint8, bytes32, bytes32));
 
-            // Zero price
-            if (price == 0) revert ZeroPrice();
+        if (price == 0) revert ZeroPrice();
 
-            // Signature verification
-            bytes32 messageHash =
-                keccak256(abi.encode(asset, price, timestamp, marketOpen, sequenceNumber, block.chainid, address(this)));
-            address recoveredSigner = messageHash.toEthSignedMessageHash().recover(v, r, s);
+        // Verify signature
+        bytes32 messageHash =
+            keccak256(abi.encode(asset, price, timestamp, block.chainid, address(this)));
+        address recoveredSigner = messageHash.toEthSignedMessageHash().recover(v, r, s);
+        if (!_signers[recoveredSigner]) revert UnauthorizedSigner(recoveredSigner);
 
-            if (!_signers[recoveredSigner]) {
-                revert UnauthorizedSigner(recoveredSigner);
-            }
-        }
-
-        // --- Checks ---
-
-        // Staleness
+        // Staleness check
         AssetOracleConfig storage config = _assetConfigs[asset];
         if (config.maxStaleness > 0 && block.timestamp - timestamp > config.maxStaleness) {
             revert StalePrice(asset, timestamp, config.maxStaleness);
         }
 
-        // Sequence number: must be strictly greater than last accepted
-        uint256 expectedSeq = _sequenceNumbers[asset] + 1;
-        if (sequenceNumber < expectedSeq) {
-            revert InvalidSequenceNumber(asset, sequenceNumber, expectedSeq);
-        }
+        // Only accept newer prices
+        PriceEntry storage existing = _prices[asset];
+        if (existing.timestamp > 0 && timestamp <= existing.timestamp) return;
 
         // Deviation check (skip for first price)
-        _checkDeviation(asset, price, config.maxDeviation);
+        if (existing.price > 0 && config.maxDeviation > 0) {
+            uint256 deviation;
+            if (price > existing.price) {
+                deviation = ((price - existing.price) * BPS) / existing.price;
+            } else {
+                deviation = ((existing.price - price) * BPS) / existing.price;
+            }
+            if (deviation > config.maxDeviation) {
+                revert PriceDeviationExceeded(asset, price, existing.price, config.maxDeviation);
+            }
+        }
 
-        // --- Effects ---
-
-        _sequenceNumbers[asset] = sequenceNumber;
-        _lastPrices[asset] = LastPrice(price, timestamp);
-
-        emit PriceVerified(asset, price, timestamp, marketOpen);
+        _prices[asset] = PriceEntry(price, timestamp);
+        emit PriceUpdated(asset, price, timestamp);
     }
 
-    /// @dev Check price deviation against last known price.
-    function _checkDeviation(bytes32 asset, uint256 price, uint256 maxDeviation) private view {
-        LastPrice storage last = _lastPrices[asset];
-        if (last.price == 0 || maxDeviation == 0) return;
-
-        uint256 deviation;
-        if (price > last.price) {
-            deviation = ((price - last.price) * BPS) / last.price;
-        } else {
-            deviation = ((last.price - price) * BPS) / last.price;
-        }
-        if (deviation > maxDeviation) {
-            revert PriceDeviationExceeded(asset, price, last.price, maxDeviation);
-        }
+    /// @inheritdoc IOracleVerifier
+    /// @dev For in-house oracle, this is a no-op. Use updatePrice() + multicall instead.
+    function updatePriceFeeds(bytes calldata) external payable override {
+        revert("OracleVerifier: use updatePrice + multicall");
     }
 
     // ──────────────────────────────────────────────────────────
-    //  Signer management (admin)
+    //  Read — cached prices
     // ──────────────────────────────────────────────────────────
 
     /// @inheritdoc IOracleVerifier
-    function addSigner(
-        address signer
-    ) external onlyOwner {
+    function getPrice(bytes32 asset) external view override returns (uint256 price, uint256 timestamp) {
+        PriceEntry storage pe = _prices[asset];
+        if (pe.price == 0) revert PriceNotAvailable(asset);
+        return (pe.price, pe.timestamp);
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Verify — inline proof (force execution)
+    // ──────────────────────────────────────────────────────────
+
+    /// @inheritdoc IOracleVerifier
+    function verifyPrice(bytes32 asset, bytes calldata priceData)
+        external
+        view
+        override
+        returns (uint256 price, uint256 timestamp)
+    {
+        uint8 v;
+        bytes32 r;
+        bytes32 s;
+        (price, timestamp, v, r, s) = abi.decode(priceData, (uint256, uint256, uint8, bytes32, bytes32));
+
+        if (price == 0) revert ZeroPrice();
+
+        bytes32 messageHash =
+            keccak256(abi.encode(asset, price, timestamp, block.chainid, address(this)));
+        address recoveredSigner = messageHash.toEthSignedMessageHash().recover(v, r, s);
+        if (!_signers[recoveredSigner]) revert UnauthorizedSigner(recoveredSigner);
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Admin — signer management
+    // ──────────────────────────────────────────────────────────
+
+    /// @inheritdoc IOracleVerifier
+    function addSigner(address signer) external onlyOwner {
         if (signer == address(0)) revert ZeroAddress();
         _signers[signer] = true;
         emit SignerAdded(signer);
     }
 
     /// @inheritdoc IOracleVerifier
-    function removeSigner(
-        address signer
-    ) external onlyOwner {
+    function removeSigner(address signer) external onlyOwner {
         _signers[signer] = false;
         emit SignerRemoved(signer);
     }
 
     /// @inheritdoc IOracleVerifier
-    function isSigner(
-        address account
-    ) external view returns (bool) {
+    function isSigner(address account) external view returns (bool) {
         return _signers[account];
     }
 
     // ──────────────────────────────────────────────────────────
-    //  Per-asset configuration (admin)
+    //  Admin — per-asset configuration
     // ──────────────────────────────────────────────────────────
 
     /// @inheritdoc IOracleVerifier
     function setAssetOracleConfig(bytes32 asset, uint256 maxStaleness, uint256 maxDeviation) external onlyOwner {
         _assetConfigs[asset] = AssetOracleConfig(maxStaleness, maxDeviation);
-        emit AssetOracleConfigUpdated(asset, maxStaleness, maxDeviation);
-    }
-
-    // ──────────────────────────────────────────────────────────
-    //  View functions
-    // ──────────────────────────────────────────────────────────
-
-    /// @inheritdoc IOracleVerifier
-    function getLastPrice(
-        bytes32 asset
-    ) external view returns (uint256 price, uint256 timestamp) {
-        LastPrice storage lp = _lastPrices[asset];
-        return (lp.price, lp.timestamp);
-    }
-
-    /// @inheritdoc IOracleVerifier
-    function getSequenceNumber(
-        bytes32 asset
-    ) external view returns (uint256) {
-        return _sequenceNumbers[asset];
     }
 }

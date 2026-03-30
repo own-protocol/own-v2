@@ -122,12 +122,7 @@ contract BaseTest is Test {
 
     /// @notice Set oracle price for an asset at the current block timestamp.
     function _setOraclePrice(bytes32 asset, uint256 price) internal {
-        oracle.setPrice(asset, price, block.timestamp, true);
-    }
-
-    /// @notice Set oracle price with market closed.
-    function _setOraclePriceMarketClosed(bytes32 asset, uint256 price) internal {
-        oracle.setPrice(asset, price, block.timestamp, false);
+        oracle.setPrice(asset, price, block.timestamp);
     }
 
     /// @notice Build empty price data bytes (mock oracle ignores the payload).
@@ -183,8 +178,8 @@ contract BaseTest is Test {
     }
 
     function _setDefaultPrices() private {
-        oracle.setPrice(TSLA, TSLA_PRICE, block.timestamp, true);
-        oracle.setPrice(GOLD, GOLD_PRICE, block.timestamp, true);
-        oracle.setPrice(TLT, TLT_PRICE, block.timestamp, true);
+        oracle.setPrice(TSLA, TSLA_PRICE, block.timestamp);
+        oracle.setPrice(GOLD, GOLD_PRICE, block.timestamp);
+        oracle.setPrice(TLT, TLT_PRICE, block.timestamp);
     }
 }
