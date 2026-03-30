@@ -123,7 +123,7 @@ contract HaltFlowTest is BaseTest {
 
     function test_halt_onlyAdmin() public {
         vm.prank(Actors.ATTACKER);
-        vm.expectRevert("OwnVault: not admin");
+        vm.expectRevert(abi.encodeWithSignature("OnlyAdmin()"));
         usdcVault.halt(bytes32("attack"));
     }
 
@@ -132,7 +132,7 @@ contract HaltFlowTest is BaseTest {
         usdcVault.halt(bytes32("emergency"));
 
         vm.prank(Actors.ATTACKER);
-        vm.expectRevert("OwnVault: not admin");
+        vm.expectRevert(abi.encodeWithSignature("OnlyAdmin()"));
         usdcVault.unhalt();
     }
 
@@ -160,7 +160,7 @@ contract HaltFlowTest is BaseTest {
 
     function test_haltAsset_onlyAdmin() public {
         vm.prank(Actors.ATTACKER);
-        vm.expectRevert("OwnVault: not admin");
+        vm.expectRevert(abi.encodeWithSignature("OnlyAdmin()"));
         usdcVault.haltAsset(TSLA, bytes32("attack"));
     }
 
@@ -186,7 +186,7 @@ contract HaltFlowTest is BaseTest {
 
     function test_windDown_onlyAdmin() public {
         vm.prank(Actors.ATTACKER);
-        vm.expectRevert("OwnVault: not admin");
+        vm.expectRevert(abi.encodeWithSignature("OnlyAdmin()"));
         usdcVault.initiateWindDown();
     }
 

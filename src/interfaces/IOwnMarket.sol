@@ -76,11 +76,20 @@ interface IOwnMarket {
     /// @notice The asset is not active in the registry.
     error AssetNotActive(bytes32 asset);
 
+    /// @notice Caller is not the protocol admin.
+    error OnlyAdmin();
+
     /// @notice Only the registered VM can perform this action.
     error OnlyVM();
 
+    /// @notice Caller is not the VM that claimed this order.
+    error NotClaimVM(uint256 orderId, address caller);
+
     /// @notice The claim would breach the vault's max utilization.
     error UtilizationBreached(uint256 currentUtilization, uint256 maxUtilization);
+
+    /// @notice The ETH oracle is not configured.
+    error ETHOracleNotSet();
 
     // ──────────────────────────────────────────────────────────
     //  Order placement

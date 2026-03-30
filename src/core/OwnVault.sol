@@ -98,7 +98,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     // ──────────────────────────────────────────────────────────
 
     modifier onlyAdmin() {
-        require(msg.sender == Ownable(address(registry)).owner(), "OwnVault: not admin");
+        if (msg.sender != Ownable(address(registry)).owner()) revert OnlyAdmin();
         _;
     }
 
@@ -108,7 +108,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     }
 
     modifier onlyMarket() {
-        require(msg.sender == registry.market(), "OwnVault: not market");
+        if (msg.sender != registry.market()) revert OnlyMarket();
         _;
     }
 
@@ -301,7 +301,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
         WithdrawalRequest storage req = _withdrawalRequests[requestId];
         if (req.owner == address(0)) revert WithdrawalRequestNotFound(requestId);
         if (req.owner != msg.sender) revert NotRequestOwner(requestId, msg.sender);
-        require(req.status == WithdrawalStatus.Pending, "OwnVault: not pending");
+        if (req.status != WithdrawalStatus.Pending) revert WithdrawalNotPending(requestId);
 
         req.status = WithdrawalStatus.Cancelled;
         _transfer(address(this), msg.sender, req.shares);
@@ -316,7 +316,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     ) external nonReentrant returns (uint256 assets) {
         WithdrawalRequest storage req = _withdrawalRequests[requestId];
         if (req.owner == address(0)) revert WithdrawalRequestNotFound(requestId);
-        require(req.status == WithdrawalStatus.Pending, "OwnVault: not pending");
+        if (req.status != WithdrawalStatus.Pending) revert WithdrawalNotPending(requestId);
 
         // Enforce wait period
         uint256 readyAt = req.timestamp + _withdrawalWaitPeriod;

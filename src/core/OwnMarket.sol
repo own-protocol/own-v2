@@ -65,9 +65,9 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
     // ──────────────────────────────────────────────────────────
 
     modifier onlyAdmin() {
-        require(
-            msg.sender == address(registry) || msg.sender == _registryOwner(), "OwnMarket: not admin"
-        );
+        if (msg.sender != address(registry) && msg.sender != _registryOwner()) {
+            revert OnlyAdmin();
+        }
         _;
     }
 
@@ -181,7 +181,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
 
         // Verify caller is the VM bound to our vault
         IVaultManager vmManager = IVaultManager(registry.vaultManager());
-        require(vmManager.getVMVault(msg.sender) == vault, "OwnMarket: not vault VM");
+        if (vmManager.getVMVault(msg.sender) != vault) revert OnlyVM();
 
         order.status = OrderStatus.Claimed;
         order.vm = msg.sender;
@@ -221,7 +221,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         Order storage order = _orders[orderId];
         if (order.user == address(0)) revert OrderNotFound(orderId);
         if (order.status != OrderStatus.Claimed) revert InvalidOrderStatus(orderId, order.status);
-        require(order.vm == msg.sender, "OwnMarket: not claim VM");
+        if (order.vm != msg.sender) revert NotClaimVM(orderId, msg.sender);
 
         order.status = OrderStatus.Confirmed;
 
@@ -244,7 +244,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         if (order.user == address(0)) revert OrderNotFound(orderId);
         if (order.status != OrderStatus.Claimed) revert InvalidOrderStatus(orderId, order.status);
         if (block.timestamp <= order.expiry) revert ExpiryNotReached(orderId);
-        require(order.vm == msg.sender, "OwnMarket: not claim VM");
+        if (order.vm != msg.sender) revert NotClaimVM(orderId, msg.sender);
 
         order.status = OrderStatus.Closed;
 
@@ -600,7 +600,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
     /// @dev Get the ETH/USD price from the ETH oracle.
     function _getETHPrice(bytes calldata ethPriceData) private returns (uint256) {
         address oracleAddr = IAssetRegistry(registry.assetRegistry()).getPrimaryOracle(ethOracleAsset);
-        require(oracleAddr != address(0), "OwnMarket: ETH oracle not set");
+        if (oracleAddr == address(0)) revert ETHOracleNotSet();
         (uint256 price,,) = IOracleVerifier(oracleAddr).verifyPrice(ethOracleAsset, ethPriceData);
         return price;
     }

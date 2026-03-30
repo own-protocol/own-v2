@@ -29,8 +29,10 @@ contract VaultManager is IVaultManager, Ownable {
         _;
     }
 
+    error OnlyMarket();
+
     modifier onlyMarket() {
-        require(msg.sender == registry.market(), "VaultManager: not market");
+        if (msg.sender != registry.market()) revert OnlyMarket();
         _;
     }
 

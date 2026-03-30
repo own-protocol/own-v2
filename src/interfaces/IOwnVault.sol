@@ -60,6 +60,9 @@ interface IOwnVault is IERC4626 {
     error AssetIsHalted(bytes32 asset);
     error NoFeesToClaim();
     error ShareTooHigh(uint256 shareBps, uint256 maxBps);
+    error OnlyAdmin();
+    error OnlyMarket();
+    error WithdrawalNotPending(uint256 requestId);
     error OutstandingFeesExist();
     error WrongFeeToken(address expected, address provided);
     error WithdrawalWaitPeriodNotElapsed(uint256 requestId, uint256 readyAt);
