@@ -196,9 +196,17 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         }
         // For redeem: eTokens stay in escrow, nothing moves
 
-        // Update VM exposure
+        // Update VM exposure and check utilization
         uint256 exposureDelta = _calculateExposure(order);
         vmManager.updateExposure(msg.sender, int256(exposureDelta));
+
+        // Verify vault utilization is still within bounds after exposure increase
+        IOwnVault vaultContract = IOwnVault(vault);
+        uint256 currentUtil = vaultContract.utilization();
+        uint256 maxUtil = vaultContract.maxUtilization();
+        if (currentUtil > maxUtil) {
+            revert UtilizationBreached(currentUtil, maxUtil);
+        }
 
         emit OrderClaimed(orderId, msg.sender);
     }

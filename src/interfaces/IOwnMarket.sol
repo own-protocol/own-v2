@@ -79,6 +79,9 @@ interface IOwnMarket {
     /// @notice Only the registered VM can perform this action.
     error OnlyVM();
 
+    /// @notice The claim would breach the vault's max utilization.
+    error UtilizationBreached(uint256 currentUtilization, uint256 maxUtilization);
+
     // ──────────────────────────────────────────────────────────
     //  Order placement
     // ──────────────────────────────────────────────────────────

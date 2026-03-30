@@ -48,6 +48,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
 
     uint256 private _maxUtilization;
     uint256 private _totalExposure;
+    uint256 private _withdrawalWaitPeriod;
 
     // ──────────────────────────────────────────────────────────
     //  Payment token (single, VM-controlled)
@@ -317,8 +318,23 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
         if (req.owner == address(0)) revert WithdrawalRequestNotFound(requestId);
         require(req.status == WithdrawalStatus.Pending, "OwnVault: not pending");
 
+        // Enforce wait period
+        uint256 readyAt = req.timestamp + _withdrawalWaitPeriod;
+        if (block.timestamp < readyAt) {
+            revert WithdrawalWaitPeriodNotElapsed(requestId, readyAt);
+        }
+
         uint256 shares = req.shares;
         assets = convertToAssets(shares);
+
+        // Check that withdrawal won't breach max utilization
+        uint256 assetsAfter = totalAssets() - assets;
+        if (assetsAfter > 0 && _totalExposure > 0) {
+            uint256 utilizationAfter = _totalExposure.mulDiv(BPS, assetsAfter);
+            if (utilizationAfter > _maxUtilization) {
+                revert MaxUtilizationExceeded(utilizationAfter, _maxUtilization);
+            }
+        }
 
         req.status = WithdrawalStatus.Fulfilled;
         _removePendingRequest(requestId);
@@ -419,6 +435,16 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     /// @inheritdoc IOwnVault
     function totalExposure() external view returns (uint256) {
         return _totalExposure;
+    }
+
+    /// @inheritdoc IOwnVault
+    function withdrawalWaitPeriod() external view returns (uint256) {
+        return _withdrawalWaitPeriod;
+    }
+
+    /// @inheritdoc IOwnVault
+    function setWithdrawalWaitPeriod(uint256 period) external onlyAdmin {
+        _withdrawalWaitPeriod = period;
     }
 
     // ──────────────────────────────────────────────────────────

@@ -62,6 +62,7 @@ interface IOwnVault is IERC4626 {
     error ShareTooHigh(uint256 shareBps, uint256 maxBps);
     error OutstandingFeesExist();
     error WrongFeeToken(address expected, address provided);
+    error WithdrawalWaitPeriodNotElapsed(uint256 requestId, uint256 readyAt);
 
     // ──────────────────────────────────────────────────────────
     //  VM binding
@@ -130,6 +131,12 @@ interface IOwnVault is IERC4626 {
 
     function maxUtilization() external view returns (uint256);
     function setMaxUtilization(uint256 maxUtilBps) external;
+
+    /// @notice Return the withdrawal wait period in seconds.
+    function withdrawalWaitPeriod() external view returns (uint256);
+
+    /// @notice Set the withdrawal wait period. Only callable by admin.
+    function setWithdrawalWaitPeriod(uint256 period) external;
 
     /// @notice Return the total outstanding eToken exposure backed by this vault (18 decimals).
     function totalExposure() external view returns (uint256);

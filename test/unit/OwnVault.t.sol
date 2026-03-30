@@ -474,13 +474,266 @@ contract OwnVaultTest is BaseTest {
     }
 
     // ──────────────────────────────────────────────────────────
+    //  Payment token
+    // ──────────────────────────────────────────────────────────
+
+    function test_setPaymentToken_VM_succeeds() public {
+        vm.expectEmit(true, true, false, false);
+        emit IOwnVault.PaymentTokenUpdated(address(0), address(usdc));
+
+        vm.prank(Actors.VM1);
+        vault.setPaymentToken(address(usdc));
+
+        assertEq(vault.paymentToken(), address(usdc));
+    }
+
+    function test_setPaymentToken_notVM_reverts() public {
+        vm.prank(Actors.ATTACKER);
+        vm.expectRevert(IOwnVault.OnlyVM.selector);
+        vault.setPaymentToken(address(usdc));
+    }
+
+    function test_setPaymentToken_zeroAddress_reverts() public {
+        vm.prank(Actors.VM1);
+        vm.expectRevert(IOwnVault.ZeroAddress.selector);
+        vault.setPaymentToken(address(0));
+    }
+
+    function test_setPaymentToken_outstandingFees_reverts() public {
+        // Set payment token first
+        vm.prank(Actors.VM1);
+        vault.setPaymentToken(address(usdc));
+
+        // Deposit fees
+        _depositAs(Actors.LP1, 1000e6);
+        usdc.mint(mockMarket, 100e6);
+        vm.startPrank(mockMarket);
+        usdc.approve(address(vault), 100e6);
+        vault.depositFees(address(usdc), 100e6);
+        vm.stopPrank();
+
+        // Try to change payment token — should fail
+        vm.prank(Actors.VM1);
+        vm.expectRevert(IOwnVault.OutstandingFeesExist.selector);
+        vault.setPaymentToken(address(usdt));
+    }
+
+    function test_setPaymentToken_afterFlush_succeeds() public {
+        vm.prank(Actors.VM1);
+        vault.setPaymentToken(address(usdc));
+
+        // Deposit fees
+        _depositAs(Actors.LP1, 1000e6);
+        usdc.mint(mockMarket, 100e6);
+        vm.startPrank(mockMarket);
+        usdc.approve(address(vault), 100e6);
+        vault.depositFees(address(usdc), 100e6);
+        vm.stopPrank();
+
+        // Flush all fees
+        vault.claimProtocolFees();
+        vm.prank(Actors.VM1);
+        vault.claimVMFees();
+
+        // Now change should work (LP rewards are per-share, not blocking)
+        vm.prank(Actors.VM1);
+        vault.setPaymentToken(address(usdt));
+
+        assertEq(vault.paymentToken(), address(usdt));
+    }
+
+    // ──────────────────────────────────────────────────────────
     //  Fee management
     // ──────────────────────────────────────────────────────────
 
-    // TODO: aumFee tests removed — aumFee no longer exists on OwnVault
+    function test_depositFees_splits_three_ways() public {
+        vm.prank(Actors.VM1);
+        vault.setPaymentToken(address(usdc));
+
+        _depositAs(Actors.LP1, 1000e6);
+
+        uint256 feeAmount = 1000e6;
+        usdc.mint(mockMarket, feeAmount);
+        vm.startPrank(mockMarket);
+        usdc.approve(address(vault), feeAmount);
+
+        vm.expectEmit(true, false, false, true);
+        // protocolShare=20%, vmShare=20% of remainder
+        // protocol = 1000 * 2000 / 10000 = 200 (ceil)
+        // remainder = 800
+        // vm = 800 * 2000 / 10000 = 160
+        // lp = 800 - 160 = 640
+        emit IOwnVault.FeeDeposited(address(usdc), 1000e6, 200e6, 160e6, 640e6);
+
+        vault.depositFees(address(usdc), feeAmount);
+        vm.stopPrank();
+
+        assertEq(vault.accruedProtocolFees(), 200e6);
+        assertEq(vault.accruedVMFees(), 160e6);
+    }
+
+    function test_depositFees_wrongToken_reverts() public {
+        vm.prank(Actors.VM1);
+        vault.setPaymentToken(address(usdc));
+
+        usdt.mint(mockMarket, 100e6);
+        vm.startPrank(mockMarket);
+        usdt.approve(address(vault), 100e6);
+        vm.expectRevert(abi.encodeWithSelector(IOwnVault.WrongFeeToken.selector, address(usdc), address(usdt)));
+        vault.depositFees(address(usdt), 100e6);
+        vm.stopPrank();
+    }
+
+    function test_claimProtocolFees_succeeds() public {
+        vm.prank(Actors.VM1);
+        vault.setPaymentToken(address(usdc));
+
+        _depositAs(Actors.LP1, 1000e6);
+
+        usdc.mint(mockMarket, 100e6);
+        vm.startPrank(mockMarket);
+        usdc.approve(address(vault), 100e6);
+        vault.depositFees(address(usdc), 100e6);
+        vm.stopPrank();
+
+        uint256 protocolFees = vault.accruedProtocolFees();
+        assertGt(protocolFees, 0);
+
+        vault.claimProtocolFees();
+
+        assertEq(vault.accruedProtocolFees(), 0);
+        assertEq(usdc.balanceOf(Actors.FEE_RECIPIENT), protocolFees);
+    }
+
+    function test_claimVMFees_succeeds() public {
+        vm.prank(Actors.VM1);
+        vault.setPaymentToken(address(usdc));
+
+        _depositAs(Actors.LP1, 1000e6);
+
+        usdc.mint(mockMarket, 100e6);
+        vm.startPrank(mockMarket);
+        usdc.approve(address(vault), 100e6);
+        vault.depositFees(address(usdc), 100e6);
+        vm.stopPrank();
+
+        uint256 vmFees = vault.accruedVMFees();
+        assertGt(vmFees, 0);
+
+        vm.prank(Actors.VM1);
+        vault.claimVMFees();
+
+        assertEq(vault.accruedVMFees(), 0);
+        assertEq(usdc.balanceOf(Actors.VM1), vmFees);
+    }
+
+    function test_claimLPRewards_succeeds() public {
+        vm.prank(Actors.VM1);
+        vault.setPaymentToken(address(usdc));
+
+        _depositAs(Actors.LP1, 1000e6);
+
+        usdc.mint(mockMarket, 1000e6);
+        vm.startPrank(mockMarket);
+        usdc.approve(address(vault), 1000e6);
+        vault.depositFees(address(usdc), 1000e6);
+        vm.stopPrank();
+
+        uint256 claimable = vault.claimableLPRewards(Actors.LP1);
+        assertGt(claimable, 0);
+
+        vm.prank(Actors.LP1);
+        uint256 claimed = vault.claimLPRewards();
+
+        assertEq(claimed, claimable);
+        assertEq(usdc.balanceOf(Actors.LP1), claimed);
+    }
+
+    function test_claimProtocolFees_noFees_reverts() public {
+        vm.expectRevert(IOwnVault.NoFeesToClaim.selector);
+        vault.claimProtocolFees();
+    }
+
+    function test_claimVMFees_notVM_reverts() public {
+        vm.prank(Actors.ATTACKER);
+        vm.expectRevert(IOwnVault.OnlyVM.selector);
+        vault.claimVMFees();
+    }
+
+    function test_depositFees_noLPs_redirectsToProtocol() public {
+        vm.prank(Actors.VM1);
+        vault.setPaymentToken(address(usdc));
+
+        // No LPs, no deposits
+        usdc.mint(mockMarket, 100e6);
+        vm.startPrank(mockMarket);
+        usdc.approve(address(vault), 100e6);
+        vault.depositFees(address(usdc), 100e6);
+        vm.stopPrank();
+
+        // Protocol gets its share + LP's share (no LPs to distribute to)
+        // protocol = 20 (ceil), vm = 16, lp = 64 → redirected to protocol
+        // Total protocol = 20 + 64 = 84
+        uint256 protocolFees = vault.accruedProtocolFees();
+        uint256 vmFees = vault.accruedVMFees();
+        assertEq(protocolFees + vmFees, 100e6);
+        assertGt(protocolFees, 20e6); // More than just protocol share
+    }
 
     function test_treasury_returnsCorrectAddress() public view {
         assertEq(protocolRegistry.treasury(), Actors.FEE_RECIPIENT);
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Withdrawal wait period
+    // ──────────────────────────────────────────────────────────
+
+    function test_withdrawalWaitPeriod_default_isZero() public view {
+        assertEq(vault.withdrawalWaitPeriod(), 0);
+    }
+
+    function test_setWithdrawalWaitPeriod_admin_succeeds() public {
+        vm.prank(Actors.ADMIN);
+        vault.setWithdrawalWaitPeriod(3 days);
+        assertEq(vault.withdrawalWaitPeriod(), 3 days);
+    }
+
+    function test_setWithdrawalWaitPeriod_nonAdmin_reverts() public {
+        vm.prank(Actors.ATTACKER);
+        vm.expectRevert();
+        vault.setWithdrawalWaitPeriod(3 days);
+    }
+
+    function test_fulfillWithdrawal_beforeWaitPeriod_reverts() public {
+        vm.prank(Actors.ADMIN);
+        vault.setWithdrawalWaitPeriod(3 days);
+
+        uint256 shares = _depositAs(Actors.LP1, 1000e6);
+
+        vm.prank(Actors.LP1);
+        uint256 requestId = vault.requestWithdrawal(shares);
+
+        // Try immediately — should fail
+        uint256 readyAt = block.timestamp + 3 days;
+        vm.expectRevert(abi.encodeWithSelector(IOwnVault.WithdrawalWaitPeriodNotElapsed.selector, requestId, readyAt));
+        vault.fulfillWithdrawal(requestId);
+    }
+
+    function test_fulfillWithdrawal_afterWaitPeriod_succeeds() public {
+        vm.prank(Actors.ADMIN);
+        vault.setWithdrawalWaitPeriod(3 days);
+
+        uint256 shares = _depositAs(Actors.LP1, 1000e6);
+
+        vm.prank(Actors.LP1);
+        uint256 requestId = vault.requestWithdrawal(shares);
+
+        // Warp past wait period
+        vm.warp(block.timestamp + 3 days + 1);
+
+        uint256 assets = vault.fulfillWithdrawal(requestId);
+        assertEq(assets, 1000e6);
+        assertEq(usdc.balanceOf(Actors.LP1), 1000e6);
     }
 
     // ──────────────────────────────────────────────────────────
