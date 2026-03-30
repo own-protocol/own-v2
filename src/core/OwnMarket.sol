@@ -44,6 +44,9 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
     /// @dev Time after placement before user can force-redeem an unclaimed order.
     uint256 public claimThreshold;
 
+    /// @dev Asset ticker used to look up ETH/USD price for collateral conversion.
+    bytes32 public ethOracleAsset;
+
     // ──────────────────────────────────────────────────────────
     //  State
     // ──────────────────────────────────────────────────────────
@@ -293,7 +296,11 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
     }
 
     /// @inheritdoc IOwnMarket
-    function forceExecute(uint256 orderId, bytes calldata ohlcProofData) external nonReentrant {
+    function forceExecute(
+        uint256 orderId,
+        bytes calldata priceProofData,
+        bytes calldata ethPriceData
+    ) external nonReentrant {
         Order storage order = _orders[orderId];
         if (order.user == address(0)) revert OrderNotFound(orderId);
         if (order.user != msg.sender) revert OnlyOrderOwner(orderId);
@@ -302,12 +309,10 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         bool isOpen = order.status == OrderStatus.Open;
 
         if (isClaimed) {
-            // Force after grace period on claimed orders (both mint & redeem)
             if (block.timestamp < order.claimedAt + gracePeriod) {
                 revert GracePeriodNotElapsed(orderId);
             }
         } else if (isOpen && order.orderType == OrderType.Redeem) {
-            // Force on unclaimed redeem after claim threshold
             if (block.timestamp < order.createdAt + claimThreshold) {
                 revert ClaimThresholdNotElapsed(orderId);
             }
@@ -317,13 +322,12 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
 
         order.status = OrderStatus.ForceExecuted;
 
-        // Verify price range proof to determine if set price was reachable
-        bool priceReachable = _verifyPriceRange(order, ohlcProofData);
+        bool priceReachable = _verifyPriceRange(order, priceProofData);
 
         if (priceReachable) {
-            _forceExecuteAtSetPrice(order);
+            _forceExecuteAtSetPrice(order, ethPriceData);
         } else {
-            _forceExecuteRefund(order);
+            _forceExecuteRefund(order, ethPriceData);
         }
 
         // Clear VM exposure if was claimed
@@ -377,6 +381,11 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
     /// @notice Update the claim threshold for unclaimed redeem force execution.
     function setClaimThreshold(uint256 newClaimThreshold) external onlyAdmin {
         claimThreshold = newClaimThreshold;
+    }
+
+    /// @notice Set the asset ticker used for ETH/USD price lookups.
+    function setETHOracleAsset(bytes32 asset) external onlyAdmin {
+        ethOracleAsset = asset;
     }
 
     // ──────────────────────────────────────────────────────────
@@ -456,55 +465,66 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
 
     /// @dev Force execution when set price was reachable. No fees charged.
     ///      Mint: eTokens minted at set price. Redeem: user gets collateral (ETH).
-    function _forceExecuteAtSetPrice(Order storage order) private {
+    function _forceExecuteAtSetPrice(Order storage order, bytes calldata ethPriceData) private {
         if (order.orderType == OrderType.Mint) {
             // Mint eTokens at set price, no fees
             address paymentToken = _getPaymentToken();
             uint256 decimals = IERC20Metadata(paymentToken).decimals();
             uint256 decimalScaler = 10 ** (18 - decimals);
 
-            // Use full amount (no fee deduction for force execution)
             uint256 eTokenAmount = Math.mulDiv(order.amount * decimalScaler, PRECISION, order.price);
             address eToken = IAssetRegistry(registry.assetRegistry()).getActiveToken(order.asset);
             IEToken(eToken).mint(order.user, eTokenAmount);
 
-            // Return escrowed fee to user (fee was held in contract)
-            uint256 feeAmount = _escrowedMintFees[order.orderId];
-            if (feeAmount > 0) {
-                _escrowedMintFees[order.orderId] = 0;
-                IERC20(paymentToken).safeTransfer(order.user, feeAmount);
-            }
+            // Return escrowed fee to user
+            _returnEscrowedFee(order.orderId);
         } else {
             // Redeem: user gets collateral (ETH) equivalent from vault
-            // collateralAmount = eTokenAmount * setPrice / ethPrice
-            // TODO: Integrate ETH/USD oracle for collateral conversion
-            // TODO: Add vault.releaseCollateral() function
-            // For now: burn eTokens and emit event — collateral release to be implemented
+            uint256 collateralAmount = _convertToCollateral(
+                Math.mulDiv(order.amount, order.price, PRECISION), ethPriceData
+            );
+            IOwnVault(vault).releaseCollateral(order.user, collateralAmount);
+
+            // Burn escrowed eTokens
             address eToken = IAssetRegistry(registry.assetRegistry()).getActiveToken(order.asset);
             IEToken(eToken).burn(address(this), order.amount);
         }
     }
 
     /// @dev Force execution when set price was NOT reachable.
-    ///      Mint: user gets original value as collateral (ETH). Redeem: eTokens returned.
-    function _forceExecuteRefund(Order storage order) private {
+    ///      Mint: user gets original stablecoin value as collateral (ETH). Redeem: eTokens returned.
+    function _forceExecuteRefund(Order storage order, bytes calldata ethPriceData) private {
         if (order.orderType == OrderType.Mint) {
             // User gets original stablecoin value as ETH collateral from vault
-            // collateralAmount = stablecoinAmount / ethPrice
-            // TODO: Integrate ETH/USD oracle for collateral conversion
-            // TODO: Add vault.releaseCollateral() function
+            address paymentToken = _getPaymentToken();
+            uint256 decimals = IERC20Metadata(paymentToken).decimals();
+            uint256 usdValue = order.amount * 10 ** (18 - decimals);
+
+            uint256 collateralAmount = _convertToCollateral(usdValue, ethPriceData);
+            IOwnVault(vault).releaseCollateral(order.user, collateralAmount);
+
             // Return escrowed fee to user
-            uint256 feeAmount = _escrowedMintFees[order.orderId];
-            if (feeAmount > 0) {
-                _escrowedMintFees[order.orderId] = 0;
-                address paymentToken = _getPaymentToken();
-                IERC20(paymentToken).safeTransfer(order.user, feeAmount);
-            }
+            _returnEscrowedFee(order.orderId);
         } else {
             // Return escrowed eTokens to user
             address eToken = IAssetRegistry(registry.assetRegistry()).getActiveToken(order.asset);
             IERC20(eToken).safeTransfer(order.user, order.amount);
         }
+    }
+
+    /// @dev Return escrowed mint fee to user.
+    function _returnEscrowedFee(uint256 orderId) private {
+        uint256 feeAmount = _escrowedMintFees[orderId];
+        if (feeAmount > 0) {
+            _escrowedMintFees[orderId] = 0;
+            IERC20(_getPaymentToken()).safeTransfer(_orders[orderId].user, feeAmount);
+        }
+    }
+
+    /// @dev Convert a USD value (18 decimals) to collateral amount using ETH/USD oracle.
+    function _convertToCollateral(uint256 usdValue, bytes calldata ethPriceData) private returns (uint256) {
+        uint256 ethPrice = _getETHPrice(ethPriceData);
+        return Math.mulDiv(usdValue, PRECISION, ethPrice);
     }
 
     // ──────────────────────────────────────────────────────────
@@ -569,6 +589,14 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
     /// @dev Get the payment token from the vault.
     function _getPaymentToken() private view returns (address) {
         return IOwnVault(vault).paymentToken();
+    }
+
+    /// @dev Get the ETH/USD price from the ETH oracle.
+    function _getETHPrice(bytes calldata ethPriceData) private returns (uint256) {
+        address oracleAddr = IAssetRegistry(registry.assetRegistry()).getPrimaryOracle(ethOracleAsset);
+        require(oracleAddr != address(0), "OwnMarket: ETH oracle not set");
+        (uint256 price,,) = IOracleVerifier(oracleAddr).verifyPrice(ethOracleAsset, ethPriceData);
+        return price;
     }
 
     /// @dev Get the registry owner (admin).

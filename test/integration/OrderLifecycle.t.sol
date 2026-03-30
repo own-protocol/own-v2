@@ -7,6 +7,7 @@ import {BaseTest} from "../helpers/BaseTest.sol";
 import {
     AssetConfig,
     BPS,
+    OracleConfig,
     Order,
     OrderStatus,
     OrderType,
@@ -38,7 +39,7 @@ contract OrderLifecycleTest is BaseTest {
 
     uint256 constant MAX_EXPOSURE = 10_000_000e18;
     uint256 constant MAX_UTIL_BPS = 8000;
-    uint256 constant LP_DEPOSIT = 1_000_000e6;
+    uint256 constant LP_DEPOSIT_WETH = 500e18;
     uint256 constant MINT_AMOUNT = 10_000e6;
     uint256 constant ETOKEN_AMOUNT = 40e18; // 10000 / 250 = 40
     uint256 constant GRACE_PERIOD = 1 days;
@@ -78,9 +79,9 @@ contract OrderLifecycleTest is BaseTest {
 
         vaultMgr = new VaultManager(Actors.ADMIN, address(protocolRegistry));
 
-        // protocolShareBps=20%, vmShareBps=20% of remainder
+        // Single vault with WETH collateral (matches production design)
         vault = new OwnVault(
-            address(usdc), "Own USDC Vault", "oUSDC",
+            address(weth), "Own ETH Vault", "oETH",
             address(protocolRegistry), Actors.VM1, MAX_UTIL_BPS, 2000, 2000
         );
 
@@ -100,7 +101,19 @@ contract OrderLifecycleTest is BaseTest {
             AssetConfig({activeToken: address(eTSLA), legacyTokens: new address[](0), active: true, volatilityLevel: 2});
         assetRegistry.addAsset(TSLA, address(eTSLA), tslaConfig);
 
+        // Configure ETH asset + oracle for force execution collateral conversion
+        bytes32 ethAsset = bytes32("ETH");
+        AssetConfig memory ethConfig =
+            AssetConfig({activeToken: address(weth), legacyTokens: new address[](0), active: true, volatilityLevel: 1});
+        assetRegistry.addAsset(ethAsset, address(weth), ethConfig);
+        OracleConfig memory ethOracleConfig =
+            OracleConfig({primaryOracle: address(oracle), secondaryOracle: address(0), pythPriceFeedId: bytes32(0)});
+        assetRegistry.setOracleConfig(ethAsset, ethOracleConfig);
+        market.setETHOracleAsset(ethAsset);
+
         vm.stopPrank();
+
+        _setOraclePrice(ethAsset, ETH_PRICE);
     }
 
     function _configureVaultManager() private {
@@ -112,10 +125,11 @@ contract OrderLifecycleTest is BaseTest {
     }
 
     function _depositLPCollateral() private {
-        _fundUSDC(Actors.VM1, LP_DEPOSIT);
+        uint256 wethDeposit = 500e18; // 500 WETH (~$1.5M at $3000/ETH)
+        _fundWETH(Actors.VM1, wethDeposit);
         vm.startPrank(Actors.VM1);
-        usdc.approve(address(vault), LP_DEPOSIT);
-        vault.deposit(LP_DEPOSIT, Actors.LP1);
+        weth.approve(address(vault), wethDeposit);
+        vault.deposit(wethDeposit, Actors.LP1);
         vm.stopPrank();
     }
 
@@ -221,7 +235,7 @@ contract OrderLifecycleTest is BaseTest {
         // For mint+price not reachable: user should get collateral (TODO in impl)
         // Currently: escrowed fee returned to user
         vm.prank(Actors.MINTER1);
-        market.forceExecute(orderId, "");
+        market.forceExecute(orderId, "", "");
 
         Order memory order = market.getOrder(orderId);
         assertEq(uint8(order.status), uint8(OrderStatus.ForceExecuted));
@@ -245,7 +259,7 @@ contract OrderLifecycleTest is BaseTest {
         vm.warp(block.timestamp + GRACE_PERIOD + 1);
 
         vm.prank(Actors.MINTER1);
-        market.forceExecute(orderId, "");
+        market.forceExecute(orderId, "", "");
 
         // eTokens returned to user
         assertEq(eTSLA.balanceOf(Actors.MINTER1), ETOKEN_AMOUNT, "eTokens returned");
@@ -264,7 +278,7 @@ contract OrderLifecycleTest is BaseTest {
         vm.warp(block.timestamp + CLAIM_THRESHOLD + 1);
 
         vm.prank(Actors.MINTER1);
-        market.forceExecute(orderId, "");
+        market.forceExecute(orderId, "", "");
 
         // eTokens returned (price not reachable stub)
         assertEq(eTSLA.balanceOf(Actors.MINTER1), ETOKEN_AMOUNT, "eTokens returned");
@@ -400,8 +414,8 @@ contract OrderLifecycleTest is BaseTest {
         vm.warp(block.timestamp + 2 days + 1);
         uint256 assets = vault.fulfillWithdrawal(requestId);
 
-        assertEq(assets, LP_DEPOSIT, "LP gets full deposit back");
-        assertEq(usdc.balanceOf(Actors.LP1), LP_DEPOSIT);
+        assertEq(assets, LP_DEPOSIT_WETH, "LP gets full deposit back");
+        assertEq(weth.balanceOf(Actors.LP1), LP_DEPOSIT_WETH);
     }
 
     // ══════════════════════════════════════════════════════════

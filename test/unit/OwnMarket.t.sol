@@ -7,9 +7,10 @@ import {IOwnMarket} from "../../src/interfaces/IOwnMarket.sol";
 
 import {IOwnVault} from "../../src/interfaces/IOwnVault.sol";
 import {IVaultManager} from "../../src/interfaces/IVaultManager.sol";
-import {AssetConfig} from "../../src/interfaces/types/Types.sol";
 import {
+    AssetConfig,
     BPS,
+    OracleConfig,
     Order,
     OrderStatus,
     OrderType,
@@ -70,13 +71,29 @@ contract OwnMarketTest is BaseTest {
 
         market = new OwnMarket(address(protocolRegistry), mockVault, GRACE_PERIOD, CLAIM_THRESHOLD);
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
+
+        // Configure ETH oracle for force execution collateral conversion
+        bytes32 ethAsset = bytes32("ETH");
+        AssetConfig memory ethConfig = AssetConfig({
+            activeToken: address(0),
+            legacyTokens: new address[](0),
+            active: true,
+            volatilityLevel: 1
+        });
+        assetReg.addAsset(ethAsset, address(weth), ethConfig);
+        OracleConfig memory ethOracleConfig =
+            OracleConfig({primaryOracle: address(oracle), secondaryOracle: address(0), pythPriceFeedId: bytes32(0)});
+        assetReg.setOracleConfig(ethAsset, ethOracleConfig);
+        market.setETHOracleAsset(ethAsset);
         vm.stopPrank();
         vm.label(address(market), "OwnMarket");
 
-        // Mock the vault's payment token
+        // Mock the vault's payment token and collateral release
         vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.paymentToken.selector), abi.encode(address(usdc)));
+        vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.releaseCollateral.selector), abi.encode());
 
         _setOraclePrice(TSLA, TSLA_PRICE);
+        _setOraclePrice(ethAsset, ETH_PRICE);
     }
 
     // ──────────────────────────────────────────────────────────
@@ -571,7 +588,7 @@ contract OwnMarketTest is BaseTest {
         emit IOwnMarket.OrderForceExecuted(orderId, Actors.MINTER1, false);
 
         vm.prank(Actors.MINTER1);
-        market.forceExecute(orderId, "");
+        market.forceExecute(orderId, "", "");
 
         Order memory order = market.getOrder(orderId);
         assertEq(uint256(order.status), uint256(OrderStatus.ForceExecuted));
@@ -585,7 +602,7 @@ contract OwnMarketTest is BaseTest {
 
         vm.prank(Actors.MINTER1);
         vm.expectRevert(abi.encodeWithSelector(IOwnMarket.GracePeriodNotElapsed.selector, orderId));
-        market.forceExecute(orderId, "");
+        market.forceExecute(orderId, "", "");
     }
 
     function test_forceExecute_notOrderOwner_reverts() public {
@@ -598,7 +615,7 @@ contract OwnMarketTest is BaseTest {
 
         vm.prank(Actors.ATTACKER);
         vm.expectRevert(abi.encodeWithSelector(IOwnMarket.OnlyOrderOwner.selector, orderId));
-        market.forceExecute(orderId, "");
+        market.forceExecute(orderId, "", "");
     }
 
     // ══════════════════════════════════════════════════════════
@@ -614,7 +631,7 @@ contract OwnMarketTest is BaseTest {
         vm.warp(block.timestamp + GRACE_PERIOD + 1);
 
         vm.prank(Actors.MINTER1);
-        market.forceExecute(orderId, "");
+        market.forceExecute(orderId, "", "");
 
         Order memory order = market.getOrder(orderId);
         assertEq(uint256(order.status), uint256(OrderStatus.ForceExecuted));
@@ -633,7 +650,7 @@ contract OwnMarketTest is BaseTest {
         vm.warp(block.timestamp + CLAIM_THRESHOLD + 1);
 
         vm.prank(Actors.MINTER1);
-        market.forceExecute(orderId, "");
+        market.forceExecute(orderId, "", "");
 
         Order memory order = market.getOrder(orderId);
         assertEq(uint256(order.status), uint256(OrderStatus.ForceExecuted));
@@ -647,7 +664,7 @@ contract OwnMarketTest is BaseTest {
 
         vm.prank(Actors.MINTER1);
         vm.expectRevert(abi.encodeWithSelector(IOwnMarket.ClaimThresholdNotElapsed.selector, orderId));
-        market.forceExecute(orderId, "");
+        market.forceExecute(orderId, "", "");
     }
 
     function test_forceExecute_unclaimedMint_reverts() public {
@@ -658,7 +675,7 @@ contract OwnMarketTest is BaseTest {
 
         vm.prank(Actors.MINTER1);
         vm.expectRevert(abi.encodeWithSelector(IOwnMarket.InvalidOrderStatus.selector, orderId, OrderStatus.Open));
-        market.forceExecute(orderId, "");
+        market.forceExecute(orderId, "", "");
     }
 
     function test_forceExecute_confirmedOrder_reverts() public {
@@ -676,7 +693,7 @@ contract OwnMarketTest is BaseTest {
         vm.expectRevert(
             abi.encodeWithSelector(IOwnMarket.InvalidOrderStatus.selector, orderId, OrderStatus.Confirmed)
         );
-        market.forceExecute(orderId, "");
+        market.forceExecute(orderId, "", "");
     }
 
     // ══════════════════════════════════════════════════════════

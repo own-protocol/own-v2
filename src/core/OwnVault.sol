@@ -652,6 +652,17 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     }
 
     // ──────────────────────────────────────────────────────────
+    //  Collateral release (force execution)
+    // ──────────────────────────────────────────────────────────
+
+    /// @inheritdoc IOwnVault
+    function releaseCollateral(address to, uint256 amount) external onlyMarket nonReentrant {
+        if (to == address(0)) revert ZeroAddress();
+        if (amount == 0) revert ZeroAmount();
+        IERC20(asset()).safeTransfer(to, amount);
+    }
+
+    // ──────────────────────────────────────────────────────────
     //  Required overrides for diamond inheritance
     // ──────────────────────────────────────────────────────────
 

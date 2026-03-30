@@ -147,9 +147,10 @@ interface IOwnMarket {
     /// @notice Force-execute an order after the grace period when the VM has
     ///         not confirmed or closed. For claimed orders (mint & redeem) and
     ///         unclaimed redeem orders past the claim threshold.
-    /// @param orderId       Order to force-execute.
-    /// @param ohlcProofData OHLC oracle proof showing whether the set price was reachable.
-    function forceExecute(uint256 orderId, bytes calldata ohlcProofData) external;
+    /// @param orderId        Order to force-execute.
+    /// @param priceProofData Two oracle price proofs (low + high) to verify price reachability.
+    /// @param ethPriceData   Oracle price data for ETH/USD conversion (needed when releasing collateral).
+    function forceExecute(uint256 orderId, bytes calldata priceProofData, bytes calldata ethPriceData) external;
 
     // ──────────────────────────────────────────────────────────
     //  Permissionless

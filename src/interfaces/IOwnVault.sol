@@ -168,6 +168,16 @@ interface IOwnVault is IERC4626 {
     function claimableLPRewards(address account) external view returns (uint256 amount);
 
     // ──────────────────────────────────────────────────────────
+    //  Collateral release (force execution)
+    // ──────────────────────────────────────────────────────────
+
+    /// @notice Release vault collateral (ETH/WETH) to a recipient.
+    ///         Only callable by OwnMarket during force execution.
+    /// @param to     Recipient address.
+    /// @param amount Amount of collateral to release.
+    function releaseCollateral(address to, uint256 amount) external;
+
+    // ──────────────────────────────────────────────────────────
     //  Payment token
     // ──────────────────────────────────────────────────────────
 
