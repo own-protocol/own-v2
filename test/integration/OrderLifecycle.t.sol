@@ -257,8 +257,9 @@ contract OrderLifecycleTest is BaseTest {
         Order memory order = market.getOrder(orderId);
         assertEq(uint8(order.status), uint8(OrderStatus.ForceExecuted));
 
-        // Calculate expected collateral: usdValue (18 decimals) / ethPrice
-        uint256 usdValue = MINT_AMOUNT * 1e12; // scale 6-decimal USDC to 18
+        // Calculate expected collateral: only the net amount (what VM holds) is converted.
+        // The escrowed fee is returned separately in stablecoins so it is excluded here.
+        uint256 usdValue = (MINT_AMOUNT - fee) * 1e12; // scale 6-decimal USDC to 18
         uint256 expectedCollateral = Math.mulDiv(usdValue, PRECISION, ETH_PRICE);
 
         // User receives WETH collateral from vault

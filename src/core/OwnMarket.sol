@@ -446,7 +446,12 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         if (order.orderType == OrderType.Mint) {
             address paymentToken = IOwnVault(order.vault).paymentToken();
             uint256 decimals = IERC20Metadata(paymentToken).decimals();
-            uint256 usdValue = order.amount * 10 ** (18 - decimals);
+
+            // Only convert the net amount (what the VM actually holds) to collateral.
+            // The escrowed fee is still in OwnMarket and is returned separately in stablecoins.
+            // Together they make the user exactly whole: collateral(netAmount) + fee = order.amount.
+            uint256 feeAmount = _escrowedMintFees[order.orderId];
+            uint256 usdValue = (order.amount - feeAmount) * 10 ** (18 - decimals);
 
             uint256 collateralAmount = _convertToCollateral(order, usdValue, ethPriceData);
             IOwnVault(order.vault).releaseCollateral(order.user, collateralAmount);
