@@ -9,6 +9,7 @@ import {AssetConfig, VaultStatus, WithdrawalRequest, WithdrawalStatus} from "../
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {OwnMarket} from "../../src/core/OwnMarket.sol";
 import {OwnVault} from "../../src/core/OwnVault.sol";
+import {VaultFactory} from "../../src/core/VaultFactory.sol";
 import {EToken} from "../../src/tokens/EToken.sol";
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -36,19 +37,13 @@ contract LPLifecycleTest is BaseTest {
         protocolRegistry.setAddress(protocolRegistry.ORACLE_VERIFIER(), address(oracle));
         protocolRegistry.setAddress(protocolRegistry.ASSET_REGISTRY(), address(assetRegistry));
         protocolRegistry.setAddress(protocolRegistry.TREASURY(), Actors.FEE_RECIPIENT);
+        protocolRegistry.setProtocolShareBps(0);
 
-        usdcVault = new OwnVault(
-            address(usdc),
-            "Own USDC Vault",
-            "oUSDC",
-            address(protocolRegistry),
-            Actors.VM1,
-            8000,
-            0, // protocolShareBps
-            2000 // vmShareBps
-        );
+        VaultFactory factory = new VaultFactory(Actors.ADMIN, address(protocolRegistry));
+        protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), address(factory));
 
-        protocolRegistry.setAddress(protocolRegistry.VAULT(), address(usdcVault));
+        usdcVault = OwnVault(factory.createVault(address(usdc), Actors.VM1, "Own USDC Vault", "oUSDC", 8000, 2000));
+
         market = new OwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
 
@@ -63,10 +58,11 @@ contract LPLifecycleTest is BaseTest {
 
         vm.stopPrank();
 
-        // Set payment token (single token per vault)
-        vm.prank(Actors.VM1);
+        // Set payment token and enable asset
+        vm.startPrank(Actors.VM1);
         usdcVault.setPaymentToken(address(usdc));
-
+        usdcVault.enableAsset(TSLA);
+        vm.stopPrank();
     }
 
     // ──────────────────────────────────────────────────────────

@@ -59,6 +59,12 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     bytes32 private _collateralOracleAsset;
 
     // ──────────────────────────────────────────────────────────
+    //  Supported assets (VM-controlled)
+    // ──────────────────────────────────────────────────────────
+
+    mapping(bytes32 => bool) private _supportedAssets;
+
+    // ──────────────────────────────────────────────────────────
     //  Payment token (single, VM-controlled)
     // ──────────────────────────────────────────────────────────
 
@@ -70,7 +76,6 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     //  flushed (protocol + VM claimed) before changing token.
     // ──────────────────────────────────────────────────────────
 
-    uint256 private _protocolShareBps;
     uint256 private _vmShareBps;
 
     uint256 private _protocolFees;
@@ -130,14 +135,13 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     //  Constructor
     // ──────────────────────────────────────────────────────────
 
-    /// @param asset_            Underlying collateral ERC-20 (WETH).
-    /// @param name_             Vault share name.
-    /// @param symbol_           Vault share symbol.
-    /// @param registry_         ProtocolRegistry contract address.
-    /// @param vm_               Vault manager address bound to this vault.
-    /// @param maxUtilBps        Initial max utilization in BPS.
-    /// @param protocolShareBps_ Initial protocol fee share in BPS.
-    /// @param vmShareBps_       Initial VM fee share (of LP+VM remainder) in BPS.
+    /// @param asset_      Underlying collateral ERC-20 (e.g. WETH).
+    /// @param name_       Vault share name.
+    /// @param symbol_     Vault share symbol.
+    /// @param registry_   ProtocolRegistry contract address.
+    /// @param vm_         Vault manager address bound to this vault.
+    /// @param maxUtilBps  Initial max utilization in BPS.
+    /// @param vmShareBps_ Initial VM fee share (of LP+VM remainder) in BPS.
     constructor(
         address asset_,
         string memory name_,
@@ -145,16 +149,13 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
         address registry_,
         address vm_,
         uint256 maxUtilBps,
-        uint256 protocolShareBps_,
         uint256 vmShareBps_
     ) ERC4626(IERC20(asset_)) ERC20(name_, symbol_) {
-        if (protocolShareBps_ > BPS) revert ShareTooHigh(protocolShareBps_, BPS);
         if (vmShareBps_ > BPS) revert ShareTooHigh(vmShareBps_, BPS);
         registry = IProtocolRegistry(registry_);
         vm = vm_;
         _maxUtilization = maxUtilBps;
         _vaultStatus = VaultStatus.Active;
-        _protocolShareBps = protocolShareBps_;
         _vmShareBps = vmShareBps_;
     }
 
@@ -494,8 +495,8 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     }
 
     /// @inheritdoc IOwnVault
-    function setCollateralOracleAsset(bytes32 asset) external onlyAdmin {
-        _collateralOracleAsset = asset;
+    function setCollateralOracleAsset(bytes32 asset_) external onlyAdmin {
+        _collateralOracleAsset = asset_;
     }
 
     // ──────────────────────────────────────────────────────────
@@ -510,7 +511,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
         IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
 
         // Protocol takes its cut first (round up — protocol-favorable)
-        uint256 protocolAmount = amount.mulDiv(_protocolShareBps, BPS, Math.Rounding.Ceil);
+        uint256 protocolAmount = amount.mulDiv(registry.protocolShareBps(), BPS, Math.Rounding.Ceil);
         uint256 remainder = amount - protocolAmount;
 
         // VM takes its share of the remainder (round down — LP-favorable)
@@ -532,24 +533,11 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     }
 
     /// @inheritdoc IOwnVault
-    function setProtocolShareBps(uint256 shareBps) external onlyAdmin {
-        if (shareBps > BPS) revert ShareTooHigh(shareBps, BPS);
-        uint256 oldShare = _protocolShareBps;
-        _protocolShareBps = shareBps;
-        emit ProtocolShareUpdated(oldShare, shareBps);
-    }
-
-    /// @inheritdoc IOwnVault
     function setVMShareBps(uint256 shareBps) external onlyVM {
         if (shareBps > BPS) revert ShareTooHigh(shareBps, BPS);
         uint256 oldShare = _vmShareBps;
         _vmShareBps = shareBps;
         emit VMShareUpdated(oldShare, shareBps);
-    }
-
-    /// @inheritdoc IOwnVault
-    function protocolShareBps() external view returns (uint256) {
-        return _protocolShareBps;
     }
 
     /// @inheritdoc IOwnVault
@@ -606,6 +594,27 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     function claimableLPRewards(address account) external view returns (uint256 amount) {
         uint256 userPaid = _lpCheckpoint[account];
         amount = _lpAccruedFees[account] + balanceOf(account).mulDiv(_lpRewardsPerShare - userPaid, PRECISION);
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Supported assets
+    // ──────────────────────────────────────────────────────────
+
+    /// @inheritdoc IOwnVault
+    function enableAsset(bytes32 asset_) external onlyVM {
+        _supportedAssets[asset_] = true;
+        emit AssetEnabled(asset_);
+    }
+
+    /// @inheritdoc IOwnVault
+    function disableAsset(bytes32 asset_) external onlyVM {
+        _supportedAssets[asset_] = false;
+        emit AssetDisabled(asset_);
+    }
+
+    /// @inheritdoc IOwnVault
+    function isAssetSupported(bytes32 asset_) external view returns (bool) {
+        return _supportedAssets[asset_];
     }
 
     // ──────────────────────────────────────────────────────────

@@ -9,6 +9,7 @@ import {AssetConfig, BPS, OrderStatus, VaultStatus} from "../../src/interfaces/t
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {OwnMarket} from "../../src/core/OwnMarket.sol";
 import {OwnVault} from "../../src/core/OwnVault.sol";
+import {VaultFactory} from "../../src/core/VaultFactory.sol";
 import {EToken} from "../../src/tokens/EToken.sol";
 
 /// @title HaltFlow Integration Test
@@ -35,12 +36,13 @@ contract HaltFlowTest is BaseTest {
         protocolRegistry.setAddress(protocolRegistry.ORACLE_VERIFIER(), address(oracle));
         protocolRegistry.setAddress(protocolRegistry.ASSET_REGISTRY(), address(assetRegistry));
         protocolRegistry.setAddress(protocolRegistry.TREASURY(), Actors.FEE_RECIPIENT);
+        protocolRegistry.setProtocolShareBps(2000);
 
-        usdcVault = new OwnVault(
-            address(usdc), "Own USDC Vault", "oUSDC", address(protocolRegistry), Actors.VM1, 8000, 2000, 2000
-        );
+        VaultFactory factory = new VaultFactory(Actors.ADMIN, address(protocolRegistry));
+        protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), address(factory));
 
-        protocolRegistry.setAddress(protocolRegistry.VAULT(), address(usdcVault));
+        usdcVault = OwnVault(factory.createVault(address(usdc), Actors.VM1, "Own USDC Vault", "oUSDC", 8000, 2000));
+
         market = new OwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
 
@@ -55,9 +57,11 @@ contract HaltFlowTest is BaseTest {
 
         vm.stopPrank();
 
-        // Set payment token (single token per vault)
-        vm.prank(Actors.VM1);
+        // Set payment token and enable asset
+        vm.startPrank(Actors.VM1);
         usdcVault.setPaymentToken(address(usdc));
+        usdcVault.enableAsset(TSLA);
+        vm.stopPrank();
 
         // LP deposits (via VM1)
         _fundUSDC(Actors.VM1, LP_DEPOSIT);

@@ -13,6 +13,7 @@ import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {FeeCalculator} from "../../src/core/FeeCalculator.sol";
 import {OwnMarket} from "../../src/core/OwnMarket.sol";
 import {OwnVault} from "../../src/core/OwnVault.sol";
+import {VaultFactory} from "../../src/core/VaultFactory.sol";
 import {EToken} from "../../src/tokens/EToken.sol";
 
 /// @title MultiStablecoin Integration Test
@@ -45,6 +46,7 @@ contract MultiStablecoinTest is BaseTest {
         protocolRegistry.setAddress(protocolRegistry.ORACLE_VERIFIER(), address(oracle));
         protocolRegistry.setAddress(protocolRegistry.ASSET_REGISTRY(), address(assetRegistry));
         protocolRegistry.setAddress(protocolRegistry.TREASURY(), Actors.FEE_RECIPIENT);
+        protocolRegistry.setProtocolShareBps(2000);
 
         feeCalc = new FeeCalculator(address(protocolRegistry), Actors.ADMIN);
         feeCalc.setMintFee(1, 0);
@@ -55,13 +57,12 @@ contract MultiStablecoinTest is BaseTest {
         feeCalc.setRedeemFee(3, 0);
         protocolRegistry.setAddress(keccak256("FEE_CALCULATOR"), address(feeCalc));
 
-        // Each VM gets its own vault (1:1 binding)
-        usdcVault = new OwnVault(
-            address(usdc), "Own USDC Vault", "oUSDC", address(protocolRegistry), Actors.VM1, 8000, 2000, 2000
-        );
-        usdcVault2 = new OwnVault(
-            address(usdc), "Own USDC Vault 2", "oUSDC2", address(protocolRegistry), Actors.VM2, 8000, 2000, 2000
-        );
+        // Deploy factory and create vaults through it
+        VaultFactory factory = new VaultFactory(Actors.ADMIN, address(protocolRegistry));
+        protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), address(factory));
+
+        usdcVault = OwnVault(factory.createVault(address(usdc), Actors.VM1, "Own USDC Vault", "oUSDC", 8000, 2000));
+        usdcVault2 = OwnVault(factory.createVault(address(usdc), Actors.VM2, "Own USDC Vault 2", "oUSDC2", 8000, 2000));
 
         eTSLA = new EToken("Own Tesla", "eTSLA", TSLA, address(protocolRegistry), address(usdc));
 
@@ -69,7 +70,6 @@ contract MultiStablecoinTest is BaseTest {
             AssetConfig({activeToken: address(eTSLA), legacyTokens: new address[](0), active: true, volatilityLevel: 2});
         assetRegistry.addAsset(TSLA, address(eTSLA), config);
 
-        protocolRegistry.setAddress(protocolRegistry.VAULT(), address(usdcVault));
         market = new OwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
 
@@ -78,12 +78,16 @@ contract MultiStablecoinTest is BaseTest {
 
         vm.stopPrank();
 
-        // Set payment tokens (single token per vault)
-        vm.prank(Actors.VM1);
+        // Set payment tokens and enable assets
+        vm.startPrank(Actors.VM1);
         usdcVault.setPaymentToken(address(usdc));
+        usdcVault.enableAsset(TSLA);
+        vm.stopPrank();
 
-        vm.prank(Actors.VM2);
+        vm.startPrank(Actors.VM2);
         usdcVault2.setPaymentToken(address(usdc));
+        usdcVault2.enableAsset(TSLA);
+        vm.stopPrank();
 
         // LP deposits (VM must call deposit)
         _fundUSDC(Actors.VM1, 500_000e6);
@@ -103,7 +107,7 @@ contract MultiStablecoinTest is BaseTest {
         vm.startPrank(Actors.MINTER1);
         usdc.approve(address(market), MINT_AMOUNT);
         uint256 orderId = market.placeMintOrder(
-            TSLA, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days
+            address(usdcVault), TSLA, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days
         );
         vm.stopPrank();
 

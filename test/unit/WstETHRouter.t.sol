@@ -32,6 +32,7 @@ contract WstETHRouterTest is BaseTest {
         router = new WstETHRouter(address(wstETH), address(stETH));
 
         // Deploy a wstETH vault with router as the bound VM (router calls deposit directly)
+        protocolRegistry.setProtocolShareBps(2000);
         vault = new OwnVault(
             address(wstETH),
             "Own wstETH Vault",
@@ -39,7 +40,6 @@ contract WstETHRouterTest is BaseTest {
             address(protocolRegistry),
             address(router), // bound VM is the router (it calls deposit directly)
             8000, // 80% max util
-            2000,
             2000
         );
         vm.stopPrank();

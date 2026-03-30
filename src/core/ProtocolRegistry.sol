@@ -19,7 +19,7 @@ contract ProtocolRegistry is IProtocolRegistry, Ownable {
     bytes32 public constant MARKET = keccak256("MARKET");
     bytes32 public constant ASSET_REGISTRY = keccak256("ASSET_REGISTRY");
     bytes32 public constant TREASURY = keccak256("TREASURY");
-    bytes32 public constant VAULT = keccak256("VAULT");
+    bytes32 public constant VAULT_FACTORY = keccak256("VAULT_FACTORY");
 
     // ──────────────────────────────────────────────────────────────
     //  Types
@@ -43,6 +43,9 @@ contract ProtocolRegistry is IProtocolRegistry, Ownable {
 
     /// @notice Minimum delay (seconds) before a timelocked change can be executed.
     uint256 public override timelockDelay;
+
+    /// @dev Protocol's share of all order fees in BPS.
+    uint256 private _protocolShareBps;
 
     // ──────────────────────────────────────────────────────────────
     //  Constructor
@@ -84,8 +87,19 @@ contract ProtocolRegistry is IProtocolRegistry, Ownable {
     }
 
     /// @inheritdoc IProtocolRegistry
-    function vault() external view override returns (address) {
-        return _addresses[VAULT];
+    function vaultFactory() external view override returns (address) {
+        return _addresses[VAULT_FACTORY];
+    }
+
+    /// @inheritdoc IProtocolRegistry
+    function protocolShareBps() external view override returns (uint256) {
+        return _protocolShareBps;
+    }
+
+    /// @inheritdoc IProtocolRegistry
+    function setProtocolShareBps(uint256 shareBps) external override onlyOwner {
+        require(shareBps <= 10_000, "ProtocolRegistry: share > 100%");
+        _protocolShareBps = shareBps;
     }
 
     // ──────────────────────────────────────────────────────────────

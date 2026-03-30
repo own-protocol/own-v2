@@ -10,6 +10,7 @@ import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {FeeCalculator} from "../../src/core/FeeCalculator.sol";
 import {OwnMarket} from "../../src/core/OwnMarket.sol";
 import {OwnVault} from "../../src/core/OwnVault.sol";
+import {VaultFactory} from "../../src/core/VaultFactory.sol";
 import {EToken} from "../../src/tokens/EToken.sol";
 
 /// @title CrossVault Integration Test
@@ -49,37 +50,38 @@ contract CrossVaultTest is BaseTest {
         feeCalc.setRedeemFee(3, 0);
         protocolRegistry.setAddress(keccak256("FEE_CALCULATOR"), address(feeCalc));
 
-        // USDC vault (bound to VM1)
-        usdcVault = new OwnVault(
-            address(usdc), "Own USDC Vault", "oUSDC", address(protocolRegistry), Actors.VM1, 8000, 2000, 2000
-        );
-
-        // WETH vault (bound to VM2)
-        wethVault = new OwnVault(
-            address(weth), "Own WETH Vault", "oWETH", address(protocolRegistry), Actors.VM2, 8000, 2000, 2000
-        );
-
         eTSLA = new EToken("Own Tesla", "eTSLA", TSLA, address(protocolRegistry), address(usdc));
 
         AssetConfig memory config =
             AssetConfig({activeToken: address(eTSLA), legacyTokens: new address[](0), active: true, volatilityLevel: 2});
         assetRegistry.addAsset(TSLA, address(eTSLA), config);
 
-        protocolRegistry.setAddress(protocolRegistry.VAULT(), address(usdcVault));
+        // Deploy factory and create vaults through it
+        VaultFactory factory = new VaultFactory(Actors.ADMIN, address(protocolRegistry));
+        protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), address(factory));
+
+        usdcVault = OwnVault(factory.createVault(address(usdc), Actors.VM1, "Own USDC Vault", "oUSDC", 8000, 2000));
+        wethVault = OwnVault(factory.createVault(address(weth), Actors.VM2, "Own WETH Vault", "oWETH", 8000, 2000));
+
         market = new OwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
+        protocolRegistry.setProtocolShareBps(2000);
 
         usdcVault.setGracePeriod(1 days);
         usdcVault.setClaimThreshold(6 hours);
 
         vm.stopPrank();
 
-        // Set payment tokens (now single token per vault)
-        vm.prank(Actors.VM1);
+        // Set payment tokens and enable assets
+        vm.startPrank(Actors.VM1);
         usdcVault.setPaymentToken(address(usdc));
+        usdcVault.enableAsset(TSLA);
+        vm.stopPrank();
 
-        vm.prank(Actors.VM2);
+        vm.startPrank(Actors.VM2);
         wethVault.setPaymentToken(address(usdc));
+        wethVault.enableAsset(TSLA);
+        vm.stopPrank();
 
         vm.label(address(usdcVault), "USDCVault");
         vm.label(address(wethVault), "WETHVault");

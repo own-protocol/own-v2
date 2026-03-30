@@ -15,7 +15,12 @@ interface IOwnMarket {
 
     /// @notice Emitted when a user places a new order.
     event OrderPlaced(
-        uint256 indexed orderId, address indexed user, uint8 orderType, bytes32 indexed asset, uint256 amount
+        uint256 indexed orderId,
+        address indexed user,
+        uint8 orderType,
+        bytes32 indexed asset,
+        address vault,
+        uint256 amount
     );
 
     /// @notice Emitted when the VM claims an order.
@@ -85,30 +90,38 @@ interface IOwnMarket {
     /// @notice The claim would breach the vault's max utilization.
     error UtilizationBreached(uint256 currentUtilization, uint256 maxUtilization);
 
-    /// @notice The ETH oracle is not configured.
-    error ETHOracleNotSet();
+    /// @notice The collateral oracle is not configured.
+    error CollateralOracleNotSet();
+
+    /// @notice The vault is not registered in the factory.
+    error VaultNotRegistered(address vault);
+
+    /// @notice The vault does not support the requested asset.
+    error VaultAssetNotSupported(address vault, bytes32 asset);
 
     // ──────────────────────────────────────────────────────────
     //  Order placement
     // ──────────────────────────────────────────────────────────
 
     /// @notice Place a mint order. User deposits stablecoins into escrow.
+    /// @param vault  Vault to mint against (must be registered and support the asset).
     /// @param asset  Asset ticker (e.g. bytes32("TSLA")).
     /// @param amount Amount of stablecoins to deposit.
     /// @param price  Maximum price per eToken the user will pay (18 decimals).
     /// @param expiry Timestamp after which the order can be expired.
     /// @return orderId The unique order identifier.
-    function placeMintOrder(bytes32 asset, uint256 amount, uint256 price, uint256 expiry)
+    function placeMintOrder(address vault, bytes32 asset, uint256 amount, uint256 price, uint256 expiry)
         external
         returns (uint256 orderId);
 
     /// @notice Place a redeem order. User deposits eTokens into escrow.
+    /// @param vault  Vault to redeem against (must be registered and support the asset).
     /// @param asset  Asset ticker.
     /// @param amount Amount of eTokens to deposit.
     /// @param price  Minimum price per eToken the user will accept (18 decimals).
     /// @param expiry Timestamp after which the order can be expired.
     /// @return orderId The unique order identifier.
-    function placeRedeemOrder(bytes32 asset, uint256 amount, uint256 price, uint256 expiry)
+    function placeRedeemOrder(address vault, bytes32 asset, uint256 amount, uint256 price, uint256 expiry)
         external
         returns (uint256 orderId);
 

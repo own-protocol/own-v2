@@ -6,6 +6,7 @@ import {OwnMarket} from "../../src/core/OwnMarket.sol";
 import {IOwnMarket} from "../../src/interfaces/IOwnMarket.sol";
 
 import {IOwnVault} from "../../src/interfaces/IOwnVault.sol";
+import {IVaultFactory} from "../../src/interfaces/IVaultFactory.sol";
 import {
     AssetConfig,
     BPS,
@@ -30,6 +31,7 @@ contract OwnMarketTest is BaseTest {
     MockERC20 public eTSLAToken;
 
     address public mockVault = makeAddr("vault");
+    address public mockFactory = makeAddr("factory");
 
     uint256 constant DEFAULT_EXPIRY_OFFSET = 1 days;
     uint256 constant GRACE_PERIOD = 1 days;
@@ -64,7 +66,7 @@ contract OwnMarketTest is BaseTest {
         feeCalc.setRedeemFee(3, 0);
         protocolRegistry.setAddress(keccak256("FEE_CALCULATOR"), address(feeCalc));
 
-        protocolRegistry.setAddress(protocolRegistry.VAULT(), mockVault);
+        protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), mockFactory);
         market = new OwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
 
@@ -83,12 +85,16 @@ contract OwnMarketTest is BaseTest {
         vm.stopPrank();
         vm.label(address(market), "OwnMarket");
 
-        // Mock the vault's payment token, collateral release, grace period, claim threshold, and collateral oracle asset
+        // Mock the factory's isRegisteredVault
+        vm.mockCall(mockFactory, abi.encodeWithSelector(IVaultFactory.isRegisteredVault.selector, mockVault), abi.encode(true));
+
+        // Mock the vault's payment token, collateral release, grace period, claim threshold, collateral oracle asset, and asset support
         vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.paymentToken.selector), abi.encode(address(usdc)));
         vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.releaseCollateral.selector), abi.encode());
         vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.gracePeriod.selector), abi.encode(GRACE_PERIOD));
         vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.claimThreshold.selector), abi.encode(CLAIM_THRESHOLD));
         vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.collateralOracleAsset.selector), abi.encode(bytes32("ETH")));
+        vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.isAssetSupported.selector), abi.encode(true));
 
         _setOraclePrice(TSLA, TSLA_PRICE);
         _setOraclePrice(ethAsset, ETH_PRICE);
@@ -106,7 +112,7 @@ contract OwnMarketTest is BaseTest {
         usdc.mint(minter, stablecoinAmount);
         vm.startPrank(minter);
         usdc.approve(address(market), stablecoinAmount);
-        orderId = market.placeMintOrder(TSLA, stablecoinAmount, TSLA_PRICE, _defaultExpiry());
+        orderId = market.placeMintOrder(mockVault, TSLA, stablecoinAmount, TSLA_PRICE, _defaultExpiry());
         vm.stopPrank();
     }
 
@@ -114,7 +120,7 @@ contract OwnMarketTest is BaseTest {
         eTSLAToken.mint(minter, eTokenAmount);
         vm.startPrank(minter);
         eTSLAToken.approve(address(market), eTokenAmount);
-        orderId = market.placeRedeemOrder(TSLA, eTokenAmount, TSLA_PRICE, _defaultExpiry());
+        orderId = market.placeRedeemOrder(mockVault, TSLA, eTokenAmount, TSLA_PRICE, _defaultExpiry());
         vm.stopPrank();
     }
 
@@ -143,9 +149,9 @@ contract OwnMarketTest is BaseTest {
         usdc.approve(address(market), amount);
 
         vm.expectEmit(true, true, false, true);
-        emit IOwnMarket.OrderPlaced(1, Actors.MINTER1, uint8(OrderType.Mint), TSLA, amount);
+        emit IOwnMarket.OrderPlaced(1, Actors.MINTER1, uint8(OrderType.Mint), TSLA, mockVault, amount);
 
-        uint256 orderId = market.placeMintOrder(TSLA, amount, TSLA_PRICE, _defaultExpiry());
+        uint256 orderId = market.placeMintOrder(mockVault, TSLA, amount, TSLA_PRICE, _defaultExpiry());
         vm.stopPrank();
 
         assertEq(orderId, 1);
@@ -166,13 +172,13 @@ contract OwnMarketTest is BaseTest {
     function test_placeMintOrder_zeroAmount_reverts() public {
         vm.prank(Actors.MINTER1);
         vm.expectRevert(IOwnMarket.ZeroAmount.selector);
-        market.placeMintOrder(TSLA, 0, TSLA_PRICE, _defaultExpiry());
+        market.placeMintOrder(mockVault, TSLA, 0, TSLA_PRICE, _defaultExpiry());
     }
 
     function test_placeMintOrder_zeroPrice_reverts() public {
         vm.prank(Actors.MINTER1);
         vm.expectRevert(IOwnMarket.InvalidPrice.selector);
-        market.placeMintOrder(TSLA, 1000e6, 0, _defaultExpiry());
+        market.placeMintOrder(mockVault, TSLA, 1000e6, 0, _defaultExpiry());
     }
 
     function test_placeMintOrder_pastExpiry_reverts() public {
@@ -181,14 +187,14 @@ contract OwnMarketTest is BaseTest {
         vm.startPrank(Actors.MINTER1);
         usdc.approve(address(market), amount);
         vm.expectRevert(IOwnMarket.InvalidExpiry.selector);
-        market.placeMintOrder(TSLA, amount, TSLA_PRICE, block.timestamp - 1);
+        market.placeMintOrder(mockVault, TSLA, amount, TSLA_PRICE, block.timestamp - 1);
         vm.stopPrank();
     }
 
     function test_placeMintOrder_inactiveAsset_reverts() public {
         vm.prank(Actors.MINTER1);
         vm.expectRevert(abi.encodeWithSelector(IOwnMarket.AssetNotActive.selector, bytes32("FAKE")));
-        market.placeMintOrder(bytes32("FAKE"), 1000e6, TSLA_PRICE, _defaultExpiry());
+        market.placeMintOrder(mockVault, bytes32("FAKE"), 1000e6, TSLA_PRICE, _defaultExpiry());
     }
 
     // ══════════════════════════════════════════════════════════
@@ -203,9 +209,9 @@ contract OwnMarketTest is BaseTest {
         eTSLAToken.approve(address(market), eTokenAmount);
 
         vm.expectEmit(true, true, false, true);
-        emit IOwnMarket.OrderPlaced(1, Actors.MINTER1, uint8(OrderType.Redeem), TSLA, eTokenAmount);
+        emit IOwnMarket.OrderPlaced(1, Actors.MINTER1, uint8(OrderType.Redeem), TSLA, mockVault, eTokenAmount);
 
-        uint256 orderId = market.placeRedeemOrder(TSLA, eTokenAmount, TSLA_PRICE, _defaultExpiry());
+        uint256 orderId = market.placeRedeemOrder(mockVault, TSLA, eTokenAmount, TSLA_PRICE, _defaultExpiry());
         vm.stopPrank();
 
         assertEq(eTSLAToken.balanceOf(address(market)), eTokenAmount);
@@ -219,7 +225,7 @@ contract OwnMarketTest is BaseTest {
     function test_placeRedeemOrder_zeroAmount_reverts() public {
         vm.prank(Actors.MINTER1);
         vm.expectRevert(IOwnMarket.ZeroAmount.selector);
-        market.placeRedeemOrder(TSLA, 0, TSLA_PRICE, _defaultExpiry());
+        market.placeRedeemOrder(mockVault, TSLA, 0, TSLA_PRICE, _defaultExpiry());
     }
 
     // ══════════════════════════════════════════════════════════
@@ -805,7 +811,7 @@ contract OwnMarketTest is BaseTest {
         vm.startPrank(Actors.MINTER1);
         usdc.approve(address(market), amount);
 
-        uint256 orderId = market.placeMintOrder(TSLA, amount, TSLA_PRICE, _defaultExpiry());
+        uint256 orderId = market.placeMintOrder(mockVault, TSLA, amount, TSLA_PRICE, _defaultExpiry());
         vm.stopPrank();
 
         Order memory order = market.getOrder(orderId);

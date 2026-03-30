@@ -32,6 +32,7 @@ contract OwnVaultTest is BaseTest {
         vm.startPrank(Actors.ADMIN);
         protocolRegistry.setAddress(protocolRegistry.MARKET(), mockMarket);
         protocolRegistry.setAddress(protocolRegistry.TREASURY(), Actors.FEE_RECIPIENT);
+        protocolRegistry.setProtocolShareBps(2000);
         vault = new OwnVault(
             address(usdc),
             "Own USDC Vault",
@@ -39,7 +40,6 @@ contract OwnVaultTest is BaseTest {
             address(protocolRegistry),
             Actors.VM1,
             INITIAL_MAX_UTIL,
-            2000,
             2000
         );
         vm.stopPrank();

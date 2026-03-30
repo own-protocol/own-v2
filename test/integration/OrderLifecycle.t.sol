@@ -20,6 +20,7 @@ import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {FeeCalculator} from "../../src/core/FeeCalculator.sol";
 import {OwnMarket} from "../../src/core/OwnMarket.sol";
 import {OwnVault} from "../../src/core/OwnVault.sol";
+import {VaultFactory} from "../../src/core/VaultFactory.sol";
 import {EToken} from "../../src/tokens/EToken.sol";
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -62,6 +63,7 @@ contract OrderLifecycleTest is BaseTest {
         protocolRegistry.setAddress(protocolRegistry.ORACLE_VERIFIER(), address(oracle));
         protocolRegistry.setAddress(protocolRegistry.ASSET_REGISTRY(), address(assetRegistry));
         protocolRegistry.setAddress(protocolRegistry.TREASURY(), Actors.FEE_RECIPIENT);
+        protocolRegistry.setProtocolShareBps(2000);
 
         feeCalc = new FeeCalculator(address(protocolRegistry), Actors.ADMIN);
         feeCalc.setMintFee(2, MINT_FEE_BPS);
@@ -72,12 +74,11 @@ contract OrderLifecycleTest is BaseTest {
         feeCalc.setRedeemFee(3, 0);
         protocolRegistry.setAddress(keccak256("FEE_CALCULATOR"), address(feeCalc));
 
-        vault = new OwnVault(
-            address(weth), "Own ETH Vault", "oETH",
-            address(protocolRegistry), Actors.VM1, MAX_UTIL_BPS, 2000, 2000
-        );
+        VaultFactory factory = new VaultFactory(Actors.ADMIN, address(protocolRegistry));
+        protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), address(factory));
 
-        protocolRegistry.setAddress(protocolRegistry.VAULT(), address(vault));
+        vault = OwnVault(factory.createVault(address(weth), Actors.VM1, "Own ETH Vault", "oETH", MAX_UTIL_BPS, 2000));
+
         market = new OwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
 
@@ -110,8 +111,10 @@ contract OrderLifecycleTest is BaseTest {
     }
 
     function _configureVault() private {
-        vm.prank(Actors.VM1);
+        vm.startPrank(Actors.VM1);
         vault.setPaymentToken(address(usdc));
+        vault.enableAsset(TSLA);
+        vm.stopPrank();
     }
 
     function _depositLPCollateral() private {
@@ -126,7 +129,7 @@ contract OrderLifecycleTest is BaseTest {
         _fundUSDC(minter, amount);
         vm.startPrank(minter);
         usdc.approve(address(market), amount);
-        uint256 orderId = market.placeMintOrder(TSLA, amount, TSLA_PRICE, expiry);
+        uint256 orderId = market.placeMintOrder(address(vault), TSLA, amount, TSLA_PRICE, expiry);
         vm.stopPrank();
         return orderId;
     }
@@ -134,7 +137,7 @@ contract OrderLifecycleTest is BaseTest {
     function _placeRedeem(address minter, uint256 eAmount, uint256 expiry) internal returns (uint256) {
         vm.startPrank(minter);
         eTSLA.approve(address(market), eAmount);
-        uint256 orderId = market.placeRedeemOrder(TSLA, eAmount, TSLA_PRICE, expiry);
+        uint256 orderId = market.placeRedeemOrder(address(vault), TSLA, eAmount, TSLA_PRICE, expiry);
         vm.stopPrank();
         return orderId;
     }

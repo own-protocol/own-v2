@@ -17,6 +17,7 @@ import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {FeeCalculator} from "../../src/core/FeeCalculator.sol";
 import {OwnMarket} from "../../src/core/OwnMarket.sol";
 import {OwnVault} from "../../src/core/OwnVault.sol";
+import {VaultFactory} from "../../src/core/VaultFactory.sol";
 import {EToken} from "../../src/tokens/EToken.sol";
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -55,6 +56,7 @@ contract RedeemFlowTest is BaseTest {
         protocolRegistry.setAddress(protocolRegistry.ORACLE_VERIFIER(), address(oracle));
         protocolRegistry.setAddress(protocolRegistry.ASSET_REGISTRY(), address(assetRegistry));
         protocolRegistry.setAddress(protocolRegistry.TREASURY(), Actors.FEE_RECIPIENT);
+        protocolRegistry.setProtocolShareBps(2000);
 
         feeCalc = new FeeCalculator(address(protocolRegistry), Actors.ADMIN);
         feeCalc.setMintFee(1, 0);
@@ -65,18 +67,11 @@ contract RedeemFlowTest is BaseTest {
         feeCalc.setRedeemFee(3, 0);
         protocolRegistry.setAddress(keccak256("FEE_CALCULATOR"), address(feeCalc));
 
-        usdcVault = new OwnVault(
-            address(weth),
-            "Own ETH Vault",
-            "oETH",
-            address(protocolRegistry),
-            Actors.VM1,
-            MAX_UTIL_BPS,
-            2000,
-            2000
-        );
+        VaultFactory factory = new VaultFactory(Actors.ADMIN, address(protocolRegistry));
+        protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), address(factory));
 
-        protocolRegistry.setAddress(protocolRegistry.VAULT(), address(usdcVault));
+        usdcVault = OwnVault(factory.createVault(address(weth), Actors.VM1, "Own ETH Vault", "oETH", MAX_UTIL_BPS, 2000));
+
         market = new OwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
 
@@ -104,8 +99,10 @@ contract RedeemFlowTest is BaseTest {
     }
 
     function _configureVault() private {
-        vm.prank(Actors.VM1);
+        vm.startPrank(Actors.VM1);
         usdcVault.setPaymentToken(address(usdc));
+        usdcVault.enableAsset(TSLA);
+        vm.stopPrank();
     }
 
     function _depositLPCollateral() private {
@@ -130,7 +127,7 @@ contract RedeemFlowTest is BaseTest {
         eTSLA.approve(address(market), ETOKEN_AMOUNT);
 
         uint256 orderId = market.placeRedeemOrder(
-            TSLA, ETOKEN_AMOUNT, TSLA_PRICE, block.timestamp + 1 days
+            address(usdcVault), TSLA, ETOKEN_AMOUNT, TSLA_PRICE, block.timestamp + 1 days
         );
         vm.stopPrank();
 
@@ -170,7 +167,7 @@ contract RedeemFlowTest is BaseTest {
         eTSLA.approve(address(market), ETOKEN_AMOUNT);
 
         uint256 orderId = market.placeRedeemOrder(
-            TSLA, ETOKEN_AMOUNT, TSLA_PRICE, block.timestamp + 1 days
+            address(usdcVault), TSLA, ETOKEN_AMOUNT, TSLA_PRICE, block.timestamp + 1 days
         );
 
         assertEq(eTSLA.balanceOf(Actors.MINTER1), 0);
@@ -192,7 +189,7 @@ contract RedeemFlowTest is BaseTest {
         eTSLA.approve(address(market), ETOKEN_AMOUNT);
 
         uint256 orderId = market.placeRedeemOrder(
-            TSLA, ETOKEN_AMOUNT, TSLA_PRICE, expiry
+            address(usdcVault), TSLA, ETOKEN_AMOUNT, TSLA_PRICE, expiry
         );
         vm.stopPrank();
 

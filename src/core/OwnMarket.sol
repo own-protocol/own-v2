@@ -8,6 +8,7 @@ import {IOracleVerifier} from "../interfaces/IOracleVerifier.sol";
 import {IOwnMarket} from "../interfaces/IOwnMarket.sol";
 import {IOwnVault} from "../interfaces/IOwnVault.sol";
 import {IProtocolRegistry} from "../interfaces/IProtocolRegistry.sol";
+import {IVaultFactory} from "../interfaces/IVaultFactory.sol";
 import {BPS, Order, OrderStatus, OrderType, PRECISION} from "../interfaces/types/Types.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
@@ -56,6 +57,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
 
     /// @inheritdoc IOwnMarket
     function placeMintOrder(
+        address vault,
         bytes32 asset,
         uint256 amount,
         uint256 price,
@@ -64,10 +66,10 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         if (amount == 0) revert ZeroAmount();
         if (price == 0) revert InvalidPrice();
         if (expiry <= block.timestamp) revert InvalidExpiry();
-        if (!IAssetRegistry(registry.assetRegistry()).isActiveAsset(asset)) revert AssetNotActive(asset);
+        _validateVaultAndAsset(vault, asset);
 
         // Resolve the vault's payment token
-        address paymentToken = _getPaymentToken();
+        address paymentToken = IOwnVault(vault).paymentToken();
 
         // Escrow stablecoins
         IERC20(paymentToken).safeTransferFrom(msg.sender, address(this), amount);
@@ -84,18 +86,19 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
             status: OrderStatus.Open,
             createdAt: block.timestamp,
             vm: address(0),
-            vault: address(0),
+            vault: vault,
             claimedAt: 0
         });
 
         _openOrders[asset].push(orderId);
         _userOrders[msg.sender].push(orderId);
 
-        emit OrderPlaced(orderId, msg.sender, uint8(OrderType.Mint), asset, amount);
+        emit OrderPlaced(orderId, msg.sender, uint8(OrderType.Mint), asset, vault, amount);
     }
 
     /// @inheritdoc IOwnMarket
     function placeRedeemOrder(
+        address vault,
         bytes32 asset,
         uint256 amount,
         uint256 price,
@@ -104,7 +107,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         if (amount == 0) revert ZeroAmount();
         if (price == 0) revert InvalidPrice();
         if (expiry <= block.timestamp) revert InvalidExpiry();
-        if (!IAssetRegistry(registry.assetRegistry()).isActiveAsset(asset)) revert AssetNotActive(asset);
+        _validateVaultAndAsset(vault, asset);
 
         // Escrow eTokens
         address eToken = IAssetRegistry(registry.assetRegistry()).getActiveToken(asset);
@@ -122,14 +125,14 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
             status: OrderStatus.Open,
             createdAt: block.timestamp,
             vm: address(0),
-            vault: address(0),
+            vault: vault,
             claimedAt: 0
         });
 
         _openOrders[asset].push(orderId);
         _userOrders[msg.sender].push(orderId);
 
-        emit OrderPlaced(orderId, msg.sender, uint8(OrderType.Redeem), asset, amount);
+        emit OrderPlaced(orderId, msg.sender, uint8(OrderType.Redeem), asset, vault, amount);
     }
 
     // ──────────────────────────────────────────────────────────
@@ -143,13 +146,12 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         if (order.status != OrderStatus.Open) revert InvalidOrderStatus(orderId, order.status);
         if (block.timestamp > order.expiry) revert OrderExpiredError(orderId);
 
-        // Verify caller is the VM bound to our vault
-        IOwnVault vaultContract = IOwnVault(_getVault());
+        // Verify caller is the VM bound to the order's vault
+        IOwnVault vaultContract = IOwnVault(order.vault);
         if (vaultContract.vm() != msg.sender) revert OnlyVM();
 
         order.status = OrderStatus.Claimed;
         order.vm = msg.sender;
-        order.vault = address(vaultContract);
         order.claimedAt = block.timestamp;
         _removeFromOpenOrders(order.asset, orderId);
 
@@ -160,7 +162,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
             uint256 feeAmount = Math.mulDiv(order.amount, feeBps, BPS, Math.Rounding.Ceil);
             _escrowedMintFees[orderId] = feeAmount;
 
-            address paymentToken = _getPaymentToken();
+            address paymentToken = vaultContract.paymentToken();
             IERC20(paymentToken).safeTransfer(msg.sender, order.amount - feeAmount);
         }
         // For redeem: eTokens stay in escrow, nothing moves
@@ -195,7 +197,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
 
         // Decrease exposure
         uint256 exposureDelta = _calculateExposure(order);
-        IOwnVault(_getVault()).updateExposure(-int256(exposureDelta));
+        IOwnVault(order.vault).updateExposure(-int256(exposureDelta));
 
         emit OrderConfirmed(orderId, msg.sender, order.amount);
     }
@@ -211,25 +213,22 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         order.status = OrderStatus.Closed;
 
         if (order.orderType == OrderType.Mint) {
-            // VM returns stablecoins to user in this transaction
-            address paymentToken = _getPaymentToken();
+            address paymentToken = IOwnVault(order.vault).paymentToken();
             uint256 feeAmount = _escrowedMintFees[orderId];
             IERC20(paymentToken).safeTransferFrom(msg.sender, order.user, order.amount - feeAmount);
 
-            // Return escrowed fee to user
             if (feeAmount > 0) {
                 _escrowedMintFees[orderId] = 0;
                 IERC20(paymentToken).safeTransfer(order.user, feeAmount);
             }
         } else {
-            // Return escrowed eTokens to user
             address eToken = IAssetRegistry(registry.assetRegistry()).getActiveToken(order.asset);
             IERC20(eToken).safeTransfer(order.user, order.amount);
         }
 
         // Decrease exposure
         uint256 exposureDelta = _calculateExposure(order);
-        IOwnVault(_getVault()).updateExposure(-int256(exposureDelta));
+        IOwnVault(order.vault).updateExposure(-int256(exposureDelta));
 
         emit OrderClosed(orderId, msg.sender);
     }
@@ -249,7 +248,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         _removeFromOpenOrders(order.asset, orderId);
 
         if (order.orderType == OrderType.Mint) {
-            address paymentToken = _getPaymentToken();
+            address paymentToken = IOwnVault(order.vault).paymentToken();
             IERC20(paymentToken).safeTransfer(order.user, order.amount);
         } else {
             address eToken = IAssetRegistry(registry.assetRegistry()).getActiveToken(order.asset);
@@ -272,7 +271,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         bool isClaimed = order.status == OrderStatus.Claimed;
         bool isOpen = order.status == OrderStatus.Open;
 
-        IOwnVault vaultContract = IOwnVault(_getVault());
+        IOwnVault vaultContract = IOwnVault(order.vault);
         if (isClaimed) {
             if (block.timestamp < order.claimedAt + vaultContract.gracePeriod()) {
                 revert GracePeriodNotElapsed(orderId);
@@ -301,7 +300,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         // Clear exposure if was claimed
         if (isClaimed) {
             uint256 exposureDelta = _calculateExposure(order);
-            IOwnVault(_getVault()).updateExposure(-int256(exposureDelta));
+            vaultContract.updateExposure(-int256(exposureDelta));
         }
 
         emit OrderForceExecuted(orderId, msg.sender, priceReachable);
@@ -323,7 +322,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
 
         // Return escrowed funds
         if (order.orderType == OrderType.Mint) {
-            address paymentToken = _getPaymentToken();
+            address paymentToken = IOwnVault(order.vault).paymentToken();
             IERC20(paymentToken).safeTransfer(order.user, order.amount);
         } else {
             address eToken = IAssetRegistry(registry.assetRegistry()).getActiveToken(order.asset);
@@ -361,7 +360,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
     function _executeMint(Order storage order) private {
         uint256 feeAmount = _escrowedMintFees[order.orderId];
         uint256 netAmount = order.amount - feeAmount;
-        address paymentToken = _getPaymentToken();
+        address paymentToken = IOwnVault(order.vault).paymentToken();
 
         // Deposit escrowed fee to vault
         if (feeAmount > 0) {
@@ -382,7 +381,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
 
     /// @dev Execute a redeem confirmation at the order's set price.
     function _executeRedeem(Order storage order) private {
-        address paymentToken = _getPaymentToken();
+        address paymentToken = IOwnVault(order.vault).paymentToken();
         uint256 decimals = IERC20Metadata(paymentToken).decimals();
         uint256 precisionWithDecimals = PRECISION * 10 ** (18 - decimals);
 
@@ -409,11 +408,9 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
     }
 
     /// @dev Force execution when set price was reachable. No fees charged.
-    ///      Mint: eTokens minted at set price. Redeem: user gets collateral (ETH).
     function _forceExecuteAtSetPrice(Order storage order, bytes calldata ethPriceData) private {
         if (order.orderType == OrderType.Mint) {
-            // Mint eTokens at set price, no fees
-            address paymentToken = _getPaymentToken();
+            address paymentToken = IOwnVault(order.vault).paymentToken();
             uint256 decimals = IERC20Metadata(paymentToken).decimals();
             uint256 decimalScaler = 10 ** (18 - decimals);
 
@@ -421,134 +418,112 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
             address eToken = IAssetRegistry(registry.assetRegistry()).getActiveToken(order.asset);
             IEToken(eToken).mint(order.user, eTokenAmount);
 
-            // Return escrowed fee to user
-            _returnEscrowedFee(order.orderId);
+            _returnEscrowedFee(order);
         } else {
-            // Redeem: user gets collateral (ETH) equivalent from vault
             uint256 collateralAmount = _convertToCollateral(
-                Math.mulDiv(order.amount, order.price, PRECISION), ethPriceData
+                order, Math.mulDiv(order.amount, order.price, PRECISION), ethPriceData
             );
-            IOwnVault(_getVault()).releaseCollateral(order.user, collateralAmount);
+            IOwnVault(order.vault).releaseCollateral(order.user, collateralAmount);
 
-            // Burn escrowed eTokens
             address eToken = IAssetRegistry(registry.assetRegistry()).getActiveToken(order.asset);
             IEToken(eToken).burn(address(this), order.amount);
         }
     }
 
     /// @dev Force execution when set price was NOT reachable.
-    ///      Mint: user gets original stablecoin value as collateral (ETH). Redeem: eTokens returned.
     function _forceExecuteRefund(Order storage order, bytes calldata ethPriceData) private {
         if (order.orderType == OrderType.Mint) {
-            // User gets original stablecoin value as ETH collateral from vault
-            address paymentToken = _getPaymentToken();
+            address paymentToken = IOwnVault(order.vault).paymentToken();
             uint256 decimals = IERC20Metadata(paymentToken).decimals();
             uint256 usdValue = order.amount * 10 ** (18 - decimals);
 
-            uint256 collateralAmount = _convertToCollateral(usdValue, ethPriceData);
-            IOwnVault(_getVault()).releaseCollateral(order.user, collateralAmount);
+            uint256 collateralAmount = _convertToCollateral(order, usdValue, ethPriceData);
+            IOwnVault(order.vault).releaseCollateral(order.user, collateralAmount);
 
-            // Return escrowed fee to user
-            _returnEscrowedFee(order.orderId);
+            _returnEscrowedFee(order);
         } else {
-            // Return escrowed eTokens to user
             address eToken = IAssetRegistry(registry.assetRegistry()).getActiveToken(order.asset);
             IERC20(eToken).safeTransfer(order.user, order.amount);
         }
     }
 
     /// @dev Return escrowed mint fee to user.
-    function _returnEscrowedFee(uint256 orderId) private {
-        uint256 feeAmount = _escrowedMintFees[orderId];
+    function _returnEscrowedFee(Order storage order) private {
+        uint256 feeAmount = _escrowedMintFees[order.orderId];
         if (feeAmount > 0) {
-            _escrowedMintFees[orderId] = 0;
-            IERC20(_getPaymentToken()).safeTransfer(_orders[orderId].user, feeAmount);
+            _escrowedMintFees[order.orderId] = 0;
+            address paymentToken = IOwnVault(order.vault).paymentToken();
+            IERC20(paymentToken).safeTransfer(order.user, feeAmount);
         }
     }
 
-    /// @dev Convert a USD value (18 decimals) to collateral amount using ETH/USD oracle.
-    function _convertToCollateral(uint256 usdValue, bytes calldata ethPriceData) private returns (uint256) {
-        uint256 ethPrice = _getCollateralPrice(ethPriceData);
-        return Math.mulDiv(usdValue, PRECISION, ethPrice);
+    /// @dev Convert a USD value (18 decimals) to collateral amount using the vault's collateral oracle.
+    function _convertToCollateral(
+        Order storage order,
+        uint256 usdValue,
+        bytes calldata ethPriceData
+    ) private returns (uint256) {
+        bytes32 collatAsset = IOwnVault(order.vault).collateralOracleAsset();
+        address oracleAddr = IAssetRegistry(registry.assetRegistry()).getPrimaryOracle(collatAsset);
+        if (oracleAddr == address(0)) revert CollateralOracleNotSet();
+        (uint256 price,,) = IOracleVerifier(oracleAddr).verifyPrice(collatAsset, ethPriceData);
+        return Math.mulDiv(usdValue, PRECISION, price);
     }
 
     // ──────────────────────────────────────────────────────────
     //  Internal — helpers
     // ──────────────────────────────────────────────────────────
 
+    /// @dev Validate that the vault is registered and supports the asset.
+    function _validateVaultAndAsset(address vault, bytes32 asset) private view {
+        if (!IVaultFactory(registry.vaultFactory()).isRegisteredVault(vault)) {
+            revert VaultNotRegistered(vault);
+        }
+        if (!IAssetRegistry(registry.assetRegistry()).isActiveAsset(asset)) {
+            revert AssetNotActive(asset);
+        }
+        if (!IOwnVault(vault).isAssetSupported(asset)) {
+            revert VaultAssetNotSupported(vault, asset);
+        }
+    }
+
     /// @dev Verify whether the set price was reachable during the time window.
-    ///      The user submits two oracle price proofs (low and high) with timestamps
-    ///      within the valid window. The contract verifies both are valid oracle data
-    ///      and checks if the set price falls within [lowPrice, highPrice].
-    /// @param order The order being force-executed.
-    /// @param priceProofData Encoded as (bytes lowPriceData, bytes highPriceData).
-    /// @return True if the set price was reachable.
     function _verifyPriceRange(Order storage order, bytes calldata priceProofData) private returns (bool) {
         if (priceProofData.length == 0) return false;
 
         (bytes memory lowPriceData, bytes memory highPriceData) =
             abi.decode(priceProofData, (bytes, bytes));
 
-        // Get the asset's primary oracle
         address oracleAddr = IAssetRegistry(registry.assetRegistry()).getPrimaryOracle(order.asset);
         if (oracleAddr == address(0)) return false;
 
         IOracleVerifier oracle = IOracleVerifier(oracleAddr);
 
-        // Determine the valid time window
         uint256 windowStart = order.claimedAt > 0 ? order.claimedAt : order.createdAt;
         uint256 windowEnd = block.timestamp;
 
-        // Verify low price proof
         (uint256 lowPrice, uint256 lowTimestamp,) = oracle.verifyPrice(order.asset, lowPriceData);
         if (lowTimestamp < windowStart || lowTimestamp > windowEnd) return false;
 
-        // Verify high price proof
         (uint256 highPrice, uint256 highTimestamp,) = oracle.verifyPrice(order.asset, highPriceData);
         if (highTimestamp < windowStart || highTimestamp > windowEnd) return false;
 
-        // Sanity: low <= high
         if (lowPrice > highPrice) (lowPrice, highPrice) = (highPrice, lowPrice);
 
-        // Check if set price was reachable
         if (order.orderType == OrderType.Mint) {
-            // Mint: price must have dropped to or below user's max price
             return lowPrice <= order.price;
         } else {
-            // Redeem: price must have risen to or above user's min price
             return highPrice >= order.price;
         }
     }
 
-    /// @dev Calculate the USD exposure for an order (amount * price for redeems, amount for mints).
+    /// @dev Calculate the USD exposure for an order.
     function _calculateExposure(Order storage order) private view returns (uint256) {
         if (order.orderType == OrderType.Mint) {
-            // Mint: exposure is the stablecoin amount (already in USD terms)
             return order.amount;
         } else {
-            // Redeem: exposure is eToken amount * set price
             return Math.mulDiv(order.amount, order.price, PRECISION);
         }
-    }
-
-    /// @dev Get the vault address from the registry.
-    function _getVault() private view returns (address) {
-        return registry.vault();
-    }
-
-    /// @dev Get the payment token from the vault.
-    function _getPaymentToken() private view returns (address) {
-        return IOwnVault(_getVault()).paymentToken();
-    }
-
-    /// @dev Get the collateral (ETH/USD) price from the oracle.
-    function _getCollateralPrice(bytes calldata ethPriceData) private returns (uint256) {
-        IOwnVault vaultContract = IOwnVault(_getVault());
-        bytes32 collatAsset = vaultContract.collateralOracleAsset();
-        address oracleAddr = IAssetRegistry(registry.assetRegistry()).getPrimaryOracle(collatAsset);
-        if (oracleAddr == address(0)) revert ETHOracleNotSet();
-        (uint256 price,,) = IOracleVerifier(oracleAddr).verifyPrice(collatAsset, ethPriceData);
-        return price;
     }
 
     /// @dev Remove an order from the open orders array (swap-and-pop).

@@ -36,9 +36,10 @@ interface IOwnVault is IERC4626 {
     event VMFeesClaimed(address indexed token, uint256 amount);
     event LPRewardsClaimed(address indexed account, address indexed token, uint256 amount);
 
-    event ProtocolShareUpdated(uint256 oldShareBps, uint256 newShareBps);
     event VMShareUpdated(uint256 oldShareBps, uint256 newShareBps);
     event PaymentTokenUpdated(address indexed oldToken, address indexed newToken);
+    event AssetEnabled(bytes32 indexed asset);
+    event AssetDisabled(bytes32 indexed asset);
 
     // ──────────────────────────────────────────────────────────
     //  Errors
@@ -178,9 +179,7 @@ interface IOwnVault is IERC4626 {
     ///         Splits three ways: protocol / VM / LP. Token must match the current payment token.
     function depositFees(address token, uint256 amount) external;
 
-    function setProtocolShareBps(uint256 shareBps) external;
     function setVMShareBps(uint256 shareBps) external;
-    function protocolShareBps() external view returns (uint256);
     function vmShareBps() external view returns (uint256);
 
     /// @notice Claim accrued protocol fees. Callable by anyone. Transfers to treasury.
@@ -205,6 +204,20 @@ interface IOwnVault is IERC4626 {
     /// @param to     Recipient address.
     /// @param amount Amount of collateral to release.
     function releaseCollateral(address to, uint256 amount) external;
+
+    // ──────────────────────────────────────────────────────────
+    //  Supported assets (VM-controlled)
+    // ──────────────────────────────────────────────────────────
+
+    /// @notice Enable an asset for this vault. Only callable by the bound VM.
+    ///         The asset must exist in the global AssetRegistry.
+    function enableAsset(bytes32 asset) external;
+
+    /// @notice Disable an asset for this vault. Only callable by the bound VM.
+    function disableAsset(bytes32 asset) external;
+
+    /// @notice Check if this vault supports a given asset.
+    function isAssetSupported(bytes32 asset) external view returns (bool);
 
     // ──────────────────────────────────────────────────────────
     //  Payment token
