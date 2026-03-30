@@ -9,7 +9,6 @@ import {AssetConfig, PRECISION} from "../../src/interfaces/types/Types.sol";
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {OwnMarket} from "../../src/core/OwnMarket.sol";
 import {OwnVault} from "../../src/core/OwnVault.sol";
-import {VaultManager} from "../../src/core/VaultManager.sol";
 import {EToken} from "../../src/tokens/EToken.sol";
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -23,7 +22,6 @@ contract DividendFlowTest is BaseTest {
 
     AssetRegistry public assetRegistry;
     OwnMarket public market;
-    VaultManager public vaultMgr;
     OwnVault public usdcVault;
     EToken public eTSLA;
 
@@ -46,8 +44,6 @@ contract DividendFlowTest is BaseTest {
         protocolRegistry.setAddress(protocolRegistry.ASSET_REGISTRY(), address(assetRegistry));
         protocolRegistry.setAddress(protocolRegistry.TREASURY(), Actors.FEE_RECIPIENT);
 
-        vaultMgr = new VaultManager(Actors.ADMIN, address(protocolRegistry));
-
         usdcVault = new OwnVault(
             address(usdc), "Own USDC Vault", "oUSDC", address(protocolRegistry), Actors.VM1, 8000, 2000, 2000
         );
@@ -58,7 +54,6 @@ contract DividendFlowTest is BaseTest {
 
         usdcVault.setGracePeriod(1 days);
         usdcVault.setClaimThreshold(6 hours);
-        protocolRegistry.setAddress(protocolRegistry.VAULT_MANAGER(), address(vaultMgr));
 
         eTSLA = new EToken("Own Tesla", "eTSLA", TSLA, address(protocolRegistry), address(usdc));
 

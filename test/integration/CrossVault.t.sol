@@ -10,7 +10,6 @@ import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {FeeCalculator} from "../../src/core/FeeCalculator.sol";
 import {OwnMarket} from "../../src/core/OwnMarket.sol";
 import {OwnVault} from "../../src/core/OwnVault.sol";
-import {VaultManager} from "../../src/core/VaultManager.sol";
 import {EToken} from "../../src/tokens/EToken.sol";
 
 /// @title CrossVault Integration Test
@@ -19,7 +18,6 @@ import {EToken} from "../../src/tokens/EToken.sol";
 ///         no longer applies with the simplified single-claim model.
 contract CrossVaultTest is BaseTest {
     AssetRegistry public assetRegistry;
-    VaultManager public vaultMgr;
     OwnMarket public market;
     OwnVault public usdcVault;
     OwnVault public wethVault;
@@ -51,8 +49,6 @@ contract CrossVaultTest is BaseTest {
         feeCalc.setRedeemFee(3, 0);
         protocolRegistry.setAddress(keccak256("FEE_CALCULATOR"), address(feeCalc));
 
-        vaultMgr = new VaultManager(Actors.ADMIN, address(protocolRegistry));
-
         // USDC vault (bound to VM1)
         usdcVault = new OwnVault(
             address(usdc), "Own USDC Vault", "oUSDC", address(protocolRegistry), Actors.VM1, 8000, 2000, 2000
@@ -75,7 +71,6 @@ contract CrossVaultTest is BaseTest {
 
         usdcVault.setGracePeriod(1 days);
         usdcVault.setClaimThreshold(6 hours);
-        protocolRegistry.setAddress(protocolRegistry.VAULT_MANAGER(), address(vaultMgr));
 
         vm.stopPrank();
 
@@ -103,17 +98,6 @@ contract CrossVaultTest is BaseTest {
         wethVault.deposit(100e18, Actors.LP2);
         vm.stopPrank();
 
-        // VM1 registered with USDC vault
-        vm.startPrank(Actors.VM1);
-        vaultMgr.registerVM(address(usdcVault));
-        vaultMgr.setExposureCaps(10_000_000e18);
-        vm.stopPrank();
-
-        // VM2 registered with WETH vault
-        vm.startPrank(Actors.VM2);
-        vaultMgr.registerVM(address(wethVault));
-        vaultMgr.setExposureCaps(10_000_000e18);
-        vm.stopPrank();
     }
 
     // ══════════════════════════════════════════════════════════
@@ -121,8 +105,8 @@ contract CrossVaultTest is BaseTest {
     // ══════════════════════════════════════════════════════════
 
     function test_crossVault_vaultAttribution() public view {
-        assertEq(vaultMgr.getVMVault(Actors.VM1), address(usdcVault));
-        assertEq(vaultMgr.getVMVault(Actors.VM2), address(wethVault));
+        assertEq(usdcVault.vm(), Actors.VM1);
+        assertEq(wethVault.vm(), Actors.VM2);
     }
 
     // ══════════════════════════════════════════════════════════

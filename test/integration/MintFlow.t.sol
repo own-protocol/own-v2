@@ -18,7 +18,6 @@ import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {FeeCalculator} from "../../src/core/FeeCalculator.sol";
 import {OwnMarket} from "../../src/core/OwnMarket.sol";
 import {OwnVault} from "../../src/core/OwnVault.sol";
-import {VaultManager} from "../../src/core/VaultManager.sol";
 import {EToken} from "../../src/tokens/EToken.sol";
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -30,7 +29,6 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 ///         OwnMarket interface (no PriceType, no partial fills, simplified claim/confirm).
 contract MintFlowTest is BaseTest {
     AssetRegistry public assetRegistry;
-    VaultManager public vaultMgr;
     OwnMarket public market;
     OwnVault public usdcVault;
     EToken public eTSLA;
@@ -46,7 +44,7 @@ contract MintFlowTest is BaseTest {
         super.setUp();
         _deployProtocol();
         _configureAssets();
-        _configureVaultManager();
+        _configureVault();
         _depositLPCollateral();
     }
 
@@ -68,8 +66,6 @@ contract MintFlowTest is BaseTest {
         feeCalc.setRedeemFee(3, 0);
         protocolRegistry.setAddress(keccak256("FEE_CALCULATOR"), address(feeCalc));
 
-        vaultMgr = new VaultManager(Actors.ADMIN, address(protocolRegistry));
-
         usdcVault = new OwnVault(
             address(usdc),
             "Own USDC Vault",
@@ -87,12 +83,10 @@ contract MintFlowTest is BaseTest {
 
         usdcVault.setGracePeriod(1 days);
         usdcVault.setClaimThreshold(6 hours);
-        protocolRegistry.setAddress(protocolRegistry.VAULT_MANAGER(), address(vaultMgr));
 
         vm.stopPrank();
 
         vm.label(address(assetRegistry), "AssetRegistry");
-        vm.label(address(vaultMgr), "VaultManager");
         vm.label(address(market), "OwnMarket");
         vm.label(address(usdcVault), "USDCVault");
     }
@@ -117,12 +111,9 @@ contract MintFlowTest is BaseTest {
         vm.stopPrank();
     }
 
-    function _configureVaultManager() private {
-        vm.startPrank(Actors.VM1);
-        vaultMgr.registerVM(address(usdcVault));
-        vaultMgr.setExposureCaps(MAX_EXPOSURE);
+    function _configureVault() private {
+        vm.prank(Actors.VM1);
         usdcVault.setPaymentToken(address(usdc));
-        vm.stopPrank();
     }
 
     function _depositLPCollateral() private {

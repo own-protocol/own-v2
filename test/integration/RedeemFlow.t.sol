@@ -17,7 +17,6 @@ import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {FeeCalculator} from "../../src/core/FeeCalculator.sol";
 import {OwnMarket} from "../../src/core/OwnMarket.sol";
 import {OwnVault} from "../../src/core/OwnVault.sol";
-import {VaultManager} from "../../src/core/VaultManager.sol";
 import {EToken} from "../../src/tokens/EToken.sol";
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -29,15 +28,13 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 ///         OwnMarket interface (no PriceType, no partial fills, simplified claim/confirm).
 contract RedeemFlowTest is BaseTest {
     AssetRegistry public assetRegistry;
-    VaultManager public vaultMgr;
     OwnMarket public market;
     OwnVault public usdcVault;
     EToken public eTSLA;
     FeeCalculator public feeCalc;
 
-    uint256 constant MAX_EXPOSURE = 10_000_000e18;
     uint256 constant MAX_UTIL_BPS = 8000;
-    uint256 constant LP_DEPOSIT = 1_000_000e6;
+    uint256 constant LP_DEPOSIT_WETH = 50_000e18;
     uint256 constant MINT_AMOUNT = 10_000e6;
     uint256 constant ETOKEN_AMOUNT = 40e18;
 
@@ -45,7 +42,7 @@ contract RedeemFlowTest is BaseTest {
         super.setUp();
         _deployProtocol();
         _configureAssets();
-        _configureVaultManager();
+        _configureVault();
         _depositLPCollateral();
         _mintETokensToMinter();
     }
@@ -68,12 +65,10 @@ contract RedeemFlowTest is BaseTest {
         feeCalc.setRedeemFee(3, 0);
         protocolRegistry.setAddress(keccak256("FEE_CALCULATOR"), address(feeCalc));
 
-        vaultMgr = new VaultManager(Actors.ADMIN, address(protocolRegistry));
-
         usdcVault = new OwnVault(
-            address(usdc),
-            "Own USDC Vault",
-            "oUSDC",
+            address(weth),
+            "Own ETH Vault",
+            "oETH",
             address(protocolRegistry),
             Actors.VM1,
             MAX_UTIL_BPS,
@@ -87,12 +82,10 @@ contract RedeemFlowTest is BaseTest {
 
         usdcVault.setGracePeriod(1 days);
         usdcVault.setClaimThreshold(6 hours);
-        protocolRegistry.setAddress(protocolRegistry.VAULT_MANAGER(), address(vaultMgr));
 
         vm.stopPrank();
 
         vm.label(address(assetRegistry), "AssetRegistry");
-        vm.label(address(vaultMgr), "VaultManager");
         vm.label(address(market), "OwnMarket");
         vm.label(address(usdcVault), "USDCVault");
     }
@@ -110,19 +103,16 @@ contract RedeemFlowTest is BaseTest {
         vm.stopPrank();
     }
 
-    function _configureVaultManager() private {
-        vm.startPrank(Actors.VM1);
-        vaultMgr.registerVM(address(usdcVault));
-        vaultMgr.setExposureCaps(MAX_EXPOSURE);
+    function _configureVault() private {
+        vm.prank(Actors.VM1);
         usdcVault.setPaymentToken(address(usdc));
-        vm.stopPrank();
     }
 
     function _depositLPCollateral() private {
-        _fundUSDC(Actors.VM1, LP_DEPOSIT);
+        _fundWETH(Actors.VM1, LP_DEPOSIT_WETH);
         vm.startPrank(Actors.VM1);
-        usdc.approve(address(usdcVault), LP_DEPOSIT);
-        usdcVault.deposit(LP_DEPOSIT, Actors.LP1);
+        weth.approve(address(usdcVault), LP_DEPOSIT_WETH);
+        usdcVault.deposit(LP_DEPOSIT_WETH, Actors.LP1);
         vm.stopPrank();
     }
 

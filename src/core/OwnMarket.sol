@@ -8,8 +8,6 @@ import {IOracleVerifier} from "../interfaces/IOracleVerifier.sol";
 import {IOwnMarket} from "../interfaces/IOwnMarket.sol";
 import {IOwnVault} from "../interfaces/IOwnVault.sol";
 import {IProtocolRegistry} from "../interfaces/IProtocolRegistry.sol";
-import {IVaultManager} from "../interfaces/IVaultManager.sol";
-
 import {BPS, Order, OrderStatus, OrderType, PRECISION} from "../interfaces/types/Types.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
@@ -146,13 +144,12 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         if (block.timestamp > order.expiry) revert OrderExpiredError(orderId);
 
         // Verify caller is the VM bound to our vault
-        address vaultAddr = _getVault();
-        IVaultManager vmManager = IVaultManager(registry.vaultManager());
-        if (vmManager.getVMVault(msg.sender) != vaultAddr) revert OnlyVM();
+        IOwnVault vaultContract = IOwnVault(_getVault());
+        if (vaultContract.vm() != msg.sender) revert OnlyVM();
 
         order.status = OrderStatus.Claimed;
         order.vm = msg.sender;
-        order.vault = vaultAddr;
+        order.vault = address(vaultContract);
         order.claimedAt = block.timestamp;
         _removeFromOpenOrders(order.asset, orderId);
 
@@ -168,12 +165,10 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         }
         // For redeem: eTokens stay in escrow, nothing moves
 
-        // Update VM exposure and check utilization
+        // Update exposure and check utilization
         uint256 exposureDelta = _calculateExposure(order);
-        vmManager.updateExposure(msg.sender, int256(exposureDelta));
+        vaultContract.updateExposure(int256(exposureDelta));
 
-        // Verify vault utilization is still within bounds after exposure increase
-        IOwnVault vaultContract = IOwnVault(vaultAddr);
         uint256 currentUtil = vaultContract.utilization();
         uint256 maxUtil = vaultContract.maxUtilization();
         if (currentUtil > maxUtil) {
@@ -198,9 +193,9 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
             _executeRedeem(order);
         }
 
-        // Decrease VM exposure
+        // Decrease exposure
         uint256 exposureDelta = _calculateExposure(order);
-        IVaultManager(registry.vaultManager()).updateExposure(msg.sender, -int256(exposureDelta));
+        IOwnVault(_getVault()).updateExposure(-int256(exposureDelta));
 
         emit OrderConfirmed(orderId, msg.sender, order.amount);
     }
@@ -232,9 +227,9 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
             IERC20(eToken).safeTransfer(order.user, order.amount);
         }
 
-        // Decrease VM exposure
+        // Decrease exposure
         uint256 exposureDelta = _calculateExposure(order);
-        IVaultManager(registry.vaultManager()).updateExposure(order.vm, -int256(exposureDelta));
+        IOwnVault(_getVault()).updateExposure(-int256(exposureDelta));
 
         emit OrderClosed(orderId, msg.sender);
     }
@@ -303,10 +298,10 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
             _forceExecuteRefund(order, ethPriceData);
         }
 
-        // Clear VM exposure if was claimed
+        // Clear exposure if was claimed
         if (isClaimed) {
             uint256 exposureDelta = _calculateExposure(order);
-            IVaultManager(registry.vaultManager()).updateExposure(order.vm, -int256(exposureDelta));
+            IOwnVault(_getVault()).updateExposure(-int256(exposureDelta));
         }
 
         emit OrderForceExecuted(orderId, msg.sender, priceReachable);

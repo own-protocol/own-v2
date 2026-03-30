@@ -144,6 +144,10 @@ interface IOwnVault is IERC4626 {
     /// @notice Return the total outstanding eToken exposure backed by this vault (18 decimals).
     function totalExposure() external view returns (uint256);
 
+    /// @notice Update the vault's current exposure. Only callable by OwnMarket.
+    /// @param delta Signed exposure change (positive = increase, negative = decrease).
+    function updateExposure(int256 delta) external;
+
     // ──────────────────────────────────────────────────────────
     //  Order execution parameters (used by OwnMarket)
     // ──────────────────────────────────────────────────────────

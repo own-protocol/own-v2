@@ -6,7 +6,6 @@ import {OwnMarket} from "../../src/core/OwnMarket.sol";
 import {IOwnMarket} from "../../src/interfaces/IOwnMarket.sol";
 
 import {IOwnVault} from "../../src/interfaces/IOwnVault.sol";
-import {IVaultManager} from "../../src/interfaces/IVaultManager.sol";
 import {
     AssetConfig,
     BPS,
@@ -14,8 +13,7 @@ import {
     Order,
     OrderStatus,
     OrderType,
-    PRECISION,
-    VMConfig
+    PRECISION
 } from "../../src/interfaces/types/Types.sol";
 
 import {FeeCalculator} from "../../src/core/FeeCalculator.sol";
@@ -31,7 +29,6 @@ contract OwnMarketTest is BaseTest {
 
     MockERC20 public eTSLAToken;
 
-    address public mockVaultManager = makeAddr("vaultManager");
     address public mockVault = makeAddr("vault");
 
     uint256 constant DEFAULT_EXPIRY_OFFSET = 1 days;
@@ -58,8 +55,6 @@ contract OwnMarketTest is BaseTest {
         vm.startPrank(Actors.ADMIN);
         protocolRegistry.setAddress(protocolRegistry.ORACLE_VERIFIER(), address(oracle));
         protocolRegistry.setAddress(protocolRegistry.ASSET_REGISTRY(), address(assetReg));
-        protocolRegistry.setAddress(protocolRegistry.VAULT_MANAGER(), mockVaultManager);
-
         feeCalc = new FeeCalculator(address(protocolRegistry), Actors.ADMIN);
         feeCalc.setMintFee(1, 0);
         feeCalc.setMintFee(2, 0);
@@ -123,11 +118,9 @@ contract OwnMarketTest is BaseTest {
         vm.stopPrank();
     }
 
-    function _mockVaultManager(address vmAddr) internal {
-        VMConfig memory config = VMConfig({maxExposure: 0, currentExposure: 0, registered: true, active: true});
-        vm.mockCall(mockVaultManager, abi.encodeCall(IVaultManager.getVMConfig, (vmAddr)), abi.encode(config));
-        vm.mockCall(mockVaultManager, abi.encodeCall(IVaultManager.getVMVault, (vmAddr)), abi.encode(mockVault));
-        vm.mockCall(mockVaultManager, abi.encodeWithSelector(IVaultManager.updateExposure.selector), abi.encode());
+    function _mockVault(address vmAddr) internal {
+        vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.vm.selector), abi.encode(vmAddr));
+        vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.updateExposure.selector), abi.encode());
         vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.depositFees.selector), abi.encode());
         vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.utilization.selector), abi.encode(uint256(0)));
         vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.maxUtilization.selector), abi.encode(uint256(BPS)));
@@ -234,7 +227,7 @@ contract OwnMarketTest is BaseTest {
     // ══════════════════════════════════════════════════════════
 
     function test_claimOrder_mint_succeeds() public {
-        _mockVaultManager(Actors.VM1);
+        _mockVault(Actors.VM1);
         uint256 orderId = _placeMintOrder(Actors.MINTER1, 1000e6);
 
         vm.expectEmit(true, true, false, false);
@@ -254,7 +247,7 @@ contract OwnMarketTest is BaseTest {
     }
 
     function test_claimOrder_redeem_succeeds() public {
-        _mockVaultManager(Actors.VM1);
+        _mockVault(Actors.VM1);
         uint256 orderId = _placeRedeemOrder(Actors.MINTER1, 4e18);
 
         _claimOrder(Actors.VM1, orderId);
@@ -268,7 +261,7 @@ contract OwnMarketTest is BaseTest {
     }
 
     function test_claimOrder_notOpen_reverts() public {
-        _mockVaultManager(Actors.VM1);
+        _mockVault(Actors.VM1);
         uint256 orderId = _placeMintOrder(Actors.MINTER1, 1000e6);
 
         _claimOrder(Actors.VM1, orderId);
@@ -279,7 +272,7 @@ contract OwnMarketTest is BaseTest {
     }
 
     function test_claimOrder_expired_reverts() public {
-        _mockVaultManager(Actors.VM1);
+        _mockVault(Actors.VM1);
         uint256 orderId = _placeMintOrder(Actors.MINTER1, 1000e6);
 
         vm.warp(block.timestamp + DEFAULT_EXPIRY_OFFSET + 1);
@@ -290,18 +283,21 @@ contract OwnMarketTest is BaseTest {
     }
 
     function test_claimOrder_wrongVM_reverts() public {
-        // Mock VM1 as registered to a different vault
-        vm.mockCall(mockVaultManager, abi.encodeCall(IVaultManager.getVMVault, (Actors.VM1)), abi.encode(address(999)));
+        // Mock vault's vm() to return a different address
+        vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.vm.selector), abi.encode(Actors.VM2));
+        vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.updateExposure.selector), abi.encode());
+        vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.utilization.selector), abi.encode(uint256(0)));
+        vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.maxUtilization.selector), abi.encode(uint256(BPS)));
 
         uint256 orderId = _placeMintOrder(Actors.MINTER1, 1000e6);
 
         vm.prank(Actors.VM1);
-        vm.expectRevert();
+        vm.expectRevert(IOwnMarket.OnlyVM.selector);
         market.claimOrder(orderId);
     }
 
     function test_claimOrder_utilizationBreached_reverts() public {
-        _mockVaultManager(Actors.VM1);
+        _mockVault(Actors.VM1);
         // Override utilization to be above max
         vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.utilization.selector), abi.encode(uint256(9500)));
         vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.maxUtilization.selector), abi.encode(uint256(9000)));
@@ -318,7 +314,7 @@ contract OwnMarketTest is BaseTest {
     // ══════════════════════════════════════════════════════════
 
     function test_confirmOrder_mint_succeeds() public {
-        _mockVaultManager(Actors.VM1);
+        _mockVault(Actors.VM1);
         uint256 orderId = _placeMintOrder(Actors.MINTER1, 1000e6);
 
         _claimOrder(Actors.VM1, orderId);
@@ -343,7 +339,7 @@ contract OwnMarketTest is BaseTest {
     }
 
     function test_confirmOrder_mint_wrongVM_reverts() public {
-        _mockVaultManager(Actors.VM1);
+        _mockVault(Actors.VM1);
         uint256 orderId = _placeMintOrder(Actors.MINTER1, 1000e6);
 
         _claimOrder(Actors.VM1, orderId);
@@ -358,7 +354,7 @@ contract OwnMarketTest is BaseTest {
     // ══════════════════════════════════════════════════════════
 
     function test_confirmOrder_redeem_succeeds() public {
-        _mockVaultManager(Actors.VM1);
+        _mockVault(Actors.VM1);
         uint256 eTokenAmount = 4e18;
         uint256 orderId = _placeRedeemOrder(Actors.MINTER1, eTokenAmount);
 
@@ -422,7 +418,7 @@ contract OwnMarketTest is BaseTest {
     }
 
     function test_cancelOrder_afterClaim_reverts() public {
-        _mockVaultManager(Actors.VM1);
+        _mockVault(Actors.VM1);
         uint256 orderId = _placeMintOrder(Actors.MINTER1, 1000e6);
 
         _claimOrder(Actors.VM1, orderId);
@@ -468,7 +464,7 @@ contract OwnMarketTest is BaseTest {
     }
 
     function test_expireOrder_claimedOrder_reverts() public {
-        _mockVaultManager(Actors.VM1);
+        _mockVault(Actors.VM1);
         uint256 orderId = _placeMintOrder(Actors.MINTER1, 1000e6);
 
         _claimOrder(Actors.VM1, orderId);
@@ -495,7 +491,7 @@ contract OwnMarketTest is BaseTest {
     // ══════════════════════════════════════════════════════════
 
     function test_closeOrder_mint_succeeds() public {
-        _mockVaultManager(Actors.VM1);
+        _mockVault(Actors.VM1);
         uint256 orderId = _placeMintOrder(Actors.MINTER1, 1000e6);
 
         _claimOrder(Actors.VM1, orderId);
@@ -522,7 +518,7 @@ contract OwnMarketTest is BaseTest {
     }
 
     function test_closeOrder_redeem_succeeds() public {
-        _mockVaultManager(Actors.VM1);
+        _mockVault(Actors.VM1);
         uint256 orderId = _placeRedeemOrder(Actors.MINTER1, 4e18);
 
         _claimOrder(Actors.VM1, orderId);
@@ -541,7 +537,7 @@ contract OwnMarketTest is BaseTest {
     }
 
     function test_closeOrder_beforeExpiry_reverts() public {
-        _mockVaultManager(Actors.VM1);
+        _mockVault(Actors.VM1);
         uint256 orderId = _placeMintOrder(Actors.MINTER1, 1000e6);
 
         _claimOrder(Actors.VM1, orderId);
@@ -562,7 +558,7 @@ contract OwnMarketTest is BaseTest {
     }
 
     function test_closeOrder_wrongVM_reverts() public {
-        _mockVaultManager(Actors.VM1);
+        _mockVault(Actors.VM1);
         uint256 orderId = _placeMintOrder(Actors.MINTER1, 1000e6);
 
         _claimOrder(Actors.VM1, orderId);
@@ -579,7 +575,7 @@ contract OwnMarketTest is BaseTest {
     // ══════════════════════════════════════════════════════════
 
     function test_forceExecute_claimedMint_afterGracePeriod() public {
-        _mockVaultManager(Actors.VM1);
+        _mockVault(Actors.VM1);
         uint256 orderId = _placeMintOrder(Actors.MINTER1, 1000e6);
 
         _claimOrder(Actors.VM1, orderId);
@@ -598,7 +594,7 @@ contract OwnMarketTest is BaseTest {
     }
 
     function test_forceExecute_claimedMint_beforeGracePeriod_reverts() public {
-        _mockVaultManager(Actors.VM1);
+        _mockVault(Actors.VM1);
         uint256 orderId = _placeMintOrder(Actors.MINTER1, 1000e6);
 
         _claimOrder(Actors.VM1, orderId);
@@ -609,7 +605,7 @@ contract OwnMarketTest is BaseTest {
     }
 
     function test_forceExecute_notOrderOwner_reverts() public {
-        _mockVaultManager(Actors.VM1);
+        _mockVault(Actors.VM1);
         uint256 orderId = _placeMintOrder(Actors.MINTER1, 1000e6);
 
         _claimOrder(Actors.VM1, orderId);
@@ -626,7 +622,7 @@ contract OwnMarketTest is BaseTest {
     // ══════════════════════════════════════════════════════════
 
     function test_forceExecute_claimedRedeem_afterGracePeriod() public {
-        _mockVaultManager(Actors.VM1);
+        _mockVault(Actors.VM1);
         uint256 orderId = _placeRedeemOrder(Actors.MINTER1, 4e18);
 
         _claimOrder(Actors.VM1, orderId);
@@ -682,7 +678,7 @@ contract OwnMarketTest is BaseTest {
     }
 
     function test_forceExecute_confirmedOrder_reverts() public {
-        _mockVaultManager(Actors.VM1);
+        _mockVault(Actors.VM1);
         uint256 orderId = _placeMintOrder(Actors.MINTER1, 1000e6);
 
         _claimOrder(Actors.VM1, orderId);
@@ -708,7 +704,7 @@ contract OwnMarketTest is BaseTest {
         vm.prank(Actors.ADMIN);
         feeCalc.setMintFee(2, 100); // 100 BPS = 1%
 
-        _mockVaultManager(Actors.VM1);
+        _mockVault(Actors.VM1);
         uint256 amount = 10_000e6;
         uint256 orderId = _placeMintOrder(Actors.MINTER1, amount);
 
@@ -740,7 +736,7 @@ contract OwnMarketTest is BaseTest {
         vm.prank(Actors.ADMIN);
         feeCalc.setRedeemFee(2, 50); // 50 BPS = 0.5%
 
-        _mockVaultManager(Actors.VM1);
+        _mockVault(Actors.VM1);
         uint256 eTokenAmount = 4e18;
         uint256 orderId = _placeRedeemOrder(Actors.MINTER1, eTokenAmount);
 
@@ -820,7 +816,7 @@ contract OwnMarketTest is BaseTest {
     function testFuzz_fullMintFlow(uint256 amount) public {
         amount = bound(amount, 1e6, 1_000_000e6); // 1 USDC to 1M USDC
 
-        _mockVaultManager(Actors.VM1);
+        _mockVault(Actors.VM1);
         uint256 orderId = _placeMintOrder(Actors.MINTER1, amount);
 
         _claimOrder(Actors.VM1, orderId);

@@ -9,7 +9,6 @@ import {AssetConfig, VaultStatus, WithdrawalRequest, WithdrawalStatus} from "../
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {OwnMarket} from "../../src/core/OwnMarket.sol";
 import {OwnVault} from "../../src/core/OwnVault.sol";
-import {VaultManager} from "../../src/core/VaultManager.sol";
 import {EToken} from "../../src/tokens/EToken.sol";
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -18,7 +17,6 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 /// @notice Tests LP deposits -> yield -> async withdrawal queue -> fulfillment.
 contract LPLifecycleTest is BaseTest {
     AssetRegistry public assetRegistry;
-    VaultManager public vaultMgr;
     OwnMarket public market;
     OwnVault public usdcVault;
     EToken public eTSLA;
@@ -39,8 +37,6 @@ contract LPLifecycleTest is BaseTest {
         protocolRegistry.setAddress(protocolRegistry.ASSET_REGISTRY(), address(assetRegistry));
         protocolRegistry.setAddress(protocolRegistry.TREASURY(), Actors.FEE_RECIPIENT);
 
-        vaultMgr = new VaultManager(Actors.ADMIN, address(protocolRegistry));
-
         usdcVault = new OwnVault(
             address(usdc),
             "Own USDC Vault",
@@ -58,7 +54,6 @@ contract LPLifecycleTest is BaseTest {
 
         usdcVault.setGracePeriod(1 days);
         usdcVault.setClaimThreshold(6 hours);
-        protocolRegistry.setAddress(protocolRegistry.VAULT_MANAGER(), address(vaultMgr));
 
         eTSLA = new EToken("Own Tesla", "eTSLA", TSLA, address(protocolRegistry), address(usdc));
 
@@ -72,11 +67,6 @@ contract LPLifecycleTest is BaseTest {
         vm.prank(Actors.VM1);
         usdcVault.setPaymentToken(address(usdc));
 
-        // Register VM1
-        vm.startPrank(Actors.VM1);
-        vaultMgr.registerVM(address(usdcVault));
-        vaultMgr.setExposureCaps(10_000_000e18);
-        vm.stopPrank();
     }
 
     // ──────────────────────────────────────────────────────────

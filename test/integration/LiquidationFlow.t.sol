@@ -10,7 +10,6 @@ import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {LiquidationEngine} from "../../src/core/LiquidationEngine.sol";
 import {OwnMarket} from "../../src/core/OwnMarket.sol";
 import {OwnVault} from "../../src/core/OwnVault.sol";
-import {VaultManager} from "../../src/core/VaultManager.sol";
 import {EToken} from "../../src/tokens/EToken.sol";
 
 /// @title LiquidationFlow Integration Test
@@ -18,7 +17,6 @@ import {EToken} from "../../src/tokens/EToken.sol";
 ///         Note: LiquidationEngine is currently a stub.
 contract LiquidationFlowTest is BaseTest {
     AssetRegistry public assetRegistry;
-    VaultManager public vaultMgr;
     OwnMarket public market;
     OwnVault public usdcVault;
     LiquidationEngine public liquidationEngine;
@@ -40,7 +38,6 @@ contract LiquidationFlowTest is BaseTest {
         protocolRegistry.setAddress(protocolRegistry.ASSET_REGISTRY(), address(assetRegistry));
         protocolRegistry.setAddress(protocolRegistry.TREASURY(), Actors.FEE_RECIPIENT);
 
-        vaultMgr = new VaultManager(Actors.ADMIN, address(protocolRegistry));
         liquidationEngine = new LiquidationEngine(address(protocolRegistry), address(dex));
 
         usdcVault = new OwnVault(
@@ -53,7 +50,6 @@ contract LiquidationFlowTest is BaseTest {
 
         usdcVault.setGracePeriod(1 days);
         usdcVault.setClaimThreshold(6 hours);
-        protocolRegistry.setAddress(protocolRegistry.VAULT_MANAGER(), address(vaultMgr));
         protocolRegistry.setAddress(protocolRegistry.LIQUIDATION_ENGINE(), address(liquidationEngine));
 
         eTSLA = new EToken("Own Tesla", "eTSLA", TSLA, address(protocolRegistry), address(usdc));

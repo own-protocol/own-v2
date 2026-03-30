@@ -446,6 +446,15 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     }
 
     /// @inheritdoc IOwnVault
+    function updateExposure(int256 delta) external onlyMarket {
+        if (delta > 0) {
+            _totalExposure += uint256(delta);
+        } else if (delta < 0) {
+            _totalExposure -= uint256(-delta);
+        }
+    }
+
+    /// @inheritdoc IOwnVault
     function withdrawalWaitPeriod() external view returns (uint256) {
         return _withdrawalWaitPeriod;
     }

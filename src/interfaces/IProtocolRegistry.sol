@@ -64,9 +64,6 @@ interface IProtocolRegistry {
     /// @notice Returns the OwnMarket contract address.
     function market() external view returns (address);
 
-    /// @notice Returns the VaultManager contract address.
-    function vaultManager() external view returns (address);
-
     /// @notice Returns the LiquidationEngine contract address.
     function liquidationEngine() external view returns (address);
 

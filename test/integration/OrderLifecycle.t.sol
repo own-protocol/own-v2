@@ -20,7 +20,6 @@ import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {FeeCalculator} from "../../src/core/FeeCalculator.sol";
 import {OwnMarket} from "../../src/core/OwnMarket.sol";
 import {OwnVault} from "../../src/core/OwnVault.sol";
-import {VaultManager} from "../../src/core/VaultManager.sol";
 import {EToken} from "../../src/tokens/EToken.sol";
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -32,7 +31,6 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 ///         and edge cases (double-claim, double-confirm, etc.).
 contract OrderLifecycleTest is BaseTest {
     AssetRegistry public assetRegistry;
-    VaultManager public vaultMgr;
     OwnMarket public market;
     OwnVault public vault;
     EToken public eTSLA;
@@ -40,7 +38,7 @@ contract OrderLifecycleTest is BaseTest {
 
     uint256 constant MAX_EXPOSURE = 10_000_000e18;
     uint256 constant MAX_UTIL_BPS = 8000;
-    uint256 constant LP_DEPOSIT_WETH = 500e18;
+    uint256 constant LP_DEPOSIT_WETH = 50_000e18;
     uint256 constant MINT_AMOUNT = 10_000e6;
     uint256 constant ETOKEN_AMOUNT = 40e18;
     uint256 constant GRACE_PERIOD = 1 days;
@@ -53,7 +51,7 @@ contract OrderLifecycleTest is BaseTest {
         super.setUp();
         _deployProtocol();
         _configureAssets();
-        _configureVaultManager();
+        _configureVault();
         _depositLPCollateral();
     }
 
@@ -74,8 +72,6 @@ contract OrderLifecycleTest is BaseTest {
         feeCalc.setRedeemFee(3, 0);
         protocolRegistry.setAddress(keccak256("FEE_CALCULATOR"), address(feeCalc));
 
-        vaultMgr = new VaultManager(Actors.ADMIN, address(protocolRegistry));
-
         vault = new OwnVault(
             address(weth), "Own ETH Vault", "oETH",
             address(protocolRegistry), Actors.VM1, MAX_UTIL_BPS, 2000, 2000
@@ -87,7 +83,6 @@ contract OrderLifecycleTest is BaseTest {
 
         vault.setGracePeriod(GRACE_PERIOD);
         vault.setClaimThreshold(CLAIM_THRESHOLD);
-        protocolRegistry.setAddress(protocolRegistry.VAULT_MANAGER(), address(vaultMgr));
 
         vm.stopPrank();
     }
@@ -114,12 +109,9 @@ contract OrderLifecycleTest is BaseTest {
         _setOraclePrice(ethAsset, ETH_PRICE);
     }
 
-    function _configureVaultManager() private {
-        vm.startPrank(Actors.VM1);
-        vaultMgr.registerVM(address(vault));
-        vaultMgr.setExposureCaps(MAX_EXPOSURE);
+    function _configureVault() private {
+        vm.prank(Actors.VM1);
         vault.setPaymentToken(address(usdc));
-        vm.stopPrank();
     }
 
     function _depositLPCollateral() private {
@@ -312,7 +304,7 @@ contract OrderLifecycleTest is BaseTest {
         assertEq(eTSLA.balanceOf(address(market)), 0, "market escrow cleared");
 
         // Verify no exposure was tracked (order was never claimed)
-        assertEq(vaultMgr.getVMConfig(Actors.VM1).currentExposure, 0, "no exposure for unclaimed");
+        assertEq(vault.totalExposure(), 0, "no exposure for unclaimed");
     }
 
     // ══════════════════════════════════════════════════════════
@@ -498,7 +490,7 @@ contract OrderLifecycleTest is BaseTest {
     // ══════════════════════════════════════════════════════════
 
     function test_exposureTracking_claimConfirm() public {
-        assertEq(vaultMgr.getVMConfig(Actors.VM1).currentExposure, 0, "initial exposure = 0");
+        assertEq(vault.totalExposure(), 0, "initial exposure = 0");
 
         uint256 orderId = _placeMint(Actors.MINTER1, MINT_AMOUNT, block.timestamp + 1 days);
 
@@ -506,12 +498,12 @@ contract OrderLifecycleTest is BaseTest {
         market.claimOrder(orderId);
 
         uint256 expectedExposure = MINT_AMOUNT; // mint exposure = stablecoin amount
-        assertEq(vaultMgr.getVMConfig(Actors.VM1).currentExposure, expectedExposure, "exposure = mint amount");
+        assertEq(vault.totalExposure(), expectedExposure, "exposure = mint amount");
 
         vm.prank(Actors.VM1);
         market.confirmOrder(orderId);
 
-        assertEq(vaultMgr.getVMConfig(Actors.VM1).currentExposure, 0, "exposure back to 0");
+        assertEq(vault.totalExposure(), 0, "exposure back to 0");
     }
 
     // ══════════════════════════════════════════════════════════
@@ -525,7 +517,7 @@ contract OrderLifecycleTest is BaseTest {
         vm.prank(Actors.VM1);
         market.claimOrder(orderId);
 
-        assertEq(vaultMgr.getVMConfig(Actors.VM1).currentExposure, MINT_AMOUNT, "exposure after claim");
+        assertEq(vault.totalExposure(), MINT_AMOUNT, "exposure after claim");
 
         vm.warp(expiry + 1);
 
@@ -534,7 +526,7 @@ contract OrderLifecycleTest is BaseTest {
         market.closeOrder(orderId);
         vm.stopPrank();
 
-        assertEq(vaultMgr.getVMConfig(Actors.VM1).currentExposure, 0, "exposure back to 0 after close");
+        assertEq(vault.totalExposure(), 0, "exposure back to 0 after close");
     }
 
     // ══════════════════════════════════════════════════════════
@@ -547,14 +539,14 @@ contract OrderLifecycleTest is BaseTest {
         vm.prank(Actors.VM1);
         market.claimOrder(orderId);
 
-        assertEq(vaultMgr.getVMConfig(Actors.VM1).currentExposure, MINT_AMOUNT, "exposure after claim");
+        assertEq(vault.totalExposure(), MINT_AMOUNT, "exposure after claim");
 
         vm.warp(block.timestamp + GRACE_PERIOD + 1);
 
         vm.prank(Actors.MINTER1);
         market.forceExecute(orderId, "", "");
 
-        assertEq(vaultMgr.getVMConfig(Actors.VM1).currentExposure, 0, "exposure back to 0 after force");
+        assertEq(vault.totalExposure(), 0, "exposure back to 0 after force");
     }
 
     // ══════════════════════════════════════════════════════════

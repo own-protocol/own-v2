@@ -13,7 +13,6 @@ import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {FeeCalculator} from "../../src/core/FeeCalculator.sol";
 import {OwnMarket} from "../../src/core/OwnMarket.sol";
 import {OwnVault} from "../../src/core/OwnVault.sol";
-import {VaultManager} from "../../src/core/VaultManager.sol";
 import {EToken} from "../../src/tokens/EToken.sol";
 
 /// @title MultiStablecoin Integration Test
@@ -24,7 +23,6 @@ import {EToken} from "../../src/tokens/EToken.sol";
 ///         single paymentToken set via setPaymentToken/paymentToken.
 contract MultiStablecoinTest is BaseTest {
     AssetRegistry public assetRegistry;
-    VaultManager public vaultMgr;
     OwnMarket public market;
     OwnVault public usdcVault;
     OwnVault public usdcVault2;
@@ -57,8 +55,6 @@ contract MultiStablecoinTest is BaseTest {
         feeCalc.setRedeemFee(3, 0);
         protocolRegistry.setAddress(keccak256("FEE_CALCULATOR"), address(feeCalc));
 
-        vaultMgr = new VaultManager(Actors.ADMIN, address(protocolRegistry));
-
         // Each VM gets its own vault (1:1 binding)
         usdcVault = new OwnVault(
             address(usdc), "Own USDC Vault", "oUSDC", address(protocolRegistry), Actors.VM1, 8000, 2000, 2000
@@ -79,7 +75,6 @@ contract MultiStablecoinTest is BaseTest {
 
         usdcVault.setGracePeriod(1 days);
         usdcVault.setClaimThreshold(6 hours);
-        protocolRegistry.setAddress(protocolRegistry.VAULT_MANAGER(), address(vaultMgr));
 
         vm.stopPrank();
 
@@ -89,18 +84,6 @@ contract MultiStablecoinTest is BaseTest {
 
         vm.prank(Actors.VM2);
         usdcVault2.setPaymentToken(address(usdc));
-
-        // Register VM1
-        vm.startPrank(Actors.VM1);
-        vaultMgr.registerVM(address(usdcVault));
-        vaultMgr.setExposureCaps(10_000_000e18);
-        vm.stopPrank();
-
-        // Register VM2
-        vm.startPrank(Actors.VM2);
-        vaultMgr.registerVM(address(usdcVault2));
-        vaultMgr.setExposureCaps(10_000_000e18);
-        vm.stopPrank();
 
         // LP deposits (VM must call deposit)
         _fundUSDC(Actors.VM1, 500_000e6);

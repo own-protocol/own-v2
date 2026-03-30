@@ -9,7 +9,6 @@ import {AssetConfig, BPS, OrderStatus, VaultStatus} from "../../src/interfaces/t
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {OwnMarket} from "../../src/core/OwnMarket.sol";
 import {OwnVault} from "../../src/core/OwnVault.sol";
-import {VaultManager} from "../../src/core/VaultManager.sol";
 import {EToken} from "../../src/tokens/EToken.sol";
 
 /// @title HaltFlow Integration Test
@@ -17,7 +16,6 @@ import {EToken} from "../../src/tokens/EToken.sol";
 ///         during halted state (deposits blocked, withdrawals blocked, etc.).
 contract HaltFlowTest is BaseTest {
     AssetRegistry public assetRegistry;
-    VaultManager public vaultMgr;
     OwnMarket public market;
     OwnVault public usdcVault;
     EToken public eTSLA;
@@ -38,8 +36,6 @@ contract HaltFlowTest is BaseTest {
         protocolRegistry.setAddress(protocolRegistry.ASSET_REGISTRY(), address(assetRegistry));
         protocolRegistry.setAddress(protocolRegistry.TREASURY(), Actors.FEE_RECIPIENT);
 
-        vaultMgr = new VaultManager(Actors.ADMIN, address(protocolRegistry));
-
         usdcVault = new OwnVault(
             address(usdc), "Own USDC Vault", "oUSDC", address(protocolRegistry), Actors.VM1, 8000, 2000, 2000
         );
@@ -50,7 +46,6 @@ contract HaltFlowTest is BaseTest {
 
         usdcVault.setGracePeriod(1 days);
         usdcVault.setClaimThreshold(6 hours);
-        protocolRegistry.setAddress(protocolRegistry.VAULT_MANAGER(), address(vaultMgr));
 
         eTSLA = new EToken("Own Tesla", "eTSLA", TSLA, address(protocolRegistry), address(usdc));
 
