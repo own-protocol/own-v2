@@ -73,7 +73,7 @@ contract MockOracleVerifier is IOracleVerifier {
     function verifyPrice(
         bytes32 asset,
         bytes calldata /* priceData */
-    ) external override returns (uint256 price, uint256 timestamp, bool marketOpen) {
+    ) external payable override returns (uint256 price, uint256 timestamp, bool marketOpen) {
         if (forceStale) revert StalePrice(asset, 0, 0);
         if (forceInvalidSignature) revert InvalidSignature();
         if (forceDeviation) revert PriceDeviationExceeded(asset, 0, 0, 0);

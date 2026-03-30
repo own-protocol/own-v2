@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {AssetConfig} from "./types/Types.sol";
+import {AssetConfig, OracleConfig} from "./types/Types.sol";
 
 /// @title IAssetRegistry — Asset whitelisting and token tracking
 /// @notice Manages the set of tradeable assets, their active eToken addresses,
@@ -113,4 +113,20 @@ interface IAssetRegistry {
     /// @param token  Token address to check.
     /// @return True if the token is valid (active or legacy) for the ticker.
     function isValidToken(bytes32 ticker, address token) external view returns (bool);
+
+    // ──────────────────────────────────────────────────────────
+    //  Oracle configuration
+    // ──────────────────────────────────────────────────────────
+
+    /// @notice Set the oracle configuration for an asset.
+    function setOracleConfig(bytes32 ticker, OracleConfig calldata config) external;
+
+    /// @notice Switch the primary oracle for an asset to the secondary.
+    function switchPrimaryOracle(bytes32 ticker) external;
+
+    /// @notice Return the oracle configuration for an asset.
+    function getOracleConfig(bytes32 ticker) external view returns (OracleConfig memory config);
+
+    /// @notice Return the primary oracle address for an asset.
+    function getPrimaryOracle(bytes32 ticker) external view returns (address oracle);
 }

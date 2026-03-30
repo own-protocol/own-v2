@@ -130,6 +130,16 @@ struct DepositRequest {
     DepositStatus status;
 }
 
+/// @notice Oracle configuration for an asset.
+/// @param primaryOracle   IOracleVerifier used for price verification.
+/// @param secondaryOracle Backup IOracleVerifier (address(0) if none).
+/// @param pythPriceFeedId Pyth price feed ID (bytes32(0) if not using Pyth).
+struct OracleConfig {
+    address primaryOracle;
+    address secondaryOracle;
+    bytes32 pythPriceFeedId;
+}
+
 /// @notice Onchain state for a registered vault manager.
 /// @param maxExposure     Max USD notional the VM will hedge (18 decimals).
 /// @param currentExposure Current outstanding notional (18 decimals).

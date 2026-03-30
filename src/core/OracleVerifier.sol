@@ -62,7 +62,7 @@ contract OracleVerifier is IOracleVerifier, Ownable {
     function verifyPrice(
         bytes32 asset,
         bytes calldata priceData
-    ) external override returns (uint256 price, uint256 timestamp, bool marketOpen) {
+    ) external payable override returns (uint256 price, uint256 timestamp, bool marketOpen) {
         // Decode payload
         uint256 sequenceNumber;
         {

@@ -83,7 +83,7 @@ interface IOracleVerifier {
     function verifyPrice(
         bytes32 asset,
         bytes calldata priceData
-    ) external returns (uint256 price, uint256 timestamp, bool marketOpen);
+    ) external payable returns (uint256 price, uint256 timestamp, bool marketOpen);
 
     // ──────────────────────────────────────────────────────────
     //  Signer management (admin)

@@ -4,6 +4,7 @@ pragma solidity 0.8.28;
 import {IAssetRegistry} from "../interfaces/IAssetRegistry.sol";
 import {IEToken} from "../interfaces/IEToken.sol";
 import {IFeeCalculator} from "../interfaces/IFeeCalculator.sol";
+import {IOracleVerifier} from "../interfaces/IOracleVerifier.sol";
 import {IOwnMarket} from "../interfaces/IOwnMarket.sol";
 import {IOwnVault} from "../interfaces/IOwnVault.sol";
 import {IProtocolRegistry} from "../interfaces/IProtocolRegistry.sol";
@@ -316,9 +317,8 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
 
         order.status = OrderStatus.ForceExecuted;
 
-        // Verify OHLC proof to determine if set price was reachable
-        // TODO: Integrate OHLC oracle verification
-        bool priceReachable = _verifyOHLCProof(order, ohlcProofData);
+        // Verify price range proof to determine if set price was reachable
+        bool priceReachable = _verifyPriceRange(order, ohlcProofData);
 
         if (priceReachable) {
             _forceExecuteAtSetPrice(order);
@@ -511,17 +511,48 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
     //  Internal — helpers
     // ──────────────────────────────────────────────────────────
 
-    /// @dev Verify OHLC proof to check if set price was reachable.
-    ///      Placeholder — to be replaced with Pyth/in-house oracle integration.
-    function _verifyOHLCProof(Order storage, /*order*/ bytes calldata /*ohlcProofData*/ )
-        private
-        pure
-        returns (bool)
-    {
-        // TODO: Implement OHLC verification
-        // For mint: check if price <= order.price during [claimTime, now]
-        // For redeem: check if price >= order.price during [claimTime, now]
-        return false;
+    /// @dev Verify whether the set price was reachable during the time window.
+    ///      The user submits two oracle price proofs (low and high) with timestamps
+    ///      within the valid window. The contract verifies both are valid oracle data
+    ///      and checks if the set price falls within [lowPrice, highPrice].
+    /// @param order The order being force-executed.
+    /// @param priceProofData Encoded as (bytes lowPriceData, bytes highPriceData).
+    /// @return True if the set price was reachable.
+    function _verifyPriceRange(Order storage order, bytes calldata priceProofData) private returns (bool) {
+        if (priceProofData.length == 0) return false;
+
+        (bytes memory lowPriceData, bytes memory highPriceData) =
+            abi.decode(priceProofData, (bytes, bytes));
+
+        // Get the asset's primary oracle
+        address oracleAddr = IAssetRegistry(registry.assetRegistry()).getPrimaryOracle(order.asset);
+        if (oracleAddr == address(0)) return false;
+
+        IOracleVerifier oracle = IOracleVerifier(oracleAddr);
+
+        // Determine the valid time window
+        uint256 windowStart = order.claimedAt > 0 ? order.claimedAt : order.createdAt;
+        uint256 windowEnd = block.timestamp;
+
+        // Verify low price proof
+        (uint256 lowPrice, uint256 lowTimestamp,) = oracle.verifyPrice(order.asset, lowPriceData);
+        if (lowTimestamp < windowStart || lowTimestamp > windowEnd) return false;
+
+        // Verify high price proof
+        (uint256 highPrice, uint256 highTimestamp,) = oracle.verifyPrice(order.asset, highPriceData);
+        if (highTimestamp < windowStart || highTimestamp > windowEnd) return false;
+
+        // Sanity: low <= high
+        if (lowPrice > highPrice) (lowPrice, highPrice) = (highPrice, lowPrice);
+
+        // Check if set price was reachable
+        if (order.orderType == OrderType.Mint) {
+            // Mint: price must have dropped to or below user's max price
+            return lowPrice <= order.price;
+        } else {
+            // Redeem: price must have risen to or above user's min price
+            return highPrice >= order.price;
+        }
     }
 
     /// @dev Calculate the USD exposure for an order (amount * price for redeems, amount for mints).

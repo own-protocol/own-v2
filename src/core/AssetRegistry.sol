@@ -2,7 +2,7 @@
 pragma solidity 0.8.28;
 
 import {IAssetRegistry} from "../interfaces/IAssetRegistry.sol";
-import {AssetConfig} from "../interfaces/types/Types.sol";
+import {AssetConfig, OracleConfig} from "../interfaces/types/Types.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
 /// @title AssetRegistry — Asset whitelisting and token tracking
@@ -18,6 +18,9 @@ contract AssetRegistry is IAssetRegistry, Ownable {
 
     /// @dev Ticker → whether it has been registered (to distinguish from default struct).
     mapping(bytes32 => bool) private _registered;
+
+    /// @dev Ticker → oracle configuration.
+    mapping(bytes32 => OracleConfig) private _oracleConfigs;
 
     // ──────────────────────────────────────────────────────────
     //  Constructor
@@ -127,9 +130,38 @@ contract AssetRegistry is IAssetRegistry, Ownable {
             if (legacy[i] == token) return true;
             unchecked {
                 ++i;
-            } // SAFETY: i < legacy.length, so i+1 won't overflow
+            }
         }
 
         return false;
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Oracle configuration
+    // ──────────────────────────────────────────────────────────
+
+    /// @inheritdoc IAssetRegistry
+    function setOracleConfig(bytes32 ticker, OracleConfig calldata config) external onlyOwner {
+        if (!_registered[ticker]) revert AssetNotFound(ticker);
+        _oracleConfigs[ticker] = config;
+    }
+
+    /// @inheritdoc IAssetRegistry
+    function switchPrimaryOracle(bytes32 ticker) external onlyOwner {
+        if (!_registered[ticker]) revert AssetNotFound(ticker);
+        OracleConfig storage config = _oracleConfigs[ticker];
+        (config.primaryOracle, config.secondaryOracle) = (config.secondaryOracle, config.primaryOracle);
+    }
+
+    /// @inheritdoc IAssetRegistry
+    function getOracleConfig(bytes32 ticker) external view returns (OracleConfig memory) {
+        if (!_registered[ticker]) revert AssetNotFound(ticker);
+        return _oracleConfigs[ticker];
+    }
+
+    /// @inheritdoc IAssetRegistry
+    function getPrimaryOracle(bytes32 ticker) external view returns (address) {
+        if (!_registered[ticker]) revert AssetNotFound(ticker);
+        return _oracleConfigs[ticker].primaryOracle;
     }
 }
