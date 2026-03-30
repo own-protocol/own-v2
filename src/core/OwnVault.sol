@@ -51,6 +51,14 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     uint256 private _withdrawalWaitPeriod;
 
     // ──────────────────────────────────────────────────────────
+    //  Order execution parameters (read by OwnMarket)
+    // ──────────────────────────────────────────────────────────
+
+    uint256 private _gracePeriod;
+    uint256 private _claimThreshold;
+    bytes32 private _collateralOracleAsset;
+
+    // ──────────────────────────────────────────────────────────
     //  Payment token (single, VM-controlled)
     // ──────────────────────────────────────────────────────────
 
@@ -445,6 +453,40 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     /// @inheritdoc IOwnVault
     function setWithdrawalWaitPeriod(uint256 period) external onlyAdmin {
         _withdrawalWaitPeriod = period;
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Order execution parameters
+    // ──────────────────────────────────────────────────────────
+
+    /// @inheritdoc IOwnVault
+    function gracePeriod() external view returns (uint256) {
+        return _gracePeriod;
+    }
+
+    /// @inheritdoc IOwnVault
+    function setGracePeriod(uint256 period) external onlyAdmin {
+        _gracePeriod = period;
+    }
+
+    /// @inheritdoc IOwnVault
+    function claimThreshold() external view returns (uint256) {
+        return _claimThreshold;
+    }
+
+    /// @inheritdoc IOwnVault
+    function setClaimThreshold(uint256 threshold) external onlyAdmin {
+        _claimThreshold = threshold;
+    }
+
+    /// @inheritdoc IOwnVault
+    function collateralOracleAsset() external view returns (bytes32) {
+        return _collateralOracleAsset;
+    }
+
+    /// @inheritdoc IOwnVault
+    function setCollateralOracleAsset(bytes32 asset) external onlyAdmin {
+        _collateralOracleAsset = asset;
     }
 
     // ──────────────────────────────────────────────────────────

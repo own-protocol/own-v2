@@ -21,6 +21,7 @@ contract ProtocolRegistry is IProtocolRegistry, Ownable {
     bytes32 public constant LIQUIDATION_ENGINE = keccak256("LIQUIDATION_ENGINE");
     bytes32 public constant ASSET_REGISTRY = keccak256("ASSET_REGISTRY");
     bytes32 public constant TREASURY = keccak256("TREASURY");
+    bytes32 public constant VAULT = keccak256("VAULT");
 
     // ──────────────────────────────────────────────────────────────
     //  Types
@@ -92,6 +93,11 @@ contract ProtocolRegistry is IProtocolRegistry, Ownable {
     /// @inheritdoc IProtocolRegistry
     function treasury() external view override returns (address) {
         return _addresses[TREASURY];
+    }
+
+    /// @inheritdoc IProtocolRegistry
+    function vault() external view override returns (address) {
+        return _addresses[VAULT];
     }
 
     // ──────────────────────────────────────────────────────────────

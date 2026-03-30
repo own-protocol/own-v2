@@ -44,9 +44,12 @@ contract HaltFlowTest is BaseTest {
             address(usdc), "Own USDC Vault", "oUSDC", address(protocolRegistry), Actors.VM1, 8000, 2000, 2000
         );
 
-        market = new OwnMarket(address(protocolRegistry), address(usdcVault), 1 days, 6 hours);
-
+        protocolRegistry.setAddress(protocolRegistry.VAULT(), address(usdcVault));
+        market = new OwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
+
+        usdcVault.setGracePeriod(1 days);
+        usdcVault.setClaimThreshold(6 hours);
         protocolRegistry.setAddress(protocolRegistry.VAULT_MANAGER(), address(vaultMgr));
 
         eTSLA = new EToken("Own Tesla", "eTSLA", TSLA, address(protocolRegistry), address(usdc));

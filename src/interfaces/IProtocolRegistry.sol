@@ -76,6 +76,9 @@ interface IProtocolRegistry {
     /// @notice Returns the protocol treasury address.
     function treasury() external view returns (address);
 
+    /// @notice Returns the OwnVault contract address.
+    function vault() external view returns (address);
+
     /// @notice Returns the timelock delay duration in seconds.
     function timelockDelay() external view returns (uint256);
 

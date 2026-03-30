@@ -69,10 +69,12 @@ contract CrossVaultTest is BaseTest {
             AssetConfig({activeToken: address(eTSLA), legacyTokens: new address[](0), active: true, volatilityLevel: 2});
         assetRegistry.addAsset(TSLA, address(eTSLA), config);
 
-        // OwnMarket now takes (registry_, vault_, gracePeriod_, claimThreshold_)
-        market = new OwnMarket(address(protocolRegistry), address(usdcVault), 1 days, 6 hours);
-
+        protocolRegistry.setAddress(protocolRegistry.VAULT(), address(usdcVault));
+        market = new OwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
+
+        usdcVault.setGracePeriod(1 days);
+        usdcVault.setClaimThreshold(6 hours);
         protocolRegistry.setAddress(protocolRegistry.VAULT_MANAGER(), address(vaultMgr));
 
         vm.stopPrank();

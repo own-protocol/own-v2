@@ -10,7 +10,6 @@ import {IOwnVault} from "../interfaces/IOwnVault.sol";
 import {IProtocolRegistry} from "../interfaces/IProtocolRegistry.sol";
 import {IVaultManager} from "../interfaces/IVaultManager.sol";
 
-import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {BPS, Order, OrderStatus, OrderType, PRECISION} from "../interfaces/types/Types.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
@@ -32,22 +31,6 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
     IProtocolRegistry public immutable registry;
 
     // ──────────────────────────────────────────────────────────
-    //  Protocol parameters
-    // ──────────────────────────────────────────────────────────
-
-    /// @notice The single vault backing all orders.
-    address public vault;
-
-    /// @dev Time after claim before user can force-execute.
-    uint256 public gracePeriod;
-
-    /// @dev Time after placement before user can force-redeem an unclaimed order.
-    uint256 public claimThreshold;
-
-    /// @dev Asset ticker used to look up ETH/USD price for collateral conversion.
-    bytes32 public ethOracleAsset;
-
-    // ──────────────────────────────────────────────────────────
     //  State
     // ──────────────────────────────────────────────────────────
 
@@ -61,29 +44,12 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
     mapping(uint256 => uint256) private _escrowedMintFees;
 
     // ──────────────────────────────────────────────────────────
-    //  Modifiers
-    // ──────────────────────────────────────────────────────────
-
-    modifier onlyAdmin() {
-        if (msg.sender != address(registry) && msg.sender != _registryOwner()) {
-            revert OnlyAdmin();
-        }
-        _;
-    }
-
-    // ──────────────────────────────────────────────────────────
     //  Constructor
     // ──────────────────────────────────────────────────────────
 
-    /// @param registry_      ProtocolRegistry contract address.
-    /// @param vault_         The single vault address.
-    /// @param gracePeriod_    Seconds after claim before force-execute is allowed.
-    /// @param claimThreshold_ Seconds after placement before unclaimed redeem can be force-executed.
-    constructor(address registry_, address vault_, uint256 gracePeriod_, uint256 claimThreshold_) {
+    /// @param registry_ ProtocolRegistry contract address.
+    constructor(address registry_) {
         registry = IProtocolRegistry(registry_);
-        vault = vault_;
-        gracePeriod = gracePeriod_;
-        claimThreshold = claimThreshold_;
     }
 
     // ──────────────────────────────────────────────────────────
@@ -180,12 +146,13 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         if (block.timestamp > order.expiry) revert OrderExpiredError(orderId);
 
         // Verify caller is the VM bound to our vault
+        address vaultAddr = _getVault();
         IVaultManager vmManager = IVaultManager(registry.vaultManager());
-        if (vmManager.getVMVault(msg.sender) != vault) revert OnlyVM();
+        if (vmManager.getVMVault(msg.sender) != vaultAddr) revert OnlyVM();
 
         order.status = OrderStatus.Claimed;
         order.vm = msg.sender;
-        order.vault = vault;
+        order.vault = vaultAddr;
         order.claimedAt = block.timestamp;
         _removeFromOpenOrders(order.asset, orderId);
 
@@ -206,7 +173,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         vmManager.updateExposure(msg.sender, int256(exposureDelta));
 
         // Verify vault utilization is still within bounds after exposure increase
-        IOwnVault vaultContract = IOwnVault(vault);
+        IOwnVault vaultContract = IOwnVault(vaultAddr);
         uint256 currentUtil = vaultContract.utilization();
         uint256 maxUtil = vaultContract.maxUtilization();
         if (currentUtil > maxUtil) {
@@ -310,12 +277,13 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         bool isClaimed = order.status == OrderStatus.Claimed;
         bool isOpen = order.status == OrderStatus.Open;
 
+        IOwnVault vaultContract = IOwnVault(_getVault());
         if (isClaimed) {
-            if (block.timestamp < order.claimedAt + gracePeriod) {
+            if (block.timestamp < order.claimedAt + vaultContract.gracePeriod()) {
                 revert GracePeriodNotElapsed(orderId);
             }
         } else if (isOpen && order.orderType == OrderType.Redeem) {
-            if (block.timestamp < order.createdAt + claimThreshold) {
+            if (block.timestamp < order.createdAt + vaultContract.claimThreshold()) {
                 revert ClaimThresholdNotElapsed(orderId);
             }
         } else {
@@ -368,30 +336,6 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         }
 
         emit OrderExpired(orderId);
-    }
-
-    // ──────────────────────────────────────────────────────────
-    //  Admin
-    // ──────────────────────────────────────────────────────────
-
-    /// @notice Update the vault address.
-    function setVault(address newVault) external onlyAdmin {
-        vault = newVault;
-    }
-
-    /// @notice Update the grace period for force execution.
-    function setGracePeriod(uint256 newGracePeriod) external onlyAdmin {
-        gracePeriod = newGracePeriod;
-    }
-
-    /// @notice Update the claim threshold for unclaimed redeem force execution.
-    function setClaimThreshold(uint256 newClaimThreshold) external onlyAdmin {
-        claimThreshold = newClaimThreshold;
-    }
-
-    /// @notice Set the asset ticker used for ETH/USD price lookups.
-    function setETHOracleAsset(bytes32 asset) external onlyAdmin {
-        ethOracleAsset = asset;
     }
 
     // ──────────────────────────────────────────────────────────
@@ -489,7 +433,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
             uint256 collateralAmount = _convertToCollateral(
                 Math.mulDiv(order.amount, order.price, PRECISION), ethPriceData
             );
-            IOwnVault(vault).releaseCollateral(order.user, collateralAmount);
+            IOwnVault(_getVault()).releaseCollateral(order.user, collateralAmount);
 
             // Burn escrowed eTokens
             address eToken = IAssetRegistry(registry.assetRegistry()).getActiveToken(order.asset);
@@ -507,7 +451,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
             uint256 usdValue = order.amount * 10 ** (18 - decimals);
 
             uint256 collateralAmount = _convertToCollateral(usdValue, ethPriceData);
-            IOwnVault(vault).releaseCollateral(order.user, collateralAmount);
+            IOwnVault(_getVault()).releaseCollateral(order.user, collateralAmount);
 
             // Return escrowed fee to user
             _returnEscrowedFee(order.orderId);
@@ -529,7 +473,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
 
     /// @dev Convert a USD value (18 decimals) to collateral amount using ETH/USD oracle.
     function _convertToCollateral(uint256 usdValue, bytes calldata ethPriceData) private returns (uint256) {
-        uint256 ethPrice = _getETHPrice(ethPriceData);
+        uint256 ethPrice = _getCollateralPrice(ethPriceData);
         return Math.mulDiv(usdValue, PRECISION, ethPrice);
     }
 
@@ -592,16 +536,23 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         }
     }
 
-    /// @dev Get the payment token from the vault.
-    function _getPaymentToken() private view returns (address) {
-        return IOwnVault(vault).paymentToken();
+    /// @dev Get the vault address from the registry.
+    function _getVault() private view returns (address) {
+        return registry.vault();
     }
 
-    /// @dev Get the ETH/USD price from the ETH oracle.
-    function _getETHPrice(bytes calldata ethPriceData) private returns (uint256) {
-        address oracleAddr = IAssetRegistry(registry.assetRegistry()).getPrimaryOracle(ethOracleAsset);
+    /// @dev Get the payment token from the vault.
+    function _getPaymentToken() private view returns (address) {
+        return IOwnVault(_getVault()).paymentToken();
+    }
+
+    /// @dev Get the collateral (ETH/USD) price from the oracle.
+    function _getCollateralPrice(bytes calldata ethPriceData) private returns (uint256) {
+        IOwnVault vaultContract = IOwnVault(_getVault());
+        bytes32 collatAsset = vaultContract.collateralOracleAsset();
+        address oracleAddr = IAssetRegistry(registry.assetRegistry()).getPrimaryOracle(collatAsset);
         if (oracleAddr == address(0)) revert ETHOracleNotSet();
-        (uint256 price,,) = IOracleVerifier(oracleAddr).verifyPrice(ethOracleAsset, ethPriceData);
+        (uint256 price,,) = IOracleVerifier(oracleAddr).verifyPrice(collatAsset, ethPriceData);
         return price;
     }
 
@@ -619,10 +570,5 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
                 ++i;
             }
         }
-    }
-
-    /// @dev Get the registry owner (admin).
-    function _registryOwner() private view returns (address) {
-        return Ownable(address(registry)).owner();
     }
 }

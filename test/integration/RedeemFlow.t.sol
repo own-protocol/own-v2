@@ -81,9 +81,12 @@ contract RedeemFlowTest is BaseTest {
             2000
         );
 
-        market = new OwnMarket(address(protocolRegistry), address(usdcVault), 1 days, 6 hours);
-
+        protocolRegistry.setAddress(protocolRegistry.VAULT(), address(usdcVault));
+        market = new OwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
+
+        usdcVault.setGracePeriod(1 days);
+        usdcVault.setClaimThreshold(6 hours);
         protocolRegistry.setAddress(protocolRegistry.VAULT_MANAGER(), address(vaultMgr));
 
         vm.stopPrank();

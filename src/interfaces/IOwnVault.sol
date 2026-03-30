@@ -145,6 +145,28 @@ interface IOwnVault is IERC4626 {
     function totalExposure() external view returns (uint256);
 
     // ──────────────────────────────────────────────────────────
+    //  Order execution parameters (used by OwnMarket)
+    // ──────────────────────────────────────────────────────────
+
+    /// @notice Time after claim before force execution is allowed.
+    function gracePeriod() external view returns (uint256);
+
+    /// @notice Set the grace period. Only callable by admin.
+    function setGracePeriod(uint256 period) external;
+
+    /// @notice Time after placement before unclaimed redeem force execution is allowed.
+    function claimThreshold() external view returns (uint256);
+
+    /// @notice Set the claim threshold. Only callable by admin.
+    function setClaimThreshold(uint256 threshold) external;
+
+    /// @notice Asset ticker used to look up collateral (ETH) price for force execution conversions.
+    function collateralOracleAsset() external view returns (bytes32);
+
+    /// @notice Set the collateral oracle asset. Only callable by admin.
+    function setCollateralOracleAsset(bytes32 asset) external;
+
+    // ──────────────────────────────────────────────────────────
     //  Fee management
     // ──────────────────────────────────────────────────────────
 

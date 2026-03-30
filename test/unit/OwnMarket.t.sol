@@ -69,7 +69,8 @@ contract OwnMarketTest is BaseTest {
         feeCalc.setRedeemFee(3, 0);
         protocolRegistry.setAddress(keccak256("FEE_CALCULATOR"), address(feeCalc));
 
-        market = new OwnMarket(address(protocolRegistry), mockVault, GRACE_PERIOD, CLAIM_THRESHOLD);
+        protocolRegistry.setAddress(protocolRegistry.VAULT(), mockVault);
+        market = new OwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
 
         // Configure ETH oracle for force execution collateral conversion
@@ -84,13 +85,15 @@ contract OwnMarketTest is BaseTest {
         OracleConfig memory ethOracleConfig =
             OracleConfig({primaryOracle: address(oracle), secondaryOracle: address(0), pythPriceFeedId: bytes32(0)});
         assetReg.setOracleConfig(ethAsset, ethOracleConfig);
-        market.setETHOracleAsset(ethAsset);
         vm.stopPrank();
         vm.label(address(market), "OwnMarket");
 
-        // Mock the vault's payment token and collateral release
+        // Mock the vault's payment token, collateral release, grace period, claim threshold, and collateral oracle asset
         vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.paymentToken.selector), abi.encode(address(usdc)));
         vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.releaseCollateral.selector), abi.encode());
+        vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.gracePeriod.selector), abi.encode(GRACE_PERIOD));
+        vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.claimThreshold.selector), abi.encode(CLAIM_THRESHOLD));
+        vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.collateralOracleAsset.selector), abi.encode(bytes32("ETH")));
 
         _setOraclePrice(TSLA, TSLA_PRICE);
         _setOraclePrice(ethAsset, ETH_PRICE);
@@ -765,18 +768,6 @@ contract OwnMarketTest is BaseTest {
     // ══════════════════════════════════════════════════════════
     //  Admin functions
     // ══════════════════════════════════════════════════════════
-
-    function test_setGracePeriod_admin_succeeds() public {
-        vm.prank(Actors.ADMIN);
-        market.setGracePeriod(2 days);
-        assertEq(market.gracePeriod(), 2 days);
-    }
-
-    function test_setClaimThreshold_admin_succeeds() public {
-        vm.prank(Actors.ADMIN);
-        market.setClaimThreshold(12 hours);
-        assertEq(market.claimThreshold(), 12 hours);
-    }
 
     // ══════════════════════════════════════════════════════════
     //  View functions

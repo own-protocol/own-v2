@@ -81,8 +81,12 @@ contract OrderLifecycleTest is BaseTest {
             address(protocolRegistry), Actors.VM1, MAX_UTIL_BPS, 2000, 2000
         );
 
-        market = new OwnMarket(address(protocolRegistry), address(vault), GRACE_PERIOD, CLAIM_THRESHOLD);
+        protocolRegistry.setAddress(protocolRegistry.VAULT(), address(vault));
+        market = new OwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
+
+        vault.setGracePeriod(GRACE_PERIOD);
+        vault.setClaimThreshold(CLAIM_THRESHOLD);
         protocolRegistry.setAddress(protocolRegistry.VAULT_MANAGER(), address(vaultMgr));
 
         vm.stopPrank();
@@ -103,7 +107,7 @@ contract OrderLifecycleTest is BaseTest {
         OracleConfig memory ethOracleConfig =
             OracleConfig({primaryOracle: address(oracle), secondaryOracle: address(0), pythPriceFeedId: bytes32(0)});
         assetRegistry.setOracleConfig(ethAsset, ethOracleConfig);
-        market.setETHOracleAsset(ethAsset);
+        vault.setCollateralOracleAsset(ethAsset);
 
         vm.stopPrank();
 

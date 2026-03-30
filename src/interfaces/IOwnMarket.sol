@@ -76,9 +76,6 @@ interface IOwnMarket {
     /// @notice The asset is not active in the registry.
     error AssetNotActive(bytes32 asset);
 
-    /// @notice Caller is not the protocol admin.
-    error OnlyAdmin();
-
     /// @notice Only the registered VM can perform this action.
     error OnlyVM();
 
