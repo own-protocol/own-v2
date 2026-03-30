@@ -48,7 +48,7 @@ contract OracleVerifierTest is BaseTest {
     //  verifyPrice — happy path
     // ──────────────────────────────────────────────────────────
 
-    function test_verifyPrice_validSignature_succeeds() public view {
+    function test_verifyPrice_validSignature_succeeds() public {
         bytes memory priceData = _signPrice(ASSET, 250e18, block.timestamp);
         (uint256 retPrice, uint256 retTs) = verifier.verifyPrice(ASSET, priceData);
         assertEq(retPrice, 250e18);
@@ -283,7 +283,7 @@ contract OracleVerifierTest is BaseTest {
     //  Fuzz
     // ──────────────────────────────────────────────────────────
 
-    function testFuzz_verifyPrice_validPrices(uint256 price) public view {
+    function testFuzz_verifyPrice_validPrices(uint256 price) public {
         price = bound(price, 1, type(uint128).max);
         bytes memory priceData = _signPrice(ASSET, price, block.timestamp);
         (uint256 retPrice,) = verifier.verifyPrice(ASSET, priceData);

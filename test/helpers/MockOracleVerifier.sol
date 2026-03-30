@@ -72,7 +72,7 @@ contract MockOracleVerifier is IOracleVerifier {
 
     function verifyPrice(bytes32 asset, bytes calldata priceData)
         external
-        view
+        payable
         override
         returns (uint256 price, uint256 timestamp)
     {
@@ -82,6 +82,11 @@ contract MockOracleVerifier is IOracleVerifier {
         // In mock, priceData is just abi.encode(uint256 price, uint256 timestamp)
         (price, timestamp) = abi.decode(priceData, (uint256, uint256));
         if (price == 0) revert ZeroPrice();
+    }
+
+    /// @dev Mock always returns 0 fee — no ETH needed for test proofs.
+    function verifyFee(bytes calldata) external pure override returns (uint256) {
+        return 0;
     }
 
     // ──────────────────────────────────────────────────────────

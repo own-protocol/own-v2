@@ -77,23 +77,39 @@ contract PythOracleVerifier is IOracleVerifier, Ownable {
     // ──────────────────────────────────────────────────────────
 
     /// @inheritdoc IOracleVerifier
-    /// @dev For Pyth, priceData encodes (bytes[] updateData, uint64 minPublishTime, uint64 maxPublishTime).
-    ///      Parses the update within the time window and returns the verified price.
-    ///      Note: this is NOT view because Pyth's parsePriceFeedUpdates is stateful.
+    /// @dev priceData encodes (bytes[] updateData, uint64 minPublishTime, uint64 maxPublishTime).
+    ///      The caller submits a Pyth VAA blob attesting to a price within [minPublishTime, maxPublishTime].
+    ///      parsePriceFeedUpdates cryptographically verifies the VAA and returns the attested price.
+    ///      Caller must send ETH >= verifyFee(priceData) to cover the Pyth fee.
     function verifyPrice(bytes32 asset, bytes calldata priceData)
         external
-        view
+        payable
         override
         returns (uint256 price, uint256 timestamp)
     {
         bytes32 feedId = _feedIds[asset];
         if (feedId == bytes32(0)) revert FeedNotConfigured(asset);
 
-        // For Pyth inline verification, read the current cached price
-        // The caller should have pushed the update via updatePriceFeeds first
-        PythStructs.Price memory pythPrice = pyth.getPriceNoOlderThan(feedId, maxPriceAge);
+        (bytes[] memory updateData, uint64 minPublishTime, uint64 maxPublishTime) =
+            abi.decode(priceData, (bytes[], uint64, uint64));
+
+        bytes32[] memory priceIds = new bytes32[](1);
+        priceIds[0] = feedId;
+
+        uint256 fee = pyth.getUpdateFee(updateData);
+        PythStructs.PriceFeed[] memory feeds =
+            pyth.parsePriceFeedUpdates{value: fee}(updateData, priceIds, minPublishTime, maxPublishTime);
+
+        PythStructs.Price memory pythPrice = feeds[0].price;
         price = _normalizePythPrice(asset, pythPrice);
-        timestamp = pythPrice.publishTime;
+        timestamp = uint256(uint64(pythPrice.publishTime));
+    }
+
+    /// @inheritdoc IOracleVerifier
+    /// @dev Decodes updateData from priceData and returns pyth.getUpdateFee(updateData).
+    function verifyFee(bytes calldata priceData) external view override returns (uint256) {
+        (bytes[] memory updateData,,) = abi.decode(priceData, (bytes[], uint64, uint64));
+        return pyth.getUpdateFee(updateData);
     }
 
     // ──────────────────────────────────────────────────────────

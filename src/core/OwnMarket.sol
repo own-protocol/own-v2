@@ -259,11 +259,15 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
     }
 
     /// @inheritdoc IOwnMarket
+    /// @dev Caller must send ETH to cover Pyth oracle fees for verifyPrice calls.
+    ///      Use verifyFee() on the relevant oracle to calculate the required amounts.
+    ///      Any unused ETH is refunded at the end of the call.
+    ///      For in-house oracle, no ETH is needed and msg.value should be 0.
     function forceExecute(
         uint256 orderId,
         bytes calldata priceProofData,
         bytes calldata ethPriceData
-    ) external nonReentrant {
+    ) external payable nonReentrant {
         Order storage order = _orders[orderId];
         if (order.user == address(0)) revert OrderNotFound(orderId);
         if (order.user != msg.sender) revert OnlyOrderOwner(orderId);
@@ -304,6 +308,13 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         }
 
         emit OrderForceExecuted(orderId, msg.sender, priceReachable);
+
+        // Refund any unused ETH (e.g. in-house oracle fees are 0; or priceData path skipped collateral)
+        uint256 remaining = address(this).balance;
+        if (remaining > 0) {
+            (bool ok,) = payable(msg.sender).call{value: remaining}("");
+            if (!ok) revert ETHRefundFailed();
+        }
     }
 
     // ──────────────────────────────────────────────────────────
@@ -458,6 +469,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
     }
 
     /// @dev Convert a USD value (18 decimals) to collateral amount using the vault's collateral oracle.
+    ///      Forwards the exact ETH fee required by the oracle for verifyPrice.
     function _convertToCollateral(
         Order storage order,
         uint256 usdValue,
@@ -466,7 +478,9 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         bytes32 collatAsset = IOwnVault(order.vault).collateralOracleAsset();
         address oracleAddr = IAssetRegistry(registry.assetRegistry()).getPrimaryOracle(collatAsset);
         if (oracleAddr == address(0)) revert CollateralOracleNotSet();
-        (uint256 price,) = IOracleVerifier(oracleAddr).verifyPrice(collatAsset, ethPriceData);
+        IOracleVerifier oracle = IOracleVerifier(oracleAddr);
+        uint256 fee = oracle.verifyFee(ethPriceData);
+        (uint256 price,) = oracle.verifyPrice{value: fee}(collatAsset, ethPriceData);
         return Math.mulDiv(usdValue, PRECISION, price);
     }
 
@@ -488,6 +502,8 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
     }
 
     /// @dev Verify whether the set price was reachable during the time window.
+    ///      For Pyth oracle, each verifyPrice call consumes ETH from msg.value.
+    ///      Fees are computed via verifyFee() before each call.
     function _verifyPriceRange(Order storage order, bytes calldata priceProofData) private returns (bool) {
         if (priceProofData.length == 0) return false;
 
@@ -497,24 +513,27 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         address oracleAddr = IAssetRegistry(registry.assetRegistry()).getPrimaryOracle(order.asset);
         if (oracleAddr == address(0)) return false;
 
-        IOracleVerifier oracle = IOracleVerifier(oracleAddr);
-
         uint256 windowStart = order.claimedAt > 0 ? order.claimedAt : order.createdAt;
-        uint256 windowEnd = block.timestamp;
 
-        (uint256 lowPrice, uint256 lowTimestamp) = oracle.verifyPrice(order.asset, lowPriceData);
-        if (lowTimestamp < windowStart || lowTimestamp > windowEnd) return false;
+        (uint256 lowPrice, uint256 lowTs) = _callVerifyPrice(oracleAddr, order.asset, lowPriceData);
+        if (lowTs < windowStart || lowTs > block.timestamp) return false;
 
-        (uint256 highPrice, uint256 highTimestamp) = oracle.verifyPrice(order.asset, highPriceData);
-        if (highTimestamp < windowStart || highTimestamp > windowEnd) return false;
+        (uint256 highPrice, uint256 highTs) = _callVerifyPrice(oracleAddr, order.asset, highPriceData);
+        if (highTs < windowStart || highTs > block.timestamp) return false;
 
         if (lowPrice > highPrice) (lowPrice, highPrice) = (highPrice, lowPrice);
 
-        if (order.orderType == OrderType.Mint) {
-            return lowPrice <= order.price;
-        } else {
-            return highPrice >= order.price;
-        }
+        return order.orderType == OrderType.Mint ? lowPrice <= order.price : highPrice >= order.price;
+    }
+
+    /// @dev Call verifyFee then verifyPrice on the oracle, forwarding the exact fee.
+    function _callVerifyPrice(address oracleAddr, bytes32 asset, bytes memory proofData)
+        private
+        returns (uint256 price, uint256 timestamp)
+    {
+        IOracleVerifier oracle = IOracleVerifier(oracleAddr);
+        uint256 fee = oracle.verifyFee(proofData);
+        return oracle.verifyPrice{value: fee}(asset, proofData);
     }
 
     /// @dev Calculate the USD exposure for an order.

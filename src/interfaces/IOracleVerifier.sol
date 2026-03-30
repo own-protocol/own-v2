@@ -59,14 +59,22 @@ interface IOracleVerifier {
     /// @notice Verify a signed price proof inline. Used by force execution to
     ///         prove a price existed at a specific timestamp without requiring
     ///         it to be pre-pushed on-chain.
+    ///         For Pyth: caller must send ETH to cover parsePriceFeedUpdates fee.
+    ///         For in-house: no ETH required (pure ECDSA verification).
     /// @param asset     Asset ticker.
     /// @param priceData Backend-specific encoded signed price proof.
     /// @return price     Verified price in 18 decimals.
     /// @return timestamp Timestamp of the price observation.
     function verifyPrice(bytes32 asset, bytes calldata priceData)
         external
-        view
+        payable
         returns (uint256 price, uint256 timestamp);
+
+    /// @notice Return the ETH fee required to call verifyPrice for the given priceData.
+    ///         For Pyth: returns pyth.getUpdateFee(updateData).
+    ///         For in-house: always returns 0.
+    /// @param priceData The same priceData that will be passed to verifyPrice.
+    function verifyFee(bytes calldata priceData) external view returns (uint256);
 
     // ──────────────────────────────────────────────────────────
     //  Admin

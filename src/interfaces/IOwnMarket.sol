@@ -99,6 +99,9 @@ interface IOwnMarket {
     /// @notice The vault does not support the requested asset.
     error VaultAssetNotSupported(address vault, bytes32 asset);
 
+    /// @notice ETH refund to caller failed at end of forceExecute.
+    error ETHRefundFailed();
+
     // ──────────────────────────────────────────────────────────
     //  Order placement
     // ──────────────────────────────────────────────────────────
@@ -166,10 +169,14 @@ interface IOwnMarket {
     /// @notice Force-execute an order after the grace period when the VM has
     ///         not confirmed or closed. For claimed orders (mint & redeem) and
     ///         unclaimed redeem orders past the claim threshold.
+    ///         Caller must send ETH to cover oracle verifyPrice fees (Pyth only).
+    ///         For in-house oracle, msg.value should be 0. Unused ETH is refunded.
     /// @param orderId        Order to force-execute.
     /// @param priceProofData Two oracle price proofs (low + high) to verify price reachability.
     /// @param ethPriceData   Oracle price data for ETH/USD conversion (needed when releasing collateral).
-    function forceExecute(uint256 orderId, bytes calldata priceProofData, bytes calldata ethPriceData) external;
+    function forceExecute(uint256 orderId, bytes calldata priceProofData, bytes calldata ethPriceData)
+        external
+        payable;
 
     // ──────────────────────────────────────────────────────────
     //  Permissionless

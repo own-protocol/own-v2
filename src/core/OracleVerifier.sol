@@ -113,9 +113,10 @@ contract OracleVerifier is IOracleVerifier, Ownable, Multicall {
     // ──────────────────────────────────────────────────────────
 
     /// @inheritdoc IOracleVerifier
+    /// @dev Pure ECDSA verification — no ETH required. payable to satisfy the interface.
     function verifyPrice(bytes32 asset, bytes calldata priceData)
         external
-        view
+        payable
         override
         returns (uint256 price, uint256 timestamp)
     {
@@ -130,6 +131,12 @@ contract OracleVerifier is IOracleVerifier, Ownable, Multicall {
             keccak256(abi.encode(asset, price, timestamp, block.chainid, address(this)));
         address recoveredSigner = messageHash.toEthSignedMessageHash().recover(v, r, s);
         if (!_signers[recoveredSigner]) revert UnauthorizedSigner(recoveredSigner);
+    }
+
+    /// @inheritdoc IOracleVerifier
+    /// @dev In-house oracle never needs ETH for proof verification.
+    function verifyFee(bytes calldata) external pure override returns (uint256) {
+        return 0;
     }
 
     // ──────────────────────────────────────────────────────────
