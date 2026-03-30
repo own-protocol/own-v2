@@ -187,6 +187,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         order.vm = msg.sender;
         order.vault = vault;
         order.claimedAt = block.timestamp;
+        _removeFromOpenOrders(order.asset, orderId);
 
         // For mint: calculate fee, hold in escrow, release net to VM
         if (order.orderType == OrderType.Mint) {
@@ -283,6 +284,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         if (order.status != OrderStatus.Open) revert InvalidOrderStatus(orderId, order.status);
 
         order.status = OrderStatus.Cancelled;
+        _removeFromOpenOrders(order.asset, orderId);
 
         if (order.orderType == OrderType.Mint) {
             address paymentToken = _getPaymentToken();
@@ -321,6 +323,9 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         }
 
         order.status = OrderStatus.ForceExecuted;
+        if (isOpen) {
+            _removeFromOpenOrders(order.asset, orderId);
+        }
 
         bool priceReachable = _verifyPriceRange(order, priceProofData);
 
@@ -351,6 +356,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         if (order.status != OrderStatus.Open) revert InvalidOrderStatus(orderId, order.status);
 
         order.status = OrderStatus.Expired;
+        _removeFromOpenOrders(order.asset, orderId);
 
         // Return escrowed funds
         if (order.orderType == OrderType.Mint) {
@@ -597,6 +603,22 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         require(oracleAddr != address(0), "OwnMarket: ETH oracle not set");
         (uint256 price,,) = IOracleVerifier(oracleAddr).verifyPrice(ethOracleAsset, ethPriceData);
         return price;
+    }
+
+    /// @dev Remove an order from the open orders array (swap-and-pop).
+    function _removeFromOpenOrders(bytes32 asset, uint256 orderId) private {
+        uint256[] storage ids = _openOrders[asset];
+        uint256 len = ids.length;
+        for (uint256 i; i < len;) {
+            if (ids[i] == orderId) {
+                ids[i] = ids[len - 1];
+                ids.pop();
+                return;
+            }
+            unchecked {
+                ++i;
+            }
+        }
     }
 
     /// @dev Get the registry owner (admin).
