@@ -42,7 +42,9 @@ contract OracleVerifier is IOracleVerifier, Ownable, Multicall {
     //  Constructor
     // ──────────────────────────────────────────────────────────
 
-    constructor(address admin) Ownable(admin) {}
+    constructor(
+        address admin
+    ) Ownable(admin) {}
 
     // ──────────────────────────────────────────────────────────
     //  Push — update a single asset price
@@ -59,8 +61,7 @@ contract OracleVerifier is IOracleVerifier, Ownable, Multicall {
         if (price == 0) revert ZeroPrice();
 
         // Verify signature
-        bytes32 messageHash =
-            keccak256(abi.encode(asset, price, timestamp, block.chainid, address(this)));
+        bytes32 messageHash = keccak256(abi.encode(asset, price, timestamp, block.chainid, address(this)));
         address recoveredSigner = messageHash.toEthSignedMessageHash().recover(v, r, s);
         if (!_signers[recoveredSigner]) revert UnauthorizedSigner(recoveredSigner);
 
@@ -93,7 +94,9 @@ contract OracleVerifier is IOracleVerifier, Ownable, Multicall {
 
     /// @inheritdoc IOracleVerifier
     /// @dev For in-house oracle, this is a no-op. Use updatePrice() + multicall instead.
-    function updatePriceFeeds(bytes calldata) external payable override {
+    function updatePriceFeeds(
+        bytes calldata
+    ) external payable override {
         revert("OracleVerifier: use updatePrice + multicall");
     }
 
@@ -102,7 +105,9 @@ contract OracleVerifier is IOracleVerifier, Ownable, Multicall {
     // ──────────────────────────────────────────────────────────
 
     /// @inheritdoc IOracleVerifier
-    function getPrice(bytes32 asset) external view override returns (uint256 price, uint256 timestamp) {
+    function getPrice(
+        bytes32 asset
+    ) external view override returns (uint256 price, uint256 timestamp) {
         PriceEntry storage pe = _prices[asset];
         if (pe.price == 0) revert PriceNotAvailable(asset);
         return (pe.price, pe.timestamp);
@@ -114,12 +119,10 @@ contract OracleVerifier is IOracleVerifier, Ownable, Multicall {
 
     /// @inheritdoc IOracleVerifier
     /// @dev Pure ECDSA verification — no ETH required. payable to satisfy the interface.
-    function verifyPrice(bytes32 asset, bytes calldata priceData)
-        external
-        payable
-        override
-        returns (uint256 price, uint256 timestamp)
-    {
+    function verifyPrice(
+        bytes32 asset,
+        bytes calldata priceData
+    ) external payable override returns (uint256 price, uint256 timestamp) {
         uint8 v;
         bytes32 r;
         bytes32 s;
@@ -127,15 +130,16 @@ contract OracleVerifier is IOracleVerifier, Ownable, Multicall {
 
         if (price == 0) revert ZeroPrice();
 
-        bytes32 messageHash =
-            keccak256(abi.encode(asset, price, timestamp, block.chainid, address(this)));
+        bytes32 messageHash = keccak256(abi.encode(asset, price, timestamp, block.chainid, address(this)));
         address recoveredSigner = messageHash.toEthSignedMessageHash().recover(v, r, s);
         if (!_signers[recoveredSigner]) revert UnauthorizedSigner(recoveredSigner);
     }
 
     /// @inheritdoc IOracleVerifier
     /// @dev In-house oracle never needs ETH for proof verification.
-    function verifyFee(bytes calldata) external pure override returns (uint256) {
+    function verifyFee(
+        bytes calldata
+    ) external pure override returns (uint256) {
         return 0;
     }
 
@@ -144,20 +148,26 @@ contract OracleVerifier is IOracleVerifier, Ownable, Multicall {
     // ──────────────────────────────────────────────────────────
 
     /// @inheritdoc IOracleVerifier
-    function addSigner(address signer) external onlyOwner {
+    function addSigner(
+        address signer
+    ) external onlyOwner {
         if (signer == address(0)) revert ZeroAddress();
         _signers[signer] = true;
         emit SignerAdded(signer);
     }
 
     /// @inheritdoc IOracleVerifier
-    function removeSigner(address signer) external onlyOwner {
+    function removeSigner(
+        address signer
+    ) external onlyOwner {
         _signers[signer] = false;
         emit SignerRemoved(signer);
     }
 
     /// @inheritdoc IOracleVerifier
-    function isSigner(address account) external view returns (bool) {
+    function isSigner(
+        address account
+    ) external view returns (bool) {
         return _signers[account];
     }
 

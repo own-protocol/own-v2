@@ -147,20 +147,26 @@ contract AssetRegistry is IAssetRegistry, Ownable {
     }
 
     /// @inheritdoc IAssetRegistry
-    function switchPrimaryOracle(bytes32 ticker) external onlyOwner {
+    function switchPrimaryOracle(
+        bytes32 ticker
+    ) external onlyOwner {
         if (!_registered[ticker]) revert AssetNotFound(ticker);
         OracleConfig storage config = _oracleConfigs[ticker];
         (config.primaryOracle, config.secondaryOracle) = (config.secondaryOracle, config.primaryOracle);
     }
 
     /// @inheritdoc IAssetRegistry
-    function getOracleConfig(bytes32 ticker) external view returns (OracleConfig memory) {
+    function getOracleConfig(
+        bytes32 ticker
+    ) external view returns (OracleConfig memory) {
         if (!_registered[ticker]) revert AssetNotFound(ticker);
         return _oracleConfigs[ticker];
     }
 
     /// @inheritdoc IAssetRegistry
-    function getPrimaryOracle(bytes32 ticker) external view returns (address) {
+    function getPrimaryOracle(
+        bytes32 ticker
+    ) external view returns (address) {
         if (!_registered[ticker]) revert AssetNotFound(ticker);
         return _oracleConfigs[ticker].primaryOracle;
     }

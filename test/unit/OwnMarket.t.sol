@@ -72,12 +72,8 @@ contract OwnMarketTest is BaseTest {
 
         // Configure ETH oracle for force execution collateral conversion
         bytes32 ethAsset = bytes32("ETH");
-        AssetConfig memory ethConfig = AssetConfig({
-            activeToken: address(0),
-            legacyTokens: new address[](0),
-            active: true,
-            volatilityLevel: 1
-        });
+        AssetConfig memory ethConfig =
+            AssetConfig({activeToken: address(0), legacyTokens: new address[](0), active: true, volatilityLevel: 1});
         assetReg.addAsset(ethAsset, address(weth), ethConfig);
         OracleConfig memory ethOracleConfig =
             OracleConfig({primaryOracle: address(oracle), secondaryOracle: address(0), pythPriceFeedId: bytes32(0)});
@@ -86,7 +82,9 @@ contract OwnMarketTest is BaseTest {
         vm.label(address(market), "OwnMarket");
 
         // Mock the factory's isRegisteredVault
-        vm.mockCall(mockFactory, abi.encodeWithSelector(IVaultFactory.isRegisteredVault.selector, mockVault), abi.encode(true));
+        vm.mockCall(
+            mockFactory, abi.encodeWithSelector(IVaultFactory.isRegisteredVault.selector, mockVault), abi.encode(true)
+        );
 
         // Mock the vault's payment token, collateral release, grace period, claim threshold, collateral oracle asset, and asset support
         vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.paymentToken.selector), abi.encode(address(usdc)));
@@ -94,7 +92,9 @@ contract OwnMarketTest is BaseTest {
         vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.gracePeriod.selector), abi.encode(GRACE_PERIOD));
         vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.claimThreshold.selector), abi.encode(CLAIM_THRESHOLD));
         vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.mintBuffer.selector), abi.encode(uint256(900)));
-        vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.collateralOracleAsset.selector), abi.encode(bytes32("ETH")));
+        vm.mockCall(
+            mockVault, abi.encodeWithSelector(IOwnVault.collateralOracleAsset.selector), abi.encode(bytes32("ETH"))
+        );
         vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.isAssetSupported.selector), abi.encode(true));
 
         _setOraclePrice(TSLA, TSLA_PRICE);
@@ -125,7 +125,9 @@ contract OwnMarketTest is BaseTest {
         vm.stopPrank();
     }
 
-    function _mockVault(address vmAddr) internal {
+    function _mockVault(
+        address vmAddr
+    ) internal {
         vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.vm.selector), abi.encode(vmAddr));
         vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.updateExposure.selector), abi.encode());
         vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.depositFees.selector), abi.encode());
@@ -592,9 +594,7 @@ contract OwnMarketTest is BaseTest {
 
         // Mock collateral oracle and release for force execution
         vm.mockCall(
-            mockVault,
-            abi.encodeWithSelector(IOwnVault.collateralOracleAsset.selector),
-            abi.encode(bytes32("ETH"))
+            mockVault, abi.encodeWithSelector(IOwnVault.collateralOracleAsset.selector), abi.encode(bytes32("ETH"))
         );
         vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.releaseCollateral.selector), abi.encode());
 
@@ -726,9 +726,7 @@ contract OwnMarketTest is BaseTest {
         vm.warp(block.timestamp + GRACE_PERIOD + 1);
 
         vm.prank(Actors.MINTER1);
-        vm.expectRevert(
-            abi.encodeWithSelector(IOwnMarket.InvalidOrderStatus.selector, orderId, OrderStatus.Confirmed)
-        );
+        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.InvalidOrderStatus.selector, orderId, OrderStatus.Confirmed));
         market.forceExecute(orderId, "", "");
     }
 
@@ -835,7 +833,9 @@ contract OwnMarketTest is BaseTest {
     //  Fuzz
     // ══════════════════════════════════════════════════════════
 
-    function testFuzz_placeMintOrder_anyAmount(uint256 amount) public {
+    function testFuzz_placeMintOrder_anyAmount(
+        uint256 amount
+    ) public {
         amount = bound(amount, 1, type(uint128).max);
 
         usdc.mint(Actors.MINTER1, amount);
@@ -850,7 +850,9 @@ contract OwnMarketTest is BaseTest {
         assertEq(usdc.balanceOf(address(market)), amount);
     }
 
-    function testFuzz_fullMintFlow(uint256 amount) public {
+    function testFuzz_fullMintFlow(
+        uint256 amount
+    ) public {
         amount = bound(amount, 1e6, 1_000_000e6); // 1 USDC to 1M USDC
 
         _mockVault(Actors.VM1);

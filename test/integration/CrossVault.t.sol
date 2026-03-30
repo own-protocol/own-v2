@@ -99,7 +99,6 @@ contract CrossVaultTest is BaseTest {
         weth.approve(address(wethVault), 100e18);
         wethVault.deposit(100e18, Actors.LP2);
         vm.stopPrank();
-
     }
 
     // ══════════════════════════════════════════════════════════

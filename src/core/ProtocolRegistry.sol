@@ -97,7 +97,9 @@ contract ProtocolRegistry is IProtocolRegistry, Ownable {
     }
 
     /// @inheritdoc IProtocolRegistry
-    function setProtocolShareBps(uint256 shareBps) external override onlyOwner {
+    function setProtocolShareBps(
+        uint256 shareBps
+    ) external override onlyOwner {
         require(shareBps <= 10_000, "ProtocolRegistry: share > 100%");
         _protocolShareBps = shareBps;
     }

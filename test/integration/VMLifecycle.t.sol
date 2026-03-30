@@ -4,8 +4,8 @@ pragma solidity 0.8.28;
 import {Actors} from "../helpers/Actors.sol";
 import {BaseTest} from "../helpers/BaseTest.sol";
 
-import {AssetConfig, OrderStatus} from "../../src/interfaces/types/Types.sol";
 import {IOwnVault} from "../../src/interfaces/IOwnVault.sol";
+import {AssetConfig, OrderStatus} from "../../src/interfaces/types/Types.sol";
 
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {FeeCalculator} from "../../src/core/FeeCalculator.sol";
@@ -56,7 +56,8 @@ contract VMLifecycleTest is BaseTest {
         protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), address(factory));
 
         usdcVault = OwnVault(factory.createVault(address(usdc), Actors.VM1, "Own USDC Vault", "oUSDC", 8000, 2000, 900));
-        usdcVault2 = OwnVault(factory.createVault(address(usdc), Actors.VM2, "Own USDC Vault 2", "oUSDC2", 8000, 2000, 900));
+        usdcVault2 =
+            OwnVault(factory.createVault(address(usdc), Actors.VM2, "Own USDC Vault 2", "oUSDC2", 8000, 2000, 900));
 
         eTSLA = new EToken("Own Tesla", "eTSLA", TSLA, address(protocolRegistry), address(usdc));
 
@@ -108,9 +109,8 @@ contract VMLifecycleTest is BaseTest {
         _fundUSDC(Actors.MINTER1, MINT_AMOUNT);
         vm.startPrank(Actors.MINTER1);
         usdc.approve(address(market), MINT_AMOUNT);
-        uint256 orderId = market.placeMintOrder(
-            address(usdcVault), TSLA, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days
-        );
+        uint256 orderId =
+            market.placeMintOrder(address(usdcVault), TSLA, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
         vm.stopPrank();
 
         vm.prank(Actors.VM1);
@@ -124,9 +124,8 @@ contract VMLifecycleTest is BaseTest {
         _fundUSDC(Actors.MINTER1, MINT_AMOUNT);
         vm.startPrank(Actors.MINTER1);
         usdc.approve(address(market), MINT_AMOUNT);
-        uint256 orderId = market.placeMintOrder(
-            address(usdcVault), TSLA, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days
-        );
+        uint256 orderId =
+            market.placeMintOrder(address(usdcVault), TSLA, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
         vm.stopPrank();
 
         // VM2 is bound to usdcVault2, not usdcVault (which is the registered vault)
@@ -144,9 +143,8 @@ contract VMLifecycleTest is BaseTest {
         _fundUSDC(Actors.MINTER1, MINT_AMOUNT);
         vm.startPrank(Actors.MINTER1);
         usdc.approve(address(market), MINT_AMOUNT);
-        uint256 orderId = market.placeMintOrder(
-            address(usdcVault), TSLA, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days
-        );
+        uint256 orderId =
+            market.placeMintOrder(address(usdcVault), TSLA, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
         vm.stopPrank();
 
         // 2. VM claims and confirms

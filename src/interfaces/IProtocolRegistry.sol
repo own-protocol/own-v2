@@ -78,7 +78,9 @@ interface IProtocolRegistry {
 
     /// @notice Set the protocol's share of order fees. Only callable by admin.
     /// @param shareBps Protocol share in basis points (e.g., 2000 = 20%).
-    function setProtocolShareBps(uint256 shareBps) external;
+    function setProtocolShareBps(
+        uint256 shareBps
+    ) external;
 
     /// @notice Returns the timelock delay duration in seconds.
     function timelockDelay() external view returns (uint256);

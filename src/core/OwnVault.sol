@@ -16,10 +16,11 @@ import {
 } from "../interfaces/types/Types.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
-import {Multicall} from "@openzeppelin/contracts/utils/Multicall.sol";
+
 import {ERC20, IERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {ERC4626} from "@openzeppelin/contracts/token/ERC20/extensions/ERC4626.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {Multicall} from "@openzeppelin/contracts/utils/Multicall.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
@@ -363,8 +364,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
         // Check that withdrawal won't breach max utilization (in USD terms)
         if (_totalExposureUSD > 0 && _collateralValueUSD > 0) {
             // Estimate collateral value after withdrawal
-            uint256 collateralAfter =
-                _collateralValueUSD - _collateralValueUSD.mulDiv(assets, totalAssets());
+            uint256 collateralAfter = _collateralValueUSD - _collateralValueUSD.mulDiv(assets, totalAssets());
             if (collateralAfter > 0) {
                 uint256 utilizationAfter = _totalExposureUSD.mulDiv(BPS, collateralAfter);
                 if (utilizationAfter > _maxUtilization) {
@@ -408,7 +408,9 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
     }
 
     /// @inheritdoc IOwnVault
-    function halt(bytes32 reason) external onlyAdmin {
+    function halt(
+        bytes32 reason
+    ) external onlyAdmin {
         _vaultStatus = VaultStatus.Halted;
         emit VaultHalted(reason);
     }
@@ -426,13 +428,17 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
     }
 
     /// @inheritdoc IOwnVault
-    function unhaltAsset(bytes32 asset_) external onlyAdmin {
+    function unhaltAsset(
+        bytes32 asset_
+    ) external onlyAdmin {
         _assetHalted[asset_] = false;
         emit AssetUnhalted(asset_);
     }
 
     /// @inheritdoc IOwnVault
-    function isAssetHalted(bytes32 asset_) external view returns (bool) {
+    function isAssetHalted(
+        bytes32 asset_
+    ) external view returns (bool) {
         return _assetHalted[asset_];
     }
 
@@ -464,7 +470,9 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
     }
 
     /// @inheritdoc IOwnVault
-    function setMaxUtilization(uint256 maxUtilBps) external onlyAdmin {
+    function setMaxUtilization(
+        uint256 maxUtilBps
+    ) external onlyAdmin {
         _maxUtilization = maxUtilBps;
     }
 
@@ -479,17 +487,23 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
     }
 
     /// @inheritdoc IOwnVault
-    function assetExposure(bytes32 asset_) external view returns (uint256) {
+    function assetExposure(
+        bytes32 asset_
+    ) external view returns (uint256) {
         return _assetExposure[asset_];
     }
 
     /// @inheritdoc IOwnVault
-    function assetExposureUSD(bytes32 asset_) external view returns (uint256) {
+    function assetExposureUSD(
+        bytes32 asset_
+    ) external view returns (uint256) {
         return _assetExposureUSD[asset_];
     }
 
     /// @inheritdoc IOwnVault
-    function assetLastUpdated(bytes32 asset_) external view returns (uint256) {
+    function assetLastUpdated(
+        bytes32 asset_
+    ) external view returns (uint256) {
         return _assetLastUpdated[asset_];
     }
 
@@ -517,7 +531,9 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
     }
 
     /// @inheritdoc IOwnVault
-    function updateAssetValuation(bytes32 asset_) external {
+    function updateAssetValuation(
+        bytes32 asset_
+    ) external {
         address oracleAddr = IAssetRegistry(registry.assetRegistry()).getPrimaryOracle(asset_);
         if (oracleAddr == address(0)) revert PriceNotAvailable(asset_);
 
@@ -546,7 +562,9 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
     }
 
     /// @inheritdoc IOwnVault
-    function setWithdrawalWaitPeriod(uint256 period) external onlyAdmin {
+    function setWithdrawalWaitPeriod(
+        uint256 period
+    ) external onlyAdmin {
         _withdrawalWaitPeriod = period;
     }
 
@@ -560,7 +578,9 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
     }
 
     /// @inheritdoc IOwnVault
-    function setGracePeriod(uint256 period) external onlyAdmin {
+    function setGracePeriod(
+        uint256 period
+    ) external onlyAdmin {
         _gracePeriod = period;
     }
 
@@ -570,7 +590,9 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
     }
 
     /// @inheritdoc IOwnVault
-    function setClaimThreshold(uint256 threshold) external onlyAdmin {
+    function setClaimThreshold(
+        uint256 threshold
+    ) external onlyAdmin {
         _claimThreshold = threshold;
     }
 
@@ -580,15 +602,21 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
     }
 
     /// @inheritdoc IOwnVault
-    function setCollateralOracleAsset(bytes32 asset_) external onlyAdmin {
+    function setCollateralOracleAsset(
+        bytes32 asset_
+    ) external onlyAdmin {
         _collateralOracleAsset = asset_;
     }
 
     /// @inheritdoc IOwnVault
-    function mintBuffer() external view override returns (uint256) { return _mintBuffer; }
+    function mintBuffer() external view override returns (uint256) {
+        return _mintBuffer;
+    }
 
     /// @inheritdoc IOwnVault
-    function setMintBuffer(uint256 buffer) external override onlyAdmin {
+    function setMintBuffer(
+        uint256 buffer
+    ) external override onlyAdmin {
         _mintBuffer = buffer;
     }
 
@@ -626,7 +654,9 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
     }
 
     /// @inheritdoc IOwnVault
-    function setVMShareBps(uint256 shareBps) external onlyVM {
+    function setVMShareBps(
+        uint256 shareBps
+    ) external onlyVM {
         if (shareBps > BPS) revert ShareTooHigh(shareBps, BPS);
         uint256 oldShare = _vmShareBps;
         _vmShareBps = shareBps;
@@ -684,7 +714,9 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
     }
 
     /// @inheritdoc IOwnVault
-    function claimableLPRewards(address account) external view returns (uint256 amount) {
+    function claimableLPRewards(
+        address account
+    ) external view returns (uint256 amount) {
         uint256 userPaid = _lpCheckpoint[account];
         amount = _lpAccruedFees[account] + balanceOf(account).mulDiv(_lpRewardsPerShare - userPaid, PRECISION);
     }
@@ -694,19 +726,25 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
     // ──────────────────────────────────────────────────────────
 
     /// @inheritdoc IOwnVault
-    function enableAsset(bytes32 asset_) external onlyVM {
+    function enableAsset(
+        bytes32 asset_
+    ) external onlyVM {
         _supportedAssets[asset_] = true;
         emit AssetEnabled(asset_);
     }
 
     /// @inheritdoc IOwnVault
-    function disableAsset(bytes32 asset_) external onlyVM {
+    function disableAsset(
+        bytes32 asset_
+    ) external onlyVM {
         _supportedAssets[asset_] = false;
         emit AssetDisabled(asset_);
     }
 
     /// @inheritdoc IOwnVault
-    function isAssetSupported(bytes32 asset_) external view returns (bool) {
+    function isAssetSupported(
+        bytes32 asset_
+    ) external view returns (bool) {
         return _supportedAssets[asset_];
     }
 
@@ -715,7 +753,9 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
     // ──────────────────────────────────────────────────────────
 
     /// @inheritdoc IOwnVault
-    function setPaymentToken(address token) external onlyVM {
+    function setPaymentToken(
+        address token
+    ) external onlyVM {
         if (token == address(0)) revert ZeroAddress();
         if (_protocolFees != 0 || _vmFees != 0) revert OutstandingFeesExist();
 
@@ -746,7 +786,9 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
     }
 
     /// @dev Settle pending LP rewards for an account.
-    function _settleLPReward(address account) private {
+    function _settleLPReward(
+        address account
+    ) private {
         uint256 currentRPS = _lpRewardsPerShare;
         uint256 userPaid = _lpCheckpoint[account];
         if (currentRPS > userPaid) {
@@ -759,7 +801,9 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
     }
 
     /// @dev Settle and claim LP rewards for an account (used by fulfillWithdrawal).
-    function _claimLPRewardsFor(address account) private {
+    function _claimLPRewardsFor(
+        address account
+    ) private {
         _settleLPReward(account);
 
         uint256 amount = _lpAccruedFees[account];
@@ -795,7 +839,9 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
     // ──────────────────────────────────────────────────────────
 
     /// @dev Remove a request ID from the pending withdrawal list (swap-and-pop).
-    function _removePendingRequest(uint256 requestId) private {
+    function _removePendingRequest(
+        uint256 requestId
+    ) private {
         uint256 len = _pendingRequestIds.length;
         for (uint256 i; i < len;) {
             if (_pendingRequestIds[i] == requestId) {
@@ -810,7 +856,9 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
     }
 
     /// @dev Remove a request ID from the pending deposit list (swap-and-pop).
-    function _removePendingDeposit(uint256 requestId) private {
+    function _removePendingDeposit(
+        uint256 requestId
+    ) private {
         uint256 len = _pendingDepositIds.length;
         for (uint256 i; i < len;) {
             if (_pendingDepositIds[i] == requestId) {
@@ -839,19 +887,19 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
     //  Required overrides for diamond inheritance
     // ──────────────────────────────────────────────────────────
 
-    function withdraw(uint256 assets, address receiver, address own)
-        public
-        override(ERC4626, IERC4626)
-        returns (uint256)
-    {
+    function withdraw(
+        uint256 assets,
+        address receiver,
+        address own
+    ) public override(ERC4626, IERC4626) returns (uint256) {
         return super.withdraw(assets, receiver, own);
     }
 
-    function redeem(uint256 shares, address receiver, address own)
-        public
-        override(ERC4626, IERC4626)
-        returns (uint256)
-    {
+    function redeem(
+        uint256 shares,
+        address receiver,
+        address own
+    ) public override(ERC4626, IERC4626) returns (uint256) {
         return super.redeem(shares, receiver, own);
     }
 
@@ -859,37 +907,53 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
         return super.totalAssets();
     }
 
-    function convertToShares(uint256 assets) public view override(ERC4626, IERC4626) returns (uint256) {
+    function convertToShares(
+        uint256 assets
+    ) public view override(ERC4626, IERC4626) returns (uint256) {
         return super.convertToShares(assets);
     }
 
-    function convertToAssets(uint256 shares) public view override(ERC4626, IERC4626) returns (uint256) {
+    function convertToAssets(
+        uint256 shares
+    ) public view override(ERC4626, IERC4626) returns (uint256) {
         return super.convertToAssets(shares);
     }
 
-    function maxDeposit(address) public view override(ERC4626, IERC4626) returns (uint256) {
+    function maxDeposit(
+        address
+    ) public view override(ERC4626, IERC4626) returns (uint256) {
         if (_vaultStatus != VaultStatus.Active) return 0;
         return type(uint256).max;
     }
 
-    function maxMint(address) public view override(ERC4626, IERC4626) returns (uint256) {
+    function maxMint(
+        address
+    ) public view override(ERC4626, IERC4626) returns (uint256) {
         if (_vaultStatus != VaultStatus.Active) return 0;
         return type(uint256).max;
     }
 
-    function previewDeposit(uint256 assets) public view override(ERC4626, IERC4626) returns (uint256) {
+    function previewDeposit(
+        uint256 assets
+    ) public view override(ERC4626, IERC4626) returns (uint256) {
         return super.previewDeposit(assets);
     }
 
-    function previewMint(uint256 shares) public view override(ERC4626, IERC4626) returns (uint256) {
+    function previewMint(
+        uint256 shares
+    ) public view override(ERC4626, IERC4626) returns (uint256) {
         return super.previewMint(shares);
     }
 
-    function previewWithdraw(uint256 assets) public view override(ERC4626, IERC4626) returns (uint256) {
+    function previewWithdraw(
+        uint256 assets
+    ) public view override(ERC4626, IERC4626) returns (uint256) {
         return super.previewWithdraw(assets);
     }
 
-    function previewRedeem(uint256 shares) public view override(ERC4626, IERC4626) returns (uint256) {
+    function previewRedeem(
+        uint256 shares
+    ) public view override(ERC4626, IERC4626) returns (uint256) {
         return super.previewRedeem(shares);
     }
 

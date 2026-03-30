@@ -37,8 +37,7 @@ contract OracleVerifierTest is BaseTest {
     // ──────────────────────────────────────────────────────────
 
     function _signPrice(bytes32 asset, uint256 price, uint256 timestamp) internal view returns (bytes memory) {
-        bytes32 messageHash =
-            keccak256(abi.encode(asset, price, timestamp, block.chainid, address(verifier)));
+        bytes32 messageHash = keccak256(abi.encode(asset, price, timestamp, block.chainid, address(verifier)));
         bytes32 ethSignedHash = MessageHashUtils.toEthSignedMessageHash(messageHash);
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(SIGNER_PK, ethSignedHash);
         return abi.encode(price, timestamp, v, r, s);
@@ -91,8 +90,7 @@ contract OracleVerifierTest is BaseTest {
 
     function test_verifyPrice_invalidSigner_reverts() public {
         uint256 wrongPk = 0xDEAD;
-        bytes32 messageHash =
-            keccak256(abi.encode(ASSET, 250e18, block.timestamp, block.chainid, address(verifier)));
+        bytes32 messageHash = keccak256(abi.encode(ASSET, 250e18, block.timestamp, block.chainid, address(verifier)));
         bytes32 ethSignedHash = MessageHashUtils.toEthSignedMessageHash(messageHash);
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(wrongPk, ethSignedHash);
         bytes memory priceData = abi.encode(250e18, block.timestamp, v, r, s);
@@ -102,8 +100,7 @@ contract OracleVerifierTest is BaseTest {
     }
 
     function test_verifyPrice_tamperedPrice_reverts() public {
-        bytes32 messageHash =
-            keccak256(abi.encode(ASSET, 250e18, block.timestamp, block.chainid, address(verifier)));
+        bytes32 messageHash = keccak256(abi.encode(ASSET, 250e18, block.timestamp, block.chainid, address(verifier)));
         bytes32 ethSignedHash = MessageHashUtils.toEthSignedMessageHash(messageHash);
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(SIGNER_PK, ethSignedHash);
         bytes memory priceData = abi.encode(999e18, block.timestamp, v, r, s);
@@ -203,8 +200,7 @@ contract OracleVerifierTest is BaseTest {
     // ──────────────────────────────────────────────────────────
 
     function test_verifyPrice_wrongChainId_reverts() public {
-        bytes32 messageHash =
-            keccak256(abi.encode(ASSET, 250e18, block.timestamp, uint256(999), address(verifier)));
+        bytes32 messageHash = keccak256(abi.encode(ASSET, 250e18, block.timestamp, uint256(999), address(verifier)));
         bytes32 ethSignedHash = MessageHashUtils.toEthSignedMessageHash(messageHash);
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(SIGNER_PK, ethSignedHash);
         bytes memory priceData = abi.encode(250e18, block.timestamp, v, r, s);
@@ -283,7 +279,9 @@ contract OracleVerifierTest is BaseTest {
     //  Fuzz
     // ──────────────────────────────────────────────────────────
 
-    function testFuzz_verifyPrice_validPrices(uint256 price) public {
+    function testFuzz_verifyPrice_validPrices(
+        uint256 price
+    ) public {
         price = bound(price, 1, type(uint128).max);
         bytes memory priceData = _signPrice(ASSET, price, block.timestamp);
         (uint256 retPrice,) = verifier.verifyPrice(ASSET, priceData);

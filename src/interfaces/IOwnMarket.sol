@@ -113,9 +113,13 @@ interface IOwnMarket {
     /// @param price  Maximum price per eToken the user will pay (18 decimals).
     /// @param expiry Timestamp after which the order can be expired.
     /// @return orderId The unique order identifier.
-    function placeMintOrder(address vault, bytes32 asset, uint256 amount, uint256 price, uint256 expiry)
-        external
-        returns (uint256 orderId);
+    function placeMintOrder(
+        address vault,
+        bytes32 asset,
+        uint256 amount,
+        uint256 price,
+        uint256 expiry
+    ) external returns (uint256 orderId);
 
     /// @notice Place a redeem order. User deposits eTokens into escrow.
     /// @param vault  Vault to redeem against (must be registered and support the asset).
@@ -124,9 +128,13 @@ interface IOwnMarket {
     /// @param price  Minimum price per eToken the user will accept (18 decimals).
     /// @param expiry Timestamp after which the order can be expired.
     /// @return orderId The unique order identifier.
-    function placeRedeemOrder(address vault, bytes32 asset, uint256 amount, uint256 price, uint256 expiry)
-        external
-        returns (uint256 orderId);
+    function placeRedeemOrder(
+        address vault,
+        bytes32 asset,
+        uint256 amount,
+        uint256 price,
+        uint256 expiry
+    ) external returns (uint256 orderId);
 
     // ──────────────────────────────────────────────────────────
     //  VM operations
@@ -174,9 +182,11 @@ interface IOwnMarket {
     /// @param orderId        Order to force-execute.
     /// @param priceProofData Two oracle price proofs (low + high) to verify price reachability.
     /// @param ethPriceData   Oracle price data for ETH/USD conversion (needed when releasing collateral).
-    function forceExecute(uint256 orderId, bytes calldata priceProofData, bytes calldata ethPriceData)
-        external
-        payable;
+    function forceExecute(
+        uint256 orderId,
+        bytes calldata priceProofData,
+        bytes calldata ethPriceData
+    ) external payable;
 
     // ──────────────────────────────────────────────────────────
     //  Permissionless

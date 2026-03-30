@@ -47,7 +47,9 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
     // ──────────────────────────────────────────────────────────
 
     /// @param registry_ ProtocolRegistry contract address.
-    constructor(address registry_) {
+    constructor(
+        address registry_
+    ) {
         registry = IProtocolRegistry(registry_);
     }
 
@@ -140,7 +142,9 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
     // ──────────────────────────────────────────────────────────
 
     /// @inheritdoc IOwnMarket
-    function claimOrder(uint256 orderId) external nonReentrant {
+    function claimOrder(
+        uint256 orderId
+    ) external nonReentrant {
         Order storage order = _orders[orderId];
         if (order.user == address(0)) revert OrderNotFound(orderId);
         if (order.status != OrderStatus.Open) revert InvalidOrderStatus(orderId, order.status);
@@ -157,8 +161,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
 
         // For mint: calculate fee, hold in escrow, release net to VM
         if (order.orderType == OrderType.Mint) {
-            uint256 feeBps =
-                IFeeCalculator(registry.feeCalculator()).getMintFee(order.asset, order.amount);
+            uint256 feeBps = IFeeCalculator(registry.feeCalculator()).getMintFee(order.asset, order.amount);
             uint256 feeAmount = Math.mulDiv(order.amount, feeBps, BPS, Math.Rounding.Ceil);
             _escrowedMintFees[orderId] = feeAmount;
 
@@ -181,7 +184,9 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
     }
 
     /// @inheritdoc IOwnMarket
-    function confirmOrder(uint256 orderId) external nonReentrant {
+    function confirmOrder(
+        uint256 orderId
+    ) external nonReentrant {
         Order storage order = _orders[orderId];
         if (order.user == address(0)) revert OrderNotFound(orderId);
         if (order.status != OrderStatus.Claimed) revert InvalidOrderStatus(orderId, order.status);
@@ -203,7 +208,9 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
     }
 
     /// @inheritdoc IOwnMarket
-    function closeOrder(uint256 orderId) external nonReentrant {
+    function closeOrder(
+        uint256 orderId
+    ) external nonReentrant {
         Order storage order = _orders[orderId];
         if (order.user == address(0)) revert OrderNotFound(orderId);
         if (order.status != OrderStatus.Claimed) revert InvalidOrderStatus(orderId, order.status);
@@ -238,7 +245,9 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
     // ──────────────────────────────────────────────────────────
 
     /// @inheritdoc IOwnMarket
-    function cancelOrder(uint256 orderId) external nonReentrant {
+    function cancelOrder(
+        uint256 orderId
+    ) external nonReentrant {
         Order storage order = _orders[orderId];
         if (order.user == address(0)) revert OrderNotFound(orderId);
         if (order.user != msg.sender) revert OnlyOrderOwner(orderId);
@@ -322,7 +331,9 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
     // ──────────────────────────────────────────────────────────
 
     /// @inheritdoc IOwnMarket
-    function expireOrder(uint256 orderId) external nonReentrant {
+    function expireOrder(
+        uint256 orderId
+    ) external nonReentrant {
         Order storage order = _orders[orderId];
         if (order.user == address(0)) revert OrderNotFound(orderId);
         if (block.timestamp <= order.expiry) revert ExpiryNotReached(orderId);
@@ -348,18 +359,24 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
     // ──────────────────────────────────────────────────────────
 
     /// @inheritdoc IOwnMarket
-    function getOrder(uint256 orderId) external view returns (Order memory order) {
+    function getOrder(
+        uint256 orderId
+    ) external view returns (Order memory order) {
         order = _orders[orderId];
         if (order.user == address(0)) revert OrderNotFound(orderId);
     }
 
     /// @inheritdoc IOwnMarket
-    function getOpenOrders(bytes32 asset) external view returns (uint256[] memory) {
+    function getOpenOrders(
+        bytes32 asset
+    ) external view returns (uint256[] memory) {
         return _openOrders[asset];
     }
 
     /// @inheritdoc IOwnMarket
-    function getUserOrders(address user) external view returns (uint256[] memory) {
+    function getUserOrders(
+        address user
+    ) external view returns (uint256[] memory) {
         return _userOrders[user];
     }
 
@@ -368,7 +385,9 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
     // ──────────────────────────────────────────────────────────
 
     /// @dev Execute a mint confirmation at the order's set price.
-    function _executeMint(Order storage order) private {
+    function _executeMint(
+        Order storage order
+    ) private {
         uint256 feeAmount = _escrowedMintFees[order.orderId];
         uint256 netAmount = order.amount - feeAmount;
         address paymentToken = IOwnVault(order.vault).paymentToken();
@@ -391,7 +410,9 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
     }
 
     /// @dev Execute a redeem confirmation at the order's set price.
-    function _executeRedeem(Order storage order) private {
+    function _executeRedeem(
+        Order storage order
+    ) private {
         address paymentToken = IOwnVault(order.vault).paymentToken();
         uint256 decimals = IERC20Metadata(paymentToken).decimals();
         uint256 precisionWithDecimals = PRECISION * 10 ** (18 - decimals);
@@ -400,8 +421,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         uint256 grossPayout = Math.mulDiv(order.amount, order.price, precisionWithDecimals);
 
         // Deduct fee (round up — protocol-favorable)
-        uint256 feeBps =
-            IFeeCalculator(registry.feeCalculator()).getRedeemFee(order.asset, order.amount);
+        uint256 feeBps = IFeeCalculator(registry.feeCalculator()).getRedeemFee(order.asset, order.amount);
         uint256 feeAmount = Math.mulDiv(grossPayout, feeBps, BPS, Math.Rounding.Ceil);
 
         // VM sends stablecoins: net to user, fee to vault
@@ -457,7 +477,6 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
             uint256 eTokenAmount = Math.mulDiv(netAmount * decimalScaler, PRECISION, order.price);
             address eToken = IAssetRegistry(registry.assetRegistry()).getActiveToken(order.asset);
             IEToken(eToken).mint(order.user, eTokenAmount);
-
         } else {
             // Redeem: charge fee from gross collateral payout; vault retains fee collateral implicitly
             uint256 grossUsd = Math.mulDiv(order.amount, order.price, PRECISION);
@@ -498,7 +517,9 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
     }
 
     /// @dev Return escrowed mint fee to user.
-    function _returnEscrowedFee(Order storage order) private {
+    function _returnEscrowedFee(
+        Order storage order
+    ) private {
         uint256 feeAmount = _escrowedMintFees[order.orderId];
         if (feeAmount > 0) {
             _escrowedMintFees[order.orderId] = 0;
@@ -546,8 +567,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
     function _verifyPriceRange(Order storage order, bytes calldata priceProofData) private returns (bool) {
         if (priceProofData.length == 0) return false;
 
-        (bytes memory lowPriceData, bytes memory highPriceData) =
-            abi.decode(priceProofData, (bytes, bytes));
+        (bytes memory lowPriceData, bytes memory highPriceData) = abi.decode(priceProofData, (bytes, bytes));
 
         address oracleAddr = IAssetRegistry(registry.assetRegistry()).getPrimaryOracle(order.asset);
         if (oracleAddr == address(0)) return false;
@@ -573,17 +593,20 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
     }
 
     /// @dev Call verifyFee then verifyPrice on the oracle, forwarding the exact fee.
-    function _callVerifyPrice(address oracleAddr, bytes32 asset, bytes memory proofData)
-        private
-        returns (uint256 price, uint256 timestamp)
-    {
+    function _callVerifyPrice(
+        address oracleAddr,
+        bytes32 asset,
+        bytes memory proofData
+    ) private returns (uint256 price, uint256 timestamp) {
         IOracleVerifier oracle = IOracleVerifier(oracleAddr);
         uint256 fee = oracle.verifyFee(proofData);
         return oracle.verifyPrice{value: fee}(asset, proofData);
     }
 
     /// @dev Calculate the USD exposure for an order.
-    function _calculateExposure(Order storage order) private view returns (uint256) {
+    function _calculateExposure(
+        Order storage order
+    ) private view returns (uint256) {
         if (order.orderType == OrderType.Mint) {
             return order.amount;
         } else {

@@ -87,15 +87,23 @@ interface IOwnVault is IERC4626 {
     function requestDeposit(uint256 assets, address receiver) external returns (uint256 requestId);
 
     /// @notice Accept a pending deposit request. Only callable by the bound VM.
-    function acceptDeposit(uint256 requestId) external;
+    function acceptDeposit(
+        uint256 requestId
+    ) external;
 
     /// @notice Reject a pending deposit request. Returns escrowed assets to depositor.
-    function rejectDeposit(uint256 requestId) external;
+    function rejectDeposit(
+        uint256 requestId
+    ) external;
 
     /// @notice Cancel a pending deposit request. Only callable by the original depositor.
-    function cancelDeposit(uint256 requestId) external;
+    function cancelDeposit(
+        uint256 requestId
+    ) external;
 
-    function getDepositRequest(uint256 requestId) external view returns (DepositRequest memory request);
+    function getDepositRequest(
+        uint256 requestId
+    ) external view returns (DepositRequest memory request);
     function getPendingDeposits() external view returns (uint256[] memory requestIds);
 
     // ──────────────────────────────────────────────────────────
@@ -103,15 +111,23 @@ interface IOwnVault is IERC4626 {
     // ──────────────────────────────────────────────────────────
 
     /// @notice Submit an async withdrawal request.
-    function requestWithdrawal(uint256 shares) external returns (uint256 requestId);
+    function requestWithdrawal(
+        uint256 shares
+    ) external returns (uint256 requestId);
 
     /// @notice Cancel a pending withdrawal request. Shares are returned to the LP.
-    function cancelWithdrawal(uint256 requestId) external;
+    function cancelWithdrawal(
+        uint256 requestId
+    ) external;
 
     /// @notice Fulfill a withdrawal request. Callable by anyone when utilization allows.
-    function fulfillWithdrawal(uint256 requestId) external returns (uint256 assets);
+    function fulfillWithdrawal(
+        uint256 requestId
+    ) external returns (uint256 assets);
 
-    function getWithdrawalRequest(uint256 requestId) external view returns (WithdrawalRequest memory request);
+    function getWithdrawalRequest(
+        uint256 requestId
+    ) external view returns (WithdrawalRequest memory request);
     function getPendingWithdrawals() external view returns (uint256[] memory requestIds);
 
     // ──────────────────────────────────────────────────────────
@@ -119,11 +135,17 @@ interface IOwnVault is IERC4626 {
     // ──────────────────────────────────────────────────────────
 
     function vaultStatus() external view returns (VaultStatus);
-    function halt(bytes32 reason) external;
+    function halt(
+        bytes32 reason
+    ) external;
     function unhalt() external;
     function haltAsset(bytes32 asset, bytes32 reason) external;
-    function unhaltAsset(bytes32 asset) external;
-    function isAssetHalted(bytes32 asset) external view returns (bool);
+    function unhaltAsset(
+        bytes32 asset
+    ) external;
+    function isAssetHalted(
+        bytes32 asset
+    ) external view returns (bool);
     function initiateWindDown() external;
 
     // ──────────────────────────────────────────────────────────
@@ -139,11 +161,15 @@ interface IOwnVault is IERC4626 {
     function utilization() external view returns (uint256);
 
     function maxUtilization() external view returns (uint256);
-    function setMaxUtilization(uint256 maxUtilBps) external;
+    function setMaxUtilization(
+        uint256 maxUtilBps
+    ) external;
 
     /// @notice Return the withdrawal wait period in seconds.
     function withdrawalWaitPeriod() external view returns (uint256);
-    function setWithdrawalWaitPeriod(uint256 period) external;
+    function setWithdrawalWaitPeriod(
+        uint256 period
+    ) external;
 
     /// @notice Return the total exposure in USD across all assets (18 decimals).
     function totalExposureUSD() external view returns (uint256);
@@ -152,13 +178,19 @@ interface IOwnVault is IERC4626 {
     function collateralValueUSD() external view returns (uint256);
 
     /// @notice Return per-asset exposure in raw units (18 decimals).
-    function assetExposure(bytes32 asset) external view returns (uint256);
+    function assetExposure(
+        bytes32 asset
+    ) external view returns (uint256);
 
     /// @notice Return per-asset exposure in USD (18 decimals).
-    function assetExposureUSD(bytes32 asset) external view returns (uint256);
+    function assetExposureUSD(
+        bytes32 asset
+    ) external view returns (uint256);
 
     /// @notice Return the timestamp of the last valuation update for an asset.
-    function assetLastUpdated(bytes32 asset) external view returns (uint256);
+    function assetLastUpdated(
+        bytes32 asset
+    ) external view returns (uint256);
 
     /// @notice Update raw exposure units for an asset. Only callable by OwnMarket.
     ///         Adjusts per-asset units and per-asset USD value using last known price.
@@ -169,7 +201,9 @@ interface IOwnVault is IERC4626 {
     /// @notice Refresh the USD valuation of an asset using its oracle price.
     ///         Callable by anyone (keeper pattern). Reads price from the asset's primary oracle.
     /// @param asset Asset ticker to revalue.
-    function updateAssetValuation(bytes32 asset) external;
+    function updateAssetValuation(
+        bytes32 asset
+    ) external;
 
     /// @notice Refresh the USD valuation of vault collateral using the collateral oracle.
     ///         Callable by anyone (keeper pattern).
@@ -183,26 +217,34 @@ interface IOwnVault is IERC4626 {
     function gracePeriod() external view returns (uint256);
 
     /// @notice Set the grace period. Only callable by admin.
-    function setGracePeriod(uint256 period) external;
+    function setGracePeriod(
+        uint256 period
+    ) external;
 
     /// @notice Time after placement before unclaimed redeem force execution is allowed.
     function claimThreshold() external view returns (uint256);
 
     /// @notice Set the claim threshold. Only callable by admin.
-    function setClaimThreshold(uint256 threshold) external;
+    function setClaimThreshold(
+        uint256 threshold
+    ) external;
 
     /// @notice Asset ticker used to look up collateral (ETH) price for force execution conversions.
     function collateralOracleAsset() external view returns (bytes32);
 
     /// @notice Set the collateral oracle asset. Only callable by admin.
-    function setCollateralOracleAsset(bytes32 asset) external;
+    function setCollateralOracleAsset(
+        bytes32 asset
+    ) external;
 
     /// @notice Buffer time after order placement before price proofs are valid for open mint force execution.
     ///         Gives the VM time to react before the user's proof window opens.
     function mintBuffer() external view returns (uint256);
 
     /// @notice Set the mint buffer. Only callable by admin.
-    function setMintBuffer(uint256 buffer) external;
+    function setMintBuffer(
+        uint256 buffer
+    ) external;
 
     // ──────────────────────────────────────────────────────────
     //  Fee management
@@ -212,7 +254,9 @@ interface IOwnVault is IERC4626 {
     ///         Splits three ways: protocol / VM / LP. Token must match the current payment token.
     function depositFees(address token, uint256 amount) external;
 
-    function setVMShareBps(uint256 shareBps) external;
+    function setVMShareBps(
+        uint256 shareBps
+    ) external;
     function vmShareBps() external view returns (uint256);
 
     /// @notice Claim accrued protocol fees. Callable by anyone. Transfers to treasury.
@@ -226,7 +270,9 @@ interface IOwnVault is IERC4626 {
 
     function accruedProtocolFees() external view returns (uint256);
     function accruedVMFees() external view returns (uint256);
-    function claimableLPRewards(address account) external view returns (uint256 amount);
+    function claimableLPRewards(
+        address account
+    ) external view returns (uint256 amount);
 
     // ──────────────────────────────────────────────────────────
     //  Collateral release (force execution)
@@ -244,13 +290,19 @@ interface IOwnVault is IERC4626 {
 
     /// @notice Enable an asset for this vault. Only callable by the bound VM.
     ///         The asset must exist in the global AssetRegistry.
-    function enableAsset(bytes32 asset) external;
+    function enableAsset(
+        bytes32 asset
+    ) external;
 
     /// @notice Disable an asset for this vault. Only callable by the bound VM.
-    function disableAsset(bytes32 asset) external;
+    function disableAsset(
+        bytes32 asset
+    ) external;
 
     /// @notice Check if this vault supports a given asset.
-    function isAssetSupported(bytes32 asset) external view returns (bool);
+    function isAssetSupported(
+        bytes32 asset
+    ) external view returns (bool);
 
     // ──────────────────────────────────────────────────────────
     //  Payment token
@@ -258,7 +310,9 @@ interface IOwnVault is IERC4626 {
 
     /// @notice Set the accepted payment token. Only callable by the bound VM.
     ///         All outstanding protocol and VM fees must be claimed first.
-    function setPaymentToken(address token) external;
+    function setPaymentToken(
+        address token
+    ) external;
 
     /// @notice Return the accepted payment token address.
     function paymentToken() external view returns (address);

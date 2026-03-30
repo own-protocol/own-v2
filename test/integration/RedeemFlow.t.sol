@@ -4,14 +4,7 @@ pragma solidity 0.8.28;
 import {Actors} from "../helpers/Actors.sol";
 import {BaseTest} from "../helpers/BaseTest.sol";
 
-import {
-    AssetConfig,
-    BPS,
-    Order,
-    OrderStatus,
-    OrderType,
-    PRECISION
-} from "../../src/interfaces/types/Types.sol";
+import {AssetConfig, BPS, Order, OrderStatus, OrderType, PRECISION} from "../../src/interfaces/types/Types.sol";
 
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {FeeCalculator} from "../../src/core/FeeCalculator.sol";
@@ -70,7 +63,8 @@ contract RedeemFlowTest is BaseTest {
         VaultFactory factory = new VaultFactory(Actors.ADMIN, address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), address(factory));
 
-        usdcVault = OwnVault(factory.createVault(address(weth), Actors.VM1, "Own ETH Vault", "oETH", MAX_UTIL_BPS, 2000, 900));
+        usdcVault =
+            OwnVault(factory.createVault(address(weth), Actors.VM1, "Own ETH Vault", "oETH", MAX_UTIL_BPS, 2000, 900));
 
         market = new OwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
@@ -126,9 +120,8 @@ contract RedeemFlowTest is BaseTest {
         vm.startPrank(Actors.MINTER1);
         eTSLA.approve(address(market), ETOKEN_AMOUNT);
 
-        uint256 orderId = market.placeRedeemOrder(
-            address(usdcVault), TSLA, ETOKEN_AMOUNT, TSLA_PRICE, block.timestamp + 1 days
-        );
+        uint256 orderId =
+            market.placeRedeemOrder(address(usdcVault), TSLA, ETOKEN_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
         vm.stopPrank();
 
         assertEq(eTSLA.balanceOf(address(market)), ETOKEN_AMOUNT, "eTokens escrowed");
@@ -166,9 +159,8 @@ contract RedeemFlowTest is BaseTest {
         vm.startPrank(Actors.MINTER1);
         eTSLA.approve(address(market), ETOKEN_AMOUNT);
 
-        uint256 orderId = market.placeRedeemOrder(
-            address(usdcVault), TSLA, ETOKEN_AMOUNT, TSLA_PRICE, block.timestamp + 1 days
-        );
+        uint256 orderId =
+            market.placeRedeemOrder(address(usdcVault), TSLA, ETOKEN_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
 
         assertEq(eTSLA.balanceOf(Actors.MINTER1), 0);
 
@@ -188,9 +180,7 @@ contract RedeemFlowTest is BaseTest {
         vm.startPrank(Actors.MINTER1);
         eTSLA.approve(address(market), ETOKEN_AMOUNT);
 
-        uint256 orderId = market.placeRedeemOrder(
-            address(usdcVault), TSLA, ETOKEN_AMOUNT, TSLA_PRICE, expiry
-        );
+        uint256 orderId = market.placeRedeemOrder(address(usdcVault), TSLA, ETOKEN_AMOUNT, TSLA_PRICE, expiry);
         vm.stopPrank();
 
         vm.warp(expiry + 1);

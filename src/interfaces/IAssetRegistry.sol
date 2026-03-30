@@ -122,11 +122,17 @@ interface IAssetRegistry {
     function setOracleConfig(bytes32 ticker, OracleConfig calldata config) external;
 
     /// @notice Switch the primary oracle for an asset to the secondary.
-    function switchPrimaryOracle(bytes32 ticker) external;
+    function switchPrimaryOracle(
+        bytes32 ticker
+    ) external;
 
     /// @notice Return the oracle configuration for an asset.
-    function getOracleConfig(bytes32 ticker) external view returns (OracleConfig memory config);
+    function getOracleConfig(
+        bytes32 ticker
+    ) external view returns (OracleConfig memory config);
 
     /// @notice Return the primary oracle address for an asset.
-    function getPrimaryOracle(bytes32 ticker) external view returns (address oracle);
+    function getPrimaryOracle(
+        bytes32 ticker
+    ) external view returns (address oracle);
 }

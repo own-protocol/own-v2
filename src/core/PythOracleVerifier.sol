@@ -52,7 +52,9 @@ contract PythOracleVerifier is IOracleVerifier, Ownable {
     /// @inheritdoc IOracleVerifier
     /// @dev updateData is abi.encode(bytes[]) — Pyth price update blobs.
     ///      Caller must send enough ETH to cover pyth.getUpdateFee().
-    function updatePriceFeeds(bytes calldata updateData) external payable override {
+    function updatePriceFeeds(
+        bytes calldata updateData
+    ) external payable override {
         bytes[] memory pythUpdateData = abi.decode(updateData, (bytes[]));
         uint256 updateFee = pyth.getUpdateFee(pythUpdateData);
         pyth.updatePriceFeeds{value: updateFee}(pythUpdateData);
@@ -63,7 +65,9 @@ contract PythOracleVerifier is IOracleVerifier, Ownable {
     // ──────────────────────────────────────────────────────────
 
     /// @inheritdoc IOracleVerifier
-    function getPrice(bytes32 asset) external view override returns (uint256 price, uint256 timestamp) {
+    function getPrice(
+        bytes32 asset
+    ) external view override returns (uint256 price, uint256 timestamp) {
         bytes32 feedId = _feedIds[asset];
         if (feedId == bytes32(0)) revert FeedNotConfigured(asset);
 
@@ -81,12 +85,10 @@ contract PythOracleVerifier is IOracleVerifier, Ownable {
     ///      The caller submits a Pyth VAA blob attesting to a price within [minPublishTime, maxPublishTime].
     ///      parsePriceFeedUpdates cryptographically verifies the VAA and returns the attested price.
     ///      Caller must send ETH >= verifyFee(priceData) to cover the Pyth fee.
-    function verifyPrice(bytes32 asset, bytes calldata priceData)
-        external
-        payable
-        override
-        returns (uint256 price, uint256 timestamp)
-    {
+    function verifyPrice(
+        bytes32 asset,
+        bytes calldata priceData
+    ) external payable override returns (uint256 price, uint256 timestamp) {
         bytes32 feedId = _feedIds[asset];
         if (feedId == bytes32(0)) revert FeedNotConfigured(asset);
 
@@ -107,7 +109,9 @@ contract PythOracleVerifier is IOracleVerifier, Ownable {
 
     /// @inheritdoc IOracleVerifier
     /// @dev Decodes updateData from priceData and returns pyth.getUpdateFee(updateData).
-    function verifyFee(bytes calldata priceData) external view override returns (uint256) {
+    function verifyFee(
+        bytes calldata priceData
+    ) external view override returns (uint256) {
         (bytes[] memory updateData,,) = abi.decode(priceData, (bytes[], uint64, uint64));
         return pyth.getUpdateFee(updateData);
     }
@@ -116,9 +120,24 @@ contract PythOracleVerifier is IOracleVerifier, Ownable {
     //  Admin — signer management (no-op for Pyth)
     // ──────────────────────────────────────────────────────────
 
-    function addSigner(address) external pure override { revert("PythOracle: no signers"); }
-    function removeSigner(address) external pure override { revert("PythOracle: no signers"); }
-    function isSigner(address) external pure override returns (bool) { return false; }
+    function addSigner(
+        address
+    ) external pure override {
+        revert("PythOracle: no signers");
+    }
+
+    function removeSigner(
+        address
+    ) external pure override {
+        revert("PythOracle: no signers");
+    }
+
+    function isSigner(
+        address
+    ) external pure override returns (bool) {
+        return false;
+    }
+
     function setAssetOracleConfig(bytes32, uint256, uint256) external pure override {
         revert("PythOracle: use setFeedId/setMaxPriceAge");
     }
@@ -132,13 +151,17 @@ contract PythOracleVerifier is IOracleVerifier, Ownable {
         emit FeedIdSet(asset, feedId);
     }
 
-    function setMaxPriceAge(uint256 newMaxAge) external onlyOwner {
+    function setMaxPriceAge(
+        uint256 newMaxAge
+    ) external onlyOwner {
         uint256 old = maxPriceAge;
         maxPriceAge = newMaxAge;
         emit MaxPriceAgeUpdated(old, newMaxAge);
     }
 
-    function getFeedId(bytes32 asset) external view returns (bytes32) {
+    function getFeedId(
+        bytes32 asset
+    ) external view returns (bytes32) {
         return _feedIds[asset];
     }
 

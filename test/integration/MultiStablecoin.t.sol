@@ -4,9 +4,7 @@ pragma solidity 0.8.28;
 import {Actors} from "../helpers/Actors.sol";
 import {BaseTest} from "../helpers/BaseTest.sol";
 
-import {
-    AssetConfig, BPS, Order, OrderStatus, OrderType, PRECISION
-} from "../../src/interfaces/types/Types.sol";
+import {AssetConfig, BPS, Order, OrderStatus, OrderType, PRECISION} from "../../src/interfaces/types/Types.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
@@ -62,7 +60,8 @@ contract MultiStablecoinTest is BaseTest {
         protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), address(factory));
 
         usdcVault = OwnVault(factory.createVault(address(usdc), Actors.VM1, "Own USDC Vault", "oUSDC", 8000, 2000, 900));
-        usdcVault2 = OwnVault(factory.createVault(address(usdc), Actors.VM2, "Own USDC Vault 2", "oUSDC2", 8000, 2000, 900));
+        usdcVault2 =
+            OwnVault(factory.createVault(address(usdc), Actors.VM2, "Own USDC Vault 2", "oUSDC2", 8000, 2000, 900));
 
         eTSLA = new EToken("Own Tesla", "eTSLA", TSLA, address(protocolRegistry), address(usdc));
 
@@ -106,9 +105,8 @@ contract MultiStablecoinTest is BaseTest {
 
         vm.startPrank(Actors.MINTER1);
         usdc.approve(address(market), MINT_AMOUNT);
-        uint256 orderId = market.placeMintOrder(
-            address(usdcVault), TSLA, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days
-        );
+        uint256 orderId =
+            market.placeMintOrder(address(usdcVault), TSLA, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
         vm.stopPrank();
 
         Order memory order = market.getOrder(orderId);

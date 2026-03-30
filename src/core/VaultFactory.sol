@@ -32,9 +32,8 @@ contract VaultFactory is IVaultFactory, Ownable {
         if (collateral == address(0)) revert ZeroAddress();
         if (vm == address(0)) revert ZeroAddress();
 
-        vault = address(
-            new OwnVault(collateral, name, symbol, address(registry), vm, maxUtilBps, vmShareBps, mintBuffer)
-        );
+        vault =
+            address(new OwnVault(collateral, name, symbol, address(registry), vm, maxUtilBps, vmShareBps, mintBuffer));
 
         _isRegistered[vault] = true;
         _vaults.push(vault);
@@ -43,7 +42,9 @@ contract VaultFactory is IVaultFactory, Ownable {
     }
 
     /// @inheritdoc IVaultFactory
-    function isRegisteredVault(address vault) external view returns (bool) {
+    function isRegisteredVault(
+        address vault
+    ) external view returns (bool) {
         return _isRegistered[vault];
     }
 

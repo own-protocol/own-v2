@@ -34,14 +34,7 @@ contract OwnVaultTest is BaseTest {
         protocolRegistry.setAddress(protocolRegistry.TREASURY(), Actors.FEE_RECIPIENT);
         protocolRegistry.setProtocolShareBps(2000);
         vault = new OwnVault(
-            address(usdc),
-            "Own USDC Vault",
-            "oUSDC",
-            address(protocolRegistry),
-            Actors.VM1,
-            INITIAL_MAX_UTIL,
-            2000,
-            900
+            address(usdc), "Own USDC Vault", "oUSDC", address(protocolRegistry), Actors.VM1, INITIAL_MAX_UTIL, 2000, 900
         );
         vm.stopPrank();
         vm.label(address(vault), "OwnVault-USDC");

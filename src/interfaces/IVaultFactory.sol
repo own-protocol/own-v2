@@ -46,7 +46,9 @@ interface IVaultFactory {
     // ──────────────────────────────────────────────────────────
 
     /// @notice Check if a vault was deployed by this factory.
-    function isRegisteredVault(address vault) external view returns (bool);
+    function isRegisteredVault(
+        address vault
+    ) external view returns (bool);
 
     /// @notice Return all factory-deployed vault addresses.
     function getAllVaults() external view returns (address[] memory);

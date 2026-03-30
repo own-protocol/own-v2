@@ -4,6 +4,8 @@ pragma solidity 0.8.28;
 import {Actors} from "../helpers/Actors.sol";
 import {BaseTest} from "../helpers/BaseTest.sol";
 
+import {IOwnMarket} from "../../src/interfaces/IOwnMarket.sol";
+import {IOwnVault} from "../../src/interfaces/IOwnVault.sol";
 import {
     AssetConfig,
     BPS,
@@ -13,8 +15,6 @@ import {
     OrderType,
     PRECISION
 } from "../../src/interfaces/types/Types.sol";
-import {IOwnMarket} from "../../src/interfaces/IOwnMarket.sol";
-import {IOwnVault} from "../../src/interfaces/IOwnVault.sol";
 
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {FeeCalculator} from "../../src/core/FeeCalculator.sol";
@@ -77,7 +77,8 @@ contract OrderLifecycleTest is BaseTest {
         VaultFactory factory = new VaultFactory(Actors.ADMIN, address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), address(factory));
 
-        vault = OwnVault(factory.createVault(address(weth), Actors.VM1, "Own ETH Vault", "oETH", MAX_UTIL_BPS, 2000, 900));
+        vault =
+            OwnVault(factory.createVault(address(weth), Actors.VM1, "Own ETH Vault", "oETH", MAX_UTIL_BPS, 2000, 900));
 
         market = new OwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
@@ -154,11 +155,15 @@ contract OrderLifecycleTest is BaseTest {
         eTSLA.mint(to, amount);
     }
 
-    function _mintFee(uint256 amount) internal pure returns (uint256) {
+    function _mintFee(
+        uint256 amount
+    ) internal pure returns (uint256) {
         return Math.mulDiv(amount, MINT_FEE_BPS, BPS, Math.Rounding.Ceil);
     }
 
-    function _redeemGrossPayout(uint256 eAmount) internal pure returns (uint256) {
+    function _redeemGrossPayout(
+        uint256 eAmount
+    ) internal pure returns (uint256) {
         return Math.mulDiv(eAmount, TSLA_PRICE, PRECISION * 1e12);
     }
 
@@ -438,9 +443,7 @@ contract OrderLifecycleTest is BaseTest {
         uint256 requestId = vault.requestWithdrawal(shares);
 
         uint256 readyAt = block.timestamp + 2 days;
-        vm.expectRevert(
-            abi.encodeWithSelector(IOwnVault.WithdrawalWaitPeriodNotElapsed.selector, requestId, readyAt)
-        );
+        vm.expectRevert(abi.encodeWithSelector(IOwnVault.WithdrawalWaitPeriodNotElapsed.selector, requestId, readyAt));
         vault.fulfillWithdrawal(requestId);
 
         vm.warp(block.timestamp + 2 days + 1);
@@ -594,9 +597,7 @@ contract OrderLifecycleTest is BaseTest {
         market.confirmOrder(orderId);
 
         vm.prank(Actors.VM1);
-        vm.expectRevert(
-            abi.encodeWithSelector(IOwnMarket.InvalidOrderStatus.selector, orderId, OrderStatus.Confirmed)
-        );
+        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.InvalidOrderStatus.selector, orderId, OrderStatus.Confirmed));
         market.confirmOrder(orderId);
     }
 

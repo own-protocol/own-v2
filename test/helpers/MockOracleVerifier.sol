@@ -35,15 +35,31 @@ contract MockOracleVerifier is IOracleVerifier {
         _prices[asset] = AssetPrice(price, block.timestamp);
     }
 
-    function setForceStale(bool value) external { forceStale = value; }
-    function setForceInvalidSignature(bool value) external { forceInvalidSignature = value; }
-    function setForceDeviation(bool value) external { forceDeviation = value; }
+    function setForceStale(
+        bool value
+    ) external {
+        forceStale = value;
+    }
+
+    function setForceInvalidSignature(
+        bool value
+    ) external {
+        forceInvalidSignature = value;
+    }
+
+    function setForceDeviation(
+        bool value
+    ) external {
+        forceDeviation = value;
+    }
 
     // ──────────────────────────────────────────────────────────
     //  IOracleVerifier — push
     // ──────────────────────────────────────────────────────────
 
-    function updatePriceFeeds(bytes calldata updateData) external payable override {
+    function updatePriceFeeds(
+        bytes calldata updateData
+    ) external payable override {
         // In mock, decode as (bytes32[] assets, uint256[] prices, uint256[] timestamps)
         (bytes32[] memory assets, uint256[] memory prices, uint256[] memory timestamps) =
             abi.decode(updateData, (bytes32[], uint256[], uint256[]));
@@ -58,7 +74,9 @@ contract MockOracleVerifier is IOracleVerifier {
     //  IOracleVerifier — read
     // ──────────────────────────────────────────────────────────
 
-    function getPrice(bytes32 asset) external view override returns (uint256 price, uint256 timestamp) {
+    function getPrice(
+        bytes32 asset
+    ) external view override returns (uint256 price, uint256 timestamp) {
         if (forceStale) revert StalePrice(asset, 0, 0);
 
         AssetPrice storage ap = _prices[asset];
@@ -70,12 +88,10 @@ contract MockOracleVerifier is IOracleVerifier {
     //  IOracleVerifier — verify (inline proof for force execution)
     // ──────────────────────────────────────────────────────────
 
-    function verifyPrice(bytes32 asset, bytes calldata priceData)
-        external
-        payable
-        override
-        returns (uint256 price, uint256 timestamp)
-    {
+    function verifyPrice(
+        bytes32 asset,
+        bytes calldata priceData
+    ) external payable override returns (uint256 price, uint256 timestamp) {
         if (forceStale) revert StalePrice(asset, 0, 0);
         if (forceInvalidSignature) revert InvalidSignature();
 
@@ -85,7 +101,9 @@ contract MockOracleVerifier is IOracleVerifier {
     }
 
     /// @dev Mock always returns 0 fee — no ETH needed for test proofs.
-    function verifyFee(bytes calldata) external pure override returns (uint256) {
+    function verifyFee(
+        bytes calldata
+    ) external pure override returns (uint256) {
         return 0;
     }
 
@@ -93,17 +111,23 @@ contract MockOracleVerifier is IOracleVerifier {
     //  IOracleVerifier — admin (no-op in mock)
     // ──────────────────────────────────────────────────────────
 
-    function addSigner(address signer) external override {
+    function addSigner(
+        address signer
+    ) external override {
         _signers[signer] = true;
         emit SignerAdded(signer);
     }
 
-    function removeSigner(address signer) external override {
+    function removeSigner(
+        address signer
+    ) external override {
         _signers[signer] = false;
         emit SignerRemoved(signer);
     }
 
-    function isSigner(address account) external view override returns (bool) {
+    function isSigner(
+        address account
+    ) external view override returns (bool) {
         return _signers[account];
     }
 

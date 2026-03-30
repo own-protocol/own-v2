@@ -40,7 +40,9 @@ interface IOracleVerifier {
     ///         For Pyth: wraps pyth.updatePriceFeeds(). Caller may need to send ETH for Pyth fees.
     ///         For in-house: verifies signatures and stores prices.
     /// @param updateData Backend-specific encoded price update payload.
-    function updatePriceFeeds(bytes calldata updateData) external payable;
+    function updatePriceFeeds(
+        bytes calldata updateData
+    ) external payable;
 
     // ──────────────────────────────────────────────────────────
     //  Read — consume cached prices (view)
@@ -50,7 +52,9 @@ interface IOracleVerifier {
     /// @param asset Asset ticker (e.g. bytes32("TSLA")).
     /// @return price     Price in 18 decimals.
     /// @return timestamp Timestamp of the price observation.
-    function getPrice(bytes32 asset) external view returns (uint256 price, uint256 timestamp);
+    function getPrice(
+        bytes32 asset
+    ) external view returns (uint256 price, uint256 timestamp);
 
     // ──────────────────────────────────────────────────────────
     //  Verify — inline price proof (force execution only)
@@ -65,29 +69,37 @@ interface IOracleVerifier {
     /// @param priceData Backend-specific encoded signed price proof.
     /// @return price     Verified price in 18 decimals.
     /// @return timestamp Timestamp of the price observation.
-    function verifyPrice(bytes32 asset, bytes calldata priceData)
-        external
-        payable
-        returns (uint256 price, uint256 timestamp);
+    function verifyPrice(
+        bytes32 asset,
+        bytes calldata priceData
+    ) external payable returns (uint256 price, uint256 timestamp);
 
     /// @notice Return the ETH fee required to call verifyPrice for the given priceData.
     ///         For Pyth: returns pyth.getUpdateFee(updateData).
     ///         For in-house: always returns 0.
     /// @param priceData The same priceData that will be passed to verifyPrice.
-    function verifyFee(bytes calldata priceData) external view returns (uint256);
+    function verifyFee(
+        bytes calldata priceData
+    ) external view returns (uint256);
 
     // ──────────────────────────────────────────────────────────
     //  Admin
     // ──────────────────────────────────────────────────────────
 
     /// @notice Add an authorised oracle signer (in-house oracle only).
-    function addSigner(address signer) external;
+    function addSigner(
+        address signer
+    ) external;
 
     /// @notice Remove an authorised oracle signer.
-    function removeSigner(address signer) external;
+    function removeSigner(
+        address signer
+    ) external;
 
     /// @notice Check whether an address is an authorised signer.
-    function isSigner(address account) external view returns (bool);
+    function isSigner(
+        address account
+    ) external view returns (bool);
 
     /// @notice Set the staleness and deviation limits for an asset.
     function setAssetOracleConfig(bytes32 asset, uint256 maxStaleness, uint256 maxDeviation) external;
