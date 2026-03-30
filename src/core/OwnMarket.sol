@@ -280,7 +280,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
             if (block.timestamp < order.claimedAt + vaultContract.gracePeriod()) {
                 revert GracePeriodNotElapsed(orderId);
             }
-        } else if (isOpen && order.orderType == OrderType.Redeem) {
+        } else if (isOpen) {
             if (block.timestamp < order.createdAt + vaultContract.claimThreshold()) {
                 revert ClaimThresholdNotElapsed(orderId);
             }
@@ -418,23 +418,55 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         IEToken(eToken).burn(address(this), order.amount);
     }
 
-    /// @dev Force execution when set price was reachable. No fees charged.
+    /// @dev Force execution when set price was reachable. Fees charged and deposited to vault.
     function _forceExecuteAtSetPrice(Order storage order, bytes calldata ethPriceData) private {
         if (order.orderType == OrderType.Mint) {
             address paymentToken = IOwnVault(order.vault).paymentToken();
             uint256 decimals = IERC20Metadata(paymentToken).decimals();
             uint256 decimalScaler = 10 ** (18 - decimals);
+            uint256 feeAmount;
+            uint256 netAmount;
 
-            uint256 eTokenAmount = Math.mulDiv(order.amount * decimalScaler, PRECISION, order.price);
+            if (order.claimedAt > 0) {
+                // Claimed: fee already escrowed — deposit to vault instead of returning to user
+                feeAmount = _escrowedMintFees[order.orderId];
+                if (feeAmount > 0) {
+                    _escrowedMintFees[order.orderId] = 0;
+                    IERC20(paymentToken).safeIncreaseAllowance(order.vault, feeAmount);
+                    IOwnVault(order.vault).depositFees(paymentToken, feeAmount);
+                    emit FeeCollected(order.orderId, paymentToken, feeAmount);
+                }
+                netAmount = order.amount - feeAmount;
+            } else {
+                // Open (never claimed): calculate fee, send net stablecoins to VM so they must hedge,
+                // deposit fee to vault
+                uint256 feeBps = IFeeCalculator(registry.feeCalculator()).getMintFee(order.asset, order.amount);
+                feeAmount = Math.mulDiv(order.amount, feeBps, BPS, Math.Rounding.Ceil);
+                netAmount = order.amount - feeAmount;
+
+                address vmAddr = IOwnVault(order.vault).vm();
+                IERC20(paymentToken).safeTransfer(vmAddr, netAmount);
+
+                if (feeAmount > 0) {
+                    IERC20(paymentToken).safeIncreaseAllowance(order.vault, feeAmount);
+                    IOwnVault(order.vault).depositFees(paymentToken, feeAmount);
+                    emit FeeCollected(order.orderId, paymentToken, feeAmount);
+                }
+            }
+
+            uint256 eTokenAmount = Math.mulDiv(netAmount * decimalScaler, PRECISION, order.price);
             address eToken = IAssetRegistry(registry.assetRegistry()).getActiveToken(order.asset);
             IEToken(eToken).mint(order.user, eTokenAmount);
 
-            _returnEscrowedFee(order);
         } else {
-            uint256 collateralAmount = _convertToCollateral(
-                order, Math.mulDiv(order.amount, order.price, PRECISION), ethPriceData
-            );
-            IOwnVault(order.vault).releaseCollateral(order.user, collateralAmount);
+            // Redeem: charge fee from gross collateral payout; vault retains fee collateral implicitly
+            uint256 grossUsd = Math.mulDiv(order.amount, order.price, PRECISION);
+            uint256 grossCollateral = _convertToCollateral(order, grossUsd, ethPriceData);
+
+            uint256 feeBps = IFeeCalculator(registry.feeCalculator()).getRedeemFee(order.asset, order.amount);
+            uint256 feeCollateral = Math.mulDiv(grossCollateral, feeBps, BPS, Math.Rounding.Ceil);
+
+            IOwnVault(order.vault).releaseCollateral(order.user, grossCollateral - feeCollateral);
 
             address eToken = IAssetRegistry(registry.assetRegistry()).getActiveToken(order.asset);
             IEToken(eToken).burn(address(this), order.amount);
@@ -444,19 +476,21 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
     /// @dev Force execution when set price was NOT reachable.
     function _forceExecuteRefund(Order storage order, bytes calldata ethPriceData) private {
         if (order.orderType == OrderType.Mint) {
-            address paymentToken = IOwnVault(order.vault).paymentToken();
-            uint256 decimals = IERC20Metadata(paymentToken).decimals();
-
-            // Only convert the net amount (what the VM actually holds) to collateral.
-            // The escrowed fee is still in OwnMarket and is returned separately in stablecoins.
-            // Together they make the user exactly whole: collateral(netAmount) + fee = order.amount.
-            uint256 feeAmount = _escrowedMintFees[order.orderId];
-            uint256 usdValue = (order.amount - feeAmount) * 10 ** (18 - decimals);
-
-            uint256 collateralAmount = _convertToCollateral(order, usdValue, ethPriceData);
-            IOwnVault(order.vault).releaseCollateral(order.user, collateralAmount);
-
-            _returnEscrowedFee(order);
+            if (order.claimedAt > 0) {
+                // Claimed: VM has net stablecoins — vault releases equivalent collateral to user.
+                // Fee portion is still escrowed and returned separately in stablecoins.
+                address paymentToken = IOwnVault(order.vault).paymentToken();
+                uint256 decimals = IERC20Metadata(paymentToken).decimals();
+                uint256 feeAmount = _escrowedMintFees[order.orderId];
+                uint256 usdValue = (order.amount - feeAmount) * 10 ** (18 - decimals);
+                uint256 collateralAmount = _convertToCollateral(order, usdValue, ethPriceData);
+                IOwnVault(order.vault).releaseCollateral(order.user, collateralAmount);
+                _returnEscrowedFee(order);
+            } else {
+                // Open: stablecoins never left escrow — return directly, no collateral conversion needed.
+                address paymentToken = IOwnVault(order.vault).paymentToken();
+                IERC20(paymentToken).safeTransfer(order.user, order.amount);
+            }
         } else {
             address eToken = IAssetRegistry(registry.assetRegistry()).getActiveToken(order.asset);
             IERC20(eToken).safeTransfer(order.user, order.amount);
@@ -518,7 +552,14 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         address oracleAddr = IAssetRegistry(registry.assetRegistry()).getPrimaryOracle(order.asset);
         if (oracleAddr == address(0)) return false;
 
-        uint256 windowStart = order.claimedAt > 0 ? order.claimedAt : order.createdAt;
+        uint256 windowStart;
+        if (order.claimedAt > 0) {
+            windowStart = order.claimedAt;
+        } else if (order.orderType == OrderType.Mint) {
+            windowStart = order.createdAt + IOwnVault(order.vault).mintBuffer();
+        } else {
+            windowStart = order.createdAt;
+        }
 
         (uint256 lowPrice, uint256 lowTs) = _callVerifyPrice(oracleAddr, order.asset, lowPriceData);
         if (lowTs < windowStart || lowTs > block.timestamp) return false;

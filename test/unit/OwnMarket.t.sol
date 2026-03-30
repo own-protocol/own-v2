@@ -93,6 +93,7 @@ contract OwnMarketTest is BaseTest {
         vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.releaseCollateral.selector), abi.encode());
         vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.gracePeriod.selector), abi.encode(GRACE_PERIOD));
         vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.claimThreshold.selector), abi.encode(CLAIM_THRESHOLD));
+        vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.mintBuffer.selector), abi.encode(uint256(900)));
         vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.collateralOracleAsset.selector), abi.encode(bytes32("ETH")));
         vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.isAssetSupported.selector), abi.encode(true));
 
@@ -683,15 +684,34 @@ contract OwnMarketTest is BaseTest {
         market.forceExecute(orderId, "", "");
     }
 
-    function test_forceExecute_unclaimedMint_reverts() public {
-        // Unclaimed mint cannot be force-executed (only redeems have claim threshold path)
+    function test_forceExecute_unclaimedMint_beforeThreshold_reverts() public {
+        // Unclaimed mint cannot be force-executed before claim threshold elapses
         uint256 orderId = _placeMintOrder(Actors.MINTER1, 1000e6);
+
+        vm.prank(Actors.MINTER1);
+        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.ClaimThresholdNotElapsed.selector, orderId));
+        market.forceExecute(orderId, "", "");
+    }
+
+    function test_forceExecute_unclaimedMint_afterClaimThreshold_succeeds() public {
+        // Open mint can now be force-executed after claim threshold
+        uint256 orderId = _placeMintOrder(Actors.MINTER1, 1000e6);
+
+        // Mock mintBuffer for _verifyPriceRange windowStart calculation
+        vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.mintBuffer.selector), abi.encode(uint256(900)));
+        // Mock vm() for open mint force execute at set price (sends stablecoins to VM)
+        vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.vm.selector), abi.encode(Actors.VM1));
 
         vm.warp(block.timestamp + CLAIM_THRESHOLD + 1);
 
         vm.prank(Actors.MINTER1);
-        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.InvalidOrderStatus.selector, orderId, OrderStatus.Open));
         market.forceExecute(orderId, "", "");
+
+        Order memory order = market.getOrder(orderId);
+        assertEq(uint256(order.status), uint256(OrderStatus.ForceExecuted));
+
+        // priceProofData is empty => price not reachable => stablecoins returned to user
+        assertEq(usdc.balanceOf(Actors.MINTER1), 1000e6);
     }
 
     function test_forceExecute_confirmedOrder_reverts() public {
