@@ -6,7 +6,7 @@ pragma solidity 0.8.28;
 ///         backend (signed oracle for MVP), and returns a validated price,
 ///         timestamp, and market-open status.
 ///
-/// @dev Downstream contracts (OwnMarket, LiquidationEngine) call only
+/// @dev Downstream contracts (OwnMarket) call only
 ///      `verifyPrice()`. They never know which backend produced the data.
 ///      Swapping backends requires deploying a new verifier — no changes
 ///      to downstream contracts.
