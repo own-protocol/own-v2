@@ -18,7 +18,9 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
 
 import {ERC20, IERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+
 import {ERC4626} from "@openzeppelin/contracts/token/ERC20/extensions/ERC4626.sol";
+import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Multicall} from "@openzeppelin/contracts/utils/Multicall.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
@@ -840,6 +842,8 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
         address token
     ) external onlyVM {
         if (token == address(0)) revert ZeroAddress();
+        uint256 decimals = IERC20Metadata(token).decimals();
+        if (decimals > 18) revert DecimalsTooHigh(decimals);
         if (_protocolFees != 0 || _vmFees != 0) revert OutstandingFeesExist();
 
         address oldToken = _paymentToken;

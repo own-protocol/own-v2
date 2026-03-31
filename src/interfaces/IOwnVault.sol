@@ -73,6 +73,7 @@ interface IOwnVault is IERC4626 {
     error WithdrawalNotPending(uint256 requestId);
     error OutstandingFeesExist();
     error WrongFeeToken(address expected, address provided);
+    error DecimalsTooHigh(uint256 decimals);
     error WithdrawalWaitPeriodNotElapsed(uint256 requestId, uint256 readyAt);
     error PriceNotAvailable(bytes32 asset);
     error DepositApprovalNotRequired();
