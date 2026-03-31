@@ -295,7 +295,7 @@ contract AssetRegistryTest is BaseTest {
 
         vm.startPrank(Actors.ADMIN);
         registry.addAsset(TSLA, eTSLA, _defaultConfig(eTSLA));
-        registry.setOracleConfig(TSLA, OracleConfig(oracleA, oracleB, bytes32(0)));
+        registry.setOracleConfig(TSLA, OracleConfig(oracleA, oracleB));
         registry.switchPrimaryOracle(TSLA);
         vm.stopPrank();
 
@@ -307,7 +307,7 @@ contract AssetRegistryTest is BaseTest {
 
         vm.startPrank(Actors.ADMIN);
         registry.addAsset(TSLA, eTSLA, _defaultConfig(eTSLA));
-        registry.setOracleConfig(TSLA, OracleConfig(oracleA, address(0), bytes32(0)));
+        registry.setOracleConfig(TSLA, OracleConfig(oracleA, address(0)));
 
         vm.expectRevert(IAssetRegistry.ZeroAddress.selector);
         registry.switchPrimaryOracle(TSLA);

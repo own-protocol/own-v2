@@ -75,7 +75,7 @@ contract OwnMarketTest is BaseTest {
             AssetConfig({activeToken: address(0), legacyTokens: new address[](0), active: true, volatilityLevel: 1});
         assetReg.addAsset(ethAsset, address(weth), ethConfig);
         OracleConfig memory ethOracleConfig =
-            OracleConfig({primaryOracle: address(oracle), secondaryOracle: address(0), pythPriceFeedId: bytes32(0)});
+            OracleConfig({primaryOracle: address(oracle), secondaryOracle: address(0)});
         assetReg.setOracleConfig(ethAsset, ethOracleConfig);
         vm.stopPrank();
         vm.label(address(market), "OwnMarket");

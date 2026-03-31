@@ -95,7 +95,7 @@ contract OrderLifecycleTest is BaseTest {
             AssetConfig({activeToken: address(eTSLA), legacyTokens: new address[](0), active: true, volatilityLevel: 2});
         assetRegistry.addAsset(TSLA, address(eTSLA), tslaConfig);
         OracleConfig memory tslaOracleConfig =
-            OracleConfig({primaryOracle: address(oracle), secondaryOracle: address(0), pythPriceFeedId: bytes32(0)});
+            OracleConfig({primaryOracle: address(oracle), secondaryOracle: address(0)});
         assetRegistry.setOracleConfig(TSLA, tslaOracleConfig);
 
         bytes32 ethAsset = bytes32("ETH");
@@ -103,7 +103,7 @@ contract OrderLifecycleTest is BaseTest {
             AssetConfig({activeToken: address(weth), legacyTokens: new address[](0), active: true, volatilityLevel: 1});
         assetRegistry.addAsset(ethAsset, address(weth), ethConfig);
         OracleConfig memory ethOracleConfig =
-            OracleConfig({primaryOracle: address(oracle), secondaryOracle: address(0), pythPriceFeedId: bytes32(0)});
+            OracleConfig({primaryOracle: address(oracle), secondaryOracle: address(0)});
         assetRegistry.setOracleConfig(ethAsset, ethOracleConfig);
         vault.setCollateralOracleAsset(ethAsset);
 
