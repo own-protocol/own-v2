@@ -23,15 +23,12 @@ interface IWstETHRouter {
         address indexed vault, address indexed sender, address indexed receiver, uint256 stETHAmount, uint256 shares
     );
 
-    /// @notice Emitted when vault shares are redeemed, wstETH unwrapped to stETH, and sent to receiver.
-    /// @param vault       The ERC-4626 vault.
-    /// @param owner       The share owner.
-    /// @param receiver    The address that received stETH.
-    /// @param stETHAmount Amount of stETH returned.
-    /// @param shares      Amount of vault shares burned.
-    event RedeemStETH(
-        address indexed vault, address indexed owner, address indexed receiver, uint256 stETHAmount, uint256 shares
-    );
+    /// @notice Emitted when wstETH is unwrapped to stETH.
+    /// @param sender       The caller who provided wstETH.
+    /// @param receiver     The address that received stETH.
+    /// @param wstETHAmount Amount of wstETH unwrapped.
+    /// @param stETHAmount  Amount of stETH received.
+    event UnwrappedWstETH(address indexed sender, address indexed receiver, uint256 wstETHAmount, uint256 stETHAmount);
 
     // ──────────────────────────────────────────────────────────
     //  Errors
@@ -90,18 +87,11 @@ interface IWstETHRouter {
         bytes32 s
     ) external returns (uint256 shares);
 
-    /// @notice Redeem vault shares for stETH.
-    /// @dev Burns shares, receives wstETH, unwraps to stETH, sends to receiver.
-    ///      Caller must have approved this router to spend their vault shares.
-    /// @param vault        The ERC-4626 vault (must use wstETH as underlying).
-    /// @param shares       Number of vault shares to redeem.
-    /// @param receiver     Address to receive stETH.
-    /// @param minAmountOut Minimum acceptable stETH output (slippage protection).
-    /// @return stETHAmount Amount of stETH sent to receiver.
-    function redeemStETH(
-        IERC4626 vault,
-        uint256 shares,
-        address receiver,
-        uint256 minAmountOut
-    ) external returns (uint256 stETHAmount);
+    /// @notice Unwrap wstETH to stETH and send to receiver.
+    /// @dev Pulls wstETH from caller, unwraps to stETH, and sends. Caller must have
+    ///      approved this router to spend their wstETH.
+    /// @param amount   Amount of wstETH to unwrap.
+    /// @param receiver Address to receive stETH.
+    /// @return stETHAmount Amount of stETH sent.
+    function unwrapWstETH(uint256 amount, address receiver) external returns (uint256 stETHAmount);
 }

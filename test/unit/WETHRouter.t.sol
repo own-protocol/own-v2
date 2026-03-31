@@ -128,84 +128,64 @@ contract WETHRouterTest is BaseTest {
     }
 
     // ──────────────────────────────────────────────────────────
-    //  redeemETH
+    //  unwrapWETH
     // ──────────────────────────────────────────────────────────
 
-    function test_redeemETH_succeeds() public {
-        // First deposit
+    function test_unwrapWETH_succeeds() public {
         uint256 amount = 1 ether;
-        _fundETH(Actors.LP1, amount);
-        vm.prank(Actors.LP1);
-        uint256 shares = router.depositETH{value: amount}(IERC4626(address(vault)), Actors.LP1, 0);
-
-        // Redeem
-        uint256 balanceBefore = Actors.LP1.balance;
+        vm.deal(Actors.LP1, amount);
         vm.startPrank(Actors.LP1);
-        vault.approve(address(router), shares);
-        uint256 assets = router.redeemETH(IERC4626(address(vault)), shares, Actors.LP1, 0);
+        mockWeth.deposit{value: amount}();
+        IERC20(address(mockWeth)).approve(address(router), amount);
+
+        uint256 balanceBefore = Actors.LP1.balance;
+        uint256 result = router.unwrapWETH(amount, Actors.LP1);
         vm.stopPrank();
 
-        assertGt(assets, 0);
-        assertEq(Actors.LP1.balance, balanceBefore + assets);
-        assertEq(vault.balanceOf(Actors.LP1), 0);
+        assertEq(result, amount);
+        assertEq(Actors.LP1.balance, balanceBefore + amount);
+        assertEq(mockWeth.balanceOf(Actors.LP1), 0);
         assertEq(address(router).balance, 0, "Router should hold no ETH");
         assertEq(mockWeth.balanceOf(address(router)), 0, "Router should hold no WETH");
     }
 
-    function test_redeemETH_differentReceiver() public {
+    function test_unwrapWETH_differentReceiver() public {
         uint256 amount = 1 ether;
-        _fundETH(Actors.LP1, amount);
-        vm.prank(Actors.LP1);
-        uint256 shares = router.depositETH{value: amount}(IERC4626(address(vault)), Actors.LP1, 0);
+        vm.deal(Actors.LP1, amount);
+        vm.startPrank(Actors.LP1);
+        mockWeth.deposit{value: amount}();
+        IERC20(address(mockWeth)).approve(address(router), amount);
 
         uint256 lp2BalanceBefore = Actors.LP2.balance;
-        vm.startPrank(Actors.LP1);
-        vault.approve(address(router), shares);
-        uint256 assets = router.redeemETH(IERC4626(address(vault)), shares, Actors.LP2, 0);
+        router.unwrapWETH(amount, Actors.LP2);
         vm.stopPrank();
 
-        assertEq(Actors.LP2.balance, lp2BalanceBefore + assets);
+        assertEq(Actors.LP2.balance, lp2BalanceBefore + amount);
     }
 
-    function test_redeemETH_emitsEvent() public {
+    function test_unwrapWETH_emitsEvent() public {
         uint256 amount = 1 ether;
-        _fundETH(Actors.LP1, amount);
-        vm.prank(Actors.LP1);
-        uint256 shares = router.depositETH{value: amount}(IERC4626(address(vault)), Actors.LP1, 0);
-
+        vm.deal(Actors.LP1, amount);
         vm.startPrank(Actors.LP1);
-        vault.approve(address(router), shares);
-        vm.expectEmit(true, true, true, false);
-        emit IWETHRouter.RedeemETH(address(vault), Actors.LP1, Actors.LP1, 0, shares);
-        router.redeemETH(IERC4626(address(vault)), shares, Actors.LP1, 0);
+        mockWeth.deposit{value: amount}();
+        IERC20(address(mockWeth)).approve(address(router), amount);
+
+        vm.expectEmit(true, true, false, true);
+        emit IWETHRouter.UnwrappedWETH(Actors.LP1, Actors.LP1, amount);
+        router.unwrapWETH(amount, Actors.LP1);
         vm.stopPrank();
     }
 
-    function test_redeemETH_zeroShares_reverts() public {
+    function test_unwrapWETH_zeroAmount_reverts() public {
         vm.prank(Actors.LP1);
         vm.expectRevert(IWETHRouter.ZeroAmount.selector);
-        router.redeemETH(IERC4626(address(vault)), 0, Actors.LP1, 0);
+        router.unwrapWETH(0, Actors.LP1);
     }
 
-    function test_redeemETH_zeroReceiver_reverts() public {
+    function test_unwrapWETH_zeroReceiver_reverts() public {
         vm.prank(Actors.LP1);
         vm.expectRevert(IWETHRouter.ZeroAddress.selector);
-        router.redeemETH(IERC4626(address(vault)), 1, address(0), 0);
-    }
-
-    function test_redeemETH_slippageProtection_reverts() public {
-        uint256 amount = 1 ether;
-        _fundETH(Actors.LP1, amount);
-        vm.prank(Actors.LP1);
-        uint256 shares = router.depositETH{value: amount}(IERC4626(address(vault)), Actors.LP1, 0);
-
-        vm.startPrank(Actors.LP1);
-        vault.approve(address(router), shares);
-        vm.expectRevert(
-            abi.encodeWithSelector(IWETHRouter.MinAmountError.selector, vault.previewRedeem(shares), type(uint256).max)
-        );
-        router.redeemETH(IERC4626(address(vault)), shares, Actors.LP1, type(uint256).max);
-        vm.stopPrank();
+        router.unwrapWETH(1, address(0));
     }
 
     // ──────────────────────────────────────────────────────────

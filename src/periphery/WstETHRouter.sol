@@ -67,30 +67,21 @@ contract WstETHRouter is IWstETHRouter, ReentrancyGuard {
     }
 
     /// @inheritdoc IWstETHRouter
-    function redeemStETH(
-        IERC4626 vault,
-        uint256 shares,
-        address receiver,
-        uint256 minAmountOut
-    ) external nonReentrant returns (uint256 stETHAmount) {
-        if (shares == 0) revert ZeroAmount();
+    function unwrapWstETH(uint256 amount, address receiver) external nonReentrant returns (uint256 stETHAmount) {
+        if (amount == 0) revert ZeroAmount();
         if (receiver == address(0)) revert ZeroAddress();
 
-        // Pull vault shares from caller and redeem for wstETH (to this contract)
-        IERC20(address(vault)).safeTransferFrom(msg.sender, address(this), shares);
-        uint256 wstETHAmount = vault.redeem(shares, address(this), address(this));
+        // Pull wstETH from caller
+        IERC20(address(wstETH)).safeTransferFrom(msg.sender, address(this), amount);
 
         // Unwrap wstETH → stETH
-        IERC20(address(wstETH)).forceApprove(address(wstETH), wstETHAmount);
-        stETHAmount = wstETH.unwrap(wstETHAmount);
-
-        // Slippage check
-        if (stETHAmount < minAmountOut) revert MinAmountError(stETHAmount, minAmountOut);
+        IERC20(address(wstETH)).forceApprove(address(wstETH), amount);
+        stETHAmount = wstETH.unwrap(amount);
 
         // Send stETH to receiver
         stETH.safeTransfer(receiver, stETHAmount);
 
-        emit RedeemStETH(address(vault), msg.sender, receiver, stETHAmount, shares);
+        emit UnwrappedWstETH(msg.sender, receiver, amount, stETHAmount);
     }
 
     // ──────────────────────────────────────────────────────────

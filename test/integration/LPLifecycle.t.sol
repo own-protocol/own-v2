@@ -4,6 +4,7 @@ pragma solidity 0.8.28;
 import {Actors} from "../helpers/Actors.sol";
 import {BaseTest} from "../helpers/BaseTest.sol";
 
+import {IOwnVault} from "../../src/interfaces/IOwnVault.sol";
 import {AssetConfig, VaultStatus, WithdrawalRequest, WithdrawalStatus} from "../../src/interfaces/types/Types.sol";
 
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
@@ -116,8 +117,11 @@ contract LPLifecycleTest is BaseTest {
         uint256 sharePriceAfter = usdcVault.convertToAssets(1e6);
         assertGt(sharePriceAfter, sharePriceBefore, "share price increased");
 
-        uint256 maxWithdraw = usdcVault.maxWithdraw(Actors.LP1);
-        assertApproxEqAbs(maxWithdraw, LP_DEPOSIT + yieldAmount, 1, "LP can withdraw deposit + yield");
+        // maxWithdraw returns 0 (direct withdrawals disabled), but share price still reflects yield
+        assertEq(usdcVault.maxWithdraw(Actors.LP1), 0, "maxWithdraw is 0 (use async queue)");
+        uint256 lpShares = usdcVault.balanceOf(Actors.LP1);
+        uint256 withdrawableViaQueue = usdcVault.convertToAssets(lpShares);
+        assertApproxEqAbs(withdrawableViaQueue, LP_DEPOSIT + yieldAmount, 1, "LP value includes deposit + yield");
     }
 
     // ══════════════════════════════════════════════════════════
@@ -271,31 +275,24 @@ contract LPLifecycleTest is BaseTest {
     //  Test: ERC-4626 standard withdraw
     // ══════════════════════════════════════════════════════════
 
-    function test_erc4626_standardWithdraw() public {
+    function test_erc4626_standardWithdraw_reverts() public {
         _lpDeposit(Actors.LP1, LP_DEPOSIT);
 
-        uint256 usdcBefore = usdc.balanceOf(Actors.LP1);
         vm.prank(Actors.LP1);
-        uint256 shares = usdcVault.withdraw(LP_DEPOSIT, Actors.LP1, Actors.LP1);
-
-        assertGt(shares, 0);
-        assertEq(usdc.balanceOf(Actors.LP1), usdcBefore + LP_DEPOSIT);
-        assertEq(usdcVault.balanceOf(Actors.LP1), 0);
+        vm.expectRevert(IOwnVault.DirectWithdrawalDisabled.selector);
+        usdcVault.withdraw(LP_DEPOSIT, Actors.LP1, Actors.LP1);
     }
 
     // ══════════════════════════════════════════════════════════
-    //  Test: ERC-4626 standard redeem
+    //  Test: ERC-4626 standard redeem (disabled — use async queue)
     // ══════════════════════════════════════════════════════════
 
-    function test_erc4626_standardRedeem() public {
+    function test_erc4626_standardRedeem_reverts() public {
         uint256 shares = _lpDeposit(Actors.LP1, LP_DEPOSIT);
 
-        uint256 usdcBefore = usdc.balanceOf(Actors.LP1);
         vm.prank(Actors.LP1);
-        uint256 assets = usdcVault.redeem(shares, Actors.LP1, Actors.LP1);
-
-        assertEq(assets, LP_DEPOSIT);
-        assertEq(usdc.balanceOf(Actors.LP1), usdcBefore + LP_DEPOSIT);
+        vm.expectRevert(IOwnVault.DirectWithdrawalDisabled.selector);
+        usdcVault.redeem(shares, Actors.LP1, Actors.LP1);
     }
 
     // ══════════════════════════════════════════════════════════

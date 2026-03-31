@@ -7,6 +7,7 @@ import {MockWETH} from "../helpers/MockWETH.sol";
 import {MockWstETH} from "../helpers/MockWstETH.sol";
 
 import {OwnVault} from "../../src/core/OwnVault.sol";
+import {IOwnVault} from "../../src/interfaces/IOwnVault.sol";
 import {WETHRouter} from "../../src/periphery/WETHRouter.sol";
 import {WstETHRouter} from "../../src/periphery/WstETHRouter.sol";
 
@@ -102,53 +103,59 @@ contract RouterIntegrationTest is BaseTest {
     }
 
     // ══════════════════════════════════════════════════════════
-    //  WETH Router: redeem shares → WETH → ETH
+    //  WETH Router: unwrapWETH (WETH → ETH utility)
     // ══════════════════════════════════════════════════════════
 
-    function test_wethRouter_redeemETH_receivesETH() public {
-        // First deposit
-        _fundETH(Actors.LP1, DEPOSIT_AMOUNT_ETH);
-        vm.prank(Actors.LP1);
-        uint256 shares = wethRouter.depositETH{value: DEPOSIT_AMOUNT_ETH}(IERC4626(address(wethVault)), Actors.LP1, 0);
-
-        // Approve router to pull shares
-        vm.prank(Actors.LP1);
-        IERC20(address(wethVault)).approve(address(wethRouter), shares);
+    function test_wethRouter_unwrapWETH_receivesETH() public {
+        // Give LP some WETH directly
+        vm.deal(Actors.LP1, DEPOSIT_AMOUNT_ETH);
+        vm.startPrank(Actors.LP1);
+        mockWeth.deposit{value: DEPOSIT_AMOUNT_ETH}();
+        IERC20(address(mockWeth)).approve(address(wethRouter), DEPOSIT_AMOUNT_ETH);
 
         uint256 ethBefore = Actors.LP1.balance;
+        uint256 result = wethRouter.unwrapWETH(DEPOSIT_AMOUNT_ETH, Actors.LP1);
+        vm.stopPrank();
 
-        // Redeem
-        vm.prank(Actors.LP1);
-        uint256 assets = wethRouter.redeemETH(IERC4626(address(wethVault)), shares, Actors.LP1, 0);
-
-        assertEq(assets, DEPOSIT_AMOUNT_ETH, "received full ETH back");
+        assertEq(result, DEPOSIT_AMOUNT_ETH, "returned correct amount");
         assertEq(Actors.LP1.balance, ethBefore + DEPOSIT_AMOUNT_ETH, "LP got ETH");
-        assertEq(wethVault.balanceOf(Actors.LP1), 0, "shares burned");
-        assertEq(wethVault.totalAssets(), 0, "vault drained");
+        assertEq(IERC20(address(mockWeth)).balanceOf(Actors.LP1), 0, "WETH drained");
     }
 
     // ══════════════════════════════════════════════════════════
-    //  WETH Router: Full round trip (deposit + redeem)
+    //  Vault: direct withdraw/redeem are disabled
     // ══════════════════════════════════════════════════════════
 
-    function test_wethRouter_fullRoundTrip() public {
+    function test_vault_withdraw_reverts() public {
+        // Deposit first
         _fundETH(Actors.LP1, DEPOSIT_AMOUNT_ETH);
-
-        // Deposit
         vm.prank(Actors.LP1);
         uint256 shares = wethRouter.depositETH{value: DEPOSIT_AMOUNT_ETH}(IERC4626(address(wethVault)), Actors.LP1, 0);
 
-        assertGt(shares, 0);
-        assertEq(Actors.LP1.balance, 0);
+        // Direct withdraw should revert
+        vm.prank(Actors.LP1);
+        vm.expectRevert(IOwnVault.DirectWithdrawalDisabled.selector);
+        wethVault.withdraw(DEPOSIT_AMOUNT_ETH, Actors.LP1, Actors.LP1);
+    }
 
-        // Approve + Redeem
-        vm.startPrank(Actors.LP1);
-        IERC20(address(wethVault)).approve(address(wethRouter), shares);
-        wethRouter.redeemETH(IERC4626(address(wethVault)), shares, Actors.LP1, 0);
-        vm.stopPrank();
+    function test_vault_redeem_reverts() public {
+        // Deposit first
+        _fundETH(Actors.LP1, DEPOSIT_AMOUNT_ETH);
+        vm.prank(Actors.LP1);
+        uint256 shares = wethRouter.depositETH{value: DEPOSIT_AMOUNT_ETH}(IERC4626(address(wethVault)), Actors.LP1, 0);
 
-        assertEq(Actors.LP1.balance, DEPOSIT_AMOUNT_ETH, "full ETH returned");
-        assertEq(wethVault.totalAssets(), 0, "vault empty");
+        // Direct redeem should revert
+        vm.prank(Actors.LP1);
+        vm.expectRevert(IOwnVault.DirectWithdrawalDisabled.selector);
+        wethVault.redeem(shares, Actors.LP1, Actors.LP1);
+    }
+
+    function test_vault_maxWithdraw_returnsZero() public {
+        assertEq(wethVault.maxWithdraw(Actors.LP1), 0, "maxWithdraw should be 0");
+    }
+
+    function test_vault_maxRedeem_returnsZero() public {
+        assertEq(wethVault.maxRedeem(Actors.LP1), 0, "maxRedeem should be 0");
     }
 
     // ══════════════════════════════════════════════════════════
@@ -173,28 +180,26 @@ contract RouterIntegrationTest is BaseTest {
     }
 
     // ══════════════════════════════════════════════════════════
-    //  wstETH Router: redeem shares → wstETH → stETH
+    //  wstETH Router: unwrapWstETH (wstETH → stETH utility)
     // ══════════════════════════════════════════════════════════
 
-    function test_wstethRouter_redeemStETH_receivesStETH() public {
-        // First deposit
+    function test_wstethRouter_unwrapWstETH_receivesStETH() public {
+        // Give LP some wstETH: mint stETH, wrap to wstETH
         _fundStETH(Actors.LP1, DEPOSIT_AMOUNT_STETH);
         vm.startPrank(Actors.LP1);
-        stETH.approve(address(wstethRouter), DEPOSIT_AMOUNT_STETH);
-        uint256 shares = wstethRouter.depositStETH(IERC4626(address(wstethVault)), DEPOSIT_AMOUNT_STETH, Actors.LP1, 0);
+        stETH.approve(address(mockWstETH), DEPOSIT_AMOUNT_STETH);
+        uint256 wstETHAmount = mockWstETH.wrap(DEPOSIT_AMOUNT_STETH);
 
-        // Approve router to pull shares
-        IERC20(address(wstethVault)).approve(address(wstethRouter), shares);
+        // Approve router to pull wstETH
+        IERC20(address(mockWstETH)).approve(address(wstethRouter), wstETHAmount);
 
         uint256 stethBefore = stETH.balanceOf(Actors.LP1);
-
-        // Redeem
-        uint256 stETHOut = wstethRouter.redeemStETH(IERC4626(address(wstethVault)), shares, Actors.LP1, 0);
+        uint256 stETHOut = wstethRouter.unwrapWstETH(wstETHAmount, Actors.LP1);
         vm.stopPrank();
 
         assertEq(stETHOut, DEPOSIT_AMOUNT_STETH, "received full stETH back");
         assertEq(stETH.balanceOf(Actors.LP1), stethBefore + DEPOSIT_AMOUNT_STETH, "LP got stETH");
-        assertEq(wstethVault.balanceOf(Actors.LP1), 0, "shares burned");
+        assertEq(IERC20(address(mockWstETH)).balanceOf(Actors.LP1), 0, "wstETH drained");
     }
 
     // ══════════════════════════════════════════════════════════

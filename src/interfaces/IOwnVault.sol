@@ -51,6 +51,7 @@ interface IOwnVault is IERC4626 {
     // ──────────────────────────────────────────────────────────
 
     error OnlyVM();
+    error DirectWithdrawalDisabled();
     error VaultIsPaused();
     error VaultIsHalted();
     error InvalidHaltPrice();

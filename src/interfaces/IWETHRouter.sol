@@ -22,15 +22,11 @@ interface IWETHRouter {
         address indexed vault, address indexed sender, address indexed receiver, uint256 assets, uint256 shares
     );
 
-    /// @notice Emitted when vault shares are redeemed for native ETH.
-    /// @param vault    The ERC-4626 vault.
-    /// @param owner    The share owner.
-    /// @param receiver The address that received ETH.
-    /// @param assets   Amount of WETH withdrawn.
-    /// @param shares   Amount of vault shares burned.
-    event RedeemETH(
-        address indexed vault, address indexed owner, address indexed receiver, uint256 assets, uint256 shares
-    );
+    /// @notice Emitted when WETH is unwrapped to native ETH.
+    /// @param sender   The caller who provided WETH.
+    /// @param receiver The address that received native ETH.
+    /// @param amount   Amount of WETH unwrapped.
+    event UnwrappedWETH(address indexed sender, address indexed receiver, uint256 amount);
 
     // ──────────────────────────────────────────────────────────
     //  Errors
@@ -67,18 +63,11 @@ interface IWETHRouter {
         uint256 minSharesOut
     ) external payable returns (uint256 shares);
 
-    /// @notice Redeem vault shares for native ETH.
-    /// @dev Burns shares, receives WETH, unwraps to ETH, sends to receiver.
-    ///      Caller must have approved this router to spend their vault shares.
-    /// @param vault        The ERC-4626 vault (must use WETH as underlying).
-    /// @param shares       Number of vault shares to redeem.
-    /// @param receiver     Address to receive native ETH.
-    /// @param minAmountOut Minimum acceptable ETH output (slippage protection).
-    /// @return assets Amount of ETH sent to receiver.
-    function redeemETH(
-        IERC4626 vault,
-        uint256 shares,
-        address receiver,
-        uint256 minAmountOut
-    ) external returns (uint256 assets);
+    /// @notice Unwrap WETH to native ETH and send to receiver.
+    /// @dev Pulls WETH from caller, unwraps, and sends ETH. Caller must have
+    ///      approved this router to spend their WETH.
+    /// @param amount   Amount of WETH to unwrap.
+    /// @param receiver Address to receive native ETH.
+    /// @return Amount of ETH sent.
+    function unwrapWETH(uint256 amount, address receiver) external returns (uint256);
 }

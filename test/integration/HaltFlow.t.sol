@@ -169,12 +169,12 @@ contract HaltFlowTest is BaseTest {
         assertEq(usdcVault.maxMint(Actors.LP1), 0);
     }
 
-    function test_halt_withdrawalsAllowed() public {
+    function test_halt_directWithdrawalsDisabled() public {
         _haltVault();
 
-        // maxWithdraw / maxRedeem should NOT return 0 during halt
-        assertGt(usdcVault.maxWithdraw(Actors.LP1), 0);
-        assertGt(usdcVault.maxRedeem(Actors.LP1), 0);
+        // maxWithdraw / maxRedeem always return 0 (direct withdrawals disabled, use async queue)
+        assertEq(usdcVault.maxWithdraw(Actors.LP1), 0);
+        assertEq(usdcVault.maxRedeem(Actors.LP1), 0);
     }
 
     function test_halt_requiresActive() public {

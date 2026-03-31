@@ -214,16 +214,20 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
         return super.mint(shares, receiver);
     }
 
+    /// @dev Direct withdrawals are disabled. Use the async withdrawal queue
+    ///      (requestWithdrawal → fulfillWithdrawal) instead.
     function maxWithdraw(
-        address owner
-    ) public view override(ERC4626, IERC4626) returns (uint256) {
-        return super.maxWithdraw(owner);
+        address
+    ) public pure override(ERC4626, IERC4626) returns (uint256) {
+        return 0;
     }
 
+    /// @dev Direct redemptions are disabled. Use the async withdrawal queue
+    ///      (requestWithdrawal → fulfillWithdrawal) instead.
     function maxRedeem(
-        address owner
-    ) public view override(ERC4626, IERC4626) returns (uint256) {
-        return super.maxRedeem(owner);
+        address
+    ) public pure override(ERC4626, IERC4626) returns (uint256) {
+        return 0;
     }
 
     // ──────────────────────────────────────────────────────────
@@ -991,20 +995,16 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
     //  Required overrides for diamond inheritance
     // ──────────────────────────────────────────────────────────
 
-    function withdraw(
-        uint256 assets,
-        address receiver,
-        address own
-    ) public override(ERC4626, IERC4626) returns (uint256) {
-        return super.withdraw(assets, receiver, own);
+    /// @dev Direct withdrawals are disabled. Use the async withdrawal queue
+    ///      (requestWithdrawal → fulfillWithdrawal) instead.
+    function withdraw(uint256, address, address) public pure override(ERC4626, IERC4626) returns (uint256) {
+        revert DirectWithdrawalDisabled();
     }
 
-    function redeem(
-        uint256 shares,
-        address receiver,
-        address own
-    ) public override(ERC4626, IERC4626) returns (uint256) {
-        return super.redeem(shares, receiver, own);
+    /// @dev Direct redemptions are disabled. Use the async withdrawal queue
+    ///      (requestWithdrawal → fulfillWithdrawal) instead.
+    function redeem(uint256, address, address) public pure override(ERC4626, IERC4626) returns (uint256) {
+        revert DirectWithdrawalDisabled();
     }
 
     function totalAssets() public view override(ERC4626, IERC4626) returns (uint256) {

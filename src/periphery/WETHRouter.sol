@@ -51,29 +51,21 @@ contract WETHRouter is IWETHRouter, ReentrancyGuard {
     }
 
     /// @inheritdoc IWETHRouter
-    function redeemETH(
-        IERC4626 vault,
-        uint256 shares,
-        address receiver,
-        uint256 minAmountOut
-    ) external nonReentrant returns (uint256 assets) {
-        if (shares == 0) revert ZeroAmount();
+    function unwrapWETH(uint256 amount, address receiver) external nonReentrant returns (uint256) {
+        if (amount == 0) revert ZeroAmount();
         if (receiver == address(0)) revert ZeroAddress();
 
-        // Pull vault shares from caller and redeem for WETH (to this contract)
-        IERC20(address(vault)).safeTransferFrom(msg.sender, address(this), shares);
-        assets = vault.redeem(shares, address(this), address(this));
-
-        // Slippage check
-        if (assets < minAmountOut) revert MinAmountError(assets, minAmountOut);
+        // Pull WETH from caller
+        IERC20(address(weth)).safeTransferFrom(msg.sender, address(this), amount);
 
         // Unwrap WETH → ETH
-        weth.withdraw(assets);
+        weth.withdraw(amount);
 
         // Send ETH to receiver
-        Address.sendValue(payable(receiver), assets);
+        Address.sendValue(payable(receiver), amount);
 
-        emit RedeemETH(address(vault), msg.sender, receiver, assets, shares);
+        emit UnwrappedWETH(msg.sender, receiver, amount);
+        return amount;
     }
 
     /// @notice Accept ETH only from the WETH contract (during withdraw).

@@ -160,105 +160,88 @@ contract WstETHRouterTest is BaseTest {
     }
 
     // ──────────────────────────────────────────────────────────
-    //  redeemStETH
+    //  unwrapWstETH
     // ──────────────────────────────────────────────────────────
 
-    function test_redeemStETH_succeeds() public {
-        // First deposit
+    function test_unwrapWstETH_succeeds() public {
+        // Give LP some wstETH directly
         uint256 amount = 10 ether;
-        _fundAndApproveStETH(Actors.LP1, amount);
-        vm.prank(Actors.LP1);
-        uint256 shares = router.depositStETH(IERC4626(address(vault)), amount, Actors.LP1, 0);
-
-        // Redeem
-        uint256 balanceBefore = stETH.balanceOf(Actors.LP1);
+        _fundStETH(Actors.LP1, amount);
         vm.startPrank(Actors.LP1);
-        vault.approve(address(router), shares);
-        uint256 stETHAmount = router.redeemStETH(IERC4626(address(vault)), shares, Actors.LP1, 0);
+        stETH.approve(address(wstETH), amount);
+        uint256 wstETHAmount = wstETH.wrap(amount);
+
+        // Approve router to pull wstETH
+        IERC20(address(wstETH)).approve(address(router), wstETHAmount);
+
+        uint256 balanceBefore = stETH.balanceOf(Actors.LP1);
+        uint256 stETHOut = router.unwrapWstETH(wstETHAmount, Actors.LP1);
         vm.stopPrank();
 
-        assertGt(stETHAmount, 0);
-        assertEq(stETH.balanceOf(Actors.LP1), balanceBefore + stETHAmount);
-        assertEq(vault.balanceOf(Actors.LP1), 0);
+        assertGt(stETHOut, 0);
+        assertEq(stETH.balanceOf(Actors.LP1), balanceBefore + stETHOut);
+        assertEq(IERC20(address(wstETH)).balanceOf(Actors.LP1), 0);
         assertEq(stETH.balanceOf(address(router)), 0, "Router should hold no stETH");
         assertEq(wstETH.balanceOf(address(router)), 0, "Router should hold no wstETH");
     }
 
-    function test_redeemStETH_differentReceiver() public {
+    function test_unwrapWstETH_differentReceiver() public {
         uint256 amount = 10 ether;
-        _fundAndApproveStETH(Actors.LP1, amount);
-        vm.prank(Actors.LP1);
-        uint256 shares = router.depositStETH(IERC4626(address(vault)), amount, Actors.LP1, 0);
+        _fundStETH(Actors.LP1, amount);
+        vm.startPrank(Actors.LP1);
+        stETH.approve(address(wstETH), amount);
+        uint256 wstETHAmount = wstETH.wrap(amount);
+        IERC20(address(wstETH)).approve(address(router), wstETHAmount);
 
         uint256 lp2BalanceBefore = stETH.balanceOf(Actors.LP2);
-        vm.startPrank(Actors.LP1);
-        vault.approve(address(router), shares);
-        uint256 stETHAmount = router.redeemStETH(IERC4626(address(vault)), shares, Actors.LP2, 0);
+        uint256 stETHOut = router.unwrapWstETH(wstETHAmount, Actors.LP2);
         vm.stopPrank();
 
-        assertEq(stETH.balanceOf(Actors.LP2), lp2BalanceBefore + stETHAmount);
+        assertEq(stETH.balanceOf(Actors.LP2), lp2BalanceBefore + stETHOut);
     }
 
-    function test_redeemStETH_emitsEvent() public {
+    function test_unwrapWstETH_emitsEvent() public {
         uint256 amount = 10 ether;
-        _fundAndApproveStETH(Actors.LP1, amount);
-        vm.prank(Actors.LP1);
-        uint256 shares = router.depositStETH(IERC4626(address(vault)), amount, Actors.LP1, 0);
-
+        _fundStETH(Actors.LP1, amount);
         vm.startPrank(Actors.LP1);
-        vault.approve(address(router), shares);
-        vm.expectEmit(true, true, true, false);
-        emit IWstETHRouter.RedeemStETH(address(vault), Actors.LP1, Actors.LP1, 0, shares);
-        router.redeemStETH(IERC4626(address(vault)), shares, Actors.LP1, 0);
+        stETH.approve(address(wstETH), amount);
+        uint256 wstETHAmount = wstETH.wrap(amount);
+        IERC20(address(wstETH)).approve(address(router), wstETHAmount);
+
+        vm.expectEmit(true, true, false, true);
+        emit IWstETHRouter.UnwrappedWstETH(Actors.LP1, Actors.LP1, wstETHAmount, amount);
+        router.unwrapWstETH(wstETHAmount, Actors.LP1);
         vm.stopPrank();
     }
 
-    function test_redeemStETH_zeroShares_reverts() public {
+    function test_unwrapWstETH_zeroAmount_reverts() public {
         vm.prank(Actors.LP1);
         vm.expectRevert(IWstETHRouter.ZeroAmount.selector);
-        router.redeemStETH(IERC4626(address(vault)), 0, Actors.LP1, 0);
+        router.unwrapWstETH(0, Actors.LP1);
     }
 
-    function test_redeemStETH_zeroReceiver_reverts() public {
+    function test_unwrapWstETH_zeroReceiver_reverts() public {
         vm.prank(Actors.LP1);
         vm.expectRevert(IWstETHRouter.ZeroAddress.selector);
-        router.redeemStETH(IERC4626(address(vault)), 1, address(0), 0);
+        router.unwrapWstETH(1, address(0));
     }
 
-    function test_redeemStETH_slippageProtection_reverts() public {
-        uint256 amount = 10 ether;
-        _fundAndApproveStETH(Actors.LP1, amount);
-        vm.prank(Actors.LP1);
-        uint256 shares = router.depositStETH(IERC4626(address(vault)), amount, Actors.LP1, 0);
-
-        vm.startPrank(Actors.LP1);
-        vault.approve(address(router), shares);
-        uint256 expectedAssets = vault.previewRedeem(shares);
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                IWstETHRouter.MinAmountError.selector, wstETH.getStETHByWstETH(expectedAssets), type(uint256).max
-            )
-        );
-        router.redeemStETH(IERC4626(address(vault)), shares, Actors.LP1, type(uint256).max);
-        vm.stopPrank();
-    }
-
-    function test_redeemStETH_withExchangeRate() public {
-        // Set rate: 1 stETH = 0.9 wstETH
+    function test_unwrapWstETH_withExchangeRate() public {
+        // Set rate: 1 stETH = 0.9 wstETH (stETH appreciated)
         wstETH.setTokensPerStEth(0.9e18);
 
         uint256 amount = 10 ether;
-        _fundAndApproveStETH(Actors.LP1, amount);
-        vm.prank(Actors.LP1);
-        uint256 shares = router.depositStETH(IERC4626(address(vault)), amount, Actors.LP1, 0);
-
+        _fundStETH(Actors.LP1, amount);
         vm.startPrank(Actors.LP1);
-        vault.approve(address(router), shares);
-        uint256 stETHAmount = router.redeemStETH(IERC4626(address(vault)), shares, Actors.LP1, 0);
+        stETH.approve(address(wstETH), amount);
+        uint256 wstETHAmount = wstETH.wrap(amount);
+        IERC20(address(wstETH)).approve(address(router), wstETHAmount);
+
+        uint256 stETHOut = router.unwrapWstETH(wstETHAmount, Actors.LP1);
         vm.stopPrank();
 
         // Should get back approximately the same stETH (minus rounding)
-        assertGt(stETHAmount, 0);
-        assertApproxEqAbs(stETHAmount, amount, 2, "Should recover approximately same stETH");
+        assertGt(stETHOut, 0);
+        assertApproxEqAbs(stETHOut, amount, 2, "Should recover approximately same stETH");
     }
 }
