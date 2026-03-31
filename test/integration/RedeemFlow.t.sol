@@ -23,7 +23,7 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 contract RedeemFlowTest is BaseTest {
     AssetRegistry public assetRegistry;
     OwnMarket public market;
-    OwnVault public usdcVault;
+    OwnVault public vault;
     EToken public eTSLA;
     FeeCalculator public feeCalc;
 
@@ -62,20 +62,19 @@ contract RedeemFlowTest is BaseTest {
         VaultFactory factory = new VaultFactory(Actors.ADMIN, address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), address(factory));
 
-        usdcVault =
-            OwnVault(factory.createVault(address(weth), Actors.VM1, "Own ETH Vault", "oETH", MAX_UTIL_BPS, 2000));
+        vault = OwnVault(factory.createVault(address(weth), Actors.VM1, "Own ETH Vault", "oETH", MAX_UTIL_BPS, 2000));
 
         market = new OwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
 
-        usdcVault.setGracePeriod(1 days);
-        usdcVault.setClaimThreshold(6 hours);
+        vault.setGracePeriod(1 days);
+        vault.setClaimThreshold(6 hours);
 
         vm.stopPrank();
 
         vm.label(address(assetRegistry), "AssetRegistry");
         vm.label(address(market), "OwnMarket");
-        vm.label(address(usdcVault), "USDCVault");
+        vm.label(address(vault), "USDCVault");
     }
 
     function _configureAssets() private {
@@ -93,16 +92,16 @@ contract RedeemFlowTest is BaseTest {
 
     function _configureVault() private {
         vm.startPrank(Actors.VM1);
-        usdcVault.setPaymentToken(address(usdc));
-        usdcVault.enableAsset(TSLA);
+        vault.setPaymentToken(address(usdc));
+        vault.enableAsset(TSLA);
         vm.stopPrank();
     }
 
     function _depositLPCollateral() private {
         _fundWETH(Actors.VM1, LP_DEPOSIT_WETH);
         vm.startPrank(Actors.VM1);
-        weth.approve(address(usdcVault), LP_DEPOSIT_WETH);
-        usdcVault.deposit(LP_DEPOSIT_WETH, Actors.LP1);
+        weth.approve(address(vault), LP_DEPOSIT_WETH);
+        vault.deposit(LP_DEPOSIT_WETH, Actors.LP1);
         vm.stopPrank();
     }
 
@@ -120,7 +119,7 @@ contract RedeemFlowTest is BaseTest {
         eTSLA.approve(address(market), ETOKEN_AMOUNT);
 
         uint256 orderId =
-            market.placeRedeemOrder(address(usdcVault), TSLA, ETOKEN_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
+            market.placeRedeemOrder(address(vault), TSLA, ETOKEN_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
         vm.stopPrank();
 
         assertEq(eTSLA.balanceOf(address(market)), ETOKEN_AMOUNT, "eTokens escrowed");
@@ -159,7 +158,7 @@ contract RedeemFlowTest is BaseTest {
         eTSLA.approve(address(market), ETOKEN_AMOUNT);
 
         uint256 orderId =
-            market.placeRedeemOrder(address(usdcVault), TSLA, ETOKEN_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
+            market.placeRedeemOrder(address(vault), TSLA, ETOKEN_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
 
         assertEq(eTSLA.balanceOf(Actors.MINTER1), 0);
 
@@ -180,7 +179,7 @@ contract RedeemFlowTest is BaseTest {
         vm.startPrank(Actors.MINTER1);
         eTSLA.approve(address(market), ETOKEN_AMOUNT);
 
-        uint256 orderId = market.placeRedeemOrder(address(usdcVault), TSLA, ETOKEN_AMOUNT, TSLA_PRICE, expiry);
+        uint256 orderId = market.placeRedeemOrder(address(vault), TSLA, ETOKEN_AMOUNT, TSLA_PRICE, expiry);
         vm.stopPrank();
 
         vm.warp(expiry + 1);

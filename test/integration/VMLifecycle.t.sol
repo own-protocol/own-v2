@@ -20,13 +20,13 @@ import {EToken} from "../../src/tokens/EToken.sol";
 contract VMLifecycleTest is BaseTest {
     AssetRegistry public assetRegistry;
     OwnMarket public market;
-    OwnVault public usdcVault;
-    OwnVault public usdcVault2;
+    OwnVault public vault;
+    OwnVault public vault2;
     EToken public eTSLA;
     FeeCalculator public feeCalc;
 
     uint256 constant MINT_AMOUNT = 10_000e6;
-    uint256 constant LP_DEPOSIT = 500_000e6;
+    uint256 constant LP_DEPOSIT = 100 ether;
 
     function setUp() public override {
         super.setUp();
@@ -54,8 +54,8 @@ contract VMLifecycleTest is BaseTest {
         VaultFactory factory = new VaultFactory(Actors.ADMIN, address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), address(factory));
 
-        usdcVault = OwnVault(factory.createVault(address(usdc), Actors.VM1, "Own USDC Vault", "oUSDC", 8000, 2000));
-        usdcVault2 = OwnVault(factory.createVault(address(usdc), Actors.VM2, "Own USDC Vault 2", "oUSDC2", 8000, 2000));
+        vault = OwnVault(factory.createVault(address(weth), Actors.VM1, "Own WETH Vault", "oWETH", 8000, 2000));
+        vault2 = OwnVault(factory.createVault(address(weth), Actors.VM2, "Own WETH Vault 2", "oWETH2", 8000, 2000));
 
         eTSLA = new EToken("Own Tesla", "eTSLA", TSLA, address(protocolRegistry), address(usdc));
 
@@ -66,27 +66,27 @@ contract VMLifecycleTest is BaseTest {
         market = new OwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
 
-        usdcVault.setGracePeriod(1 days);
-        usdcVault.setClaimThreshold(6 hours);
+        vault.setGracePeriod(1 days);
+        vault.setClaimThreshold(6 hours);
 
         vm.stopPrank();
 
         // Set payment tokens and enable assets
         vm.startPrank(Actors.VM1);
-        usdcVault.setPaymentToken(address(usdc));
-        usdcVault.enableAsset(TSLA);
+        vault.setPaymentToken(address(usdc));
+        vault.enableAsset(TSLA);
         vm.stopPrank();
 
         vm.startPrank(Actors.VM2);
-        usdcVault2.setPaymentToken(address(usdc));
-        usdcVault2.enableAsset(TSLA);
+        vault2.setPaymentToken(address(usdc));
+        vault2.enableAsset(TSLA);
         vm.stopPrank();
 
         // LP deposits collateral (VM1 must call deposit on behalf of LP)
-        _fundUSDC(Actors.VM1, LP_DEPOSIT);
+        _fundWETH(Actors.VM1, LP_DEPOSIT);
         vm.startPrank(Actors.VM1);
-        usdc.approve(address(usdcVault), LP_DEPOSIT);
-        usdcVault.deposit(LP_DEPOSIT, Actors.LP1);
+        weth.approve(address(vault), LP_DEPOSIT);
+        vault.deposit(LP_DEPOSIT, Actors.LP1);
         vm.stopPrank();
     }
 
@@ -95,8 +95,8 @@ contract VMLifecycleTest is BaseTest {
     // ══════════════════════════════════════════════════════════
 
     function test_vmBinding() public view {
-        assertEq(usdcVault.vm(), Actors.VM1);
-        assertEq(usdcVault2.vm(), Actors.VM2);
+        assertEq(vault.vm(), Actors.VM1);
+        assertEq(vault2.vm(), Actors.VM2);
     }
 
     // ══════════════════════════════════════════════════════════
@@ -107,8 +107,7 @@ contract VMLifecycleTest is BaseTest {
         _fundUSDC(Actors.MINTER1, MINT_AMOUNT);
         vm.startPrank(Actors.MINTER1);
         usdc.approve(address(market), MINT_AMOUNT);
-        uint256 orderId =
-            market.placeMintOrder(address(usdcVault), TSLA, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
+        uint256 orderId = market.placeMintOrder(address(vault), TSLA, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
         vm.stopPrank();
 
         vm.prank(Actors.VM1);
@@ -122,11 +121,10 @@ contract VMLifecycleTest is BaseTest {
         _fundUSDC(Actors.MINTER1, MINT_AMOUNT);
         vm.startPrank(Actors.MINTER1);
         usdc.approve(address(market), MINT_AMOUNT);
-        uint256 orderId =
-            market.placeMintOrder(address(usdcVault), TSLA, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
+        uint256 orderId = market.placeMintOrder(address(vault), TSLA, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
         vm.stopPrank();
 
-        // VM2 is bound to usdcVault2, not usdcVault (which is the registered vault)
+        // VM2 is bound to vault2, not vault (which is the registered vault)
         vm.prank(Actors.VM2);
         vm.expectRevert(abi.encodeWithSignature("OnlyVM()"));
         market.claimOrder(orderId);
@@ -141,8 +139,7 @@ contract VMLifecycleTest is BaseTest {
         _fundUSDC(Actors.MINTER1, MINT_AMOUNT);
         vm.startPrank(Actors.MINTER1);
         usdc.approve(address(market), MINT_AMOUNT);
-        uint256 orderId =
-            market.placeMintOrder(address(usdcVault), TSLA, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
+        uint256 orderId = market.placeMintOrder(address(vault), TSLA, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
         vm.stopPrank();
 
         // 2. VM claims and confirms
@@ -161,18 +158,18 @@ contract VMLifecycleTest is BaseTest {
     function test_vmOnlyDeposit_whenApprovalRequired() public {
         // Enable deposit approval — non-VM deposit should revert
         vm.prank(Actors.ADMIN);
-        usdcVault.setRequireDepositApproval(true);
+        vault.setRequireDepositApproval(true);
 
-        _fundUSDC(Actors.LP1, 1000e6);
+        _fundWETH(Actors.LP1, 10 ether);
         vm.startPrank(Actors.LP1);
-        usdc.approve(address(usdcVault), 1000e6);
+        weth.approve(address(vault), 10 ether);
         vm.expectRevert(IOwnVault.DepositApprovalRequired.selector);
-        usdcVault.deposit(1000e6, Actors.LP1);
+        vault.deposit(1000e6, Actors.LP1);
         vm.stopPrank();
     }
 
     function test_vmSetPaymentToken() public view {
-        assertEq(usdcVault.paymentToken(), address(usdc));
-        assertEq(usdcVault2.paymentToken(), address(usdc));
+        assertEq(vault.paymentToken(), address(usdc));
+        assertEq(vault2.paymentToken(), address(usdc));
     }
 }

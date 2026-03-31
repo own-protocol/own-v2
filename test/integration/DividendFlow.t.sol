@@ -23,7 +23,7 @@ contract DividendFlowTest is BaseTest {
 
     AssetRegistry public assetRegistry;
     OwnMarket public market;
-    OwnVault public usdcVault;
+    OwnVault public vault;
     EToken public eTSLA;
 
     uint256 constant HOLDER1_AMOUNT = 100e18;
@@ -48,13 +48,13 @@ contract DividendFlowTest is BaseTest {
         VaultFactory factory = new VaultFactory(Actors.ADMIN, address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), address(factory));
 
-        usdcVault = OwnVault(factory.createVault(address(usdc), Actors.VM1, "Own USDC Vault", "oUSDC", 8000, 2000));
+        vault = OwnVault(factory.createVault(address(weth), Actors.VM1, "Own WETH Vault", "oWETH", 8000, 2000));
 
         market = new OwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
 
-        usdcVault.setGracePeriod(1 days);
-        usdcVault.setClaimThreshold(6 hours);
+        vault.setGracePeriod(1 days);
+        vault.setClaimThreshold(6 hours);
 
         eTSLA = new EToken("Own Tesla", "eTSLA", TSLA, address(protocolRegistry), address(usdc));
 
@@ -66,8 +66,8 @@ contract DividendFlowTest is BaseTest {
 
         // Set payment token and enable asset
         vm.startPrank(Actors.VM1);
-        usdcVault.setPaymentToken(address(usdc));
-        usdcVault.enableAsset(TSLA);
+        vault.setPaymentToken(address(usdc));
+        vault.enableAsset(TSLA);
         vm.stopPrank();
     }
 

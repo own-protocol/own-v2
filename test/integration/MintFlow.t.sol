@@ -24,14 +24,14 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 contract MintFlowTest is BaseTest {
     AssetRegistry public assetRegistry;
     OwnMarket public market;
-    OwnVault public usdcVault;
+    OwnVault public vault;
     EToken public eTSLA;
     EToken public eGOLD;
     FeeCalculator public feeCalc;
 
     uint256 constant MAX_EXPOSURE = 10_000_000e18;
     uint256 constant MAX_UTIL_BPS = 8000;
-    uint256 constant LP_DEPOSIT = 1_000_000e6;
+    uint256 constant LP_DEPOSIT = 500 ether;
     uint256 constant MINT_AMOUNT = 10_000e6;
 
     function setUp() public override {
@@ -63,20 +63,19 @@ contract MintFlowTest is BaseTest {
         VaultFactory factory = new VaultFactory(Actors.ADMIN, address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), address(factory));
 
-        usdcVault =
-            OwnVault(factory.createVault(address(usdc), Actors.VM1, "Own USDC Vault", "oUSDC", MAX_UTIL_BPS, 2000));
+        vault = OwnVault(factory.createVault(address(weth), Actors.VM1, "Own WETH Vault", "oWETH", MAX_UTIL_BPS, 2000));
 
         market = new OwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
 
-        usdcVault.setGracePeriod(1 days);
-        usdcVault.setClaimThreshold(6 hours);
+        vault.setGracePeriod(1 days);
+        vault.setClaimThreshold(6 hours);
 
         vm.stopPrank();
 
         vm.label(address(assetRegistry), "AssetRegistry");
         vm.label(address(market), "OwnMarket");
-        vm.label(address(usdcVault), "USDCVault");
+        vm.label(address(vault), "USDCVault");
     }
 
     function _configureAssets() private {
@@ -101,17 +100,17 @@ contract MintFlowTest is BaseTest {
 
     function _configureVault() private {
         vm.startPrank(Actors.VM1);
-        usdcVault.setPaymentToken(address(usdc));
-        usdcVault.enableAsset(TSLA);
-        usdcVault.enableAsset(GOLD);
+        vault.setPaymentToken(address(usdc));
+        vault.enableAsset(TSLA);
+        vault.enableAsset(GOLD);
         vm.stopPrank();
     }
 
     function _depositLPCollateral() private {
-        _fundUSDC(Actors.VM1, LP_DEPOSIT);
+        _fundWETH(Actors.VM1, LP_DEPOSIT);
         vm.startPrank(Actors.VM1);
-        usdc.approve(address(usdcVault), LP_DEPOSIT);
-        usdcVault.deposit(LP_DEPOSIT, Actors.LP1);
+        weth.approve(address(vault), LP_DEPOSIT);
+        vault.deposit(LP_DEPOSIT, Actors.LP1);
         vm.stopPrank();
     }
 
@@ -127,8 +126,7 @@ contract MintFlowTest is BaseTest {
 
         vm.startPrank(Actors.MINTER1);
         usdc.approve(address(market), MINT_AMOUNT);
-        uint256 orderId =
-            market.placeMintOrder(address(usdcVault), TSLA, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
+        uint256 orderId = market.placeMintOrder(address(vault), TSLA, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
         vm.stopPrank();
 
         assertEq(usdc.balanceOf(address(market)), MINT_AMOUNT, "stablecoins escrowed");
@@ -169,8 +167,7 @@ contract MintFlowTest is BaseTest {
 
         vm.startPrank(Actors.MINTER1);
         usdc.approve(address(market), MINT_AMOUNT);
-        uint256 orderId =
-            market.placeMintOrder(address(usdcVault), TSLA, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
+        uint256 orderId = market.placeMintOrder(address(vault), TSLA, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
 
         assertEq(usdc.balanceOf(Actors.MINTER1), 0);
         assertEq(usdc.balanceOf(address(market)), MINT_AMOUNT);
@@ -195,7 +192,7 @@ contract MintFlowTest is BaseTest {
 
         vm.startPrank(Actors.MINTER1);
         usdc.approve(address(market), MINT_AMOUNT);
-        uint256 orderId = market.placeMintOrder(address(usdcVault), TSLA, MINT_AMOUNT, TSLA_PRICE, expiry);
+        uint256 orderId = market.placeMintOrder(address(vault), TSLA, MINT_AMOUNT, TSLA_PRICE, expiry);
         vm.stopPrank();
 
         vm.warp(expiry + 1);
@@ -217,8 +214,7 @@ contract MintFlowTest is BaseTest {
 
         vm.startPrank(Actors.MINTER1);
         usdc.approve(address(market), MINT_AMOUNT);
-        uint256 orderId =
-            market.placeMintOrder(address(usdcVault), TSLA, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
+        uint256 orderId = market.placeMintOrder(address(vault), TSLA, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
         vm.stopPrank();
 
         vm.prank(Actors.MINTER2);
@@ -234,7 +230,7 @@ contract MintFlowTest is BaseTest {
         vm.startPrank(Actors.MINTER1);
         usdc.approve(address(market), MINT_AMOUNT);
         vm.expectRevert(abi.encodeWithSignature("ZeroAmount()"));
-        market.placeMintOrder(address(usdcVault), TSLA, 0, TSLA_PRICE, block.timestamp + 1 days);
+        market.placeMintOrder(address(vault), TSLA, 0, TSLA_PRICE, block.timestamp + 1 days);
         vm.stopPrank();
     }
 
@@ -248,7 +244,7 @@ contract MintFlowTest is BaseTest {
         vm.startPrank(Actors.MINTER1);
         usdc.approve(address(market), MINT_AMOUNT);
         vm.expectRevert(abi.encodeWithSignature("InvalidExpiry()"));
-        market.placeMintOrder(address(usdcVault), TSLA, MINT_AMOUNT, TSLA_PRICE, block.timestamp);
+        market.placeMintOrder(address(vault), TSLA, MINT_AMOUNT, TSLA_PRICE, block.timestamp);
         vm.stopPrank();
     }
 
@@ -261,8 +257,7 @@ contract MintFlowTest is BaseTest {
 
         vm.startPrank(Actors.MINTER1);
         usdc.approve(address(market), MINT_AMOUNT);
-        uint256 orderId =
-            market.placeMintOrder(address(usdcVault), TSLA, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
+        uint256 orderId = market.placeMintOrder(address(vault), TSLA, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
         vm.stopPrank();
 
         uint256[] memory openOrders = market.getOpenOrders(TSLA);
@@ -288,7 +283,7 @@ contract MintFlowTest is BaseTest {
         vm.startPrank(Actors.MINTER1);
         usdc.approve(address(market), MINT_AMOUNT);
         uint256 tslaOrderId =
-            market.placeMintOrder(address(usdcVault), TSLA, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
+            market.placeMintOrder(address(vault), TSLA, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
         vm.stopPrank();
 
         // Place GOLD order
@@ -296,7 +291,7 @@ contract MintFlowTest is BaseTest {
         vm.startPrank(Actors.MINTER2);
         usdc.approve(address(market), goldAmount);
         uint256 goldOrderId =
-            market.placeMintOrder(address(usdcVault), GOLD, goldAmount, GOLD_PRICE, block.timestamp + 1 days);
+            market.placeMintOrder(address(vault), GOLD, goldAmount, GOLD_PRICE, block.timestamp + 1 days);
         vm.stopPrank();
 
         // VM claims and confirms both
@@ -327,9 +322,9 @@ contract MintFlowTest is BaseTest {
         vm.startPrank(Actors.MINTER1);
         usdc.approve(address(market), MINT_AMOUNT * 2);
         uint256 orderId1 =
-            market.placeMintOrder(address(usdcVault), TSLA, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
+            market.placeMintOrder(address(vault), TSLA, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
         uint256 orderId2 =
-            market.placeMintOrder(address(usdcVault), TSLA, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
+            market.placeMintOrder(address(vault), TSLA, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
         vm.stopPrank();
 
         assertTrue(orderId1 != orderId2, "distinct order IDs");

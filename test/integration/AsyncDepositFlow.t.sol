@@ -18,10 +18,10 @@ import {EToken} from "../../src/tokens/EToken.sol";
 contract AsyncDepositFlowTest is BaseTest {
     AssetRegistry public assetRegistry;
     OwnMarket public market;
-    OwnVault public usdcVault;
+    OwnVault public vault;
     EToken public eTSLA;
 
-    uint256 constant LP_DEPOSIT = 100_000e6;
+    uint256 constant LP_DEPOSIT = 50 ether;
 
     function setUp() public override {
         super.setUp();
@@ -40,13 +40,13 @@ contract AsyncDepositFlowTest is BaseTest {
         VaultFactory factory = new VaultFactory(Actors.ADMIN, address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), address(factory));
 
-        usdcVault = OwnVault(factory.createVault(address(usdc), Actors.VM1, "Own USDC Vault", "oUSDC", 8000, 2000));
+        vault = OwnVault(factory.createVault(address(weth), Actors.VM1, "Own WETH Vault", "oWETH", 8000, 2000));
 
         market = new OwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
 
-        usdcVault.setGracePeriod(1 days);
-        usdcVault.setClaimThreshold(6 hours);
+        vault.setGracePeriod(1 days);
+        vault.setClaimThreshold(6 hours);
 
         eTSLA = new EToken("Own Tesla", "eTSLA", TSLA, address(protocolRegistry), address(usdc));
 
@@ -57,12 +57,12 @@ contract AsyncDepositFlowTest is BaseTest {
         vm.stopPrank();
 
         vm.startPrank(Actors.VM1);
-        usdcVault.setPaymentToken(address(usdc));
-        usdcVault.enableAsset(TSLA);
+        vault.setPaymentToken(address(usdc));
+        vault.enableAsset(TSLA);
         vm.stopPrank();
 
         vm.prank(Actors.ADMIN);
-        usdcVault.setRequireDepositApproval(true);
+        vault.setRequireDepositApproval(true);
     }
 
     // ══════════════════════════════════════════════════════════
@@ -70,44 +70,44 @@ contract AsyncDepositFlowTest is BaseTest {
     // ══════════════════════════════════════════════════════════
 
     function test_asyncDeposit_requestAndAccept() public {
-        _fundUSDC(Actors.LP1, LP_DEPOSIT);
+        _fundWETH(Actors.LP1, LP_DEPOSIT);
 
         vm.startPrank(Actors.LP1);
-        usdc.approve(address(usdcVault), LP_DEPOSIT);
-        uint256 requestId = usdcVault.requestDeposit(LP_DEPOSIT, Actors.LP1);
+        weth.approve(address(vault), LP_DEPOSIT);
+        uint256 requestId = vault.requestDeposit(LP_DEPOSIT, Actors.LP1);
         vm.stopPrank();
 
         // Collateral transferred to vault
-        assertEq(usdc.balanceOf(Actors.LP1), 0, "LP drained");
-        assertEq(usdc.balanceOf(address(usdcVault)), LP_DEPOSIT, "vault received collateral");
+        assertEq(weth.balanceOf(Actors.LP1), 0, "LP drained");
+        assertEq(weth.balanceOf(address(vault)), LP_DEPOSIT, "vault received collateral");
 
         // Request is pending
-        DepositRequest memory req = usdcVault.getDepositRequest(requestId);
+        DepositRequest memory req = vault.getDepositRequest(requestId);
         assertEq(req.depositor, Actors.LP1);
         assertEq(req.receiver, Actors.LP1);
         assertEq(req.assets, LP_DEPOSIT);
         assertEq(uint8(req.status), uint8(DepositStatus.Pending));
 
         // Check pending list
-        uint256[] memory pending = usdcVault.getPendingDeposits();
+        uint256[] memory pending = vault.getPendingDeposits();
         assertEq(pending.length, 1);
         assertEq(pending[0], requestId);
 
         // VM accepts
         vm.prank(Actors.VM1);
-        usdcVault.acceptDeposit(requestId);
+        vault.acceptDeposit(requestId);
 
         // Shares minted to LP
-        uint256 shares = usdcVault.balanceOf(Actors.LP1);
+        uint256 shares = vault.balanceOf(Actors.LP1);
         assertGt(shares, 0, "LP received shares");
-        assertEq(usdcVault.totalAssets(), LP_DEPOSIT, "total assets match");
+        assertEq(vault.totalAssets(), LP_DEPOSIT, "total assets match");
 
         // Request status updated
-        req = usdcVault.getDepositRequest(requestId);
+        req = vault.getDepositRequest(requestId);
         assertEq(uint8(req.status), uint8(DepositStatus.Accepted));
 
         // Pending list cleared
-        pending = usdcVault.getPendingDeposits();
+        pending = vault.getPendingDeposits();
         assertEq(pending.length, 0);
     }
 
@@ -116,29 +116,29 @@ contract AsyncDepositFlowTest is BaseTest {
     // ══════════════════════════════════════════════════════════
 
     function test_asyncDeposit_requestAndReject() public {
-        _fundUSDC(Actors.LP1, LP_DEPOSIT);
+        _fundWETH(Actors.LP1, LP_DEPOSIT);
 
         vm.startPrank(Actors.LP1);
-        usdc.approve(address(usdcVault), LP_DEPOSIT);
-        uint256 requestId = usdcVault.requestDeposit(LP_DEPOSIT, Actors.LP1);
+        weth.approve(address(vault), LP_DEPOSIT);
+        uint256 requestId = vault.requestDeposit(LP_DEPOSIT, Actors.LP1);
         vm.stopPrank();
 
-        assertEq(usdc.balanceOf(Actors.LP1), 0, "LP collateral escrowed");
+        assertEq(weth.balanceOf(Actors.LP1), 0, "LP collateral escrowed");
 
         // VM rejects
         vm.prank(Actors.VM1);
-        usdcVault.rejectDeposit(requestId);
+        vault.rejectDeposit(requestId);
 
         // Collateral returned
-        assertEq(usdc.balanceOf(Actors.LP1), LP_DEPOSIT, "LP collateral returned");
-        assertEq(usdcVault.balanceOf(Actors.LP1), 0, "no shares minted");
+        assertEq(weth.balanceOf(Actors.LP1), LP_DEPOSIT, "LP collateral returned");
+        assertEq(vault.balanceOf(Actors.LP1), 0, "no shares minted");
 
         // Request status updated
-        DepositRequest memory req = usdcVault.getDepositRequest(requestId);
+        DepositRequest memory req = vault.getDepositRequest(requestId);
         assertEq(uint8(req.status), uint8(DepositStatus.Rejected));
 
         // Pending list cleared
-        assertEq(usdcVault.getPendingDeposits().length, 0);
+        assertEq(vault.getPendingDeposits().length, 0);
     }
 
     // ══════════════════════════════════════════════════════════
@@ -146,23 +146,23 @@ contract AsyncDepositFlowTest is BaseTest {
     // ══════════════════════════════════════════════════════════
 
     function test_asyncDeposit_cancelByDepositor() public {
-        _fundUSDC(Actors.LP1, LP_DEPOSIT);
+        _fundWETH(Actors.LP1, LP_DEPOSIT);
 
         vm.startPrank(Actors.LP1);
-        usdc.approve(address(usdcVault), LP_DEPOSIT);
-        uint256 requestId = usdcVault.requestDeposit(LP_DEPOSIT, Actors.LP1);
+        weth.approve(address(vault), LP_DEPOSIT);
+        uint256 requestId = vault.requestDeposit(LP_DEPOSIT, Actors.LP1);
 
-        assertEq(usdc.balanceOf(Actors.LP1), 0, "collateral escrowed");
+        assertEq(weth.balanceOf(Actors.LP1), 0, "collateral escrowed");
 
-        usdcVault.cancelDeposit(requestId);
+        vault.cancelDeposit(requestId);
         vm.stopPrank();
 
-        assertEq(usdc.balanceOf(Actors.LP1), LP_DEPOSIT, "collateral returned");
-        assertEq(usdcVault.balanceOf(Actors.LP1), 0, "no shares minted");
+        assertEq(weth.balanceOf(Actors.LP1), LP_DEPOSIT, "collateral returned");
+        assertEq(vault.balanceOf(Actors.LP1), 0, "no shares minted");
 
-        DepositRequest memory req = usdcVault.getDepositRequest(requestId);
+        DepositRequest memory req = vault.getDepositRequest(requestId);
         assertEq(uint8(req.status), uint8(DepositStatus.Cancelled));
-        assertEq(usdcVault.getPendingDeposits().length, 0);
+        assertEq(vault.getPendingDeposits().length, 0);
     }
 
     // ══════════════════════════════════════════════════════════
@@ -170,16 +170,16 @@ contract AsyncDepositFlowTest is BaseTest {
     // ══════════════════════════════════════════════════════════
 
     function test_asyncDeposit_cancelByNonOwner_reverts() public {
-        _fundUSDC(Actors.LP1, LP_DEPOSIT);
+        _fundWETH(Actors.LP1, LP_DEPOSIT);
 
         vm.startPrank(Actors.LP1);
-        usdc.approve(address(usdcVault), LP_DEPOSIT);
-        uint256 requestId = usdcVault.requestDeposit(LP_DEPOSIT, Actors.LP1);
+        weth.approve(address(vault), LP_DEPOSIT);
+        uint256 requestId = vault.requestDeposit(LP_DEPOSIT, Actors.LP1);
         vm.stopPrank();
 
         vm.prank(Actors.LP2);
         vm.expectRevert(abi.encodeWithSelector(IOwnVault.OnlyDepositor.selector, requestId));
-        usdcVault.cancelDeposit(requestId);
+        vault.cancelDeposit(requestId);
     }
 
     // ══════════════════════════════════════════════════════════
@@ -187,42 +187,42 @@ contract AsyncDepositFlowTest is BaseTest {
     // ══════════════════════════════════════════════════════════
 
     function test_asyncDeposit_multipleRequests() public {
-        _fundUSDC(Actors.LP1, LP_DEPOSIT);
-        _fundUSDC(Actors.LP2, LP_DEPOSIT * 2);
+        _fundWETH(Actors.LP1, LP_DEPOSIT);
+        _fundWETH(Actors.LP2, LP_DEPOSIT * 2);
 
         vm.startPrank(Actors.LP1);
-        usdc.approve(address(usdcVault), LP_DEPOSIT);
-        uint256 reqId1 = usdcVault.requestDeposit(LP_DEPOSIT, Actors.LP1);
+        weth.approve(address(vault), LP_DEPOSIT);
+        uint256 reqId1 = vault.requestDeposit(LP_DEPOSIT, Actors.LP1);
         vm.stopPrank();
 
         vm.startPrank(Actors.LP2);
-        usdc.approve(address(usdcVault), LP_DEPOSIT * 2);
-        uint256 reqId2 = usdcVault.requestDeposit(LP_DEPOSIT * 2, Actors.LP2);
+        weth.approve(address(vault), LP_DEPOSIT * 2);
+        uint256 reqId2 = vault.requestDeposit(LP_DEPOSIT * 2, Actors.LP2);
         vm.stopPrank();
 
-        uint256[] memory pending = usdcVault.getPendingDeposits();
+        uint256[] memory pending = vault.getPendingDeposits();
         assertEq(pending.length, 2);
 
         // VM accepts first request
         vm.prank(Actors.VM1);
-        usdcVault.acceptDeposit(reqId1);
+        vault.acceptDeposit(reqId1);
 
-        pending = usdcVault.getPendingDeposits();
+        pending = vault.getPendingDeposits();
         assertEq(pending.length, 1);
 
-        uint256 lp1Shares = usdcVault.balanceOf(Actors.LP1);
+        uint256 lp1Shares = vault.balanceOf(Actors.LP1);
         assertGt(lp1Shares, 0, "LP1 received shares");
 
         // VM accepts second request
         vm.prank(Actors.VM1);
-        usdcVault.acceptDeposit(reqId2);
+        vault.acceptDeposit(reqId2);
 
-        uint256 lp2Shares = usdcVault.balanceOf(Actors.LP2);
+        uint256 lp2Shares = vault.balanceOf(Actors.LP2);
         assertGt(lp2Shares, 0, "LP2 received shares");
         assertApproxEqAbs(lp2Shares, lp1Shares * 2, 1, "LP2 has ~2x shares");
 
-        assertEq(usdcVault.getPendingDeposits().length, 0);
-        assertEq(usdcVault.totalAssets(), LP_DEPOSIT * 3, "total assets correct");
+        assertEq(vault.getPendingDeposits().length, 0);
+        assertEq(vault.totalAssets(), LP_DEPOSIT * 3, "total assets correct");
     }
 
     // ══════════════════════════════════════════════════════════
@@ -231,13 +231,13 @@ contract AsyncDepositFlowTest is BaseTest {
 
     function test_asyncDeposit_whilePaused_reverts() public {
         vm.prank(Actors.ADMIN);
-        usdcVault.pause(bytes32("emergency"));
+        vault.pause(bytes32("emergency"));
 
-        _fundUSDC(Actors.LP1, LP_DEPOSIT);
+        _fundWETH(Actors.LP1, LP_DEPOSIT);
         vm.startPrank(Actors.LP1);
-        usdc.approve(address(usdcVault), LP_DEPOSIT);
+        weth.approve(address(vault), LP_DEPOSIT);
         vm.expectRevert(IOwnVault.VaultIsPaused.selector);
-        usdcVault.requestDeposit(LP_DEPOSIT, Actors.LP1);
+        vault.requestDeposit(LP_DEPOSIT, Actors.LP1);
         vm.stopPrank();
     }
 
@@ -247,15 +247,15 @@ contract AsyncDepositFlowTest is BaseTest {
 
     function test_asyncDeposit_whileHalted_reverts() public {
         vm.startPrank(Actors.ADMIN);
-        usdcVault.haltAsset(TSLA, TSLA_PRICE);
-        usdcVault.haltVault();
+        vault.haltAsset(TSLA, TSLA_PRICE);
+        vault.haltVault();
         vm.stopPrank();
 
-        _fundUSDC(Actors.LP1, LP_DEPOSIT);
+        _fundWETH(Actors.LP1, LP_DEPOSIT);
         vm.startPrank(Actors.LP1);
-        usdc.approve(address(usdcVault), LP_DEPOSIT);
+        weth.approve(address(vault), LP_DEPOSIT);
         vm.expectRevert(IOwnVault.VaultIsHalted.selector);
-        usdcVault.requestDeposit(LP_DEPOSIT, Actors.LP1);
+        vault.requestDeposit(LP_DEPOSIT, Actors.LP1);
         vm.stopPrank();
     }
 
@@ -264,16 +264,16 @@ contract AsyncDepositFlowTest is BaseTest {
     // ══════════════════════════════════════════════════════════
 
     function test_asyncDeposit_acceptByNonVM_reverts() public {
-        _fundUSDC(Actors.LP1, LP_DEPOSIT);
+        _fundWETH(Actors.LP1, LP_DEPOSIT);
 
         vm.startPrank(Actors.LP1);
-        usdc.approve(address(usdcVault), LP_DEPOSIT);
-        uint256 requestId = usdcVault.requestDeposit(LP_DEPOSIT, Actors.LP1);
+        weth.approve(address(vault), LP_DEPOSIT);
+        uint256 requestId = vault.requestDeposit(LP_DEPOSIT, Actors.LP1);
         vm.stopPrank();
 
         vm.prank(Actors.LP2);
         vm.expectRevert(IOwnVault.OnlyVM.selector);
-        usdcVault.acceptDeposit(requestId);
+        vault.acceptDeposit(requestId);
     }
 
     // ══════════════════════════════════════════════════════════
@@ -281,16 +281,16 @@ contract AsyncDepositFlowTest is BaseTest {
     // ══════════════════════════════════════════════════════════
 
     function test_asyncDeposit_rejectByNonVM_reverts() public {
-        _fundUSDC(Actors.LP1, LP_DEPOSIT);
+        _fundWETH(Actors.LP1, LP_DEPOSIT);
 
         vm.startPrank(Actors.LP1);
-        usdc.approve(address(usdcVault), LP_DEPOSIT);
-        uint256 requestId = usdcVault.requestDeposit(LP_DEPOSIT, Actors.LP1);
+        weth.approve(address(vault), LP_DEPOSIT);
+        uint256 requestId = vault.requestDeposit(LP_DEPOSIT, Actors.LP1);
         vm.stopPrank();
 
         vm.prank(Actors.LP2);
         vm.expectRevert(IOwnVault.OnlyVM.selector);
-        usdcVault.rejectDeposit(requestId);
+        vault.rejectDeposit(requestId);
     }
 
     // ══════════════════════════════════════════════════════════
@@ -298,19 +298,19 @@ contract AsyncDepositFlowTest is BaseTest {
     // ══════════════════════════════════════════════════════════
 
     function test_asyncDeposit_doubleAccept_reverts() public {
-        _fundUSDC(Actors.LP1, LP_DEPOSIT);
+        _fundWETH(Actors.LP1, LP_DEPOSIT);
 
         vm.startPrank(Actors.LP1);
-        usdc.approve(address(usdcVault), LP_DEPOSIT);
-        uint256 requestId = usdcVault.requestDeposit(LP_DEPOSIT, Actors.LP1);
+        weth.approve(address(vault), LP_DEPOSIT);
+        uint256 requestId = vault.requestDeposit(LP_DEPOSIT, Actors.LP1);
         vm.stopPrank();
 
         vm.prank(Actors.VM1);
-        usdcVault.acceptDeposit(requestId);
+        vault.acceptDeposit(requestId);
 
         vm.prank(Actors.VM1);
         vm.expectRevert(abi.encodeWithSelector(IOwnVault.DepositRequestNotPending.selector, requestId));
-        usdcVault.acceptDeposit(requestId);
+        vault.acceptDeposit(requestId);
     }
 
     // ══════════════════════════════════════════════════════════
@@ -320,7 +320,7 @@ contract AsyncDepositFlowTest is BaseTest {
     function test_asyncDeposit_zeroAmount_reverts() public {
         vm.prank(Actors.LP1);
         vm.expectRevert(abi.encodeWithSignature("ZeroAmount()"));
-        usdcVault.requestDeposit(0, Actors.LP1);
+        vault.requestDeposit(0, Actors.LP1);
     }
 
     // ══════════════════════════════════════════════════════════
@@ -328,18 +328,18 @@ contract AsyncDepositFlowTest is BaseTest {
     // ══════════════════════════════════════════════════════════
 
     function test_asyncDeposit_differentReceiver() public {
-        _fundUSDC(Actors.LP1, LP_DEPOSIT);
+        _fundWETH(Actors.LP1, LP_DEPOSIT);
 
         vm.startPrank(Actors.LP1);
-        usdc.approve(address(usdcVault), LP_DEPOSIT);
-        uint256 requestId = usdcVault.requestDeposit(LP_DEPOSIT, Actors.LP2);
+        weth.approve(address(vault), LP_DEPOSIT);
+        uint256 requestId = vault.requestDeposit(LP_DEPOSIT, Actors.LP2);
         vm.stopPrank();
 
         vm.prank(Actors.VM1);
-        usdcVault.acceptDeposit(requestId);
+        vault.acceptDeposit(requestId);
 
-        assertEq(usdcVault.balanceOf(Actors.LP1), 0, "depositor has no shares");
-        assertGt(usdcVault.balanceOf(Actors.LP2), 0, "receiver has shares");
+        assertEq(vault.balanceOf(Actors.LP1), 0, "depositor has no shares");
+        assertGt(vault.balanceOf(Actors.LP2), 0, "receiver has shares");
     }
 
     // ══════════════════════════════════════════════════════════
@@ -349,52 +349,52 @@ contract AsyncDepositFlowTest is BaseTest {
     function test_requestDeposit_reverts_whenApprovalNotRequired() public {
         // Disable approval (setUp enabled it)
         vm.prank(Actors.ADMIN);
-        usdcVault.setRequireDepositApproval(false);
+        vault.setRequireDepositApproval(false);
 
-        _fundUSDC(Actors.LP1, LP_DEPOSIT);
+        _fundWETH(Actors.LP1, LP_DEPOSIT);
         vm.startPrank(Actors.LP1);
-        usdc.approve(address(usdcVault), LP_DEPOSIT);
+        weth.approve(address(vault), LP_DEPOSIT);
         vm.expectRevert(IOwnVault.DepositApprovalNotRequired.selector);
-        usdcVault.requestDeposit(LP_DEPOSIT, Actors.LP1);
+        vault.requestDeposit(LP_DEPOSIT, Actors.LP1);
         vm.stopPrank();
     }
 
     function test_directDeposit_succeeds_whenApprovalNotRequired() public {
         // Disable approval
         vm.prank(Actors.ADMIN);
-        usdcVault.setRequireDepositApproval(false);
+        vault.setRequireDepositApproval(false);
 
-        _fundUSDC(Actors.LP1, LP_DEPOSIT);
+        _fundWETH(Actors.LP1, LP_DEPOSIT);
         vm.startPrank(Actors.LP1);
-        usdc.approve(address(usdcVault), LP_DEPOSIT);
-        uint256 shares = usdcVault.deposit(LP_DEPOSIT, Actors.LP1);
+        weth.approve(address(vault), LP_DEPOSIT);
+        uint256 shares = vault.deposit(LP_DEPOSIT, Actors.LP1);
         vm.stopPrank();
 
         assertGt(shares, 0, "LP received shares directly");
-        assertEq(usdcVault.balanceOf(Actors.LP1), shares);
-        assertEq(usdcVault.totalAssets(), LP_DEPOSIT);
+        assertEq(vault.balanceOf(Actors.LP1), shares);
+        assertEq(vault.totalAssets(), LP_DEPOSIT);
     }
 
     function test_directDeposit_reverts_whenApprovalRequired() public {
         // Approval is already enabled in setUp
-        _fundUSDC(Actors.LP1, LP_DEPOSIT);
+        _fundWETH(Actors.LP1, LP_DEPOSIT);
         vm.startPrank(Actors.LP1);
-        usdc.approve(address(usdcVault), LP_DEPOSIT);
+        weth.approve(address(vault), LP_DEPOSIT);
         vm.expectRevert(IOwnVault.DepositApprovalRequired.selector);
-        usdcVault.deposit(LP_DEPOSIT, Actors.LP1);
+        vault.deposit(LP_DEPOSIT, Actors.LP1);
         vm.stopPrank();
     }
 
     function test_setRequireDepositApproval_onlyAdmin() public {
         vm.prank(Actors.ATTACKER);
         vm.expectRevert(IOwnVault.OnlyAdmin.selector);
-        usdcVault.setRequireDepositApproval(true);
+        vault.setRequireDepositApproval(true);
     }
 
     function test_setRequireDepositApproval_emitsEvent() public {
         vm.prank(Actors.ADMIN);
         vm.expectEmit(false, false, false, true);
         emit IOwnVault.DepositApprovalUpdated(false);
-        usdcVault.setRequireDepositApproval(false);
+        vault.setRequireDepositApproval(false);
     }
 }

@@ -383,7 +383,10 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
         assets = convertToAssets(shares);
 
         // Check that withdrawal won't breach max utilization (in USD terms)
-        if (_totalExposureUSD > 0 && _collateralValueUSD > 0) {
+        if (_totalExposureUSD > 0) {
+            // Block withdrawals if collateral value is unknown while exposure exists
+            if (_collateralValueUSD == 0) revert CollateralValueNotInitialized();
+
             // Estimate collateral value after withdrawal
             uint256 collateralAfter = _collateralValueUSD - _collateralValueUSD.mulDiv(assets, totalAssets());
             if (collateralAfter > 0) {
@@ -846,6 +849,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
         address token
     ) external onlyVM {
         if (token == address(0)) revert ZeroAddress();
+        if (token == asset()) revert PaymentTokenCannotBeCollateral();
         uint256 decimals = IERC20Metadata(token).decimals();
         if (decimals > 18) revert DecimalsTooHigh(decimals);
         if (_protocolFees != 0 || _vmFees != 0) revert OutstandingFeesExist();

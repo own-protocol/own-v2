@@ -34,10 +34,10 @@ contract OwnVaultTest is BaseTest {
         protocolRegistry.setAddress(protocolRegistry.TREASURY(), Actors.FEE_RECIPIENT);
         protocolRegistry.setProtocolShareBps(2000);
         vault = new OwnVault(
-            address(usdc), "Own USDC Vault", "oUSDC", address(protocolRegistry), Actors.VM1, INITIAL_MAX_UTIL, 2000
+            address(weth), "Own WETH Vault", "oWETH", address(protocolRegistry), Actors.VM1, INITIAL_MAX_UTIL, 2000
         );
         vm.stopPrank();
-        vm.label(address(vault), "OwnVault-USDC");
+        vm.label(address(vault), "OwnVault-WETH");
     }
 
     // ──────────────────────────────────────────────────────────
@@ -46,9 +46,9 @@ contract OwnVaultTest is BaseTest {
 
     /// @dev Deposit as the bound VM.
     function _depositAs(address lp, uint256 amount) internal returns (uint256 shares) {
-        usdc.mint(Actors.VM1, amount);
+        weth.mint(Actors.VM1, amount);
         vm.startPrank(Actors.VM1);
-        usdc.approve(address(vault), amount);
+        weth.approve(address(vault), amount);
         shares = vault.deposit(amount, lp);
         vm.stopPrank();
     }
@@ -64,7 +64,7 @@ contract OwnVaultTest is BaseTest {
     // ──────────────────────────────────────────────────────────
 
     function test_deposit_succeeds() public {
-        uint256 depositAmount = 1000e6;
+        uint256 depositAmount = 10 ether;
         uint256 shares = _depositAs(Actors.LP1, depositAmount);
 
         assertGt(shares, 0);
@@ -73,10 +73,10 @@ contract OwnVaultTest is BaseTest {
     }
 
     function test_deposit_multipleLPs() public {
-        _depositAs(Actors.LP1, 1000e6);
-        _depositAs(Actors.LP2, 2000e6);
+        _depositAs(Actors.LP1, 10 ether);
+        _depositAs(Actors.LP2, 20 ether);
 
-        assertEq(vault.totalAssets(), 3000e6);
+        assertEq(vault.totalAssets(), 30 ether);
         assertGt(vault.balanceOf(Actors.LP1), 0);
         assertGt(vault.balanceOf(Actors.LP2), 0);
     }
@@ -85,11 +85,11 @@ contract OwnVaultTest is BaseTest {
         // With approval required, non-VM deposit reverts
         _enableDepositApproval();
 
-        usdc.mint(Actors.LP1, 1000e6);
+        weth.mint(Actors.LP1, 10 ether);
         vm.startPrank(Actors.LP1);
-        usdc.approve(address(vault), 1000e6);
+        weth.approve(address(vault), 10 ether);
         vm.expectRevert(IOwnVault.DepositApprovalRequired.selector);
-        vault.deposit(1000e6, Actors.LP1);
+        vault.deposit(10 ether, Actors.LP1);
         vm.stopPrank();
     }
 
@@ -97,11 +97,11 @@ contract OwnVaultTest is BaseTest {
         vm.prank(Actors.ADMIN);
         vault.haltVault();
 
-        usdc.mint(Actors.VM1, 1000e6);
+        weth.mint(Actors.VM1, 10 ether);
         vm.startPrank(Actors.VM1);
-        usdc.approve(address(vault), 1000e6);
+        weth.approve(address(vault), 10 ether);
         vm.expectRevert(IOwnVault.VaultIsHalted.selector);
-        vault.deposit(1000e6, Actors.LP1);
+        vault.deposit(10 ether, Actors.LP1);
         vm.stopPrank();
     }
 
@@ -109,11 +109,11 @@ contract OwnVaultTest is BaseTest {
         vm.prank(Actors.ADMIN);
         vault.pause(bytes32("emergency"));
 
-        usdc.mint(Actors.VM1, 1000e6);
+        weth.mint(Actors.VM1, 10 ether);
         vm.startPrank(Actors.VM1);
-        usdc.approve(address(vault), 1000e6);
+        weth.approve(address(vault), 10 ether);
         vm.expectRevert(IOwnVault.VaultIsPaused.selector);
-        vault.deposit(1000e6, Actors.LP1);
+        vault.deposit(10 ether, Actors.LP1);
         vm.stopPrank();
     }
 
@@ -122,17 +122,17 @@ contract OwnVaultTest is BaseTest {
     // ──────────────────────────────────────────────────────────
 
     function test_convertToShares_initiallyOneToOne() public {
-        uint256 assets = 1000e6;
+        uint256 assets = 10 ether;
         uint256 expectedShares = vault.convertToShares(assets);
         // First deposit: 1:1 (adjusted for decimal difference if any)
         assertGt(expectedShares, 0);
     }
 
     function test_convertToAssets_afterDeposit() public {
-        _depositAs(Actors.LP1, 1000e6);
+        _depositAs(Actors.LP1, 10 ether);
         uint256 shares = vault.balanceOf(Actors.LP1);
         uint256 assets = vault.convertToAssets(shares);
-        assertEq(assets, 1000e6);
+        assertEq(assets, 10 ether);
     }
 
     // ──────────────────────────────────────────────────────────
@@ -141,11 +141,11 @@ contract OwnVaultTest is BaseTest {
 
     function test_requestDeposit_succeeds() public {
         _enableDepositApproval();
-        uint256 depositAmount = 1000e6;
-        usdc.mint(Actors.LP1, depositAmount);
+        uint256 depositAmount = 10 ether;
+        weth.mint(Actors.LP1, depositAmount);
 
         vm.startPrank(Actors.LP1);
-        usdc.approve(address(vault), depositAmount);
+        weth.approve(address(vault), depositAmount);
 
         vm.expectEmit(true, true, false, true);
         emit IOwnVault.DepositRequested(1, Actors.LP1, Actors.LP1, depositAmount);
@@ -156,8 +156,8 @@ contract OwnVaultTest is BaseTest {
         assertEq(requestId, 1);
 
         // Assets should be escrowed in vault
-        assertEq(usdc.balanceOf(address(vault)), depositAmount);
-        assertEq(usdc.balanceOf(Actors.LP1), 0);
+        assertEq(weth.balanceOf(address(vault)), depositAmount);
+        assertEq(weth.balanceOf(Actors.LP1), 0);
 
         DepositRequest memory req = vault.getDepositRequest(requestId);
         assertEq(req.depositor, Actors.LP1);
@@ -169,13 +169,13 @@ contract OwnVaultTest is BaseTest {
     function test_acceptDeposit_mintsShares() public {
         _enableDepositApproval();
         // Bootstrap vault with an initial VM deposit to establish share price
-        _depositAs(Actors.LP2, 1000e6);
+        _depositAs(Actors.LP2, 10 ether);
 
-        uint256 depositAmount = 1000e6;
-        usdc.mint(Actors.LP1, depositAmount);
+        uint256 depositAmount = 10 ether;
+        weth.mint(Actors.LP1, depositAmount);
 
         vm.startPrank(Actors.LP1);
-        usdc.approve(address(vault), depositAmount);
+        weth.approve(address(vault), depositAmount);
         uint256 requestId = vault.requestDeposit(depositAmount, Actors.LP1);
         vm.stopPrank();
 
@@ -192,16 +192,16 @@ contract OwnVaultTest is BaseTest {
 
         // Shares should be minted to receiver
         assertGt(vault.balanceOf(Actors.LP1), 0);
-        assertEq(vault.totalAssets(), 2000e6); // initial + async deposit
+        assertEq(vault.totalAssets(), 20 ether); // initial + async deposit
     }
 
     function test_rejectDeposit_returnsAssets() public {
         _enableDepositApproval();
-        uint256 depositAmount = 1000e6;
-        usdc.mint(Actors.LP1, depositAmount);
+        uint256 depositAmount = 10 ether;
+        weth.mint(Actors.LP1, depositAmount);
 
         vm.startPrank(Actors.LP1);
-        usdc.approve(address(vault), depositAmount);
+        weth.approve(address(vault), depositAmount);
         uint256 requestId = vault.requestDeposit(depositAmount, Actors.LP1);
         vm.stopPrank();
 
@@ -215,17 +215,17 @@ contract OwnVaultTest is BaseTest {
         assertEq(uint256(req.status), uint256(DepositStatus.Rejected));
 
         // Assets should be returned to depositor
-        assertEq(usdc.balanceOf(Actors.LP1), depositAmount);
+        assertEq(weth.balanceOf(Actors.LP1), depositAmount);
         assertEq(vault.balanceOf(Actors.LP1), 0);
     }
 
     function test_cancelDeposit_returnsAssets() public {
         _enableDepositApproval();
-        uint256 depositAmount = 1000e6;
-        usdc.mint(Actors.LP1, depositAmount);
+        uint256 depositAmount = 10 ether;
+        weth.mint(Actors.LP1, depositAmount);
 
         vm.startPrank(Actors.LP1);
-        usdc.approve(address(vault), depositAmount);
+        weth.approve(address(vault), depositAmount);
         uint256 requestId = vault.requestDeposit(depositAmount, Actors.LP1);
 
         vm.expectEmit(true, true, false, false);
@@ -238,17 +238,17 @@ contract OwnVaultTest is BaseTest {
         assertEq(uint256(req.status), uint256(DepositStatus.Cancelled));
 
         // Assets should be returned to depositor
-        assertEq(usdc.balanceOf(Actors.LP1), depositAmount);
+        assertEq(weth.balanceOf(Actors.LP1), depositAmount);
         assertEq(vault.balanceOf(Actors.LP1), 0);
     }
 
     function test_acceptDeposit_notVM_reverts() public {
         _enableDepositApproval();
-        uint256 depositAmount = 1000e6;
-        usdc.mint(Actors.LP1, depositAmount);
+        uint256 depositAmount = 10 ether;
+        weth.mint(Actors.LP1, depositAmount);
 
         vm.startPrank(Actors.LP1);
-        usdc.approve(address(vault), depositAmount);
+        weth.approve(address(vault), depositAmount);
         uint256 requestId = vault.requestDeposit(depositAmount, Actors.LP1);
         vm.stopPrank();
 
@@ -259,11 +259,11 @@ contract OwnVaultTest is BaseTest {
 
     function test_cancelDeposit_notDepositor_reverts() public {
         _enableDepositApproval();
-        uint256 depositAmount = 1000e6;
-        usdc.mint(Actors.LP1, depositAmount);
+        uint256 depositAmount = 10 ether;
+        weth.mint(Actors.LP1, depositAmount);
 
         vm.startPrank(Actors.LP1);
-        usdc.approve(address(vault), depositAmount);
+        weth.approve(address(vault), depositAmount);
         uint256 requestId = vault.requestDeposit(depositAmount, Actors.LP1);
         vm.stopPrank();
 
@@ -277,7 +277,7 @@ contract OwnVaultTest is BaseTest {
     // ──────────────────────────────────────────────────────────
 
     function test_requestWithdrawal_succeeds() public {
-        uint256 shares = _depositAs(Actors.LP1, 1000e6);
+        uint256 shares = _depositAs(Actors.LP1, 10 ether);
 
         vm.expectEmit(true, true, false, true);
         emit IOwnVault.WithdrawalRequested(1, Actors.LP1, shares);
@@ -294,7 +294,7 @@ contract OwnVaultTest is BaseTest {
     }
 
     function test_requestWithdrawal_zeroShares_reverts() public {
-        _depositAs(Actors.LP1, 1000e6);
+        _depositAs(Actors.LP1, 10 ether);
 
         vm.prank(Actors.LP1);
         vm.expectRevert(IOwnVault.ZeroAmount.selector);
@@ -302,7 +302,7 @@ contract OwnVaultTest is BaseTest {
     }
 
     function test_cancelWithdrawal_succeeds() public {
-        uint256 shares = _depositAs(Actors.LP1, 1000e6);
+        uint256 shares = _depositAs(Actors.LP1, 10 ether);
 
         vm.prank(Actors.LP1);
         uint256 requestId = vault.requestWithdrawal(shares);
@@ -321,7 +321,7 @@ contract OwnVaultTest is BaseTest {
     }
 
     function test_cancelWithdrawal_notOwner_reverts() public {
-        uint256 shares = _depositAs(Actors.LP1, 1000e6);
+        uint256 shares = _depositAs(Actors.LP1, 10 ether);
 
         vm.prank(Actors.LP1);
         uint256 requestId = vault.requestWithdrawal(shares);
@@ -332,7 +332,7 @@ contract OwnVaultTest is BaseTest {
     }
 
     function test_fulfillWithdrawal_succeeds() public {
-        uint256 depositAmount = 1000e6;
+        uint256 depositAmount = 10 ether;
         uint256 shares = _depositAs(Actors.LP1, depositAmount);
 
         vm.prank(Actors.LP1);
@@ -344,7 +344,7 @@ contract OwnVaultTest is BaseTest {
         uint256 assets = vault.fulfillWithdrawal(requestId);
 
         assertEq(assets, depositAmount);
-        assertEq(usdc.balanceOf(Actors.LP1), depositAmount);
+        assertEq(weth.balanceOf(Actors.LP1), depositAmount);
         assertEq(vault.balanceOf(Actors.LP1), 0);
     }
 
@@ -354,8 +354,8 @@ contract OwnVaultTest is BaseTest {
     }
 
     function test_getPendingWithdrawals_fifoOrder() public {
-        _depositAs(Actors.LP1, 1000e6);
-        _depositAs(Actors.LP2, 2000e6);
+        _depositAs(Actors.LP1, 10 ether);
+        _depositAs(Actors.LP2, 20 ether);
 
         uint256 lp1Shares = vault.balanceOf(Actors.LP1);
         uint256 lp2Shares = vault.balanceOf(Actors.LP2);
@@ -455,7 +455,7 @@ contract OwnVaultTest is BaseTest {
     // ──────────────────────────────────────────────────────────
 
     function test_utilization_zeroWithNoExposure() public {
-        _depositAs(Actors.LP1, 1000e6);
+        _depositAs(Actors.LP1, 10 ether);
         assertEq(vault.utilization(), 0);
     }
 
@@ -477,7 +477,7 @@ contract OwnVaultTest is BaseTest {
     }
 
     function test_healthFactor_noExposure_returnsMax() public {
-        _depositAs(Actors.LP1, 1000e6);
+        _depositAs(Actors.LP1, 10 ether);
         uint256 hf = vault.healthFactor();
         // With collateral and no exposure, health factor should be max / very high
         assertGt(hf, PRECISION);
@@ -515,7 +515,7 @@ contract OwnVaultTest is BaseTest {
         vault.setPaymentToken(address(usdc));
 
         // Deposit fees
-        _depositAs(Actors.LP1, 1000e6);
+        _depositAs(Actors.LP1, 10 ether);
         usdc.mint(mockMarket, 100e6);
         vm.startPrank(mockMarket);
         usdc.approve(address(vault), 100e6);
@@ -525,7 +525,7 @@ contract OwnVaultTest is BaseTest {
         // Try to change payment token — should fail
         vm.prank(Actors.VM1);
         vm.expectRevert(IOwnVault.OutstandingFeesExist.selector);
-        vault.setPaymentToken(address(usdt));
+        vault.setPaymentToken(address(usds));
     }
 
     function test_setPaymentToken_afterFlush_succeeds() public {
@@ -533,7 +533,7 @@ contract OwnVaultTest is BaseTest {
         vault.setPaymentToken(address(usdc));
 
         // Deposit fees
-        _depositAs(Actors.LP1, 1000e6);
+        _depositAs(Actors.LP1, 10 ether);
         usdc.mint(mockMarket, 100e6);
         vm.startPrank(mockMarket);
         usdc.approve(address(vault), 100e6);
@@ -547,9 +547,9 @@ contract OwnVaultTest is BaseTest {
 
         // Now change should work (LP rewards are per-share, not blocking)
         vm.prank(Actors.VM1);
-        vault.setPaymentToken(address(usdt));
+        vault.setPaymentToken(address(usds));
 
-        assertEq(vault.paymentToken(), address(usdt));
+        assertEq(vault.paymentToken(), address(usds));
     }
 
     // ──────────────────────────────────────────────────────────
@@ -560,7 +560,7 @@ contract OwnVaultTest is BaseTest {
         vm.prank(Actors.VM1);
         vault.setPaymentToken(address(usdc));
 
-        _depositAs(Actors.LP1, 1000e6);
+        _depositAs(Actors.LP1, 10 ether);
 
         uint256 feeAmount = 1000e6;
         usdc.mint(mockMarket, feeAmount);
@@ -598,7 +598,7 @@ contract OwnVaultTest is BaseTest {
         vm.prank(Actors.VM1);
         vault.setPaymentToken(address(usdc));
 
-        _depositAs(Actors.LP1, 1000e6);
+        _depositAs(Actors.LP1, 10 ether);
 
         usdc.mint(mockMarket, 100e6);
         vm.startPrank(mockMarket);
@@ -619,7 +619,7 @@ contract OwnVaultTest is BaseTest {
         vm.prank(Actors.VM1);
         vault.setPaymentToken(address(usdc));
 
-        _depositAs(Actors.LP1, 1000e6);
+        _depositAs(Actors.LP1, 10 ether);
 
         usdc.mint(mockMarket, 100e6);
         vm.startPrank(mockMarket);
@@ -641,7 +641,7 @@ contract OwnVaultTest is BaseTest {
         vm.prank(Actors.VM1);
         vault.setPaymentToken(address(usdc));
 
-        _depositAs(Actors.LP1, 1000e6);
+        _depositAs(Actors.LP1, 10 ether);
 
         usdc.mint(mockMarket, 1000e6);
         vm.startPrank(mockMarket);
@@ -718,7 +718,7 @@ contract OwnVaultTest is BaseTest {
         vm.prank(Actors.ADMIN);
         vault.setWithdrawalWaitPeriod(3 days);
 
-        uint256 shares = _depositAs(Actors.LP1, 1000e6);
+        uint256 shares = _depositAs(Actors.LP1, 10 ether);
 
         vm.prank(Actors.LP1);
         uint256 requestId = vault.requestWithdrawal(shares);
@@ -733,7 +733,7 @@ contract OwnVaultTest is BaseTest {
         vm.prank(Actors.ADMIN);
         vault.setWithdrawalWaitPeriod(3 days);
 
-        uint256 shares = _depositAs(Actors.LP1, 1000e6);
+        uint256 shares = _depositAs(Actors.LP1, 10 ether);
 
         vm.prank(Actors.LP1);
         uint256 requestId = vault.requestWithdrawal(shares);
@@ -742,8 +742,8 @@ contract OwnVaultTest is BaseTest {
         vm.warp(block.timestamp + 3 days + 1);
 
         uint256 assets = vault.fulfillWithdrawal(requestId);
-        assertEq(assets, 1000e6);
-        assertEq(usdc.balanceOf(Actors.LP1), 1000e6);
+        assertEq(assets, 10 ether);
+        assertEq(weth.balanceOf(Actors.LP1), 10 ether);
     }
 
     // ──────────────────────────────────────────────────────────
@@ -753,7 +753,7 @@ contract OwnVaultTest is BaseTest {
     function testFuzz_deposit_withdraw_roundtrip(
         uint256 amount
     ) public {
-        amount = bound(amount, 1e6, 100_000_000e6); // 1 to 100M USDC
+        amount = bound(amount, 0.01 ether, 100_000 ether); // 0.01 to 100K ETH
 
         uint256 shares = _depositAs(Actors.LP1, amount);
 
@@ -767,8 +767,8 @@ contract OwnVaultTest is BaseTest {
     }
 
     function testFuzz_multipleDeposits_totalAssets(uint256 a1, uint256 a2) public {
-        a1 = bound(a1, 1e6, 50_000_000e6);
-        a2 = bound(a2, 1e6, 50_000_000e6);
+        a1 = bound(a1, 0.01 ether, 50_000 ether);
+        a2 = bound(a2, 0.01 ether, 50_000 ether);
 
         _depositAs(Actors.LP1, a1);
         _depositAs(Actors.LP2, a2);
