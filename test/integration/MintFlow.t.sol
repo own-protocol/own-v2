@@ -65,7 +65,7 @@ contract MintFlowTest is BaseTest {
         protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), address(factory));
 
         usdcVault =
-            OwnVault(factory.createVault(address(usdc), Actors.VM1, "Own USDC Vault", "oUSDC", MAX_UTIL_BPS, 2000, 900));
+            OwnVault(factory.createVault(address(usdc), Actors.VM1, "Own USDC Vault", "oUSDC", MAX_UTIL_BPS, 2000));
 
         market = new OwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));

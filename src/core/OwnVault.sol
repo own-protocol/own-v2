@@ -78,7 +78,6 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
     uint256 private _gracePeriod;
     uint256 private _claimThreshold;
     bytes32 private _collateralOracleAsset;
-    uint256 private _mintBuffer;
 
     // ──────────────────────────────────────────────────────────
     //  Supported assets (VM-controlled)
@@ -164,7 +163,6 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
     /// @param vm_         Vault manager address bound to this vault.
     /// @param maxUtilBps  Initial max utilization in BPS.
     /// @param vmShareBps_ Initial VM fee share (of LP+VM remainder) in BPS.
-    /// @param mintBuffer_ Buffer time after order placement before price proofs are valid for open mint force execution.
     constructor(
         address asset_,
         string memory name_,
@@ -172,8 +170,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
         address registry_,
         address vm_,
         uint256 maxUtilBps,
-        uint256 vmShareBps_,
-        uint256 mintBuffer_
+        uint256 vmShareBps_
     ) ERC4626(IERC20(asset_)) ERC20(name_, symbol_) {
         if (vmShareBps_ > BPS) revert ShareTooHigh(vmShareBps_, BPS);
         registry = IProtocolRegistry(registry_);
@@ -181,7 +178,6 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
         _maxUtilization = maxUtilBps;
         _vaultStatus = VaultStatus.Active;
         _vmShareBps = vmShareBps_;
-        _mintBuffer = mintBuffer_;
     }
 
     // ──────────────────────────────────────────────────────────
@@ -606,18 +602,6 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
         bytes32 asset_
     ) external onlyAdmin {
         _collateralOracleAsset = asset_;
-    }
-
-    /// @inheritdoc IOwnVault
-    function mintBuffer() external view override returns (uint256) {
-        return _mintBuffer;
-    }
-
-    /// @inheritdoc IOwnVault
-    function setMintBuffer(
-        uint256 buffer
-    ) external override onlyAdmin {
-        _mintBuffer = buffer;
     }
 
     // ──────────────────────────────────────────────────────────

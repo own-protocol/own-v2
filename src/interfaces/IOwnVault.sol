@@ -237,15 +237,6 @@ interface IOwnVault is IERC4626 {
         bytes32 asset
     ) external;
 
-    /// @notice Buffer time after order placement before price proofs are valid for open mint force execution.
-    ///         Gives the VM time to react before the user's proof window opens.
-    function mintBuffer() external view returns (uint256);
-
-    /// @notice Set the mint buffer. Only callable by admin.
-    function setMintBuffer(
-        uint256 buffer
-    ) external;
-
     // ──────────────────────────────────────────────────────────
     //  Fee management
     // ──────────────────────────────────────────────────────────

@@ -60,8 +60,8 @@ contract CrossVaultTest is BaseTest {
         VaultFactory factory = new VaultFactory(Actors.ADMIN, address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), address(factory));
 
-        usdcVault = OwnVault(factory.createVault(address(usdc), Actors.VM1, "Own USDC Vault", "oUSDC", 8000, 2000, 900));
-        wethVault = OwnVault(factory.createVault(address(weth), Actors.VM2, "Own WETH Vault", "oWETH", 8000, 2000, 900));
+        usdcVault = OwnVault(factory.createVault(address(usdc), Actors.VM1, "Own USDC Vault", "oUSDC", 8000, 2000));
+        wethVault = OwnVault(factory.createVault(address(weth), Actors.VM2, "Own WETH Vault", "oWETH", 8000, 2000));
 
         market = new OwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
