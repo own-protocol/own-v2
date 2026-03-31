@@ -133,11 +133,9 @@ struct DepositRequest {
 /// @notice Oracle configuration for an asset.
 /// @param primaryOracle   IOracleVerifier used for price verification.
 /// @param secondaryOracle Backup IOracleVerifier (address(0) if none).
-/// @param pythPriceFeedId Pyth price feed ID (bytes32(0) if not using Pyth).
 struct OracleConfig {
     address primaryOracle;
     address secondaryOracle;
-    bytes32 pythPriceFeedId;
 }
 
 /// @notice Onchain state for a registered vault manager.
