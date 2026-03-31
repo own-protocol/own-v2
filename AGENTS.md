@@ -48,7 +48,7 @@ forge script script/Deploy.s.sol --rpc-url $BASE_SEPOLIA_RPC --broadcast --verif
 
 ## Architecture
 
-See `docs/Own_Protocol_Vision.md` for full product vision and `docs/Own_Protocol_MVP_PRD.md` for MVP spec.
+See `docs/PROTOCOL.md` for comprehensive protocol documentation and `docs/DEPLOYMENT.md` for deployment instructions.
 
 ### High-Level Architecture
 

@@ -77,11 +77,14 @@ VAULT_ADDRESS=0x...
 ```
 
 **Configuration applied:**
-- Max utilization: 80%
-- VM fee share: 20%
-- Grace period: 1 day (force execute delay after claim)
-- Claim threshold: 6 hours (force execute delay for unclaimed orders)
-- Collateral oracle: ETH/USD Pyth feed
+
+| Parameter | Value | Description |
+|-----------|-------|-------------|
+| Max utilization | 80% (8000 BPS) | Cap on exposure / collateral ratio |
+| VM fee share | 20% (2000 BPS) | VM's portion of the non-protocol fee |
+| Grace period | 1 day | Delay after claim before force execution |
+| Claim threshold | 6 hours | Delay for unclaimed orders before force execution |
+| Collateral oracle | ETH/USD Pyth feed | Used for utilization and force execution calculations |
 
 ## Step 3: Configure Vault (as VM)
 
@@ -95,16 +98,15 @@ forge script script/ConfigureVault.s.sol --rpc-url base_sepolia --broadcast
 - Payment token: MockUSDC
 - Enabled assets: TSLA, GOLD
 
-## Testing the Deployment
-
-After deployment, you can interact with the protocol:
+## Post-Deployment Verification
 
 ### Mint testnet USDC
 
-The MockUSDC has an open `mint(address, uint256)` function. Mint tokens to any address for testing:
+The MockUSDC has an open `mint(address, uint256)` function:
 
 ```bash
-cast send $MOCK_USDC "mint(address,uint256)" <YOUR_ADDRESS> 1000000000000 --rpc-url base_sepolia --private-key $DEPLOYER_PRIVATE_KEY
+cast send $MOCK_USDC "mint(address,uint256)" <YOUR_ADDRESS> 1000000000000 \
+  --rpc-url base_sepolia --private-key $DEPLOYER_PRIVATE_KEY
 ```
 
 This mints 1,000,000 USDC (6 decimals).
@@ -113,7 +115,8 @@ This mints 1,000,000 USDC (6 decimals).
 
 ```bash
 # 1. Approve market to spend USDC
-cast send $MOCK_USDC "approve(address,uint256)" $OWN_MARKET 10000000000 --rpc-url base_sepolia --private-key <USER_KEY>
+cast send $MOCK_USDC "approve(address,uint256)" $OWN_MARKET 10000000000 \
+  --rpc-url base_sepolia --private-key <USER_KEY>
 
 # 2. Place mint order (10,000 USDC for TSLA at $250)
 cast send $OWN_MARKET "placeMintOrder(address,bytes32,uint256,uint256,uint256)" \
@@ -134,7 +137,7 @@ cast send $WETH_ROUTER "depositETH(address,address,uint256)" \
   --rpc-url base_sepolia --private-key <USER_KEY>
 ```
 
-## Contract Addresses (Base Sepolia External)
+## External Addresses (Base Sepolia)
 
 | Contract | Address |
 |----------|---------|
@@ -155,4 +158,4 @@ cast send $WETH_ROUTER "depositETH(address,address,uint256)" \
 |-------------------|----------|------------|--------|
 | 1 (Low) | 0.50% | 0.25% | GOLD |
 | 2 (Medium) | 1.00% | 0.50% | TSLA |
-| 3 (High) | 2.00% | 1.00% | — |
+| 3 (High) | 2.00% | 1.00% | -- |

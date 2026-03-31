@@ -19,9 +19,8 @@ Execute these phases IN ORDER. Do not skip any phase.
 ### Phase 0: Context Loading
 
 1. Read `AGENTS.md` for project architecture, security checklist, trust model, and coding conventions
-2. Read `docs/Own_Protocol_MVP_PRD.md` for the specification / requirements
-3. Read `docs/todo.md` for current implementation status
-4. If scope is `diff`, run `git diff HEAD` to get changed files. If scope is `full`, glob `src/**/*.sol` to get all contract files
+2. Read `docs/PROTOCOL.md` for the specification / requirements
+3. If scope is `diff`, run `git diff HEAD` to get changed files. If scope is `full`, glob `src/**/*.sol` to get all contract files
 
 ### Phase 1: Spec-to-Code Compliance (PRD Alignment)
 
