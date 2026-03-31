@@ -119,6 +119,11 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
     mapping(uint256 => DepositRequest) private _depositRequests;
     uint256[] private _pendingDepositIds;
 
+    /// @dev Total assets held for pending deposit requests. Excluded from
+    ///      totalAssets() so that ERC-4626 share math is not polluted by
+    ///      assets that have no corresponding shares yet.
+    uint256 private _pendingDepositAssets;
+
     // ──────────────────────────────────────────────────────────
     //  Async withdrawal queue
     // ──────────────────────────────────────────────────────────
@@ -222,6 +227,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
         if (assets == 0) revert ZeroAmount();
 
         IERC20(asset()).safeTransferFrom(msg.sender, address(this), assets);
+        _pendingDepositAssets += assets;
 
         requestId = _nextDepositRequestId++;
         _depositRequests[requestId] = DepositRequest({
@@ -246,6 +252,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
         if (req.status != DepositStatus.Pending) revert DepositRequestNotPending(requestId);
 
         uint256 shares = previewDeposit(req.assets);
+        _pendingDepositAssets -= req.assets;
         req.status = DepositStatus.Accepted;
         _removePendingDeposit(requestId);
         _mint(req.receiver, shares);
@@ -261,6 +268,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
         if (req.depositor == address(0)) revert DepositRequestNotFound(requestId);
         if (req.status != DepositStatus.Pending) revert DepositRequestNotPending(requestId);
 
+        _pendingDepositAssets -= req.assets;
         req.status = DepositStatus.Rejected;
         _removePendingDeposit(requestId);
         IERC20(asset()).safeTransfer(req.depositor, req.assets);
@@ -277,6 +285,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
         if (req.status != DepositStatus.Pending) revert DepositRequestNotPending(requestId);
         if (msg.sender != req.depositor) revert OnlyDepositor(requestId);
 
+        _pendingDepositAssets -= req.assets;
         req.status = DepositStatus.Cancelled;
         _removePendingDeposit(requestId);
         IERC20(asset()).safeTransfer(req.depositor, req.assets);
@@ -948,7 +957,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
     }
 
     function totalAssets() public view override(ERC4626, IERC4626) returns (uint256) {
-        return super.totalAssets();
+        return super.totalAssets() - _pendingDepositAssets;
     }
 
     function convertToShares(

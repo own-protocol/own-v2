@@ -679,4 +679,47 @@ contract OrderLifecycleTest is BaseTest {
         vm.expectRevert(abi.encodeWithSelector(IOwnMarket.InvalidOrderStatus.selector, orderId, OrderStatus.Claimed));
         market.expireOrder(orderId);
     }
+
+    // ══════════════════════════════════════════════════════════
+    //  Force execute — claimed mint, price IS reachable
+    //  User gets eTokens minted (same as normal confirm)
+    // ══════════════════════════════════════════════════════════
+
+    function test_forceExecute_claimedMint_withOraclePrice() public {
+        uint256 expiry = block.timestamp + 7 days;
+        uint256 orderId = _placeMint(Actors.MINTER1, MINT_AMOUNT, expiry);
+
+        vm.prank(Actors.VM1);
+        market.claimOrder(orderId);
+
+        uint256 fee = _mintFee(MINT_AMOUNT);
+
+        vm.warp(block.timestamp + GRACE_PERIOD + 1);
+
+        // Build price proof: lowPrice = $200, highPrice = $300
+        // Order price is $250 (TSLA_PRICE). Since lowPrice <= orderPrice, price is reachable for mint.
+        uint256 lowPrice = 200e18;
+        uint256 highPrice = 300e18;
+        bytes memory lowPriceData = abi.encode(lowPrice, block.timestamp);
+        bytes memory highPriceData = abi.encode(highPrice, block.timestamp);
+        bytes memory priceProofData = abi.encode(lowPriceData, highPriceData);
+
+        // Collateral price data for fallback (not needed when price reachable, but pass it anyway)
+        bytes memory collateralPriceData = abi.encode(uint256(ETH_PRICE), uint256(block.timestamp));
+
+        vm.prank(Actors.MINTER1);
+        market.forceExecute(orderId, priceProofData, collateralPriceData);
+
+        Order memory order = market.getOrder(orderId);
+        assertEq(uint8(order.status), uint8(OrderStatus.ForceExecuted));
+
+        // Price was reachable → eTokens minted at set price (same as normal confirm)
+        uint256 net = MINT_AMOUNT - fee;
+        uint256 expectedETokens = Math.mulDiv(net * 1e12, PRECISION, TSLA_PRICE);
+        assertEq(eTSLA.balanceOf(Actors.MINTER1), expectedETokens, "user got eTokens at set price");
+        assertGt(expectedETokens, 0, "non-zero eTokens");
+
+        // Fee deposited to vault
+        assertEq(usdc.balanceOf(address(market)), 0, "market escrow cleared");
+    }
 }

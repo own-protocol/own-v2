@@ -167,6 +167,7 @@ contract RedeemFlowTest is BaseTest {
         vm.stopPrank();
 
         assertEq(uint8(market.getOrder(orderId).status), uint8(OrderStatus.Cancelled));
+        assertEq(eTSLA.balanceOf(Actors.MINTER1), ETOKEN_AMOUNT, "eTokens returned on cancel");
     }
 
     // ══════════════════════════════════════════════════════════
@@ -187,5 +188,6 @@ contract RedeemFlowTest is BaseTest {
         market.expireOrder(orderId);
 
         assertEq(uint8(market.getOrder(orderId).status), uint8(OrderStatus.Expired));
+        assertEq(eTSLA.balanceOf(Actors.MINTER1), ETOKEN_AMOUNT, "eTokens returned on expiry");
     }
 }

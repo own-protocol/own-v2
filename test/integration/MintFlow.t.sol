@@ -150,6 +150,14 @@ contract MintFlowTest is BaseTest {
 
         order = market.getOrder(orderId);
         assertEq(uint8(order.status), uint8(OrderStatus.Confirmed));
+
+        // Verify eTokens minted to user
+        uint256 expectedETokens = Math.mulDiv(MINT_AMOUNT * 1e12, PRECISION, TSLA_PRICE);
+        assertEq(eTSLA.balanceOf(Actors.MINTER1), expectedETokens, "minter received eTokens");
+        assertGt(expectedETokens, 0, "non-zero eTokens minted");
+
+        // Verify market escrow is cleared
+        assertEq(usdc.balanceOf(address(market)), 0, "market escrow cleared");
     }
 
     // ══════════════════════════════════════════════════════════
@@ -266,5 +274,75 @@ contract MintFlowTest is BaseTest {
             }
         }
         assertTrue(found, "order in open orders list");
+    }
+
+    // ══════════════════════════════════════════════════════════
+    //  Test: Multiple assets minted through same vault
+    // ══════════════════════════════════════════════════════════
+
+    function test_mintFlow_multipleAssets_sameVault() public {
+        uint256 goldAmount = 5_000e6;
+
+        // Place TSLA order
+        _fundUSDC(Actors.MINTER1, MINT_AMOUNT);
+        vm.startPrank(Actors.MINTER1);
+        usdc.approve(address(market), MINT_AMOUNT);
+        uint256 tslaOrderId =
+            market.placeMintOrder(address(usdcVault), TSLA, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
+        vm.stopPrank();
+
+        // Place GOLD order
+        _fundUSDC(Actors.MINTER2, goldAmount);
+        vm.startPrank(Actors.MINTER2);
+        usdc.approve(address(market), goldAmount);
+        uint256 goldOrderId =
+            market.placeMintOrder(address(usdcVault), GOLD, goldAmount, GOLD_PRICE, block.timestamp + 1 days);
+        vm.stopPrank();
+
+        // VM claims and confirms both
+        vm.startPrank(Actors.VM1);
+        market.claimOrder(tslaOrderId);
+        market.claimOrder(goldOrderId);
+        market.confirmOrder(tslaOrderId);
+        market.confirmOrder(goldOrderId);
+        vm.stopPrank();
+
+        // Verify independent eToken balances
+        uint256 expectedTSLA = Math.mulDiv(MINT_AMOUNT * 1e12, PRECISION, TSLA_PRICE);
+        uint256 expectedGOLD = Math.mulDiv(goldAmount * 1e12, PRECISION, GOLD_PRICE);
+
+        assertEq(eTSLA.balanceOf(Actors.MINTER1), expectedTSLA, "MINTER1 got eTSLA");
+        assertEq(eGOLD.balanceOf(Actors.MINTER2), expectedGOLD, "MINTER2 got eGOLD");
+        assertGt(expectedTSLA, 0, "non-zero eTSLA");
+        assertGt(expectedGOLD, 0, "non-zero eGOLD");
+    }
+
+    // ══════════════════════════════════════════════════════════
+    //  Test: Multiple orders from same user
+    // ══════════════════════════════════════════════════════════
+
+    function test_mintFlow_multipleOrders_sameUser() public {
+        _fundUSDC(Actors.MINTER1, MINT_AMOUNT * 2);
+
+        vm.startPrank(Actors.MINTER1);
+        usdc.approve(address(market), MINT_AMOUNT * 2);
+        uint256 orderId1 =
+            market.placeMintOrder(address(usdcVault), TSLA, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
+        uint256 orderId2 =
+            market.placeMintOrder(address(usdcVault), TSLA, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
+        vm.stopPrank();
+
+        assertTrue(orderId1 != orderId2, "distinct order IDs");
+
+        // Claim and confirm both
+        vm.startPrank(Actors.VM1);
+        market.claimOrder(orderId1);
+        market.claimOrder(orderId2);
+        market.confirmOrder(orderId1);
+        market.confirmOrder(orderId2);
+        vm.stopPrank();
+
+        uint256 expectedPerOrder = Math.mulDiv(MINT_AMOUNT * 1e12, PRECISION, TSLA_PRICE);
+        assertEq(eTSLA.balanceOf(Actors.MINTER1), expectedPerOrder * 2, "minter got eTokens from both orders");
     }
 }
