@@ -3,7 +3,7 @@ pragma solidity 0.8.28;
 
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {IAssetRegistry} from "../../src/interfaces/IAssetRegistry.sol";
-import {AssetConfig} from "../../src/interfaces/types/Types.sol";
+import {AssetConfig, OracleConfig} from "../../src/interfaces/types/Types.sol";
 import {Actors} from "../helpers/Actors.sol";
 import {BaseTest} from "../helpers/BaseTest.sol";
 
@@ -283,5 +283,34 @@ contract AssetRegistryTest is BaseTest {
     function test_getAssetConfig_nonExistent_reverts() public {
         vm.expectRevert(abi.encodeWithSelector(IAssetRegistry.AssetNotFound.selector, TSLA));
         registry.getAssetConfig(TSLA);
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  switchPrimaryOracle
+    // ──────────────────────────────────────────────────────────
+
+    function test_switchPrimaryOracle_succeeds() public {
+        address oracleA = makeAddr("oracleA");
+        address oracleB = makeAddr("oracleB");
+
+        vm.startPrank(Actors.ADMIN);
+        registry.addAsset(TSLA, eTSLA, _defaultConfig(eTSLA));
+        registry.setOracleConfig(TSLA, OracleConfig(oracleA, oracleB, bytes32(0)));
+        registry.switchPrimaryOracle(TSLA);
+        vm.stopPrank();
+
+        assertEq(registry.getPrimaryOracle(TSLA), oracleB);
+    }
+
+    function test_switchPrimaryOracle_noSecondary_reverts() public {
+        address oracleA = makeAddr("oracleA");
+
+        vm.startPrank(Actors.ADMIN);
+        registry.addAsset(TSLA, eTSLA, _defaultConfig(eTSLA));
+        registry.setOracleConfig(TSLA, OracleConfig(oracleA, address(0), bytes32(0)));
+
+        vm.expectRevert(IAssetRegistry.ZeroAddress.selector);
+        registry.switchPrimaryOracle(TSLA);
+        vm.stopPrank();
     }
 }

@@ -152,6 +152,7 @@ contract AssetRegistry is IAssetRegistry, Ownable {
     ) external onlyOwner {
         if (!_registered[ticker]) revert AssetNotFound(ticker);
         OracleConfig storage config = _oracleConfigs[ticker];
+        if (config.secondaryOracle == address(0)) revert ZeroAddress();
         (config.primaryOracle, config.secondaryOracle) = (config.secondaryOracle, config.primaryOracle);
     }
 
