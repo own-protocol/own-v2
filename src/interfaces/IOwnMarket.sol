@@ -181,11 +181,11 @@ interface IOwnMarket {
     ///         For in-house oracle, msg.value should be 0. Unused ETH is refunded.
     /// @param orderId        Order to force-execute.
     /// @param priceProofData Two oracle price proofs (low + high) to verify price reachability.
-    /// @param ethPriceData   Oracle price data for ETH/USD conversion (needed when releasing collateral).
+    /// @param collateralPriceData   Oracle price data for collateral/USD conversion (needed when releasing collateral).
     function forceExecute(
         uint256 orderId,
         bytes calldata priceProofData,
-        bytes calldata ethPriceData
+        bytes calldata collateralPriceData
     ) external payable;
 
     // ──────────────────────────────────────────────────────────

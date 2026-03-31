@@ -25,9 +25,7 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 /// @title OwnVault — ERC-4626 collateral vault with async deposit/withdrawal
-/// @notice Single vault holding ETH (WETH) as collateral to back eToken exposure.
-///         Bound 1:1 to a single VM. Accepts one payment token for fee accrual.
-///         All fees must be flushed before the payment token can be changed.
+/// @notice Single vault holding collateral to back eToken exposure.
 contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
     using SafeERC20 for IERC20;
     using Math for uint256;

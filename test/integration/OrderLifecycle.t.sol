@@ -252,10 +252,10 @@ contract OrderLifecycleTest is BaseTest {
         vm.warp(block.timestamp + GRACE_PERIOD + 1);
 
         // ETH price data for collateral conversion
-        bytes memory ethPriceData = abi.encode(uint256(ETH_PRICE), uint256(block.timestamp));
+        bytes memory collateralPriceData = abi.encode(uint256(ETH_PRICE), uint256(block.timestamp));
 
         vm.prank(Actors.MINTER1);
-        market.forceExecute(orderId, "", ethPriceData);
+        market.forceExecute(orderId, "", collateralPriceData);
 
         Order memory order = market.getOrder(orderId);
         assertEq(uint8(order.status), uint8(OrderStatus.ForceExecuted));
@@ -558,10 +558,10 @@ contract OrderLifecycleTest is BaseTest {
 
         vm.warp(block.timestamp + GRACE_PERIOD + 1);
 
-        bytes memory ethPriceData = abi.encode(uint256(ETH_PRICE), uint256(block.timestamp));
+        bytes memory collateralPriceData = abi.encode(uint256(ETH_PRICE), uint256(block.timestamp));
 
         vm.prank(Actors.MINTER1);
-        market.forceExecute(orderId, "", ethPriceData);
+        market.forceExecute(orderId, "", collateralPriceData);
 
         assertEq(vault.totalExposureUSD(), 0, "exposure back to 0 after force");
     }

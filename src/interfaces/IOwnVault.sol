@@ -5,9 +5,7 @@ import {DepositRequest, VaultStatus, WithdrawalRequest} from "./types/Types.sol"
 import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
 
 /// @title IOwnVault — ERC-4626 collateral vault with async deposit/withdrawal
-/// @notice Single vault holding ETH (WETH) as collateral to back eToken exposure.
-///         Bound 1:1 to a single VM. Accepts one payment token for fee accrual.
-///         LPs deposit via async queue (VM approval) and withdraw via FIFO queue.
+/// @notice Single vault holding collateral to back eToken exposure.
 interface IOwnVault is IERC4626 {
     // ──────────────────────────────────────────────────────────
     //  Events
@@ -229,7 +227,7 @@ interface IOwnVault is IERC4626 {
         uint256 threshold
     ) external;
 
-    /// @notice Asset ticker used to look up collateral (ETH) price for force execution conversions.
+    /// @notice Asset ticker used to look up the collateral price for force execution conversions.
     function collateralOracleAsset() external view returns (bytes32);
 
     /// @notice Set the collateral oracle asset. Only callable by admin.
@@ -269,7 +267,7 @@ interface IOwnVault is IERC4626 {
     //  Collateral release (force execution)
     // ──────────────────────────────────────────────────────────
 
-    /// @notice Release vault collateral (ETH/WETH) to a recipient.
+    /// @notice Release vault collateral to a recipient.
     ///         Only callable by OwnMarket during force execution.
     /// @param to     Recipient address.
     /// @param amount Amount of collateral to release.

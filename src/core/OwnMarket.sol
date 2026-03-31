@@ -275,7 +275,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
     function forceExecute(
         uint256 orderId,
         bytes calldata priceProofData,
-        bytes calldata ethPriceData
+        bytes calldata collateralPriceData
     ) external payable nonReentrant {
         Order storage order = _orders[orderId];
         if (order.user == address(0)) revert OrderNotFound(orderId);
@@ -305,9 +305,9 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         bool priceReachable = _verifyPriceRange(order, priceProofData);
 
         if (priceReachable) {
-            _forceExecuteAtSetPrice(order, ethPriceData);
+            _forceExecuteAtSetPrice(order, collateralPriceData);
         } else {
-            _forceExecuteRefund(order, ethPriceData);
+            _forceExecuteRefund(order, collateralPriceData);
         }
 
         // Clear exposure if was claimed
@@ -439,7 +439,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
     }
 
     /// @dev Force execution when set price was reachable. Fees charged and deposited to vault.
-    function _forceExecuteAtSetPrice(Order storage order, bytes calldata ethPriceData) private {
+    function _forceExecuteAtSetPrice(Order storage order, bytes calldata collateralPriceData) private {
         if (order.orderType == OrderType.Mint) {
             // Mint force execute is only for claimed orders (VM took stablecoins but didn't confirm).
             // Deposit escrowed fee to vault, mint eTokens for net amount.
@@ -462,7 +462,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         } else {
             // Redeem: charge fee from gross collateral payout; vault retains fee collateral implicitly
             uint256 grossUsd = Math.mulDiv(order.amount, order.price, PRECISION);
-            uint256 grossCollateral = _convertToCollateral(order, grossUsd, ethPriceData);
+            uint256 grossCollateral = _convertToCollateral(order, grossUsd, collateralPriceData);
 
             uint256 feeBps = IFeeCalculator(registry.feeCalculator()).getRedeemFee(order.asset, order.amount);
             uint256 feeCollateral = Math.mulDiv(grossCollateral, feeBps, BPS, Math.Rounding.Ceil);
@@ -475,7 +475,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
     }
 
     /// @dev Force execution when set price was NOT reachable.
-    function _forceExecuteRefund(Order storage order, bytes calldata ethPriceData) private {
+    function _forceExecuteRefund(Order storage order, bytes calldata collateralPriceData) private {
         if (order.orderType == OrderType.Mint) {
             // Mint refund is only for claimed orders (VM took stablecoins but didn't confirm).
             // Vault releases equivalent collateral for the net amount, escrowed fee returned in stablecoins.
@@ -483,7 +483,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
             uint256 decimals = IERC20Metadata(paymentToken).decimals();
             uint256 feeAmount = _escrowedMintFees[order.orderId];
             uint256 usdValue = (order.amount - feeAmount) * 10 ** (18 - decimals);
-            uint256 collateralAmount = _convertToCollateral(order, usdValue, ethPriceData);
+            uint256 collateralAmount = _convertToCollateral(order, usdValue, collateralPriceData);
             IOwnVault(order.vault).releaseCollateral(order.user, collateralAmount);
             _returnEscrowedFee(order);
         } else {
@@ -509,14 +509,14 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
     function _convertToCollateral(
         Order storage order,
         uint256 usdValue,
-        bytes calldata ethPriceData
+        bytes calldata collateralPriceData
     ) private returns (uint256) {
         bytes32 collatAsset = IOwnVault(order.vault).collateralOracleAsset();
         address oracleAddr = IAssetRegistry(registry.assetRegistry()).getPrimaryOracle(collatAsset);
         if (oracleAddr == address(0)) revert CollateralOracleNotSet();
         IOracleVerifier oracle = IOracleVerifier(oracleAddr);
-        uint256 fee = oracle.verifyFee(ethPriceData);
-        (uint256 price,) = oracle.verifyPrice{value: fee}(collatAsset, ethPriceData);
+        uint256 fee = oracle.verifyFee(collateralPriceData);
+        (uint256 price,) = oracle.verifyPrice{value: fee}(collatAsset, collateralPriceData);
         return Math.mulDiv(usdValue, PRECISION, price);
     }
 

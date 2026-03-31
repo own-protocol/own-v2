@@ -600,10 +600,10 @@ contract OwnMarketTest is BaseTest {
         emit IOwnMarket.OrderForceExecuted(orderId, Actors.MINTER1, false);
 
         // Pass valid ETH price data for collateral conversion
-        bytes memory ethPriceData = abi.encode(uint256(2000e18), uint256(block.timestamp));
+        bytes memory collateralPriceData = abi.encode(uint256(2000e18), uint256(block.timestamp));
 
         vm.prank(Actors.MINTER1);
-        market.forceExecute(orderId, "", ethPriceData);
+        market.forceExecute(orderId, "", collateralPriceData);
 
         Order memory order = market.getOrder(orderId);
         assertEq(uint256(order.status), uint256(OrderStatus.ForceExecuted));
