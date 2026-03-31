@@ -125,36 +125,18 @@ function redeem(...) public override returns (uint256) {
 
 ### [H-01] Open Redeem Order Force-Execute Can Release Untracked Collateral
 
-**Severity**: High
+**Severity**: Informational (downgraded from High)
 **Contract**: OwnMarket.sol
 **Functions**: `forceExecute()` (L297-362), `_forceExecuteAtSetPrice()` (L504-537)
-**Status**: Open
+**Status**: Accepted Risk
 
 #### Description
 
-When an unclaimed (Open) redeem order is force-executed and the price is reachable, `_forceExecuteAtSetPrice()` calls `vaultContract.releaseCollateral()` to send collateral to the user. However, since the order was never claimed, `updateExposure()` was never called to increase the vault's exposure tracking. The exposure reduction at L349 is correctly skipped for open orders (`isClaimed` is false), but the collateral release at L532 still occurs.
+When an unclaimed (Open) redeem order is force-executed and the price is reachable, `releaseCollateral()` sends vault collateral without exposure tracking. However, the impact is minimal: the collateral release immediately reduces `totalAssets()`, and the next keeper call to `updateCollateralValuation()` or any `updateExposure()` on the vault recalculates `_collateralValueUSD`. Lower collateral → higher utilization ratio → more restrictive. The system self-corrects on the next keeper update.
 
-This means the vault releases collateral without it ever being tracked as exposure, creating untracked collateral outflow.
+#### Risk Assessment
 
-#### Impact
-
-- Vault collateral decreases without corresponding exposure tracking
-- Utilization calculations become inaccurate (understated)
-- LP share price decreases without the vault's health metrics reflecting it
-
-#### Proof of Concept
-
-1. User places a redeem order (Open status)
-2. No VM claims it within `claimThreshold`
-3. User calls `forceExecute()` with valid price proofs showing price was reachable
-4. `_forceExecuteAtSetPrice()` calls `releaseCollateral()` — collateral leaves the vault
-5. But no exposure was ever tracked or reduced for this order
-
-#### Recommendation
-
-For open redeem orders force-executed at set price, either:
-1. Track the exposure temporarily before releasing collateral, or
-2. Add a dedicated code path that accounts for the collateral outflow in the vault's health metrics
+The only window of risk is between the collateral release and the next keeper update, where `_collateralValueUSD` is stale. Given regular keeper updates, this is negligible and does not warrant additional code complexity.
 
 ---
 
@@ -163,34 +145,24 @@ For open redeem orders force-executed at set price, either:
 **Severity**: High
 **Contract**: OwnVault.sol
 **Functions**: `setPaymentToken()` (L841-853), `depositFees()` (L713-738)
-**Status**: Open
+**Status**: Resolved
 
 #### Description
 
-There is no check preventing `_paymentToken` from being set to the same address as `asset()` (the vault's collateral token). When `_paymentToken == asset()`, fee deposits via `depositFees()` increase the vault's `IERC20(asset()).balanceOf(address(this))`, which is included in `totalAssets()`. This causes:
+When `_paymentToken == asset()` (common for USDC-collateral vaults), fee deposits via `depositFees()` increase the vault's token balance, which is included in `totalAssets()`. This inflates the ERC-4626 share price while the same fees are also tracked in the `_lpRewardsPerShare` accumulator — double-counting LP rewards.
 
-1. **Share price inflation**: Fee deposits increase `totalAssets()`, raising the share price for all LPs
-2. **Double-counting of LP rewards**: LPs benefit from both share price appreciation (via increased totalAssets) AND the `_lpRewardsPerShare` accumulator
+#### Resolution
 
-The LP share of fees is effectively counted twice — once through the ERC-4626 share price mechanism and once through the separate LP reward accumulator.
-
-#### Impact
-
-- LP rewards are overestimated when `_paymentToken == asset()`
-- The vault may not have sufficient tokens to pay out all claimed LP rewards plus all share redemptions
-- Protocol accounting becomes inconsistent
-
-#### Recommendation
-
-Add a check in `setPaymentToken()`:
+The `totalAssets()` override now excludes unclaimed protocol and VM fees when `_paymentToken == asset()`:
 
 ```solidity
-function setPaymentToken(address token) external onlyVM {
-    if (token == address(0)) revert ZeroAddress();
-    if (token == asset()) revert PaymentTokenCannotBeCollateral();
-    // ... rest of function
+if (_paymentToken == asset()) {
+    uint256 feeReserve = _protocolFees + _vmFees;
+    return raw > feeReserve ? raw - feeReserve : 0;
 }
 ```
+
+This ensures fee balances don't inflate the share price while they await claiming.
 
 ---
 
@@ -270,42 +242,16 @@ if (_totalExposureUSD > 0 && _collateralValueUSD == 0) {
 
 ---
 
-### [H-05] Force Execution Charges Fees — Spec Mandates Zero Fees (VM Penalty)
+### [H-05] Force Execution Charges Fees — Spec Previously Said Zero Fees
 
-**Severity**: High
+**Severity**: Informational (downgraded from High — intentional design)
 **Contract**: OwnMarket.sol
 **Functions**: `_forceExecuteAtSetPrice()` (L504-537), `_forceExecuteRedeemAtHaltPrice()` (L558-573)
-**Status**: Open
+**Status**: Resolved — spec updated to match code
 
 #### Description
 
-The protocol specification (`docs/protocol.md`, Section 7) explicitly states: *"When an order is force-executed, no fees are charged"* — this is intended as a VM penalty for failing to confirm within the grace period.
-
-However, the implementation charges full fees during force execution:
-- **Mint force-execute** (L512-518): Deposits the escrowed mint fee to the vault via `depositFees()`
-- **Redeem force-execute** (L526-536): Calculates `feeBps` via `getRedeemFee()` and deducts `feeCollateral` from payout
-- **Halt redeem force-execute** (L558-573): Also charges redeem fees
-
-This is a direct contradiction of the specification.
-
-#### Impact
-
-- Users are unfairly penalized during force execution — they already suffer from VM non-performance
-- The "VM penalty" mechanism described in the spec is not implemented
-- Economic incentives are misaligned: force execution should disincentivize VM failure, but currently the user bears the cost
-
-#### Recommendation
-
-Either update the code to waive fees during force execution:
-```solidity
-// In _forceExecuteAtSetPrice for mints:
-if (feeAmount > 0) {
-    _escrowedMintFees[order.orderId] = 0;
-    // Return fee to user instead of depositing to vault
-    IERC20(paymentToken).safeTransfer(order.user, feeAmount);
-}
-```
-Or update the spec to document that fees are charged on force execution and explain the rationale.
+The spec previously stated force execution should charge no fees. After review, this was determined to be an intentional design decision: fees are charged on force execution because the user still receives their assets at the set price, and the protocol/LPs should continue to earn fees regardless of the execution path. The spec (`docs/protocol.md`) has been updated to reflect this.
 
 ---
 

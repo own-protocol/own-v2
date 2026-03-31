@@ -198,7 +198,7 @@ The user must provide:
 
 ### Execution Logic
 
-- **If the order price was reachable** (user's limit price was achievable based on oracle data): execute at the user's specified price, with **no fees charged** (VM penalty)
+- **If the order price was reachable** (user's limit price was achievable based on oracle data): execute at the user's specified price, with **standard fees charged** (the user still receives the correct asset amount at their set price, and the protocol/LPs earn their fee share)
 - **If the order price was NOT reachable** (market moved against the user): return the escrowed funds — stablecoins (mint) or eTokens (redeem)
 
 ### Timing
@@ -263,9 +263,9 @@ When a VM confirms an order, the fee is split:
 
 The `protocolShareBps` is a global parameter set in ProtocolRegistry.
 
-### No Fees on Force Execution
+### Fees on Force Execution
 
-When an order is force-executed, no fees are charged. This serves as a penalty to the VM for failing to execute promptly.
+When an order is force-executed, standard fees are charged (same rates as normal order confirmation). The user still receives their assets at the set price — the fee is deducted as it would be in a normal flow. This ensures the protocol and LPs continue to earn fees regardless of whether the VM confirms or the user force-executes.
 
 ---
 
