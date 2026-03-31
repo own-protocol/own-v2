@@ -42,7 +42,9 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
     // ──────────────────────────────────────────────────────────
 
     VaultStatus private _vaultStatus;
+    mapping(bytes32 => bool) private _assetPaused;
     mapping(bytes32 => bool) private _assetHalted;
+    mapping(bytes32 => uint256) private _assetHaltPrice;
 
     // ──────────────────────────────────────────────────────────
     //  Utilization & health
@@ -144,9 +146,9 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
         _;
     }
 
-    modifier whenActive() {
+    modifier whenDepositsAllowed() {
+        if (_vaultStatus == VaultStatus.Paused) revert VaultIsPaused();
         if (_vaultStatus == VaultStatus.Halted) revert VaultIsHalted();
-        if (_vaultStatus == VaultStatus.WindingDown) revert VaultIsWindingDown();
         _;
     }
 
@@ -185,28 +187,26 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
     function deposit(
         uint256 assets,
         address receiver
-    ) public override(ERC4626, IERC4626) whenActive onlyVM nonReentrant returns (uint256) {
+    ) public override(ERC4626, IERC4626) whenDepositsAllowed onlyVM nonReentrant returns (uint256) {
         return super.deposit(assets, receiver);
     }
 
     function mint(
         uint256 shares,
         address receiver
-    ) public override(ERC4626, IERC4626) whenActive onlyVM nonReentrant returns (uint256) {
+    ) public override(ERC4626, IERC4626) whenDepositsAllowed onlyVM nonReentrant returns (uint256) {
         return super.mint(shares, receiver);
     }
 
     function maxWithdraw(
         address owner
     ) public view override(ERC4626, IERC4626) returns (uint256) {
-        if (_vaultStatus == VaultStatus.Halted) return 0;
         return super.maxWithdraw(owner);
     }
 
     function maxRedeem(
         address owner
     ) public view override(ERC4626, IERC4626) returns (uint256) {
-        if (_vaultStatus == VaultStatus.Halted) return 0;
         return super.maxRedeem(owner);
     }
 
@@ -218,7 +218,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
     function requestDeposit(
         uint256 assets,
         address receiver
-    ) external whenActive nonReentrant returns (uint256 requestId) {
+    ) external whenDepositsAllowed nonReentrant returns (uint256 requestId) {
         if (assets == 0) revert ZeroAmount();
 
         IERC20(asset()).safeTransferFrom(msg.sender, address(this), assets);
@@ -401,24 +401,68 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
         return _vaultStatus;
     }
 
+    // ── Pause ────────────────────────────────────────────────
+
     /// @inheritdoc IOwnVault
-    function halt(
+    function pause(
         bytes32 reason
     ) external onlyAdmin {
+        if (_vaultStatus != VaultStatus.Active) revert InvalidStatusTransition();
+        _vaultStatus = VaultStatus.Paused;
+        emit VaultPaused(reason);
+    }
+
+    /// @inheritdoc IOwnVault
+    function unpause() external onlyAdmin {
+        if (_vaultStatus != VaultStatus.Paused) revert InvalidStatusTransition();
+        _vaultStatus = VaultStatus.Active;
+        emit VaultUnpaused();
+    }
+
+    /// @inheritdoc IOwnVault
+    function pauseAsset(bytes32 asset_, bytes32 reason) external onlyAdmin {
+        _assetPaused[asset_] = true;
+        emit AssetPaused(asset_, reason);
+    }
+
+    /// @inheritdoc IOwnVault
+    function unpauseAsset(
+        bytes32 asset_
+    ) external onlyAdmin {
+        _assetPaused[asset_] = false;
+        emit AssetUnpaused(asset_);
+    }
+
+    /// @inheritdoc IOwnVault
+    function isAssetPaused(
+        bytes32 asset_
+    ) external view returns (bool) {
+        return _assetPaused[asset_];
+    }
+
+    // ── Halt ─────────────────────────────────────────────────
+
+    /// @inheritdoc IOwnVault
+    function haltVault() external onlyAdmin {
+        if (_vaultStatus != VaultStatus.Active) revert InvalidStatusTransition();
         _vaultStatus = VaultStatus.Halted;
-        emit VaultHalted(reason);
+        emit VaultHalted();
     }
 
     /// @inheritdoc IOwnVault
     function unhalt() external onlyAdmin {
+        if (_vaultStatus != VaultStatus.Halted) revert InvalidStatusTransition();
         _vaultStatus = VaultStatus.Active;
         emit VaultUnhalted();
     }
 
     /// @inheritdoc IOwnVault
-    function haltAsset(bytes32 asset_, bytes32 reason) external onlyAdmin {
+    function haltAsset(bytes32 asset_, uint256 haltPrice) external onlyAdmin {
+        if (haltPrice == 0) revert InvalidHaltPrice();
         _assetHalted[asset_] = true;
-        emit AssetHalted(asset_, reason);
+        _assetHaltPrice[asset_] = haltPrice;
+        emit AssetHalted(asset_);
+        emit AssetHaltPriceSet(asset_, haltPrice);
     }
 
     /// @inheritdoc IOwnVault
@@ -426,6 +470,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
         bytes32 asset_
     ) external onlyAdmin {
         _assetHalted[asset_] = false;
+        _assetHaltPrice[asset_] = 0;
         emit AssetUnhalted(asset_);
     }
 
@@ -437,9 +482,26 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
     }
 
     /// @inheritdoc IOwnVault
-    function initiateWindDown() external onlyAdmin {
-        _vaultStatus = VaultStatus.WindingDown;
-        emit WindDownInitiated();
+    function getAssetHaltPrice(
+        bytes32 asset_
+    ) external view returns (uint256) {
+        return _assetHaltPrice[asset_];
+    }
+
+    // ── Combined query helpers ───────────────────────────────
+
+    /// @inheritdoc IOwnVault
+    function isEffectivelyPaused(
+        bytes32 asset_
+    ) external view returns (bool) {
+        return _vaultStatus == VaultStatus.Paused || _assetPaused[asset_];
+    }
+
+    /// @inheritdoc IOwnVault
+    function isEffectivelyHalted(
+        bytes32 asset_
+    ) external view returns (bool) {
+        return _vaultStatus == VaultStatus.Halted || _assetHalted[asset_];
     }
 
     // ──────────────────────────────────────────────────────────

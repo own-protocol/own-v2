@@ -87,7 +87,7 @@ contract OwnVaultTest is BaseTest {
 
     function test_deposit_whileHalted_reverts() public {
         vm.prank(Actors.ADMIN);
-        vault.halt(bytes32("emergency"));
+        vault.haltVault();
 
         usdc.mint(Actors.VM1, 1000e6);
         vm.startPrank(Actors.VM1);
@@ -97,14 +97,14 @@ contract OwnVaultTest is BaseTest {
         vm.stopPrank();
     }
 
-    function test_deposit_whileWindingDown_reverts() public {
+    function test_deposit_whilePaused_reverts() public {
         vm.prank(Actors.ADMIN);
-        vault.initiateWindDown();
+        vault.pause(bytes32("emergency"));
 
         usdc.mint(Actors.VM1, 1000e6);
         vm.startPrank(Actors.VM1);
         usdc.approve(address(vault), 1000e6);
-        vm.expectRevert(IOwnVault.VaultIsWindingDown.selector);
+        vm.expectRevert(IOwnVault.VaultIsPaused.selector);
         vault.deposit(1000e6, Actors.LP1);
         vm.stopPrank();
     }
@@ -367,11 +367,11 @@ contract OwnVaultTest is BaseTest {
     }
 
     function test_halt_admin_succeeds() public {
-        vm.expectEmit(true, false, false, false);
-        emit IOwnVault.VaultHalted(bytes32("emergency"));
+        vm.expectEmit(false, false, false, false);
+        emit IOwnVault.VaultHalted();
 
         vm.prank(Actors.ADMIN);
-        vault.halt(bytes32("emergency"));
+        vault.haltVault();
 
         assertEq(uint256(vault.vaultStatus()), uint256(VaultStatus.Halted));
     }
@@ -379,12 +379,12 @@ contract OwnVaultTest is BaseTest {
     function test_halt_nonAdmin_reverts() public {
         vm.prank(Actors.ATTACKER);
         vm.expectRevert();
-        vault.halt(bytes32("emergency"));
+        vault.haltVault();
     }
 
     function test_unhalt_admin_succeeds() public {
         vm.startPrank(Actors.ADMIN);
-        vault.halt(bytes32("emergency"));
+        vault.haltVault();
 
         vm.expectEmit(false, false, false, false);
         emit IOwnVault.VaultUnhalted();
@@ -396,18 +396,19 @@ contract OwnVaultTest is BaseTest {
     }
 
     function test_haltAsset_succeeds() public {
-        vm.expectEmit(true, true, false, false);
-        emit IOwnVault.AssetHalted(TSLA, bytes32("oracle"));
+        vm.expectEmit(true, false, false, false);
+        emit IOwnVault.AssetHalted(TSLA);
 
         vm.prank(Actors.ADMIN);
-        vault.haltAsset(TSLA, bytes32("oracle"));
+        vault.haltAsset(TSLA, TSLA_PRICE);
 
         assertTrue(vault.isAssetHalted(TSLA));
+        assertEq(vault.getAssetHaltPrice(TSLA), TSLA_PRICE);
     }
 
     function test_unhaltAsset_succeeds() public {
         vm.startPrank(Actors.ADMIN);
-        vault.haltAsset(TSLA, bytes32("oracle"));
+        vault.haltAsset(TSLA, TSLA_PRICE);
 
         vm.expectEmit(true, false, false, false);
         emit IOwnVault.AssetUnhalted(TSLA);
@@ -416,22 +417,23 @@ contract OwnVaultTest is BaseTest {
         vm.stopPrank();
 
         assertFalse(vault.isAssetHalted(TSLA));
+        assertEq(vault.getAssetHaltPrice(TSLA), 0);
     }
 
-    function test_initiateWindDown_succeeds() public {
-        vm.expectEmit(false, false, false, false);
-        emit IOwnVault.WindDownInitiated();
+    function test_pause_admin_succeeds() public {
+        vm.expectEmit(true, false, false, false);
+        emit IOwnVault.VaultPaused(bytes32("emergency"));
 
         vm.prank(Actors.ADMIN);
-        vault.initiateWindDown();
+        vault.pause(bytes32("emergency"));
 
-        assertEq(uint256(vault.vaultStatus()), uint256(VaultStatus.WindingDown));
+        assertEq(uint256(vault.vaultStatus()), uint256(VaultStatus.Paused));
     }
 
-    function test_initiateWindDown_nonAdmin_reverts() public {
+    function test_pause_nonAdmin_reverts() public {
         vm.prank(Actors.ATTACKER);
         vm.expectRevert();
-        vault.initiateWindDown();
+        vault.pause(bytes32("emergency"));
     }
 
     // ──────────────────────────────────────────────────────────

@@ -52,8 +52,8 @@ enum DepositStatus {
 /// @notice Operating state of a collateral vault.
 enum VaultStatus {
     Active,
-    Halted,
-    WindingDown
+    Paused,
+    Halted
 }
 
 // ──────────────────────────────────────────────────────────────

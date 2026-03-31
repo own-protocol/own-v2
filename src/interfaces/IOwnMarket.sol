@@ -44,6 +44,9 @@ interface IOwnMarket {
     /// @notice Emitted when a protocol fee is collected during order confirmation.
     event FeeCollected(uint256 indexed orderId, address indexed token, uint256 feeAmount);
 
+    /// @notice Emitted when a redeem order is confirmed at the halt settlement price.
+    event OrderConfirmedAtHaltPrice(uint256 indexed orderId, address indexed vm, uint256 haltPrice, uint256 amount);
+
     // ──────────────────────────────────────────────────────────
     //  Errors
     // ──────────────────────────────────────────────────────────
@@ -101,6 +104,15 @@ interface IOwnMarket {
 
     /// @notice The vault's payment token is not configured.
     error PaymentTokenNotSet(address vault);
+
+    /// @notice The asset is paused (vault-wide or per-asset).
+    error AssetPaused(bytes32 asset);
+
+    /// @notice Mint operations are blocked because the asset is halted.
+    error MintBlockedDuringHalt(bytes32 asset);
+
+    /// @notice The halt price is not set or is invalid.
+    error InvalidHaltPrice();
 
     /// @notice ETH refund to caller failed at end of forceExecute.
     error ETHRefundFailed();

@@ -4,6 +4,7 @@ pragma solidity 0.8.28;
 import {Actors} from "../helpers/Actors.sol";
 import {BaseTest} from "../helpers/BaseTest.sol";
 
+import {IOwnVault} from "../../src/interfaces/IOwnVault.sol";
 import {AssetConfig, BPS, OrderStatus, VaultStatus} from "../../src/interfaces/types/Types.sol";
 
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
@@ -13,8 +14,8 @@ import {VaultFactory} from "../../src/core/VaultFactory.sol";
 import {EToken} from "../../src/tokens/EToken.sol";
 
 /// @title HaltFlow Integration Test
-/// @notice Tests halt/unhalt vault-wide and per-asset, wind-down, and behavior
-///         during halted state (deposits blocked, withdrawals blocked, etc.).
+/// @notice Tests pause/unpause and halt/unhalt vault-wide and per-asset,
+///         including LP deposit blocking and withdrawal behavior.
 contract HaltFlowTest is BaseTest {
     AssetRegistry public assetRegistry;
     OwnMarket public market;
@@ -70,46 +71,45 @@ contract HaltFlowTest is BaseTest {
         vm.stopPrank();
     }
 
+    function _haltVault() private {
+        vm.startPrank(Actors.ADMIN);
+        usdcVault.haltAsset(TSLA, TSLA_PRICE);
+        usdcVault.haltVault();
+        vm.stopPrank();
+    }
+
     // ══════════════════════════════════════════════════════════
-    //  Vault-wide halt
+    //  Vault-wide pause
     // ══════════════════════════════════════════════════════════
 
-    function test_halt_depositsBlocked() public {
+    function test_pause_blocksDeposits() public {
         vm.prank(Actors.ADMIN);
-        usdcVault.halt(bytes32("emergency"));
+        usdcVault.pause(bytes32("emergency"));
 
-        assertEq(uint8(usdcVault.vaultStatus()), uint8(VaultStatus.Halted));
+        assertEq(uint8(usdcVault.vaultStatus()), uint8(VaultStatus.Paused));
 
         _fundUSDC(Actors.VM1, 1000e6);
         vm.startPrank(Actors.VM1);
         usdc.approve(address(usdcVault), 1000e6);
-        vm.expectRevert(abi.encodeWithSignature("VaultIsHalted()"));
+        vm.expectRevert(IOwnVault.VaultIsPaused.selector);
         usdcVault.deposit(1000e6, Actors.LP2);
         vm.stopPrank();
     }
 
-    function test_halt_maxDepositReturnsZero() public {
+    function test_pause_maxDepositReturnsZero() public {
         vm.prank(Actors.ADMIN);
-        usdcVault.halt(bytes32("emergency"));
+        usdcVault.pause(bytes32("emergency"));
 
         assertEq(usdcVault.maxDeposit(Actors.LP1), 0);
         assertEq(usdcVault.maxMint(Actors.LP1), 0);
     }
 
-    function test_halt_maxWithdrawReturnsZero() public {
-        vm.prank(Actors.ADMIN);
-        usdcVault.halt(bytes32("emergency"));
-
-        assertEq(usdcVault.maxWithdraw(Actors.LP1), 0);
-        assertEq(usdcVault.maxRedeem(Actors.LP1), 0);
-    }
-
-    function test_unhalt_resumesNormal() public {
+    function test_unpause_resumesNormal() public {
         vm.startPrank(Actors.ADMIN);
-        usdcVault.halt(bytes32("emergency"));
-        assertEq(uint8(usdcVault.vaultStatus()), uint8(VaultStatus.Halted));
+        usdcVault.pause(bytes32("emergency"));
+        assertEq(uint8(usdcVault.vaultStatus()), uint8(VaultStatus.Paused));
 
-        usdcVault.unhalt();
+        usdcVault.unpause();
         assertEq(uint8(usdcVault.vaultStatus()), uint8(VaultStatus.Active));
         vm.stopPrank();
 
@@ -122,18 +122,95 @@ contract HaltFlowTest is BaseTest {
         assertGt(usdcVault.balanceOf(Actors.LP2), 0);
     }
 
-    function test_halt_onlyAdmin() public {
+    function test_pause_onlyAdmin() public {
         vm.prank(Actors.ATTACKER);
-        vm.expectRevert(abi.encodeWithSignature("OnlyAdmin()"));
-        usdcVault.halt(bytes32("attack"));
+        vm.expectRevert(IOwnVault.OnlyAdmin.selector);
+        usdcVault.pause(bytes32("attack"));
     }
 
-    function test_unhalt_onlyAdmin() public {
+    function test_unpause_onlyAdmin() public {
         vm.prank(Actors.ADMIN);
-        usdcVault.halt(bytes32("emergency"));
+        usdcVault.pause(bytes32("emergency"));
 
         vm.prank(Actors.ATTACKER);
-        vm.expectRevert(abi.encodeWithSignature("OnlyAdmin()"));
+        vm.expectRevert(IOwnVault.OnlyAdmin.selector);
+        usdcVault.unpause();
+    }
+
+    function test_pause_requiresActive() public {
+        _haltVault();
+
+        vm.prank(Actors.ADMIN);
+        vm.expectRevert(IOwnVault.InvalidStatusTransition.selector);
+        usdcVault.pause(bytes32("try pause from halt"));
+    }
+
+    // ══════════════════════════════════════════════════════════
+    //  Vault-wide halt
+    // ══════════════════════════════════════════════════════════
+
+    function test_halt_depositsBlocked() public {
+        _haltVault();
+
+        assertEq(uint8(usdcVault.vaultStatus()), uint8(VaultStatus.Halted));
+
+        _fundUSDC(Actors.VM1, 1000e6);
+        vm.startPrank(Actors.VM1);
+        usdc.approve(address(usdcVault), 1000e6);
+        vm.expectRevert(IOwnVault.VaultIsHalted.selector);
+        usdcVault.deposit(1000e6, Actors.LP2);
+        vm.stopPrank();
+    }
+
+    function test_halt_maxDepositReturnsZero() public {
+        _haltVault();
+
+        assertEq(usdcVault.maxDeposit(Actors.LP1), 0);
+        assertEq(usdcVault.maxMint(Actors.LP1), 0);
+    }
+
+    function test_halt_withdrawalsAllowed() public {
+        _haltVault();
+
+        // maxWithdraw / maxRedeem should NOT return 0 during halt
+        assertGt(usdcVault.maxWithdraw(Actors.LP1), 0);
+        assertGt(usdcVault.maxRedeem(Actors.LP1), 0);
+    }
+
+    function test_halt_requiresActive() public {
+        vm.prank(Actors.ADMIN);
+        usdcVault.pause(bytes32("paused"));
+
+        vm.prank(Actors.ADMIN);
+        vm.expectRevert(IOwnVault.InvalidStatusTransition.selector);
+        usdcVault.haltVault();
+    }
+
+    function test_unhalt_resumesNormal() public {
+        _haltVault();
+
+        vm.prank(Actors.ADMIN);
+        usdcVault.unhalt();
+        assertEq(uint8(usdcVault.vaultStatus()), uint8(VaultStatus.Active));
+
+        _fundUSDC(Actors.VM1, 1000e6);
+        vm.startPrank(Actors.VM1);
+        usdc.approve(address(usdcVault), 1000e6);
+        usdcVault.deposit(1000e6, Actors.LP2);
+        vm.stopPrank();
+
+        assertGt(usdcVault.balanceOf(Actors.LP2), 0);
+    }
+
+    function test_halt_onlyAdmin() public {
+        vm.prank(Actors.ATTACKER);
+        vm.expectRevert(IOwnVault.OnlyAdmin.selector);
+        usdcVault.haltVault();
+    }
+
+    function test_unhalt_onlyFromHalted() public {
+        vm.prank(Actors.ADMIN);
+        vm.expectRevert(IOwnVault.InvalidStatusTransition.selector);
         usdcVault.unhalt();
     }
 
@@ -143,52 +220,92 @@ contract HaltFlowTest is BaseTest {
 
     function test_haltAsset_setsFlag() public {
         vm.prank(Actors.ADMIN);
-        usdcVault.haltAsset(TSLA, bytes32("market closed"));
+        usdcVault.haltAsset(TSLA, TSLA_PRICE);
 
         assertTrue(usdcVault.isAssetHalted(TSLA));
         assertFalse(usdcVault.isAssetHalted(GOLD));
+        assertEq(usdcVault.getAssetHaltPrice(TSLA), TSLA_PRICE);
     }
 
-    function test_unhaltAsset_clearsFlag() public {
+    function test_unhaltAsset_clearsFlagAndPrice() public {
         vm.startPrank(Actors.ADMIN);
-        usdcVault.haltAsset(TSLA, bytes32("market closed"));
+        usdcVault.haltAsset(TSLA, TSLA_PRICE);
         assertTrue(usdcVault.isAssetHalted(TSLA));
 
         usdcVault.unhaltAsset(TSLA);
         assertFalse(usdcVault.isAssetHalted(TSLA));
+        assertEq(usdcVault.getAssetHaltPrice(TSLA), 0);
         vm.stopPrank();
+    }
+
+    function test_haltAsset_zeroPriceReverts() public {
+        vm.prank(Actors.ADMIN);
+        vm.expectRevert(IOwnVault.InvalidHaltPrice.selector);
+        usdcVault.haltAsset(TSLA, 0);
     }
 
     function test_haltAsset_onlyAdmin() public {
         vm.prank(Actors.ATTACKER);
-        vm.expectRevert(abi.encodeWithSignature("OnlyAdmin()"));
-        usdcVault.haltAsset(TSLA, bytes32("attack"));
+        vm.expectRevert(IOwnVault.OnlyAdmin.selector);
+        usdcVault.haltAsset(TSLA, TSLA_PRICE);
     }
 
     // ══════════════════════════════════════════════════════════
-    //  Wind-down
+    //  Per-asset pause
     // ══════════════════════════════════════════════════════════
 
-    function test_windDown_blocksDeposits() public {
+    function test_pauseAsset_setsFlag() public {
         vm.prank(Actors.ADMIN);
-        usdcVault.initiateWindDown();
+        usdcVault.pauseAsset(TSLA, bytes32("oracle issue"));
 
-        assertEq(uint8(usdcVault.vaultStatus()), uint8(VaultStatus.WindingDown));
-        assertEq(usdcVault.maxDeposit(Actors.LP1), 0);
-        assertEq(usdcVault.maxMint(Actors.LP1), 0);
+        assertTrue(usdcVault.isAssetPaused(TSLA));
+        assertFalse(usdcVault.isAssetPaused(GOLD));
+    }
 
-        _fundUSDC(Actors.VM1, 1000e6);
-        vm.startPrank(Actors.VM1);
-        usdc.approve(address(usdcVault), 1000e6);
-        vm.expectRevert(abi.encodeWithSignature("VaultIsWindingDown()"));
-        usdcVault.deposit(1000e6, Actors.LP2);
+    function test_unpauseAsset_clearsFlag() public {
+        vm.startPrank(Actors.ADMIN);
+        usdcVault.pauseAsset(TSLA, bytes32("oracle issue"));
+        assertTrue(usdcVault.isAssetPaused(TSLA));
+
+        usdcVault.unpauseAsset(TSLA);
+        assertFalse(usdcVault.isAssetPaused(TSLA));
         vm.stopPrank();
     }
 
-    function test_windDown_onlyAdmin() public {
-        vm.prank(Actors.ATTACKER);
-        vm.expectRevert(abi.encodeWithSignature("OnlyAdmin()"));
-        usdcVault.initiateWindDown();
+    // ══════════════════════════════════════════════════════════
+    //  Combined query helpers
+    // ══════════════════════════════════════════════════════════
+
+    function test_isEffectivelyPaused_vaultPaused() public {
+        vm.prank(Actors.ADMIN);
+        usdcVault.pause(bytes32("emergency"));
+
+        assertTrue(usdcVault.isEffectivelyPaused(TSLA));
+        assertTrue(usdcVault.isEffectivelyPaused(GOLD));
+    }
+
+    function test_isEffectivelyPaused_assetPaused() public {
+        vm.prank(Actors.ADMIN);
+        usdcVault.pauseAsset(TSLA, bytes32("oracle issue"));
+
+        assertTrue(usdcVault.isEffectivelyPaused(TSLA));
+        assertFalse(usdcVault.isEffectivelyPaused(GOLD));
+    }
+
+    function test_isEffectivelyHalted_vaultHalted() public {
+        _haltVault();
+
+        assertTrue(usdcVault.isEffectivelyHalted(TSLA));
+        // GOLD is not in the halt assets list, but vault is halted
+        assertTrue(usdcVault.isEffectivelyHalted(GOLD));
+    }
+
+    function test_isEffectivelyHalted_assetHalted() public {
+        vm.prank(Actors.ADMIN);
+        usdcVault.haltAsset(TSLA, TSLA_PRICE);
+
+        assertTrue(usdcVault.isEffectivelyHalted(TSLA));
+        assertFalse(usdcVault.isEffectivelyHalted(GOLD));
     }
 
     // ══════════════════════════════════════════════════════════
@@ -196,8 +313,7 @@ contract HaltFlowTest is BaseTest {
     // ══════════════════════════════════════════════════════════
 
     function test_halt_asyncWithdrawalStillRequestable() public {
-        vm.prank(Actors.ADMIN);
-        usdcVault.halt(bytes32("emergency"));
+        _haltVault();
 
         uint256 shares = usdcVault.balanceOf(Actors.LP1);
         assertGt(shares, 0);
@@ -210,8 +326,7 @@ contract HaltFlowTest is BaseTest {
     function test_halt_unhalt_fulfillWithdrawal() public {
         uint256 shares = usdcVault.balanceOf(Actors.LP1);
 
-        vm.prank(Actors.ADMIN);
-        usdcVault.halt(bytes32("emergency"));
+        _haltVault();
 
         vm.prank(Actors.LP1);
         uint256 requestId = usdcVault.requestWithdrawal(shares / 2);
@@ -233,13 +348,15 @@ contract HaltFlowTest is BaseTest {
     function test_haltUnhaltCycle() public {
         vm.startPrank(Actors.ADMIN);
 
-        usdcVault.halt(bytes32("first"));
+        usdcVault.haltAsset(TSLA, TSLA_PRICE);
+        usdcVault.haltVault();
         assertEq(uint8(usdcVault.vaultStatus()), uint8(VaultStatus.Halted));
 
         usdcVault.unhalt();
         assertEq(uint8(usdcVault.vaultStatus()), uint8(VaultStatus.Active));
 
-        usdcVault.halt(bytes32("second"));
+        usdcVault.haltAsset(TSLA, TSLA_PRICE);
+        usdcVault.haltVault();
         assertEq(uint8(usdcVault.vaultStatus()), uint8(VaultStatus.Halted));
 
         usdcVault.unhalt();

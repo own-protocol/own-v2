@@ -20,11 +20,15 @@ interface IOwnVault is IERC4626 {
     event WithdrawalCancelled(uint256 indexed requestId, address indexed owner);
     event WithdrawalFulfilled(uint256 indexed requestId, address indexed owner, uint256 assets, uint256 shares);
 
-    event VaultHalted(bytes32 indexed reason);
+    event VaultPaused(bytes32 indexed reason);
+    event VaultUnpaused();
+    event VaultHalted();
     event VaultUnhalted();
-    event AssetHalted(bytes32 indexed asset, bytes32 indexed reason);
+    event AssetPaused(bytes32 indexed asset, bytes32 indexed reason);
+    event AssetUnpaused(bytes32 indexed asset);
+    event AssetHalted(bytes32 indexed asset);
     event AssetUnhalted(bytes32 indexed asset);
-    event WindDownInitiated();
+    event AssetHaltPriceSet(bytes32 indexed asset, uint256 haltPrice);
     event UtilizationUpdated(uint256 newUtilization);
 
     event FeeDeposited(
@@ -46,8 +50,10 @@ interface IOwnVault is IERC4626 {
     // ──────────────────────────────────────────────────────────
 
     error OnlyVM();
+    error VaultIsPaused();
     error VaultIsHalted();
-    error VaultIsWindingDown();
+    error InvalidHaltPrice();
+    error InvalidStatusTransition();
     error InsufficientCollateral();
     error MaxUtilizationExceeded(uint256 currentUtilization, uint256 maxUtilization);
     error WithdrawalRequestNotFound(uint256 requestId);
@@ -133,18 +139,62 @@ interface IOwnVault is IERC4626 {
     // ──────────────────────────────────────────────────────────
 
     function vaultStatus() external view returns (VaultStatus);
-    function halt(
+
+    /// @notice Pause the vault. Blocks new orders, claims, and LP deposits.
+    function pause(
         bytes32 reason
     ) external;
+
+    /// @notice Unpause the vault. Resumes normal operation.
+    function unpause() external;
+
+    /// @notice Pause a specific asset. Blocks new orders and claims for this asset.
+    function pauseAsset(bytes32 asset, bytes32 reason) external;
+
+    /// @notice Unpause a specific asset.
+    function unpauseAsset(
+        bytes32 asset
+    ) external;
+
+    /// @notice Check if a specific asset is paused.
+    function isAssetPaused(
+        bytes32 asset
+    ) external view returns (bool);
+
+    /// @notice Halt the vault. Set per-asset halt prices via haltAsset before or after.
+    ///         Assets without a halt price use the latest oracle price for redemptions.
+    function haltVault() external;
+
+    /// @notice Unhalt the vault. Does NOT clear per-asset halt prices.
     function unhalt() external;
-    function haltAsset(bytes32 asset, bytes32 reason) external;
+
+    /// @notice Halt a specific asset with a settlement price.
+    function haltAsset(bytes32 asset, uint256 haltPrice) external;
+
+    /// @notice Unhalt a specific asset. Clears the halt price.
     function unhaltAsset(
         bytes32 asset
     ) external;
+
+    /// @notice Check if a specific asset is halted.
     function isAssetHalted(
         bytes32 asset
     ) external view returns (bool);
-    function initiateWindDown() external;
+
+    /// @notice Return the halt settlement price for an asset (0 if not halted).
+    function getAssetHaltPrice(
+        bytes32 asset
+    ) external view returns (uint256);
+
+    /// @notice Check if an asset is effectively paused (vault paused OR asset paused).
+    function isEffectivelyPaused(
+        bytes32 asset
+    ) external view returns (bool);
+
+    /// @notice Check if an asset is effectively halted (vault halted OR asset halted).
+    function isEffectivelyHalted(
+        bytes32 asset
+    ) external view returns (bool);
 
     // ──────────────────────────────────────────────────────────
     //  Health and utilization

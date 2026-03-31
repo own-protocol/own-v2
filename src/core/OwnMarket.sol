@@ -69,6 +69,8 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         if (price == 0) revert InvalidPrice();
         if (expiry <= block.timestamp) revert InvalidExpiry();
         _validateVaultAndAsset(vault, asset);
+        if (IOwnVault(vault).isEffectivelyPaused(asset)) revert AssetPaused(asset);
+        if (IOwnVault(vault).isEffectivelyHalted(asset)) revert MintBlockedDuringHalt(asset);
 
         // Resolve the vault's payment token
         address paymentToken = IOwnVault(vault).paymentToken();
@@ -110,6 +112,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         if (price == 0) revert InvalidPrice();
         if (expiry <= block.timestamp) revert InvalidExpiry();
         _validateVaultAndAsset(vault, asset);
+        if (IOwnVault(vault).isEffectivelyPaused(asset)) revert AssetPaused(asset);
 
         // Escrow eTokens
         address eToken = IAssetRegistry(registry.assetRegistry()).getActiveToken(asset);
@@ -153,6 +156,10 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         // Verify caller is the VM bound to the order's vault
         IOwnVault vaultContract = IOwnVault(order.vault);
         if (vaultContract.vm() != msg.sender) revert OnlyVM();
+        if (vaultContract.isEffectivelyPaused(order.asset)) revert AssetPaused(order.asset);
+        if (order.orderType == OrderType.Mint && vaultContract.isEffectivelyHalted(order.asset)) {
+            revert MintBlockedDuringHalt(order.asset);
+        }
 
         order.status = OrderStatus.Claimed;
         order.vm = msg.sender;
@@ -193,17 +200,26 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         if (order.vm != msg.sender) revert NotClaimVM(orderId, msg.sender);
         if (block.timestamp > order.expiry) revert OrderExpiredError(orderId);
 
+        IOwnVault vaultContract = IOwnVault(order.vault);
+
         order.status = OrderStatus.Confirmed;
 
         if (order.orderType == OrderType.Mint) {
+            if (vaultContract.isEffectivelyHalted(order.asset)) revert MintBlockedDuringHalt(order.asset);
             _executeMint(order);
         } else {
-            _executeRedeem(order);
+            if (vaultContract.isEffectivelyHalted(order.asset)) {
+                uint256 haltPrice = _resolveHaltPrice(order.vault, order.asset);
+                _executeRedeemAtPrice(order, haltPrice);
+                emit OrderConfirmedAtHaltPrice(orderId, msg.sender, haltPrice, order.amount);
+            } else {
+                _executeRedeem(order);
+            }
         }
 
         // Decrease exposure
         uint256 exposureDelta = _calculateExposure(order);
-        IOwnVault(order.vault).updateExposure(order.asset, -int256(exposureDelta));
+        vaultContract.updateExposure(order.asset, -int256(exposureDelta));
 
         emit OrderConfirmed(orderId, msg.sender, order.amount);
     }
@@ -215,8 +231,13 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         Order storage order = _orders[orderId];
         if (order.user == address(0)) revert OrderNotFound(orderId);
         if (order.status != OrderStatus.Claimed) revert InvalidOrderStatus(orderId, order.status);
-        if (block.timestamp <= order.expiry) revert ExpiryNotReached(orderId);
         if (order.vm != msg.sender) revert NotClaimVM(orderId, msg.sender);
+
+        // During halt, claimed mint orders can be closed immediately (no expiry wait)
+        bool isHalted = IOwnVault(order.vault).isEffectivelyHalted(order.asset);
+        if (!(isHalted && order.orderType == OrderType.Mint) && block.timestamp <= order.expiry) {
+            revert ExpiryNotReached(orderId);
+        }
 
         order.status = OrderStatus.Closed;
 
@@ -303,12 +324,25 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
             _removeFromOpenOrders(order.asset, orderId);
         }
 
-        bool priceReachable = _verifyPriceRange(order, priceProofData);
+        bool isHalted = vaultContract.isEffectivelyHalted(order.asset);
+        bool priceReachable;
 
-        if (priceReachable) {
-            _forceExecuteAtSetPrice(order, collateralPriceData);
+        if (isHalted) {
+            // During halt: mints get refund, redeems settle at halt price
+            if (order.orderType == OrderType.Mint) {
+                _forceExecuteRefund(order, collateralPriceData);
+            } else {
+                uint256 haltPrice = _resolveHaltPrice(order.vault, order.asset);
+                _forceExecuteRedeemAtHaltPrice(order, haltPrice, collateralPriceData);
+            }
+            priceReachable = false;
         } else {
-            _forceExecuteRefund(order, collateralPriceData);
+            priceReachable = _verifyPriceRange(order, priceProofData);
+            if (priceReachable) {
+                _forceExecuteAtSetPrice(order, collateralPriceData);
+            } else {
+                _forceExecuteRefund(order, collateralPriceData);
+            }
         }
 
         // Clear exposure if was claimed
@@ -439,6 +473,33 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         IEToken(eToken).burn(address(this), order.amount);
     }
 
+    /// @dev Execute a redeem confirmation at a specified price (used during halt).
+    function _executeRedeemAtPrice(Order storage order, uint256 executionPrice) private {
+        address paymentToken = IOwnVault(order.vault).paymentToken();
+        uint256 decimals = IERC20Metadata(paymentToken).decimals();
+        uint256 precisionWithDecimals = PRECISION * 10 ** (18 - decimals);
+
+        // Gross payout at execution price
+        uint256 grossPayout = Math.mulDiv(order.amount, executionPrice, precisionWithDecimals);
+
+        // Deduct fee (round up — protocol-favorable)
+        uint256 feeBps = IFeeCalculator(registry.feeCalculator()).getRedeemFee(order.asset, order.amount);
+        uint256 feeAmount = Math.mulDiv(grossPayout, feeBps, BPS, Math.Rounding.Ceil);
+
+        // VM sends stablecoins: net to user, fee to vault
+        IERC20(paymentToken).safeTransferFrom(order.vm, order.user, grossPayout - feeAmount);
+        if (feeAmount > 0) {
+            IERC20(paymentToken).safeTransferFrom(order.vm, address(this), feeAmount);
+            IERC20(paymentToken).safeIncreaseAllowance(order.vault, feeAmount);
+            IOwnVault(order.vault).depositFees(paymentToken, feeAmount);
+            emit FeeCollected(order.orderId, paymentToken, feeAmount);
+        }
+
+        // Burn escrowed eTokens
+        address eToken = IAssetRegistry(registry.assetRegistry()).getActiveToken(order.asset);
+        IEToken(eToken).burn(address(this), order.amount);
+    }
+
     /// @dev Force execution when set price was reachable. Fees charged and deposited to vault.
     function _forceExecuteAtSetPrice(Order storage order, bytes calldata collateralPriceData) private {
         if (order.orderType == OrderType.Mint) {
@@ -493,6 +554,24 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         }
     }
 
+    /// @dev Force execute a redeem at the halt settlement price via collateral release.
+    function _forceExecuteRedeemAtHaltPrice(
+        Order storage order,
+        uint256 haltPrice,
+        bytes calldata collateralPriceData
+    ) private {
+        uint256 grossUsd = Math.mulDiv(order.amount, haltPrice, PRECISION);
+        uint256 grossCollateral = _convertToCollateral(order, grossUsd, collateralPriceData);
+
+        uint256 feeBps = IFeeCalculator(registry.feeCalculator()).getRedeemFee(order.asset, order.amount);
+        uint256 feeCollateral = Math.mulDiv(grossCollateral, feeBps, BPS, Math.Rounding.Ceil);
+
+        IOwnVault(order.vault).releaseCollateral(order.user, grossCollateral - feeCollateral);
+
+        address eToken = IAssetRegistry(registry.assetRegistry()).getActiveToken(order.asset);
+        IEToken(eToken).burn(address(this), order.amount);
+    }
+
     /// @dev Return escrowed mint fee to user.
     function _returnEscrowedFee(
         Order storage order
@@ -524,6 +603,19 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
     // ──────────────────────────────────────────────────────────
     //  Internal — helpers
     // ──────────────────────────────────────────────────────────
+
+    /// @dev Resolve the effective halt price for an asset. Uses the admin-set halt price
+    ///      if available, otherwise falls back to the latest oracle price.
+    function _resolveHaltPrice(address vault, bytes32 asset) private view returns (uint256 price) {
+        price = IOwnVault(vault).getAssetHaltPrice(asset);
+        if (price > 0) return price;
+
+        address oracleAddr = IAssetRegistry(registry.assetRegistry()).getPrimaryOracle(asset);
+        if (oracleAddr != address(0)) {
+            (price,) = IOracleVerifier(oracleAddr).getPrice(asset);
+        }
+        if (price == 0) revert InvalidHaltPrice();
+    }
 
     /// @dev Validate that the vault is registered, has a payment token, and supports the asset.
     function _validateVaultAndAsset(address vault, bytes32 asset) private view {

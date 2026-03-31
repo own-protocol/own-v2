@@ -94,6 +94,9 @@ contract OwnMarketTest is BaseTest {
             mockVault, abi.encodeWithSelector(IOwnVault.collateralOracleAsset.selector), abi.encode(bytes32("ETH"))
         );
         vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.isAssetSupported.selector), abi.encode(true));
+        vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.isEffectivelyPaused.selector), abi.encode(false));
+        vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.isEffectivelyHalted.selector), abi.encode(false));
+        vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.getAssetHaltPrice.selector), abi.encode(uint256(0)));
 
         _setOraclePrice(TSLA, TSLA_PRICE);
         _setOraclePrice(ethAsset, ETH_PRICE);
