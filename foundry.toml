@@ -54,3 +54,11 @@ invariant = { runs = 1_000, depth = 100 }
 [profile.audit]
 fuzz = { runs = 50_000 }
 invariant = { runs = 5_000, depth = 200 }
+
+# RPC endpoints
+[rpc_endpoints]
+base_sepolia = "${BASE_SEPOLIA_RPC}"
+
+# Etherscan verification
+[etherscan]
+base_sepolia = { key = "${BASESCAN_API_KEY}", url = "https://api-sepolia.basescan.org/api" }
