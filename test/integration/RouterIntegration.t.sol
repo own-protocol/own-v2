@@ -90,7 +90,9 @@ contract RouterIntegrationTest is BaseTest {
 
         vm.prank(Actors.LP1);
         uint256 shares = wethRouter.depositETH{value: DEPOSIT_AMOUNT_ETH}(
-            IERC4626(address(wethVault)), Actors.LP1, 0 // no slippage protection for test
+            IERC4626(address(wethVault)),
+            Actors.LP1,
+            0 // no slippage protection for test
         );
 
         assertGt(shares, 0, "LP received shares");
@@ -107,8 +109,7 @@ contract RouterIntegrationTest is BaseTest {
         // First deposit
         _fundETH(Actors.LP1, DEPOSIT_AMOUNT_ETH);
         vm.prank(Actors.LP1);
-        uint256 shares =
-            wethRouter.depositETH{value: DEPOSIT_AMOUNT_ETH}(IERC4626(address(wethVault)), Actors.LP1, 0);
+        uint256 shares = wethRouter.depositETH{value: DEPOSIT_AMOUNT_ETH}(IERC4626(address(wethVault)), Actors.LP1, 0);
 
         // Approve router to pull shares
         vm.prank(Actors.LP1);
@@ -135,8 +136,7 @@ contract RouterIntegrationTest is BaseTest {
 
         // Deposit
         vm.prank(Actors.LP1);
-        uint256 shares =
-            wethRouter.depositETH{value: DEPOSIT_AMOUNT_ETH}(IERC4626(address(wethVault)), Actors.LP1, 0);
+        uint256 shares = wethRouter.depositETH{value: DEPOSIT_AMOUNT_ETH}(IERC4626(address(wethVault)), Actors.LP1, 0);
 
         assertGt(shares, 0);
         assertEq(Actors.LP1.balance, 0);
@@ -160,9 +160,7 @@ contract RouterIntegrationTest is BaseTest {
 
         vm.startPrank(Actors.LP1);
         stETH.approve(address(wstethRouter), DEPOSIT_AMOUNT_STETH);
-        uint256 shares = wstethRouter.depositStETH(
-            IERC4626(address(wstethVault)), DEPOSIT_AMOUNT_STETH, Actors.LP1, 0
-        );
+        uint256 shares = wstethRouter.depositStETH(IERC4626(address(wstethVault)), DEPOSIT_AMOUNT_STETH, Actors.LP1, 0);
         vm.stopPrank();
 
         assertGt(shares, 0, "LP received shares");
@@ -183,9 +181,7 @@ contract RouterIntegrationTest is BaseTest {
         _fundStETH(Actors.LP1, DEPOSIT_AMOUNT_STETH);
         vm.startPrank(Actors.LP1);
         stETH.approve(address(wstethRouter), DEPOSIT_AMOUNT_STETH);
-        uint256 shares = wstethRouter.depositStETH(
-            IERC4626(address(wstethVault)), DEPOSIT_AMOUNT_STETH, Actors.LP1, 0
-        );
+        uint256 shares = wstethRouter.depositStETH(IERC4626(address(wstethVault)), DEPOSIT_AMOUNT_STETH, Actors.LP1, 0);
 
         // Approve router to pull shares
         IERC20(address(wstethVault)).approve(address(wstethRouter), shares);
@@ -213,9 +209,7 @@ contract RouterIntegrationTest is BaseTest {
 
         vm.startPrank(Actors.LP1);
         stETH.approve(address(wstethRouter), DEPOSIT_AMOUNT_STETH);
-        uint256 shares = wstethRouter.depositStETH(
-            IERC4626(address(wstethVault)), DEPOSIT_AMOUNT_STETH, Actors.LP1, 0
-        );
+        uint256 shares = wstethRouter.depositStETH(IERC4626(address(wstethVault)), DEPOSIT_AMOUNT_STETH, Actors.LP1, 0);
         vm.stopPrank();
 
         // Expected wstETH = 10e18 * 0.9e18 / 1e18 = 9e18

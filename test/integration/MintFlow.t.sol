@@ -281,7 +281,7 @@ contract MintFlowTest is BaseTest {
     // ══════════════════════════════════════════════════════════
 
     function test_mintFlow_multipleAssets_sameVault() public {
-        uint256 goldAmount = 5_000e6;
+        uint256 goldAmount = 5000e6;
 
         // Place TSLA order
         _fundUSDC(Actors.MINTER1, MINT_AMOUNT);
