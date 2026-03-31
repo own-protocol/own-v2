@@ -158,11 +158,15 @@ contract VMLifecycleTest is BaseTest {
     //  VM-only vault operations
     // ══════════════════════════════════════════════════════════
 
-    function test_vmOnlyDeposit() public {
+    function test_vmOnlyDeposit_whenApprovalRequired() public {
+        // Enable deposit approval — non-VM deposit should revert
+        vm.prank(Actors.ADMIN);
+        usdcVault.setRequireDepositApproval(true);
+
         _fundUSDC(Actors.LP1, 1000e6);
         vm.startPrank(Actors.LP1);
         usdc.approve(address(usdcVault), 1000e6);
-        vm.expectRevert(IOwnVault.OnlyVM.selector);
+        vm.expectRevert(IOwnVault.DepositApprovalRequired.selector);
         usdcVault.deposit(1000e6, Actors.LP1);
         vm.stopPrank();
     }

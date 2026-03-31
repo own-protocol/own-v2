@@ -241,4 +241,87 @@ contract UtilizationLimitTest is BaseTest {
 
         assertEq(vault.utilization(), 0, "utilization back to 0 after all confirmed");
     }
+
+    // ══════════════════════════════════════════════════════════
+    //  Projected Utilization
+    // ══════════════════════════════════════════════════════════
+
+    function test_projectedUtilization_noWithdrawals_matchesUtilization() public {
+        uint256 mintAmount = 10_000e6;
+        uint256 orderId = _placeMint(Actors.MINTER1, mintAmount, block.timestamp + 1 days);
+
+        vm.prank(Actors.VM1);
+        market.claimOrder(orderId);
+
+        assertEq(vault.projectedUtilization(), vault.utilization(), "projected == current when no withdrawals");
+        assertEq(vault.pendingWithdrawalShares(), 0, "no pending withdrawal shares");
+    }
+
+    function test_projectedUtilization_withPendingWithdrawal_higherThanCurrent() public {
+        uint256 mintAmount = 10_000e6;
+        uint256 orderId = _placeMint(Actors.MINTER1, mintAmount, block.timestamp + 1 days);
+
+        vm.prank(Actors.VM1);
+        market.claimOrder(orderId);
+
+        uint256 utilBefore = vault.utilization();
+        assertGt(utilBefore, 0);
+
+        // LP requests withdrawal of half their shares
+        uint256 lpShares = vault.balanceOf(Actors.LP1);
+        vm.prank(Actors.LP1);
+        vault.requestWithdrawal(lpShares / 2);
+
+        assertEq(vault.pendingWithdrawalShares(), lpShares / 2, "pending shares tracked");
+
+        // Current utilization unchanged (collateral still in vault)
+        assertEq(vault.utilization(), utilBefore, "current util unchanged");
+
+        // Projected utilization higher (accounts for pending withdrawal)
+        uint256 projected = vault.projectedUtilization();
+        assertGt(projected, utilBefore, "projected > current with pending withdrawal");
+    }
+
+    function test_projectedUtilization_afterFulfill_dropsBack() public {
+        uint256 mintAmount = 10_000e6;
+        uint256 orderId = _placeMint(Actors.MINTER1, mintAmount, block.timestamp + 1 days);
+
+        vm.prank(Actors.VM1);
+        market.claimOrder(orderId);
+
+        uint256 lpShares = vault.balanceOf(Actors.LP1);
+        vm.prank(Actors.LP1);
+        uint256 requestId = vault.requestWithdrawal(lpShares / 4);
+
+        uint256 projectedBefore = vault.projectedUtilization();
+        assertGt(projectedBefore, vault.utilization());
+
+        // Fulfill the withdrawal
+        vault.fulfillWithdrawal(requestId);
+
+        // After fulfillment, projected should match current (no pending shares)
+        assertEq(vault.pendingWithdrawalShares(), 0, "no pending shares after fulfill");
+        assertEq(vault.projectedUtilization(), vault.utilization(), "projected == current after fulfill");
+    }
+
+    function test_projectedUtilization_afterCancel_dropsBack() public {
+        uint256 mintAmount = 10_000e6;
+        uint256 orderId = _placeMint(Actors.MINTER1, mintAmount, block.timestamp + 1 days);
+
+        vm.prank(Actors.VM1);
+        market.claimOrder(orderId);
+
+        uint256 lpShares = vault.balanceOf(Actors.LP1);
+        vm.prank(Actors.LP1);
+        uint256 requestId = vault.requestWithdrawal(lpShares / 4);
+
+        assertGt(vault.projectedUtilization(), vault.utilization());
+
+        // Cancel the withdrawal
+        vm.prank(Actors.LP1);
+        vault.cancelWithdrawal(requestId);
+
+        assertEq(vault.pendingWithdrawalShares(), 0, "no pending shares after cancel");
+        assertEq(vault.projectedUtilization(), vault.utilization(), "projected == current after cancel");
+    }
 }

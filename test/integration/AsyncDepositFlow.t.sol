@@ -60,6 +60,9 @@ contract AsyncDepositFlowTest is BaseTest {
         usdcVault.setPaymentToken(address(usdc));
         usdcVault.enableAsset(TSLA);
         vm.stopPrank();
+
+        vm.prank(Actors.ADMIN);
+        usdcVault.setRequireDepositApproval(true);
     }
 
     // ══════════════════════════════════════════════════════════
@@ -337,5 +340,61 @@ contract AsyncDepositFlowTest is BaseTest {
 
         assertEq(usdcVault.balanceOf(Actors.LP1), 0, "depositor has no shares");
         assertGt(usdcVault.balanceOf(Actors.LP2), 0, "receiver has shares");
+    }
+
+    // ══════════════════════════════════════════════════════════
+    //  Deposit Approval Toggle
+    // ══════════════════════════════════════════════════════════
+
+    function test_requestDeposit_reverts_whenApprovalNotRequired() public {
+        // Disable approval (setUp enabled it)
+        vm.prank(Actors.ADMIN);
+        usdcVault.setRequireDepositApproval(false);
+
+        _fundUSDC(Actors.LP1, LP_DEPOSIT);
+        vm.startPrank(Actors.LP1);
+        usdc.approve(address(usdcVault), LP_DEPOSIT);
+        vm.expectRevert(IOwnVault.DepositApprovalNotRequired.selector);
+        usdcVault.requestDeposit(LP_DEPOSIT, Actors.LP1);
+        vm.stopPrank();
+    }
+
+    function test_directDeposit_succeeds_whenApprovalNotRequired() public {
+        // Disable approval
+        vm.prank(Actors.ADMIN);
+        usdcVault.setRequireDepositApproval(false);
+
+        _fundUSDC(Actors.LP1, LP_DEPOSIT);
+        vm.startPrank(Actors.LP1);
+        usdc.approve(address(usdcVault), LP_DEPOSIT);
+        uint256 shares = usdcVault.deposit(LP_DEPOSIT, Actors.LP1);
+        vm.stopPrank();
+
+        assertGt(shares, 0, "LP received shares directly");
+        assertEq(usdcVault.balanceOf(Actors.LP1), shares);
+        assertEq(usdcVault.totalAssets(), LP_DEPOSIT);
+    }
+
+    function test_directDeposit_reverts_whenApprovalRequired() public {
+        // Approval is already enabled in setUp
+        _fundUSDC(Actors.LP1, LP_DEPOSIT);
+        vm.startPrank(Actors.LP1);
+        usdc.approve(address(usdcVault), LP_DEPOSIT);
+        vm.expectRevert(IOwnVault.DepositApprovalRequired.selector);
+        usdcVault.deposit(LP_DEPOSIT, Actors.LP1);
+        vm.stopPrank();
+    }
+
+    function test_setRequireDepositApproval_onlyAdmin() public {
+        vm.prank(Actors.ATTACKER);
+        vm.expectRevert(IOwnVault.OnlyAdmin.selector);
+        usdcVault.setRequireDepositApproval(true);
+    }
+
+    function test_setRequireDepositApproval_emitsEvent() public {
+        vm.prank(Actors.ADMIN);
+        vm.expectEmit(false, false, false, true);
+        emit IOwnVault.DepositApprovalUpdated(false);
+        usdcVault.setRequireDepositApproval(false);
     }
 }

@@ -44,14 +44,19 @@ contract OwnVaultTest is BaseTest {
     //  Helpers
     // ──────────────────────────────────────────────────────────
 
-    /// @dev Deposit as the bound VM (only VM can call deposit directly).
-    ///      Funds VM1 with USDC, VM1 deposits on behalf of LP (receiver).
+    /// @dev Deposit as the bound VM.
     function _depositAs(address lp, uint256 amount) internal returns (uint256 shares) {
         usdc.mint(Actors.VM1, amount);
         vm.startPrank(Actors.VM1);
         usdc.approve(address(vault), amount);
         shares = vault.deposit(amount, lp);
         vm.stopPrank();
+    }
+
+    /// @dev Enable deposit approval mode (admin-only toggle).
+    function _enableDepositApproval() internal {
+        vm.prank(Actors.ADMIN);
+        vault.setRequireDepositApproval(true);
     }
 
     // ──────────────────────────────────────────────────────────
@@ -77,10 +82,13 @@ contract OwnVaultTest is BaseTest {
     }
 
     function test_deposit_onlyVM() public {
+        // With approval required, non-VM deposit reverts
+        _enableDepositApproval();
+
         usdc.mint(Actors.LP1, 1000e6);
         vm.startPrank(Actors.LP1);
         usdc.approve(address(vault), 1000e6);
-        vm.expectRevert(IOwnVault.OnlyVM.selector);
+        vm.expectRevert(IOwnVault.DepositApprovalRequired.selector);
         vault.deposit(1000e6, Actors.LP1);
         vm.stopPrank();
     }
@@ -132,6 +140,7 @@ contract OwnVaultTest is BaseTest {
     // ──────────────────────────────────────────────────────────
 
     function test_requestDeposit_succeeds() public {
+        _enableDepositApproval();
         uint256 depositAmount = 1000e6;
         usdc.mint(Actors.LP1, depositAmount);
 
@@ -158,6 +167,7 @@ contract OwnVaultTest is BaseTest {
     }
 
     function test_acceptDeposit_mintsShares() public {
+        _enableDepositApproval();
         // Bootstrap vault with an initial VM deposit to establish share price
         _depositAs(Actors.LP2, 1000e6);
 
@@ -186,6 +196,7 @@ contract OwnVaultTest is BaseTest {
     }
 
     function test_rejectDeposit_returnsAssets() public {
+        _enableDepositApproval();
         uint256 depositAmount = 1000e6;
         usdc.mint(Actors.LP1, depositAmount);
 
@@ -209,6 +220,7 @@ contract OwnVaultTest is BaseTest {
     }
 
     function test_cancelDeposit_returnsAssets() public {
+        _enableDepositApproval();
         uint256 depositAmount = 1000e6;
         usdc.mint(Actors.LP1, depositAmount);
 
@@ -231,6 +243,7 @@ contract OwnVaultTest is BaseTest {
     }
 
     function test_acceptDeposit_notVM_reverts() public {
+        _enableDepositApproval();
         uint256 depositAmount = 1000e6;
         usdc.mint(Actors.LP1, depositAmount);
 
@@ -245,6 +258,7 @@ contract OwnVaultTest is BaseTest {
     }
 
     function test_cancelDeposit_notDepositor_reverts() public {
+        _enableDepositApproval();
         uint256 depositAmount = 1000e6;
         usdc.mint(Actors.LP1, depositAmount);
 

@@ -124,6 +124,10 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
     ///      assets that have no corresponding shares yet.
     uint256 private _pendingDepositAssets;
 
+    /// @dev When true, LP deposits require VM approval via requestDeposit/acceptDeposit.
+    ///      When false (default), LPs call deposit() directly.
+    bool private _requireDepositApproval;
+
     // ──────────────────────────────────────────────────────────
     //  Async withdrawal queue
     // ──────────────────────────────────────────────────────────
@@ -131,6 +135,10 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
     uint256 private _nextRequestId = 1;
     mapping(uint256 => WithdrawalRequest) private _withdrawalRequests;
     uint256[] private _pendingRequestIds;
+
+    /// @dev Total shares escrowed for pending withdrawal requests.
+    ///      Used by projectedUtilization() to estimate effective collateral.
+    uint256 private _pendingWithdrawalShares;
 
     // ──────────────────────────────────────────────────────────
     //  Modifiers
@@ -192,7 +200,8 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
     function deposit(
         uint256 assets,
         address receiver
-    ) public override(ERC4626, IERC4626) whenDepositsAllowed onlyVM nonReentrant returns (uint256) {
+    ) public override(ERC4626, IERC4626) whenDepositsAllowed nonReentrant returns (uint256) {
+        if (_requireDepositApproval && msg.sender != vm) revert DepositApprovalRequired();
         return super.deposit(assets, receiver);
     }
 
@@ -224,6 +233,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
         uint256 assets,
         address receiver
     ) external whenDepositsAllowed nonReentrant returns (uint256 requestId) {
+        if (!_requireDepositApproval) revert DepositApprovalNotRequired();
         if (assets == 0) revert ZeroAmount();
 
         IERC20(asset()).safeTransferFrom(msg.sender, address(this), assets);
@@ -317,6 +327,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
         if (shares == 0) revert ZeroAmount();
 
         _transfer(msg.sender, address(this), shares);
+        _pendingWithdrawalShares += shares;
 
         requestId = _nextRequestId++;
         _withdrawalRequests[requestId] = WithdrawalRequest({
@@ -341,6 +352,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
         if (req.status != WithdrawalStatus.Pending) revert WithdrawalNotPending(requestId);
 
         req.status = WithdrawalStatus.Cancelled;
+        _pendingWithdrawalShares -= req.shares;
         _transfer(address(this), msg.sender, req.shares);
         _removePendingRequest(requestId);
 
@@ -377,6 +389,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
         }
 
         req.status = WithdrawalStatus.Fulfilled;
+        _pendingWithdrawalShares -= shares;
         _removePendingRequest(requestId);
 
         // Auto-claim LP rewards before exit
@@ -539,6 +552,23 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
         uint256 maxUtilBps
     ) external onlyAdmin {
         _maxUtilization = maxUtilBps;
+    }
+
+    /// @inheritdoc IOwnVault
+    function projectedUtilization() external view returns (uint256) {
+        if (_collateralValueUSD == 0) return 0;
+        uint256 total = totalAssets();
+        if (total == 0) return type(uint256).max;
+        uint256 pendingAssets = convertToAssets(_pendingWithdrawalShares);
+        uint256 pendingValueUSD = _collateralValueUSD.mulDiv(pendingAssets, total);
+        uint256 effectiveCollateral = _collateralValueUSD - pendingValueUSD;
+        if (effectiveCollateral == 0) return type(uint256).max;
+        return _totalExposureUSD.mulDiv(BPS, effectiveCollateral);
+    }
+
+    /// @inheritdoc IOwnVault
+    function pendingWithdrawalShares() external view returns (uint256) {
+        return _pendingWithdrawalShares;
     }
 
     /// @inheritdoc IOwnVault
@@ -821,6 +851,23 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
     /// @inheritdoc IOwnVault
     function paymentToken() external view returns (address) {
         return _paymentToken;
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Deposit approval
+    // ──────────────────────────────────────────────────────────
+
+    /// @inheritdoc IOwnVault
+    function setRequireDepositApproval(
+        bool required
+    ) external onlyAdmin {
+        _requireDepositApproval = required;
+        emit DepositApprovalUpdated(required);
+    }
+
+    /// @inheritdoc IOwnVault
+    function requireDepositApproval() external view returns (bool) {
+        return _requireDepositApproval;
     }
 
     // ──────────────────────────────────────────────────────────

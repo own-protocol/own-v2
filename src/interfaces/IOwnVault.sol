@@ -42,6 +42,7 @@ interface IOwnVault is IERC4626 {
     event PaymentTokenUpdated(address indexed oldToken, address indexed newToken);
     event AssetEnabled(bytes32 indexed asset);
     event AssetDisabled(bytes32 indexed asset);
+    event DepositApprovalUpdated(bool required);
     event AssetValuationUpdated(bytes32 indexed asset, uint256 exposureUnits, uint256 exposureUSD, uint256 price);
     event CollateralValuationUpdated(uint256 collateralValueUSD, uint256 price);
 
@@ -74,6 +75,8 @@ interface IOwnVault is IERC4626 {
     error WrongFeeToken(address expected, address provided);
     error WithdrawalWaitPeriodNotElapsed(uint256 requestId, uint256 readyAt);
     error PriceNotAvailable(bytes32 asset);
+    error DepositApprovalNotRequired();
+    error DepositApprovalRequired();
 
     // ──────────────────────────────────────────────────────────
     //  VM binding
@@ -355,4 +358,29 @@ interface IOwnVault is IERC4626 {
 
     /// @notice Return the accepted payment token address.
     function paymentToken() external view returns (address);
+
+    // ──────────────────────────────────────────────────────────
+    //  Deposit approval
+    // ──────────────────────────────────────────────────────────
+
+    /// @notice Toggle whether LP deposits require VM approval.
+    ///         When false (default), LPs call deposit() directly.
+    ///         When true, LPs must use requestDeposit() and wait for VM acceptance.
+    function setRequireDepositApproval(
+        bool required
+    ) external;
+
+    /// @notice Return whether deposit approval is currently required.
+    function requireDepositApproval() external view returns (bool);
+
+    // ──────────────────────────────────────────────────────────
+    //  Projected utilization
+    // ──────────────────────────────────────────────────────────
+
+    /// @notice Return projected utilization in BPS, excluding collateral tied up
+    ///         in pending withdrawal requests. For off-chain monitoring.
+    function projectedUtilization() external view returns (uint256);
+
+    /// @notice Return total shares currently escrowed for pending withdrawals.
+    function pendingWithdrawalShares() external view returns (uint256);
 }
