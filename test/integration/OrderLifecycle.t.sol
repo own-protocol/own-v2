@@ -512,7 +512,11 @@ contract OrderLifecycleTest is BaseTest {
         vm.prank(Actors.VM1);
         market.claimOrder(orderId);
 
-        uint256 expectedExposure = Math.mulDiv(MINT_AMOUNT, TSLA_PRICE, PRECISION);
+        // Exposure is in eToken units, priced by lastPrice to get USD:
+        // eTokenUnits = MINT_AMOUNT * 1e12 * PRECISION / TSLA_PRICE = 40e18
+        // exposureUSD = eTokenUnits * TSLA_PRICE / PRECISION = 10_000e18
+        uint256 eTokenUnits = Math.mulDiv(MINT_AMOUNT * 1e12, PRECISION, TSLA_PRICE);
+        uint256 expectedExposure = Math.mulDiv(eTokenUnits, TSLA_PRICE, PRECISION);
         assertEq(vault.totalExposureUSD(), expectedExposure, "exposure = mint amount in USD");
 
         vm.prank(Actors.VM1);
@@ -532,7 +536,9 @@ contract OrderLifecycleTest is BaseTest {
         vm.prank(Actors.VM1);
         market.claimOrder(orderId);
 
-        assertEq(vault.totalExposureUSD(), Math.mulDiv(MINT_AMOUNT, TSLA_PRICE, PRECISION), "exposure after claim");
+        uint256 eTokenUnits = Math.mulDiv(MINT_AMOUNT * 1e12, PRECISION, TSLA_PRICE);
+        uint256 expectedExposure = Math.mulDiv(eTokenUnits, TSLA_PRICE, PRECISION);
+        assertEq(vault.totalExposureUSD(), expectedExposure, "exposure after claim");
 
         vm.warp(expiry + 1);
 
@@ -554,7 +560,9 @@ contract OrderLifecycleTest is BaseTest {
         vm.prank(Actors.VM1);
         market.claimOrder(orderId);
 
-        assertEq(vault.totalExposureUSD(), Math.mulDiv(MINT_AMOUNT, TSLA_PRICE, PRECISION), "exposure after claim");
+        uint256 eTokenUnits = Math.mulDiv(MINT_AMOUNT * 1e12, PRECISION, TSLA_PRICE);
+        uint256 expectedExposure = Math.mulDiv(eTokenUnits, TSLA_PRICE, PRECISION);
+        assertEq(vault.totalExposureUSD(), expectedExposure, "exposure after claim");
 
         vm.warp(block.timestamp + GRACE_PERIOD + 1);
 

@@ -99,6 +99,9 @@ interface IOwnMarket {
     /// @notice The vault does not support the requested asset.
     error VaultAssetNotSupported(address vault, bytes32 asset);
 
+    /// @notice The vault's payment token is not configured.
+    error PaymentTokenNotSet(address vault);
+
     /// @notice ETH refund to caller failed at end of forceExecute.
     error ETHRefundFailed();
 

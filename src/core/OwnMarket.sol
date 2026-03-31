@@ -191,6 +191,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         if (order.user == address(0)) revert OrderNotFound(orderId);
         if (order.status != OrderStatus.Claimed) revert InvalidOrderStatus(orderId, order.status);
         if (order.vm != msg.sender) revert NotClaimVM(orderId, msg.sender);
+        if (block.timestamp > order.expiry) revert OrderExpiredError(orderId);
 
         order.status = OrderStatus.Confirmed;
 
@@ -524,10 +525,13 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
     //  Internal — helpers
     // ──────────────────────────────────────────────────────────
 
-    /// @dev Validate that the vault is registered and supports the asset.
+    /// @dev Validate that the vault is registered, has a payment token, and supports the asset.
     function _validateVaultAndAsset(address vault, bytes32 asset) private view {
         if (!IVaultFactory(registry.vaultFactory()).isRegisteredVault(vault)) {
             revert VaultNotRegistered(vault);
+        }
+        if (IOwnVault(vault).paymentToken() == address(0)) {
+            revert PaymentTokenNotSet(vault);
         }
         if (!IAssetRegistry(registry.assetRegistry()).isActiveAsset(asset)) {
             revert AssetNotActive(asset);
@@ -572,14 +576,19 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         return oracle.verifyPrice{value: fee}(asset, proofData);
     }
 
-    /// @dev Calculate the USD exposure for an order.
+    /// @dev Calculate the eToken-unit exposure for an order (18 decimals).
+    ///      For mint: converts stablecoin amount to eToken units using the order price.
+    ///      For redeem: order.amount is already in eToken units.
     function _calculateExposure(
         Order storage order
     ) private view returns (uint256) {
         if (order.orderType == OrderType.Mint) {
-            return order.amount;
+            address paymentToken = IOwnVault(order.vault).paymentToken();
+            uint256 decimals = IERC20Metadata(paymentToken).decimals();
+            uint256 decimalScaler = 10 ** (18 - decimals);
+            return Math.mulDiv(order.amount * decimalScaler, PRECISION, order.price);
         } else {
-            return Math.mulDiv(order.amount, order.price, PRECISION);
+            return order.amount;
         }
     }
 
