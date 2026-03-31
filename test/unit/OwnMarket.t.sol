@@ -55,7 +55,6 @@ contract OwnMarketTest is BaseTest {
         vm.stopPrank();
 
         vm.startPrank(Actors.ADMIN);
-        protocolRegistry.setAddress(protocolRegistry.ORACLE_VERIFIER(), address(oracle));
         protocolRegistry.setAddress(protocolRegistry.ASSET_REGISTRY(), address(assetReg));
         feeCalc = new FeeCalculator(address(protocolRegistry), Actors.ADMIN);
         feeCalc.setMintFee(1, 0);

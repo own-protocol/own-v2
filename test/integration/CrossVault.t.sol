@@ -37,7 +37,6 @@ contract CrossVaultTest is BaseTest {
 
         assetRegistry = new AssetRegistry(Actors.ADMIN);
 
-        protocolRegistry.setAddress(protocolRegistry.ORACLE_VERIFIER(), address(oracle));
         protocolRegistry.setAddress(protocolRegistry.ASSET_REGISTRY(), address(assetRegistry));
         protocolRegistry.setAddress(protocolRegistry.TREASURY(), Actors.FEE_RECIPIENT);
 

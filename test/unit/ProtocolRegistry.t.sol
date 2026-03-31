@@ -18,7 +18,6 @@ contract ProtocolRegistryTest is BaseTest {
 
     // Cache key constants to avoid external calls consuming vm.prank
     bytes32 MARKET_KEY;
-    bytes32 ORACLE_VERIFIER_KEY;
     bytes32 FEE_CALCULATOR_KEY;
     bytes32 ASSET_REGISTRY_KEY;
     bytes32 TREASURY_KEY;
@@ -35,7 +34,6 @@ contract ProtocolRegistryTest is BaseTest {
 
         // Cache keys
         MARKET_KEY = reg.MARKET();
-        ORACLE_VERIFIER_KEY = reg.ORACLE_VERIFIER();
         FEE_CALCULATOR_KEY = reg.FEE_CALCULATOR();
         ASSET_REGISTRY_KEY = reg.ASSET_REGISTRY();
         TREASURY_KEY = reg.TREASURY();
@@ -54,7 +52,6 @@ contract ProtocolRegistryTest is BaseTest {
     }
 
     function test_constructor_allGettersReturnZero() public view {
-        assertEq(reg.oracleVerifier(), address(0));
         assertEq(reg.feeCalculator(), address(0));
         assertEq(reg.market(), address(0));
         assertEq(reg.assetRegistry(), address(0));
@@ -66,7 +63,6 @@ contract ProtocolRegistryTest is BaseTest {
     // ══════════════════════════════════════════════════════════
 
     function test_constants_correctHashes() public view {
-        assertEq(ORACLE_VERIFIER_KEY, keccak256("ORACLE_VERIFIER"));
         assertEq(MARKET_KEY, keccak256("MARKET"));
         assertEq(TREASURY_KEY, keccak256("TREASURY"));
     }
@@ -92,14 +88,12 @@ contract ProtocolRegistryTest is BaseTest {
 
     function test_setAddress_allSlots() public {
         vm.startPrank(Actors.ADMIN);
-        reg.setAddress(ORACLE_VERIFIER_KEY, addr1);
         reg.setAddress(FEE_CALCULATOR_KEY, addr2);
         reg.setAddress(MARKET_KEY, makeAddr("market"));
         reg.setAddress(ASSET_REGISTRY_KEY, makeAddr("ar"));
         reg.setAddress(TREASURY_KEY, makeAddr("treasury"));
         vm.stopPrank();
 
-        assertEq(reg.oracleVerifier(), addr1);
         assertEq(reg.feeCalculator(), addr2);
         assertEq(reg.market(), makeAddr("market"));
         assertEq(reg.assetRegistry(), makeAddr("ar"));
@@ -395,19 +389,19 @@ contract ProtocolRegistryTest is BaseTest {
     function test_fullLifecycle_multipleSlots() public {
         vm.startPrank(Actors.ADMIN);
         reg.setAddress(MARKET_KEY, addr1);
-        reg.setAddress(ORACLE_VERIFIER_KEY, addr2);
+        reg.setAddress(FEE_CALCULATOR_KEY, addr2);
 
         reg.proposeAddress(MARKET_KEY, addr3);
-        reg.proposeAddress(ORACLE_VERIFIER_KEY, addr1);
+        reg.proposeAddress(FEE_CALCULATOR_KEY, addr1);
         vm.stopPrank();
 
         vm.warp(block.timestamp + TIMELOCK_DELAY);
 
         reg.executeTimelock(MARKET_KEY);
-        reg.executeTimelock(ORACLE_VERIFIER_KEY);
+        reg.executeTimelock(FEE_CALCULATOR_KEY);
 
         assertEq(reg.market(), addr3);
-        assertEq(reg.oracleVerifier(), addr1);
+        assertEq(reg.feeCalculator(), addr1);
     }
 
     // ══════════════════════════════════════════════════════════

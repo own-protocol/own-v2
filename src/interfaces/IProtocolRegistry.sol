@@ -55,9 +55,6 @@ interface IProtocolRegistry {
     //  Getters
     // ──────────────────────────────────────────────────────────────
 
-    /// @notice Returns the OracleVerifier contract address.
-    function oracleVerifier() external view returns (address);
-
     /// @notice Returns the FeeCalculator contract address.
     function feeCalculator() external view returns (address);
 

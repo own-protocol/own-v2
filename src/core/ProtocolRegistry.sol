@@ -14,7 +14,6 @@ contract ProtocolRegistry is IProtocolRegistry, Ownable {
     //  Constants — contract slot keys
     // ──────────────────────────────────────────────────────────────
 
-    bytes32 public constant ORACLE_VERIFIER = keccak256("ORACLE_VERIFIER");
     bytes32 public constant FEE_CALCULATOR = keccak256("FEE_CALCULATOR");
     bytes32 public constant MARKET = keccak256("MARKET");
     bytes32 public constant ASSET_REGISTRY = keccak256("ASSET_REGISTRY");
@@ -60,11 +59,6 @@ contract ProtocolRegistry is IProtocolRegistry, Ownable {
     // ──────────────────────────────────────────────────────────────
     //  Getters
     // ──────────────────────────────────────────────────────────────
-
-    /// @inheritdoc IProtocolRegistry
-    function oracleVerifier() external view override returns (address) {
-        return _addresses[ORACLE_VERIFIER];
-    }
 
     /// @inheritdoc IProtocolRegistry
     function feeCalculator() external view override returns (address) {
