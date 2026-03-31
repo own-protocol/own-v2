@@ -6,7 +6,7 @@ Own is a permissionless protocol for bringing tokenized real-world assets (RWAs)
 
 **Peripheral contracts**: WETHRouter, WstETHRouter
 
-See [docs/PROTOCOL.md](docs/PROTOCOL.md) for comprehensive protocol documentation.
+See [docs/protocol.md](docs/protocol.md) for comprehensive protocol documentation.
 
 ## Getting Started
 
@@ -35,7 +35,7 @@ forge test -vvv
 
 ### Deploy
 
-See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for full deployment instructions.
+See [docs/deployment.md](docs/deployment.md) for full deployment instructions.
 
 ```bash
 # Deploy core contracts to Base Sepolia
@@ -60,8 +60,8 @@ docs/             Protocol and deployment documentation
 
 ## Documentation
 
-- [Protocol Documentation](docs/PROTOCOL.md) — how the protocol works, contract architecture, order lifecycle, fee model, oracle system
-- [Deployment Guide](docs/DEPLOYMENT.md) — step-by-step deployment instructions for Base Sepolia
+- [Protocol Documentation](docs/protocol.md) — how the protocol works, contract architecture, order lifecycle, fee model, oracle system
+- [Deployment Guide](docs/deployment.md) — step-by-step deployment instructions for Base Sepolia
 - [Development Guide](AGENTS.md) — coding conventions, security patterns, testing standards
 
 ## License

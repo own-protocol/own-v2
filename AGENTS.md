@@ -48,13 +48,14 @@ forge script script/Deploy.s.sol --rpc-url $BASE_SEPOLIA_RPC --broadcast --verif
 
 ## Architecture
 
-See `docs/PROTOCOL.md` for comprehensive protocol documentation and `docs/DEPLOYMENT.md` for deployment instructions.
+See `docs/protocol.md` for comprehensive protocol documentation and `docs/deployment.md` for deployment instructions.
 
 ### High-Level Architecture
 
 The protocol is organised around an order-based escrow + claim marketplace, per-collateral-type security vaults, and vault managers. Specific contract files and structure will be defined as implementation progresses. The key architectural components are:
 
 **Order Escrow + Claim Marketplace:**
+
 - Minters place orders (market with slippage, or limit price) depositing stablecoins into escrow.
 - VMs see orders and call `claimOrder()` to accept (full or partial).
 - VMs receive the minter's stablecoins, execute the offchain hedge, and confirm with a signed oracle price.
@@ -63,6 +64,7 @@ The protocol is organised around an order-based escrow + claim marketplace, per-
 - VMs across different vaults can compete to claim the same order (cross-vault competition).
 
 **One vault per LP collateral type (security pools):**
+
 - USDC vault — accepts USDC deposits from LPs
 - aUSDC vault — accepts aUSDC deposits (yield-bearing; ERC-4626 share price naturally appreciates as aUSDC accrues interest)
 - ETH vault — accepts ETH deposits (wrapped to WETH internally)
@@ -70,6 +72,7 @@ The protocol is organised around an order-based escrow + claim marketplace, per-
 - **Vaults are NOT fund-flow intermediaries** — minter stablecoins go to VMs via escrow, not through vaults. Vaults hold LP collateral as trustless security/guarantee.
 
 **Public vaults with multiple LPs:**
+
 - All vaults are public. Any LP can deposit collateral into any vault.
 - LP deposits use an async request/accept queue. LP requests deposit, VM accepts, shares are minted.
 - ERC-4626 is used for LP share accounting. LPs receive vault shares proportional to their deposit. Share price increases as yield accrues (for aUSDC, stETH vaults) and as fee revenue is distributed.
@@ -77,26 +80,31 @@ The protocol is organised around an order-based escrow + claim marketplace, per-
 - LP withdrawals use an async FIFO queue (ERC-7540 pattern), fulfilled when utilization allows.
 
 **Vault managers (1:1 per vault):**
+
 - Each vault has exactly one vault manager (1:1 binding). VMs create their vault.
 - Vault managers claim orders from the escrow marketplace and execute offchain hedging. There is no onchain hedging mechanism.
 - Each vault manager sets exposure caps, accepted stablecoins, and per-asset off-hours toggles.
 
 **eTokens:**
+
 - Each asset has one active eToken (eTSLA, eGOLD, etc.) plus possible legacy tokens from stock splits.
 - eTokens are standard ERC20 + ERC-2612 (Permit) with admin-updatable `name()`/`symbol()`.
 - For dividend-paying assets (eTLT): includes rewards-per-share accumulator.
 
 **Oracle & Utilisation:**
+
 - Signed oracle price feeds and utilisation data verified onchain (ECDSA). MVP uses a protocol-operated signer service.
 - Includes staleness bounds, price deviation checks, and monotonic sequence numbers.
 - On-chain `totalCommittedUSD` counter as sanity check against signed utilisation.
 - OracleVerifier is upgradable via ProtocolRegistry — supports future transition to Pyth, Chainlink, or ZK oracles.
 
 **Fee System:**
+
 - `FeeCalculator`: per-asset mint/redeem fee lookup based on volatility level. Fixed for MVP, swappable for dynamic fees.
 - `FeeAccrual`: collects all fees, distributes to protocol treasury, LPs, and VMs.
 
 **Protocol Registry:**
+
 - Single governance-upgradable contract holding all protocol contract addresses. All contracts look up dependencies here.
 
 ```
@@ -306,6 +314,7 @@ The protocol charges per-asset mint and redemption fees. Fees are the sole proto
 ### Fee Distribution
 
 Fees are split three ways:
+
 - **Protocol share**: set by governance (e.g., 20%). Goes to protocol treasury.
 - **LP share**: share of the remainder after protocol cut. Accrues to vault, increasing share price.
 - **VM share**: VM sets their cut of the remainder after protocol share.
@@ -334,6 +343,7 @@ Fees are split three ways:
 ## Protocol Registry
 
 All protocol contracts are registered in a single `ProtocolRegistry` contract. Other contracts look up addresses from this registry instead of storing immutable/admin-set references. This enables:
+
 - Swapping OracleVerifier (e.g., to Pyth/Chainlink adapter) by updating one address.
 - Swapping FeeCalculator (e.g., to dynamic fees) by updating one address.
 - Governance-controlled upgrades with timelock protection.
@@ -491,7 +501,7 @@ When asked to write invariant tests for a contract:
 
 These must ALWAYS hold, regardless of operation sequence:
 
-- **Solvency**: total LP collateral value >= total outstanding eToken exposure * min collateral ratio
+- **Solvency**: total LP collateral value >= total outstanding eToken exposure \* min collateral ratio
 - **ERC-4626 Accounting**: sum of all LP vault shares == vault.totalSupply(); vault.totalAssets() >= sum of all deposits minus withdrawals (accounting for yield)
 - **eToken Accounting**: eToken totalSupply matches protocol's tracked outstanding exposure per asset
 - **Escrow Integrity**: stablecoins in escrow + stablecoins released to VMs == total deposited by minters for pending orders; eTokens in escrow == total submitted for pending redemptions

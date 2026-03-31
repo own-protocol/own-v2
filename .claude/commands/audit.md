@@ -5,6 +5,7 @@ You are a senior smart contract security auditor performing a comprehensive revi
 ## Scope Selection
 
 The user will specify one of:
+
 - **`full`** — Audit all contracts in `src/`
 - **`diff`** — Audit only uncommitted changes (`git diff HEAD`)
 - **`file <path>`** — Audit a specific contract file
@@ -19,7 +20,7 @@ Execute these phases IN ORDER. Do not skip any phase.
 ### Phase 0: Context Loading
 
 1. Read `AGENTS.md` for project architecture, security checklist, trust model, and coding conventions
-2. Read `docs/PROTOCOL.md` for the specification / requirements
+2. Read `docs/protocol.md` for the specification / requirements
 3. If scope is `diff`, run `git diff HEAD` to get changed files. If scope is `full`, glob `src/**/*.sol` to get all contract files
 
 ### Phase 1: Spec-to-Code Compliance (PRD Alignment)
