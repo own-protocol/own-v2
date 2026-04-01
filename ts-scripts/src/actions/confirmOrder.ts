@@ -1,61 +1,87 @@
 /**
  * VM confirms a claimed order with Pyth price proof.
  *
- * Usage: npx tsx src/actions/confirmOrder.ts <orderId> [asset]
- * Default asset: TSLA
+ * Usage: npx tsx src/actions/confirmOrder.ts <orderId> [asset] [sessionId]
+ * Default asset: TSLA, sessionId: auto-detected from current time
  */
-import { addresses, feedIds, publicClient, vmClient, vmAccount } from "../config.js";
-import { marketAbi, oracleAbi } from "../abis.js";
-import { buildPriceProofFromHermes } from "../pyth.js";
-import { waitForTx, formatPrice } from "./utils.js";
+import {
+  addresses,
+  publicClient,
+  vmClient,
+  getCurrentSession,
+  getSessionFeedId,
+} from "../config.js";
+import { marketAbi } from "../abis.js";
+import {
+  fetchPriceUpdateAtTimestamp,
+  buildPythPriceData,
+  buildConfirmPriceProof,
+} from "../pyth.js";
+import { writeContract, formatPrice } from "./utils.js";
+
+const SESSION_NAMES = ["regular", "pre-market", "post-market", "overnight"];
 
 export async function confirmOrder(
   orderId: bigint,
-  asset: "TSLA" | "GOLD" = "TSLA"
+  asset: "TSLA" | "GOLD" = "TSLA",
+  sessionId?: number
 ) {
-  const feedId = feedIds[asset];
+  const session = sessionId ?? getCurrentSession();
+  const feedId = getSessionFeedId(asset, session);
 
   console.log(`\n=== VM Confirm Order #${orderId} (${asset}) ===`);
+  console.log(`  Session: ${session} (${SESSION_NAMES[session]})`);
 
-  // 1. Build price proof from Pyth Hermes
-  console.log("Fetching Pyth price proof...");
-  const { priceProofData, price } = await buildPriceProofFromHermes(feedId, 0);
-  console.log(`  Pyth price: ${formatPrice(price.normalizedPrice)}`);
-  console.log(`  Publish time: ${new Date(price.publishTime * 1000).toISOString()}`);
-
-  // 2. Estimate Pyth verification fee
-  // For confirmOrder, the market calls verifyPriceForSession twice (low + high)
-  // Each call goes through _callVerifyPriceForSession which calls verifyFee first
-  // On Base, Pyth fees are typically 1 wei per VAA
-  const value = 2n; // 2 wei for 2 verifyPrice calls (1 wei each)
-
-  // 3. Confirm order
-  console.log("Confirming order...");
-  const hash = await vmClient.writeContract({
-    address: addresses.market,
-    abi: marketAbi,
-    functionName: "confirmOrder",
-    args: [orderId, priceProofData],
-    value,
-    account: vmAccount,
-  });
-  await waitForTx(publicClient, hash, "Order confirmed");
-
-  // 4. Check order status
-  const order = await publicClient.readContract({
+  // 1. Read the order to get claimedAt timestamp
+  const order = (await publicClient.readContract({
     address: addresses.market,
     abi: marketAbi,
     functionName: "getOrder",
     args: [orderId],
-  });
-  console.log(`  Order status: ${(order as any).status} (2 = Confirmed)`);
+  })) as any;
+
+  const claimedAt = Number(order.claimedAt);
+  console.log(
+    `  Claimed at: ${new Date(claimedAt * 1000).toISOString()} (${claimedAt})`
+  );
+  console.log(`  Order price: ${formatPrice(order.price)}`);
+
+  // 2. Fetch VAA at the claim timestamp (proves price was reachable at claim time)
+  console.log("Fetching Pyth price proof at claim time...");
+  const priceUpdate = await fetchPriceUpdateAtTimestamp(feedId, claimedAt);
+  console.log(`  Proof price: ${formatPrice(priceUpdate.normalizedPrice)}`);
+  console.log(
+    `  Proof publish time: ${new Date(priceUpdate.publishTime * 1000).toISOString()}`
+  );
+
+  // 3. Build price proof — use the same VAA for both low and high
+  const priceData = buildPythPriceData(
+    priceUpdate.vaa,
+    priceUpdate.publishTime
+  );
+  const priceProofData = buildConfirmPriceProof(priceData, priceData, session);
+
+  // 4. Confirm order with enough ETH for Pyth fees (unused is refunded)
+  console.log("Confirming order...");
+  await writeContract(
+    vmClient,
+    {
+      address: addresses.market,
+      abi: marketAbi,
+      functionName: "confirmOrder",
+      args: [orderId, priceProofData],
+      value: 100n,
+    },
+    "Order confirmed"
+  );
+
+  // 5. Check order status
+  const updatedOrder = (await publicClient.readContract({
+    address: addresses.market,
+    abi: marketAbi,
+    functionName: "getOrder",
+    args: [orderId],
+  })) as any;
+  console.log(`  Order status: ${updatedOrder.status} (2 = Confirmed)`);
 }
 
-// CLI entry point
-const orderId = process.argv[2];
-if (!orderId) {
-  console.error("Usage: npx tsx src/actions/confirmOrder.ts <orderId> [asset]");
-  process.exit(1);
-}
-const asset = (process.argv[3] as "TSLA" | "GOLD") || "TSLA";
-confirmOrder(BigInt(orderId), asset).catch(console.error);

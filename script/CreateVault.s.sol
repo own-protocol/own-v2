@@ -27,7 +27,7 @@ contract CreateVault is Script {
         VaultFactory factory = VaultFactory(factoryAddr);
 
         // Create WETH vault: 80% max utilization, 20% VM fee share
-        address vaultAddr = factory.createVault(WETH, vmAddress, "Own ETH Vault", "oETH", 8000, 2000);
+        address vaultAddr = factory.createVault(WETH, vmAddress, "Own ETH Vault", "oETH", 8000, 0);
         console.log("Vault created:", vaultAddr);
 
         OwnVault vault = OwnVault(vaultAddr);

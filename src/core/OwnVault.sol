@@ -952,9 +952,9 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
 
     /// @dev Resolve the oracle address for an asset via ProtocolRegistry.
     function _getOracleForAsset(
-        bytes32 asset
+        bytes32 ticker
     ) private view returns (address) {
-        uint8 oracleType = IAssetRegistry(registry.assetRegistry()).getOracleType(asset);
+        uint8 oracleType = IAssetRegistry(registry.assetRegistry()).getOracleType(ticker);
         if (oracleType == 0) return registry.pythOracle();
         return registry.inhouseOracle();
     }

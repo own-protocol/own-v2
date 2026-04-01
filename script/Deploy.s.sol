@@ -35,7 +35,13 @@ contract Deploy is Script {
     //  Pyth feed IDs
     // ──────────────────────────────────────────────────────────
 
+    // TSLA — 4 session feeds (regular, pre-market, post-market, overnight)
     bytes32 constant TSLA_FEED = 0x16dad506d7db8da01c87581c87ca897a012a153557d4d578c3b9c9e1bc0632f1;
+    bytes32 constant TSLA_PRE_FEED = 0x42676a595d0099c381687124805c8bb22c75424dffcaa55e3dc6549854ebe20a;
+    bytes32 constant TSLA_POST_FEED = 0x2a797e196973b72447e0ab8e841d9f5706c37dc581fe66a0bd21bcd256cdb9b9;
+    bytes32 constant TSLA_OVERNIGHT_FEED = 0x713631e41c06db404e6a5d029f3eebfd5b885c59dce4a19f337c024e26584e26;
+
+    // XAU (Gold) and ETH — 24/7 feeds, single feed ID
     bytes32 constant XAU_FEED = 0x765d2ba906dbc32ca17cc11f5310a89e9ee1f6420508c63861f2f8ba4ee34bb2;
     bytes32 constant ETH_FEED = 0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace;
 
@@ -51,7 +57,7 @@ contract Deploy is Script {
     //  Configuration
     // ──────────────────────────────────────────────────────────
 
-    uint256 constant TIMELOCK_DELAY = 2 days;
+    uint256 constant TIMELOCK_DELAY = 10 minutes; // Short delay for testing; increase for production
     uint256 constant PYTH_MAX_PRICE_AGE = 120; // 2 minutes
     uint256 constant PROTOCOL_SHARE_BPS = 2000; // 20%
 
@@ -82,20 +88,25 @@ contract Deploy is Script {
 
         // Set fee levels: volatility 1 (low), 2 (medium), 3 (high)
         // Mint fees
-        feeCalc.setMintFee(1, 50); // 0.50%
-        feeCalc.setMintFee(2, 100); // 1.00%
-        feeCalc.setMintFee(3, 200); // 2.00%
+        feeCalc.setMintFee(1, 5); // 0.05%
+        feeCalc.setMintFee(2, 10); // 0.10%
+        feeCalc.setMintFee(3, 50); // 0.50%
         // Redeem fees
-        feeCalc.setRedeemFee(1, 25); // 0.25%
-        feeCalc.setRedeemFee(2, 50); // 0.50%
-        feeCalc.setRedeemFee(3, 100); // 1.00%
+        feeCalc.setRedeemFee(1, 5); // 0.05%
+        feeCalc.setRedeemFee(2, 10); // 0.10%
+        feeCalc.setRedeemFee(3, 50); // 0.50%
 
         // ── 5. PythOracleVerifier ───────────────────────────
         PythOracleVerifier pythOracle = new PythOracleVerifier(deployer, PYTH, PYTH_MAX_PRICE_AGE);
         console.log("PythOracleVerifier:", address(pythOracle));
 
-        // Configure feed IDs (session 0 = regular market hours)
-        pythOracle.setFeedId(TSLA, 0, TSLA_FEED);
+        // Configure TSLA feed IDs for all 4 sessions
+        pythOracle.setFeedId(TSLA, 0, TSLA_FEED); // regular
+        pythOracle.setFeedId(TSLA, 1, TSLA_PRE_FEED); // pre-market
+        pythOracle.setFeedId(TSLA, 2, TSLA_POST_FEED); // post-market
+        pythOracle.setFeedId(TSLA, 3, TSLA_OVERNIGHT_FEED); // overnight
+
+        // GOLD and ETH — 24/7 feeds, only session 0 needed
         pythOracle.setFeedId(GOLD, 0, XAU_FEED);
         pythOracle.setFeedId(ETH, 0, ETH_FEED);
 
@@ -111,10 +122,10 @@ contract Deploy is Script {
         ETokenFactory etokenFactory = new ETokenFactory(deployer, address(registry));
         console.log("ETokenFactory:", address(etokenFactory));
 
-        address eTSLA = etokenFactory.createEToken("Own Tesla", "eTSLA", TSLA, address(mockUSDC));
+        address eTSLA = etokenFactory.createEToken("Tesla", "eTSLA", TSLA, address(mockUSDC));
         console.log("EToken TSLA:", eTSLA);
 
-        address eGOLD = etokenFactory.createEToken("Own Gold", "eGOLD", GOLD, address(mockUSDC));
+        address eGOLD = etokenFactory.createEToken("Gold", "eGOLD", GOLD, address(mockUSDC));
         console.log("EToken GOLD:", eGOLD);
 
         // ── 9. WETHRouter ───────────────────────────────────

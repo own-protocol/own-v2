@@ -71,6 +71,13 @@ export const marketAbi = [
     ],
   },
   {
+    name: "cancelOrder",
+    type: "function",
+    stateMutability: "nonpayable",
+    inputs: [{ name: "orderId", type: "uint256" }],
+    outputs: [],
+  },
+  {
     name: "OrderPlaced",
     type: "event",
     inputs: [

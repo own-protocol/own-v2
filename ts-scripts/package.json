@@ -4,12 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "lifecycle": "tsx src/lifecycle.ts",
-    "deposit": "tsx src/actions/deposit.ts",
-    "place-mint": "tsx src/actions/placeMint.ts",
-    "claim": "tsx src/actions/claimOrder.ts",
-    "confirm": "tsx src/actions/confirmOrder.ts",
-    "place-redeem": "tsx src/actions/placeRedeem.ts"
+    "run": "tsx src/run.ts",
+    "lifecycle": "tsx src/lifecycle.ts"
   },
   "dependencies": {
     "viem": "^2.21.0",

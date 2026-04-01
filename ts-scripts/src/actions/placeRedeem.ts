@@ -7,24 +7,30 @@
 import {
   addresses,
   assets,
-  feedIds,
   publicClient,
   userClient,
   userAccount,
+  getCurrentSession,
+  getSessionFeedId,
 } from "../config.js";
 import { erc20Abi, marketAbi } from "../abis.js";
 import { fetchLatestPriceUpdate } from "../pyth.js";
-import { waitForTx, formatPrice, formatAmount } from "./utils.js";
+import { writeContract, formatPrice, formatAmount } from "./utils.js";
+
+const SESSION_NAMES = ["regular", "pre-market", "post-market", "overnight"];
 
 export async function placeRedeem(
   eTokenAmount?: string,
   asset: "TSLA" | "GOLD" = "TSLA"
 ) {
   const assetBytes = assets[asset];
-  const feedId = feedIds[asset];
   const eTokenAddr = asset === "TSLA" ? addresses.eTSLA : addresses.eGOLD;
 
+  const session = getCurrentSession();
+  const feedId = getSessionFeedId(asset, session);
+
   console.log(`\n=== Place Redeem Order: e${asset} -> USDC ===`);
+  console.log(`  Session: ${session} (${SESSION_NAMES[session]})`);
 
   // 1. Get eToken balance if amount not specified
   let amount: bigint;
@@ -45,37 +51,46 @@ export async function placeRedeem(
     return;
   }
 
-  // 2. Fetch current price from Pyth
+  // 2. Fetch current price from Pyth (session-aware)
   console.log("Fetching current price from Pyth...");
   const priceUpdate = await fetchLatestPriceUpdate(feedId);
-  const orderPrice = priceUpdate.normalizedPrice;
-  console.log(`  Current ${asset} price: ${formatPrice(orderPrice)}`);
+  // Subtract 0.1% buffer below current price for redeem
+  const currentPrice = priceUpdate.normalizedPrice;
+  const orderPrice = currentPrice - currentPrice / 1000n;
+  console.log(`  Current ${asset} price: ${formatPrice(currentPrice)}`);
+  console.log(`  Order price (-0.1% buffer): ${formatPrice(orderPrice)}`);
 
   // 3. Approve market for eTokens
   console.log("Approving market for eTokens...");
-  const approveHash = await userClient.writeContract({
-    address: eTokenAddr,
-    abi: erc20Abi,
-    functionName: "approve",
-    args: [addresses.market, amount],
-    account: userAccount,
-  });
-  await waitForTx(publicClient, approveHash, "eToken approve");
+  await writeContract(
+    userClient,
+    {
+      address: eTokenAddr,
+      abi: erc20Abi,
+      functionName: "approve",
+      args: [addresses.market, amount],
+    },
+    "eToken approve"
+  );
 
   // 4. Place redeem order (expiry = 1 day from now)
   const expiry = BigInt(Math.floor(Date.now() / 1000) + 86400);
   console.log("Placing redeem order...");
-  const placeHash = await userClient.writeContract({
-    address: addresses.market,
-    abi: marketAbi,
-    functionName: "placeRedeemOrder",
-    args: [addresses.vault, assetBytes, amount, orderPrice, expiry],
-    account: userAccount,
-  });
-  await waitForTx(publicClient, placeHash, "Redeem order placed");
+  const placeHash = await writeContract(
+    userClient,
+    {
+      address: addresses.market,
+      abi: marketAbi,
+      functionName: "placeRedeemOrder",
+      args: [addresses.vault, assetBytes, amount, orderPrice, expiry],
+    },
+    "Redeem order placed"
+  );
 
   // 5. Get order ID from logs
-  const receipt = await publicClient.getTransactionReceipt({ hash: placeHash });
+  const receipt = await publicClient.getTransactionReceipt({
+    hash: placeHash,
+  });
   const orderPlacedLog = receipt.logs[receipt.logs.length - 1];
   const orderId = BigInt(orderPlacedLog.topics[1]!);
   console.log(`  Order ID: ${orderId}`);
@@ -83,7 +98,3 @@ export async function placeRedeem(
   return { orderId, orderPrice };
 }
 
-// CLI entry point
-const amount = process.argv[2];
-const asset = (process.argv[3] as "TSLA" | "GOLD") || "TSLA";
-placeRedeem(amount, asset).catch(console.error);

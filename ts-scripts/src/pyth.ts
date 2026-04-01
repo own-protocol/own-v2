@@ -41,6 +41,37 @@ export async function fetchLatestPriceUpdate(
 }
 
 /**
+ * Fetch a price update at a specific timestamp from Pyth Hermes.
+ * Uses the /v2/updates/price/:publish_time endpoint.
+ */
+export async function fetchPriceUpdateAtTimestamp(
+  feedId: string,
+  publishTime: number
+): Promise<PythPriceUpdate> {
+  const url = `${HERMES_BASE_URL}/v2/updates/price/${publishTime}?ids[]=${feedId}&encoding=hex&parsed=true`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Hermes API error: ${res.status} for timestamp ${publishTime}`);
+
+  const data = await res.json();
+  const vaaHex = data.binary.data[0] as string;
+  const parsed = data.parsed[0];
+
+  const rawPrice = BigInt(parsed.price.price);
+  const expo = parsed.price.expo as number;
+  const actualPublishTime = parsed.price.publish_time as number;
+
+  const normalizedPrice = normalizePythPrice(rawPrice, expo);
+
+  return {
+    vaa: `0x${vaaHex}`,
+    price: rawPrice,
+    expo,
+    publishTime: actualPublishTime,
+    normalizedPrice,
+  };
+}
+
+/**
  * Normalize a Pyth price (raw + exponent) to 18 decimals.
  */
 function normalizePythPrice(rawPrice: bigint, expo: number): bigint {
