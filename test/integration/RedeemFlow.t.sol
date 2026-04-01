@@ -4,7 +4,7 @@ pragma solidity 0.8.28;
 import {Actors} from "../helpers/Actors.sol";
 import {BaseTest} from "../helpers/BaseTest.sol";
 
-import {AssetConfig, BPS, Order, OrderStatus, OrderType, PRECISION} from "../../src/interfaces/types/Types.sol";
+import {AssetConfig, BPS, OracleConfig, Order, OrderStatus, OrderType, PRECISION} from "../../src/interfaces/types/Types.sol";
 
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {FeeCalculator} from "../../src/core/FeeCalculator.sol";
@@ -38,6 +38,8 @@ contract RedeemFlowTest is BaseTest {
         _configureAssets();
         _configureVault();
         _depositLPCollateral();
+        // Update collateral valuation AFTER deposit so USD value reflects actual assets
+        vault.updateCollateralValuation();
         _mintETokensToMinter();
     }
 
@@ -86,8 +88,22 @@ contract RedeemFlowTest is BaseTest {
         AssetConfig memory tslaConfig =
             AssetConfig({activeToken: address(eTSLA), legacyTokens: new address[](0), active: true, volatilityLevel: 2});
         assetRegistry.addAsset(TSLA, address(eTSLA), tslaConfig);
+        OracleConfig memory tslaOracleConfig =
+            OracleConfig({primaryOracle: address(oracle), secondaryOracle: address(0)});
+        assetRegistry.setOracleConfig(TSLA, tslaOracleConfig);
+
+        bytes32 ethAsset = bytes32("ETH");
+        AssetConfig memory ethConfig =
+            AssetConfig({activeToken: address(weth), legacyTokens: new address[](0), active: true, volatilityLevel: 1});
+        assetRegistry.addAsset(ethAsset, address(weth), ethConfig);
+        OracleConfig memory ethOracleConfig =
+            OracleConfig({primaryOracle: address(oracle), secondaryOracle: address(0)});
+        assetRegistry.setOracleConfig(ethAsset, ethOracleConfig);
+        vault.setCollateralOracleAsset(ethAsset);
 
         vm.stopPrank();
+
+        _setOraclePrice(ethAsset, ETH_PRICE);
     }
 
     function _configureVault() private {
@@ -95,6 +111,9 @@ contract RedeemFlowTest is BaseTest {
         vault.setPaymentToken(address(usdc));
         vault.enableAsset(TSLA);
         vm.stopPrank();
+
+        vault.updateAssetValuation(TSLA);
+        vault.updateCollateralValuation();
     }
 
     function _depositLPCollateral() private {
@@ -106,8 +125,15 @@ contract RedeemFlowTest is BaseTest {
     }
 
     function _mintETokensToMinter() private {
-        vm.prank(address(market));
-        eTSLA.mint(Actors.MINTER1, ETOKEN_AMOUNT);
+        _fundUSDC(Actors.MINTER1, MINT_AMOUNT);
+        vm.startPrank(Actors.MINTER1);
+        usdc.approve(address(market), MINT_AMOUNT);
+        uint256 orderId = market.placeMintOrder(address(vault), TSLA, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
+        vm.stopPrank();
+        vm.prank(Actors.VM1);
+        market.claimOrder(orderId);
+        vm.prank(Actors.VM1);
+        market.confirmOrder(orderId);
     }
 
     // ══════════════════════════════════════════════════════════

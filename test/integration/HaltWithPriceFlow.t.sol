@@ -181,9 +181,16 @@ contract HaltWithPriceFlowTest is BaseTest {
         return orderId;
     }
 
-    function _mintETokens(address to, uint256 amount) internal {
-        vm.prank(address(market));
-        eTSLA.mint(to, amount);
+    function _mintETokensViaFlow(address minter, uint256 usdcAmount) internal {
+        _fundUSDC(minter, usdcAmount);
+        vm.startPrank(minter);
+        usdc.approve(address(market), usdcAmount);
+        uint256 orderId = market.placeMintOrder(address(vault), TSLA, usdcAmount, TSLA_PRICE, block.timestamp + 1 days);
+        vm.stopPrank();
+        vm.prank(Actors.VM1);
+        market.claimOrder(orderId);
+        vm.prank(Actors.VM1);
+        market.confirmOrder(orderId);
     }
 
     function _haltAssetTSLA() private {
@@ -249,13 +256,14 @@ contract HaltWithPriceFlowTest is BaseTest {
     // ══════════════════════════════════════════════════════════
 
     function test_halt_allowsRedeemPlacement() public {
-        _mintETokens(Actors.MINTER1, ETOKEN_AMOUNT);
+        _mintETokensViaFlow(Actors.MINTER1, MINT_AMOUNT);
+        uint256 eTokenBal = eTSLA.balanceOf(Actors.MINTER1);
         _haltAssetTSLA();
 
         vm.startPrank(Actors.MINTER1);
-        eTSLA.approve(address(market), ETOKEN_AMOUNT);
+        eTSLA.approve(address(market), eTokenBal);
         uint256 orderId =
-            market.placeRedeemOrder(address(vault), TSLA, ETOKEN_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
+            market.placeRedeemOrder(address(vault), TSLA, eTokenBal, TSLA_PRICE, block.timestamp + 1 days);
         vm.stopPrank();
 
         Order memory order = market.getOrder(orderId);
@@ -267,8 +275,9 @@ contract HaltWithPriceFlowTest is BaseTest {
     // ══════════════════════════════════════════════════════════
 
     function test_halt_allowsRedeemClaim() public {
-        _mintETokens(Actors.MINTER1, ETOKEN_AMOUNT);
-        uint256 orderId = _placeRedeem(Actors.MINTER1, ETOKEN_AMOUNT, block.timestamp + 1 days);
+        _mintETokensViaFlow(Actors.MINTER1, MINT_AMOUNT);
+        uint256 eTokenBal = eTSLA.balanceOf(Actors.MINTER1);
+        uint256 orderId = _placeRedeem(Actors.MINTER1, eTokenBal, block.timestamp + 1 days);
 
         _haltAssetTSLA();
 
@@ -284,8 +293,9 @@ contract HaltWithPriceFlowTest is BaseTest {
     // ══════════════════════════════════════════════════════════
 
     function test_halt_redeemConfirmUsesHaltPrice() public {
-        _mintETokens(Actors.MINTER1, ETOKEN_AMOUNT);
-        uint256 orderId = _placeRedeem(Actors.MINTER1, ETOKEN_AMOUNT, block.timestamp + 1 days);
+        _mintETokensViaFlow(Actors.MINTER1, MINT_AMOUNT);
+        uint256 eTokenBal = eTSLA.balanceOf(Actors.MINTER1);
+        uint256 orderId = _placeRedeem(Actors.MINTER1, eTokenBal, block.timestamp + 1 days);
 
         vm.prank(Actors.VM1);
         market.claimOrder(orderId);
@@ -293,7 +303,7 @@ contract HaltWithPriceFlowTest is BaseTest {
         _haltAssetTSLA();
 
         // Calculate payout at halt price (not order price)
-        uint256 grossPayout = Math.mulDiv(ETOKEN_AMOUNT, HALT_PRICE, PRECISION * 1e12);
+        uint256 grossPayout = Math.mulDiv(eTokenBal, HALT_PRICE, PRECISION * 1e12);
         uint256 fee = Math.mulDiv(grossPayout, REDEEM_FEE_BPS, BPS, Math.Rounding.Ceil);
         uint256 netPayout = grossPayout - fee;
 
@@ -303,7 +313,7 @@ contract HaltWithPriceFlowTest is BaseTest {
         usdc.approve(address(market), grossPayout);
 
         vm.expectEmit(true, true, true, true);
-        emit IOwnMarket.OrderConfirmedAtHaltPrice(orderId, Actors.VM1, HALT_PRICE, ETOKEN_AMOUNT);
+        emit IOwnMarket.OrderConfirmedAtHaltPrice(orderId, Actors.VM1, HALT_PRICE, eTokenBal);
 
         market.confirmOrder(orderId);
         vm.stopPrank();

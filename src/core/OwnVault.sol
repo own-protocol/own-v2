@@ -61,9 +61,6 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
     /// @dev Per-asset exposure in USD (18 decimals), updated incrementally.
     mapping(bytes32 => uint256) private _assetExposureUSD;
 
-    /// @dev Per-asset last known price from oracle (18 decimals).
-    mapping(bytes32 => uint256) private _assetLastPrice;
-
     /// @dev Per-asset last valuation update timestamp.
     mapping(bytes32 => uint256) private _assetLastUpdated;
 
@@ -576,6 +573,12 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
     }
 
     /// @inheritdoc IOwnVault
+    function projectedExposureUtilization(uint256 additionalExposureUSD) external view returns (uint256) {
+        if (_collateralValueUSD == 0) return 0;
+        return (_totalExposureUSD + additionalExposureUSD).mulDiv(BPS, _collateralValueUSD);
+    }
+
+    /// @inheritdoc IOwnVault
     function pendingWithdrawalShares() external view returns (uint256) {
         return _pendingWithdrawalShares;
     }
@@ -612,9 +615,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
     }
 
     /// @inheritdoc IOwnVault
-    function updateExposure(bytes32 asset_, int256 delta) external onlyMarket {
-        uint256 lastPrice = _assetLastPrice[asset_];
-
+    function updateExposure(bytes32 asset_, int256 delta, uint256 price) external onlyMarket {
         // Update raw units
         if (delta > 0) {
             _assetExposure[asset_] += uint256(delta);
@@ -622,13 +623,11 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
             _assetExposure[asset_] -= uint256(-delta);
         }
 
-        // Update USD values using last known price
-        if (lastPrice > 0) {
-            uint256 oldUSD = _assetExposureUSD[asset_];
-            uint256 newUSD = _assetExposure[asset_].mulDiv(lastPrice, PRECISION);
-            _assetExposureUSD[asset_] = newUSD;
-            _totalExposureUSD = _totalExposureUSD - oldUSD + newUSD;
-        }
+        // Update USD values using provided execution price
+        uint256 oldUSD = _assetExposureUSD[asset_];
+        uint256 newUSD = _assetExposure[asset_].mulDiv(price, PRECISION);
+        _assetExposureUSD[asset_] = newUSD;
+        _totalExposureUSD = _totalExposureUSD - oldUSD + newUSD;
 
         // Also refresh collateral value
         _refreshCollateralValue();
@@ -647,7 +646,6 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
         uint256 oldUSD = _assetExposureUSD[asset_];
         uint256 newUSD = _assetExposure[asset_].mulDiv(price, PRECISION);
 
-        _assetLastPrice[asset_] = price;
         _assetExposureUSD[asset_] = newUSD;
         _totalExposureUSD = _totalExposureUSD - oldUSD + newUSD;
         _assetLastUpdated[asset_] = block.timestamp;

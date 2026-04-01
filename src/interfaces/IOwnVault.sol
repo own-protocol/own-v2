@@ -248,10 +248,15 @@ interface IOwnVault is IERC4626 {
     ) external view returns (uint256);
 
     /// @notice Update raw exposure units for an asset. Only callable by OwnMarket.
-    ///         Adjusts per-asset units and per-asset USD value using last known price.
+    ///         Adjusts per-asset units and per-asset USD value using the provided execution price.
     /// @param asset Asset ticker.
     /// @param delta Signed change in raw exposure units.
-    function updateExposure(bytes32 asset, int256 delta) external;
+    /// @param price Execution price (18 decimals) used to convert units to USD.
+    function updateExposure(bytes32 asset, int256 delta, uint256 price) external;
+
+    /// @notice Returns projected utilisation (BPS) if additionalExposureUSD were added.
+    /// @param additionalExposureUSD Additional USD exposure to project (18 decimals).
+    function projectedExposureUtilization(uint256 additionalExposureUSD) external view returns (uint256);
 
     /// @notice Refresh the USD valuation of an asset using its oracle price.
     ///         Callable by anyone (keeper pattern). Reads price from the asset's primary oracle.

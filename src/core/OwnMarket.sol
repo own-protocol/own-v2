@@ -177,14 +177,13 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         }
         // For redeem: eTokens stay in escrow, nothing moves
 
-        // Update exposure and check utilization
+        // Check projected utilization (read-only — exposure is updated at confirm/forceExecute)
         uint256 exposureDelta = _calculateExposure(order);
-        vaultContract.updateExposure(order.asset, int256(exposureDelta));
-
-        uint256 currentUtil = vaultContract.utilization();
+        uint256 exposureDeltaUSD = Math.mulDiv(exposureDelta, order.price, PRECISION);
+        uint256 projectedUtil = vaultContract.projectedExposureUtilization(exposureDeltaUSD);
         uint256 maxUtil = vaultContract.maxUtilization();
-        if (currentUtil > maxUtil) {
-            revert UtilizationBreached(currentUtil, maxUtil);
+        if (projectedUtil > maxUtil) {
+            revert UtilizationBreached(projectedUtil, maxUtil);
         }
 
         emit OrderClaimed(orderId, msg.sender);
@@ -204,22 +203,23 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
 
         order.status = OrderStatus.Confirmed;
 
+        uint256 exposureDelta = _calculateExposure(order);
+
         if (order.orderType == OrderType.Mint) {
             if (vaultContract.isEffectivelyHalted(order.asset)) revert MintBlockedDuringHalt(order.asset);
             _executeMint(order);
+            vaultContract.updateExposure(order.asset, int256(exposureDelta), order.price);
         } else {
             if (vaultContract.isEffectivelyHalted(order.asset)) {
                 uint256 haltPrice = _resolveHaltPrice(order.vault, order.asset);
                 _executeRedeemAtPrice(order, haltPrice);
+                vaultContract.updateExposure(order.asset, -int256(exposureDelta), haltPrice);
                 emit OrderConfirmedAtHaltPrice(orderId, msg.sender, haltPrice, order.amount);
             } else {
                 _executeRedeem(order);
+                vaultContract.updateExposure(order.asset, -int256(exposureDelta), order.price);
             }
         }
-
-        // Decrease exposure
-        uint256 exposureDelta = _calculateExposure(order);
-        vaultContract.updateExposure(order.asset, -int256(exposureDelta));
 
         emit OrderConfirmed(orderId, msg.sender, order.amount);
     }
@@ -254,10 +254,6 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
             address eToken = IAssetRegistry(registry.assetRegistry()).getActiveToken(order.asset);
             IERC20(eToken).safeTransfer(order.user, order.amount);
         }
-
-        // Decrease exposure
-        uint256 exposureDelta = _calculateExposure(order);
-        IOwnVault(order.vault).updateExposure(order.asset, -int256(exposureDelta));
 
         emit OrderClosed(orderId, msg.sender);
     }
@@ -326,29 +322,32 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
 
         bool isHalted = vaultContract.isEffectivelyHalted(order.asset);
         bool priceReachable;
+        uint256 exposureDelta = _calculateExposure(order);
 
         if (isHalted) {
             // During halt: mints get refund, redeems settle at halt price
             if (order.orderType == OrderType.Mint) {
                 _forceExecuteRefund(order, collateralPriceData);
+                // Mint refund — no execution, no exposure change
             } else {
                 uint256 haltPrice = _resolveHaltPrice(order.vault, order.asset);
                 _forceExecuteRedeemAtHaltPrice(order, haltPrice, collateralPriceData);
+                vaultContract.updateExposure(order.asset, -int256(exposureDelta), haltPrice);
             }
             priceReachable = false;
         } else {
             priceReachable = _verifyPriceRange(order, priceProofData);
             if (priceReachable) {
                 _forceExecuteAtSetPrice(order, collateralPriceData);
+                if (order.orderType == OrderType.Mint) {
+                    vaultContract.updateExposure(order.asset, int256(exposureDelta), order.price);
+                } else {
+                    vaultContract.updateExposure(order.asset, -int256(exposureDelta), order.price);
+                }
             } else {
+                // Refund — no execution, no exposure change
                 _forceExecuteRefund(order, collateralPriceData);
             }
-        }
-
-        // Clear exposure if was claimed
-        if (isClaimed) {
-            uint256 exposureDelta = _calculateExposure(order);
-            vaultContract.updateExposure(order.asset, -int256(exposureDelta));
         }
 
         emit OrderForceExecuted(orderId, msg.sender, priceReachable);

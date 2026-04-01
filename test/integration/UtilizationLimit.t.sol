@@ -39,6 +39,8 @@ contract UtilizationLimitTest is BaseTest {
         _configureAssets();
         _configureVault();
         _depositLPCollateral();
+        // Update collateral valuation AFTER deposit so USD value reflects actual assets
+        vault.updateCollateralValuation();
     }
 
     function _deployProtocol() private {
@@ -140,8 +142,8 @@ contract UtilizationLimitTest is BaseTest {
         market.claimOrder(orderId);
 
         assertEq(uint8(market.getOrder(orderId).status), uint8(OrderStatus.Claimed));
-        assertGt(vault.utilization(), 0, "utilization increased");
-        assertLe(vault.utilization(), MAX_UTIL_BPS, "utilization within limit");
+        // Claim is read-only — exposure not yet updated
+        assertEq(vault.utilization(), 0, "utilization unchanged after claim");
     }
 
     // ══════════════════════════════════════════════════════════
@@ -171,13 +173,14 @@ contract UtilizationLimitTest is BaseTest {
         vm.prank(Actors.VM1);
         market.claimOrder(orderId);
 
-        uint256 utilAfterClaim = vault.utilization();
-        assertGt(utilAfterClaim, 0, "utilization > 0 after claim");
+        assertEq(vault.utilization(), 0, "utilization unchanged after claim");
 
+        // Confirm mint → exposure increases
         vm.prank(Actors.VM1);
         market.confirmOrder(orderId);
 
-        assertEq(vault.utilization(), 0, "utilization back to 0 after confirm");
+        assertGt(vault.utilization(), 0, "utilization > 0 after mint confirm");
+        assertLe(vault.utilization(), MAX_UTIL_BPS, "utilization within limit");
     }
 
     // ══════════════════════════════════════════════════════════
@@ -192,7 +195,8 @@ contract UtilizationLimitTest is BaseTest {
         vm.prank(Actors.VM1);
         market.claimOrder(orderId);
 
-        assertGt(vault.utilization(), 0, "utilization > 0 after claim");
+        // Claim doesn't change exposure
+        assertEq(vault.utilization(), 0, "utilization unchanged after claim");
 
         vm.warp(expiry + 1);
 
@@ -201,7 +205,8 @@ contract UtilizationLimitTest is BaseTest {
         market.closeOrder(orderId);
         vm.stopPrank();
 
-        assertEq(vault.utilization(), 0, "utilization back to 0 after close");
+        // Close doesn't change exposure (nothing was executed)
+        assertEq(vault.utilization(), 0, "utilization still 0 after close");
     }
 
     // ══════════════════════════════════════════════════════════
@@ -217,29 +222,25 @@ contract UtilizationLimitTest is BaseTest {
 
         vm.prank(Actors.VM1);
         market.claimOrder(orderId1);
-
-        uint256 utilAfterFirst = vault.utilization();
-        assertGt(utilAfterFirst, 0, "utilization after first claim");
-
         vm.prank(Actors.VM1);
         market.claimOrder(orderId2);
 
-        uint256 utilAfterSecond = vault.utilization();
-        assertGt(utilAfterSecond, utilAfterFirst, "utilization increased with second claim");
+        // Claims don't change exposure
+        assertEq(vault.utilization(), 0, "utilization unchanged after claims");
 
-        // Confirm first → utilization drops but not to zero
+        // Confirm first mint → exposure increases
         vm.prank(Actors.VM1);
         market.confirmOrder(orderId1);
 
-        uint256 utilAfterFirstConfirm = vault.utilization();
-        assertGt(utilAfterFirstConfirm, 0, "utilization still > 0 (second order pending)");
-        assertLt(utilAfterFirstConfirm, utilAfterSecond, "utilization decreased after first confirm");
+        uint256 utilAfterFirst = vault.utilization();
+        assertGt(utilAfterFirst, 0, "utilization > 0 after first confirm");
 
-        // Confirm second → utilization back to zero
+        // Confirm second mint → exposure increases further
         vm.prank(Actors.VM1);
         market.confirmOrder(orderId2);
 
-        assertEq(vault.utilization(), 0, "utilization back to 0 after all confirmed");
+        uint256 utilAfterSecond = vault.utilization();
+        assertGt(utilAfterSecond, utilAfterFirst, "utilization increased with second confirm");
     }
 
     // ══════════════════════════════════════════════════════════
@@ -252,7 +253,10 @@ contract UtilizationLimitTest is BaseTest {
 
         vm.prank(Actors.VM1);
         market.claimOrder(orderId);
+        vm.prank(Actors.VM1);
+        market.confirmOrder(orderId);
 
+        assertGt(vault.utilization(), 0, "utilization > 0 after confirm");
         assertEq(vault.projectedUtilization(), vault.utilization(), "projected == current when no withdrawals");
         assertEq(vault.pendingWithdrawalShares(), 0, "no pending withdrawal shares");
     }
@@ -263,6 +267,8 @@ contract UtilizationLimitTest is BaseTest {
 
         vm.prank(Actors.VM1);
         market.claimOrder(orderId);
+        vm.prank(Actors.VM1);
+        market.confirmOrder(orderId);
 
         uint256 utilBefore = vault.utilization();
         assertGt(utilBefore, 0);
@@ -288,6 +294,8 @@ contract UtilizationLimitTest is BaseTest {
 
         vm.prank(Actors.VM1);
         market.claimOrder(orderId);
+        vm.prank(Actors.VM1);
+        market.confirmOrder(orderId);
 
         uint256 lpShares = vault.balanceOf(Actors.LP1);
         vm.prank(Actors.LP1);
@@ -310,6 +318,8 @@ contract UtilizationLimitTest is BaseTest {
 
         vm.prank(Actors.VM1);
         market.claimOrder(orderId);
+        vm.prank(Actors.VM1);
+        market.confirmOrder(orderId);
 
         uint256 lpShares = vault.balanceOf(Actors.LP1);
         vm.prank(Actors.LP1);

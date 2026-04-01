@@ -132,7 +132,11 @@ contract OwnMarketTest is BaseTest {
         vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.vm.selector), abi.encode(vmAddr));
         vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.updateExposure.selector), abi.encode());
         vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.depositFees.selector), abi.encode());
-        vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.utilization.selector), abi.encode(uint256(0)));
+        vm.mockCall(
+            mockVault,
+            abi.encodeWithSelector(IOwnVault.projectedExposureUtilization.selector),
+            abi.encode(uint256(0))
+        );
         vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.maxUtilization.selector), abi.encode(uint256(BPS)));
     }
 
@@ -296,7 +300,11 @@ contract OwnMarketTest is BaseTest {
         // Mock vault's vm() to return a different address
         vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.vm.selector), abi.encode(Actors.VM2));
         vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.updateExposure.selector), abi.encode());
-        vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.utilization.selector), abi.encode(uint256(0)));
+        vm.mockCall(
+            mockVault,
+            abi.encodeWithSelector(IOwnVault.projectedExposureUtilization.selector),
+            abi.encode(uint256(0))
+        );
         vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.maxUtilization.selector), abi.encode(uint256(BPS)));
 
         uint256 orderId = _placeMintOrder(Actors.MINTER1, 1000e6);
@@ -308,8 +316,12 @@ contract OwnMarketTest is BaseTest {
 
     function test_claimOrder_utilizationBreached_reverts() public {
         _mockVault(Actors.VM1);
-        // Override utilization to be above max
-        vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.utilization.selector), abi.encode(uint256(9500)));
+        // Override projected utilization to be above max
+        vm.mockCall(
+            mockVault,
+            abi.encodeWithSelector(IOwnVault.projectedExposureUtilization.selector),
+            abi.encode(uint256(9500))
+        );
         vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.maxUtilization.selector), abi.encode(uint256(9000)));
 
         uint256 orderId = _placeMintOrder(Actors.MINTER1, 1000e6);
