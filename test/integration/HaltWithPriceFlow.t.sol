@@ -262,8 +262,7 @@ contract HaltWithPriceFlowTest is BaseTest {
 
         vm.startPrank(Actors.MINTER1);
         eTSLA.approve(address(market), eTokenBal);
-        uint256 orderId =
-            market.placeRedeemOrder(address(vault), TSLA, eTokenBal, TSLA_PRICE, block.timestamp + 1 days);
+        uint256 orderId = market.placeRedeemOrder(address(vault), TSLA, eTokenBal, TSLA_PRICE, block.timestamp + 1 days);
         vm.stopPrank();
 
         Order memory order = market.getOrder(orderId);

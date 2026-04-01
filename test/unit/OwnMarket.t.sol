@@ -133,9 +133,7 @@ contract OwnMarketTest is BaseTest {
         vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.updateExposure.selector), abi.encode());
         vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.depositFees.selector), abi.encode());
         vm.mockCall(
-            mockVault,
-            abi.encodeWithSelector(IOwnVault.projectedExposureUtilization.selector),
-            abi.encode(uint256(0))
+            mockVault, abi.encodeWithSelector(IOwnVault.projectedExposureUtilization.selector), abi.encode(uint256(0))
         );
         vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.maxUtilization.selector), abi.encode(uint256(BPS)));
     }
@@ -301,9 +299,7 @@ contract OwnMarketTest is BaseTest {
         vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.vm.selector), abi.encode(Actors.VM2));
         vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.updateExposure.selector), abi.encode());
         vm.mockCall(
-            mockVault,
-            abi.encodeWithSelector(IOwnVault.projectedExposureUtilization.selector),
-            abi.encode(uint256(0))
+            mockVault, abi.encodeWithSelector(IOwnVault.projectedExposureUtilization.selector), abi.encode(uint256(0))
         );
         vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.maxUtilization.selector), abi.encode(uint256(BPS)));
 

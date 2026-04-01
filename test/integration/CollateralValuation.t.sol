@@ -180,7 +180,8 @@ contract CollateralValuationTest is BaseTest {
         uint256 eTokenUnits = Math.mulDiv(MINT_AMOUNT * 1e12, PRECISION, TSLA_PRICE);
         vm.startPrank(Actors.MINTER1);
         EToken(address(eTSLA)).approve(address(market), eTokenUnits);
-        uint256 redeemId = market.placeRedeemOrder(address(vault), TSLA, eTokenUnits, TSLA_PRICE, block.timestamp + 1 days);
+        uint256 redeemId =
+            market.placeRedeemOrder(address(vault), TSLA, eTokenUnits, TSLA_PRICE, block.timestamp + 1 days);
         vm.stopPrank();
 
         // VM needs USDC to pay user on redeem confirm
@@ -272,7 +273,8 @@ contract CollateralValuationTest is BaseTest {
         uint256 tslaETokens = Math.mulDiv(MINT_AMOUNT * 1e12, PRECISION, TSLA_PRICE);
         vm.startPrank(Actors.MINTER1);
         EToken(address(eTSLA)).approve(address(market), tslaETokens);
-        uint256 tslaRedeemId = market.placeRedeemOrder(address(vault), TSLA, tslaETokens, TSLA_PRICE, block.timestamp + 1 days);
+        uint256 tslaRedeemId =
+            market.placeRedeemOrder(address(vault), TSLA, tslaETokens, TSLA_PRICE, block.timestamp + 1 days);
         vm.stopPrank();
 
         uint256 tslaPayout = Math.mulDiv(tslaETokens, TSLA_PRICE, PRECISION * 1e12);
@@ -292,7 +294,8 @@ contract CollateralValuationTest is BaseTest {
         uint256 goldETokens = Math.mulDiv(MINT_AMOUNT * 1e12, PRECISION, GOLD_PRICE);
         vm.startPrank(Actors.MINTER1);
         EToken(address(eGOLD)).approve(address(market), goldETokens);
-        uint256 goldRedeemId = market.placeRedeemOrder(address(vault), GOLD, goldETokens, GOLD_PRICE, block.timestamp + 1 days);
+        uint256 goldRedeemId =
+            market.placeRedeemOrder(address(vault), GOLD, goldETokens, GOLD_PRICE, block.timestamp + 1 days);
         vm.stopPrank();
 
         uint256 goldPayout = Math.mulDiv(goldETokens, GOLD_PRICE, PRECISION * 1e12);

@@ -423,9 +423,7 @@ contract OrderLifecycleTest is BaseTest {
         // LP rewards use share-based math; the mint fee deposit via _mintETokensViaFlow
         // changes totalAssets, causing minor rounding in the per-share reward accumulator.
         // Tolerance: 1 USDC cent (1e4) covers the share-based rounding.
-        assertApproxEqAbs(
-            vault.claimableLPRewards(Actors.LP1) - lpBefore, lpAmount, 1e5, "LP rewards approx"
-        );
+        assertApproxEqAbs(vault.claimableLPRewards(Actors.LP1) - lpBefore, lpAmount, 1e5, "LP rewards approx");
         assertEq(protocolAmount + vmAmount + lpAmount, totalFee, "fee split sums to total");
 
         // User received net payout

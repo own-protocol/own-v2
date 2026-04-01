@@ -573,7 +573,9 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
     }
 
     /// @inheritdoc IOwnVault
-    function projectedExposureUtilization(uint256 additionalExposureUSD) external view returns (uint256) {
+    function projectedExposureUtilization(
+        uint256 additionalExposureUSD
+    ) external view returns (uint256) {
         if (_collateralValueUSD == 0) return 0;
         return (_totalExposureUSD + additionalExposureUSD).mulDiv(BPS, _collateralValueUSD);
     }

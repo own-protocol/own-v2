@@ -256,7 +256,9 @@ interface IOwnVault is IERC4626 {
 
     /// @notice Returns projected utilisation (BPS) if additionalExposureUSD were added.
     /// @param additionalExposureUSD Additional USD exposure to project (18 decimals).
-    function projectedExposureUtilization(uint256 additionalExposureUSD) external view returns (uint256);
+    function projectedExposureUtilization(
+        uint256 additionalExposureUSD
+    ) external view returns (uint256);
 
     /// @notice Refresh the USD valuation of an asset using its oracle price.
     ///         Callable by anyone (keeper pattern). Reads price from the asset's primary oracle.
