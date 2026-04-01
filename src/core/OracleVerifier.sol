@@ -136,6 +136,16 @@ contract OracleVerifier is IOracleVerifier, Ownable, Multicall {
     }
 
     /// @inheritdoc IOracleVerifier
+    /// @dev In-house oracle has no session concept — delegates to verifyPrice, ignoring sessionId.
+    function verifyPriceForSession(
+        bytes32 asset,
+        bytes calldata priceData,
+        uint8
+    ) external payable override returns (uint256 price, uint256 timestamp) {
+        return this.verifyPrice(asset, priceData);
+    }
+
+    /// @inheritdoc IOracleVerifier
     /// @dev In-house oracle never needs ETH for proof verification.
     function verifyFee(
         bytes calldata

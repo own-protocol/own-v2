@@ -157,7 +157,7 @@ contract OrderLifecycleTest is BaseTest {
         vm.prank(Actors.VM1);
         market.claimOrder(orderId);
         vm.prank(Actors.VM1);
-        market.confirmOrder(orderId);
+        market.confirmOrder(orderId, _buildPriceProof(TSLA_PRICE));
     }
 
     function _mintFee(
@@ -345,7 +345,7 @@ contract OrderLifecycleTest is BaseTest {
         market.claimOrder(orderId);
 
         vm.prank(Actors.VM1);
-        market.confirmOrder(orderId);
+        market.confirmOrder(orderId, _buildPriceProof(TSLA_PRICE));
 
         uint256 totalFee = _mintFee(MINT_AMOUNT);
 
@@ -407,7 +407,7 @@ contract OrderLifecycleTest is BaseTest {
 
         vm.startPrank(Actors.VM1);
         usdc.approve(address(market), grossPayout);
-        market.confirmOrder(orderId);
+        market.confirmOrder(orderId, _buildPriceProof(TSLA_PRICE));
         vm.stopPrank();
 
         uint256 totalFee = Math.mulDiv(grossPayout, REDEEM_FEE_BPS, BPS, Math.Rounding.Ceil);
@@ -439,7 +439,7 @@ contract OrderLifecycleTest is BaseTest {
         vm.prank(Actors.VM1);
         market.claimOrder(orderId);
         vm.prank(Actors.VM1);
-        market.confirmOrder(orderId);
+        market.confirmOrder(orderId, _buildPriceProof(TSLA_PRICE));
 
         vm.prank(Actors.VM1);
         vm.expectRevert(IOwnVault.OutstandingFeesExist.selector);
@@ -492,7 +492,7 @@ contract OrderLifecycleTest is BaseTest {
         market.claimOrder(orderId);
 
         vm.prank(Actors.VM1);
-        market.confirmOrder(orderId);
+        market.confirmOrder(orderId, _buildPriceProof(TSLA_PRICE));
 
         uint256 fee = _mintFee(MINT_AMOUNT);
         uint256 net = MINT_AMOUNT - fee;
@@ -521,7 +521,7 @@ contract OrderLifecycleTest is BaseTest {
         _fundUSDC(Actors.VM1, grossPayout);
         vm.startPrank(Actors.VM1);
         usdc.approve(address(market), grossPayout);
-        market.confirmOrder(orderId);
+        market.confirmOrder(orderId, _buildPriceProof(TSLA_PRICE));
         vm.stopPrank();
 
         assertEq(usdc.balanceOf(Actors.MINTER1), netToUser, "exact stablecoin payout");
@@ -546,7 +546,7 @@ contract OrderLifecycleTest is BaseTest {
 
         // Confirm mint → exposure increases
         vm.prank(Actors.VM1);
-        market.confirmOrder(orderId);
+        market.confirmOrder(orderId, _buildPriceProof(TSLA_PRICE));
 
         // exposureUSD = eTokenUnits * TSLA_PRICE / PRECISION
         uint256 eTokenUnits = Math.mulDiv(MINT_AMOUNT * 1e12, PRECISION, TSLA_PRICE);
@@ -629,11 +629,11 @@ contract OrderLifecycleTest is BaseTest {
         market.claimOrder(orderId);
 
         vm.prank(Actors.VM1);
-        market.confirmOrder(orderId);
+        market.confirmOrder(orderId, _buildPriceProof(TSLA_PRICE));
 
         vm.prank(Actors.VM1);
         vm.expectRevert(abi.encodeWithSelector(IOwnMarket.InvalidOrderStatus.selector, orderId, OrderStatus.Confirmed));
-        market.confirmOrder(orderId);
+        market.confirmOrder(orderId, _buildPriceProof(TSLA_PRICE));
     }
 
     // ══════════════════════════════════════════════════════════

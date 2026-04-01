@@ -141,7 +141,7 @@ contract RedeemFlowTest is BaseTest {
         vm.prank(Actors.VM1);
         market.claimOrder(orderId);
         vm.prank(Actors.VM1);
-        market.confirmOrder(orderId);
+        market.confirmOrder(orderId, _buildPriceProof(TSLA_PRICE));
     }
 
     // ══════════════════════════════════════════════════════════
@@ -176,7 +176,7 @@ contract RedeemFlowTest is BaseTest {
         _fundUSDC(Actors.VM1, payout);
         vm.startPrank(Actors.VM1);
         usdc.approve(address(market), payout);
-        market.confirmOrder(orderId);
+        market.confirmOrder(orderId, _buildPriceProof(TSLA_PRICE));
         vm.stopPrank();
 
         order = market.getOrder(orderId);

@@ -151,7 +151,7 @@ contract CollateralValuationTest is BaseTest {
         vm.prank(Actors.VM1);
         market.claimOrder(orderId);
         vm.prank(Actors.VM1);
-        market.confirmOrder(orderId);
+        market.confirmOrder(orderId, _buildPriceProof(TSLA_PRICE));
 
         uint256 healthAfterConfirm = vault.healthFactor();
         assertLt(healthAfterConfirm, type(uint256).max, "health decreased from max");
@@ -170,7 +170,7 @@ contract CollateralValuationTest is BaseTest {
         vm.prank(Actors.VM1);
         market.claimOrder(orderId);
         vm.prank(Actors.VM1);
-        market.confirmOrder(orderId);
+        market.confirmOrder(orderId, _buildPriceProof(TSLA_PRICE));
 
         uint256 healthWithExposure = vault.healthFactor();
         assertLt(healthWithExposure, type(uint256).max, "health decreased with mint exposure");
@@ -191,7 +191,7 @@ contract CollateralValuationTest is BaseTest {
         market.claimOrder(redeemId);
         vm.startPrank(Actors.VM1);
         usdc.approve(address(market), grossPayout);
-        market.confirmOrder(redeemId);
+        market.confirmOrder(redeemId, _buildPriceProof(TSLA_PRICE));
         vm.stopPrank();
 
         assertEq(vault.healthFactor(), type(uint256).max, "health recovered to max after redeem");
@@ -227,7 +227,7 @@ contract CollateralValuationTest is BaseTest {
         vm.prank(Actors.VM1);
         market.claimOrder(orderId);
         vm.prank(Actors.VM1);
-        market.confirmOrder(orderId);
+        market.confirmOrder(orderId, _buildPriceProof(TSLA_PRICE));
 
         uint256 exposureBefore = vault.totalExposureUSD();
         assertGt(exposureBefore, 0, "exposure > 0");
@@ -251,7 +251,7 @@ contract CollateralValuationTest is BaseTest {
         vm.prank(Actors.VM1);
         market.claimOrder(tslaOrderId);
         vm.prank(Actors.VM1);
-        market.confirmOrder(tslaOrderId);
+        market.confirmOrder(tslaOrderId, _buildPriceProof(TSLA_PRICE));
 
         uint256 healthAfterTSLA = vault.healthFactor();
         uint256 exposureAfterTSLA = vault.totalExposureUSD();
@@ -261,7 +261,7 @@ contract CollateralValuationTest is BaseTest {
         vm.prank(Actors.VM1);
         market.claimOrder(goldOrderId);
         vm.prank(Actors.VM1);
-        market.confirmOrder(goldOrderId);
+        market.confirmOrder(goldOrderId, _buildPriceProof(GOLD_PRICE));
 
         uint256 healthAfterBoth = vault.healthFactor();
         uint256 exposureAfterBoth = vault.totalExposureUSD();
@@ -283,7 +283,7 @@ contract CollateralValuationTest is BaseTest {
         market.claimOrder(tslaRedeemId);
         vm.startPrank(Actors.VM1);
         usdc.approve(address(market), tslaPayout);
-        market.confirmOrder(tslaRedeemId);
+        market.confirmOrder(tslaRedeemId, _buildPriceProof(TSLA_PRICE));
         vm.stopPrank();
 
         uint256 healthAfterTSLARedeem = vault.healthFactor();
@@ -304,7 +304,7 @@ contract CollateralValuationTest is BaseTest {
         market.claimOrder(goldRedeemId);
         vm.startPrank(Actors.VM1);
         usdc.approve(address(market), goldPayout);
-        market.confirmOrder(goldRedeemId);
+        market.confirmOrder(goldRedeemId, _buildPriceProof(GOLD_PRICE));
         vm.stopPrank();
 
         assertEq(vault.healthFactor(), type(uint256).max, "health max after all redeemed");
@@ -320,7 +320,7 @@ contract CollateralValuationTest is BaseTest {
         vm.prank(Actors.VM1);
         market.claimOrder(orderId);
         vm.prank(Actors.VM1);
-        market.confirmOrder(orderId);
+        market.confirmOrder(orderId, _buildPriceProof(TSLA_PRICE));
 
         uint256 healthBefore = vault.healthFactor();
 

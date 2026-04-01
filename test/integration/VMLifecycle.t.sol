@@ -5,7 +5,7 @@ import {Actors} from "../helpers/Actors.sol";
 import {BaseTest} from "../helpers/BaseTest.sol";
 
 import {IOwnVault} from "../../src/interfaces/IOwnVault.sol";
-import {AssetConfig, OrderStatus} from "../../src/interfaces/types/Types.sol";
+import {AssetConfig, OracleConfig, OrderStatus} from "../../src/interfaces/types/Types.sol";
 
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {FeeCalculator} from "../../src/core/FeeCalculator.sol";
@@ -62,6 +62,10 @@ contract VMLifecycleTest is BaseTest {
         AssetConfig memory config =
             AssetConfig({activeToken: address(eTSLA), legacyTokens: new address[](0), active: true, volatilityLevel: 2});
         assetRegistry.addAsset(TSLA, address(eTSLA), config);
+
+        OracleConfig memory tslaOracleConfig =
+            OracleConfig({primaryOracle: address(oracle), secondaryOracle: address(0)});
+        assetRegistry.setOracleConfig(TSLA, tslaOracleConfig);
 
         market = new OwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
@@ -145,7 +149,7 @@ contract VMLifecycleTest is BaseTest {
         // 2. VM claims and confirms
         vm.startPrank(Actors.VM1);
         market.claimOrder(orderId);
-        market.confirmOrder(orderId);
+        market.confirmOrder(orderId, _buildPriceProof(TSLA_PRICE));
         vm.stopPrank();
 
         assertEq(uint8(market.getOrder(orderId).status), uint8(OrderStatus.Confirmed));

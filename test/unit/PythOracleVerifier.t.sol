@@ -26,8 +26,8 @@ contract PythOracleVerifierTest is BaseTest {
 
         vm.startPrank(Actors.ADMIN);
         verifier = new PythOracleVerifier(Actors.ADMIN, address(mockPyth), MAX_PRICE_AGE);
-        verifier.setFeedId(TSLA, TSLA_FEED_ID);
-        verifier.setFeedId(GOLD, GOLD_FEED_ID);
+        verifier.setFeedId(TSLA, 0, TSLA_FEED_ID);
+        verifier.setFeedId(GOLD, 0, GOLD_FEED_ID);
         vm.stopPrank();
 
         vm.label(address(verifier), "PythOracleVerifier");
@@ -70,16 +70,16 @@ contract PythOracleVerifierTest is BaseTest {
         bytes32 newFeedId = bytes32(uint256(99));
         vm.prank(Actors.ADMIN);
         vm.expectEmit(true, false, false, true);
-        emit PythOracleVerifier.FeedIdSet(TSLA, newFeedId);
-        verifier.setFeedId(TSLA, newFeedId);
+        emit PythOracleVerifier.FeedIdSet(TSLA, 0, newFeedId);
+        verifier.setFeedId(TSLA, 0, newFeedId);
 
-        assertEq(verifier.getFeedId(TSLA), newFeedId);
+        assertEq(verifier.getFeedId(TSLA, 0), newFeedId);
     }
 
     function test_setFeedId_notOwner_reverts() public {
         vm.prank(Actors.ATTACKER);
         vm.expectRevert();
-        verifier.setFeedId(TSLA, bytes32(uint256(99)));
+        verifier.setFeedId(TSLA, 0, bytes32(uint256(99)));
     }
 
     // ──────────────────────────────────────────────────────────
@@ -308,12 +308,12 @@ contract PythOracleVerifierTest is BaseTest {
     // ──────────────────────────────────────────────────────────
 
     function test_getFeedId_returnsConfigured() public view {
-        assertEq(verifier.getFeedId(TSLA), TSLA_FEED_ID);
-        assertEq(verifier.getFeedId(GOLD), GOLD_FEED_ID);
+        assertEq(verifier.getFeedId(TSLA, 0), TSLA_FEED_ID);
+        assertEq(verifier.getFeedId(GOLD, 0), GOLD_FEED_ID);
     }
 
     function test_getFeedId_unconfigured_returnsZero() public view {
-        assertEq(verifier.getFeedId(bytes32("UNKNOWN")), bytes32(0));
+        assertEq(verifier.getFeedId(bytes32("UNKNOWN"), 0), bytes32(0));
     }
 
     // ──────────────────────────────────────────────────────────

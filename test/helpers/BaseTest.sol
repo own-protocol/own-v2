@@ -130,6 +130,15 @@ contract BaseTest is Test {
         return "";
     }
 
+    /// @notice Build price proof data for confirmOrder (mock oracle format).
+    ///         Encodes two identical price proofs (low == high) with session 0.
+    function _buildPriceProof(
+        uint256 price
+    ) internal view returns (bytes memory) {
+        bytes memory proof = abi.encode(price, block.timestamp);
+        return abi.encode(proof, proof, uint8(0));
+    }
+
     // ──────────────────────────────────────────────────────────
     //  Internal setup helpers
     // ──────────────────────────────────────────────────────────

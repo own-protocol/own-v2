@@ -190,9 +190,10 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
     }
 
     /// @inheritdoc IOwnMarket
-    function confirmOrder(
-        uint256 orderId
-    ) external nonReentrant {
+    /// @dev Caller must send ETH to cover Pyth oracle fees for verifyPriceForSession calls.
+    ///      Any unused ETH is refunded at the end of the call.
+    ///      For in-house oracle, no ETH is needed and msg.value should be 0.
+    function confirmOrder(uint256 orderId, bytes calldata priceProofData) external payable nonReentrant {
         Order storage order = _orders[orderId];
         if (order.user == address(0)) revert OrderNotFound(orderId);
         if (order.status != OrderStatus.Claimed) revert InvalidOrderStatus(orderId, order.status);
@@ -200,6 +201,12 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         if (block.timestamp > order.expiry) revert OrderExpiredError(orderId);
 
         IOwnVault vaultContract = IOwnVault(order.vault);
+
+        // Verify order price was reachable (skip for halted assets — confirmed at halt price)
+        if (!vaultContract.isEffectivelyHalted(order.asset)) {
+            bool priceValid = _verifyPriceRangeForSession(order, priceProofData);
+            if (!priceValid) revert PriceNotVerified(orderId);
+        }
 
         order.status = OrderStatus.Confirmed;
 
@@ -222,6 +229,13 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         }
 
         emit OrderConfirmed(orderId, msg.sender, order.amount);
+
+        // Refund any unused ETH (Pyth fees may leave a remainder)
+        uint256 remaining = address(this).balance;
+        if (remaining > 0) {
+            (bool ok,) = payable(msg.sender).call{value: remaining}("");
+            if (!ok) revert ETHRefundFailed();
+        }
     }
 
     /// @inheritdoc IOwnMarket
@@ -657,6 +671,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
     }
 
     /// @dev Call verifyFee then verifyPrice on the oracle, forwarding the exact fee.
+    ///      Uses verifyPrice (regular session only). Used by forceExecute.
     function _callVerifyPrice(
         address oracleAddr,
         bytes32 asset,
@@ -665,6 +680,44 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         IOracleVerifier oracle = IOracleVerifier(oracleAddr);
         uint256 fee = oracle.verifyFee(proofData);
         return oracle.verifyPrice{value: fee}(asset, proofData);
+    }
+
+    /// @dev Session-aware variant of _verifyPriceRange. Used by confirmOrder.
+    ///      priceProofData encodes (bytes lowPriceData, bytes highPriceData, uint8 sessionId).
+    function _verifyPriceRangeForSession(Order storage order, bytes calldata priceProofData) private returns (bool) {
+        if (priceProofData.length == 0) return false;
+
+        (bytes memory lowPriceData, bytes memory highPriceData, uint8 sessionId) =
+            abi.decode(priceProofData, (bytes, bytes, uint8));
+
+        address oracleAddr = IAssetRegistry(registry.assetRegistry()).getPrimaryOracle(order.asset);
+        if (oracleAddr == address(0)) return false;
+
+        uint256 windowStart = order.claimedAt > 0 ? order.claimedAt : order.createdAt;
+
+        (uint256 lowPrice, uint256 lowTs) = _callVerifyPriceForSession(oracleAddr, order.asset, lowPriceData, sessionId);
+        if (lowTs < windowStart || lowTs > block.timestamp) return false;
+
+        (uint256 highPrice, uint256 highTs) =
+            _callVerifyPriceForSession(oracleAddr, order.asset, highPriceData, sessionId);
+        if (highTs < windowStart || highTs > block.timestamp) return false;
+
+        if (lowPrice > highPrice) (lowPrice, highPrice) = (highPrice, lowPrice);
+
+        return order.orderType == OrderType.Mint ? lowPrice <= order.price : highPrice >= order.price;
+    }
+
+    /// @dev Call verifyFee then verifyPriceForSession on the oracle, forwarding the exact fee.
+    ///      Used by confirmOrder for multi-session price verification.
+    function _callVerifyPriceForSession(
+        address oracleAddr,
+        bytes32 asset,
+        bytes memory proofData,
+        uint8 sessionId
+    ) private returns (uint256 price, uint256 timestamp) {
+        IOracleVerifier oracle = IOracleVerifier(oracleAddr);
+        uint256 fee = oracle.verifyFee(proofData);
+        return oracle.verifyPriceForSession{value: fee}(asset, proofData, sessionId);
     }
 
     /// @dev Calculate the eToken-unit exposure for an order (18 decimals).

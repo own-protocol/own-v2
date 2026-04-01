@@ -93,10 +93,10 @@ contract Deploy is Script {
         PythOracleVerifier pythOracle = new PythOracleVerifier(deployer, PYTH, PYTH_MAX_PRICE_AGE);
         console.log("PythOracleVerifier:", address(pythOracle));
 
-        // Configure feed IDs
-        pythOracle.setFeedId(TSLA, TSLA_FEED);
-        pythOracle.setFeedId(GOLD, XAU_FEED);
-        pythOracle.setFeedId(ETH, ETH_FEED);
+        // Configure feed IDs (session 0 = regular market hours)
+        pythOracle.setFeedId(TSLA, 0, TSLA_FEED);
+        pythOracle.setFeedId(GOLD, 0, XAU_FEED);
+        pythOracle.setFeedId(ETH, 0, ETH_FEED);
 
         // ── 6. VaultFactory ─────────────────────────────────
         VaultFactory factory = new VaultFactory(deployer, address(registry));

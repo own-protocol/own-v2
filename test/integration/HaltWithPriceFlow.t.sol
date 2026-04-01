@@ -190,7 +190,7 @@ contract HaltWithPriceFlowTest is BaseTest {
         vm.prank(Actors.VM1);
         market.claimOrder(orderId);
         vm.prank(Actors.VM1);
-        market.confirmOrder(orderId);
+        market.confirmOrder(orderId, _buildPriceProof(TSLA_PRICE));
     }
 
     function _haltAssetTSLA() private {
@@ -248,7 +248,7 @@ contract HaltWithPriceFlowTest is BaseTest {
 
         vm.prank(Actors.VM1);
         vm.expectRevert(abi.encodeWithSelector(IOwnMarket.MintBlockedDuringHalt.selector, TSLA));
-        market.confirmOrder(orderId);
+        market.confirmOrder(orderId, _buildPriceProof(TSLA_PRICE));
     }
 
     // ══════════════════════════════════════════════════════════
@@ -314,7 +314,7 @@ contract HaltWithPriceFlowTest is BaseTest {
         vm.expectEmit(true, true, true, true);
         emit IOwnMarket.OrderConfirmedAtHaltPrice(orderId, Actors.VM1, HALT_PRICE, eTokenBal);
 
-        market.confirmOrder(orderId);
+        market.confirmOrder(orderId, "");
         vm.stopPrank();
 
         // User received net payout at halt price
@@ -476,7 +476,7 @@ contract HaltWithPriceFlowTest is BaseTest {
         market.claimOrder(orderId);
 
         vm.prank(Actors.VM1);
-        market.confirmOrder(orderId);
+        market.confirmOrder(orderId, _buildPriceProof(TSLA_PRICE));
 
         Order memory order = market.getOrder(orderId);
         assertEq(uint8(order.status), uint8(OrderStatus.Confirmed), "mint confirmed after unhalt");

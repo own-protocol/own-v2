@@ -117,6 +117,9 @@ interface IOwnMarket {
     /// @notice ETH refund to caller failed at end of forceExecute.
     error ETHRefundFailed();
 
+    /// @notice Price proof verification failed during confirmOrder.
+    error PriceNotVerified(uint256 orderId);
+
     // ──────────────────────────────────────────────────────────
     //  Order placement
     // ──────────────────────────────────────────────────────────
@@ -166,10 +169,12 @@ interface IOwnMarket {
     /// @notice Confirm execution of a claimed order at the set price.
     ///         Mint: eTokens minted to user, escrowed fee deposited to vault.
     ///         Redeem: VM sends stablecoins to user, eTokens burned, fee deposited to vault.
+    ///         Caller must submit price proofs to verify order.price was reachable.
+    ///         For Pyth oracle: caller must send ETH to cover verifyPrice fees.
     /// @param orderId Order to confirm.
-    function confirmOrder(
-        uint256 orderId
-    ) external;
+    /// @param priceProofData Encoded price proofs: abi.encode(bytes lowPriceData, bytes highPriceData, uint8 sessionId).
+    ///        For halted assets, pass empty bytes (verification is skipped).
+    function confirmOrder(uint256 orderId, bytes calldata priceProofData) external payable;
 
     /// @notice Close an expired claimed order and return funds to the user.
     ///         Mint: VM returns stablecoins to user in this transaction, escrowed fee returned.

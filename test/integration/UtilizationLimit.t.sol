@@ -177,7 +177,7 @@ contract UtilizationLimitTest is BaseTest {
 
         // Confirm mint → exposure increases
         vm.prank(Actors.VM1);
-        market.confirmOrder(orderId);
+        market.confirmOrder(orderId, _buildPriceProof(TSLA_PRICE));
 
         assertGt(vault.utilization(), 0, "utilization > 0 after mint confirm");
         assertLe(vault.utilization(), MAX_UTIL_BPS, "utilization within limit");
@@ -230,14 +230,14 @@ contract UtilizationLimitTest is BaseTest {
 
         // Confirm first mint → exposure increases
         vm.prank(Actors.VM1);
-        market.confirmOrder(orderId1);
+        market.confirmOrder(orderId1, _buildPriceProof(TSLA_PRICE));
 
         uint256 utilAfterFirst = vault.utilization();
         assertGt(utilAfterFirst, 0, "utilization > 0 after first confirm");
 
         // Confirm second mint → exposure increases further
         vm.prank(Actors.VM1);
-        market.confirmOrder(orderId2);
+        market.confirmOrder(orderId2, _buildPriceProof(TSLA_PRICE));
 
         uint256 utilAfterSecond = vault.utilization();
         assertGt(utilAfterSecond, utilAfterFirst, "utilization increased with second confirm");
@@ -254,7 +254,7 @@ contract UtilizationLimitTest is BaseTest {
         vm.prank(Actors.VM1);
         market.claimOrder(orderId);
         vm.prank(Actors.VM1);
-        market.confirmOrder(orderId);
+        market.confirmOrder(orderId, _buildPriceProof(TSLA_PRICE));
 
         assertGt(vault.utilization(), 0, "utilization > 0 after confirm");
         assertEq(vault.projectedUtilization(), vault.utilization(), "projected == current when no withdrawals");
@@ -268,7 +268,7 @@ contract UtilizationLimitTest is BaseTest {
         vm.prank(Actors.VM1);
         market.claimOrder(orderId);
         vm.prank(Actors.VM1);
-        market.confirmOrder(orderId);
+        market.confirmOrder(orderId, _buildPriceProof(TSLA_PRICE));
 
         uint256 utilBefore = vault.utilization();
         assertGt(utilBefore, 0);
@@ -295,7 +295,7 @@ contract UtilizationLimitTest is BaseTest {
         vm.prank(Actors.VM1);
         market.claimOrder(orderId);
         vm.prank(Actors.VM1);
-        market.confirmOrder(orderId);
+        market.confirmOrder(orderId, _buildPriceProof(TSLA_PRICE));
 
         uint256 lpShares = vault.balanceOf(Actors.LP1);
         vm.prank(Actors.LP1);
@@ -319,7 +319,7 @@ contract UtilizationLimitTest is BaseTest {
         vm.prank(Actors.VM1);
         market.claimOrder(orderId);
         vm.prank(Actors.VM1);
-        market.confirmOrder(orderId);
+        market.confirmOrder(orderId, _buildPriceProof(TSLA_PRICE));
 
         uint256 lpShares = vault.balanceOf(Actors.LP1);
         vm.prank(Actors.LP1);

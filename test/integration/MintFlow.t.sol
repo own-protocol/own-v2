@@ -5,7 +5,15 @@ import {Actors} from "../helpers/Actors.sol";
 import {BaseTest} from "../helpers/BaseTest.sol";
 
 import {IOwnMarket} from "../../src/interfaces/IOwnMarket.sol";
-import {AssetConfig, BPS, Order, OrderStatus, OrderType, PRECISION} from "../../src/interfaces/types/Types.sol";
+import {
+    AssetConfig,
+    BPS,
+    OracleConfig,
+    Order,
+    OrderStatus,
+    OrderType,
+    PRECISION
+} from "../../src/interfaces/types/Types.sol";
 
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {FeeCalculator} from "../../src/core/FeeCalculator.sol";
@@ -95,6 +103,15 @@ contract MintFlowTest is BaseTest {
             AssetConfig({activeToken: address(eGOLD), legacyTokens: new address[](0), active: true, volatilityLevel: 2});
         assetRegistry.addAsset(GOLD, address(eGOLD), goldConfig);
 
+        // Configure oracles for price verification during confirm
+        OracleConfig memory tslaOracleConfig =
+            OracleConfig({primaryOracle: address(oracle), secondaryOracle: address(0)});
+        assetRegistry.setOracleConfig(TSLA, tslaOracleConfig);
+
+        OracleConfig memory goldOracleConfig =
+            OracleConfig({primaryOracle: address(oracle), secondaryOracle: address(0)});
+        assetRegistry.setOracleConfig(GOLD, goldOracleConfig);
+
         vm.stopPrank();
     }
 
@@ -144,7 +161,7 @@ contract MintFlowTest is BaseTest {
         assertEq(uint8(order.status), uint8(OrderStatus.Claimed));
 
         vm.prank(Actors.VM1);
-        market.confirmOrder(orderId);
+        market.confirmOrder(orderId, _buildPriceProof(TSLA_PRICE));
 
         order = market.getOrder(orderId);
         assertEq(uint8(order.status), uint8(OrderStatus.Confirmed));
@@ -298,8 +315,8 @@ contract MintFlowTest is BaseTest {
         vm.startPrank(Actors.VM1);
         market.claimOrder(tslaOrderId);
         market.claimOrder(goldOrderId);
-        market.confirmOrder(tslaOrderId);
-        market.confirmOrder(goldOrderId);
+        market.confirmOrder(tslaOrderId, _buildPriceProof(TSLA_PRICE));
+        market.confirmOrder(goldOrderId, _buildPriceProof(GOLD_PRICE));
         vm.stopPrank();
 
         // Verify independent eToken balances
@@ -333,8 +350,8 @@ contract MintFlowTest is BaseTest {
         vm.startPrank(Actors.VM1);
         market.claimOrder(orderId1);
         market.claimOrder(orderId2);
-        market.confirmOrder(orderId1);
-        market.confirmOrder(orderId2);
+        market.confirmOrder(orderId1, _buildPriceProof(TSLA_PRICE));
+        market.confirmOrder(orderId2, _buildPriceProof(TSLA_PRICE));
         vm.stopPrank();
 
         uint256 expectedPerOrder = Math.mulDiv(MINT_AMOUNT * 1e12, PRECISION, TSLA_PRICE);

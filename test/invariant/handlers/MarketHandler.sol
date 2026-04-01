@@ -200,8 +200,11 @@ contract MarketHandler is CommonBase, StdCheats, StdUtils {
         oracle.setPrice(TSLA, TSLA_PRICE, block.timestamp);
         oracle.setPrice(ETH_ASSET, 3000e18, block.timestamp);
 
+        bytes memory proof = abi.encode(TSLA_PRICE, block.timestamp);
+        bytes memory priceProofData = abi.encode(proof, proof, uint8(0));
+
         vm.prank(vmAddr);
-        market.confirmOrder(orderId);
+        market.confirmOrder(orderId, priceProofData);
 
         // Fee moved from escrow to vault
         ghost_escrowedMintFees -= ghost_orderFee[orderId];
@@ -240,7 +243,9 @@ contract MarketHandler is CommonBase, StdCheats, StdUtils {
         usdc.mint(vmAddr, grossPayout);
         vm.startPrank(vmAddr);
         usdc.approve(address(market), grossPayout);
-        market.confirmOrder(orderId);
+        bytes memory proof = abi.encode(TSLA_PRICE, block.timestamp);
+        bytes memory redeemProofData = abi.encode(proof, proof, uint8(0));
+        market.confirmOrder(orderId, redeemProofData);
         vm.stopPrank();
 
         // eTokens burned from market escrow

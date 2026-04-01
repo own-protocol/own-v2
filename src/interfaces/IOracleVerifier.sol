@@ -74,6 +74,21 @@ interface IOracleVerifier {
         bytes calldata priceData
     ) external payable returns (uint256 price, uint256 timestamp);
 
+    /// @notice Verify a signed price proof for a specific trading session.
+    ///         Used by confirmOrder to support multi-session price feeds (e.g. Pyth equity feeds
+    ///         have separate feeds for regular, pre-market, post-market, and overnight sessions).
+    ///         For in-house oracle: sessionId is ignored (delegates to verifyPrice).
+    /// @param asset     Asset ticker.
+    /// @param priceData Backend-specific encoded signed price proof.
+    /// @param sessionId Trading session index (0=regular, 1=pre-market, 2=post-market, 3=overnight).
+    /// @return price     Verified price in 18 decimals.
+    /// @return timestamp Timestamp of the price observation.
+    function verifyPriceForSession(
+        bytes32 asset,
+        bytes calldata priceData,
+        uint8 sessionId
+    ) external payable returns (uint256 price, uint256 timestamp);
+
     /// @notice Return the ETH fee required to call verifyPrice for the given priceData.
     ///         For Pyth: returns pyth.getUpdateFee(updateData).
     ///         For in-house: always returns 0.

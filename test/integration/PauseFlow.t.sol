@@ -222,7 +222,7 @@ contract PauseFlowTest is BaseTest {
 
         // Confirm should still succeed while paused
         vm.prank(Actors.VM1);
-        market.confirmOrder(orderId);
+        market.confirmOrder(orderId, _buildPriceProof(TSLA_PRICE));
 
         Order memory order = market.getOrder(orderId);
         assertEq(uint8(order.status), uint8(OrderStatus.Confirmed));
@@ -392,7 +392,7 @@ contract PauseFlowTest is BaseTest {
         market.claimOrder(orderId);
 
         vm.prank(Actors.VM1);
-        market.confirmOrder(orderId);
+        market.confirmOrder(orderId, _buildPriceProof(TSLA_PRICE));
 
         Order memory order = market.getOrder(orderId);
         assertEq(uint8(order.status), uint8(OrderStatus.Confirmed));

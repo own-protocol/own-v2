@@ -19,21 +19,24 @@ contract PythOracleVerifier is IOracleVerifier, Ownable {
     IPyth public immutable pyth;
     uint256 public maxPriceAge;
 
-    /// @dev Asset ticker → Pyth price feed ID.
-    mapping(bytes32 => bytes32) private _feedIds;
+    /// @dev Asset ticker → session feed IDs.
+    ///      Index 0 = regular, 1 = pre-market, 2 = post-market, 3 = overnight.
+    ///      verifyPrice() always uses index 0 (regular). verifyPriceForSession() uses the specified index.
+    mapping(bytes32 => bytes32[4]) private _feedIds;
 
     // ──────────────────────────────────────────────────────────
     //  Errors
     // ──────────────────────────────────────────────────────────
 
     error FeedNotConfigured(bytes32 asset);
+    error InvalidSessionId(uint8 sessionId);
     error NegativePrice(bytes32 asset, int64 rawPrice);
 
     // ──────────────────────────────────────────────────────────
     //  Events
     // ──────────────────────────────────────────────────────────
 
-    event FeedIdSet(bytes32 indexed asset, bytes32 feedId);
+    event FeedIdSet(bytes32 indexed asset, uint8 sessionId, bytes32 feedId);
     event MaxPriceAgeUpdated(uint256 oldAge, uint256 newAge);
 
     // ──────────────────────────────────────────────────────────
@@ -68,7 +71,7 @@ contract PythOracleVerifier is IOracleVerifier, Ownable {
     function getPrice(
         bytes32 asset
     ) external view override returns (uint256 price, uint256 timestamp) {
-        bytes32 feedId = _feedIds[asset];
+        bytes32 feedId = _feedIds[asset][0];
         if (feedId == bytes32(0)) revert FeedNotConfigured(asset);
 
         PythStructs.Price memory pythPrice = pyth.getPriceNoOlderThan(feedId, maxPriceAge);
@@ -81,30 +84,23 @@ contract PythOracleVerifier is IOracleVerifier, Ownable {
     // ──────────────────────────────────────────────────────────
 
     /// @inheritdoc IOracleVerifier
-    /// @dev priceData encodes (bytes[] updateData, uint64 minPublishTime, uint64 maxPublishTime).
-    ///      The caller submits a Pyth VAA blob attesting to a price within [minPublishTime, maxPublishTime].
-    ///      parsePriceFeedUpdates cryptographically verifies the VAA and returns the attested price.
+    /// @dev Uses index 0 (regular session) feed only. For multi-session, use verifyPriceForSession.
     ///      Caller must send ETH >= verifyFee(priceData) to cover the Pyth fee.
     function verifyPrice(
         bytes32 asset,
         bytes calldata priceData
     ) external payable override returns (uint256 price, uint256 timestamp) {
-        bytes32 feedId = _feedIds[asset];
-        if (feedId == bytes32(0)) revert FeedNotConfigured(asset);
+        return _verifyPriceWithFeed(asset, _feedIds[asset][0], priceData);
+    }
 
-        (bytes[] memory updateData, uint64 minPublishTime, uint64 maxPublishTime) =
-            abi.decode(priceData, (bytes[], uint64, uint64));
-
-        bytes32[] memory priceIds = new bytes32[](1);
-        priceIds[0] = feedId;
-
-        uint256 fee = pyth.getUpdateFee(updateData);
-        PythStructs.PriceFeed[] memory feeds =
-            pyth.parsePriceFeedUpdates{value: fee}(updateData, priceIds, minPublishTime, maxPublishTime);
-
-        PythStructs.Price memory pythPrice = feeds[0].price;
-        price = _normalizePythPrice(asset, pythPrice);
-        timestamp = uint256(uint64(pythPrice.publishTime));
+    /// @inheritdoc IOracleVerifier
+    function verifyPriceForSession(
+        bytes32 asset,
+        bytes calldata priceData,
+        uint8 sessionId
+    ) external payable override returns (uint256 price, uint256 timestamp) {
+        if (sessionId >= 4) revert InvalidSessionId(sessionId);
+        return _verifyPriceWithFeed(asset, _feedIds[asset][sessionId], priceData);
     }
 
     /// @inheritdoc IOracleVerifier
@@ -146,9 +142,14 @@ contract PythOracleVerifier is IOracleVerifier, Ownable {
     //  Admin — feed configuration
     // ──────────────────────────────────────────────────────────
 
-    function setFeedId(bytes32 asset, bytes32 feedId) external onlyOwner {
-        _feedIds[asset] = feedId;
-        emit FeedIdSet(asset, feedId);
+    /// @notice Set the Pyth feed ID for an asset and trading session.
+    /// @param asset     Asset ticker.
+    /// @param sessionId Session index (0=regular, 1=pre-market, 2=post-market, 3=overnight).
+    /// @param feedId    Pyth price feed ID.
+    function setFeedId(bytes32 asset, uint8 sessionId, bytes32 feedId) external onlyOwner {
+        if (sessionId >= 4) revert InvalidSessionId(sessionId);
+        _feedIds[asset][sessionId] = feedId;
+        emit FeedIdSet(asset, sessionId, feedId);
     }
 
     function setMaxPriceAge(
@@ -159,15 +160,37 @@ contract PythOracleVerifier is IOracleVerifier, Ownable {
         emit MaxPriceAgeUpdated(old, newMaxAge);
     }
 
-    function getFeedId(
-        bytes32 asset
-    ) external view returns (bytes32) {
-        return _feedIds[asset];
+    /// @notice Get the Pyth feed ID for an asset and trading session.
+    function getFeedId(bytes32 asset, uint8 sessionId) external view returns (bytes32) {
+        return _feedIds[asset][sessionId];
     }
 
     // ──────────────────────────────────────────────────────────
     //  Internal
     // ──────────────────────────────────────────────────────────
+
+    /// @dev Shared verification logic for both verifyPrice and verifyPriceForSession.
+    function _verifyPriceWithFeed(
+        bytes32 asset,
+        bytes32 feedId,
+        bytes calldata priceData
+    ) private returns (uint256 price, uint256 timestamp) {
+        if (feedId == bytes32(0)) revert FeedNotConfigured(asset);
+
+        (bytes[] memory updateData, uint64 minPublishTime, uint64 maxPublishTime) =
+            abi.decode(priceData, (bytes[], uint64, uint64));
+
+        bytes32[] memory priceIds = new bytes32[](1);
+        priceIds[0] = feedId;
+
+        uint256 fee = pyth.getUpdateFee(updateData);
+        PythStructs.PriceFeed[] memory feeds =
+            pyth.parsePriceFeedUpdates{value: fee}(updateData, priceIds, minPublishTime, maxPublishTime);
+
+        PythStructs.Price memory pythPrice = feeds[0].price;
+        price = _normalizePythPrice(asset, pythPrice);
+        timestamp = uint256(uint64(pythPrice.publishTime));
+    }
 
     function _normalizePythPrice(bytes32 asset, PythStructs.Price memory pythPrice) private pure returns (uint256) {
         if (pythPrice.price <= 0) revert NegativePrice(asset, pythPrice.price);

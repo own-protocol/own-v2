@@ -77,6 +77,11 @@ contract OwnMarketTest is BaseTest {
         OracleConfig memory ethOracleConfig =
             OracleConfig({primaryOracle: address(oracle), secondaryOracle: address(0)});
         assetReg.setOracleConfig(ethAsset, ethOracleConfig);
+
+        // Configure TSLA oracle for price verification during confirm
+        OracleConfig memory tslaOracleConfig =
+            OracleConfig({primaryOracle: address(oracle), secondaryOracle: address(0)});
+        assetReg.setOracleConfig(TSLA, tslaOracleConfig);
         vm.stopPrank();
         vm.label(address(market), "OwnMarket");
 
@@ -338,7 +343,7 @@ contract OwnMarketTest is BaseTest {
         _claimOrder(Actors.VM1, orderId);
 
         vm.prank(Actors.VM1);
-        market.confirmOrder(orderId);
+        market.confirmOrder(orderId, _buildPriceProof(TSLA_PRICE));
 
         Order memory order = market.getOrder(orderId);
         assertEq(uint256(order.status), uint256(OrderStatus.Confirmed));
@@ -353,7 +358,7 @@ contract OwnMarketTest is BaseTest {
 
         vm.prank(Actors.VM1);
         vm.expectRevert(abi.encodeWithSelector(IOwnMarket.InvalidOrderStatus.selector, orderId, OrderStatus.Open));
-        market.confirmOrder(orderId);
+        market.confirmOrder(orderId, _buildPriceProof(TSLA_PRICE));
     }
 
     function test_confirmOrder_mint_wrongVM_reverts() public {
@@ -364,7 +369,7 @@ contract OwnMarketTest is BaseTest {
 
         vm.prank(Actors.VM2);
         vm.expectRevert();
-        market.confirmOrder(orderId);
+        market.confirmOrder(orderId, _buildPriceProof(TSLA_PRICE));
     }
 
     // ══════════════════════════════════════════════════════════
@@ -385,7 +390,7 @@ contract OwnMarketTest is BaseTest {
         usdc.approve(address(market), grossPayout);
 
         vm.prank(Actors.VM1);
-        market.confirmOrder(orderId);
+        market.confirmOrder(orderId, _buildPriceProof(TSLA_PRICE));
 
         Order memory order = market.getOrder(orderId);
         assertEq(uint256(order.status), uint256(OrderStatus.Confirmed));
@@ -709,7 +714,7 @@ contract OwnMarketTest is BaseTest {
         _claimOrder(Actors.VM1, orderId);
 
         vm.prank(Actors.VM1);
-        market.confirmOrder(orderId);
+        market.confirmOrder(orderId, _buildPriceProof(TSLA_PRICE));
 
         vm.warp(block.timestamp + GRACE_PERIOD + 1);
 
@@ -743,7 +748,7 @@ contract OwnMarketTest is BaseTest {
         assertEq(usdc.balanceOf(address(market)), expectedFee);
 
         vm.prank(Actors.VM1);
-        market.confirmOrder(orderId);
+        market.confirmOrder(orderId, _buildPriceProof(TSLA_PRICE));
 
         // eTokens minted based on net amount
         uint256 expectedETokens = Math.mulDiv(netToVM * 1e12, PRECISION, TSLA_PRICE);
@@ -776,7 +781,7 @@ contract OwnMarketTest is BaseTest {
         usdc.approve(address(market), grossPayout);
 
         vm.prank(Actors.VM1);
-        market.confirmOrder(orderId);
+        market.confirmOrder(orderId, _buildPriceProof(TSLA_PRICE));
 
         // User gets net
         assertEq(usdc.balanceOf(Actors.MINTER1), netToUser);
@@ -849,7 +854,7 @@ contract OwnMarketTest is BaseTest {
         _claimOrder(Actors.VM1, orderId);
 
         vm.prank(Actors.VM1);
-        market.confirmOrder(orderId);
+        market.confirmOrder(orderId, _buildPriceProof(TSLA_PRICE));
 
         // eTokens should be minted
         assertGt(eTSLAToken.balanceOf(Actors.MINTER1), 0);

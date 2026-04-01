@@ -100,6 +100,15 @@ contract MockOracleVerifier is IOracleVerifier {
         if (price == 0) revert ZeroPrice();
     }
 
+    /// @dev Session-aware variant — delegates to verifyPrice in mock (sessions are irrelevant).
+    function verifyPriceForSession(
+        bytes32 asset,
+        bytes calldata priceData,
+        uint8
+    ) external payable override returns (uint256 price, uint256 timestamp) {
+        return this.verifyPrice(asset, priceData);
+    }
+
     /// @dev Mock always returns 0 fee — no ETH needed for test proofs.
     function verifyFee(
         bytes calldata
