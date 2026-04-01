@@ -14,6 +14,7 @@ import {VaultFactory} from "../src/core/VaultFactory.sol";
 import {AssetConfig} from "../src/interfaces/types/Types.sol";
 import {WETHRouter} from "../src/periphery/WETHRouter.sol";
 import {EToken} from "../src/tokens/EToken.sol";
+import {ETokenFactory} from "../src/tokens/ETokenFactory.sol";
 import {MockERC20} from "../test/helpers/MockERC20.sol";
 
 /// @title Deploy — Deploy all core Own Protocol contracts to Base Sepolia
@@ -106,12 +107,15 @@ contract Deploy is Script {
         OwnMarket market = new OwnMarket(address(registry));
         console.log("OwnMarket:", address(market));
 
-        // ── 8. ETokens ──────────────────────────────────────
-        EToken eTSLA = new EToken("Own Tesla", "eTSLA", TSLA, address(registry), address(mockUSDC));
-        console.log("EToken TSLA:", address(eTSLA));
+        // ── 8. ETokenFactory + ETokens ──────────────────────
+        ETokenFactory etokenFactory = new ETokenFactory(deployer, address(registry));
+        console.log("ETokenFactory:", address(etokenFactory));
 
-        EToken eGOLD = new EToken("Own Gold", "eGOLD", GOLD, address(registry), address(mockUSDC));
-        console.log("EToken GOLD:", address(eGOLD));
+        address eTSLA = etokenFactory.createEToken("Own Tesla", "eTSLA", TSLA, address(mockUSDC));
+        console.log("EToken TSLA:", eTSLA);
+
+        address eGOLD = etokenFactory.createEToken("Own Gold", "eGOLD", GOLD, address(mockUSDC));
+        console.log("EToken GOLD:", eGOLD);
 
         // ── 9. WETHRouter ───────────────────────────────────
         WETHRouter wethRouter = new WETHRouter(WETH);
@@ -124,15 +128,16 @@ contract Deploy is Script {
         registry.setAddress(registry.VAULT_FACTORY(), address(factory));
         registry.setAddress(registry.MARKET(), address(market));
         registry.setAddress(registry.PYTH_ORACLE(), address(pythOracle));
+        registry.setAddress(registry.ETOKEN_FACTORY(), address(etokenFactory));
         registry.setProtocolShareBps(PROTOCOL_SHARE_BPS);
 
         // ── 11. Add assets to AssetRegistry ─────────────────
         // TSLA — volatility level 2 (medium), oracleType 0 (Pyth)
         assetRegistry.addAsset(
             TSLA,
-            address(eTSLA),
+            eTSLA,
             AssetConfig({
-                activeToken: address(eTSLA),
+                activeToken: eTSLA,
                 legacyTokens: new address[](0),
                 active: true,
                 volatilityLevel: 2,
@@ -143,9 +148,9 @@ contract Deploy is Script {
         // GOLD — volatility level 1 (low), oracleType 0 (Pyth)
         assetRegistry.addAsset(
             GOLD,
-            address(eGOLD),
+            eGOLD,
             AssetConfig({
-                activeToken: address(eGOLD),
+                activeToken: eGOLD,
                 legacyTokens: new address[](0),
                 active: true,
                 volatilityLevel: 1,

@@ -21,6 +21,7 @@ contract ProtocolRegistry is IProtocolRegistry, Ownable {
     bytes32 public constant VAULT_FACTORY = keccak256("VAULT_FACTORY");
     bytes32 public constant PYTH_ORACLE = keccak256("PYTH_ORACLE");
     bytes32 public constant INHOUSE_ORACLE = keccak256("INHOUSE_ORACLE");
+    bytes32 public constant ETOKEN_FACTORY = keccak256("ETOKEN_FACTORY");
 
     // ──────────────────────────────────────────────────────────────
     //  Types
@@ -95,6 +96,11 @@ contract ProtocolRegistry is IProtocolRegistry, Ownable {
     /// @inheritdoc IProtocolRegistry
     function inhouseOracle() external view override returns (address) {
         return _addresses[INHOUSE_ORACLE];
+    }
+
+    /// @inheritdoc IProtocolRegistry
+    function etokenFactory() external view override returns (address) {
+        return _addresses[ETOKEN_FACTORY];
     }
 
     /// @inheritdoc IProtocolRegistry
