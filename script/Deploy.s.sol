@@ -11,7 +11,7 @@ import {ProtocolRegistry} from "../src/core/ProtocolRegistry.sol";
 import {PythOracleVerifier} from "../src/core/PythOracleVerifier.sol";
 import {VaultFactory} from "../src/core/VaultFactory.sol";
 
-import {AssetConfig, OracleConfig} from "../src/interfaces/types/Types.sol";
+import {AssetConfig} from "../src/interfaces/types/Types.sol";
 import {WETHRouter} from "../src/periphery/WETHRouter.sol";
 import {EToken} from "../src/tokens/EToken.sol";
 import {MockERC20} from "../test/helpers/MockERC20.sol";
@@ -123,37 +123,47 @@ contract Deploy is Script {
         registry.setAddress(keccak256("FEE_CALCULATOR"), address(feeCalc));
         registry.setAddress(registry.VAULT_FACTORY(), address(factory));
         registry.setAddress(registry.MARKET(), address(market));
+        registry.setAddress(registry.PYTH_ORACLE(), address(pythOracle));
         registry.setProtocolShareBps(PROTOCOL_SHARE_BPS);
 
         // ── 11. Add assets to AssetRegistry ─────────────────
-        // TSLA — volatility level 2 (medium)
+        // TSLA — volatility level 2 (medium), oracleType 0 (Pyth)
         assetRegistry.addAsset(
             TSLA,
             address(eTSLA),
-            AssetConfig({activeToken: address(eTSLA), legacyTokens: new address[](0), active: true, volatilityLevel: 2})
-        );
-        assetRegistry.setOracleConfig(
-            TSLA, OracleConfig({primaryOracle: address(pythOracle), secondaryOracle: address(0)})
+            AssetConfig({
+                activeToken: address(eTSLA),
+                legacyTokens: new address[](0),
+                active: true,
+                volatilityLevel: 2,
+                oracleType: 0
+            })
         );
 
-        // GOLD — volatility level 1 (low)
+        // GOLD — volatility level 1 (low), oracleType 0 (Pyth)
         assetRegistry.addAsset(
             GOLD,
             address(eGOLD),
-            AssetConfig({activeToken: address(eGOLD), legacyTokens: new address[](0), active: true, volatilityLevel: 1})
-        );
-        assetRegistry.setOracleConfig(
-            GOLD, OracleConfig({primaryOracle: address(pythOracle), secondaryOracle: address(0)})
+            AssetConfig({
+                activeToken: address(eGOLD),
+                legacyTokens: new address[](0),
+                active: true,
+                volatilityLevel: 1,
+                oracleType: 0
+            })
         );
 
-        // ETH — registered for collateral pricing (no eToken)
+        // ETH — registered for collateral pricing (no eToken), oracleType 0 (Pyth)
         assetRegistry.addAsset(
             ETH,
             WETH,
-            AssetConfig({activeToken: WETH, legacyTokens: new address[](0), active: true, volatilityLevel: 2})
-        );
-        assetRegistry.setOracleConfig(
-            ETH, OracleConfig({primaryOracle: address(pythOracle), secondaryOracle: address(0)})
+            AssetConfig({
+                activeToken: WETH,
+                legacyTokens: new address[](0),
+                active: true,
+                volatilityLevel: 2,
+                oracleType: 0
+            })
         );
 
         vm.stopBroadcast();

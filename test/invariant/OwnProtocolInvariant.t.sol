@@ -10,7 +10,7 @@ import {OwnMarket} from "../../src/core/OwnMarket.sol";
 import {OwnVault} from "../../src/core/OwnVault.sol";
 import {VaultFactory} from "../../src/core/VaultFactory.sol";
 
-import {AssetConfig, OracleConfig, PRECISION} from "../../src/interfaces/types/Types.sol";
+import {AssetConfig, PRECISION} from "../../src/interfaces/types/Types.sol";
 import {EToken} from "../../src/tokens/EToken.sol";
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -110,20 +110,24 @@ contract OwnProtocolInvariant is BaseTest {
 
         // eTSLA (volatility level 2)
         eTSLA = new EToken("Own Tesla", "eTSLA", TSLA, address(protocolRegistry), address(usdc));
-        AssetConfig memory tslaConfig =
-            AssetConfig({activeToken: address(eTSLA), legacyTokens: new address[](0), active: true, volatilityLevel: 2});
+        AssetConfig memory tslaConfig = AssetConfig({
+            activeToken: address(eTSLA),
+            legacyTokens: new address[](0),
+            active: true,
+            volatilityLevel: 2,
+            oracleType: 1
+        });
         assetRegistry.addAsset(TSLA, address(eTSLA), tslaConfig);
-        OracleConfig memory tslaOracleConfig =
-            OracleConfig({primaryOracle: address(oracle), secondaryOracle: address(0)});
-        assetRegistry.setOracleConfig(TSLA, tslaOracleConfig);
 
         // ETH collateral oracle
-        AssetConfig memory ethConfig =
-            AssetConfig({activeToken: address(weth), legacyTokens: new address[](0), active: true, volatilityLevel: 1});
+        AssetConfig memory ethConfig = AssetConfig({
+            activeToken: address(weth),
+            legacyTokens: new address[](0),
+            active: true,
+            volatilityLevel: 1,
+            oracleType: 1
+        });
         assetRegistry.addAsset(ETH_ASSET, address(weth), ethConfig);
-        OracleConfig memory ethOracleConfig =
-            OracleConfig({primaryOracle: address(oracle), secondaryOracle: address(0)});
-        assetRegistry.setOracleConfig(ETH_ASSET, ethOracleConfig);
         vault.setCollateralOracleAsset(ETH_ASSET);
 
         vm.stopPrank();

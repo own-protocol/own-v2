@@ -70,6 +70,12 @@ interface IProtocolRegistry {
     /// @notice Returns the VaultFactory contract address.
     function vaultFactory() external view returns (address);
 
+    /// @notice Returns the PythOracleVerifier contract address.
+    function pythOracle() external view returns (address);
+
+    /// @notice Returns the in-house OracleVerifier contract address.
+    function inhouseOracle() external view returns (address);
+
     /// @notice Returns the protocol's share of order fees in BPS.
     function protocolShareBps() external view returns (uint256);
 

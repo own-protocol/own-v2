@@ -605,7 +605,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         bytes calldata collateralPriceData
     ) private returns (uint256) {
         bytes32 collatAsset = IOwnVault(order.vault).collateralOracleAsset();
-        address oracleAddr = IAssetRegistry(registry.assetRegistry()).getPrimaryOracle(collatAsset);
+        address oracleAddr = _getOracleForAsset(collatAsset);
         if (oracleAddr == address(0)) revert CollateralOracleNotSet();
         IOracleVerifier oracle = IOracleVerifier(oracleAddr);
         uint256 fee = oracle.verifyFee(collateralPriceData);
@@ -623,7 +623,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         price = IOwnVault(vault).getAssetHaltPrice(asset);
         if (price > 0) return price;
 
-        address oracleAddr = IAssetRegistry(registry.assetRegistry()).getPrimaryOracle(asset);
+        address oracleAddr = _getOracleForAsset(asset);
         if (oracleAddr != address(0)) {
             (price,) = IOracleVerifier(oracleAddr).getPrice(asset);
         }
@@ -654,7 +654,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
 
         (bytes memory lowPriceData, bytes memory highPriceData) = abi.decode(priceProofData, (bytes, bytes));
 
-        address oracleAddr = IAssetRegistry(registry.assetRegistry()).getPrimaryOracle(order.asset);
+        address oracleAddr = _getOracleForAsset(order.asset);
         if (oracleAddr == address(0)) return false;
 
         uint256 windowStart = order.claimedAt > 0 ? order.claimedAt : order.createdAt;
@@ -690,7 +690,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         (bytes memory lowPriceData, bytes memory highPriceData, uint8 sessionId) =
             abi.decode(priceProofData, (bytes, bytes, uint8));
 
-        address oracleAddr = IAssetRegistry(registry.assetRegistry()).getPrimaryOracle(order.asset);
+        address oracleAddr = _getOracleForAsset(order.asset);
         if (oracleAddr == address(0)) return false;
 
         uint256 windowStart = order.claimedAt > 0 ? order.claimedAt : order.createdAt;
@@ -734,6 +734,15 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         } else {
             return order.amount;
         }
+    }
+
+    /// @dev Resolve the oracle address for an asset via ProtocolRegistry.
+    function _getOracleForAsset(
+        bytes32 asset
+    ) private view returns (address) {
+        uint8 oracleType = IAssetRegistry(registry.assetRegistry()).getOracleType(asset);
+        if (oracleType == 0) return registry.pythOracle();
+        return registry.inhouseOracle();
     }
 
     /// @dev Remove an order from the open orders array (swap-and-pop).

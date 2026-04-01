@@ -3,7 +3,7 @@ pragma solidity 0.8.28;
 
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {IAssetRegistry} from "../../src/interfaces/IAssetRegistry.sol";
-import {AssetConfig, OracleConfig} from "../../src/interfaces/types/Types.sol";
+import {AssetConfig} from "../../src/interfaces/types/Types.sol";
 import {Actors} from "../helpers/Actors.sol";
 import {BaseTest} from "../helpers/BaseTest.sol";
 
@@ -31,7 +31,13 @@ contract AssetRegistryTest is BaseTest {
     function _defaultConfig(
         address token
     ) internal pure returns (AssetConfig memory) {
-        return AssetConfig({activeToken: token, legacyTokens: new address[](0), active: true, volatilityLevel: 2});
+        return AssetConfig({
+            activeToken: token,
+            legacyTokens: new address[](0),
+            active: true,
+            volatilityLevel: 2,
+            oracleType: 1
+        });
     }
 
     // ──────────────────────────────────────────────────────────
@@ -286,31 +292,36 @@ contract AssetRegistryTest is BaseTest {
     }
 
     // ──────────────────────────────────────────────────────────
-    //  switchPrimaryOracle
+    //  getOracleType
     // ──────────────────────────────────────────────────────────
 
-    function test_switchPrimaryOracle_succeeds() public {
-        address oracleA = makeAddr("oracleA");
-        address oracleB = makeAddr("oracleB");
+    function test_getOracleType_returnsConfiguredType() public {
+        AssetConfig memory config = _defaultConfig(eTSLA);
+        // _defaultConfig sets oracleType = 1 (in-house)
 
-        vm.startPrank(Actors.ADMIN);
-        registry.addAsset(TSLA, eTSLA, _defaultConfig(eTSLA));
-        registry.setOracleConfig(TSLA, OracleConfig(oracleA, oracleB));
-        registry.switchPrimaryOracle(TSLA);
-        vm.stopPrank();
+        vm.prank(Actors.ADMIN);
+        registry.addAsset(TSLA, eTSLA, config);
 
-        assertEq(registry.getPrimaryOracle(TSLA), oracleB);
+        assertEq(registry.getOracleType(TSLA), 1);
     }
 
-    function test_switchPrimaryOracle_noSecondary_reverts() public {
-        address oracleA = makeAddr("oracleA");
+    function test_getOracleType_pythType() public {
+        AssetConfig memory config = AssetConfig({
+            activeToken: eGOLD,
+            legacyTokens: new address[](0),
+            active: true,
+            volatilityLevel: 1,
+            oracleType: 0
+        });
 
-        vm.startPrank(Actors.ADMIN);
-        registry.addAsset(TSLA, eTSLA, _defaultConfig(eTSLA));
-        registry.setOracleConfig(TSLA, OracleConfig(oracleA, address(0)));
+        vm.prank(Actors.ADMIN);
+        registry.addAsset(GOLD, eGOLD, config);
 
-        vm.expectRevert(IAssetRegistry.ZeroAddress.selector);
-        registry.switchPrimaryOracle(TSLA);
-        vm.stopPrank();
+        assertEq(registry.getOracleType(GOLD), 0);
+    }
+
+    function test_getOracleType_nonExistent_reverts() public {
+        vm.expectRevert(abi.encodeWithSelector(IAssetRegistry.AssetNotFound.selector, TSLA));
+        registry.getOracleType(TSLA);
     }
 }

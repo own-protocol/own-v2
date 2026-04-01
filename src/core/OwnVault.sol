@@ -639,7 +639,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
     function updateAssetValuation(
         bytes32 asset_
     ) external {
-        address oracleAddr = IAssetRegistry(registry.assetRegistry()).getPrimaryOracle(asset_);
+        address oracleAddr = _getOracleForAsset(asset_);
         if (oracleAddr == address(0)) revert PriceNotAvailable(asset_);
 
         (uint256 price,) = IOracleVerifier(oracleAddr).getPrice(asset_);
@@ -935,7 +935,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
         bytes32 collatAsset = _collateralOracleAsset;
         if (collatAsset == bytes32(0)) return;
 
-        address oracleAddr = IAssetRegistry(registry.assetRegistry()).getPrimaryOracle(collatAsset);
+        address oracleAddr = _getOracleForAsset(collatAsset);
         if (oracleAddr == address(0)) return;
 
         (uint256 price,) = IOracleVerifier(oracleAddr).getPrice(collatAsset);
@@ -949,6 +949,15 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
     // ──────────────────────────────────────────────────────────
     //  Internal — helpers
     // ──────────────────────────────────────────────────────────
+
+    /// @dev Resolve the oracle address for an asset via ProtocolRegistry.
+    function _getOracleForAsset(
+        bytes32 asset
+    ) private view returns (address) {
+        uint8 oracleType = IAssetRegistry(registry.assetRegistry()).getOracleType(asset);
+        if (oracleType == 0) return registry.pythOracle();
+        return registry.inhouseOracle();
+    }
 
     /// @dev Remove a request ID from the pending withdrawal list (swap-and-pop).
     function _removePendingRequest(

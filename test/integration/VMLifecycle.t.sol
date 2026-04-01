@@ -5,7 +5,7 @@ import {Actors} from "../helpers/Actors.sol";
 import {BaseTest} from "../helpers/BaseTest.sol";
 
 import {IOwnVault} from "../../src/interfaces/IOwnVault.sol";
-import {AssetConfig, OracleConfig, OrderStatus} from "../../src/interfaces/types/Types.sol";
+import {AssetConfig, OrderStatus} from "../../src/interfaces/types/Types.sol";
 
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {FeeCalculator} from "../../src/core/FeeCalculator.sol";
@@ -59,13 +59,14 @@ contract VMLifecycleTest is BaseTest {
 
         eTSLA = new EToken("Own Tesla", "eTSLA", TSLA, address(protocolRegistry), address(usdc));
 
-        AssetConfig memory config =
-            AssetConfig({activeToken: address(eTSLA), legacyTokens: new address[](0), active: true, volatilityLevel: 2});
+        AssetConfig memory config = AssetConfig({
+            activeToken: address(eTSLA),
+            legacyTokens: new address[](0),
+            active: true,
+            volatilityLevel: 2,
+            oracleType: 1
+        });
         assetRegistry.addAsset(TSLA, address(eTSLA), config);
-
-        OracleConfig memory tslaOracleConfig =
-            OracleConfig({primaryOracle: address(oracle), secondaryOracle: address(0)});
-        assetRegistry.setOracleConfig(TSLA, tslaOracleConfig);
 
         market = new OwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));

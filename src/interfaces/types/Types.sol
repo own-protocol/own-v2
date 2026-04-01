@@ -107,11 +107,13 @@ struct WithdrawalRequest {
 /// @param legacyTokens    Previous eToken addresses (post-split).
 /// @param active          Whether the asset is active for new orders.
 /// @param volatilityLevel Volatility tier for fee lookup (1=low, 2=medium, 3=high).
+/// @param oracleType      Oracle backend (0 = Pyth, 1 = in-house).
 struct AssetConfig {
     address activeToken;
     address[] legacyTokens;
     bool active;
     uint8 volatilityLevel;
+    uint8 oracleType;
 }
 
 /// @notice An async LP deposit request.
@@ -128,14 +130,6 @@ struct DepositRequest {
     uint256 assets;
     uint256 timestamp;
     DepositStatus status;
-}
-
-/// @notice Oracle configuration for an asset.
-/// @param primaryOracle   IOracleVerifier used for price verification.
-/// @param secondaryOracle Backup IOracleVerifier (address(0) if none).
-struct OracleConfig {
-    address primaryOracle;
-    address secondaryOracle;
 }
 
 /// @notice Onchain state for a registered vault manager.

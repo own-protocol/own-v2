@@ -5,15 +5,7 @@ import {Actors} from "../helpers/Actors.sol";
 import {BaseTest} from "../helpers/BaseTest.sol";
 
 import {IOwnMarket} from "../../src/interfaces/IOwnMarket.sol";
-import {
-    AssetConfig,
-    BPS,
-    OracleConfig,
-    Order,
-    OrderStatus,
-    OrderType,
-    PRECISION
-} from "../../src/interfaces/types/Types.sol";
+import {AssetConfig, BPS, Order, OrderStatus, OrderType, PRECISION} from "../../src/interfaces/types/Types.sol";
 
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {FeeCalculator} from "../../src/core/FeeCalculator.sol";
@@ -95,22 +87,23 @@ contract MintFlowTest is BaseTest {
         eGOLD = new EToken("Own Gold", "eGOLD", GOLD, address(protocolRegistry), address(usdc));
         vm.label(address(eGOLD), "eGOLD");
 
-        AssetConfig memory tslaConfig =
-            AssetConfig({activeToken: address(eTSLA), legacyTokens: new address[](0), active: true, volatilityLevel: 2});
+        AssetConfig memory tslaConfig = AssetConfig({
+            activeToken: address(eTSLA),
+            legacyTokens: new address[](0),
+            active: true,
+            volatilityLevel: 2,
+            oracleType: 1
+        });
         assetRegistry.addAsset(TSLA, address(eTSLA), tslaConfig);
 
-        AssetConfig memory goldConfig =
-            AssetConfig({activeToken: address(eGOLD), legacyTokens: new address[](0), active: true, volatilityLevel: 2});
+        AssetConfig memory goldConfig = AssetConfig({
+            activeToken: address(eGOLD),
+            legacyTokens: new address[](0),
+            active: true,
+            volatilityLevel: 2,
+            oracleType: 1
+        });
         assetRegistry.addAsset(GOLD, address(eGOLD), goldConfig);
-
-        // Configure oracles for price verification during confirm
-        OracleConfig memory tslaOracleConfig =
-            OracleConfig({primaryOracle: address(oracle), secondaryOracle: address(0)});
-        assetRegistry.setOracleConfig(TSLA, tslaOracleConfig);
-
-        OracleConfig memory goldOracleConfig =
-            OracleConfig({primaryOracle: address(oracle), secondaryOracle: address(0)});
-        assetRegistry.setOracleConfig(GOLD, goldOracleConfig);
 
         vm.stopPrank();
     }

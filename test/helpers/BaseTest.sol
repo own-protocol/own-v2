@@ -156,8 +156,10 @@ contract BaseTest is Test {
     function _deployMockInfrastructure() private {
         oracle = new MockOracleVerifier();
         dex = new MockDEX();
-        vm.prank(Actors.ADMIN);
+        vm.startPrank(Actors.ADMIN);
         protocolRegistry = new ProtocolRegistry(Actors.ADMIN, 2 days);
+        protocolRegistry.setAddress(keccak256("INHOUSE_ORACLE"), address(oracle));
+        vm.stopPrank();
     }
 
     function _labelActors() private {

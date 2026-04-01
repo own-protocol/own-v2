@@ -7,15 +7,7 @@ import {IOwnMarket} from "../../src/interfaces/IOwnMarket.sol";
 
 import {IOwnVault} from "../../src/interfaces/IOwnVault.sol";
 import {IVaultFactory} from "../../src/interfaces/IVaultFactory.sol";
-import {
-    AssetConfig,
-    BPS,
-    OracleConfig,
-    Order,
-    OrderStatus,
-    OrderType,
-    PRECISION
-} from "../../src/interfaces/types/Types.sol";
+import {AssetConfig, BPS, Order, OrderStatus, OrderType, PRECISION} from "../../src/interfaces/types/Types.sol";
 
 import {FeeCalculator} from "../../src/core/FeeCalculator.sol";
 import {Actors} from "../helpers/Actors.sol";
@@ -49,7 +41,8 @@ contract OwnMarketTest is BaseTest {
             activeToken: address(eTSLAToken),
             legacyTokens: new address[](0),
             active: true,
-            volatilityLevel: 2
+            volatilityLevel: 2,
+            oracleType: 1
         });
         assetReg.addAsset(TSLA, address(eTSLAToken), config);
         vm.stopPrank();
@@ -71,17 +64,15 @@ contract OwnMarketTest is BaseTest {
 
         // Configure ETH oracle for force execution collateral conversion
         bytes32 ethAsset = bytes32("ETH");
-        AssetConfig memory ethConfig =
-            AssetConfig({activeToken: address(0), legacyTokens: new address[](0), active: true, volatilityLevel: 1});
+        AssetConfig memory ethConfig = AssetConfig({
+            activeToken: address(0),
+            legacyTokens: new address[](0),
+            active: true,
+            volatilityLevel: 1,
+            oracleType: 1
+        });
         assetReg.addAsset(ethAsset, address(weth), ethConfig);
-        OracleConfig memory ethOracleConfig =
-            OracleConfig({primaryOracle: address(oracle), secondaryOracle: address(0)});
-        assetReg.setOracleConfig(ethAsset, ethOracleConfig);
 
-        // Configure TSLA oracle for price verification during confirm
-        OracleConfig memory tslaOracleConfig =
-            OracleConfig({primaryOracle: address(oracle), secondaryOracle: address(0)});
-        assetReg.setOracleConfig(TSLA, tslaOracleConfig);
         vm.stopPrank();
         vm.label(address(market), "OwnMarket");
 

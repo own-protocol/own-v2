@@ -4,7 +4,7 @@ pragma solidity 0.8.28;
 import {Actors} from "../helpers/Actors.sol";
 import {BaseTest} from "../helpers/BaseTest.sol";
 
-import {AssetConfig, BPS, OracleConfig, OrderStatus, PRECISION} from "../../src/interfaces/types/Types.sol";
+import {AssetConfig, BPS, OrderStatus, PRECISION} from "../../src/interfaces/types/Types.sol";
 
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {FeeCalculator} from "../../src/core/FeeCalculator.sol";
@@ -77,27 +77,33 @@ contract CollateralValuationTest is BaseTest {
         vm.startPrank(Actors.ADMIN);
 
         eTSLA = new EToken("Own Tesla", "eTSLA", TSLA, address(protocolRegistry), address(usdc));
-        AssetConfig memory tslaConfig =
-            AssetConfig({activeToken: address(eTSLA), legacyTokens: new address[](0), active: true, volatilityLevel: 2});
+        AssetConfig memory tslaConfig = AssetConfig({
+            activeToken: address(eTSLA),
+            legacyTokens: new address[](0),
+            active: true,
+            volatilityLevel: 2,
+            oracleType: 1
+        });
         assetRegistry.addAsset(TSLA, address(eTSLA), tslaConfig);
-        OracleConfig memory tslaOracleConfig =
-            OracleConfig({primaryOracle: address(oracle), secondaryOracle: address(0)});
-        assetRegistry.setOracleConfig(TSLA, tslaOracleConfig);
 
         eGOLD = new EToken("Own Gold", "eGOLD", GOLD, address(protocolRegistry), address(usdc));
-        AssetConfig memory goldConfig =
-            AssetConfig({activeToken: address(eGOLD), legacyTokens: new address[](0), active: true, volatilityLevel: 2});
+        AssetConfig memory goldConfig = AssetConfig({
+            activeToken: address(eGOLD),
+            legacyTokens: new address[](0),
+            active: true,
+            volatilityLevel: 2,
+            oracleType: 1
+        });
         assetRegistry.addAsset(GOLD, address(eGOLD), goldConfig);
-        OracleConfig memory goldOracleConfig =
-            OracleConfig({primaryOracle: address(oracle), secondaryOracle: address(0)});
-        assetRegistry.setOracleConfig(GOLD, goldOracleConfig);
 
-        AssetConfig memory ethConfig =
-            AssetConfig({activeToken: address(weth), legacyTokens: new address[](0), active: true, volatilityLevel: 1});
+        AssetConfig memory ethConfig = AssetConfig({
+            activeToken: address(weth),
+            legacyTokens: new address[](0),
+            active: true,
+            volatilityLevel: 1,
+            oracleType: 1
+        });
         assetRegistry.addAsset(ETH_ASSET, address(weth), ethConfig);
-        OracleConfig memory ethOracleConfig =
-            OracleConfig({primaryOracle: address(oracle), secondaryOracle: address(0)});
-        assetRegistry.setOracleConfig(ETH_ASSET, ethOracleConfig);
         vault.setCollateralOracleAsset(ETH_ASSET);
 
         vm.stopPrank();

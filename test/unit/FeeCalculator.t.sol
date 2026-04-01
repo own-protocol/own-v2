@@ -35,17 +35,35 @@ contract FeeCalculatorTest is BaseTest {
         assetRegistry.addAsset(
             TSLA,
             eTSLA,
-            AssetConfig({activeToken: eTSLA, legacyTokens: new address[](0), active: true, volatilityLevel: 3})
+            AssetConfig({
+                activeToken: eTSLA,
+                legacyTokens: new address[](0),
+                active: true,
+                volatilityLevel: 3,
+                oracleType: 1
+            })
         );
         assetRegistry.addAsset(
             GOLD,
             eGOLD,
-            AssetConfig({activeToken: eGOLD, legacyTokens: new address[](0), active: true, volatilityLevel: 2})
+            AssetConfig({
+                activeToken: eGOLD,
+                legacyTokens: new address[](0),
+                active: true,
+                volatilityLevel: 2,
+                oracleType: 1
+            })
         );
         assetRegistry.addAsset(
             TLT,
             eTLT,
-            AssetConfig({activeToken: eTLT, legacyTokens: new address[](0), active: true, volatilityLevel: 1})
+            AssetConfig({
+                activeToken: eTLT,
+                legacyTokens: new address[](0),
+                active: true,
+                volatilityLevel: 1,
+                oracleType: 1
+            })
         );
 
         // Set default fees: low=10bps, medium=20bps, high=30bps for mint
@@ -213,8 +231,13 @@ contract FeeCalculatorTest is BaseTest {
         assertEq(feeCalc.getMintFee(TSLA, 0), 30);
 
         // Change TSLA volatility level to 1 via AssetRegistry
-        AssetConfig memory config =
-            AssetConfig({activeToken: eTSLA, legacyTokens: new address[](0), active: true, volatilityLevel: 1});
+        AssetConfig memory config = AssetConfig({
+            activeToken: eTSLA,
+            legacyTokens: new address[](0),
+            active: true,
+            volatilityLevel: 1,
+            oracleType: 1
+        });
         vm.prank(Actors.ADMIN);
         assetRegistry.updateAssetConfig(TSLA, config);
 
