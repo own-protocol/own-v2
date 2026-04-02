@@ -16,6 +16,7 @@ import { claimOrder } from "./actions/claimOrder.js";
 import { confirmOrder } from "./actions/confirmOrder.js";
 import { placeRedeem } from "./actions/placeRedeem.js";
 import { cancelOrder } from "./actions/cancelOrder.js";
+import { pushPrices } from "./actions/pushPrices.js";
 import { addresses, publicClient, userAccount, vmAccount } from "./config.js";
 import { erc20Abi } from "./abis.js";
 import { formatUnits } from "viem";
@@ -27,6 +28,7 @@ const COMMANDS: Record<string, string> = {
   confirm: "confirm <orderId> [asset] [session] — VM confirms with price proof",
   "place-redeem": "place-redeem [amount] [asset] — User places a redeem order",
   cancel: "cancel <orderId>             — User cancels an open order",
+  "push-prices": "push-prices                  — Push Pyth prices on-chain",
   balances: "balances                     — Show user/VM balances",
 };
 
@@ -85,6 +87,10 @@ async function main() {
     case "cancel":
       if (!args[0]) { console.error("Error: orderId required"); usage(); }
       await cancelOrder(BigInt(args[0]));
+      break;
+
+    case "push-prices":
+      await pushPrices();
       break;
 
     case "balances":

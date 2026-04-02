@@ -11,6 +11,10 @@ import { writeContract, sendTx, formatAmount } from "./utils.js";
 
 export async function deposit(amountEth: string = "1") {
   const amount = parseEther(amountEth);
+  if (amount === 0n) {
+    console.log("Error: deposit amount must be > 0");
+    return;
+  }
   console.log(`\n=== LP Deposit: ${amountEth} WETH ===`);
 
   // 1. Check existing WETH balance, only wrap the shortfall
