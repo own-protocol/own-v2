@@ -182,19 +182,37 @@ contract Deploy is Script {
         assetRegistry.addAsset(
             TSLA,
             d.eTSLA,
-            AssetConfig({activeToken: d.eTSLA, legacyTokens: new address[](0), active: true, volatilityLevel: 2, oracleType: 0})
+            AssetConfig({
+                activeToken: d.eTSLA,
+                legacyTokens: new address[](0),
+                active: true,
+                volatilityLevel: 2,
+                oracleType: 0
+            })
         );
 
         assetRegistry.addAsset(
             GOLD,
             d.eGOLD,
-            AssetConfig({activeToken: d.eGOLD, legacyTokens: new address[](0), active: true, volatilityLevel: 1, oracleType: 0})
+            AssetConfig({
+                activeToken: d.eGOLD,
+                legacyTokens: new address[](0),
+                active: true,
+                volatilityLevel: 1,
+                oracleType: 0
+            })
         );
 
         assetRegistry.addAsset(
             ETH,
             d.weth,
-            AssetConfig({activeToken: d.weth, legacyTokens: new address[](0), active: true, volatilityLevel: 2, oracleType: 0})
+            AssetConfig({
+                activeToken: d.weth,
+                legacyTokens: new address[](0),
+                active: true,
+                volatilityLevel: 2,
+                oracleType: 0
+            })
         );
     }
 
