@@ -5,7 +5,7 @@
  * Default: 1 ETH
  */
 import { parseEther } from "viem";
-import { addresses, publicClient, vmClient, vmAccount } from "../config.js";
+import { addresses, publicClient, vmClient, vmAccount, useMockWeth } from "../config.js";
 import { erc20Abi, vaultAbi } from "../abis.js";
 import { writeContract, sendTx, formatAmount } from "./utils.js";
 
@@ -28,10 +28,24 @@ export async function deposit(amountEth: string = "1") {
 
   if (wethBalance < amount) {
     const toWrap = amount - wethBalance;
-    console.log(`  Wrapping ${formatAmount(toWrap, 18)} ETH to WETH...`);
-    await sendTx(vmClient, { to: addresses.weth, value: toWrap }, "WETH wrap");
+    if (useMockWeth) {
+      console.log(`  Minting ${formatAmount(toWrap, 18)} MockWETH (free testnet mint)...`);
+      await writeContract(
+        vmClient,
+        {
+          address: addresses.weth,
+          abi: erc20Abi,
+          functionName: "mint",
+          args: [vmAccount.address, toWrap],
+        },
+        "MockWETH mint"
+      );
+    } else {
+      console.log(`  Wrapping ${formatAmount(toWrap, 18)} ETH → WETH...`);
+      await sendTx(vmClient, { to: addresses.weth, value: toWrap }, "WETH wrap");
+    }
   } else {
-    console.log("  Sufficient WETH balance, skipping wrap.");
+    console.log("  Sufficient WETH balance, skipping.");
   }
 
   // 2. Approve vault

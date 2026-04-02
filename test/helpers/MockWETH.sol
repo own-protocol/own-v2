@@ -32,4 +32,11 @@ contract MockWETH is ERC20 {
     receive() external payable {
         _mint(msg.sender, msg.value);
     }
+
+    /// @notice Testnet helper — mint WETH freely without depositing ETH.
+    /// @dev Not in real WETH9; used for testnet convenience so testers don't
+    ///      need real testnet ETH to seed the vault.
+    function mint(address to, uint256 amount) external {
+        _mint(to, amount);
+    }
 }

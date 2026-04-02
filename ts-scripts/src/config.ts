@@ -77,6 +77,12 @@ export const addresses = {
   weth: envAddress("WETH"),
 } as const;
 
+// When MOCK_WETH_COLLATERAL=true, the WETH address points to a MockWETH
+// contract that supports free minting (no real ETH needed). When false/unset,
+// WETH is the canonical 0x4200...0006 and must be obtained by wrapping ETH.
+export const useMockWeth: boolean =
+  process.env.MOCK_WETH_COLLATERAL === "true";
+
 // ── Pyth feed IDs ────────────────────────────────────────────
 // Session 0 = regular, 1 = pre-market, 2 = post-market, 3 = overnight
 

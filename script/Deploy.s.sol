@@ -13,9 +13,9 @@ import {VaultFactory} from "../src/core/VaultFactory.sol";
 
 import {AssetConfig} from "../src/interfaces/types/Types.sol";
 import {WETHRouter} from "../src/periphery/WETHRouter.sol";
-import {EToken} from "../src/tokens/EToken.sol";
 import {ETokenFactory} from "../src/tokens/ETokenFactory.sol";
 import {MockERC20} from "../test/helpers/MockERC20.sol";
+import {MockWETH} from "../test/helpers/MockWETH.sol";
 
 /// @title Deploy — Deploy all core Own Protocol contracts to Base Sepolia
 /// @notice Deploys contracts, registers them in ProtocolRegistry, configures oracle feeds,
@@ -23,13 +23,17 @@ import {MockERC20} from "../test/helpers/MockERC20.sol";
 ///
 /// Usage:
 ///   forge script script/Deploy.s.sol --rpc-url base_sepolia --broadcast --verify
+///
+/// To deploy with a MockWETH instead of real WETH:
+///   DEPLOY_MOCK_WETH=true forge script script/Deploy.s.sol --rpc-url base_sepolia --broadcast --verify
+///   Then set WETH=<MockWETH address> and MOCK_WETH_COLLATERAL=true in ts-scripts/.env.
 contract Deploy is Script {
     // ──────────────────────────────────────────────────────────
     //  External addresses (Base Sepolia)
     // ──────────────────────────────────────────────────────────
 
     address constant PYTH = 0xA2aa501b19aff244D90cc15a4Cf739D2725B5729;
-    address constant WETH = 0x4200000000000000000000000000000000000006;
+    address constant REAL_WETH = 0x4200000000000000000000000000000000000006;
 
     // ──────────────────────────────────────────────────────────
     //  Pyth feed IDs
@@ -61,6 +65,139 @@ contract Deploy is Script {
     uint256 constant PYTH_MAX_PRICE_AGE = 120; // 2 minutes
     uint256 constant PROTOCOL_SHARE_BPS = 2000; // 20%
 
+    // ──────────────────────────────────────────────────────────
+    //  Deployment result struct — keeps run() under stack limit
+    // ──────────────────────────────────────────────────────────
+
+    struct Deployed {
+        address usdc;
+        address weth;
+        address registry;
+        address assetRegistry;
+        address feeCalc;
+        address pythOracle;
+        address factory;
+        address market;
+        address etokenFactory;
+        address eTSLA;
+        address eGOLD;
+        address wethRouter;
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Helpers
+    // ──────────────────────────────────────────────────────────
+
+    /// @dev Returns the canonical WETH address or deploys a free-mint MockWETH
+    ///      when DEPLOY_MOCK_WETH=true. Extracted to keep run() stack-lean.
+    function _resolveWeth() internal returns (address) {
+        if (vm.envOr("DEPLOY_MOCK_WETH", false)) {
+            address mock = address(new MockWETH());
+            console.log("MockWETH (free mint):", mock);
+            return mock;
+        }
+        console.log("Real WETH:", REAL_WETH);
+        return REAL_WETH;
+    }
+
+    /// @dev Deploys all contracts and returns addresses in a struct.
+    ///      Separated from run() to keep the top-level function stack-lean.
+    function _deploy(address deployer, address treasury) internal returns (Deployed memory d) {
+        // ── 1. Mock USDC ──────────────────────────────────────
+        d.usdc = address(new MockERC20("USD Coin", "USDC", 6));
+        console.log("MockUSDC:", d.usdc);
+
+        // ── 2. WETH (real or mock) ────────────────────────────
+        d.weth = _resolveWeth();
+
+        // ── 3. ProtocolRegistry ───────────────────────────────
+        d.registry = address(new ProtocolRegistry(deployer, TIMELOCK_DELAY));
+        console.log("ProtocolRegistry:", d.registry);
+
+        // ── 4. AssetRegistry ──────────────────────────────────
+        d.assetRegistry = address(new AssetRegistry(deployer));
+        console.log("AssetRegistry:", d.assetRegistry);
+
+        // ── 5. FeeCalculator ──────────────────────────────────
+        d.feeCalc = address(new FeeCalculator(d.registry, deployer));
+        console.log("FeeCalculator:", d.feeCalc);
+
+        FeeCalculator feeCalc = FeeCalculator(d.feeCalc);
+        feeCalc.setMintFee(1, 5); // 0.05%
+        feeCalc.setMintFee(2, 10); // 0.10%
+        feeCalc.setMintFee(3, 50); // 0.50%
+        feeCalc.setRedeemFee(1, 5); // 0.05%
+        feeCalc.setRedeemFee(2, 10); // 0.10%
+        feeCalc.setRedeemFee(3, 50); // 0.50%
+
+        // ── 6. PythOracleVerifier ─────────────────────────────
+        d.pythOracle = address(new PythOracleVerifier(deployer, PYTH, PYTH_MAX_PRICE_AGE));
+        console.log("PythOracleVerifier:", d.pythOracle);
+
+        PythOracleVerifier pythOracle = PythOracleVerifier(d.pythOracle);
+        pythOracle.setFeedId(TSLA, 0, TSLA_FEED);
+        pythOracle.setFeedId(TSLA, 1, TSLA_PRE_FEED);
+        pythOracle.setFeedId(TSLA, 2, TSLA_POST_FEED);
+        pythOracle.setFeedId(TSLA, 3, TSLA_OVERNIGHT_FEED);
+        pythOracle.setFeedId(GOLD, 0, XAU_FEED);
+        pythOracle.setFeedId(ETH, 0, ETH_FEED);
+
+        // ── 7. VaultFactory ───────────────────────────────────
+        d.factory = address(new VaultFactory(deployer, d.registry));
+        console.log("VaultFactory:", d.factory);
+
+        // ── 8. OwnMarket ──────────────────────────────────────
+        d.market = address(new OwnMarket(d.registry));
+        console.log("OwnMarket:", d.market);
+
+        // ── 9. ETokenFactory + ETokens ────────────────────────
+        d.etokenFactory = address(new ETokenFactory(deployer, d.registry));
+        console.log("ETokenFactory:", d.etokenFactory);
+
+        ETokenFactory etokenFactory = ETokenFactory(d.etokenFactory);
+        d.eTSLA = etokenFactory.createEToken("Tesla", "eTSLA", TSLA, d.usdc);
+        console.log("EToken TSLA:", d.eTSLA);
+
+        d.eGOLD = etokenFactory.createEToken("Gold", "eGOLD", GOLD, d.usdc);
+        console.log("EToken GOLD:", d.eGOLD);
+
+        // ── 10. WETHRouter ────────────────────────────────────
+        d.wethRouter = address(new WETHRouter(d.weth));
+        console.log("WETHRouter:", d.wethRouter);
+
+        // ── 11. Register in ProtocolRegistry ──────────────────
+        ProtocolRegistry registry = ProtocolRegistry(d.registry);
+        registry.setAddress(registry.ASSET_REGISTRY(), d.assetRegistry);
+        registry.setAddress(registry.TREASURY(), treasury);
+        registry.setAddress(keccak256("FEE_CALCULATOR"), d.feeCalc);
+        registry.setAddress(registry.VAULT_FACTORY(), d.factory);
+        registry.setAddress(registry.MARKET(), d.market);
+        registry.setAddress(registry.PYTH_ORACLE(), d.pythOracle);
+        registry.setAddress(registry.ETOKEN_FACTORY(), d.etokenFactory);
+        registry.setProtocolShareBps(PROTOCOL_SHARE_BPS);
+
+        // ── 12. Add assets ────────────────────────────────────
+        AssetRegistry assetRegistry = AssetRegistry(d.assetRegistry);
+
+        assetRegistry.addAsset(
+            TSLA,
+            d.eTSLA,
+            AssetConfig({activeToken: d.eTSLA, legacyTokens: new address[](0), active: true, volatilityLevel: 2, oracleType: 0})
+        );
+
+        assetRegistry.addAsset(
+            GOLD,
+            d.eGOLD,
+            AssetConfig({activeToken: d.eGOLD, legacyTokens: new address[](0), active: true, volatilityLevel: 1, oracleType: 0})
+        );
+
+        assetRegistry.addAsset(
+            ETH,
+            d.weth,
+            AssetConfig({activeToken: d.weth, legacyTokens: new address[](0), active: true, volatilityLevel: 2, oracleType: 0})
+        );
+    }
+
     function run() external {
         address deployer = vm.addr(vm.envUint("DEPLOYER_PRIVATE_KEY"));
         address treasury = vm.envAddress("TREASURY_ADDRESS");
@@ -69,134 +206,22 @@ contract Deploy is Script {
         console.log("Treasury:", treasury);
 
         vm.startBroadcast(vm.envUint("DEPLOYER_PRIVATE_KEY"));
-
-        // ── 1. Mock USDC (testnet payment token) ────────────
-        MockERC20 mockUSDC = new MockERC20("USD Coin", "USDC", 6);
-        console.log("MockUSDC:", address(mockUSDC));
-
-        // ── 2. ProtocolRegistry ─────────────────────────────
-        ProtocolRegistry registry = new ProtocolRegistry(deployer, TIMELOCK_DELAY);
-        console.log("ProtocolRegistry:", address(registry));
-
-        // ── 3. AssetRegistry ────────────────────────────────
-        AssetRegistry assetRegistry = new AssetRegistry(deployer);
-        console.log("AssetRegistry:", address(assetRegistry));
-
-        // ── 4. FeeCalculator ────────────────────────────────
-        FeeCalculator feeCalc = new FeeCalculator(address(registry), deployer);
-        console.log("FeeCalculator:", address(feeCalc));
-
-        // Set fee levels: volatility 1 (low), 2 (medium), 3 (high)
-        // Mint fees
-        feeCalc.setMintFee(1, 5); // 0.05%
-        feeCalc.setMintFee(2, 10); // 0.10%
-        feeCalc.setMintFee(3, 50); // 0.50%
-        // Redeem fees
-        feeCalc.setRedeemFee(1, 5); // 0.05%
-        feeCalc.setRedeemFee(2, 10); // 0.10%
-        feeCalc.setRedeemFee(3, 50); // 0.50%
-
-        // ── 5. PythOracleVerifier ───────────────────────────
-        PythOracleVerifier pythOracle = new PythOracleVerifier(deployer, PYTH, PYTH_MAX_PRICE_AGE);
-        console.log("PythOracleVerifier:", address(pythOracle));
-
-        // Configure TSLA feed IDs for all 4 sessions
-        pythOracle.setFeedId(TSLA, 0, TSLA_FEED); // regular
-        pythOracle.setFeedId(TSLA, 1, TSLA_PRE_FEED); // pre-market
-        pythOracle.setFeedId(TSLA, 2, TSLA_POST_FEED); // post-market
-        pythOracle.setFeedId(TSLA, 3, TSLA_OVERNIGHT_FEED); // overnight
-
-        // GOLD and ETH — 24/7 feeds, only session 0 needed
-        pythOracle.setFeedId(GOLD, 0, XAU_FEED);
-        pythOracle.setFeedId(ETH, 0, ETH_FEED);
-
-        // ── 6. VaultFactory ─────────────────────────────────
-        VaultFactory factory = new VaultFactory(deployer, address(registry));
-        console.log("VaultFactory:", address(factory));
-
-        // ── 7. OwnMarket ────────────────────────────────────
-        OwnMarket market = new OwnMarket(address(registry));
-        console.log("OwnMarket:", address(market));
-
-        // ── 8. ETokenFactory + ETokens ──────────────────────
-        ETokenFactory etokenFactory = new ETokenFactory(deployer, address(registry));
-        console.log("ETokenFactory:", address(etokenFactory));
-
-        address eTSLA = etokenFactory.createEToken("Tesla", "eTSLA", TSLA, address(mockUSDC));
-        console.log("EToken TSLA:", eTSLA);
-
-        address eGOLD = etokenFactory.createEToken("Gold", "eGOLD", GOLD, address(mockUSDC));
-        console.log("EToken GOLD:", eGOLD);
-
-        // ── 9. WETHRouter ───────────────────────────────────
-        WETHRouter wethRouter = new WETHRouter(WETH);
-        console.log("WETHRouter:", address(wethRouter));
-
-        // ── 10. Register contracts in ProtocolRegistry ──────
-        registry.setAddress(registry.ASSET_REGISTRY(), address(assetRegistry));
-        registry.setAddress(registry.TREASURY(), treasury);
-        registry.setAddress(keccak256("FEE_CALCULATOR"), address(feeCalc));
-        registry.setAddress(registry.VAULT_FACTORY(), address(factory));
-        registry.setAddress(registry.MARKET(), address(market));
-        registry.setAddress(registry.PYTH_ORACLE(), address(pythOracle));
-        registry.setAddress(registry.ETOKEN_FACTORY(), address(etokenFactory));
-        registry.setProtocolShareBps(PROTOCOL_SHARE_BPS);
-
-        // ── 11. Add assets to AssetRegistry ─────────────────
-        // TSLA — volatility level 2 (medium), oracleType 0 (Pyth)
-        assetRegistry.addAsset(
-            TSLA,
-            eTSLA,
-            AssetConfig({
-                activeToken: eTSLA,
-                legacyTokens: new address[](0),
-                active: true,
-                volatilityLevel: 2,
-                oracleType: 0
-            })
-        );
-
-        // GOLD — volatility level 1 (low), oracleType 0 (Pyth)
-        assetRegistry.addAsset(
-            GOLD,
-            eGOLD,
-            AssetConfig({
-                activeToken: eGOLD,
-                legacyTokens: new address[](0),
-                active: true,
-                volatilityLevel: 1,
-                oracleType: 0
-            })
-        );
-
-        // ETH — registered for collateral pricing (no eToken), oracleType 0 (Pyth)
-        assetRegistry.addAsset(
-            ETH,
-            WETH,
-            AssetConfig({
-                activeToken: WETH,
-                legacyTokens: new address[](0),
-                active: true,
-                volatilityLevel: 2,
-                oracleType: 0
-            })
-        );
-
+        Deployed memory d = _deploy(deployer, treasury);
         vm.stopBroadcast();
 
-        // ── Summary ─────────────────────────────────────────
         console.log("");
         console.log("=== Deployment Complete ===");
         console.log("Update .env with these addresses:");
-        console.log("MOCK_USDC=", address(mockUSDC));
-        console.log("PROTOCOL_REGISTRY=", address(registry));
-        console.log("ASSET_REGISTRY=", address(assetRegistry));
-        console.log("FEE_CALCULATOR=", address(feeCalc));
-        console.log("PYTH_ORACLE=", address(pythOracle));
-        console.log("VAULT_FACTORY=", address(factory));
-        console.log("OWN_MARKET=", address(market));
-        console.log("ETOKEN_TSLA=", address(eTSLA));
-        console.log("ETOKEN_GOLD=", address(eGOLD));
-        console.log("WETH_ROUTER=", address(wethRouter));
+        console.log("MOCK_USDC=", d.usdc);
+        console.log("WETH=", d.weth);
+        console.log("PROTOCOL_REGISTRY=", d.registry);
+        console.log("ASSET_REGISTRY=", d.assetRegistry);
+        console.log("FEE_CALCULATOR=", d.feeCalc);
+        console.log("PYTH_ORACLE=", d.pythOracle);
+        console.log("VAULT_FACTORY=", d.factory);
+        console.log("OWN_MARKET=", d.market);
+        console.log("ETOKEN_TSLA=", d.eTSLA);
+        console.log("ETOKEN_GOLD=", d.eGOLD);
+        console.log("WETH_ROUTER=", d.wethRouter);
     }
 }
