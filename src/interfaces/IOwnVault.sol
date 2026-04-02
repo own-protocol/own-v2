@@ -38,6 +38,7 @@ interface IOwnVault is IERC4626 {
     event VMFeesClaimed(address indexed token, uint256 amount);
     event LPRewardsClaimed(address indexed account, address indexed token, uint256 amount);
 
+    event VMUpdated(address indexed oldVM, address indexed newVM);
     event VMShareUpdated(uint256 oldShareBps, uint256 newShareBps);
     event PaymentTokenUpdated(address indexed oldToken, address indexed newToken);
     event AssetEnabled(bytes32 indexed asset);
@@ -88,6 +89,12 @@ interface IOwnVault is IERC4626 {
 
     /// @notice Return the address of the vault's bound VM.
     function vm() external view returns (address);
+
+    /// @notice Update the vault manager address. Only callable by admin.
+    /// @param newVM New VM address.
+    function setVM(
+        address newVM
+    ) external;
 
     // ──────────────────────────────────────────────────────────
     //  Async deposit queue

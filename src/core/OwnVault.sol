@@ -37,7 +37,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
     // ──────────────────────────────────────────────────────────
 
     IProtocolRegistry public immutable registry;
-    address public immutable vm;
+    address public vm;
 
     // ──────────────────────────────────────────────────────────
     //  Vault status
@@ -743,6 +743,16 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
         }
 
         emit FeeDeposited(token, amount, protocolAmount, vmAmount, lpAmount);
+    }
+
+    /// @inheritdoc IOwnVault
+    function setVM(
+        address newVM
+    ) external onlyAdmin {
+        if (newVM == address(0)) revert ZeroAddress();
+        address oldVM = vm;
+        vm = newVM;
+        emit VMUpdated(oldVM, newVM);
     }
 
     /// @inheritdoc IOwnVault
