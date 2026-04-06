@@ -10,6 +10,8 @@ import {ProtocolRegistry} from "../src/core/ProtocolRegistry.sol";
 /// @notice Deploys the OracleVerifier contract, registers it as INHOUSE_ORACLE in the existing
 ///         ProtocolRegistry, and adds a trusted signer address.
 ///
+/// Inhouse oracle offchain service uses https://twelvedata.com/ & https://eodhd.com/ as data sources.
+///
 /// Usage:
 ///   forge script script/DeployOracleSigner.s.sol --rpc-url base_sepolia --broadcast --verify
 contract DeployOracleSigner is Script {

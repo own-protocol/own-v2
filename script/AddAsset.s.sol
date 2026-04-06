@@ -4,8 +4,9 @@ pragma solidity 0.8.28;
 import {Script, console} from "forge-std/Script.sol";
 
 import {AssetRegistry} from "../src/core/AssetRegistry.sol";
-import {ETokenFactory} from "../src/tokens/ETokenFactory.sol";
+
 import {AssetConfig} from "../src/interfaces/types/Types.sol";
+import {ETokenFactory} from "../src/tokens/ETokenFactory.sol";
 
 /// @title AddAsset — Create a new EToken and register the asset
 /// @notice Deploys a new EToken via ETokenFactory and registers it in the AssetRegistry.
