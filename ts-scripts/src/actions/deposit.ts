@@ -1,48 +1,66 @@
 /**
  * LP deposits WETH into the vault.
  *
- * Usage: npx tsx src/actions/deposit.ts [amount_in_eth]
- * Default: 1 ETH
+ * Usage: npx tsx src/run.ts deposit [amount_in_eth] [--wallet deployer|vm]
+ * Default: 1 ETH, vm wallet
  */
-import { parseEther } from "viem";
-import { addresses, publicClient, vmClient, vmAccount, useMockWeth } from "../config.js";
+import { parseEther, type WalletClient } from "viem";
+import {
+  addresses,
+  publicClient,
+  vmClient,
+  vmAccount,
+  deployerClient,
+  deployerAccount,
+  useMockWeth,
+} from "../config.js";
 import { erc20Abi, vaultAbi } from "../abis.js";
 import { writeContract, sendTx, formatAmount } from "./utils.js";
 
-export async function deposit(amountEth: string = "1") {
+export async function deposit(
+  amountEth: string = "1",
+  wallet: "vm" | "deployer" = "vm"
+) {
   const amount = parseEther(amountEth);
   if (amount === 0n) {
     console.log("Error: deposit amount must be > 0");
     return;
   }
-  console.log(`\n=== LP Deposit: ${amountEth} WETH ===`);
+
+  const client: WalletClient =
+    wallet === "deployer" ? deployerClient : vmClient;
+  const account = wallet === "deployer" ? deployerAccount : vmAccount;
+
+  console.log(`\n=== LP Deposit: ${amountEth} WETH (wallet: ${wallet}) ===`);
 
   // 1. Check existing WETH balance, only wrap the shortfall
   const wethBalance = (await publicClient.readContract({
     address: addresses.weth,
     abi: erc20Abi,
     functionName: "balanceOf",
-    args: [vmAccount.address],
+    args: [account.address],
   })) as bigint;
   console.log(`  Current WETH balance: ${formatAmount(wethBalance, 18)}`);
 
   if (wethBalance < amount) {
     const toWrap = amount - wethBalance;
     if (useMockWeth) {
-      console.log(`  Minting ${formatAmount(toWrap, 18)} MockWETH (free testnet mint)...`);
+      console.log(
+        `  Minting ${formatAmount(toWrap, 18)} MockWETH (free testnet mint)...`
+      );
       await writeContract(
-        vmClient,
+        client,
         {
           address: addresses.weth,
           abi: erc20Abi,
           functionName: "mint",
-          args: [vmAccount.address, toWrap],
+          args: [account.address, toWrap],
         },
         "MockWETH mint"
       );
     } else {
       console.log(`  Wrapping ${formatAmount(toWrap, 18)} ETH → WETH...`);
-      await sendTx(vmClient, { to: addresses.weth, value: toWrap }, "WETH wrap");
+      await sendTx(client, { to: addresses.weth, value: toWrap }, "WETH wrap");
     }
   } else {
     console.log("  Sufficient WETH balance, skipping.");
@@ -51,7 +69,7 @@ export async function deposit(amountEth: string = "1") {
   // 2. Approve vault
   console.log("Approving vault for WETH...");
   await writeContract(
-    vmClient,
+    client,
     {
       address: addresses.weth,
       abi: erc20Abi,
@@ -64,12 +82,12 @@ export async function deposit(amountEth: string = "1") {
   // 3. Deposit into vault
   console.log("Depositing into vault...");
   await writeContract(
-    vmClient,
+    client,
     {
       address: addresses.vault,
       abi: vaultAbi,
       functionName: "deposit",
-      args: [amount, vmAccount.address],
+      args: [amount, account.address],
     },
     "Vault deposit"
   );
@@ -77,7 +95,7 @@ export async function deposit(amountEth: string = "1") {
   // 4. Update collateral valuation
   console.log("Updating collateral valuation...");
   await writeContract(
-    vmClient,
+    client,
     {
       address: addresses.vault,
       abi: vaultAbi,

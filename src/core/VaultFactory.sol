@@ -40,6 +40,15 @@ contract VaultFactory is IVaultFactory, Ownable {
     }
 
     /// @inheritdoc IVaultFactory
+    function deregisterVault(
+        address vault
+    ) external onlyOwner {
+        if (!_isRegistered[vault]) revert VaultNotRegistered(vault);
+        _isRegistered[vault] = false;
+        emit VaultDeregistered(vault);
+    }
+
+    /// @inheritdoc IVaultFactory
     function isRegisteredVault(
         address vault
     ) external view returns (bool) {

@@ -12,7 +12,7 @@ import {VaultFactory} from "../src/core/VaultFactory.sol";
 /// Usage:
 ///   forge script script/CreateVault.s.sol --rpc-url base_sepolia --broadcast
 contract CreateVault is Script {
-    address constant WETH = 0x4200000000000000000000000000000000000006;
+    address constant WETH = 0xfbd78Da8aDbc322084eE7F80C10F914B92CEb6FE;
     bytes32 constant ETH = bytes32("ETH");
 
     function run() external {

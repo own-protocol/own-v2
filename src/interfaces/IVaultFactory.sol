@@ -10,6 +10,7 @@ interface IVaultFactory {
     // ──────────────────────────────────────────────────────────
 
     event VaultCreated(address indexed vault, address indexed collateral, address indexed vm);
+    event VaultDeregistered(address indexed vault);
 
     // ──────────────────────────────────────────────────────────
     //  Errors
@@ -38,6 +39,12 @@ interface IVaultFactory {
         uint256 maxUtilBps,
         uint256 vmShareBps
     ) external returns (address vault);
+
+    /// @notice Deregister a vault so it can no longer be used. Only callable by admin.
+    /// @param vault The vault address to deregister.
+    function deregisterVault(
+        address vault
+    ) external;
 
     // ──────────────────────────────────────────────────────────
     //  View functions

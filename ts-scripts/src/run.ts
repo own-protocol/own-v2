@@ -22,7 +22,7 @@ import { erc20Abi } from "./abis.js";
 import { formatUnits } from "viem";
 
 const COMMANDS: Record<string, string> = {
-  deposit: "deposit [amount_eth]         — LP deposits WETH into vault",
+  deposit: "deposit [amount_eth] [--wallet deployer|vm] — LP deposits WETH into vault",
   "place-mint": "place-mint [usdc] [asset]    — User places a mint order",
   claim: "claim <orderId>              — VM claims an order",
   confirm: "confirm <orderId> [asset] [session] — VM confirms with price proof",
@@ -58,9 +58,13 @@ async function main() {
   if (!command) usage();
 
   switch (command) {
-    case "deposit":
-      await deposit(args[0] || "1");
+    case "deposit": {
+      const walletIdx = args.indexOf("--wallet");
+      const wallet = walletIdx !== -1 ? (args[walletIdx + 1] as "deployer" | "vm") : "vm";
+      const depositAmount = args[0] && args[0] !== "--wallet" ? args[0] : "1";
+      await deposit(depositAmount, wallet);
       break;
+    }
 
     case "place-mint":
       await placeMint(args[0] || "100", (args[1] as "TSLA" | "GOLD") || "TSLA");
