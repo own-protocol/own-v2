@@ -75,6 +75,9 @@ export const addresses = {
   eGOLD: envAddress("ETOKEN_GOLD"),
   pythOracle: envAddress("PYTH_ORACLE"),
   weth: envAddress("WETH"),
+  eTokenFactory: envAddress("ETOKEN_FACTORY"),
+  assetRegistry: envAddress("ASSET_REGISTRY"),
+  inhouseOracle: envAddress("INHOUSE_ORACLE"),
 } as const;
 
 // When MOCK_WETH_COLLATERAL=true, the WETH address points to a MockWETH

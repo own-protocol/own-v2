@@ -141,4 +141,10 @@ contract MockOracleVerifier is IOracleVerifier {
     }
 
     function setAssetOracleConfig(bytes32, uint256, uint256) external override {}
+
+    function getAssetOracleConfig(
+        bytes32
+    ) external pure override returns (uint256, uint256) {
+        return (0, 0);
+    }
 }

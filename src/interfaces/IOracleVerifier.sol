@@ -118,4 +118,9 @@ interface IOracleVerifier {
 
     /// @notice Set the staleness and deviation limits for an asset.
     function setAssetOracleConfig(bytes32 asset, uint256 maxStaleness, uint256 maxDeviation) external;
+
+    /// @notice Return the staleness and deviation limits for an asset.
+    function getAssetOracleConfig(
+        bytes32 asset
+    ) external view returns (uint256 maxStaleness, uint256 maxDeviation);
 }

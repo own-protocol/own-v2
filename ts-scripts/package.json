@@ -5,11 +5,14 @@
   "type": "module",
   "scripts": {
     "run": "tsx src/run.ts",
-    "lifecycle": "tsx src/lifecycle.ts"
+    "lifecycle": "tsx src/lifecycle.ts",
+    "launch-assets": "tsx src/launch-assets.ts"
   },
   "dependencies": {
     "viem": "^2.21.0",
-    "dotenv": "^16.4.0"
+    "dotenv": "^16.4.0",
+    "@turnkey/sdk-server": "^5.3.0",
+    "@turnkey/viem": "^0.14.28"
   },
   "devDependencies": {
     "typescript": "^5.6.0",

@@ -54,19 +54,19 @@
 
 | # | Ticker | eToken | Name | Notes |
 |---|--------|--------|------|-------|
-| 31 | 005930 | eSAMSUNG | Samsung Electronics | Korea's most traded, global brand |
-| 32 | 000660 | eSKHYNIX | SK Hynix | AI/memory chip play |
-| 33 | 373220 | eLGES | LG Energy Solution | EV battery leader |
-| 34 | KODEX200 | eKODEX200 | KOSPI 200 ETF | Broad Korean market exposure |
-| 35 | 068270 | eCELLTRION | Celltrion | Biotech leader, retail favorite in Korea |
+| 31 | SMSNG | eSMSNG | Samsung Electronics | Korea's most traded, global brand |
+| 32 | SKHYNX | eSKHYNX | SK Hynix | AI/memory chip play |
+| 33 | LGES | eLGES | LG Energy Solution | EV battery leader |
+| 34 | KOSPI | eKOSPI | KOSPI 200 ETF | Broad Korean market exposure |
+| 35 | CELTRN | eCELTRN | Celltrion | Biotech leader, retail favorite in Korea |
 
 ## Japanese Stocks & ETFs (3)
 
 | # | Ticker | eToken | Name | Notes |
 |---|--------|--------|------|-------|
-| 36 | 7203 | eTOYOTA | Toyota Motor | Japan's most recognized stock |
-| 37 | 6758 | eSONY | Sony Group | Gaming/entertainment, global brand |
-| 38 | 1321 | eNIKKEI | Nikkei 225 ETF | Broad Japan market exposure |
+| 36 | TOYOTA | eTOYOTA | Toyota Motor | Japan's most recognized stock |
+| 37 | SONY | eSONY | Sony Group | Gaming/entertainment, global brand |
+| 38 | NIKKEI | eNIKKEI | Nikkei 225 ETF | Broad Japan market exposure |
 
 ## Indian ETFs (2)
 
@@ -79,8 +79,8 @@
 
 | # | Ticker | eToken | Name | Notes |
 |---|--------|--------|------|-------|
-| 41 | 9988 | eBABA | Alibaba (HKEX) | Most traded HK-listed Chinese stock |
-| 42 | 0700 | eTENCENT | Tencent | Gaming/tech giant, huge volume |
-| 43 | 9618 | eJD | JD.com | E-commerce, high retail interest |
-| 44 | 9888 | eBAIDU | Baidu | AI narrative in China |
-| 45 | 2800 | eHSI | Tracker Fund (HSI ETF) | Broad Hong Kong market exposure |
+| 41 | BABA | eBABA | Alibaba (HKEX) | Most traded HK-listed Chinese stock |
+| 42 | TCEHY | eTCEHY | Tencent | Gaming/tech giant, huge volume |
+| 43 | JD | eJD | JD.com | E-commerce, high retail interest |
+| 44 | BIDU | eBIDU | Baidu | AI narrative in China |
+| 45 | HSI | eHSI | Tracker Fund (HSI ETF) | Broad Hong Kong market exposure |

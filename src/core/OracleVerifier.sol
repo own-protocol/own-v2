@@ -189,4 +189,12 @@ contract OracleVerifier is IOracleVerifier, Ownable, Multicall {
     function setAssetOracleConfig(bytes32 asset, uint256 maxStaleness, uint256 maxDeviation) external onlyOwner {
         _assetConfigs[asset] = AssetOracleConfig(maxStaleness, maxDeviation);
     }
+
+    /// @inheritdoc IOracleVerifier
+    function getAssetOracleConfig(
+        bytes32 asset
+    ) external view returns (uint256 maxStaleness, uint256 maxDeviation) {
+        AssetOracleConfig storage config = _assetConfigs[asset];
+        return (config.maxStaleness, config.maxDeviation);
+    }
 }

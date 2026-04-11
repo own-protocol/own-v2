@@ -190,6 +190,68 @@ export const erc20Abi = [
   },
 ] as const;
 
+export const eTokenFactoryAbi = [
+  {
+    name: "createEToken",
+    type: "function",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "name", type: "string" },
+      { name: "symbol", type: "string" },
+      { name: "ticker", type: "bytes32" },
+      { name: "rewardToken", type: "address" },
+    ],
+    outputs: [{ name: "token", type: "address" }],
+  },
+  {
+    name: "ETokenCreated",
+    type: "event",
+    inputs: [
+      { name: "token", type: "address", indexed: true },
+      { name: "ticker", type: "bytes32", indexed: true },
+      { name: "symbol", type: "string", indexed: false },
+    ],
+  },
+] as const;
+
+export const assetRegistryAbi = [
+  {
+    name: "addAsset",
+    type: "function",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "ticker", type: "bytes32" },
+      { name: "eToken", type: "address" },
+      {
+        name: "config",
+        type: "tuple",
+        components: [
+          { name: "activeToken", type: "address" },
+          { name: "legacyTokens", type: "address[]" },
+          { name: "active", type: "bool" },
+          { name: "volatilityLevel", type: "uint8" },
+          { name: "oracleType", type: "uint8" },
+        ],
+      },
+    ],
+    outputs: [],
+  },
+] as const;
+
+export const oracleVerifierAbi = [
+  {
+    name: "setAssetOracleConfig",
+    type: "function",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "asset", type: "bytes32" },
+      { name: "maxStaleness", type: "uint256" },
+      { name: "maxDeviation", type: "uint256" },
+    ],
+    outputs: [],
+  },
+] as const;
+
 export const oracleAbi = [
   {
     name: "verifyFee",

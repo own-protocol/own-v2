@@ -1,0 +1,217 @@
+[
+  {
+    "ticker": "AAPL",
+    "symbol": "eAAPL",
+    "eToken": "0xcd34d87281e6567c5adE6559615564b3019B0096"
+  },
+  {
+    "ticker": "NVDA",
+    "symbol": "eNVDA",
+    "eToken": "0x18f726f604a51b87e103285fc4ee512a8e025e0e"
+  },
+  {
+    "ticker": "AMZN",
+    "symbol": "eAMZN",
+    "eToken": "0x204def88435d34a3567c1c1230a037d46427a13c"
+  },
+  {
+    "ticker": "MSFT",
+    "symbol": "eMSFT",
+    "eToken": "0x1a58cbeb908e30e87ca8a465ce88471c364f861b"
+  },
+  {
+    "ticker": "META",
+    "symbol": "eMETA",
+    "eToken": "0xb752e81612c67b6688e027aa78b1a579de2d9a1d"
+  },
+  {
+    "ticker": "GOOG",
+    "symbol": "eGOOG",
+    "eToken": "0xbfbc515f60b9cf30bcb5c3d081ea4cafc8d17453"
+  },
+  {
+    "ticker": "COIN",
+    "symbol": "eCOIN",
+    "eToken": "0x5e59dc9c04e1084f3c495f8d859b6d838a28588a"
+  },
+  {
+    "ticker": "MSTR",
+    "symbol": "eMSTR",
+    "eToken": "0x900ae3ce58d625826093e527f7f5fb33b6cad6de"
+  },
+  {
+    "ticker": "AMD",
+    "symbol": "eAMD",
+    "eToken": "0x11f530d205a7a9807f334463056a0aca618a61c2"
+  },
+  {
+    "ticker": "PLTR",
+    "symbol": "ePLTR",
+    "eToken": "0x329e67c682e1395bc10d07a82b7a2d2f2cb0370d"
+  },
+  {
+    "ticker": "TSM",
+    "symbol": "eTSM",
+    "eToken": "0x59606aF865d313c7D1A310DD3417E16430a8a30C"
+  },
+  {
+    "ticker": "NFLX",
+    "symbol": "eNFLX",
+    "eToken": "0xa4f623f427c2cf68836ba24f9f1670c387a700a1"
+  },
+  {
+    "ticker": "HOOD",
+    "symbol": "eHOOD",
+    "eToken": "0xd62f0fec161a1e9595da691bd1f048b4aebe9877"
+  },
+  {
+    "ticker": "WMT",
+    "symbol": "eWMT",
+    "eToken": "0x48b4fe24a62200be99053ff286bda1db0d1694cd"
+  },
+  {
+    "ticker": "SPY",
+    "symbol": "eSPY",
+    "eToken": "0x97f5b3fcb34a55f8fc0b91cffa8724365c5e56c4"
+  },
+  {
+    "ticker": "QQQ",
+    "symbol": "eQQQ",
+    "eToken": "0x02a7ec56d0ac5f3ae15e1987140e3bd559e4ec7f"
+  },
+  {
+    "ticker": "TLT",
+    "symbol": "eTLT",
+    "eToken": "0x128c36c8c2a48827041b5f084f123d806c0f279b"
+  },
+  {
+    "ticker": "MAGS",
+    "symbol": "eMAGS",
+    "eToken": "0xc7ce1bc2d0eb60281e24a3825a9c348b7926818e"
+  },
+  {
+    "ticker": "ITA",
+    "symbol": "eITA",
+    "eToken": "0x86fc8a6af4d011199649646d0dbe168a0475fee0"
+  },
+  {
+    "ticker": "SILVER",
+    "symbol": "eSILVER",
+    "eToken": "0xb67162e20ca5e78eba013a51b37993651941b7c4"
+  },
+  {
+    "ticker": "OIL",
+    "symbol": "eOIL",
+    "eToken": "0xfdfaf8d3d62505c915d952ca650994b04f9491b5"
+  },
+  {
+    "ticker": "NATGAS",
+    "symbol": "eNATGAS",
+    "eToken": "0x10f80df4073222b8bcf762f3fbd8e865795599d3"
+  },
+  {
+    "ticker": "COPPER",
+    "symbol": "eCOPPER",
+    "eToken": "0x6a5ec61942186a1a7f30dc138a1449da276d7ba0"
+  },
+  {
+    "ticker": "EURUSD",
+    "symbol": "eEURUSD",
+    "eToken": "0x9e6b22733647bffec3c234b3487ed353b97e52b0"
+  },
+  {
+    "ticker": "GBPUSD",
+    "symbol": "eGBPUSD",
+    "eToken": "0x65f7e07b328aed224add1f072aa27638d08d886c"
+  },
+  {
+    "ticker": "USDJPY",
+    "symbol": "eUSDJPY",
+    "eToken": "0xd40e44a3cc009ccf4fd990ac4ebf2ddc77bf7504"
+  },
+  {
+    "ticker": "USDKRW",
+    "symbol": "eUSDKRW",
+    "eToken": "0x50ee6a79f6b2e44988f6e5a6e90f4d079ee70714"
+  },
+  {
+    "ticker": "USDCNY",
+    "symbol": "eUSDCNY",
+    "eToken": "0x9fbdc86e9131c9984491f4a2d8075887891ef336"
+  },
+  {
+    "ticker": "SMSNG",
+    "symbol": "eSMSNG",
+    "eToken": "0xCA1aa127716cc6E042837fae93429f2BEBf5a17a"
+  },
+  {
+    "ticker": "SKHYNX",
+    "symbol": "eSKHYNX",
+    "eToken": "0x7faa68779bbb3047128e02c157933806a0a6d6a0"
+  },
+  {
+    "ticker": "LGES",
+    "symbol": "eLGES",
+    "eToken": "0xb7a6b2b7ec16b5050dc10665a59303767c3658ff"
+  },
+  {
+    "ticker": "KOSPI",
+    "symbol": "eKOSPI",
+    "eToken": "0x77b827d4cf2996e972c08a894077c09b0fbcdb64"
+  },
+  {
+    "ticker": "CELTRN",
+    "symbol": "eCELTRN",
+    "eToken": "0x62258a0eacaf4f1bc0c2bde197443cb4377e623c"
+  },
+  {
+    "ticker": "TOYOTA",
+    "symbol": "eTOYOTA",
+    "eToken": "0xfaac44cf580662eca71462bff68d1dece7856b5d"
+  },
+  {
+    "ticker": "SONY",
+    "symbol": "eSONY",
+    "eToken": "0x3e34c1fbac05c43bbae4c28c2e1c0a0ee350b0f0"
+  },
+  {
+    "ticker": "NIKKEI",
+    "symbol": "eNIKKEI",
+    "eToken": "0xfb1d79927da838e024b5ded31510468e0c859f66"
+  },
+  {
+    "ticker": "NIFTY",
+    "symbol": "eNIFTY",
+    "eToken": "0x59c3bc79c1ef268603f6810d23b31d59d774fa75"
+  },
+  {
+    "ticker": "SENSEX",
+    "symbol": "eSENSEX",
+    "eToken": "0x9806720759ba32f0aa29c8e67f8e15e275827667"
+  },
+  {
+    "ticker": "BABA",
+    "symbol": "eBABA",
+    "eToken": "0x6da3bc3c8dc70005bae402bb6298e19ac25269fb"
+  },
+  {
+    "ticker": "TCEHY",
+    "symbol": "eTCEHY",
+    "eToken": "0xeac4497164add5739f5a79fc6f1cd98deb7b15d5"
+  },
+  {
+    "ticker": "JD",
+    "symbol": "eJD",
+    "eToken": "0x4640f9be899469ff4df9cf56af5414c04849468e"
+  },
+  {
+    "ticker": "BIDU",
+    "symbol": "eBIDU",
+    "eToken": "0xa6f8d516036da0add841dd2ddc3898e97a4b2faa"
+  },
+  {
+    "ticker": "HSI",
+    "symbol": "eHSI",
+    "eToken": "0xf5e2efeb3e358c7acf6e7becce1ddba2f6b074b9"
+  }
+]

@@ -138,6 +138,12 @@ contract PythOracleVerifier is IOracleVerifier, Ownable {
         revert("PythOracle: use setFeedId/setMaxPriceAge");
     }
 
+    function getAssetOracleConfig(
+        bytes32
+    ) external pure override returns (uint256, uint256) {
+        revert("PythOracle: use getFeedId/maxPriceAge");
+    }
+
     // ──────────────────────────────────────────────────────────
     //  Admin — feed configuration
     // ──────────────────────────────────────────────────────────
