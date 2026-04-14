@@ -2,16 +2,15 @@
 
 ## 1. Overview
 
-Own is a permissionless protocol for bringing tokenized real-world assets (RWAs) onchain. Users mint ERC-20 tokens called **eTokens** (e.g. eTSLA, eGOLD) by using stablecoins. Each eToken tracks the price of its underlying asset through onchain oracles. The tokens are backed by on-chain collateral deposited by LPs in Own Vaults. LPs manage thier exposure via off-chain hedging performed by **Vault Managers** (VMs).
+Own is a permissionless protocol to mint synthetic real-world assets (RWAs) onchain. Users mint ERC-20 tokens called **eTokens** (e.g. eTSLA, eGOLD) by using stablecoins. Each eToken tracks the price of its underlying asset through onchain oracles. The tokens are backed by on-chain ETH collateral deposited in Own Vaults. Any Hedge fund, trading firm or RWA custodian can become a Vault Manager by posting ETH as collateral and start backing the issued eTokens.
 
 ### Core Thesis
 
-Traditional RWA tokenization requires trust in a custodian holding the physical asset. Own Protocol takes a different approach: exposure is backed by **collateral vaults** filled by liquidity providers, and **vault managers** hedge the net exposure off-chain. This means:
+Traditional RWA tokenization requires trust in a single custodian holding the physical asset. Own Protocol takes a different approach: exposure is backed by **collateral vaults** & multiple custodians / hedge funds can permissionlessly choose to back these assets:
 
-- No physical custody required
 - Permissionless minting and redemption
 - Transparent collateralization on-chain
-- Competition between vault managers drives better spreads
+- Competition between funds drives better spreads
 
 ### Supported Assets
 
@@ -26,24 +25,20 @@ New assets can be added by the protocol admin through the Asset Registry.
 
 ## 2. Participants
 
-### Minters (Users)
+### Buyers
 
-Regular users who want exposure to real-world assets. They place **mint orders** (deposit stablecoins to receive eTokens) or **redeem orders** (deposit eTokens to receive stablecoins). Trust level: untrusted.
-
-### Liquidity Providers (LPs)
-
-Provide collateral (e.g. WETH) to vaults. They receive ERC-4626 vault shares representing their proportional claim on vault assets. LPs earn a share of trading fees. Trust level: untrusted.
+Regular users who want exposure to real-world assets. They place **mint orders** (deposit stablecoins to receive eTokens) or **redeem orders** (deposit eTokens to receive stablecoins).
 
 ### Vault Managers (VMs)
 
-Professional market makers bound 1:1 to a vault. They:
+Professional hedge funds, trading firms. They:
 
-- Claim and execute user orders off-chain (hedge the exposure)
-- Approve or reject LP deposits
+- Provide collateral (e.g. WETH) to vaults.
+- Claim and mandatorily execute all valid user orders at the user-specified price (validated by the oracle) 
+- Hedge the resulting exposure off-chain.
+- Enable other ETH holders to deposit into vault & share fees.
 - Manage the vault's asset exposure
 - Set which assets and payment tokens the vault supports
-
-Trust level: semi-trusted (bound to a single vault, constrained by utilization caps and force execution).
 
 ### Protocol Admin
 
