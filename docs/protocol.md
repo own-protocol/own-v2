@@ -36,7 +36,7 @@ Professional hedge funds, trading firms. They:
 - Provide collateral (e.g. WETH) to vaults.
 - Claim and mandatorily execute all valid user orders at the user-specified price (validated by the oracle) 
 - Hedge the resulting exposure off-chain.
-- Enable other ETH holders to deposit into vault & share fees.
+- Enable other ETH holders (LPs) to deposit into vault & share fees.
 - Manage the vault's asset exposure
 - Set which assets and payment tokens the vault supports
 
