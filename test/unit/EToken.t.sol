@@ -545,4 +545,210 @@ contract ETokenTest is BaseTest {
             assertApproxEqRel(ratio1, ratio2, 1e15);
         }
     }
+
+    // ──────────────────────────────────────────────────────────
+    //  Pass-through holders (custodian dividend redirection)
+    // ──────────────────────────────────────────────────────────
+
+    /// @dev Setup helper: mint to MINTER1, register a "lending contract" address
+    ///      as a pass-through holder, then deposit rewards.
+    function _setupPassThroughCase() internal returns (address lender, uint256 rewardAmount, uint256 startBalance) {
+        lender = makeAddr("lendingContract");
+        startBalance = 100e18;
+        rewardAmount = 100e6; // 100 reward tokens
+
+        eToken.mint(Actors.MINTER1, startBalance);
+
+        vm.prank(Actors.ADMIN);
+        eToken.setPassThroughHolder(lender, true);
+    }
+
+    function test_setPassThroughHolder_setsFlagAndEmits() public {
+        address lender = makeAddr("lender");
+
+        vm.prank(Actors.ADMIN);
+        vm.expectEmit(true, false, false, true);
+        emit IEToken.PassThroughHolderUpdated(lender, true);
+        eToken.setPassThroughHolder(lender, true);
+
+        assertTrue(eToken.isPassThroughHolder(lender));
+
+        vm.prank(Actors.ADMIN);
+        eToken.setPassThroughHolder(lender, false);
+        assertFalse(eToken.isPassThroughHolder(lender));
+    }
+
+    function test_setPassThroughHolder_zeroAddress_reverts() public {
+        vm.prank(Actors.ADMIN);
+        vm.expectRevert(IEToken.ZeroAddress.selector);
+        eToken.setPassThroughHolder(address(0), true);
+    }
+
+    function test_setPassThroughHolder_onlyAdmin() public {
+        vm.prank(Actors.ATTACKER);
+        vm.expectRevert(IEToken.Unauthorized.selector);
+        eToken.setPassThroughHolder(makeAddr("x"), true);
+    }
+
+    /// @dev Single borrower posts collateral, dividend accrues during borrow,
+    ///      rewards redirect to borrower on collateral return.
+    function test_passThrough_singleBorrower_redirectsOnReturn() public {
+        (address lender, uint256 reward, uint256 amount) = _setupPassThroughCase();
+
+        // Borrower transfers all 100 to lender; rewards earned to date are 0
+        // (no deposit yet), so nothing accrues to MINTER1.
+        vm.prank(Actors.MINTER1);
+        eToken.transfer(lender, amount);
+        assertEq(eToken.claimableRewards(Actors.MINTER1), 0);
+
+        // Dividend deposit while lender holds the eTokens.
+        rewardToken.mint(address(this), reward);
+        rewardToken.approve(address(eToken), reward);
+        eToken.depositRewards(reward);
+
+        // Lender claimable should be all of the reward (it's the sole holder).
+        assertEq(eToken.claimableRewards(lender), reward);
+        assertEq(eToken.claimableRewards(Actors.MINTER1), 0);
+
+        // Lender returns the entire balance to MINTER1. Pass-through redirects
+        // the lender's accrued slice (100% of `amount/amount`) to MINTER1.
+        vm.prank(lender);
+        eToken.transfer(Actors.MINTER1, amount);
+
+        assertEq(eToken.claimableRewards(lender), 0, "lender keeps nothing");
+        assertEq(eToken.claimableRewards(Actors.MINTER1), reward, "minter recovers reward");
+    }
+
+    /// @dev Two borrowers share custody. When one withdraws, only their pro-rata
+    ///      slice of the lender's accrued bucket follows them.
+    function test_passThrough_multiBorrower_proRataRedirect() public {
+        address lender = makeAddr("lendingContract");
+        uint256 reward = 100e6;
+
+        eToken.mint(Actors.MINTER1, 75e18);
+        eToken.mint(Actors.MINTER2, 25e18);
+
+        vm.prank(Actors.ADMIN);
+        eToken.setPassThroughHolder(lender, true);
+
+        // Both transfer their entire balance to the lender (custody).
+        vm.prank(Actors.MINTER1);
+        eToken.transfer(lender, 75e18);
+        vm.prank(Actors.MINTER2);
+        eToken.transfer(lender, 25e18);
+
+        // Reward accrues entirely to lender's bucket (sole holder of 100e18).
+        rewardToken.mint(address(this), reward);
+        rewardToken.approve(address(eToken), reward);
+        eToken.depositRewards(reward);
+
+        assertEq(eToken.claimableRewards(lender), reward);
+
+        // MINTER1 withdraws 75% of the custody pool. Should receive 75% of accrued.
+        vm.prank(lender);
+        eToken.transfer(Actors.MINTER1, 75e18);
+
+        // 75 / 100 of reward → MINTER1.
+        uint256 expectedM1 = reward * 75 / 100;
+        assertApproxEqAbs(eToken.claimableRewards(Actors.MINTER1), expectedM1, 1);
+        // Remainder still credited to lender bucket pending MINTER2 withdrawal.
+        assertApproxEqAbs(eToken.claimableRewards(lender), reward - expectedM1, 1);
+
+        // MINTER2 withdraws their 25e18.
+        vm.prank(lender);
+        eToken.transfer(Actors.MINTER2, 25e18);
+
+        // After MINTER2 withdraw, lender bucket fully drained, MINTER2 gets the rest.
+        assertApproxEqAbs(eToken.claimableRewards(Actors.MINTER2), reward - expectedM1, 1);
+        assertEq(eToken.claimableRewards(lender), 0);
+    }
+
+    /// @dev Liquidator path: lender → liquidator transfer redirects rewards to
+    ///      the liquidator (decision: liquidator gets the rewards on seized
+    ///      collateral, by design).
+    function test_passThrough_liquidatorReceivesRewards() public {
+        (address lender, uint256 reward, uint256 amount) = _setupPassThroughCase();
+
+        vm.prank(Actors.MINTER1);
+        eToken.transfer(lender, amount);
+
+        rewardToken.mint(address(this), reward);
+        rewardToken.approve(address(eToken), reward);
+        eToken.depositRewards(reward);
+
+        // Lender liquidates → seizes half of the collateral to liquidator.
+        uint256 seize = amount / 2;
+        vm.prank(lender);
+        eToken.transfer(Actors.LIQUIDATOR, seize);
+
+        assertApproxEqAbs(eToken.claimableRewards(Actors.LIQUIDATOR), reward / 2, 1);
+        assertApproxEqAbs(eToken.claimableRewards(lender), reward / 2, 1);
+        assertEq(eToken.claimableRewards(Actors.MINTER1), 0);
+    }
+
+    /// @dev Lender → another pass-through holder transfer should NOT redirect:
+    ///      both are custodians, so the receiving custodian inherits the
+    ///      bookkeeping. Currently no second custodian exists in the test, but
+    ///      the behaviour is verified by the gating condition in `_update`.
+    function test_passThrough_holderToHolder_noRedirect() public {
+        (address lender, uint256 reward, uint256 amount) = _setupPassThroughCase();
+
+        address otherHolder = makeAddr("otherCustodian");
+        vm.prank(Actors.ADMIN);
+        eToken.setPassThroughHolder(otherHolder, true);
+
+        vm.prank(Actors.MINTER1);
+        eToken.transfer(lender, amount);
+
+        rewardToken.mint(address(this), reward);
+        rewardToken.approve(address(eToken), reward);
+        eToken.depositRewards(reward);
+
+        vm.prank(lender);
+        eToken.transfer(otherHolder, amount / 2);
+
+        // Half went to another pass-through holder; the redirect rule does NOT
+        // fire (to is a holder), so lender's bucket is unchanged.
+        assertEq(eToken.claimableRewards(lender), reward);
+        assertEq(eToken.claimableRewards(otherHolder), 0);
+    }
+
+    /// @dev Non-holder → holder transfer also does not trigger redirect; the
+    ///      sender simply settles via the normal path.
+    function test_passThrough_nonHolderToHolder_noRedirect() public {
+        (address lender,, uint256 amount) = _setupPassThroughCase();
+
+        // Reward arrives BEFORE transfer; MINTER1 holds 100e18.
+        rewardToken.mint(address(this), 100e6);
+        rewardToken.approve(address(eToken), 100e6);
+        eToken.depositRewards(100e6);
+
+        // Now MINTER1 transfers half to lender. Settlement credits MINTER1 with
+        // the full reward (they held all the supply at deposit time). No redirect.
+        vm.prank(Actors.MINTER1);
+        eToken.transfer(lender, amount / 2);
+
+        assertApproxEqAbs(eToken.claimableRewards(Actors.MINTER1), 100e6, 1);
+        assertEq(eToken.claimableRewards(lender), 0);
+    }
+
+    /// @dev Burning eTokens held by a pass-through custodian (e.g. on
+    ///      liquidation dust burn) leaves the rewards in the custodian bucket
+    ///      — `to == address(0)` so the redirect doesn't fire.
+    function test_passThrough_burnFromHolder_keepsRewards() public {
+        (address lender, uint256 reward, uint256 amount) = _setupPassThroughCase();
+
+        vm.prank(Actors.MINTER1);
+        eToken.transfer(lender, amount);
+
+        rewardToken.mint(address(this), reward);
+        rewardToken.approve(address(eToken), reward);
+        eToken.depositRewards(reward);
+
+        // The order system (this test contract, mocked as MARKET) burns from lender.
+        eToken.burn(lender, amount / 2);
+
+        // Lender retains the full settled reward bucket (no redirect on burn).
+        assertEq(eToken.claimableRewards(lender), reward);
+    }
 }

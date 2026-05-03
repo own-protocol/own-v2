@@ -53,6 +53,12 @@ interface IAaveV3Pool {
         address onBehalfOf
     ) external returns (uint256);
 
+    /// @notice Mark `asset` as collateral / non-collateral for the caller's
+    ///         Aave position. Requires a non-zero aToken balance for `asset`.
+    /// @param asset       Reserve underlying.
+    /// @param useAsCollateral True to enable, false to disable.
+    function setUserUseReserveAsCollateral(address asset, bool useAsCollateral) external;
+
     /// @notice Return aggregated account data for `user`.
     /// @return totalCollateralBase     Total collateral in the base currency (1e8 USD).
     /// @return totalDebtBase           Total debt in the base currency (1e8 USD).

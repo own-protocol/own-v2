@@ -52,6 +52,12 @@ contract EToken is ERC20, ERC20Permit, IEToken {
     /// @dev Per-account accrued but unclaimed rewards.
     mapping(address => uint256) private _accruedRewards;
 
+    /// @dev Addresses flagged as custodian holders. When such an address
+    ///      transfers eTokens to a non-flagged recipient, a pro-rata slice of
+    ///      its already-settled `_accruedRewards` is redirected to the
+    ///      recipient. Set by admin via `setPassThroughHolder`.
+    mapping(address => bool) private _passThroughHolders;
+
     // ──────────────────────────────────────────────────────────
     //  Modifiers
     // ──────────────────────────────────────────────────────────
@@ -157,6 +163,20 @@ contract EToken is ERC20, ERC20Permit, IEToken {
         emit SymbolUpdated(oldSymbol, newSymbol);
     }
 
+    /// @inheritdoc IEToken
+    function setPassThroughHolder(address holder, bool enabled) external onlyAdmin {
+        if (holder == address(0)) revert ZeroAddress();
+        _passThroughHolders[holder] = enabled;
+        emit PassThroughHolderUpdated(holder, enabled);
+    }
+
+    /// @inheritdoc IEToken
+    function isPassThroughHolder(
+        address holder
+    ) external view returns (bool) {
+        return _passThroughHolders[holder];
+    }
+
     // ──────────────────────────────────────────────────────────
     //  Dividend / rewards functions
     // ──────────────────────────────────────────────────────────
@@ -211,6 +231,14 @@ contract EToken is ERC20, ERC20Permit, IEToken {
 
     /// @dev Override _update to settle rewards for both sender and receiver
     ///      on every transfer, mint, and burn. This is the OZ v5 hook.
+    ///
+    ///      When `from` is a registered pass-through holder and `to` is not,
+    ///      a pro-rata slice of `from`'s settled `_accruedRewards` is shifted
+    ///      to `to`. This preserves dividends for the original owner who has
+    ///      their tokens in custody (e.g. as collateral in a lending contract).
+    ///      Settlement runs first, so `_accruedRewards[from]` already reflects
+    ///      every reward earned up to the current `_rewardsPerShare`; we only
+    ///      shuffle settled balances, never the per-share accumulator.
     function _update(address from, address to, uint256 amount) internal override {
         if (from != address(0)) {
             _settleRewards(from);
@@ -218,6 +246,23 @@ contract EToken is ERC20, ERC20Permit, IEToken {
         if (to != address(0)) {
             _settleRewards(to);
         }
+
+        // Pass-through redirect: only on holder→non-holder transfers.
+        if (from != address(0) && to != address(0) && _passThroughHolders[from] && !_passThroughHolders[to]) {
+            uint256 fromBal = balanceOf(from);
+            if (fromBal > 0) {
+                uint256 accrued = _accruedRewards[from];
+                if (accrued > 0) {
+                    // Rounding: floor — any dust stays with the custodian.
+                    uint256 redirected = accrued.mulDiv(amount, fromBal);
+                    if (redirected > 0) {
+                        _accruedRewards[from] = accrued - redirected;
+                        _accruedRewards[to] += redirected;
+                    }
+                }
+            }
+        }
+
         super._update(from, to, amount);
     }
 

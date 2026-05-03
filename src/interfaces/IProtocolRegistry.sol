@@ -79,6 +79,9 @@ interface IProtocolRegistry {
     /// @notice Returns the ETokenFactory contract address.
     function etokenFactory() external view returns (address);
 
+    /// @notice Returns the BorrowManagerFactory contract address.
+    function borrowManagerFactory() external view returns (address);
+
     /// @notice Returns the protocol's share of order fees in BPS.
     function protocolShareBps() external view returns (uint256);
 

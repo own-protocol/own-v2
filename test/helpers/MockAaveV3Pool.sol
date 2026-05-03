@@ -89,10 +89,31 @@ contract MockAToken is IERC20 {
     }
 }
 
+/// @dev Minimal Aave variable debt token used by MockAaveV3Pool. Records
+///      credit-delegation allowances. Not transferable.
+contract MockAaveDebtToken {
+    mapping(address => mapping(address => uint256)) private _allowances;
+
+    function approveDelegation(address delegatee, uint256 amount) external {
+        _allowances[msg.sender][delegatee] = amount;
+    }
+
+    function borrowAllowance(address fromUser, address toUser) external view returns (uint256) {
+        return _allowances[fromUser][toUser];
+    }
+
+    function consume(address fromUser, address toUser, uint256 amount) external {
+        uint256 allowed = _allowances[fromUser][toUser];
+        require(allowed >= amount, "MockAaveDebtToken: allowance too low");
+        if (allowed != type(uint256).max) _allowances[fromUser][toUser] = allowed - amount;
+    }
+}
+
 /// @title MockAaveV3Pool — Minimal mock of Aave V3 Pool for unit tests
-/// @notice Supports supply / withdraw of a single registered reserve. Mints a
-///         MockAToken 1:1 on supply, burns it 1:1 on withdraw. No interest
-///         accrual, no borrow logic — those are exercised in fork tests.
+/// @notice Supports supply / withdraw / borrow / repay against a registered reserve.
+///         Borrows honour credit delegation read from a per-asset
+///         MockAaveDebtToken. No interest accrual on the mock side; tests can
+///         simulate accrual by calling `accrueDebt` directly.
 contract MockAaveV3Pool is IAaveV3Pool {
     using SafeERC20 for IERC20;
 
@@ -130,12 +151,74 @@ contract MockAaveV3Pool is IAaveV3Pool {
         return amount;
     }
 
-    function borrow(address, uint256, uint256, uint16, address) external pure override {
-        revert("MockAaveV3Pool: borrow not implemented");
+    /// @notice Records `setUserUseReserveAsCollateral` calls per (caller, asset).
+    mapping(address => mapping(address => bool)) public reserveAsCollateral;
+
+    function setUserUseReserveAsCollateral(address asset, bool useAsCollateral) external override {
+        reserveAsCollateral[msg.sender][asset] = useAsCollateral;
     }
 
-    function repay(address, uint256, uint256, address) external pure override returns (uint256) {
-        revert("MockAaveV3Pool: repay not implemented");
+    /// @dev Per-(user, asset) variable debt balance. Mock has no interest curve;
+    ///      tests can call `accrueDebt` to simulate Aave-side interest.
+    mapping(address => mapping(address => uint256)) public debtOf;
+
+    /// @dev Per-asset registered debt token (informational; not enforced here).
+    mapping(address => address) public variableDebtToken;
+
+    /// @notice Register a debt token for a reserve (test convenience). Real Aave
+    ///         deploys this internally on reserve init.
+    function setVariableDebtToken(address asset, address debtToken_) external {
+        variableDebtToken[asset] = debtToken_;
+    }
+
+    /// @notice Test-helper: deploy a MockAaveDebtToken and register it for `asset`.
+    function deployVariableDebtToken(
+        address asset
+    ) external returns (address) {
+        MockAaveDebtToken dt = new MockAaveDebtToken();
+        variableDebtToken[asset] = address(dt);
+        return address(dt);
+    }
+
+    /// @dev Add to a position's outstanding debt (simulates Aave interest accrual).
+    function accrueDebt(address user, address asset, uint256 extra) external {
+        debtOf[user][asset] += extra;
+    }
+
+    function borrow(
+        address asset,
+        uint256 amount,
+        uint256, /*interestRateMode*/
+        uint16, /*referralCode*/
+        address onBehalfOf
+    ) external override {
+        // Honour delegation when caller != onBehalfOf, mirroring Aave V3.
+        if (msg.sender != onBehalfOf) {
+            address dt = variableDebtToken[asset];
+            require(dt != address(0), "MockAaveV3Pool: no debt token");
+            MockAaveDebtToken(dt).consume(onBehalfOf, msg.sender, amount);
+        }
+        debtOf[onBehalfOf][asset] += amount;
+        IERC20(asset).safeTransfer(msg.sender, amount);
+    }
+
+    function repay(
+        address asset,
+        uint256 amount,
+        uint256, /*interestRateMode*/
+        address onBehalfOf
+    ) external override returns (uint256) {
+        uint256 outstanding = debtOf[onBehalfOf][asset];
+        uint256 toRepay = amount > outstanding ? outstanding : amount;
+        if (toRepay == 0) return 0;
+        IERC20(asset).safeTransferFrom(msg.sender, address(this), toRepay);
+        debtOf[onBehalfOf][asset] = outstanding - toRepay;
+        return toRepay;
+    }
+
+    /// @dev Test seeding helper: deposit reserve liquidity so borrow can pay out.
+    function seedReserve(address asset, uint256 amount) external {
+        IERC20(asset).safeTransferFrom(msg.sender, address(this), amount);
     }
 
     function getUserAccountData(

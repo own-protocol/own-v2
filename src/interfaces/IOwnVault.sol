@@ -46,7 +46,8 @@ interface IOwnVault is IERC4626 {
     event DepositApprovalUpdated(bool required);
     event AssetValuationUpdated(bytes32 indexed asset, uint256 exposureUnits, uint256 exposureUSD, uint256 price);
     event CollateralValuationUpdated(uint256 collateralValueUSD, uint256 price);
-    event LendingEnabled(address indexed borrowManager);
+    event LendingEnabled(address indexed borrowManager, address indexed debtToken);
+    event AaveCollateralEnabled(address indexed pool, address indexed underlying);
 
     // ──────────────────────────────────────────────────────────
     //  Errors
@@ -409,14 +410,25 @@ interface IOwnVault is IERC4626 {
     //  Lending opt-in
     // ──────────────────────────────────────────────────────────
 
-    /// @notice Authorise a borrow manager for this vault. One-shot: reverts if
-    ///         a borrow manager is already registered. Phase 1 scaffold — Aave
-    ///         credit-delegation wiring lands in Phase 2 alongside the borrow
-    ///         manager itself.
-    /// @param borrowManager Address of the borrow manager to authorise. Cannot be zero.
-    function enableLending(
-        address borrowManager
-    ) external;
+    /// @notice Authorise a borrow manager for this vault and approve unlimited
+    ///         credit delegation on the matching Aave variable debt token. The
+    ///         delegated allowance is what lets the borrow manager call
+    ///         `IAaveV3Pool.borrow(..., onBehalfOf=vault)`. One-shot per vault:
+    ///         reverts if lending is already enabled.
+    /// @dev    Aave's LTV / collateral checks still bound the actual borrowable
+    ///         amount regardless of the unlimited delegation.
+    /// @param borrowManager Borrow manager address. Cannot be zero.
+    /// @param debtToken     Aave variable debt token (must implement
+    ///                      IAaveDebtToken). Cannot be zero.
+    function enableLending(address borrowManager, address debtToken) external;
+
+    /// @notice Mark `underlying` as Aave collateral for this vault. Required
+    ///         once the vault holds aTokens for the reserve so its Aave
+    ///         account-data reflects the collateral and the borrow manager
+    ///         can borrow against it. Idempotent at the Aave level.
+    /// @param pool       Aave V3 Pool.
+    /// @param underlying Reserve underlying (e.g. wstETH).
+    function enableAaveCollateral(address pool, address underlying) external;
 
     /// @notice Address of the authorised borrow manager (zero if lending not enabled).
     function borrowManager() external view returns (address);

@@ -49,6 +49,11 @@ interface IEToken is IERC20, IERC20Permit {
     /// @param amount Amount burned.
     event Burned(address indexed from, uint256 amount);
 
+    /// @notice Emitted when an admin adds or removes a pass-through holder.
+    /// @param holder  Address whose holdings are treated as a custodian pool.
+    /// @param enabled True if the address is now a pass-through holder.
+    event PassThroughHolderUpdated(address indexed holder, bool enabled);
+
     // ──────────────────────────────────────────────────────────
     //  Errors
     // ──────────────────────────────────────────────────────────
@@ -94,6 +99,21 @@ interface IEToken is IERC20, IERC20Permit {
     function updateSymbol(
         string calldata newSymbol
     ) external;
+
+    /// @notice Mark `holder` as a pass-through (custodian) holder for dividends.
+    /// @dev    When a registered holder transfers eTokens to a non-registered
+    ///         recipient, a pro-rata slice of the holder's pre-transfer accrued
+    ///         rewards is redirected to the recipient — preserving the
+    ///         dividends earned by the underlying owner while their tokens
+    ///         were held in custody (e.g. by the lending contract).
+    /// @param holder  Address to mark / unmark.
+    /// @param enabled True to register, false to remove.
+    function setPassThroughHolder(address holder, bool enabled) external;
+
+    /// @notice Whether an address is registered as a pass-through holder.
+    function isPassThroughHolder(
+        address holder
+    ) external view returns (bool);
 
     // ──────────────────────────────────────────────────────────
     //  Dividend / rewards functions

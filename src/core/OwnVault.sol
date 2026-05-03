@@ -5,6 +5,8 @@ import {IAssetRegistry} from "../interfaces/IAssetRegistry.sol";
 import {IOracleVerifier} from "../interfaces/IOracleVerifier.sol";
 import {IOwnVault} from "../interfaces/IOwnVault.sol";
 import {IProtocolRegistry} from "../interfaces/IProtocolRegistry.sol";
+import {IAaveDebtToken} from "../interfaces/external/IAaveDebtToken.sol";
+import {IAaveV3Pool} from "../interfaces/external/IAaveV3Pool.sol";
 import {
     BPS,
     DepositRequest,
@@ -909,13 +911,21 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
     // ──────────────────────────────────────────────────────────
 
     /// @inheritdoc IOwnVault
-    function enableLending(
-        address borrowManager_
-    ) external onlyAdmin {
-        if (borrowManager_ == address(0)) revert ZeroAddress();
+    function enableLending(address borrowManager_, address debtToken) external onlyAdmin {
+        if (borrowManager_ == address(0) || debtToken == address(0)) revert ZeroAddress();
         if (_borrowManager != address(0)) revert LendingAlreadyEnabled();
+
         _borrowManager = borrowManager_;
-        emit LendingEnabled(borrowManager_);
+        IAaveDebtToken(debtToken).approveDelegation(borrowManager_, type(uint256).max);
+
+        emit LendingEnabled(borrowManager_, debtToken);
+    }
+
+    /// @inheritdoc IOwnVault
+    function enableAaveCollateral(address pool, address underlying) external onlyAdmin {
+        if (pool == address(0) || underlying == address(0)) revert ZeroAddress();
+        IAaveV3Pool(pool).setUserUseReserveAsCollateral(underlying, true);
+        emit AaveCollateralEnabled(pool, underlying);
     }
 
     /// @inheritdoc IOwnVault
