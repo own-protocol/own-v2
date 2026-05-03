@@ -405,16 +405,49 @@ contract AaveBorrowManagerTest is BaseTest {
     function test_accrual_grewDebtOverTime() public {
         (, uint256 stable) = _openTypical(Actors.MINTER1);
 
-        // Set Aave borrow rate to make interest material at base premium of 1%.
-        vm.prank(Actors.ADMIN);
-        borrowManager.setAaveBorrowRateBps(1000); // 10% APR Aave + 1% premium = 11%
+        // Simulate Aave's live rate: 10% APR (RAY-scaled).
+        aavePool.setCurrentVariableBorrowRate(address(usdc), uint128(10 * 1e25));
 
         skip(365 days);
 
         uint256 debtAfter = borrowManager.debtOf(Actors.MINTER1, ASSET);
-        // Linear approximation: stable * 0.11 = grow ~ 11%. Allow 0.5% slack (the index uses simple linear approximation per second).
+        // 10% Aave + 1% base premium = ~11% APR linear. Allow 1% relative slack.
         assertGt(debtAfter, stable, "debt grew");
         assertApproxEqRel(debtAfter, stable * 111 / 100, 1e16);
+    }
+
+    function test_liveRate_readFromAave_inBps() public {
+        // 5% APR in RAY = 5e25.
+        aavePool.setCurrentVariableBorrowRate(address(usdc), uint128(5 * 1e25));
+        assertEq(borrowManager.liveAaveRateBps(), 500);
+    }
+
+    function test_floor_liftsRateWhenLiveBelow() public {
+        // Aave live = 1% APR. Admin floor = 4% APR. Borrower-facing rate uses floor.
+        aavePool.setCurrentVariableBorrowRate(address(usdc), uint128(1 * 1e25));
+        vm.prank(Actors.ADMIN);
+        borrowManager.setMinAaveBorrowRateBps(400);
+
+        (, uint256 stable) = _openTypical(Actors.MINTER1);
+        skip(365 days);
+
+        uint256 debtAfter = borrowManager.debtOf(Actors.MINTER1, ASSET);
+        // 4% floor + 1% base premium = 5% APR linear.
+        assertApproxEqRel(debtAfter, stable * 105 / 100, 1e16);
+    }
+
+    function test_floor_ignoredWhenLiveAbove() public {
+        // Aave live = 8% APR; floor = 2% APR. Borrower charged 8% (live).
+        aavePool.setCurrentVariableBorrowRate(address(usdc), uint128(8 * 1e25));
+        vm.prank(Actors.ADMIN);
+        borrowManager.setMinAaveBorrowRateBps(200);
+
+        (, uint256 stable) = _openTypical(Actors.MINTER1);
+        skip(365 days);
+
+        uint256 debtAfter = borrowManager.debtOf(Actors.MINTER1, ASSET);
+        // 8% live + 1% base premium = 9% APR linear.
+        assertApproxEqRel(debtAfter, stable * 109 / 100, 1e16);
     }
 
     // ──────────────────────────────────────────────────────────

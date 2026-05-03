@@ -221,6 +221,25 @@ contract MockAaveV3Pool is IAaveV3Pool {
         IERC20(asset).safeTransferFrom(msg.sender, address(this), amount);
     }
 
+    /// @dev Per-asset variable borrow rate (RAY-scaled, annualized). Settable
+    ///      so tests can simulate Aave rate moves and verify the floor logic.
+    mapping(address => uint128) public currentVariableBorrowRate;
+
+    function setCurrentVariableBorrowRate(address asset, uint128 rateRay) external {
+        currentVariableBorrowRate[asset] = rateRay;
+    }
+
+    function getReserveData(
+        address asset
+    ) external view override returns (ReserveDataLegacy memory data) {
+        // Mock fills only the fields the manager actually reads
+        // (`currentVariableBorrowRate` + the address fields downstream code may
+        // glance at). Everything else stays zeroed.
+        data.currentVariableBorrowRate = currentVariableBorrowRate[asset];
+        data.aTokenAddress = address(aTokens[asset]);
+        data.variableDebtTokenAddress = variableDebtToken[asset];
+    }
+
     function getUserAccountData(
         address
     ) external pure override returns (uint256, uint256, uint256, uint256, uint256, uint256) {

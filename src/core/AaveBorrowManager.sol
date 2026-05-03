@@ -37,6 +37,9 @@ contract AaveBorrowManager is IAaveBorrowManager, ReentrancyGuard {
     uint256 internal constant SECONDS_PER_YEAR = 365 days;
     uint256 internal constant AAVE_VARIABLE_RATE_MODE = 2;
 
+    /// @dev Aave V3 uses RAY (1e27) for rate scaling.
+    uint256 internal constant RAY = 1e27;
+
     // ──────────────────────────────────────────────────────────
     //  Immutables
     // ──────────────────────────────────────────────────────────
@@ -60,9 +63,12 @@ contract AaveBorrowManager is IAaveBorrowManager, ReentrancyGuard {
     ///      Zero means no cap → utilization = 0 → premium = base only.
     uint256 public borrowCap;
 
-    /// @dev External Aave borrow rate (BPS, annualized). Admin-curated;
-    ///      added to the InterestRateModel premium when accruing.
-    uint256 public aaveBorrowRateBps;
+    /// @dev Floor for the Aave-side rate (BPS, annualized). The accrual loop
+    ///      uses `max(floor, liveAaveRate)` so the protocol always charges at
+    ///      least the live Aave variable borrow rate plus the premium curve.
+    ///      Admin can raise the floor for additional safety; the live read
+    ///      protects LPs even when the admin is silent.
+    uint256 public minAaveBorrowRateBps;
 
     /// @inheritdoc IAaveBorrowManager
     uint256 public override liquidationThresholdBps;
@@ -350,12 +356,19 @@ contract AaveBorrowManager is IAaveBorrowManager, ReentrancyGuard {
         borrowLtvBps = ltvBps;
     }
 
-    /// @notice Admin-set external Aave borrow rate (BPS, annualized). Used by
-    ///         the accrual loop on top of the InterestRateModel premium.
-    function setAaveBorrowRateBps(
+    /// @notice Set the minimum Aave-side rate floor (BPS, annualized). The
+    ///         actual rate used at accrual is `max(floor, liveAaveRate)`.
+    function setMinAaveBorrowRateBps(
         uint256 rateBps
     ) external onlyAdmin {
-        aaveBorrowRateBps = rateBps;
+        minAaveBorrowRateBps = rateBps;
+    }
+
+    /// @notice Read Aave's current variable borrow rate for the manager's
+    ///         stablecoin, converted from RAY to BPS. Safe to call off-chain
+    ///         to inspect the live rate.
+    function liveAaveRateBps() external view returns (uint256) {
+        return _liveAaveRateBps();
     }
 
     /// @notice Admin-set per-manager borrow cap (stablecoin units). Drives
@@ -412,7 +425,21 @@ contract AaveBorrowManager is IAaveBorrowManager, ReentrancyGuard {
         bytes32 asset
     ) internal view returns (uint256) {
         uint256 utilBps = _utilizationBps(asset);
-        return aaveBorrowRateBps + InterestRateModel.premium(utilBps, _rateParams);
+        return _aaveRateWithFloor() + InterestRateModel.premium(utilBps, _rateParams);
+    }
+
+    /// @dev Live Aave rate, floored at `minAaveBorrowRateBps`.
+    function _aaveRateWithFloor() internal view returns (uint256) {
+        uint256 live = _liveAaveRateBps();
+        uint256 floor = minAaveBorrowRateBps;
+        return live > floor ? live : floor;
+    }
+
+    /// @dev Read Aave's variable borrow rate for our stablecoin and convert
+    ///      RAY (1e27, annualized) → BPS (10_000 = 100% APR).
+    function _liveAaveRateBps() internal view returns (uint256) {
+        IAaveV3Pool.ReserveDataLegacy memory data = IAaveV3Pool(aavePool).getReserveData(stablecoin);
+        return uint256(data.currentVariableBorrowRate).mulDiv(BPS, RAY);
     }
 
     function _utilizationBps(

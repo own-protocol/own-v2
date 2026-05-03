@@ -6,6 +6,38 @@ pragma solidity 0.8.28;
 ///         contracts (AaveRouter for supplies/withdrawals, AaveBorrowManager for
 ///         delegated borrowing and repayment, plus account-data reads).
 interface IAaveV3Pool {
+    /// @dev Mirrors Aave's `DataTypes.ReserveConfigurationMap`.
+    struct ReserveConfigurationMap {
+        uint256 data;
+    }
+
+    /// @dev Mirrors Aave V3's `DataTypes.ReserveDataLegacy` struct, returned by
+    ///      `getReserveData`. Field layout is fixed by Aave V3.
+    struct ReserveDataLegacy {
+        ReserveConfigurationMap configuration;
+        uint128 liquidityIndex;
+        uint128 currentLiquidityRate;
+        uint128 variableBorrowIndex;
+        uint128 currentVariableBorrowRate; // RAY-scaled (1e27), annualized.
+        uint128 currentStableBorrowRate;
+        uint40 lastUpdateTimestamp;
+        uint16 id;
+        address aTokenAddress;
+        address stableDebtTokenAddress;
+        address variableDebtTokenAddress;
+        address interestRateStrategyAddress;
+        uint128 accruedToTreasury;
+        uint128 unbacked;
+        uint128 isolationModeTotalDebt;
+    }
+
+    /// @notice Return the full reserve data struct for a reserve.
+    /// @dev Matches Aave V3's legacy `getReserveData` signature.
+    /// @param asset Reserve underlying.
+    function getReserveData(
+        address asset
+    ) external view returns (ReserveDataLegacy memory);
+
     /// @notice Supply `amount` of `asset` to the Aave reserve, crediting `onBehalfOf`
     ///         with the matching aTokens.
     /// @param asset       The reserve asset to supply (e.g. wstETH).

@@ -134,10 +134,9 @@ contract BorrowAndLiquidateFlowTest is BaseTest {
         // Lender's accrued bucket holds all of `reward` (sole holder of supply).
         assertEq(eTSLA.claimableRewards(address(borrowManager)), reward);
 
-        // Time passes → manager-side interest accrues. With Aave rate 0 and
-        // base premium 1%, debt grows ~1% over a year.
-        vm.prank(Actors.ADMIN);
-        borrowManager.setAaveBorrowRateBps(0);
+        // Time passes → manager-side interest accrues. Live Aave rate stays
+        // at 0 in the mock pool unless we set it; floor stays at 0 too. With
+        // base premium 1%, debt grows ~0.5% over half a year.
         skip(180 days);
 
         uint256 debtAfterTime = borrowManager.debtOf(Actors.MINTER1, ASSET);
