@@ -775,4 +775,237 @@ contract OwnVaultTest is BaseTest {
 
         assertEq(vault.totalAssets(), a1 + a2);
     }
+
+    // ──────────────────────────────────────────────────────────
+    //  enableLending (Aave credit delegation)
+    // ──────────────────────────────────────────────────────────
+
+    /// @dev Mock variable debt token recording the last approveDelegation call.
+    ///      Lives inline to avoid pulling another helper into test/.
+    function _deployDebtTokenMock() internal returns (address) {
+        return address(new MockDebtTokenForVault());
+    }
+
+    function test_enableLending_setsBothManagersAndApprovesDelegation() public {
+        address userBM = makeAddr("userBM");
+        address lpBM = makeAddr("lpBM");
+        address debt = _deployDebtTokenMock();
+
+        assertEq(vault.borrowManager(), address(0));
+        assertEq(vault.lpBorrowManager(), address(0));
+
+        vm.prank(Actors.ADMIN);
+        vault.enableLending(userBM, lpBM, debt);
+
+        assertEq(vault.borrowManager(), userBM);
+        assertEq(vault.lpBorrowManager(), lpBM);
+        // BOTH managers receive max delegation, independently.
+        assertEq(MockDebtTokenForVault(debt).borrowAllowance(address(vault), userBM), type(uint256).max);
+        assertEq(MockDebtTokenForVault(debt).borrowAllowance(address(vault), lpBM), type(uint256).max);
+    }
+
+    function test_enableLending_emitsEvent() public {
+        address userBM = makeAddr("userBM");
+        address lpBM = makeAddr("lpBM");
+        address debt = _deployDebtTokenMock();
+
+        vm.prank(Actors.ADMIN);
+        vm.expectEmit(true, true, true, false);
+        emit IOwnVault.LendingEnabled(userBM, lpBM, debt);
+        vault.enableLending(userBM, lpBM, debt);
+    }
+
+    function test_enableLending_zeroUserManager_reverts() public {
+        address debt = _deployDebtTokenMock();
+        vm.prank(Actors.ADMIN);
+        vm.expectRevert(IOwnVault.ZeroAddress.selector);
+        vault.enableLending(address(0), makeAddr("lpBM"), debt);
+    }
+
+    function test_enableLending_zeroLPManager_reverts() public {
+        address debt = _deployDebtTokenMock();
+        vm.prank(Actors.ADMIN);
+        vm.expectRevert(IOwnVault.ZeroAddress.selector);
+        vault.enableLending(makeAddr("userBM"), address(0), debt);
+    }
+
+    function test_enableLending_zeroDebtToken_reverts() public {
+        vm.prank(Actors.ADMIN);
+        vm.expectRevert(IOwnVault.ZeroAddress.selector);
+        vault.enableLending(makeAddr("userBM"), makeAddr("lpBM"), address(0));
+    }
+
+    function test_enableLending_onlyAdmin() public {
+        address debt = _deployDebtTokenMock();
+        address userBM = makeAddr("userBM");
+        address lpBM = makeAddr("lpBM");
+        vm.prank(Actors.ATTACKER);
+        vm.expectRevert(IOwnVault.OnlyAdmin.selector);
+        vault.enableLending(userBM, lpBM, debt);
+    }
+
+    function test_enableLending_alreadyEnabled_reverts() public {
+        address userBM = makeAddr("userBM");
+        address lpBM = makeAddr("lpBM");
+        address debt = _deployDebtTokenMock();
+
+        vm.startPrank(Actors.ADMIN);
+        vault.enableLending(userBM, lpBM, debt);
+
+        vm.expectRevert(IOwnVault.LendingAlreadyEnabled.selector);
+        vault.enableLending(makeAddr("u2"), makeAddr("lp2"), debt);
+        vm.stopPrank();
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Share custodian (pass-through fee rewards)
+    // ──────────────────────────────────────────────────────────
+
+    address internal _custodian = makeAddr("lpBorrowManager");
+
+    /// @dev Drive a fee deposit so `_lpRewardsPerShare` is non-zero. Uses the
+    ///      mock market to call `depositFees(weth, amount)` after first
+    ///      configuring a non-zero `vmShareBps` so the LP slice is non-trivial.
+    function _seedLPFees(
+        uint256 amount
+    ) internal {
+        usdc.mint(mockMarket, amount);
+        vm.startPrank(mockMarket);
+        usdc.approve(address(vault), amount);
+        vault.depositFees(address(usdc), amount);
+        vm.stopPrank();
+    }
+
+    function test_setShareCustodian_setsAndEmits() public {
+        vm.prank(Actors.ADMIN);
+        vm.expectEmit(true, false, false, true);
+        emit IOwnVault.ShareCustodianUpdated(_custodian, true);
+        vault.setShareCustodian(_custodian, true);
+        assertTrue(vault.isShareCustodian(_custodian));
+
+        vm.prank(Actors.ADMIN);
+        vault.setShareCustodian(_custodian, false);
+        assertFalse(vault.isShareCustodian(_custodian));
+    }
+
+    function test_setShareCustodian_zeroAddress_reverts() public {
+        vm.prank(Actors.ADMIN);
+        vm.expectRevert(IOwnVault.ZeroAddress.selector);
+        vault.setShareCustodian(address(0), true);
+    }
+
+    function test_setShareCustodian_onlyAdmin() public {
+        vm.prank(Actors.ATTACKER);
+        vm.expectRevert(IOwnVault.OnlyAdmin.selector);
+        vault.setShareCustodian(_custodian, true);
+    }
+
+    /// @dev Single LP transfers shares to the custodian, fee accrues while
+    ///      custody-held, custodian transfers back — LP picks up the fees.
+    function test_passThrough_singleLP_redirectsOnReturn() public {
+        // Set the vault's payment token to weth so depositFees works.
+        vm.prank(Actors.VM1);
+        vault.setPaymentToken(address(usdc));
+
+        vm.prank(Actors.ADMIN);
+        vault.setShareCustodian(_custodian, true);
+
+        _depositAs(Actors.LP1, 100 ether);
+        uint256 shares = vault.balanceOf(Actors.LP1);
+
+        // LP transfers all shares to custody. No fees accrued yet.
+        vm.prank(Actors.LP1);
+        vault.transfer(_custodian, shares);
+        assertEq(vault.claimableLPRewards(Actors.LP1), 0);
+
+        // Fee deposit while custody-held → entire LP slice lands on custodian's bucket.
+        _seedLPFees(1000 ether);
+        uint256 lpSliceBefore = vault.claimableLPRewards(_custodian);
+        assertGt(lpSliceBefore, 0, "custodian holds slice");
+
+        // Custodian returns the shares; pass-through redirects the bucket to LP.
+        vm.prank(_custodian);
+        vault.transfer(Actors.LP1, shares);
+
+        assertEq(vault.claimableLPRewards(_custodian), 0, "custodian drained");
+        assertApproxEqAbs(vault.claimableLPRewards(Actors.LP1), lpSliceBefore, 1);
+    }
+
+    /// @dev Two LPs share custody; each gets pro-rata share of fees on return.
+    function test_passThrough_multiLP_proRata() public {
+        vm.prank(Actors.VM1);
+        vault.setPaymentToken(address(usdc));
+
+        vm.prank(Actors.ADMIN);
+        vault.setShareCustodian(_custodian, true);
+
+        _depositAs(Actors.LP1, 75 ether);
+        _depositAs(Actors.LP2, 25 ether);
+        uint256 lp1Shares = vault.balanceOf(Actors.LP1);
+        uint256 lp2Shares = vault.balanceOf(Actors.LP2);
+
+        vm.prank(Actors.LP1);
+        vault.transfer(_custodian, lp1Shares);
+        vm.prank(Actors.LP2);
+        vault.transfer(_custodian, lp2Shares);
+
+        _seedLPFees(1000 ether);
+        uint256 totalCustodianBucket = vault.claimableLPRewards(_custodian);
+
+        // LP1 withdraws their slice (75 / 100 of custodian holdings).
+        vm.prank(_custodian);
+        vault.transfer(Actors.LP1, lp1Shares);
+
+        uint256 lp1Slice = vault.claimableLPRewards(Actors.LP1);
+        // LP1 receives their share rounded down by mulDiv; tolerate 1 wei.
+        assertApproxEqAbs(lp1Slice, totalCustodianBucket * lp1Shares / (lp1Shares + lp2Shares), 1);
+
+        // LP2 withdraws — gets the remainder.
+        vm.prank(_custodian);
+        vault.transfer(Actors.LP2, lp2Shares);
+
+        assertApproxEqAbs(vault.claimableLPRewards(Actors.LP2), totalCustodianBucket - lp1Slice, 1);
+        assertEq(vault.claimableLPRewards(_custodian), 0);
+    }
+
+    /// @dev Custodian → custodian transfer should NOT redirect (both flagged).
+    function test_passThrough_holderToHolder_noRedirect() public {
+        vm.prank(Actors.VM1);
+        vault.setPaymentToken(address(usdc));
+
+        address other = makeAddr("otherCustodian");
+        vm.startPrank(Actors.ADMIN);
+        vault.setShareCustodian(_custodian, true);
+        vault.setShareCustodian(other, true);
+        vm.stopPrank();
+
+        _depositAs(Actors.LP1, 100 ether);
+        uint256 shares = vault.balanceOf(Actors.LP1);
+
+        vm.prank(Actors.LP1);
+        vault.transfer(_custodian, shares);
+
+        _seedLPFees(1000 ether);
+        uint256 custodianBucket = vault.claimableLPRewards(_custodian);
+
+        vm.prank(_custodian);
+        vault.transfer(other, shares / 2);
+
+        assertEq(vault.claimableLPRewards(_custodian), custodianBucket, "no redirect");
+        assertEq(vault.claimableLPRewards(other), 0);
+    }
+}
+
+/// @dev Inline minimal mock — records the last approveDelegation call so the
+///      OwnVault.enableLending test can assert delegation was wired.
+contract MockDebtTokenForVault {
+    mapping(address => mapping(address => uint256)) private _allowances;
+
+    function approveDelegation(address delegatee, uint256 amount) external {
+        _allowances[msg.sender][delegatee] = amount;
+    }
+
+    function borrowAllowance(address fromUser, address toUser) external view returns (uint256) {
+        return _allowances[fromUser][toUser];
+    }
 }

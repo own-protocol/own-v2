@@ -5,6 +5,8 @@ import {IAssetRegistry} from "../interfaces/IAssetRegistry.sol";
 import {IOracleVerifier} from "../interfaces/IOracleVerifier.sol";
 import {IOwnVault} from "../interfaces/IOwnVault.sol";
 import {IProtocolRegistry} from "../interfaces/IProtocolRegistry.sol";
+import {IAaveDebtToken} from "../interfaces/external/IAaveDebtToken.sol";
+import {IAaveV3Pool} from "../interfaces/external/IAaveV3Pool.sol";
 import {
     BPS,
     DepositRequest,
@@ -22,13 +24,12 @@ import {ERC20, IERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {ERC4626} from "@openzeppelin/contracts/token/ERC20/extensions/ERC4626.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import {Multicall} from "@openzeppelin/contracts/utils/Multicall.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 /// @title OwnVault — ERC-4626 collateral vault with async deposit/withdrawal
 /// @notice Single vault holding collateral to back eToken exposure.
-contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
+contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     using SafeERC20 for IERC20;
     using Math for uint256;
 
@@ -138,6 +139,24 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
     /// @dev Total shares escrowed for pending withdrawal requests.
     ///      Used by projectedUtilization() to estimate effective collateral.
     uint256 private _pendingWithdrawalShares;
+
+    // ──────────────────────────────────────────────────────────
+    //  Lending opt-in (Phase 1 scaffold)
+    // ──────────────────────────────────────────────────────────
+
+    /// @dev Authorised user-borrowing manager. Zero until enableLending is called.
+    address private _borrowManager;
+
+    /// @dev Authorised LP-borrowing manager. Zero until enableLending is called.
+    address private _lpBorrowManager;
+
+    /// @dev Addresses flagged as custodian holders. When such an address
+    ///      transfers shares to a non-custodian, a pro-rata slice of its
+    ///      already-settled `_lpAccruedFees` is redirected to the recipient.
+    ///      Mirrors EToken's pass-through-holder mechanism so an LP whose
+    ///      shares are held by a borrow manager (custody-transfer model) still
+    ///      receives the fee rewards earned during the borrow window.
+    mapping(address => bool) private _shareCustodians;
 
     // ──────────────────────────────────────────────────────────
     //  Modifiers
@@ -267,7 +286,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
         uint256 shares = previewDeposit(req.assets);
         _pendingDepositAssets -= req.assets;
         req.status = DepositStatus.Accepted;
-        _removePendingDeposit(requestId);
+        _removeFromPendingList(_pendingDepositIds, requestId);
         _mint(req.receiver, shares);
 
         emit DepositAccepted(requestId, req.depositor, shares);
@@ -283,7 +302,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
 
         _pendingDepositAssets -= req.assets;
         req.status = DepositStatus.Rejected;
-        _removePendingDeposit(requestId);
+        _removeFromPendingList(_pendingDepositIds, requestId);
         IERC20(asset()).safeTransfer(req.depositor, req.assets);
 
         emit DepositRejected(requestId, req.depositor);
@@ -300,7 +319,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
 
         _pendingDepositAssets -= req.assets;
         req.status = DepositStatus.Cancelled;
-        _removePendingDeposit(requestId);
+        _removeFromPendingList(_pendingDepositIds, requestId);
         IERC20(asset()).safeTransfer(req.depositor, req.assets);
 
         emit DepositCancelled(requestId, req.depositor);
@@ -357,7 +376,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
         req.status = WithdrawalStatus.Cancelled;
         _pendingWithdrawalShares -= req.shares;
         _transfer(address(this), msg.sender, req.shares);
-        _removePendingRequest(requestId);
+        _removeFromPendingList(_pendingRequestIds, requestId);
 
         emit WithdrawalCancelled(requestId, msg.sender);
     }
@@ -396,7 +415,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
 
         req.status = WithdrawalStatus.Fulfilled;
         _pendingWithdrawalShares -= shares;
-        _removePendingRequest(requestId);
+        _removeFromPendingList(_pendingRequestIds, requestId);
 
         // Auto-claim LP rewards before exit
         _claimLPRewardsFor(req.owner);
@@ -893,10 +912,71 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
     }
 
     // ──────────────────────────────────────────────────────────
+    //  Lending opt-in
+    // ──────────────────────────────────────────────────────────
+
+    /// @inheritdoc IOwnVault
+    function enableLending(address userBorrowManager, address lpBorrowManager_, address debtToken) external onlyAdmin {
+        if (userBorrowManager == address(0) || lpBorrowManager_ == address(0) || debtToken == address(0)) {
+            revert ZeroAddress();
+        }
+        if (_borrowManager != address(0)) revert LendingAlreadyEnabled();
+
+        _borrowManager = userBorrowManager;
+        _lpBorrowManager = lpBorrowManager_;
+
+        // Per-spender delegation — both managers can call pool.borrow(... onBehalfOf=vault).
+        IAaveDebtToken(debtToken).approveDelegation(userBorrowManager, type(uint256).max);
+        IAaveDebtToken(debtToken).approveDelegation(lpBorrowManager_, type(uint256).max);
+
+        emit LendingEnabled(userBorrowManager, lpBorrowManager_, debtToken);
+    }
+
+    /// @inheritdoc IOwnVault
+    function enableAaveCollateral(address pool, address underlying) external onlyAdmin {
+        if (pool == address(0) || underlying == address(0)) revert ZeroAddress();
+        IAaveV3Pool(pool).setUserUseReserveAsCollateral(underlying, true);
+        emit AaveCollateralEnabled(pool, underlying);
+    }
+
+    /// @inheritdoc IOwnVault
+    function borrowManager() external view returns (address) {
+        return _borrowManager;
+    }
+
+    /// @inheritdoc IOwnVault
+    function lpBorrowManager() external view returns (address) {
+        return _lpBorrowManager;
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Share custodian (pass-through fee rewards)
+    // ──────────────────────────────────────────────────────────
+
+    /// @inheritdoc IOwnVault
+    function setShareCustodian(address holder, bool enabled) external onlyAdmin {
+        if (holder == address(0)) revert ZeroAddress();
+        _shareCustodians[holder] = enabled;
+        emit ShareCustodianUpdated(holder, enabled);
+    }
+
+    /// @inheritdoc IOwnVault
+    function isShareCustodian(
+        address holder
+    ) external view returns (bool) {
+        return _shareCustodians[holder];
+    }
+
+    // ──────────────────────────────────────────────────────────
     //  Internal — LP reward settlement
     // ──────────────────────────────────────────────────────────
 
-    /// @dev Override _update to settle LP rewards before any share balance change.
+    /// @dev Override _update to settle LP rewards on every share movement.
+    ///      When `from` is a registered share custodian (e.g. an LP borrow
+    ///      manager holding LP collateral) and `to` is not, redirect a
+    ///      pro-rata slice of `from`'s already-settled `_lpAccruedFees` to
+    ///      `to`. This preserves vault-fee rewards for the underlying LP
+    ///      across custody transfers, mirroring `EToken`'s pass-through.
     function _update(address from, address to, uint256 amount) internal override {
         if (from != address(0) && from != address(this)) {
             _settleLPReward(from);
@@ -904,6 +984,21 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
         if (to != address(0) && to != address(this)) {
             _settleLPReward(to);
         }
+
+        if (from != address(0) && to != address(0) && _shareCustodians[from] && !_shareCustodians[to]) {
+            uint256 fromBal = balanceOf(from);
+            if (fromBal > 0) {
+                uint256 accrued = _lpAccruedFees[from];
+                if (accrued > 0) {
+                    uint256 redirected = accrued.mulDiv(amount, fromBal);
+                    if (redirected > 0) {
+                        _lpAccruedFees[from] = accrued - redirected;
+                        _lpAccruedFees[to] += redirected;
+                    }
+                }
+            }
+        }
+
         super._update(from, to, amount);
     }
 
@@ -969,32 +1064,13 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
         return registry.inhouseOracle();
     }
 
-    /// @dev Remove a request ID from the pending withdrawal list (swap-and-pop).
-    function _removePendingRequest(
-        uint256 requestId
-    ) private {
-        uint256 len = _pendingRequestIds.length;
+    /// @dev Swap-and-pop a request ID from a pending list (deposit or withdrawal).
+    function _removeFromPendingList(uint256[] storage list, uint256 requestId) private {
+        uint256 len = list.length;
         for (uint256 i; i < len;) {
-            if (_pendingRequestIds[i] == requestId) {
-                _pendingRequestIds[i] = _pendingRequestIds[len - 1];
-                _pendingRequestIds.pop();
-                return;
-            }
-            unchecked {
-                ++i;
-            }
-        }
-    }
-
-    /// @dev Remove a request ID from the pending deposit list (swap-and-pop).
-    function _removePendingDeposit(
-        uint256 requestId
-    ) private {
-        uint256 len = _pendingDepositIds.length;
-        for (uint256 i; i < len;) {
-            if (_pendingDepositIds[i] == requestId) {
-                _pendingDepositIds[i] = _pendingDepositIds[len - 1];
-                _pendingDepositIds.pop();
+            if (list[i] == requestId) {
+                list[i] = list[len - 1];
+                list.pop();
                 return;
             }
             unchecked {
@@ -1034,18 +1110,6 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
         return super.totalAssets() - _pendingDepositAssets;
     }
 
-    function convertToShares(
-        uint256 assets
-    ) public view override(ERC4626, IERC4626) returns (uint256) {
-        return super.convertToShares(assets);
-    }
-
-    function convertToAssets(
-        uint256 shares
-    ) public view override(ERC4626, IERC4626) returns (uint256) {
-        return super.convertToAssets(shares);
-    }
-
     function maxDeposit(
         address
     ) public view override(ERC4626, IERC4626) returns (uint256) {
@@ -1058,33 +1122,5 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
     ) public view override(ERC4626, IERC4626) returns (uint256) {
         if (_vaultStatus != VaultStatus.Active) return 0;
         return type(uint256).max;
-    }
-
-    function previewDeposit(
-        uint256 assets
-    ) public view override(ERC4626, IERC4626) returns (uint256) {
-        return super.previewDeposit(assets);
-    }
-
-    function previewMint(
-        uint256 shares
-    ) public view override(ERC4626, IERC4626) returns (uint256) {
-        return super.previewMint(shares);
-    }
-
-    function previewWithdraw(
-        uint256 assets
-    ) public view override(ERC4626, IERC4626) returns (uint256) {
-        return super.previewWithdraw(assets);
-    }
-
-    function previewRedeem(
-        uint256 shares
-    ) public view override(ERC4626, IERC4626) returns (uint256) {
-        return super.previewRedeem(shares);
-    }
-
-    function asset() public view override(ERC4626, IERC4626) returns (address) {
-        return super.asset();
     }
 }
