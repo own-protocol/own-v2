@@ -85,7 +85,6 @@ interface IOwnVault is IERC4626 {
     error PriceNotAvailable(bytes32 asset);
     error DepositApprovalNotRequired();
     error DepositApprovalRequired();
-    error OnlyBorrowManager();
     error LendingAlreadyEnabled();
 
     // ──────────────────────────────────────────────────────────

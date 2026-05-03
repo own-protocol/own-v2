@@ -7,8 +7,8 @@ import {IVaultBorrowCoordinator} from "../interfaces/IVaultBorrowCoordinator.sol
 import {IVaultFactory} from "../interfaces/IVaultFactory.sol";
 import {InterestRateModel} from "../libraries/InterestRateModel.sol";
 
-import {LPBorrowManager} from "./LPBorrowManager.sol";
-import {UserBorrowManager} from "./UserBorrowManager.sol";
+import {LPBorrowManagerDeployer} from "./deployers/LPBorrowManagerDeployer.sol";
+import {UserBorrowManagerDeployer} from "./deployers/UserBorrowManagerDeployer.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
 /// @title BorrowManagerFactory — Deploys and tracks per-vault borrow managers
@@ -26,6 +26,9 @@ contract BorrowManagerFactory is IBorrowManagerFactory {
     mapping(address => address) internal _lpBorrowManagerOf;
     mapping(address => address) internal _vaultOf;
 
+    UserBorrowManagerDeployer private immutable _userBmDeployer;
+    LPBorrowManagerDeployer private immutable _lpBmDeployer;
+
     modifier onlyAdmin() {
         if (msg.sender != Ownable(registry).owner()) revert OnlyAdmin();
         _;
@@ -35,6 +38,8 @@ contract BorrowManagerFactory is IBorrowManagerFactory {
         if (aavePool_ == address(0) || registry_ == address(0)) revert ZeroAddress();
         aavePool = aavePool_;
         registry = registry_;
+        _userBmDeployer = new UserBorrowManagerDeployer();
+        _lpBmDeployer = new LPBorrowManagerDeployer();
     }
 
     /// @inheritdoc IBorrowManagerFactory
@@ -61,12 +66,10 @@ contract BorrowManagerFactory is IBorrowManagerFactory {
         if (vf != address(0) && !IVaultFactory(vf).isRegisteredVault(vault)) revert UnknownVault(vault);
 
         userBorrowManager =
-            address(new UserBorrowManager(vault, stablecoin, debtToken, aavePool, registry, coordinator, rateParams));
+            _userBmDeployer.deploy(vault, stablecoin, debtToken, aavePool, registry, coordinator, rateParams);
 
-        lpBorrowManager = address(
-            new LPBorrowManager(
-                vault, stablecoin, debtToken, aavePool, market, registry, coordinator, collateralAsset, rateParams
-            )
+        lpBorrowManager = _lpBmDeployer.deploy(
+            vault, stablecoin, debtToken, aavePool, market, registry, coordinator, collateralAsset, rateParams
         );
 
         _borrowManagerOf[vault] = userBorrowManager;

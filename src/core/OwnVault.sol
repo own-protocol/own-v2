@@ -24,13 +24,12 @@ import {ERC20, IERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {ERC4626} from "@openzeppelin/contracts/token/ERC20/extensions/ERC4626.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import {Multicall} from "@openzeppelin/contracts/utils/Multicall.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 /// @title OwnVault — ERC-4626 collateral vault with async deposit/withdrawal
 /// @notice Single vault holding collateral to back eToken exposure.
-contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
+contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     using SafeERC20 for IERC20;
     using Math for uint256;
 
@@ -178,11 +177,6 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
         _;
     }
 
-    modifier onlyBorrowManager() {
-        if (msg.sender != _borrowManager) revert OnlyBorrowManager();
-        _;
-    }
-
     modifier whenDepositsAllowed() {
         if (_vaultStatus == VaultStatus.Paused) revert VaultIsPaused();
         if (_vaultStatus == VaultStatus.Halted) revert VaultIsHalted();
@@ -292,7 +286,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
         uint256 shares = previewDeposit(req.assets);
         _pendingDepositAssets -= req.assets;
         req.status = DepositStatus.Accepted;
-        _removePendingDeposit(requestId);
+        _removeFromPendingList(_pendingDepositIds, requestId);
         _mint(req.receiver, shares);
 
         emit DepositAccepted(requestId, req.depositor, shares);
@@ -308,7 +302,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
 
         _pendingDepositAssets -= req.assets;
         req.status = DepositStatus.Rejected;
-        _removePendingDeposit(requestId);
+        _removeFromPendingList(_pendingDepositIds, requestId);
         IERC20(asset()).safeTransfer(req.depositor, req.assets);
 
         emit DepositRejected(requestId, req.depositor);
@@ -325,7 +319,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
 
         _pendingDepositAssets -= req.assets;
         req.status = DepositStatus.Cancelled;
-        _removePendingDeposit(requestId);
+        _removeFromPendingList(_pendingDepositIds, requestId);
         IERC20(asset()).safeTransfer(req.depositor, req.assets);
 
         emit DepositCancelled(requestId, req.depositor);
@@ -382,7 +376,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
         req.status = WithdrawalStatus.Cancelled;
         _pendingWithdrawalShares -= req.shares;
         _transfer(address(this), msg.sender, req.shares);
-        _removePendingRequest(requestId);
+        _removeFromPendingList(_pendingRequestIds, requestId);
 
         emit WithdrawalCancelled(requestId, msg.sender);
     }
@@ -421,7 +415,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
 
         req.status = WithdrawalStatus.Fulfilled;
         _pendingWithdrawalShares -= shares;
-        _removePendingRequest(requestId);
+        _removeFromPendingList(_pendingRequestIds, requestId);
 
         // Auto-claim LP rewards before exit
         _claimLPRewardsFor(req.owner);
@@ -1070,32 +1064,13 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
         return registry.inhouseOracle();
     }
 
-    /// @dev Remove a request ID from the pending withdrawal list (swap-and-pop).
-    function _removePendingRequest(
-        uint256 requestId
-    ) private {
-        uint256 len = _pendingRequestIds.length;
+    /// @dev Swap-and-pop a request ID from a pending list (deposit or withdrawal).
+    function _removeFromPendingList(uint256[] storage list, uint256 requestId) private {
+        uint256 len = list.length;
         for (uint256 i; i < len;) {
-            if (_pendingRequestIds[i] == requestId) {
-                _pendingRequestIds[i] = _pendingRequestIds[len - 1];
-                _pendingRequestIds.pop();
-                return;
-            }
-            unchecked {
-                ++i;
-            }
-        }
-    }
-
-    /// @dev Remove a request ID from the pending deposit list (swap-and-pop).
-    function _removePendingDeposit(
-        uint256 requestId
-    ) private {
-        uint256 len = _pendingDepositIds.length;
-        for (uint256 i; i < len;) {
-            if (_pendingDepositIds[i] == requestId) {
-                _pendingDepositIds[i] = _pendingDepositIds[len - 1];
-                _pendingDepositIds.pop();
+            if (list[i] == requestId) {
+                list[i] = list[len - 1];
+                list.pop();
                 return;
             }
             unchecked {
@@ -1135,18 +1110,6 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
         return super.totalAssets() - _pendingDepositAssets;
     }
 
-    function convertToShares(
-        uint256 assets
-    ) public view override(ERC4626, IERC4626) returns (uint256) {
-        return super.convertToShares(assets);
-    }
-
-    function convertToAssets(
-        uint256 shares
-    ) public view override(ERC4626, IERC4626) returns (uint256) {
-        return super.convertToAssets(shares);
-    }
-
     function maxDeposit(
         address
     ) public view override(ERC4626, IERC4626) returns (uint256) {
@@ -1159,33 +1122,5 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
     ) public view override(ERC4626, IERC4626) returns (uint256) {
         if (_vaultStatus != VaultStatus.Active) return 0;
         return type(uint256).max;
-    }
-
-    function previewDeposit(
-        uint256 assets
-    ) public view override(ERC4626, IERC4626) returns (uint256) {
-        return super.previewDeposit(assets);
-    }
-
-    function previewMint(
-        uint256 shares
-    ) public view override(ERC4626, IERC4626) returns (uint256) {
-        return super.previewMint(shares);
-    }
-
-    function previewWithdraw(
-        uint256 assets
-    ) public view override(ERC4626, IERC4626) returns (uint256) {
-        return super.previewWithdraw(assets);
-    }
-
-    function previewRedeem(
-        uint256 shares
-    ) public view override(ERC4626, IERC4626) returns (uint256) {
-        return super.previewRedeem(shares);
-    }
-
-    function asset() public view override(ERC4626, IERC4626) returns (address) {
-        return super.asset();
     }
 }
