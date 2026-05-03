@@ -88,12 +88,12 @@ contract BorrowAndLiquidateFlowTest is BaseTest {
             address(vault), address(aavePool), address(protocolRegistry), address(usdc), 3500
         );
 
-        borrowManager = AaveBorrowManager(
-            bmFactory.createBorrowManager(
-                address(vault), address(usdc), address(usdcDebt), address(coordinator), _params()
-            )
+        (address userBM, address lpBM) = bmFactory.createBorrowManager(
+            address(vault), address(usdc), address(usdcDebt), address(coordinator), market, bytes32("WSTETH"), _params()
         );
-        coordinator.registerManager(address(borrowManager));
+        borrowManager = AaveBorrowManager(userBM);
+        coordinator.registerManager(userBM);
+        coordinator.registerManager(lpBM);
         vm.stopPrank();
 
         // Seed the vault with awstETH so coordinator's debt cap is non-zero.
@@ -121,8 +121,9 @@ contract BorrowAndLiquidateFlowTest is BaseTest {
         vault.enableAsset(ASSET);
         vault.setPaymentToken(address(usdc));
 
+        address lpBMAddr = bmFactory.lpBorrowManagerOf(address(vault));
         vm.prank(Actors.ADMIN);
-        vault.enableLending(address(borrowManager), address(usdcDebt));
+        vault.enableLending(address(borrowManager), lpBMAddr, address(usdcDebt));
         vm.prank(Actors.ADMIN);
         eTSLA.setPassThroughHolder(address(borrowManager), true);
 

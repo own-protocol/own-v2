@@ -122,9 +122,11 @@ contract AaveBorrowManagerTest is BaseTest {
         vm.prank(Actors.ADMIN);
         coordinator.registerManager(address(borrowManager));
 
-        // enableLending: vault delegates borrow allowance to the manager via the debt token.
+        // enableLending: vault delegates borrow allowance to BOTH managers via
+        // the debt token. The LP slot is satisfied with a stub address — this
+        // test exercises only the user-borrow path.
         vm.prank(Actors.ADMIN);
-        vault.enableLending(address(borrowManager), address(usdcDebt));
+        vault.enableLending(address(borrowManager), makeAddr("lpBorrowManagerStub"), address(usdcDebt));
 
         // Register the manager as a pass-through holder on eTSLA so dividends route.
         vm.prank(Actors.ADMIN);

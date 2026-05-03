@@ -46,8 +46,9 @@ interface IOwnVault is IERC4626 {
     event DepositApprovalUpdated(bool required);
     event AssetValuationUpdated(bytes32 indexed asset, uint256 exposureUnits, uint256 exposureUSD, uint256 price);
     event CollateralValuationUpdated(uint256 collateralValueUSD, uint256 price);
-    event LendingEnabled(address indexed borrowManager, address indexed debtToken);
+    event LendingEnabled(address indexed userBorrowManager, address indexed lpBorrowManager, address indexed debtToken);
     event AaveCollateralEnabled(address indexed pool, address indexed underlying);
+    event ShareCustodianUpdated(address indexed holder, bool enabled);
 
     // ──────────────────────────────────────────────────────────
     //  Errors
@@ -410,17 +411,19 @@ interface IOwnVault is IERC4626 {
     //  Lending opt-in
     // ──────────────────────────────────────────────────────────
 
-    /// @notice Authorise a borrow manager for this vault and approve unlimited
-    ///         credit delegation on the matching Aave variable debt token. The
-    ///         delegated allowance is what lets the borrow manager call
-    ///         `IAaveV3Pool.borrow(..., onBehalfOf=vault)`. One-shot per vault:
-    ///         reverts if lending is already enabled.
+    /// @notice Authorise the user-borrowing and LP-borrowing managers for this
+    ///         vault and approve unlimited credit delegation on the matching
+    ///         Aave variable debt token for BOTH. The delegation is what lets
+    ///         each manager call `IAaveV3Pool.borrow(..., onBehalfOf=vault)`.
+    ///         One-shot per vault: reverts if lending is already enabled.
     /// @dev    Aave's LTV / collateral checks still bound the actual borrowable
-    ///         amount regardless of the unlimited delegation.
-    /// @param borrowManager Borrow manager address. Cannot be zero.
-    /// @param debtToken     Aave variable debt token (must implement
-    ///                      IAaveDebtToken). Cannot be zero.
-    function enableLending(address borrowManager, address debtToken) external;
+    ///         amount regardless of the unlimited delegation. Delegation is
+    ///         per-spender on the debt token, so both managers receive their
+    ///         own independent allowance.
+    /// @param userBorrowManager Borrow manager for users borrowing against eTokens.
+    /// @param lpBorrowManager   Borrow manager for LPs borrowing against vault shares.
+    /// @param debtToken         Aave variable debt token (must implement IAaveDebtToken).
+    function enableLending(address userBorrowManager, address lpBorrowManager, address debtToken) external;
 
     /// @notice Mark `underlying` as Aave collateral for this vault. Required
     ///         once the vault holds aTokens for the reserve so its Aave
@@ -430,6 +433,28 @@ interface IOwnVault is IERC4626 {
     /// @param underlying Reserve underlying (e.g. wstETH).
     function enableAaveCollateral(address pool, address underlying) external;
 
-    /// @notice Address of the authorised borrow manager (zero if lending not enabled).
+    /// @notice Address of the user-borrowing manager (zero if lending not enabled).
     function borrowManager() external view returns (address);
+
+    /// @notice Address of the LP-borrowing manager (zero if lending not enabled).
+    function lpBorrowManager() external view returns (address);
+
+    // ──────────────────────────────────────────────────────────
+    //  Share custodian (pass-through fee rewards)
+    // ──────────────────────────────────────────────────────────
+
+    /// @notice Mark `holder` as a share custodian for vault-fee pass-through.
+    /// @dev    When a registered custodian transfers shares to a non-custodian,
+    ///         a pro-rata slice of its already-settled `_lpAccruedFees` is
+    ///         redirected to the recipient — preserving vault-fee rewards for
+    ///         an LP whose shares are temporarily held by a borrow manager.
+    ///         Mirrors `EToken.setPassThroughHolder`.
+    /// @param holder  Address to mark / unmark.
+    /// @param enabled True to register, false to remove.
+    function setShareCustodian(address holder, bool enabled) external;
+
+    /// @notice Whether `holder` is registered as a share custodian.
+    function isShareCustodian(
+        address holder
+    ) external view returns (bool);
 }

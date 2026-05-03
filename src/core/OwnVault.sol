@@ -145,8 +145,19 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
     //  Lending opt-in (Phase 1 scaffold)
     // ──────────────────────────────────────────────────────────
 
-    /// @dev Authorised borrow manager for this vault. Zero until enableLending is called.
+    /// @dev Authorised user-borrowing manager. Zero until enableLending is called.
     address private _borrowManager;
+
+    /// @dev Authorised LP-borrowing manager. Zero until enableLending is called.
+    address private _lpBorrowManager;
+
+    /// @dev Addresses flagged as custodian holders. When such an address
+    ///      transfers shares to a non-custodian, a pro-rata slice of its
+    ///      already-settled `_lpAccruedFees` is redirected to the recipient.
+    ///      Mirrors EToken's pass-through-holder mechanism so an LP whose
+    ///      shares are held by a borrow manager (custody-transfer model) still
+    ///      receives the fee rewards earned during the borrow window.
+    mapping(address => bool) private _shareCustodians;
 
     // ──────────────────────────────────────────────────────────
     //  Modifiers
@@ -911,14 +922,20 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
     // ──────────────────────────────────────────────────────────
 
     /// @inheritdoc IOwnVault
-    function enableLending(address borrowManager_, address debtToken) external onlyAdmin {
-        if (borrowManager_ == address(0) || debtToken == address(0)) revert ZeroAddress();
+    function enableLending(address userBorrowManager, address lpBorrowManager_, address debtToken) external onlyAdmin {
+        if (userBorrowManager == address(0) || lpBorrowManager_ == address(0) || debtToken == address(0)) {
+            revert ZeroAddress();
+        }
         if (_borrowManager != address(0)) revert LendingAlreadyEnabled();
 
-        _borrowManager = borrowManager_;
-        IAaveDebtToken(debtToken).approveDelegation(borrowManager_, type(uint256).max);
+        _borrowManager = userBorrowManager;
+        _lpBorrowManager = lpBorrowManager_;
 
-        emit LendingEnabled(borrowManager_, debtToken);
+        // Per-spender delegation — both managers can call pool.borrow(... onBehalfOf=vault).
+        IAaveDebtToken(debtToken).approveDelegation(userBorrowManager, type(uint256).max);
+        IAaveDebtToken(debtToken).approveDelegation(lpBorrowManager_, type(uint256).max);
+
+        emit LendingEnabled(userBorrowManager, lpBorrowManager_, debtToken);
     }
 
     /// @inheritdoc IOwnVault
@@ -933,11 +950,39 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
         return _borrowManager;
     }
 
+    /// @inheritdoc IOwnVault
+    function lpBorrowManager() external view returns (address) {
+        return _lpBorrowManager;
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Share custodian (pass-through fee rewards)
+    // ──────────────────────────────────────────────────────────
+
+    /// @inheritdoc IOwnVault
+    function setShareCustodian(address holder, bool enabled) external onlyAdmin {
+        if (holder == address(0)) revert ZeroAddress();
+        _shareCustodians[holder] = enabled;
+        emit ShareCustodianUpdated(holder, enabled);
+    }
+
+    /// @inheritdoc IOwnVault
+    function isShareCustodian(
+        address holder
+    ) external view returns (bool) {
+        return _shareCustodians[holder];
+    }
+
     // ──────────────────────────────────────────────────────────
     //  Internal — LP reward settlement
     // ──────────────────────────────────────────────────────────
 
-    /// @dev Override _update to settle LP rewards before any share balance change.
+    /// @dev Override _update to settle LP rewards on every share movement.
+    ///      When `from` is a registered share custodian (e.g. an LP borrow
+    ///      manager holding LP collateral) and `to` is not, redirect a
+    ///      pro-rata slice of `from`'s already-settled `_lpAccruedFees` to
+    ///      `to`. This preserves vault-fee rewards for the underlying LP
+    ///      across custody transfers, mirroring `EToken`'s pass-through.
     function _update(address from, address to, uint256 amount) internal override {
         if (from != address(0) && from != address(this)) {
             _settleLPReward(from);
@@ -945,6 +990,21 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
         if (to != address(0) && to != address(this)) {
             _settleLPReward(to);
         }
+
+        if (from != address(0) && to != address(0) && _shareCustodians[from] && !_shareCustodians[to]) {
+            uint256 fromBal = balanceOf(from);
+            if (fromBal > 0) {
+                uint256 accrued = _lpAccruedFees[from];
+                if (accrued > 0) {
+                    uint256 redirected = accrued.mulDiv(amount, fromBal);
+                    if (redirected > 0) {
+                        _lpAccruedFees[from] = accrued - redirected;
+                        _lpAccruedFees[to] += redirected;
+                    }
+                }
+            }
+        }
+
         super._update(from, to, amount);
     }
 

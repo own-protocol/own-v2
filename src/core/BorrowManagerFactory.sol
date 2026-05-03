@@ -7,11 +7,14 @@ import {IVaultBorrowCoordinator} from "../interfaces/IVaultBorrowCoordinator.sol
 import {IVaultFactory} from "../interfaces/IVaultFactory.sol";
 import {InterestRateModel} from "../libraries/InterestRateModel.sol";
 import {AaveBorrowManager} from "./AaveBorrowManager.sol";
+import {LPBorrowManager} from "./LPBorrowManager.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
 /// @title BorrowManagerFactory — Deploys and tracks per-vault borrow managers
-/// @notice Admin-gated. One borrow manager per vault (1:1 binding). Reverts if
-///         the vault is unknown to the VaultFactory or already has a manager.
+/// @notice Admin-gated. Per vault, deploys BOTH a user-borrow manager
+///         (`AaveBorrowManager`) and an LP-borrow manager (`LPBorrowManager`)
+///         in a single call. 1:1 binding per role per vault. Reverts if the
+///         vault is unknown to the VaultFactory or already has a pair.
 contract BorrowManagerFactory is IBorrowManagerFactory {
     /// @inheritdoc IBorrowManagerFactory
     address public immutable override aavePool;
@@ -19,6 +22,7 @@ contract BorrowManagerFactory is IBorrowManagerFactory {
     address public immutable override registry;
 
     mapping(address => address) internal _borrowManagerOf;
+    mapping(address => address) internal _lpBorrowManagerOf;
     mapping(address => address) internal _vaultOf;
 
     modifier onlyAdmin() {
@@ -38,11 +42,14 @@ contract BorrowManagerFactory is IBorrowManagerFactory {
         address stablecoin,
         address debtToken,
         address coordinator,
+        address market,
+        bytes32 collateralAsset,
         InterestRateModel.Params calldata rateParams
-    ) external onlyAdmin returns (address borrowManager) {
-        if (vault == address(0) || stablecoin == address(0) || debtToken == address(0) || coordinator == address(0)) {
-            revert ZeroAddress();
-        }
+    ) external onlyAdmin returns (address userBorrowManager, address lpBorrowManager) {
+        if (
+            vault == address(0) || stablecoin == address(0) || debtToken == address(0) || coordinator == address(0)
+                || market == address(0)
+        ) revert ZeroAddress();
         if (_borrowManagerOf[vault] != address(0)) revert VaultAlreadyHasBorrowManager(vault);
 
         address coordVault = IVaultBorrowCoordinator(coordinator).vault();
@@ -52,13 +59,21 @@ contract BorrowManagerFactory is IBorrowManagerFactory {
         address vf = IProtocolRegistry(registry).vaultFactory();
         if (vf != address(0) && !IVaultFactory(vf).isRegisteredVault(vault)) revert UnknownVault(vault);
 
-        borrowManager =
+        userBorrowManager =
             address(new AaveBorrowManager(vault, stablecoin, debtToken, aavePool, registry, coordinator, rateParams));
 
-        _borrowManagerOf[vault] = borrowManager;
-        _vaultOf[borrowManager] = vault;
+        lpBorrowManager = address(
+            new LPBorrowManager(
+                vault, stablecoin, debtToken, aavePool, market, registry, coordinator, collateralAsset, rateParams
+            )
+        );
 
-        emit BorrowManagerCreated(vault, borrowManager);
+        _borrowManagerOf[vault] = userBorrowManager;
+        _lpBorrowManagerOf[vault] = lpBorrowManager;
+        _vaultOf[userBorrowManager] = vault;
+        _vaultOf[lpBorrowManager] = vault;
+
+        emit BorrowManagersCreated(vault, userBorrowManager, lpBorrowManager);
     }
 
     /// @inheritdoc IBorrowManagerFactory
@@ -69,9 +84,16 @@ contract BorrowManagerFactory is IBorrowManagerFactory {
     }
 
     /// @inheritdoc IBorrowManagerFactory
-    function vaultOf(
-        address borrowManager
+    function lpBorrowManagerOf(
+        address vault
     ) external view returns (address) {
-        return _vaultOf[borrowManager];
+        return _lpBorrowManagerOf[vault];
+    }
+
+    /// @inheritdoc IBorrowManagerFactory
+    function vaultOf(
+        address manager
+    ) external view returns (address) {
+        return _vaultOf[manager];
     }
 }
