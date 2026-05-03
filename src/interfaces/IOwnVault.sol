@@ -46,6 +46,7 @@ interface IOwnVault is IERC4626 {
     event DepositApprovalUpdated(bool required);
     event AssetValuationUpdated(bytes32 indexed asset, uint256 exposureUnits, uint256 exposureUSD, uint256 price);
     event CollateralValuationUpdated(uint256 collateralValueUSD, uint256 price);
+    event LendingEnabled(address indexed borrowManager);
 
     // ──────────────────────────────────────────────────────────
     //  Errors
@@ -82,6 +83,8 @@ interface IOwnVault is IERC4626 {
     error PriceNotAvailable(bytes32 asset);
     error DepositApprovalNotRequired();
     error DepositApprovalRequired();
+    error OnlyBorrowManager();
+    error LendingAlreadyEnabled();
 
     // ──────────────────────────────────────────────────────────
     //  VM binding
@@ -401,4 +404,20 @@ interface IOwnVault is IERC4626 {
 
     /// @notice Return total shares currently escrowed for pending withdrawals.
     function pendingWithdrawalShares() external view returns (uint256);
+
+    // ──────────────────────────────────────────────────────────
+    //  Lending opt-in
+    // ──────────────────────────────────────────────────────────
+
+    /// @notice Authorise a borrow manager for this vault. One-shot: reverts if
+    ///         a borrow manager is already registered. Phase 1 scaffold — Aave
+    ///         credit-delegation wiring lands in Phase 2 alongside the borrow
+    ///         manager itself.
+    /// @param borrowManager Address of the borrow manager to authorise. Cannot be zero.
+    function enableLending(
+        address borrowManager
+    ) external;
+
+    /// @notice Address of the authorised borrow manager (zero if lending not enabled).
+    function borrowManager() external view returns (address);
 }

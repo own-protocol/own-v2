@@ -775,4 +775,51 @@ contract OwnVaultTest is BaseTest {
 
         assertEq(vault.totalAssets(), a1 + a2);
     }
+
+    // ──────────────────────────────────────────────────────────
+    //  enableLending (Phase 1 scaffold)
+    // ──────────────────────────────────────────────────────────
+
+    function test_enableLending_setsBorrowManager() public {
+        address bm = makeAddr("borrowManager");
+        assertEq(vault.borrowManager(), address(0));
+
+        vm.prank(Actors.ADMIN);
+        vault.enableLending(bm);
+
+        assertEq(vault.borrowManager(), bm);
+    }
+
+    function test_enableLending_emitsEvent() public {
+        address bm = makeAddr("borrowManager");
+
+        vm.prank(Actors.ADMIN);
+        vm.expectEmit(true, false, false, false);
+        emit IOwnVault.LendingEnabled(bm);
+        vault.enableLending(bm);
+    }
+
+    function test_enableLending_zeroAddress_reverts() public {
+        vm.prank(Actors.ADMIN);
+        vm.expectRevert(IOwnVault.ZeroAddress.selector);
+        vault.enableLending(address(0));
+    }
+
+    function test_enableLending_onlyAdmin() public {
+        address bm = makeAddr("borrowManager");
+        vm.prank(Actors.ATTACKER);
+        vm.expectRevert(IOwnVault.OnlyAdmin.selector);
+        vault.enableLending(bm);
+    }
+
+    function test_enableLending_alreadyEnabled_reverts() public {
+        address bm = makeAddr("borrowManager");
+
+        vm.startPrank(Actors.ADMIN);
+        vault.enableLending(bm);
+
+        vm.expectRevert(IOwnVault.LendingAlreadyEnabled.selector);
+        vault.enableLending(makeAddr("anotherBM"));
+        vm.stopPrank();
+    }
 }

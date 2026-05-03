@@ -140,6 +140,13 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
     uint256 private _pendingWithdrawalShares;
 
     // ──────────────────────────────────────────────────────────
+    //  Lending opt-in (Phase 1 scaffold)
+    // ──────────────────────────────────────────────────────────
+
+    /// @dev Authorised borrow manager for this vault. Zero until enableLending is called.
+    address private _borrowManager;
+
+    // ──────────────────────────────────────────────────────────
     //  Modifiers
     // ──────────────────────────────────────────────────────────
 
@@ -155,6 +162,11 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
 
     modifier onlyMarket() {
         if (msg.sender != registry.market()) revert OnlyMarket();
+        _;
+    }
+
+    modifier onlyBorrowManager() {
+        if (msg.sender != _borrowManager) revert OnlyBorrowManager();
         _;
     }
 
@@ -890,6 +902,25 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
     /// @inheritdoc IOwnVault
     function requireDepositApproval() external view returns (bool) {
         return _requireDepositApproval;
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Lending opt-in
+    // ──────────────────────────────────────────────────────────
+
+    /// @inheritdoc IOwnVault
+    function enableLending(
+        address borrowManager_
+    ) external onlyAdmin {
+        if (borrowManager_ == address(0)) revert ZeroAddress();
+        if (_borrowManager != address(0)) revert LendingAlreadyEnabled();
+        _borrowManager = borrowManager_;
+        emit LendingEnabled(borrowManager_);
+    }
+
+    /// @inheritdoc IOwnVault
+    function borrowManager() external view returns (address) {
+        return _borrowManager;
     }
 
     // ──────────────────────────────────────────────────────────
