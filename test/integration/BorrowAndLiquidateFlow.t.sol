@@ -5,6 +5,7 @@ import {AaveBorrowManager} from "../../src/core/AaveBorrowManager.sol";
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {BorrowManagerFactory} from "../../src/core/BorrowManagerFactory.sol";
 import {OwnVault} from "../../src/core/OwnVault.sol";
+import {VaultBorrowCoordinator} from "../../src/core/VaultBorrowCoordinator.sol";
 import {VaultFactory} from "../../src/core/VaultFactory.sol";
 import {IAaveBorrowManager} from "../../src/interfaces/IAaveBorrowManager.sol";
 import {AssetConfig, BPS, PRECISION} from "../../src/interfaces/types/Types.sol";
@@ -30,6 +31,7 @@ contract BorrowAndLiquidateFlowTest is BaseTest {
     VaultFactory public vaultFactory;
     BorrowManagerFactory public bmFactory;
     OwnVault public vault;
+    VaultBorrowCoordinator public coordinator;
     AaveBorrowManager public borrowManager;
 
     bytes32 constant ASSET = bytes32("TSLA");
@@ -82,10 +84,37 @@ contract BorrowAndLiquidateFlowTest is BaseTest {
         bmFactory = new BorrowManagerFactory(address(aavePool), address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.BORROW_MANAGER_FACTORY(), address(bmFactory));
 
-        borrowManager = AaveBorrowManager(
-            bmFactory.createBorrowManager(address(vault), address(usdc), address(usdcDebt), _params())
+        coordinator = new VaultBorrowCoordinator(
+            address(vault), address(aavePool), address(protocolRegistry), address(usdc), 3500
         );
+
+        borrowManager = AaveBorrowManager(
+            bmFactory.createBorrowManager(
+                address(vault), address(usdc), address(usdcDebt), address(coordinator), _params()
+            )
+        );
+        coordinator.registerManager(address(borrowManager));
         vm.stopPrank();
+
+        // Seed the vault with awstETH so coordinator's debt cap is non-zero.
+        // 1000 wstETH @ $4k = $4M. Cap at 35% LTV = $1.4M, plenty of headroom
+        // for the test's $10k borrow.
+        vm.prank(address(aavePool));
+        awstETH.mint(address(vault), 1000e18);
+        bytes32 collat = bytes32("WSTETH");
+        _setOraclePrice(collat, 4000e18);
+        AssetConfig memory wstCfg = AssetConfig({
+            activeToken: address(awstETH),
+            legacyTokens: new address[](0),
+            active: true,
+            volatilityLevel: 1,
+            oracleType: 1
+        });
+        vm.prank(Actors.ADMIN);
+        assetRegistry.addAsset(collat, address(awstETH), wstCfg);
+        vm.prank(Actors.ADMIN);
+        vault.setCollateralOracleAsset(collat);
+        vault.updateCollateralValuation();
 
         // Vault setup: enable asset (as bound VM = this contract), set payment
         // token, opt into lending (delegate credit + register pass-through).

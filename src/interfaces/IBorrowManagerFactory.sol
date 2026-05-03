@@ -16,17 +16,22 @@ interface IBorrowManagerFactory {
     error OnlyAdmin();
     error VaultAlreadyHasBorrowManager(address vault);
     error UnknownVault(address vault);
+    error CoordinatorVaultMismatch(address coordinatorVault, address vault);
 
     /// @notice Deploy a borrow manager for `vault`. One-shot per vault.
     /// @param vault       OwnVault to bind the borrow manager to.
     /// @param stablecoin  Stablecoin asset that will be borrowed (e.g. USDC).
     /// @param debtToken   Aave variable debt token paired with `stablecoin`.
+    /// @param coordinator VaultBorrowCoordinator that mediates utilization /
+    ///                    rate / hard cap across managers. Cannot be zero;
+    ///                    its `vault()` must equal `vault`.
     /// @param rateParams  Initial interest rate curve parameters.
     /// @return borrowManager Address of the newly deployed AaveBorrowManager.
     function createBorrowManager(
         address vault,
         address stablecoin,
         address debtToken,
+        address coordinator,
         InterestRateModel.Params calldata rateParams
     ) external returns (address borrowManager);
 

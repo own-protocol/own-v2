@@ -3,6 +3,7 @@ pragma solidity 0.8.28;
 
 import {IBorrowManagerFactory} from "../interfaces/IBorrowManagerFactory.sol";
 import {IProtocolRegistry} from "../interfaces/IProtocolRegistry.sol";
+import {IVaultBorrowCoordinator} from "../interfaces/IVaultBorrowCoordinator.sol";
 import {IVaultFactory} from "../interfaces/IVaultFactory.sol";
 import {InterestRateModel} from "../libraries/InterestRateModel.sol";
 import {AaveBorrowManager} from "./AaveBorrowManager.sol";
@@ -36,16 +37,23 @@ contract BorrowManagerFactory is IBorrowManagerFactory {
         address vault,
         address stablecoin,
         address debtToken,
+        address coordinator,
         InterestRateModel.Params calldata rateParams
     ) external onlyAdmin returns (address borrowManager) {
-        if (vault == address(0) || stablecoin == address(0) || debtToken == address(0)) revert ZeroAddress();
+        if (vault == address(0) || stablecoin == address(0) || debtToken == address(0) || coordinator == address(0)) {
+            revert ZeroAddress();
+        }
         if (_borrowManagerOf[vault] != address(0)) revert VaultAlreadyHasBorrowManager(vault);
+
+        address coordVault = IVaultBorrowCoordinator(coordinator).vault();
+        if (coordVault != vault) revert CoordinatorVaultMismatch(coordVault, vault);
 
         // Defensive: only deploy managers for vaults the protocol acknowledges.
         address vf = IProtocolRegistry(registry).vaultFactory();
         if (vf != address(0) && !IVaultFactory(vf).isRegisteredVault(vault)) revert UnknownVault(vault);
 
-        borrowManager = address(new AaveBorrowManager(vault, stablecoin, debtToken, aavePool, registry, rateParams));
+        borrowManager =
+            address(new AaveBorrowManager(vault, stablecoin, debtToken, aavePool, registry, coordinator, rateParams));
 
         _borrowManagerOf[vault] = borrowManager;
         _vaultOf[borrowManager] = vault;

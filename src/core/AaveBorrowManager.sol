@@ -3,10 +3,12 @@ pragma solidity 0.8.28;
 
 import {IAaveBorrowManager} from "../interfaces/IAaveBorrowManager.sol";
 import {IAssetRegistry} from "../interfaces/IAssetRegistry.sol";
+import {IBorrowDebt} from "../interfaces/IBorrowDebt.sol";
 import {IEToken} from "../interfaces/IEToken.sol";
 import {IOracleVerifier} from "../interfaces/IOracleVerifier.sol";
 import {IOwnVault} from "../interfaces/IOwnVault.sol";
 import {IProtocolRegistry} from "../interfaces/IProtocolRegistry.sol";
+import {IVaultBorrowCoordinator} from "../interfaces/IVaultBorrowCoordinator.sol";
 import {IAaveV3Pool} from "../interfaces/external/IAaveV3Pool.sol";
 import {InterestRateModel} from "../libraries/InterestRateModel.sol";
 
@@ -26,7 +28,7 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 ///         manager's per-asset cumulative index using a two-slope utilization
 ///         curve. Liquidation is full-close, signed-price gated, with bonus
 ///         capped at remaining collateral.
-contract AaveBorrowManager is IAaveBorrowManager, ReentrancyGuard {
+contract AaveBorrowManager is IAaveBorrowManager, IBorrowDebt, ReentrancyGuard {
     using SafeERC20 for IERC20;
     using Math for uint256;
 
@@ -49,6 +51,7 @@ contract AaveBorrowManager is IAaveBorrowManager, ReentrancyGuard {
     address public immutable override debtToken;
     address public immutable override aavePool;
     IProtocolRegistry public immutable registry;
+    IVaultBorrowCoordinator public immutable coordinator;
 
     /// @dev Decimals of the borrow stablecoin (cached for USD conversion).
     uint8 internal immutable _stableDecimals;
@@ -59,15 +62,11 @@ contract AaveBorrowManager is IAaveBorrowManager, ReentrancyGuard {
 
     InterestRateModel.Params internal _rateParams;
 
-    /// @dev Manager-wide borrow cap (in stablecoin units) used for utilization.
-    ///      Zero means no cap → utilization = 0 → premium = base only.
-    uint256 public borrowCap;
-
     /// @dev Floor for the Aave-side rate (BPS, annualized). The accrual loop
-    ///      uses `max(floor, liveAaveRate)` so the protocol always charges at
-    ///      least the live Aave variable borrow rate plus the premium curve.
-    ///      Admin can raise the floor for additional safety; the live read
-    ///      protects LPs even when the admin is silent.
+    ///      uses `max(floor, coordinator.liveAaveRateBps())` so the protocol
+    ///      always charges at least the live Aave variable borrow rate plus
+    ///      the premium curve. Admin can raise the floor for additional
+    ///      safety; the live read protects LPs even when the admin is silent.
     uint256 public minAaveBorrowRateBps;
 
     /// @inheritdoc IAaveBorrowManager
@@ -87,6 +86,10 @@ contract AaveBorrowManager is IAaveBorrowManager, ReentrancyGuard {
     mapping(bytes32 => uint256) internal _totalScaledDebt;
     /// @dev Last accrual timestamp per asset.
     mapping(bytes32 => uint256) internal _lastAccrual;
+    /// @dev Asset has had at least one borrow opened (for `totalDebtUSD` iteration).
+    mapping(bytes32 => bool) internal _assetSeen;
+    /// @dev Append-only list of assets that have ever been borrowed against.
+    bytes32[] internal _registeredAssets;
 
     // ──────────────────────────────────────────────────────────
     //  Per-position state
@@ -116,11 +119,12 @@ contract AaveBorrowManager is IAaveBorrowManager, ReentrancyGuard {
         address debtToken_,
         address aavePool_,
         address registry_,
+        address coordinator_,
         InterestRateModel.Params memory rateParams_
     ) {
         if (
             vault_ == address(0) || stablecoin_ == address(0) || debtToken_ == address(0) || aavePool_ == address(0)
-                || registry_ == address(0)
+                || registry_ == address(0) || coordinator_ == address(0)
         ) revert ZeroAddress();
 
         vault = vault_;
@@ -128,6 +132,7 @@ contract AaveBorrowManager is IAaveBorrowManager, ReentrancyGuard {
         debtToken = debtToken_;
         aavePool = aavePool_;
         registry = IProtocolRegistry(registry_);
+        coordinator = IVaultBorrowCoordinator(coordinator_);
         _stableDecimals = IERC20Metadata(stablecoin_).decimals();
 
         _rateParams = rateParams_;
@@ -166,9 +171,18 @@ contract AaveBorrowManager is IAaveBorrowManager, ReentrancyGuard {
         uint256 borrowValueUSD = _stableToUSD(stablecoinAmount);
         if (borrowValueUSD > maxBorrowUSD) revert InsufficientCollateral(borrowValueUSD, maxBorrowUSD);
 
+        // Protocol-level hard cap shared across every borrow manager on this vault.
+        coordinator.preBorrowCheck(borrowValueUSD);
+
         // Bring asset index forward before recording the position.
         _accrueAsset(asset);
         uint256 idx = _index[asset];
+
+        // First borrow on this asset → register it for total-debt iteration.
+        if (!_assetSeen[asset]) {
+            _assetSeen[asset] = true;
+            _registeredAssets.push(asset);
+        }
 
         // Pull eToken collateral into the manager's pooled custody.
         IERC20(eToken).safeTransferFrom(msg.sender, address(this), eTokenAmount);
@@ -364,19 +378,32 @@ contract AaveBorrowManager is IAaveBorrowManager, ReentrancyGuard {
         minAaveBorrowRateBps = rateBps;
     }
 
-    /// @notice Read Aave's current variable borrow rate for the manager's
-    ///         stablecoin, converted from RAY to BPS. Safe to call off-chain
-    ///         to inspect the live rate.
-    function liveAaveRateBps() external view returns (uint256) {
-        return _liveAaveRateBps();
-    }
+    // ──────────────────────────────────────────────────────────
+    //  IBorrowDebt — coordinator hook
+    // ──────────────────────────────────────────────────────────
 
-    /// @notice Admin-set per-manager borrow cap (stablecoin units). Drives
-    ///         utilization in the rate curve. Zero means uncapped (util = 0).
-    function setBorrowCap(
-        uint256 cap
-    ) external onlyAdmin {
-        borrowCap = cap;
+    /// @inheritdoc IBorrowDebt
+    /// @dev Sums each registered asset's `totalScaledDebt × index` to get
+    ///      stablecoin debt, then converts to USD (18 decimals). Iteration is
+    ///      bounded by the asset list registered via the vault — read-only
+    ///      and called only from the coordinator's view path.
+    function totalDebtUSD() external view returns (uint256) {
+        bytes32[] memory tickers = _registeredAssets;
+        uint256 totalStable;
+        uint256 len = tickers.length;
+        for (uint256 i; i < len;) {
+            bytes32 asset = tickers[i];
+            uint256 scaled = _totalScaledDebt[asset];
+            if (scaled > 0) {
+                uint256 idx = _index[asset];
+                if (idx == 0) idx = PRECISION;
+                totalStable += scaled.mulDiv(idx, PRECISION);
+            }
+            unchecked {
+                ++i;
+            }
+        }
+        return _stableToUSD(totalStable);
     }
 
     // ──────────────────────────────────────────────────────────
@@ -422,33 +449,17 @@ contract AaveBorrowManager is IAaveBorrowManager, ReentrancyGuard {
     }
 
     function _currentRateBps(
-        bytes32 asset
+        bytes32 /*asset*/
     ) internal view returns (uint256) {
-        uint256 utilBps = _utilizationBps(asset);
+        uint256 utilBps = coordinator.utilizationBps();
         return _aaveRateWithFloor() + InterestRateModel.premium(utilBps, _rateParams);
     }
 
-    /// @dev Live Aave rate, floored at `minAaveBorrowRateBps`.
+    /// @dev Live Aave rate (read via the shared coordinator), floored at `minAaveBorrowRateBps`.
     function _aaveRateWithFloor() internal view returns (uint256) {
-        uint256 live = _liveAaveRateBps();
+        uint256 live = coordinator.liveAaveRateBps();
         uint256 floor = minAaveBorrowRateBps;
         return live > floor ? live : floor;
-    }
-
-    /// @dev Read Aave's variable borrow rate for our stablecoin and convert
-    ///      RAY (1e27, annualized) → BPS (10_000 = 100% APR).
-    function _liveAaveRateBps() internal view returns (uint256) {
-        IAaveV3Pool.ReserveDataLegacy memory data = IAaveV3Pool(aavePool).getReserveData(stablecoin);
-        return uint256(data.currentVariableBorrowRate).mulDiv(BPS, RAY);
-    }
-
-    function _utilizationBps(
-        bytes32 asset
-    ) internal view returns (uint256) {
-        uint256 cap = borrowCap;
-        if (cap == 0) return 0;
-        uint256 totalDebt = _totalScaledDebt[asset].mulDiv(_index[asset], PRECISION);
-        return totalDebt.mulDiv(BPS, cap);
     }
 
     // ──────────────────────────────────────────────────────────

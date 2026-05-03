@@ -4,6 +4,7 @@ pragma solidity 0.8.28;
 import {AaveBorrowManager} from "../../src/core/AaveBorrowManager.sol";
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {OwnVault} from "../../src/core/OwnVault.sol";
+import {VaultBorrowCoordinator} from "../../src/core/VaultBorrowCoordinator.sol";
 import {IAaveBorrowManager} from "../../src/interfaces/IAaveBorrowManager.sol";
 import {IEToken} from "../../src/interfaces/IEToken.sol";
 import {IOwnVault} from "../../src/interfaces/IOwnVault.sol";
@@ -27,6 +28,7 @@ contract AaveBorrowManagerTest is BaseTest {
     MockAToken public awstETH;
     MockAaveDebtToken public usdcDebt;
     OwnVault public vault;
+    VaultBorrowCoordinator public coordinator;
     AaveBorrowManager public borrowManager;
 
     bytes32 constant ASSET = bytes32("TSLA");
@@ -85,11 +87,40 @@ contract AaveBorrowManagerTest is BaseTest {
         // Set USDC as payment token for the vault (required by some flows; not used here).
         vault.setPaymentToken(address(usdc));
 
-        // 5) AaveBorrowManager. Wire credit delegation + Aave reserve liquidity.
+        // 5) Coordinator + AaveBorrowManager. Wire credit delegation + Aave reserve liquidity.
+        vm.prank(Actors.ADMIN);
+        coordinator = new VaultBorrowCoordinator(
+            address(vault), address(aavePool), address(protocolRegistry), address(usdc), 3500
+        );
+        // Seed the vault with collateral value so the coordinator's
+        // `maxDebtUSD` is non-zero — otherwise every borrow trips the cap.
+        // Real flows would have LPs deposit awstETH; here we set the vault's
+        // reported collateral value via the keeper-callable refresh after
+        // mocking a deposit.
+        // For the unit-test scope we set the collateral value indirectly by
+        // raising the LTV target sky-high — borrows still pass the cap check
+        // when `maxDebt = 0` only if `additionalUSD = 0`. Use a large LTV here.
+        // (Phase-3-friendly: real coordinator usage flows from vault deposits.)
+        // Simpler workaround: set targetLtvBps very high and rely on tests
+        // explicitly checking cap behaviour.
+        // We keep targetLtvBps = 3500 and instead provide collateral value via
+        // a helper below.
+        _seedVaultCollateral(1_000_000e18); // $1M USD-denominated collateral.
+
         borrowManager = new AaveBorrowManager(
-            address(vault), address(usdc), address(usdcDebt), address(aavePool), address(protocolRegistry), _params()
+            address(vault),
+            address(usdc),
+            address(usdcDebt),
+            address(aavePool),
+            address(protocolRegistry),
+            address(coordinator),
+            _params()
         );
         vm.label(address(borrowManager), "AaveBorrowManager");
+
+        // Register the manager with the coordinator so its debt counts.
+        vm.prank(Actors.ADMIN);
+        coordinator.registerManager(address(borrowManager));
 
         // enableLending: vault delegates borrow allowance to the manager via the debt token.
         vm.prank(Actors.ADMIN);
@@ -109,6 +140,37 @@ contract AaveBorrowManagerTest is BaseTest {
     // ──────────────────────────────────────────────────────────
     //  Helpers
     // ──────────────────────────────────────────────────────────
+
+    /// @dev Seed the vault's collateralValueUSD so the coordinator's hard cap
+    ///      is non-zero. Mints awstETH directly to the vault via the mock pool,
+    ///      then runs the keeper-callable valuation refresh.
+    function _seedVaultCollateral(
+        uint256 usdValue
+    ) internal {
+        bytes32 collat = bytes32("WSTETH");
+        _setOraclePrice(collat, 4000e18); // $4k per wstETH.
+
+        // awstETH amount such that totalAssets * 4_000 / 1e18 == usdValue.
+        uint256 amount = (usdValue * PRECISION) / 4000e18;
+
+        vm.prank(address(aavePool));
+        awstETH.mint(address(vault), amount);
+
+        // Register WSTETH in AssetRegistry so the vault's oracle resolution succeeds.
+        AssetConfig memory wstCfg = AssetConfig({
+            activeToken: address(awstETH),
+            legacyTokens: new address[](0),
+            active: true,
+            volatilityLevel: 1,
+            oracleType: 1
+        });
+        vm.prank(Actors.ADMIN);
+        assetRegistry.addAsset(collat, address(awstETH), wstCfg);
+
+        vm.prank(Actors.ADMIN);
+        vault.setCollateralOracleAsset(collat);
+        vault.updateCollateralValuation();
+    }
 
     function _giveTSLA(address to, uint256 amount) internal {
         eTSLA.mint(to, amount);
@@ -151,11 +213,33 @@ contract AaveBorrowManagerTest is BaseTest {
         InterestRateModel.Params memory p = _params();
         vm.expectRevert(IAaveBorrowManager.ZeroAddress.selector);
         new AaveBorrowManager(
-            address(0), address(usdc), address(usdcDebt), address(aavePool), address(protocolRegistry), p
+            address(0),
+            address(usdc),
+            address(usdcDebt),
+            address(aavePool),
+            address(protocolRegistry),
+            address(coordinator),
+            p
         );
         vm.expectRevert(IAaveBorrowManager.ZeroAddress.selector);
         new AaveBorrowManager(
-            address(vault), address(0), address(usdcDebt), address(aavePool), address(protocolRegistry), p
+            address(vault),
+            address(0),
+            address(usdcDebt),
+            address(aavePool),
+            address(protocolRegistry),
+            address(coordinator),
+            p
+        );
+        vm.expectRevert(IAaveBorrowManager.ZeroAddress.selector);
+        new AaveBorrowManager(
+            address(vault),
+            address(usdc),
+            address(usdcDebt),
+            address(aavePool),
+            address(protocolRegistry),
+            address(0),
+            p
         );
     }
 
@@ -417,9 +501,10 @@ contract AaveBorrowManagerTest is BaseTest {
     }
 
     function test_liveRate_readFromAave_inBps() public {
-        // 5% APR in RAY = 5e25.
+        // 5% APR in RAY = 5e25. Coordinator owns the live read; verify the
+        // manager's accrual path picks it up by surfacing it via the coordinator.
         aavePool.setCurrentVariableBorrowRate(address(usdc), uint128(5 * 1e25));
-        assertEq(borrowManager.liveAaveRateBps(), 500);
+        assertEq(coordinator.liveAaveRateBps(), 500);
     }
 
     function test_floor_liftsRateWhenLiveBelow() public {
