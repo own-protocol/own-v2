@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {AaveBorrowManager} from "../../src/core/AaveBorrowManager.sol";
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {BorrowManagerFactory} from "../../src/core/BorrowManagerFactory.sol";
 import {OwnVault} from "../../src/core/OwnVault.sol";
+import {UserBorrowManager} from "../../src/core/UserBorrowManager.sol";
 import {VaultBorrowCoordinator} from "../../src/core/VaultBorrowCoordinator.sol";
 import {VaultFactory} from "../../src/core/VaultFactory.sol";
-import {IAaveBorrowManager} from "../../src/interfaces/IAaveBorrowManager.sol";
+import {IUserBorrowManager} from "../../src/interfaces/IUserBorrowManager.sol";
 import {AssetConfig, BPS, PRECISION} from "../../src/interfaces/types/Types.sol";
 import {InterestRateModel} from "../../src/libraries/InterestRateModel.sol";
 import {EToken} from "../../src/tokens/EToken.sol";
@@ -32,7 +32,7 @@ contract BorrowAndLiquidateFlowTest is BaseTest {
     BorrowManagerFactory public bmFactory;
     OwnVault public vault;
     VaultBorrowCoordinator public coordinator;
-    AaveBorrowManager public borrowManager;
+    UserBorrowManager public borrowManager;
 
     bytes32 constant ASSET = bytes32("TSLA");
     uint256 constant TSLA_PX = 250e18;
@@ -91,7 +91,7 @@ contract BorrowAndLiquidateFlowTest is BaseTest {
         (address userBM, address lpBM) = bmFactory.createBorrowManager(
             address(vault), address(usdc), address(usdcDebt), address(coordinator), market, bytes32("WSTETH"), _params()
         );
-        borrowManager = AaveBorrowManager(userBM);
+        borrowManager = UserBorrowManager(userBM);
         coordinator.registerManager(userBM);
         coordinator.registerManager(lpBM);
         vm.stopPrank();
@@ -187,7 +187,7 @@ contract BorrowAndLiquidateFlowTest is BaseTest {
         vm.stopPrank();
 
         // Position closed.
-        IAaveBorrowManager.Position memory pos = borrowManager.positionOf(Actors.MINTER1, ASSET);
+        IUserBorrowManager.Position memory pos = borrowManager.positionOf(Actors.MINTER1, ASSET);
         assertEq(pos.principal, 0);
 
         // Aave debt cleared on the vault.

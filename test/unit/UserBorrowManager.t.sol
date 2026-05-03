@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {AaveBorrowManager} from "../../src/core/AaveBorrowManager.sol";
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {OwnVault} from "../../src/core/OwnVault.sol";
+import {UserBorrowManager} from "../../src/core/UserBorrowManager.sol";
 import {VaultBorrowCoordinator} from "../../src/core/VaultBorrowCoordinator.sol";
-import {IAaveBorrowManager} from "../../src/interfaces/IAaveBorrowManager.sol";
+
 import {IEToken} from "../../src/interfaces/IEToken.sol";
 import {IOwnVault} from "../../src/interfaces/IOwnVault.sol";
+import {IUserBorrowManager} from "../../src/interfaces/IUserBorrowManager.sol";
 import {AssetConfig, BPS, PRECISION} from "../../src/interfaces/types/Types.sol";
 import {InterestRateModel} from "../../src/libraries/InterestRateModel.sol";
 import {EToken} from "../../src/tokens/EToken.sol";
@@ -18,10 +19,10 @@ import {MockAToken, MockAaveDebtToken, MockAaveV3Pool} from "../helpers/MockAave
 import {MockERC20} from "../helpers/MockERC20.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
-/// @title AaveBorrowManager Unit Tests
+/// @title UserBorrowManager Unit Tests
 /// @notice Covers borrow / repay / liquidate flows, eligibility gating,
 ///         interest accrual, and admin guards.
-contract AaveBorrowManagerTest is BaseTest {
+contract UserBorrowManagerTest is BaseTest {
     AssetRegistry public assetRegistry;
     EToken public eTSLA;
     MockAaveV3Pool public aavePool;
@@ -29,7 +30,7 @@ contract AaveBorrowManagerTest is BaseTest {
     MockAaveDebtToken public usdcDebt;
     OwnVault public vault;
     VaultBorrowCoordinator public coordinator;
-    AaveBorrowManager public borrowManager;
+    UserBorrowManager public borrowManager;
 
     bytes32 constant ASSET = bytes32("TSLA");
     uint256 constant TSLA_PX = 250e18; // $250 / TSLA, 18 decimals.
@@ -87,7 +88,7 @@ contract AaveBorrowManagerTest is BaseTest {
         // Set USDC as payment token for the vault (required by some flows; not used here).
         vault.setPaymentToken(address(usdc));
 
-        // 5) Coordinator + AaveBorrowManager. Wire credit delegation + Aave reserve liquidity.
+        // 5) Coordinator + UserBorrowManager. Wire credit delegation + Aave reserve liquidity.
         vm.prank(Actors.ADMIN);
         coordinator = new VaultBorrowCoordinator(
             address(vault), address(aavePool), address(protocolRegistry), address(usdc), 3500
@@ -107,7 +108,7 @@ contract AaveBorrowManagerTest is BaseTest {
         // a helper below.
         _seedVaultCollateral(1_000_000e18); // $1M USD-denominated collateral.
 
-        borrowManager = new AaveBorrowManager(
+        borrowManager = new UserBorrowManager(
             address(vault),
             address(usdc),
             address(usdcDebt),
@@ -116,7 +117,7 @@ contract AaveBorrowManagerTest is BaseTest {
             address(coordinator),
             _params()
         );
-        vm.label(address(borrowManager), "AaveBorrowManager");
+        vm.label(address(borrowManager), "UserBorrowManager");
 
         // Register the manager with the coordinator so its debt counts.
         vm.prank(Actors.ADMIN);
@@ -213,8 +214,8 @@ contract AaveBorrowManagerTest is BaseTest {
 
     function test_constructor_zeroAddresses_revert() public {
         InterestRateModel.Params memory p = _params();
-        vm.expectRevert(IAaveBorrowManager.ZeroAddress.selector);
-        new AaveBorrowManager(
+        vm.expectRevert(IUserBorrowManager.ZeroAddress.selector);
+        new UserBorrowManager(
             address(0),
             address(usdc),
             address(usdcDebt),
@@ -223,8 +224,8 @@ contract AaveBorrowManagerTest is BaseTest {
             address(coordinator),
             p
         );
-        vm.expectRevert(IAaveBorrowManager.ZeroAddress.selector);
-        new AaveBorrowManager(
+        vm.expectRevert(IUserBorrowManager.ZeroAddress.selector);
+        new UserBorrowManager(
             address(vault),
             address(0),
             address(usdcDebt),
@@ -233,8 +234,8 @@ contract AaveBorrowManagerTest is BaseTest {
             address(coordinator),
             p
         );
-        vm.expectRevert(IAaveBorrowManager.ZeroAddress.selector);
-        new AaveBorrowManager(
+        vm.expectRevert(IUserBorrowManager.ZeroAddress.selector);
+        new UserBorrowManager(
             address(vault),
             address(usdc),
             address(usdcDebt),
@@ -252,7 +253,7 @@ contract AaveBorrowManagerTest is BaseTest {
     function test_borrow_succeeds_recordsPositionAndPaysOut() public {
         (uint256 eAmt, uint256 stable) = _openTypical(Actors.MINTER1);
 
-        IAaveBorrowManager.Position memory pos = borrowManager.positionOf(Actors.MINTER1, ASSET);
+        IUserBorrowManager.Position memory pos = borrowManager.positionOf(Actors.MINTER1, ASSET);
         assertEq(pos.eTokenCollateral, eAmt);
         // principal stored as scaled debt; at index = PRECISION it equals stable amount.
         assertEq(pos.principal, stable);
@@ -276,7 +277,7 @@ contract AaveBorrowManagerTest is BaseTest {
         vm.startPrank(Actors.MINTER1);
         eTSLA.approve(address(borrowManager), eAmt);
         vm.expectEmit(true, true, false, true);
-        emit IAaveBorrowManager.Borrowed(Actors.MINTER1, ASSET, eAmt, stable, TSLA_PX);
+        emit IUserBorrowManager.Borrowed(Actors.MINTER1, ASSET, eAmt, stable, TSLA_PX);
         borrowManager.borrow(ASSET, eAmt, stable, _priceData(TSLA_PX));
         vm.stopPrank();
     }
@@ -286,9 +287,9 @@ contract AaveBorrowManagerTest is BaseTest {
     // ──────────────────────────────────────────────────────────
 
     function test_borrow_zeroAmounts_revert() public {
-        vm.expectRevert(IAaveBorrowManager.ZeroAmount.selector);
+        vm.expectRevert(IUserBorrowManager.ZeroAmount.selector);
         borrowManager.borrow(ASSET, 0, 100, _priceData(TSLA_PX));
-        vm.expectRevert(IAaveBorrowManager.ZeroAmount.selector);
+        vm.expectRevert(IUserBorrowManager.ZeroAmount.selector);
         borrowManager.borrow(ASSET, 100, 0, _priceData(TSLA_PX));
     }
 
@@ -299,7 +300,7 @@ contract AaveBorrowManagerTest is BaseTest {
         _giveTSLA(Actors.MINTER1, 50e18);
         vm.startPrank(Actors.MINTER1);
         eTSLA.approve(address(borrowManager), 50e18);
-        vm.expectRevert(abi.encodeWithSelector(IAaveBorrowManager.PositionAlreadyOpen.selector, Actors.MINTER1, ASSET));
+        vm.expectRevert(abi.encodeWithSelector(IUserBorrowManager.PositionAlreadyOpen.selector, Actors.MINTER1, ASSET));
         borrowManager.borrow(ASSET, 50e18, 1000e6, _priceData(TSLA_PX));
         vm.stopPrank();
     }
@@ -325,7 +326,7 @@ contract AaveBorrowManagerTest is BaseTest {
         eGold.mint(Actors.MINTER1, 1e18);
         vm.startPrank(Actors.MINTER1);
         eGold.approve(address(borrowManager), 1e18);
-        vm.expectRevert(abi.encodeWithSelector(IAaveBorrowManager.AssetNotSupportedByVault.selector, newAsset));
+        vm.expectRevert(abi.encodeWithSelector(IUserBorrowManager.AssetNotSupportedByVault.selector, newAsset));
         borrowManager.borrow(newAsset, 1e18, 100e6, _priceData(2000e18));
         vm.stopPrank();
     }
@@ -338,7 +339,7 @@ contract AaveBorrowManagerTest is BaseTest {
         _giveTSLA(Actors.MINTER1, 100e18);
         vm.startPrank(Actors.MINTER1);
         eTSLA.approve(address(borrowManager), 100e18);
-        vm.expectRevert(abi.encodeWithSelector(IAaveBorrowManager.PassThroughNotEnabled.selector, address(eTSLA)));
+        vm.expectRevert(abi.encodeWithSelector(IUserBorrowManager.PassThroughNotEnabled.selector, address(eTSLA)));
         borrowManager.borrow(ASSET, 100e18, 1000e6, _priceData(TSLA_PX));
         vm.stopPrank();
     }
@@ -362,7 +363,7 @@ contract AaveBorrowManagerTest is BaseTest {
         _giveTSLA(Actors.MINTER1, 1e18);
         vm.startPrank(Actors.MINTER1);
         eTSLA.approve(address(borrowManager), 1e18);
-        vm.expectRevert(IAaveBorrowManager.VaultEffectivelyHalted.selector);
+        vm.expectRevert(IUserBorrowManager.VaultEffectivelyHalted.selector);
         borrowManager.borrow(ASSET, 1e18, 100e6, _priceData(TSLA_PX));
         vm.stopPrank();
     }
@@ -382,7 +383,7 @@ contract AaveBorrowManagerTest is BaseTest {
         vm.stopPrank();
 
         assertEq(released, eAmt, "all collateral released");
-        IAaveBorrowManager.Position memory pos = borrowManager.positionOf(Actors.MINTER1, ASSET);
+        IUserBorrowManager.Position memory pos = borrowManager.positionOf(Actors.MINTER1, ASSET);
         assertEq(pos.principal, 0);
         assertEq(pos.eTokenCollateral, 0);
         assertEq(eTSLA.balanceOf(Actors.MINTER1), eAmt, "borrower has eToken back");
@@ -401,14 +402,14 @@ contract AaveBorrowManagerTest is BaseTest {
         vm.stopPrank();
 
         assertEq(released, eAmt / 2, "half collateral released");
-        IAaveBorrowManager.Position memory pos = borrowManager.positionOf(Actors.MINTER1, ASSET);
+        IUserBorrowManager.Position memory pos = borrowManager.positionOf(Actors.MINTER1, ASSET);
         assertEq(pos.eTokenCollateral, eAmt - released);
         assertEq(pos.principal, stable - half);
     }
 
     function test_repay_noPosition_reverts() public {
         vm.startPrank(Actors.MINTER1);
-        vm.expectRevert(abi.encodeWithSelector(IAaveBorrowManager.NoPosition.selector, Actors.MINTER1, ASSET));
+        vm.expectRevert(abi.encodeWithSelector(IUserBorrowManager.NoPosition.selector, Actors.MINTER1, ASSET));
         borrowManager.repay(ASSET, 1);
         vm.stopPrank();
     }
@@ -434,7 +435,7 @@ contract AaveBorrowManagerTest is BaseTest {
         vm.stopPrank();
 
         // Position closed.
-        IAaveBorrowManager.Position memory pos = borrowManager.positionOf(Actors.MINTER1, ASSET);
+        IUserBorrowManager.Position memory pos = borrowManager.positionOf(Actors.MINTER1, ASSET);
         assertEq(pos.principal, 0);
 
         // Liquidator received eTokens. Target = $10k * 1.05 / $100 = 105 eTSLA.
@@ -545,7 +546,7 @@ contract AaveBorrowManagerTest is BaseTest {
         InterestRateModel.Params memory np = _params();
         np.basePremiumBps = 200;
         vm.prank(Actors.ATTACKER);
-        vm.expectRevert(IAaveBorrowManager.OnlyAdmin.selector);
+        vm.expectRevert(IUserBorrowManager.OnlyAdmin.selector);
         borrowManager.setRateParams(np);
 
         vm.prank(Actors.ADMIN);
@@ -558,7 +559,7 @@ contract AaveBorrowManagerTest is BaseTest {
         // threshold ≤ ltv → revert.
         uint256 ltv = borrowManager.borrowLtvBps();
         vm.prank(Actors.ADMIN);
-        vm.expectRevert(IAaveBorrowManager.InvalidLiquidationConfig.selector);
+        vm.expectRevert(IUserBorrowManager.InvalidLiquidationConfig.selector);
         borrowManager.setLiquidationConfig(ltv, 500);
 
         vm.prank(Actors.ADMIN);
@@ -571,7 +572,7 @@ contract AaveBorrowManagerTest is BaseTest {
         // ltv >= threshold → revert.
         uint256 threshold = borrowManager.liquidationThresholdBps();
         vm.prank(Actors.ADMIN);
-        vm.expectRevert(IAaveBorrowManager.InvalidLiquidationConfig.selector);
+        vm.expectRevert(IUserBorrowManager.InvalidLiquidationConfig.selector);
         borrowManager.setBorrowLtvBps(threshold);
 
         vm.prank(Actors.ADMIN);

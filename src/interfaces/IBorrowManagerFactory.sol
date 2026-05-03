@@ -5,7 +5,7 @@ import {InterestRateModel} from "../libraries/InterestRateModel.sol";
 
 /// @title IBorrowManagerFactory — Deploys and tracks per-vault borrow managers
 /// @notice One pair of borrow managers per vault (1:1 binding):
-///         - AaveBorrowManager for users borrowing against eTokens.
+///         - UserBorrowManager for users borrowing against eTokens.
 ///         - LPBorrowManager   for LPs borrowing against vault shares.
 ///
 ///         Both managers are deployed in a single admin-gated call so the
@@ -36,7 +36,7 @@ interface IBorrowManagerFactory {
     ///                         used by the LP manager for share valuation.
     /// @param rateParams       Initial interest-rate curve params (shared
     ///                         across both managers at deploy time).
-    /// @return userBorrowManager Address of the deployed AaveBorrowManager.
+    /// @return userBorrowManager Address of the deployed UserBorrowManager.
     /// @return lpBorrowManager   Address of the deployed LPBorrowManager.
     function createBorrowManager(
         address vault,

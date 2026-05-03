@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {AaveBorrowManager} from "../../src/core/AaveBorrowManager.sol";
 import {BorrowManagerFactory} from "../../src/core/BorrowManagerFactory.sol";
 import {OwnVault} from "../../src/core/OwnVault.sol";
+import {UserBorrowManager} from "../../src/core/UserBorrowManager.sol";
 import {VaultBorrowCoordinator} from "../../src/core/VaultBorrowCoordinator.sol";
 import {VaultFactory} from "../../src/core/VaultFactory.sol";
 import {IBorrowManagerFactory} from "../../src/interfaces/IBorrowManagerFactory.sol";
@@ -16,7 +16,7 @@ import {MockERC20} from "../helpers/MockERC20.sol";
 
 /// @title BorrowManagerFactory Unit Tests
 /// @notice Covers admin gating, 1:1 binding, vault validation, and the
-///         deployment of a working AaveBorrowManager.
+///         deployment of a working UserBorrowManager.
 contract BorrowManagerFactoryTest is BaseTest {
     BorrowManagerFactory public factory;
     MockAaveV3Pool public aavePool;
@@ -95,7 +95,7 @@ contract BorrowManagerFactoryTest is BaseTest {
         assertEq(factory.vaultOf(lpBM), address(vault));
 
         // User manager wired correctly.
-        AaveBorrowManager userMgr = AaveBorrowManager(userBM);
+        UserBorrowManager userMgr = UserBorrowManager(userBM);
         assertEq(userMgr.vault(), address(vault));
         assertEq(userMgr.stablecoin(), address(usdc));
         assertEq(userMgr.debtToken(), address(usdcDebt));

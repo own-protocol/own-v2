@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: BUSL-1.1
 pragma solidity 0.8.28;
 
-import {IAaveBorrowManager} from "../interfaces/IAaveBorrowManager.sol";
 import {IAssetRegistry} from "../interfaces/IAssetRegistry.sol";
 import {IBorrowDebt} from "../interfaces/IBorrowDebt.sol";
 import {IEToken} from "../interfaces/IEToken.sol";
 import {IOracleVerifier} from "../interfaces/IOracleVerifier.sol";
 import {IOwnVault} from "../interfaces/IOwnVault.sol";
 import {IProtocolRegistry} from "../interfaces/IProtocolRegistry.sol";
+import {IUserBorrowManager} from "../interfaces/IUserBorrowManager.sol";
 import {IVaultBorrowCoordinator} from "../interfaces/IVaultBorrowCoordinator.sol";
 import {IAaveV3Pool} from "../interfaces/external/IAaveV3Pool.sol";
 import {InterestRateModel} from "../libraries/InterestRateModel.sol";
@@ -20,7 +20,7 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
-/// @title AaveBorrowManager — User borrowing against eTokens via vault Aave credit
+/// @title UserBorrowManager — User borrowing against eTokens via vault Aave credit
 /// @notice One-per-vault stateful manager. Borrowers deposit eTokens as
 ///         collateral; the manager borrows the vault's stablecoin (USDC) from
 ///         Aave V3 via credit delegation and forwards it to the borrower. Each
@@ -28,7 +28,7 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 ///         manager's per-asset cumulative index using a two-slope utilization
 ///         curve. Liquidation is full-close, signed-price gated, with bonus
 ///         capped at remaining collateral.
-contract AaveBorrowManager is IAaveBorrowManager, IBorrowDebt, ReentrancyGuard {
+contract UserBorrowManager is IUserBorrowManager, IBorrowDebt, ReentrancyGuard {
     using SafeERC20 for IERC20;
     using Math for uint256;
 
@@ -69,11 +69,11 @@ contract AaveBorrowManager is IAaveBorrowManager, IBorrowDebt, ReentrancyGuard {
     ///      safety; the live read protects LPs even when the admin is silent.
     uint256 public minAaveBorrowRateBps;
 
-    /// @inheritdoc IAaveBorrowManager
+    /// @inheritdoc IUserBorrowManager
     uint256 public override liquidationThresholdBps;
-    /// @inheritdoc IAaveBorrowManager
+    /// @inheritdoc IUserBorrowManager
     uint256 public override liquidationBonusBps;
-    /// @inheritdoc IAaveBorrowManager
+    /// @inheritdoc IUserBorrowManager
     uint256 public override borrowLtvBps;
 
     // ──────────────────────────────────────────────────────────
@@ -150,7 +150,7 @@ contract AaveBorrowManager is IAaveBorrowManager, IBorrowDebt, ReentrancyGuard {
     //  Borrow
     // ──────────────────────────────────────────────────────────
 
-    /// @inheritdoc IAaveBorrowManager
+    /// @inheritdoc IUserBorrowManager
     function borrow(
         bytes32 asset,
         uint256 eTokenAmount,
@@ -206,7 +206,7 @@ contract AaveBorrowManager is IAaveBorrowManager, IBorrowDebt, ReentrancyGuard {
     //  Repay
     // ──────────────────────────────────────────────────────────
 
-    /// @inheritdoc IAaveBorrowManager
+    /// @inheritdoc IUserBorrowManager
     function repay(bytes32 asset, uint256 amount) external nonReentrant returns (uint256 collateralReleased) {
         Position storage p = _positions[msg.sender][asset];
         if (p.principal == 0) revert NoPosition(msg.sender, asset);
@@ -259,7 +259,7 @@ contract AaveBorrowManager is IAaveBorrowManager, IBorrowDebt, ReentrancyGuard {
     //  Liquidate
     // ──────────────────────────────────────────────────────────
 
-    /// @inheritdoc IAaveBorrowManager
+    /// @inheritdoc IUserBorrowManager
     function liquidate(address borrower, bytes32 asset, bytes calldata priceData) external payable nonReentrant {
         if (_positions[borrower][asset].principal == 0) revert NoPosition(borrower, asset);
 
@@ -307,7 +307,7 @@ contract AaveBorrowManager is IAaveBorrowManager, IBorrowDebt, ReentrancyGuard {
     //  Views
     // ──────────────────────────────────────────────────────────
 
-    /// @inheritdoc IAaveBorrowManager
+    /// @inheritdoc IUserBorrowManager
     function rateParams()
         external
         view
@@ -317,12 +317,12 @@ contract AaveBorrowManager is IAaveBorrowManager, IBorrowDebt, ReentrancyGuard {
         return (p.basePremiumBps, p.optimalUtilBps, p.slope1Bps, p.slope2Bps);
     }
 
-    /// @inheritdoc IAaveBorrowManager
+    /// @inheritdoc IUserBorrowManager
     function positionOf(address borrower, bytes32 asset) external view returns (Position memory) {
         return _positions[borrower][asset];
     }
 
-    /// @inheritdoc IAaveBorrowManager
+    /// @inheritdoc IUserBorrowManager
     function debtOf(address borrower, bytes32 asset) external view returns (uint256) {
         Position memory p = _positions[borrower][asset];
         if (p.principal == 0) return 0;
@@ -330,7 +330,7 @@ contract AaveBorrowManager is IAaveBorrowManager, IBorrowDebt, ReentrancyGuard {
         return p.principal.mulDiv(idx, PRECISION);
     }
 
-    /// @inheritdoc IAaveBorrowManager
+    /// @inheritdoc IUserBorrowManager
     function healthFactor(address borrower, bytes32 asset, uint256 oraclePrice) external view returns (uint256) {
         Position memory p = _positions[borrower][asset];
         if (p.principal == 0) return type(uint256).max;
@@ -343,7 +343,7 @@ contract AaveBorrowManager is IAaveBorrowManager, IBorrowDebt, ReentrancyGuard {
     //  Admin
     // ──────────────────────────────────────────────────────────
 
-    /// @inheritdoc IAaveBorrowManager
+    /// @inheritdoc IUserBorrowManager
     function setRateParams(
         InterestRateModel.Params calldata params
     ) external onlyAdmin {
@@ -351,7 +351,7 @@ contract AaveBorrowManager is IAaveBorrowManager, IBorrowDebt, ReentrancyGuard {
         emit RateParamsUpdated(params);
     }
 
-    /// @inheritdoc IAaveBorrowManager
+    /// @inheritdoc IUserBorrowManager
     function setLiquidationConfig(uint256 liquidationThresholdBps_, uint256 liquidationBonusBps_) external onlyAdmin {
         if (
             liquidationThresholdBps_ == 0 || liquidationThresholdBps_ > BPS || liquidationThresholdBps_ <= borrowLtvBps

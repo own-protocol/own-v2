@@ -3,7 +3,7 @@ pragma solidity 0.8.28;
 
 import {InterestRateModel} from "../libraries/InterestRateModel.sol";
 
-/// @title IAaveBorrowManager — User borrowing against eTokens via vault Aave credit
+/// @title IUserBorrowManager — User borrowing against eTokens via vault Aave credit
 /// @notice Borrowers post eTokens as collateral, the manager borrows the
 ///         vault's stablecoin (USDC) from Aave V3 via credit delegation, and
 ///         hands the stablecoin to the borrower. Each (borrower, asset)
@@ -13,7 +13,7 @@ import {InterestRateModel} from "../libraries/InterestRateModel.sol";
 ///         Pooled per-asset eToken custody: the manager holds one balance of
 ///         each eToken across all borrowers; per-position bookkeeping tracks
 ///         each borrower's share.
-interface IAaveBorrowManager {
+interface IUserBorrowManager {
     // ──────────────────────────────────────────────────────────
     //  Types
     // ──────────────────────────────────────────────────────────

@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {AaveBorrowManager} from "../../src/core/AaveBorrowManager.sol";
 import {OwnVault} from "../../src/core/OwnVault.sol";
 import {ProtocolRegistry} from "../../src/core/ProtocolRegistry.sol";
+import {UserBorrowManager} from "../../src/core/UserBorrowManager.sol";
 import {VaultBorrowCoordinator} from "../../src/core/VaultBorrowCoordinator.sol";
 import {IAaveRouter} from "../../src/interfaces/IAaveRouter.sol";
 import {IAaveV3Pool} from "../../src/interfaces/external/IAaveV3Pool.sol";
@@ -18,7 +18,7 @@ import {Test} from "forge-std/Test.sol";
 /// @notice Skipped if `BASE_RPC` is not set. Otherwise:
 ///         - Verifies the AaveRouter deposit/withdraw round-trip against the
 ///           real Aave V3 Pool, real wstETH, and real awstETH.
-///         - Verifies AaveBorrowManager's live rate read returns a sensible
+///         - Verifies UserBorrowManager's live rate read returns a sensible
 ///           non-zero rate from Aave's USDC reserve.
 contract AaveBaseForkTest is Test {
     // Base mainnet addresses (canonical, verified against Aave V3 deployments).
@@ -36,7 +36,7 @@ contract AaveBaseForkTest is Test {
     ProtocolRegistry public registry;
     AaveRouter public router;
     OwnVault public vault;
-    AaveBorrowManager public borrowManager;
+    UserBorrowManager public borrowManager;
 
     bool internal _forkActive;
 
@@ -136,7 +136,7 @@ contract AaveBaseForkTest is Test {
         vm.startPrank(admin);
         VaultBorrowCoordinator coordinator =
             new VaultBorrowCoordinator(address(vault), AAVE_V3_POOL_BASE, address(registry), USDC_BASE, 3500);
-        borrowManager = new AaveBorrowManager(
+        borrowManager = new UserBorrowManager(
             address(vault),
             USDC_BASE,
             usdcVariableDebt,
