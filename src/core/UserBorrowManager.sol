@@ -9,6 +9,7 @@ import {IProtocolRegistry} from "../interfaces/IProtocolRegistry.sol";
 import {IUserBorrowManager} from "../interfaces/IUserBorrowManager.sol";
 import {IAaveV3Pool} from "../interfaces/external/IAaveV3Pool.sol";
 import {InterestRateModel} from "../libraries/InterestRateModel.sol";
+import {LendingMath} from "../libraries/LendingMath.sol";
 
 import {BPS, PRECISION} from "../interfaces/types/Types.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
@@ -22,10 +23,11 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 /// @notice One-per-vault stateful manager. Borrowers deposit eTokens as
 ///         collateral; the manager borrows the vault's stablecoin (USDC) from
 ///         Aave V3 via credit delegation and forwards it to the borrower. Each
-///         (borrower, asset) carries its own position. Interest accrues on the
-///         manager's per-asset cumulative index using a two-slope utilization
-///         curve. Liquidation is full-close, signed-price gated, with bonus
-///         capped at remaining collateral.
+///         (borrower, asset) carries its own position. Interest accrues on a
+///         single global cumulative index using a two-slope utilization curve
+///         (the borrow rate is vault-wide, so one index prices every position).
+///         Liquidation is full-close, signed-price gated, with bonus capped at
+///         remaining collateral.
 ///
 ///         The manager is self-contained: it tracks its own outstanding debt,
 ///         enforces a vault-wide hard cap (`targetLtvBps` × vault collateral),
@@ -39,7 +41,6 @@ contract UserBorrowManager is IUserBorrowManager, ReentrancyGuard {
     //  Constants
     // ──────────────────────────────────────────────────────────
 
-    uint256 internal constant SECONDS_PER_YEAR = 365 days;
     uint256 internal constant AAVE_VARIABLE_RATE_MODE = 2;
 
     /// @dev Aave V3 uses RAY (1e27) for rate scaling.
@@ -85,19 +86,17 @@ contract UserBorrowManager is IUserBorrowManager, ReentrancyGuard {
     uint256 public override targetLtvBps;
 
     // ──────────────────────────────────────────────────────────
-    //  Per-asset state
+    //  Global debt state
     // ──────────────────────────────────────────────────────────
 
     /// @dev Cumulative interest index, PRECISION-scaled (starts at PRECISION).
-    mapping(bytes32 => uint256) internal _index;
-    /// @dev Sum of scaled debts across all positions for an asset.
-    mapping(bytes32 => uint256) internal _totalScaledDebt;
-    /// @dev Last accrual timestamp per asset.
-    mapping(bytes32 => uint256) internal _lastAccrual;
-    /// @dev Asset has had at least one borrow opened (for `totalDebtUSD` iteration).
-    mapping(bytes32 => bool) internal _assetSeen;
-    /// @dev Append-only list of assets that have ever been borrowed against.
-    bytes32[] internal _registeredAssets;
+    ///      Single global index: the borrow rate is vault-wide (driven by
+    ///      utilization, not the asset), so one index prices every position.
+    uint256 internal _index;
+    /// @dev Sum of scaled debts across all open positions, every asset.
+    uint256 internal _totalScaledDebt;
+    /// @dev Last accrual timestamp for the global index.
+    uint256 internal _lastAccrual;
 
     // ──────────────────────────────────────────────────────────
     //  Per-position state
@@ -105,7 +104,7 @@ contract UserBorrowManager is IUserBorrowManager, ReentrancyGuard {
 
     /// @dev Per-(borrower, asset) position. principal stored as scaled debt
     ///      so it auto-grows with `_index`. Recover units via
-    ///      `_currentDebt(asset, scaledDebt)`.
+    ///      `LendingMath.scaledToActual(principal, _index)`.
     mapping(address => mapping(bytes32 => Position)) internal _positions;
 
     // ──────────────────────────────────────────────────────────
@@ -151,6 +150,10 @@ contract UserBorrowManager is IUserBorrowManager, ReentrancyGuard {
         liquidationBonusBps = 500; // 5%
         borrowLtvBps = 7000; // 70%
 
+        // Seed the global interest index at 1.0 and stamp the clock.
+        _index = PRECISION;
+        _lastAccrual = block.timestamp;
+
         // Pre-approve Aave to pull stablecoin on repay.
         IERC20(stablecoin_).forceApprove(aavePool_, type(uint256).max);
     }
@@ -175,9 +178,9 @@ contract UserBorrowManager is IUserBorrowManager, ReentrancyGuard {
         uint256 oraclePrice = _verifyPrice(asset, priceData);
 
         // LTV check at borrow time.
-        uint256 collateralValueUSD = eTokenAmount.mulDiv(oraclePrice, PRECISION);
+        uint256 collateralValueUSD = LendingMath.collateralUSD(eTokenAmount, oraclePrice);
         uint256 maxBorrowUSD = collateralValueUSD.mulDiv(borrowLtvBps, BPS);
-        uint256 borrowValueUSD = _stableToUSD(stablecoinAmount);
+        uint256 borrowValueUSD = LendingMath.stableToUSD(stablecoinAmount, _stableDecimals);
         if (borrowValueUSD > maxBorrowUSD) revert InsufficientCollateral(borrowValueUSD, maxBorrowUSD);
 
         // Protocol-level hard cap: total debt must stay within the vault's
@@ -189,15 +192,9 @@ contract UserBorrowManager is IUserBorrowManager, ReentrancyGuard {
             if (projected > cap) revert BorrowExceedsCap(projected, cap);
         }
 
-        // Bring asset index forward before recording the position.
-        _accrueAsset(asset);
-        uint256 idx = _index[asset];
-
-        // First borrow on this asset → register it for total-debt iteration.
-        if (!_assetSeen[asset]) {
-            _assetSeen[asset] = true;
-            _registeredAssets.push(asset);
-        }
+        // Bring the global index forward before recording the position.
+        _accrue();
+        uint256 idx = _index;
 
         // Pull eToken collateral into the manager's pooled custody.
         IERC20(eToken).safeTransferFrom(msg.sender, address(this), eTokenAmount);
@@ -209,10 +206,10 @@ contract UserBorrowManager is IUserBorrowManager, ReentrancyGuard {
         IERC20(stablecoin).safeTransfer(msg.sender, stablecoinAmount);
 
         // Record position. principal is scaled debt: actual debt grows via index.
-        uint256 scaledDebt = stablecoinAmount.mulDiv(PRECISION, idx);
+        uint256 scaledDebt = LendingMath.actualToScaled(stablecoinAmount, idx);
         _positions[msg.sender][asset] =
             Position({eTokenCollateral: eTokenAmount, principal: scaledDebt, interestIndex: idx});
-        _totalScaledDebt[asset] += scaledDebt;
+        _totalScaledDebt += scaledDebt;
 
         emit Borrowed(msg.sender, asset, eTokenAmount, stablecoinAmount, oraclePrice);
     }
@@ -226,10 +223,10 @@ contract UserBorrowManager is IUserBorrowManager, ReentrancyGuard {
         Position storage p = _positions[msg.sender][asset];
         if (p.principal == 0) revert NoPosition(msg.sender, asset);
 
-        _accrueAsset(asset);
-        uint256 idx = _index[asset];
+        _accrue();
+        uint256 idx = _index;
 
-        uint256 currentDebt = p.principal.mulDiv(idx, PRECISION);
+        uint256 currentDebt = LendingMath.scaledToActual(p.principal, idx);
         uint256 repayAmount = amount > currentDebt ? currentDebt : amount;
         if (repayAmount == 0) revert ZeroAmount();
 
@@ -242,7 +239,7 @@ contract UserBorrowManager is IUserBorrowManager, ReentrancyGuard {
         if (repayAmount == currentDebt) {
             // Full close — release all collateral.
             collateralReleased = p.eTokenCollateral;
-            _totalScaledDebt[asset] -= p.principal;
+            _totalScaledDebt -= p.principal;
             delete _positions[msg.sender][asset];
         } else {
             // Partial — release pro-rata; preserves LTV at constant price.
@@ -250,13 +247,13 @@ contract UserBorrowManager is IUserBorrowManager, ReentrancyGuard {
             // Rounding direction for scaled-debt reduction: floor so the
             // protocol keeps a sliver more debt vs releasing more collateral
             // (protocol-favorable).
-            uint256 scaledRepay = repayAmount.mulDiv(PRECISION, idx);
+            uint256 scaledRepay = LendingMath.actualToScaled(repayAmount, idx);
             // Defensive: never let scaledRepay exceed stored principal.
             if (scaledRepay > p.principal) scaledRepay = p.principal;
             p.principal -= scaledRepay;
             p.eTokenCollateral -= collateralReleased;
             p.interestIndex = idx;
-            _totalScaledDebt[asset] -= scaledRepay;
+            _totalScaledDebt -= scaledRepay;
         }
 
         // Send eToken collateral back. Pass-through holders mapping must include
@@ -278,27 +275,29 @@ contract UserBorrowManager is IUserBorrowManager, ReentrancyGuard {
     function liquidate(address borrower, bytes32 asset, bytes calldata priceData) external payable nonReentrant {
         if (_positions[borrower][asset].principal == 0) revert NoPosition(borrower, asset);
 
-        _accrueAsset(asset);
+        _accrue();
         uint256 oraclePrice = _verifyPrice(asset, priceData);
         _liquidate(borrower, asset, oraclePrice);
     }
 
     function _liquidate(address borrower, bytes32 asset, uint256 oraclePrice) internal {
         Position storage p = _positions[borrower][asset];
-        uint256 currentDebt = p.principal.mulDiv(_index[asset], PRECISION);
-        if (_healthFactorFromValues(p.eTokenCollateral, currentDebt, oraclePrice) >= PRECISION) {
-            revert NotLiquidatable(_healthFactorFromValues(p.eTokenCollateral, currentDebt, oraclePrice));
-        }
+        uint256 currentDebt = LendingMath.scaledToActual(p.principal, _index);
+        uint256 hf = LendingMath.healthFactor(
+            p.eTokenCollateral, currentDebt, oraclePrice, liquidationThresholdBps, _stableDecimals
+        );
+        if (hf >= PRECISION) revert NotLiquidatable(hf);
 
         // Pull full debt from liquidator, repay Aave.
         IERC20(stablecoin).safeTransferFrom(msg.sender, address(this), currentDebt);
         _repayAaveAndSweep(currentDebt);
 
         // Compute seize amount in eToken units; cap at remaining collateral.
-        uint256 actualSeize = _capSeize(_targetSeize(currentDebt, oraclePrice), p.eTokenCollateral);
+        uint256 target = LendingMath.seizeAmount(currentDebt, oraclePrice, liquidationBonusBps, _stableDecimals);
+        uint256 actualSeize = Math.min(target, p.eTokenCollateral);
         uint256 residual = p.eTokenCollateral - actualSeize;
 
-        _totalScaledDebt[asset] -= p.principal;
+        _totalScaledDebt -= p.principal;
         delete _positions[borrower][asset];
 
         address eToken = _resolveActiveEToken(asset);
@@ -306,16 +305,6 @@ contract UserBorrowManager is IUserBorrowManager, ReentrancyGuard {
         if (residual > 0) IERC20(eToken).safeTransfer(borrower, residual);
 
         emit Liquidated(borrower, asset, msg.sender, currentDebt, actualSeize, residual);
-    }
-
-    /// @dev Target seize in eToken units: `currentDebt * (1+bonus) / oraclePrice`.
-    function _targetSeize(uint256 currentDebt, uint256 oraclePrice) internal view returns (uint256) {
-        uint256 withBonusUSD = _stableToUSD(currentDebt).mulDiv(BPS + liquidationBonusBps, BPS);
-        return withBonusUSD.mulDiv(PRECISION, oraclePrice);
-    }
-
-    function _capSeize(uint256 target, uint256 available) internal pure returns (uint256) {
-        return target > available ? available : target;
     }
 
     // ──────────────────────────────────────────────────────────
@@ -341,17 +330,19 @@ contract UserBorrowManager is IUserBorrowManager, ReentrancyGuard {
     function debtOf(address borrower, bytes32 asset) external view returns (uint256) {
         Position memory p = _positions[borrower][asset];
         if (p.principal == 0) return 0;
-        uint256 idx = _projectedIndex(asset);
-        return p.principal.mulDiv(idx, PRECISION);
+        uint256 idx = _projectedIndex();
+        return LendingMath.scaledToActual(p.principal, idx);
     }
 
     /// @inheritdoc IUserBorrowManager
     function healthFactor(address borrower, bytes32 asset, uint256 oraclePrice) external view returns (uint256) {
         Position memory p = _positions[borrower][asset];
         if (p.principal == 0) return type(uint256).max;
-        uint256 idx = _projectedIndex(asset);
-        uint256 currentDebt = p.principal.mulDiv(idx, PRECISION);
-        return _healthFactorFromValues(p.eTokenCollateral, currentDebt, oraclePrice);
+        uint256 idx = _projectedIndex();
+        uint256 currentDebt = LendingMath.scaledToActual(p.principal, idx);
+        return LendingMath.healthFactor(
+            p.eTokenCollateral, currentDebt, oraclePrice, liquidationThresholdBps, _stableDecimals
+        );
     }
 
     // ──────────────────────────────────────────────────────────
@@ -407,26 +398,16 @@ contract UserBorrowManager is IUserBorrowManager, ReentrancyGuard {
     // ──────────────────────────────────────────────────────────
 
     /// @inheritdoc IUserBorrowManager
-    /// @dev Sums each registered asset's `totalScaledDebt × index` to get
-    ///      stablecoin debt, then converts to USD (18 decimals). Iteration is
-    ///      bounded by the append-only asset list.
+    /// @dev `totalScaledDebt × index` is the protocol's outstanding stablecoin
+    ///      debt; lift it to 18-decimal USD. O(1) — one global index, no
+    ///      per-asset iteration. Reads the *stored* index (not projected):
+    ///      utilization feeds the rate curve, which feeds {_projectedIndex}, so
+    ///      projecting here would recurse. Pending accrual since the last touch
+    ///      is excluded — a sub-block-rate dust difference.
     function totalDebtUSD() public view returns (uint256) {
-        bytes32[] memory tickers = _registeredAssets;
-        uint256 totalStable;
-        uint256 len = tickers.length;
-        for (uint256 i; i < len;) {
-            bytes32 asset = tickers[i];
-            uint256 scaled = _totalScaledDebt[asset];
-            if (scaled > 0) {
-                uint256 idx = _index[asset];
-                if (idx == 0) idx = PRECISION;
-                totalStable += scaled.mulDiv(idx, PRECISION);
-            }
-            unchecked {
-                ++i;
-            }
-        }
-        return _stableToUSD(totalStable);
+        uint256 idx = _index == 0 ? PRECISION : _index;
+        uint256 totalStable = LendingMath.scaledToActual(_totalScaledDebt, idx);
+        return LendingMath.stableToUSD(totalStable, _stableDecimals);
     }
 
     /// @inheritdoc IUserBorrowManager
@@ -452,51 +433,57 @@ contract UserBorrowManager is IUserBorrowManager, ReentrancyGuard {
     //  Internal — accrual
     // ──────────────────────────────────────────────────────────
 
-    function _accrueAsset(
-        bytes32 asset
-    ) internal {
-        uint256 last = _lastAccrual[asset];
-        if (last == 0) {
-            _index[asset] = PRECISION;
-            _lastAccrual[asset] = block.timestamp;
-            return;
-        }
-        uint256 dt = block.timestamp - last;
+    /// @dev Advance the global cumulative interest index to `block.timestamp`,
+    ///      writing the new index and accrual timestamp. This is the single
+    ///      point where debt grows: because positions store *scaled* debt,
+    ///      moving the index forward raises every borrower's debt at once.
+    ///
+    ///      Two short-circuits, in order:
+    ///        1. Same block (`dt == 0`) — already current; avoids re-accruing
+    ///           when several actions land in one block.
+    ///        2. No debt (`_totalScaledDebt == 0`) — skip growth but roll the
+    ///           timestamp so an idle period never back-charges the next borrower.
+    ///
+    ///      Otherwise grow by simple interest over `dt` at the current rate
+    ///      (see {_currentRateBps}); compounding happens across touch points.
+    ///      The index is seeded to PRECISION and the clock stamped in the
+    ///      constructor, so there is no first-touch branch.
+    function _accrue() internal {
+        uint256 dt = block.timestamp - _lastAccrual;
         if (dt == 0) return;
 
-        if (_totalScaledDebt[asset] == 0) {
-            _lastAccrual[asset] = block.timestamp;
+        if (_totalScaledDebt == 0) {
+            _lastAccrual = block.timestamp;
             return;
         }
 
-        uint256 rateBps = _currentRateBps(asset);
-        uint256 idx = _index[asset];
-        // index += index * rate * dt / (BPS * SECONDS_PER_YEAR)
-        uint256 growth = idx.mulDiv(rateBps * dt, BPS * SECONDS_PER_YEAR);
-        _index[asset] = idx + growth;
-        _lastAccrual[asset] = block.timestamp;
+        _index = LendingMath.accrueIndex(_index, _currentRateBps(), dt);
+        _lastAccrual = block.timestamp;
     }
 
-    function _projectedIndex(
-        bytes32 asset
-    ) internal view returns (uint256) {
-        uint256 last = _lastAccrual[asset];
-        uint256 idx = _index[asset];
-        if (idx == 0) return PRECISION;
-        if (last == 0 || _totalScaledDebt[asset] == 0) return idx;
-        uint256 dt = block.timestamp - last;
+    /// @dev Read-only twin of {_accrue}: returns what the index *would* be at
+    ///      `block.timestamp` without writing, so views ({debtOf},
+    ///      {healthFactor}) report accrued figures between transactions. Mirrors
+    ///      the same short-circuits.
+    /// @return The projected index (PRECISION-scaled).
+    function _projectedIndex() internal view returns (uint256) {
+        uint256 idx = _index == 0 ? PRECISION : _index;
+        if (_totalScaledDebt == 0) return idx;
+        uint256 dt = block.timestamp - _lastAccrual;
         if (dt == 0) return idx;
-        uint256 rateBps = _currentRateBps(asset);
-        return idx + idx.mulDiv(rateBps * dt, BPS * SECONDS_PER_YEAR);
+        return LendingMath.accrueIndex(idx, _currentRateBps(), dt);
     }
 
-    function _currentRateBps(
-        bytes32 /*asset*/
-    ) internal view returns (uint256) {
+    /// @dev Current annualized borrow rate (BPS) charged to borrowers:
+    ///      `aaveRateWithFloor + premium(utilization)`. Global — driven by the
+    ///      manager's vault-wide utilization, not by any individual asset.
+    function _currentRateBps() internal view returns (uint256) {
         return _aaveRateWithFloor() + InterestRateModel.premium(utilizationBps(), _rateParams);
     }
 
-    /// @dev Live Aave rate, floored at `minAaveBorrowRateBps`.
+    /// @dev The Aave-side rate component: `max(liveAaveRateBps, minAaveBorrowRateBps)`.
+    ///      The live read protects LPs even if the admin never sets a floor; the
+    ///      floor lets the admin charge more for safety.
     function _aaveRateWithFloor() internal view returns (uint256) {
         uint256 live = liveAaveRateBps();
         uint256 floor = minAaveBorrowRateBps;
@@ -507,6 +494,13 @@ contract UserBorrowManager is IUserBorrowManager, ReentrancyGuard {
     //  Internal — eligibility / oracle
     // ──────────────────────────────────────────────────────────
 
+    /// @dev Gate a borrow: the asset must be supported by the vault and active
+    ///      in the registry, the manager must be a registered pass-through
+    ///      holder on the eToken (so dividends earned while collateral is in
+    ///      custody can follow the borrower out), and the asset must not be
+    ///      effectively paused or halted on the vault.
+    /// @param asset  Ticker being borrowed against.
+    /// @param eToken Resolved active eToken for `asset`.
     function _validateEligibility(bytes32 asset, address eToken) internal view {
         if (!IOwnVault(vault).isAssetSupported(asset)) revert AssetNotSupportedByVault(asset);
         if (!IAssetRegistry(registry.assetRegistry()).isActiveAsset(asset)) revert AssetNotActive(asset);
@@ -516,12 +510,20 @@ contract UserBorrowManager is IUserBorrowManager, ReentrancyGuard {
         }
     }
 
+    /// @dev Resolve the current active eToken for `asset` from the registry.
+    ///      Re-resolved per call so a stock-split token swap is always honored.
     function _resolveActiveEToken(
         bytes32 asset
     ) internal view returns (address) {
         return IAssetRegistry(registry.assetRegistry()).getActiveToken(asset);
     }
 
+    /// @dev Verify a signed price proof for `asset` via its primary oracle and
+    ///      return the price (18-decimal USD). Forwards `msg.value` to cover any
+    ///      oracle update fee (e.g. Pyth); the in-house oracle ignores it.
+    /// @param asset     Ticker being priced.
+    /// @param priceData Signed price payload.
+    /// @return price Verified price, 18-decimal USD per token.
     function _verifyPrice(bytes32 asset, bytes calldata priceData) internal returns (uint256 price) {
         uint8 oracleType = IAssetRegistry(registry.assetRegistry()).getOracleType(asset);
         address oracleAddr = oracleType == 0 ? registry.pythOracle() : registry.inhouseOracle();
@@ -532,8 +534,13 @@ contract UserBorrowManager is IUserBorrowManager, ReentrancyGuard {
     //  Internal — Aave repay
     // ──────────────────────────────────────────────────────────
 
-    /// @dev Repay up to `amount` of the vault's Aave debt. Any surplus stays
-    ///      on this contract; we forward it to the vault as LP-side fee yield.
+    /// @dev Repay up to `amount` of the vault's Aave debt on its behalf. Aave
+    ///      caps repayment at the outstanding debt and returns the actual amount
+    ///      pulled; any surplus (the premium charged above Aave's own rate, or
+    ///      an over-repay once Aave debt is exhausted) is forwarded to the vault.
+    ///      NOTE: this is a raw transfer — the vault does not currently credit it
+    ///      to LP rewards, so the premium accounting is implicit. See audit H3.
+    /// @param amount Stablecoin amount available to repay (already held here).
     function _repayAaveAndSweep(
         uint256 amount
     ) internal {
@@ -542,33 +549,5 @@ contract UserBorrowManager is IUserBorrowManager, ReentrancyGuard {
         if (surplus > 0) {
             IERC20(stablecoin).safeTransfer(vault, surplus);
         }
-    }
-
-    // ──────────────────────────────────────────────────────────
-    //  Internal — math helpers
-    // ──────────────────────────────────────────────────────────
-
-    /// @dev Convert stablecoin native units to USD (18 decimals).
-    function _stableToUSD(
-        uint256 amount
-    ) internal view returns (uint256) {
-        if (_stableDecimals == 18) return amount;
-        if (_stableDecimals < 18) return amount * 10 ** (18 - _stableDecimals);
-        return amount / 10 ** (_stableDecimals - 18);
-    }
-
-    function _healthFactorFromValues(
-        uint256 collateral,
-        uint256 currentDebt,
-        uint256 oraclePrice
-    ) internal view returns (uint256) {
-        if (currentDebt == 0) return type(uint256).max;
-        // collateralUSD = collateral * price / 1e18
-        uint256 collateralUSD = collateral.mulDiv(oraclePrice, PRECISION);
-        // adjustedCollateralUSD = collateralUSD * threshold / BPS
-        uint256 adjusted = collateralUSD.mulDiv(liquidationThresholdBps, BPS);
-        uint256 debtUSD = _stableToUSD(currentDebt);
-        // hf = adjusted / debtUSD, scaled to PRECISION (1e18 = 1.0).
-        return adjusted.mulDiv(PRECISION, debtUSD);
     }
 }
