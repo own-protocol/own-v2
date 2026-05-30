@@ -82,7 +82,8 @@ contract BorrowAndLiquidateFlowTest is BaseTest {
         bmFactory = new BorrowManagerFactory(address(aavePool), address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.BORROW_MANAGER_FACTORY(), address(bmFactory));
 
-        address userBM = bmFactory.createBorrowManager(address(vault), address(usdc), address(usdcDebt), 3500, _params());
+        address userBM =
+            bmFactory.createBorrowManager(address(vault), address(usdc), address(usdcDebt), 3500, _params());
         borrowManager = UserBorrowManager(userBM);
         vm.stopPrank();
 
