@@ -7,8 +7,10 @@ import {InterestRateModel} from "../libraries/InterestRateModel.sol";
 /// @notice Borrowers post eTokens as collateral, the manager borrows the
 ///         vault's stablecoin (USDC) from Aave V3 via credit delegation, and
 ///         hands the stablecoin to the borrower. Each (borrower, asset)
-///         carries its own position. Liquidation is full-close, signed-price
-///         gated, and bonus is capped by available collateral.
+///         carries its own position. Liquidation is signed-price gated and
+///         partial: the liquidator names a repay amount, capped by an
+///         HF-gated close factor, and the bonus-based seize must fit the
+///         position's remaining collateral.
 ///
 ///         Pooled per-asset eToken custody: the manager holds one balance of
 ///         each eToken across all borrowers; per-position bookkeeping tracks
@@ -20,9 +22,10 @@ interface IUserBorrowManager {
 
     /// @notice A user's borrow position for one asset.
     /// @param eTokenCollateral Amount of the asset's eToken posted (18 dec).
-    /// @param principal        Stablecoin debt principal in stablecoin decimals.
-    /// @param interestIndex    Snapshot of the manager's per-asset interest
-    ///                         index at last accrual.
+    /// @param principal        Scaled stablecoin debt; actual debt is
+    ///                         `principal × index / PRECISION`.
+    /// @param interestIndex    Snapshot of the manager's global interest index
+    ///                         at the position's last touch (informational).
     struct Position {
         uint256 eTokenCollateral;
         uint256 principal;
@@ -58,6 +61,14 @@ interface IUserBorrowManager {
     event RateParamsUpdated(InterestRateModel.Params params);
     event LiquidationConfigUpdated(uint256 liquidationThresholdBps, uint256 liquidationBonusBps);
     event TargetLtvBpsUpdated(uint256 oldBps, uint256 newBps);
+    event BadDebtAbsorbed(
+        address indexed borrower,
+        bytes32 indexed asset,
+        address indexed caller,
+        uint256 residualRepaid,
+        uint256 treasuryAbsorbed,
+        uint256 collateralReleased
+    );
 
     // ──────────────────────────────────────────────────────────
     //  Errors
@@ -78,6 +89,8 @@ interface IUserBorrowManager {
     error InvalidLiquidationConfig();
     error InvalidLtv();
     error BorrowExceedsCap(uint256 attempted, uint256 cap);
+    error SeizeExceedsCollateral(uint256 seize, uint256 available);
+    error PositionStillCollateralized(uint256 collateral);
 
     // ──────────────────────────────────────────────────────────
     //  Borrower flows
@@ -102,15 +115,46 @@ interface IUserBorrowManager {
     /// @return collateralReleased eToken units returned to the borrower.
     function repay(bytes32 asset, uint256 amount) external returns (uint256 collateralReleased);
 
-    /// @notice Liquidate an underwater `(borrower, asset)` position. Full close.
-    /// @dev    Liquidator pays the full outstanding debt; receives eToken
-    ///         collateral up to `repayAmount * (1 + bonus) / oraclePrice`,
-    ///         capped at the remaining collateral. Residual collateral (if
-    ///         any) is returned to the borrower in the same call.
-    /// @param  borrower  Underwater position's borrower.
-    /// @param  asset     Asset ticker.
-    /// @param  priceData Signed price proof for `asset`.
-    function liquidate(address borrower, bytes32 asset, bytes calldata priceData) external payable;
+    /// @notice Liquidate an underwater `(borrower, asset)` position.
+    /// @dev    The liquidator names `repayAmount`; it is clamped to the
+    ///         HF-gated close factor (a fraction of debt while the position is
+    ///         only marginally unhealthy, lifted to the full debt once deeply
+    ///         underwater). Receives eToken collateral of
+    ///         `repayAmount * (1 + bonus) / oraclePrice`, which must fit within
+    ///         the remaining collateral (reverts otherwise). A full repay closes
+    ///         the position and returns any residual collateral to the borrower;
+    ///         a partial repay leaves the position open.
+    /// @param  borrower    Underwater position's borrower.
+    /// @param  asset       Asset ticker.
+    /// @param  repayAmount Stablecoin debt the liquidator wants to repay (pre-cap).
+    /// @param  priceData   Signed price proof for `asset`.
+    function liquidate(
+        address borrower,
+        bytes32 asset,
+        uint256 repayAmount,
+        bytes calldata priceData
+    ) external payable;
+
+    /// @notice Close out the residual (zero-collateral) bad debt left after a
+    ///         position's collateral has been fully liquidated. Admin-only.
+    /// @dev    The caller fronts the *full* residual debt in stablecoin, which
+    ///         repays the vault's matching Aave loan and clears the book debt.
+    ///         `absorbAmount` is the slice of that loss the caller eats itself
+    ///         (donated, no reimbursement); the remainder is socialized to LPs
+    ///         and reimbursed to the caller in vault collateral (aToken) priced
+    ///         via the vault's collateral oracle. `absorbAmount == residual`
+    ///         means the caller absorbs everything (no collateral released);
+    ///         `absorbAmount == 0` means LPs absorb everything.
+    /// @param  borrower            Borrower whose residual debt is being closed.
+    /// @param  asset               Asset ticker of the position.
+    /// @param  absorbAmount        Stablecoin loss the caller eats (clamped to residual).
+    /// @param  collateralPriceData Signed price proof for the vault's collateral asset.
+    function absorbBadDebt(
+        address borrower,
+        bytes32 asset,
+        uint256 absorbAmount,
+        bytes calldata collateralPriceData
+    ) external payable;
 
     // ──────────────────────────────────────────────────────────
     //  Views

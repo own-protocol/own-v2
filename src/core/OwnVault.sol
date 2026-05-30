@@ -166,6 +166,11 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
         _;
     }
 
+    modifier onlyBorrowManager() {
+        if (msg.sender != _borrowManager) revert OnlyBorrowManager();
+        _;
+    }
+
     modifier whenDepositsAllowed() {
         if (_vaultStatus == VaultStatus.Paused) revert VaultIsPaused();
         if (_vaultStatus == VaultStatus.Halted) revert VaultIsHalted();
@@ -1033,6 +1038,19 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
         if (to == address(0)) revert ZeroAddress();
         if (amount == 0) revert ZeroAmount();
         IERC20(asset()).safeTransfer(to, amount);
+    }
+
+    /// @inheritdoc IOwnVault
+    function releaseCollateralForBadDebt(address to, uint256 amount) external onlyBorrowManager nonReentrant {
+        if (to == address(0)) revert ZeroAddress();
+        if (amount == 0) revert ZeroAmount();
+        // The borrow manager has already repaid the corresponding Aave debt, so
+        // this aToken slice is unlocked. Releasing it shrinks totalAssets, which
+        // socializes the bad-debt loss to LPs via a lower share price; refresh
+        // the cached collateral value so the debt cap tracks the smaller base.
+        IERC20(asset()).safeTransfer(to, amount);
+        _refreshCollateralValue();
+        emit CollateralReleasedForBadDebt(to, amount);
     }
 
     // ──────────────────────────────────────────────────────────

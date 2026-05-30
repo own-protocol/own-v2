@@ -26,8 +26,9 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 ///         (borrower, asset) carries its own position. Interest accrues on a
 ///         single global cumulative index using a two-slope utilization curve
 ///         (the borrow rate is vault-wide, so one index prices every position).
-///         Liquidation is full-close, signed-price gated, with bonus capped at
-///         remaining collateral.
+///         Liquidation is signed-price gated and partial: the liquidator names
+///         a repay amount, capped by an HF-gated close factor, and the
+///         bonus-based seize must fit the position's remaining collateral.
 ///
 ///         The manager is self-contained: it tracks its own outstanding debt,
 ///         enforces a vault-wide hard cap (`targetLtvBps` × vault collateral),
@@ -45,6 +46,13 @@ contract UserBorrowManager is IUserBorrowManager, ReentrancyGuard {
 
     /// @dev Aave V3 uses RAY (1e27) for rate scaling.
     uint256 internal constant RAY = 1e27;
+
+    /// @dev Health-factor cutoff for the liquidation close factor (PRECISION = 1.0).
+    ///      A liquidatable position with `hf` above this is only *partially*
+    ///      closable (capped at {liquidationCloseFactorBps}); at or below it the
+    ///      position can be fully closed in one call. Mirrors Aave V3's
+    ///      `CLOSE_FACTOR_HF_THRESHOLD` (0.95).
+    uint256 internal constant CLOSE_FACTOR_HF_THRESHOLD = 0.95e18;
 
     // ──────────────────────────────────────────────────────────
     //  Immutables
@@ -78,6 +86,12 @@ contract UserBorrowManager is IUserBorrowManager, ReentrancyGuard {
     uint256 public override liquidationBonusBps;
     /// @inheritdoc IUserBorrowManager
     uint256 public override borrowLtvBps;
+
+    /// @notice Max fraction of a position's debt (BPS) one liquidation may repay
+    ///         while the position's health factor is above
+    ///         {CLOSE_FACTOR_HF_THRESHOLD}. Below that threshold the cap is lifted
+    ///         to 100% so deeply underwater positions can be wound down in one go.
+    uint256 public liquidationCloseFactorBps;
 
     /// @inheritdoc IUserBorrowManager
     /// @dev Vault-wide target Aave LTV (BPS) that defines the protocol debt
@@ -149,6 +163,7 @@ contract UserBorrowManager is IUserBorrowManager, ReentrancyGuard {
         liquidationThresholdBps = 8000; // 80%
         liquidationBonusBps = 500; // 5%
         borrowLtvBps = 7000; // 70%
+        liquidationCloseFactorBps = 5000; // 50%
 
         // Seed the global interest index at 1.0 and stamp the clock.
         _index = PRECISION;
@@ -272,15 +287,31 @@ contract UserBorrowManager is IUserBorrowManager, ReentrancyGuard {
     // ──────────────────────────────────────────────────────────
 
     /// @inheritdoc IUserBorrowManager
-    function liquidate(address borrower, bytes32 asset, bytes calldata priceData) external payable nonReentrant {
+    function liquidate(
+        address borrower,
+        bytes32 asset,
+        uint256 repayAmount,
+        bytes calldata priceData
+    ) external payable nonReentrant {
         if (_positions[borrower][asset].principal == 0) revert NoPosition(borrower, asset);
+        if (repayAmount == 0) revert ZeroAmount();
 
         _accrue();
         uint256 oraclePrice = _verifyPrice(asset, priceData);
-        _liquidate(borrower, asset, oraclePrice);
+        _liquidate(borrower, asset, repayAmount, oraclePrice);
     }
 
-    function _liquidate(address borrower, bytes32 asset, uint256 oraclePrice) internal {
+    /// @dev Partial-or-full liquidation. The liquidator names `repayAmount`; it is
+    ///      clamped to the close-factor cap (50% of debt while `hf` is above
+    ///      {CLOSE_FACTOR_HF_THRESHOLD}, 100% at or below it). Collateral seized is
+    ///      bonus-based and must fit within the position's remaining collateral —
+    ///      the liquidator is expected to size `repayAmount` so the seize is
+    ///      coverable, and an over-seize reverts rather than letting them overpay.
+    ///      A full repay closes the position (residual collateral returned to the
+    ///      borrower); a partial repay reduces principal + collateral and leaves
+    ///      the position open. When a partial repay consumes all collateral, the
+    ///      leftover debt becomes a zero-collateral residual for {absorbBadDebt}.
+    function _liquidate(address borrower, bytes32 asset, uint256 repayAmount, uint256 oraclePrice) internal {
         Position storage p = _positions[borrower][asset];
         uint256 currentDebt = LendingMath.scaledToActual(p.principal, _index);
         uint256 hf = LendingMath.healthFactor(
@@ -288,23 +319,92 @@ contract UserBorrowManager is IUserBorrowManager, ReentrancyGuard {
         );
         if (hf >= PRECISION) revert NotLiquidatable(hf);
 
-        // Pull full debt from liquidator, repay Aave.
-        IERC20(stablecoin).safeTransferFrom(msg.sender, address(this), currentDebt);
-        _repayAaveAndSweep(currentDebt);
+        // Close factor: cap a single liquidation while the position is only
+        // marginally unhealthy; lift the cap once it is deeply underwater.
+        uint256 maxRepay = hf > CLOSE_FACTOR_HF_THRESHOLD ? currentDebt.mulDiv(liquidationCloseFactorBps, BPS) : currentDebt;
+        if (repayAmount > maxRepay) repayAmount = maxRepay;
 
-        // Compute seize amount in eToken units; cap at remaining collateral.
-        uint256 target = LendingMath.seizeAmount(currentDebt, oraclePrice, liquidationBonusBps, _stableDecimals);
-        uint256 actualSeize = Math.min(target, p.eTokenCollateral);
-        uint256 residual = p.eTokenCollateral - actualSeize;
+        // Bonus-based seize; must be coverable by remaining collateral.
+        uint256 seize = LendingMath.seizeAmount(repayAmount, oraclePrice, liquidationBonusBps, _stableDecimals);
+        if (seize > p.eTokenCollateral) revert SeizeExceedsCollateral(seize, p.eTokenCollateral);
 
+        // Pull the repay from the liquidator, forward to Aave.
+        IERC20(stablecoin).safeTransferFrom(msg.sender, address(this), repayAmount);
+        _repayAaveAndSweep(repayAmount);
+
+        address eToken = _resolveActiveEToken(asset);
+        uint256 returnedToBorrower;
+        if (repayAmount == currentDebt) {
+            // Full close — release any collateral left after the seize.
+            returnedToBorrower = p.eTokenCollateral - seize;
+            _totalScaledDebt -= p.principal;
+            delete _positions[borrower][asset];
+            if (returnedToBorrower > 0) IERC20(eToken).safeTransfer(borrower, returnedToBorrower);
+        } else {
+            // Partial — shrink principal + collateral, leave the position open.
+            uint256 scaledRepay = LendingMath.actualToScaled(repayAmount, _index);
+            if (scaledRepay > p.principal) scaledRepay = p.principal;
+            p.principal -= scaledRepay;
+            p.eTokenCollateral -= seize;
+            p.interestIndex = _index;
+            _totalScaledDebt -= scaledRepay;
+        }
+
+        if (seize > 0) IERC20(eToken).safeTransfer(msg.sender, seize);
+
+        emit Liquidated(borrower, asset, msg.sender, repayAmount, seize, returnedToBorrower);
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Bad debt
+    // ──────────────────────────────────────────────────────────
+
+    /// @inheritdoc IUserBorrowManager
+    /// @dev Bad debt only arises once a position's collateral is fully consumed
+    ///      by liquidations, leaving uncollateralized book debt that still backs
+    ///      a live Aave loan on the vault. The admin (acting for the treasury)
+    ///      fronts the full residual stablecoin to repay that Aave loan and clear
+    ///      the book debt; `absorbAmount` decides how the realized loss splits:
+    ///      the treasury eats `absorbAmount`, and the remainder is reimbursed to
+    ///      the caller in vault collateral (aToken) — socializing it to LPs via
+    ///      the now-smaller collateral base. The aToken slice is unlocked because
+    ///      the matching Aave debt is repaid first.
+    function absorbBadDebt(
+        address borrower,
+        bytes32 asset,
+        uint256 absorbAmount,
+        bytes calldata collateralPriceData
+    ) external payable nonReentrant onlyAdmin {
+        Position storage p = _positions[borrower][asset];
+        if (p.principal == 0) revert NoPosition(borrower, asset);
+        if (p.eTokenCollateral != 0) revert PositionStillCollateralized(p.eTokenCollateral);
+
+        _accrue();
+        uint256 residual = LendingMath.scaledToActual(p.principal, _index);
+        if (absorbAmount > residual) absorbAmount = residual;
+
+        // Caller fronts the full residual; repay the vault's Aave loan and clear
+        // the book debt before touching collateral.
+        IERC20(stablecoin).safeTransferFrom(msg.sender, address(this), residual);
+        _repayAaveAndSweep(residual);
         _totalScaledDebt -= p.principal;
         delete _positions[borrower][asset];
 
-        address eToken = _resolveActiveEToken(asset);
-        if (actualSeize > 0) IERC20(eToken).safeTransfer(msg.sender, actualSeize);
-        if (residual > 0) IERC20(eToken).safeTransfer(borrower, residual);
+        // LP-socialized slice: reimburse the caller in vault collateral priced
+        // off the vault's collateral oracle (aToken ≈ underlying 1:1).
+        uint256 collateralReleased;
+        uint256 lpLoss = residual - absorbAmount;
+        if (lpLoss > 0) {
+            bytes32 collatAsset = IOwnVault(vault).collateralOracleAsset();
+            uint256 collateralPrice = _verifyPrice(collatAsset, collateralPriceData);
+            uint256 lpLossUSD = LendingMath.stableToUSD(lpLoss, _stableDecimals);
+            collateralReleased = lpLossUSD.mulDiv(PRECISION, collateralPrice);
+            if (collateralReleased > 0) {
+                IOwnVault(vault).releaseCollateralForBadDebt(msg.sender, collateralReleased);
+            }
+        }
 
-        emit Liquidated(borrower, asset, msg.sender, currentDebt, actualSeize, residual);
+        emit BadDebtAbsorbed(borrower, asset, msg.sender, residual, absorbAmount, collateralReleased);
     }
 
     // ──────────────────────────────────────────────────────────
@@ -382,6 +482,16 @@ contract UserBorrowManager is IUserBorrowManager, ReentrancyGuard {
         uint256 rateBps
     ) external onlyAdmin {
         minAaveBorrowRateBps = rateBps;
+    }
+
+    /// @notice Set the liquidation close factor (BPS): the max fraction of a
+    ///         position's debt one liquidation may repay while its health factor
+    ///         is above {CLOSE_FACTOR_HF_THRESHOLD}. Must be in `(0, BPS]`.
+    function setLiquidationCloseFactorBps(
+        uint256 closeFactorBps
+    ) external onlyAdmin {
+        if (closeFactorBps == 0 || closeFactorBps > BPS) revert InvalidLiquidationConfig();
+        liquidationCloseFactorBps = closeFactorBps;
     }
 
     /// @inheritdoc IUserBorrowManager

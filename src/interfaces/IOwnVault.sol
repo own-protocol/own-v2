@@ -48,6 +48,7 @@ interface IOwnVault is IERC4626 {
     event CollateralValuationUpdated(uint256 collateralValueUSD, uint256 price);
     event LendingEnabled(address indexed userBorrowManager, address indexed debtToken);
     event AaveCollateralEnabled(address indexed pool, address indexed underlying);
+    event CollateralReleasedForBadDebt(address indexed to, uint256 amount);
 
     // ──────────────────────────────────────────────────────────
     //  Errors
@@ -85,6 +86,7 @@ interface IOwnVault is IERC4626 {
     error DepositApprovalNotRequired();
     error DepositApprovalRequired();
     error LendingAlreadyEnabled();
+    error OnlyBorrowManager();
 
     // ──────────────────────────────────────────────────────────
     //  VM binding
@@ -346,6 +348,15 @@ interface IOwnVault is IERC4626 {
     /// @param to     Recipient address.
     /// @param amount Amount of collateral to release.
     function releaseCollateral(address to, uint256 amount) external;
+
+    /// @notice Release collateral (aToken) to cover bad debt the borrow manager
+    ///         could not recover from a liquidated position. Only callable by the
+    ///         bound borrow manager, which must have already repaid the matching
+    ///         Aave debt so the slice is unlocked. Shrinks totalAssets, so the
+    ///         loss is socialized to LPs via a lower share price.
+    /// @param to     Recipient (the caller that fronted the residual repayment).
+    /// @param amount aToken amount to release.
+    function releaseCollateralForBadDebt(address to, uint256 amount) external;
 
     // ──────────────────────────────────────────────────────────
     //  Supported assets (VM-controlled)

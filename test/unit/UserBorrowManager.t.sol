@@ -403,26 +403,26 @@ contract UserBorrowManagerTest is BaseTest {
     function test_liquidate_underwater_fullCloseWithBonus() public {
         (uint256 eAmt, uint256 stable) = _openTypical(Actors.MINTER1);
 
-        // Crash price so position is underwater. health < 1 when
-        // collateral * threshold (80%) < debt. At LTV 40% (start) we need price
-        // drop > ~50%. Use $100 → collateral = $10k * 0.8 = $8k vs $10k debt.
-        uint256 crashPx = 100e18;
+        // Crash price so the position is deeply underwater (hf < 0.95 → full
+        // close allowed) yet the bonus-based seize still fits the collateral.
+        // At $105: hf = 100 * 105 * 0.8 / 10000 = 0.84. Seize = $10k * 1.05 / $105
+        // = 100 eTSLA exactly = available collateral, zero residual.
+        uint256 crashPx = 105e18;
         _setOraclePrice(ASSET, crashPx);
 
         // Liquidator pays full debt.
         usdc.mint(Actors.LIQUIDATOR, stable);
         vm.startPrank(Actors.LIQUIDATOR);
         usdc.approve(address(borrowManager), stable);
-        borrowManager.liquidate(Actors.MINTER1, ASSET, _priceData(crashPx));
+        borrowManager.liquidate(Actors.MINTER1, ASSET, stable, _priceData(crashPx));
         vm.stopPrank();
 
         // Position closed.
         IUserBorrowManager.Position memory pos = borrowManager.positionOf(Actors.MINTER1, ASSET);
         assertEq(pos.principal, 0);
 
-        // Liquidator received eTokens. Target = $10k * 1.05 / $100 = 105 eTSLA.
-        // Available = 100 eTSLA → cap kicks in, liquidator gets 100. Borrower gets 0 residual.
-        assertEq(eTSLA.balanceOf(Actors.LIQUIDATOR), eAmt, "liquidator gets capped collateral");
+        // Liquidator received all 100 eTSLA; borrower gets 0 residual.
+        assertEq(eTSLA.balanceOf(Actors.LIQUIDATOR), eAmt, "liquidator gets seized collateral");
         assertEq(eTSLA.balanceOf(Actors.MINTER1), 0, "no residual to borrower");
         assertEq(aavePool.debtOf(address(vault), address(usdc)), 0, "Aave debt cleared");
     }
@@ -435,7 +435,7 @@ contract UserBorrowManagerTest is BaseTest {
         vm.startPrank(Actors.LIQUIDATOR);
         usdc.approve(address(borrowManager), 10_000e6);
         vm.expectRevert();
-        borrowManager.liquidate(Actors.MINTER1, ASSET, _priceData(TSLA_PX));
+        borrowManager.liquidate(Actors.MINTER1, ASSET, 10_000e6, _priceData(TSLA_PX));
         vm.stopPrank();
     }
 
@@ -450,21 +450,107 @@ contract UserBorrowManagerTest is BaseTest {
         borrowManager.borrow(ASSET, eAmt, stable, _priceData(TSLA_PX));
         vm.stopPrank();
 
-        // Crash to $62.50. Coll value = $12.5k. threshold 80% → adjusted $10k vs debt $10k → hf = 1.0e18.
-        // Drop further to $60: adjusted = 200e18 * 60 * 0.8 / 1e18 = $9600 < $10k → liquidatable.
-        uint256 crashPx = 60e18;
+        // Crash to $59 so hf < 0.95 (full close allowed): adjusted =
+        // 200 * 59 * 0.8 = $9440 vs $10k debt → hf = 0.944. Seize = $10k * 1.05
+        // / $59 ≈ 178 eTSLA < 200 available → residual ~22 returned to borrower.
+        uint256 crashPx = 59e18;
         _setOraclePrice(ASSET, crashPx);
 
-        // Target seize = $10k * 1.05 / $60 = 175 eTSLA. Available = 200 → seize 175, residual 25 to borrower.
         usdc.mint(Actors.LIQUIDATOR, stable);
         vm.startPrank(Actors.LIQUIDATOR);
         usdc.approve(address(borrowManager), stable);
-        borrowManager.liquidate(Actors.MINTER1, ASSET, _priceData(crashPx));
+        borrowManager.liquidate(Actors.MINTER1, ASSET, stable, _priceData(crashPx));
         vm.stopPrank();
 
         uint256 expectedSeize = uint256(10_000e18) * (BPS + 500) / BPS * PRECISION / crashPx;
         assertApproxEqAbs(eTSLA.balanceOf(Actors.LIQUIDATOR), expectedSeize, 2);
         assertApproxEqAbs(eTSLA.balanceOf(Actors.MINTER1), eAmt - expectedSeize, 2);
+    }
+
+    /// @dev A position that is only marginally unhealthy (hf > 0.95) can be
+    ///      repaid at most 50% in a single liquidation; the rest stays open.
+    function test_liquidate_closeFactorCapsRepayAtHalf() public {
+        uint256 eAmt = 200e18;
+        uint256 stable = 10_000e6;
+        _giveTSLA(Actors.MINTER1, eAmt);
+        vm.startPrank(Actors.MINTER1);
+        eTSLA.approve(address(borrowManager), eAmt);
+        borrowManager.borrow(ASSET, eAmt, stable, _priceData(TSLA_PX));
+        vm.stopPrank();
+
+        // Crash to $60: hf = 200 * 60 * 0.8 / 10000 = 0.96 > 0.95 → close factor
+        // caps a single liquidation at 50% of the $10k debt = $5k.
+        uint256 crashPx = 60e18;
+        _setOraclePrice(ASSET, crashPx);
+
+        // Liquidator tries to repay the full debt but only $5k is pulled.
+        usdc.mint(Actors.LIQUIDATOR, stable);
+        vm.startPrank(Actors.LIQUIDATOR);
+        usdc.approve(address(borrowManager), stable);
+        borrowManager.liquidate(Actors.MINTER1, ASSET, stable, _priceData(crashPx));
+        vm.stopPrank();
+
+        // Only $5k pulled from the liquidator; position remains open at ~$5k.
+        assertEq(usdc.balanceOf(Actors.LIQUIDATOR), stable - 5000e6, "only half repaid");
+        IUserBorrowManager.Position memory pos = borrowManager.positionOf(Actors.MINTER1, ASSET);
+        assertEq(pos.principal, 5000e6, "half debt remains");
+
+        // Seize = $5k * 1.05 / $60 = 87.5 eTSLA; collateral shrinks to 112.5.
+        uint256 expectedSeize = uint256(5000e18) * (BPS + 500) / BPS * PRECISION / crashPx;
+        assertApproxEqAbs(eTSLA.balanceOf(Actors.LIQUIDATOR), expectedSeize, 2);
+        assertApproxEqAbs(pos.eTokenCollateral, eAmt - expectedSeize, 2);
+    }
+
+    /// @dev When the position is deeply underwater (hf <= 0.95) the close factor
+    ///      lifts, but the liquidator may still choose to repay only part.
+    function test_liquidate_partialByLiquidatorChoice() public {
+        uint256 eAmt = 200e18;
+        uint256 stable = 10_000e6;
+        _giveTSLA(Actors.MINTER1, eAmt);
+        vm.startPrank(Actors.MINTER1);
+        eTSLA.approve(address(borrowManager), eAmt);
+        borrowManager.borrow(ASSET, eAmt, stable, _priceData(TSLA_PX));
+        vm.stopPrank();
+
+        // Crash to $59: hf = 0.944 < 0.95 → full close allowed, but the
+        // liquidator opts to repay only $2k.
+        uint256 crashPx = 59e18;
+        _setOraclePrice(ASSET, crashPx);
+
+        uint256 repay = 2_000e6;
+        usdc.mint(Actors.LIQUIDATOR, repay);
+        vm.startPrank(Actors.LIQUIDATOR);
+        usdc.approve(address(borrowManager), repay);
+        borrowManager.liquidate(Actors.MINTER1, ASSET, repay, _priceData(crashPx));
+        vm.stopPrank();
+
+        IUserBorrowManager.Position memory pos = borrowManager.positionOf(Actors.MINTER1, ASSET);
+        assertEq(pos.principal, stable - repay, "debt reduced by repay");
+
+        uint256 expectedSeize = uint256(2_000e18) * (BPS + 500) / BPS * PRECISION / crashPx;
+        assertApproxEqAbs(eTSLA.balanceOf(Actors.LIQUIDATOR), expectedSeize, 2);
+        assertApproxEqAbs(pos.eTokenCollateral, eAmt - expectedSeize, 2);
+        assertEq(eTSLA.balanceOf(Actors.MINTER1), 0, "borrower gets nothing on partial");
+    }
+
+    /// @dev A repay whose bonus-based seize exceeds the remaining collateral
+    ///      reverts rather than letting the liquidator overpay for less.
+    function test_liquidate_overSeizeReverts() public {
+        (, uint256 stable) = _openTypical(Actors.MINTER1);
+
+        // Crash to $100: hf = 0.8 < 0.95 → full close allowed. Seize for the
+        // full $10k = $10k * 1.05 / $100 = 105 eTSLA > 100 available → revert.
+        uint256 crashPx = 100e18;
+        _setOraclePrice(ASSET, crashPx);
+
+        usdc.mint(Actors.LIQUIDATOR, stable);
+        vm.startPrank(Actors.LIQUIDATOR);
+        usdc.approve(address(borrowManager), stable);
+        vm.expectRevert(
+            abi.encodeWithSelector(IUserBorrowManager.SeizeExceedsCollateral.selector, 105e18, 100e18)
+        );
+        borrowManager.liquidate(Actors.MINTER1, ASSET, stable, _priceData(crashPx));
+        vm.stopPrank();
     }
 
     // ──────────────────────────────────────────────────────────
@@ -559,5 +645,99 @@ contract UserBorrowManagerTest is BaseTest {
         vm.prank(Actors.ADMIN);
         borrowManager.setBorrowLtvBps(6500);
         assertEq(borrowManager.borrowLtvBps(), 6500);
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  absorbBadDebt
+    // ──────────────────────────────────────────────────────────
+
+    /// @dev Drive MINTER1 into a zero-collateral residual: open $10k against 100
+    ///      eTSLA, crash to $84, then let the liquidator repay $8k — which seizes
+    ///      exactly the 100 eTSLA (all collateral) while leaving $2k of
+    ///      uncollateralized book debt and a matching $2k Aave loan on the vault.
+    function _stripToBadDebt() internal returns (uint256 residual) {
+        _openTypical(Actors.MINTER1);
+
+        uint256 crashPx = 84e18; // seize for $8k repay = $8k*1.05/$84 = 100 eTSLA exactly.
+        _setOraclePrice(ASSET, crashPx);
+
+        uint256 repay = 8_000e6;
+        usdc.mint(Actors.LIQUIDATOR, repay);
+        vm.startPrank(Actors.LIQUIDATOR);
+        usdc.approve(address(borrowManager), repay);
+        borrowManager.liquidate(Actors.MINTER1, ASSET, repay, _priceData(crashPx));
+        vm.stopPrank();
+
+        assertEq(borrowManager.positionOf(Actors.MINTER1, ASSET).eTokenCollateral, 0, "collateral stripped");
+        residual = borrowManager.debtOf(Actors.MINTER1, ASSET);
+        assertEq(residual, 2_000e6, "residual book debt");
+        assertEq(aavePool.debtOf(address(vault), address(usdc)), 2_000e6, "residual aave debt");
+    }
+
+    function test_absorbBadDebt_fullAbsorb_treasuryEatsAll() public {
+        uint256 residual = _stripToBadDebt();
+        uint256 vaultAwstBefore = awstETH.balanceOf(address(vault));
+
+        usdc.mint(Actors.ADMIN, residual);
+        vm.startPrank(Actors.ADMIN);
+        usdc.approve(address(borrowManager), residual);
+        borrowManager.absorbBadDebt(Actors.MINTER1, ASSET, residual, _priceData(4000e18));
+        vm.stopPrank();
+
+        // Position + Aave debt cleared.
+        assertEq(borrowManager.positionOf(Actors.MINTER1, ASSET).principal, 0);
+        assertEq(aavePool.debtOf(address(vault), address(usdc)), 0, "aave debt cleared");
+        // Caller absorbed everything: no collateral released, LPs untouched.
+        assertEq(awstETH.balanceOf(Actors.ADMIN), 0, "no collateral to caller");
+        assertEq(awstETH.balanceOf(address(vault)), vaultAwstBefore, "LP collateral untouched");
+        assertEq(usdc.balanceOf(Actors.ADMIN), 0, "admin fronted the full residual");
+    }
+
+    function test_absorbBadDebt_zeroAbsorb_lpsEatAll() public {
+        uint256 residual = _stripToBadDebt();
+        uint256 vaultAwstBefore = awstETH.balanceOf(address(vault));
+
+        usdc.mint(Actors.ADMIN, residual);
+        vm.startPrank(Actors.ADMIN);
+        usdc.approve(address(borrowManager), residual);
+        borrowManager.absorbBadDebt(Actors.MINTER1, ASSET, 0, _priceData(4000e18));
+        vm.stopPrank();
+
+        assertEq(aavePool.debtOf(address(vault), address(usdc)), 0, "aave debt cleared");
+        // LPs eat the whole $2k loss: caller reimbursed $2k of awstETH at $4k = 0.5e18.
+        uint256 expectedAwst = uint256(2_000e18) * PRECISION / 4000e18;
+        assertEq(awstETH.balanceOf(Actors.ADMIN), expectedAwst, "caller reimbursed in awstETH");
+        assertEq(awstETH.balanceOf(address(vault)), vaultAwstBefore - expectedAwst, "vault collateral shrank");
+    }
+
+    function test_absorbBadDebt_partial_splitsLoss() public {
+        uint256 residual = _stripToBadDebt(); // $2000
+        uint256 absorb = 1_000e6; // treasury eats $1k, LPs eat $1k.
+
+        usdc.mint(Actors.ADMIN, residual);
+        vm.startPrank(Actors.ADMIN);
+        usdc.approve(address(borrowManager), residual);
+        borrowManager.absorbBadDebt(Actors.MINTER1, ASSET, absorb, _priceData(4000e18));
+        vm.stopPrank();
+
+        assertEq(aavePool.debtOf(address(vault), address(usdc)), 0, "aave debt cleared");
+        // LP slice $1k → 0.25e18 awstETH back; admin still fronted the full residual.
+        uint256 expectedAwst = uint256(1_000e18) * PRECISION / 4000e18;
+        assertEq(awstETH.balanceOf(Actors.ADMIN), expectedAwst, "caller reimbursed LP slice only");
+        assertEq(usdc.balanceOf(Actors.ADMIN), 0, "admin fronted the full residual");
+    }
+
+    function test_absorbBadDebt_stillCollateralized_reverts() public {
+        _openTypical(Actors.MINTER1); // healthy, full collateral.
+        vm.prank(Actors.ADMIN);
+        vm.expectRevert(abi.encodeWithSelector(IUserBorrowManager.PositionStillCollateralized.selector, 100e18));
+        borrowManager.absorbBadDebt(Actors.MINTER1, ASSET, 0, _priceData(4000e18));
+    }
+
+    function test_absorbBadDebt_onlyAdmin() public {
+        _stripToBadDebt();
+        vm.prank(Actors.ATTACKER);
+        vm.expectRevert(IUserBorrowManager.OnlyAdmin.selector);
+        borrowManager.absorbBadDebt(Actors.MINTER1, ASSET, 0, _priceData(4000e18));
     }
 }

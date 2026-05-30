@@ -162,18 +162,21 @@ contract BorrowAndLiquidateFlowTest is BaseTest {
         uint256 debtAfterTime = borrowManager.debtOf(Actors.MINTER1, ASSET);
         assertGt(debtAfterTime, stable, "debt grew with time");
 
-        // Price crashes — make the position liquidatable. Threshold 80%.
-        // hf = collateral * px * 0.8 / debt; need < 1.0e18.
-        // With 100 eTSLA collateral and ~10.05k debt, drop px to $90 → hf ≈ 0.71.
-        uint256 crashPx = 90e18;
+        // Price crashes — make the position liquidatable (threshold 80%). The
+        // new liquidation guard reverts when the bonus-based seize exceeds the
+        // collateral, so pick a crash price where seizing for the full debt
+        // exactly clears the 100 eTSLA collateral (full close, zero residual).
+        // seize = debtUSD * (1 + bonus) / px == eAmt  →  px = debtUSD * 1.05 / eAmt.
+        uint256 liqDebt = borrowManager.debtOf(Actors.MINTER1, ASSET);
+        uint256 withBonusUSD = (liqDebt * 1e12) * (BPS + 500) / BPS; // 6-dec USDC → 18-dec USD
+        uint256 crashPx = withBonusUSD * PRECISION / eAmt + 1; // round px up so seize <= eAmt (no revert)
         _setOraclePrice(ASSET, crashPx);
 
-        // Liquidator pulls funds, repays full debt, seizes capped collateral.
-        uint256 liqDebt = borrowManager.debtOf(Actors.MINTER1, ASSET);
+        // Liquidator pulls funds, repays full debt, seizes the collateral.
         usdc.mint(Actors.LIQUIDATOR, liqDebt);
         vm.startPrank(Actors.LIQUIDATOR);
         usdc.approve(address(borrowManager), liqDebt);
-        borrowManager.liquidate(Actors.MINTER1, ASSET, _priceData(crashPx));
+        borrowManager.liquidate(Actors.MINTER1, ASSET, liqDebt, _priceData(crashPx));
         vm.stopPrank();
 
         // Position closed.
@@ -183,11 +186,9 @@ contract BorrowAndLiquidateFlowTest is BaseTest {
         // Aave debt cleared on the vault.
         assertEq(aavePool.debtOf(address(vault), address(usdc)), 0);
 
-        // Liquidator received eTokens + dividend bucket via pass-through redirect.
-        // (Their eToken share = min(targetSeize, 100 eTSLA) — at $90 with 5% bonus,
-        // target = 10.05k * 1.05 / 90 ≈ 117 → capped at 100.)
-        assertEq(eTSLA.balanceOf(Actors.LIQUIDATOR), eAmt, "liquidator gets all collateral");
-        assertEq(eTSLA.balanceOf(Actors.MINTER1), 0, "no residual to borrower");
+        // Liquidator received essentially all the collateral; borrower ~0 residual.
+        assertApproxEqAbs(eTSLA.balanceOf(Actors.LIQUIDATOR), eAmt, 1, "liquidator gets all collateral");
+        assertApproxEqAbs(eTSLA.balanceOf(Actors.MINTER1), 0, 1, "no residual to borrower");
 
         // Dividends from the borrow window followed the eTokens to the liquidator.
         assertApproxEqAbs(eTSLA.claimableRewards(Actors.LIQUIDATOR), reward, 1);
