@@ -2,13 +2,12 @@
 
 ## Overview
 
-Replace plain WETH as vault collateral with wstETH deposited into Aave V3 via a periphery router. OwnVault holds awstETH (Aave's receipt token for wstETH) as its collateral type — unchanged otherwise. The vault's Aave borrowing power is delegated at deployment to a periphery AaveBorrowManager, which handles all lending/borrowing logic without modifying the core vault.
+Replace plain WETH as vault collateral with wstETH deposited into Aave V3 via a periphery router. OwnVault holds awstETH (Aave's receipt token for wstETH) as its collateral type — unchanged otherwise. The vault's Aave borrowing power is delegated to a periphery UserBorrowManager (one per vault, deployed via BorrowManagerFactory), which handles all lending/borrowing logic without modifying the core vault.
 
 **Core insight**: With a 2x collateral ratio for eToken issuance, the vault's Aave LTV stays at a conservative 30-35% — well below the 79.5% liquidation threshold. The same collateral simultaneously backs eTokens and secures an Aave borrow position, but the overcollateralization makes this safe.
 
-**Two key features on top of base yield:**
-1. **LP direct minting** — LPs can borrow stablecoins from their share of the vault's Aave capacity and mint eTokens directly, without needing additional capital.
-2. **User looping** — eToken holders can borrow stablecoins against their eTokens, buy more eTokens, borrow again, and repeat — building leveraged RWA exposure.
+**Key feature on top of base yield:**
+- **User looping** — eToken holders can borrow stablecoins against their eTokens, buy more eTokens, borrow again, and repeat — building leveraged RWA exposure.
 
 ---
 
@@ -51,42 +50,19 @@ Minter places order via OwnMarket → VM claims → VM confirms
 
 eToken issuance works exactly as today. The collateral type changes from WETH to awstETH but the flow is identical.
 
-### LP Direct Minting (Borrow-to-Mint)
+### Stablecoin Lending to eToken Holders
 
-LPs can use their proportional share of the vault's Aave borrowing power to borrow stablecoins and mint eTokens directly — no additional capital needed.
-
-```
-LP has vault shares (proportional claim on vault's Aave borrowing power)
-  → LP calls borrowAndMint(asset, borrowAmount)
-  → Vault borrows stablecoins from Aave (against pooled wstETH)
-  → Stablecoins flow into OwnMarket.placeMintOrder() on LP's behalf
-  → VM claims and confirms → eTokens minted to LP
-  → LP's vault shares become encumbered (debt tracked per-LP)
-```
-
-**Per-LP debt tracking**: Each LP's borrowing is tracked individually against their vault shares. An LP's max borrow = their share of vault assets * maxBorrowRatio. LP cannot withdraw encumbered shares until debt is repaid.
+Borrowing runs through a single periphery contract, UserBorrowManager, that holds the vault's delegated Aave credit. eToken holders borrow stablecoins against their eTokens.
 
 ```
-LP share value:       $100 (their portion of vault's wstETH)
-Max borrow:           $35  (35% of share value)
-LP borrows:           $20 USDC → mints eTSLA
-LP's encumbered:      $20 debt against $100 shares
-LP's withdrawable:    reduced proportionally until debt repaid
-```
-
-**LP repayment/exit**: LP repays stablecoin debt → vault repays Aave → shares become unencumbered → LP can withdraw freely.
-
-### Stablecoin Lending to eToken Holders (Integrated)
-
-Borrowing is integrated directly into the vault — no separate lending contract. eToken holders (including LPs who minted via borrow-to-mint) can borrow stablecoins against their eTokens.
-
-```
-Vault borrows stablecoins from Aave (up to 70% of eToken exposure value)
-  → Vault lends stablecoins to eToken holders
+UserBorrowManager borrows stablecoins from Aave on behalf of the vault
+  → manager lends stablecoins to eToken holders
   → eToken holders post their eTokens as collateral (70% LTV)
   → Borrowers pay: Aave borrow rate + variable premium
   → Variable premium increases with lending utilization (auto-recovery)
 ```
+
+The manager is self-contained: it enforces its own vault-wide debt cap (`maxDebtUSD` = `collateralValueUSD * targetLtvBps`), computes `utilizationBps` from its own outstanding debt, and reads the live Aave borrow rate (`liveAaveRateBps`) directly from the pool's USDC reserve.
 
 ### User Looping (Leveraged eToken Exposure)
 
@@ -144,11 +120,10 @@ Borrower underwater (eToken price drops)
 
 ```
 LP requests withdrawal
-  → If LP has outstanding debt: must repay first (or get liquidated)
-  → If vault has Aave debt from other borrowers: vault may need to recall loans
+  → If vault has Aave debt from eToken borrowers: vault may need to recall loans
   → Variable premium spikes → incentivizes borrower repayment
-  → Or: vault liquidates underwater borrowers → recovers stablecoins
-  → Vault repays Aave → withdraws wstETH from Aave → returns to LP
+  → Or: manager liquidates underwater borrowers → recovers stablecoins
+  → Manager repays Aave → withdraws wstETH from Aave → returns to LP
 ```
 
 ---
@@ -310,7 +285,7 @@ This creates a natural stabilization loop under stress.
 | Accept awstETH (transferred) | Yes | Yes — but vault didn't deposit, needs `setUserUseReserveAsCollateral` | Minor | Low |
 | AaveRouter deposits on behalf of vault | Yes | Yes — vault IS the Aave depositor via `onBehalfOf` | One function | Medium |
 
-**This design uses the third approach.** AaveRouter calls `pool.supply(onBehalfOf=vault)`, making the vault the Aave depositor with full borrowing power. The only OwnVault change is an `enableLending(address)` function — protocol admin opts in vaults with Aave-compatible collateral by delegating borrowing power to AaveBorrowManager. stataTokens are not used because they sacrifice borrowing power — and we need it.
+**This design uses the third approach.** AaveRouter calls `pool.supply(onBehalfOf=vault)`, making the vault the Aave depositor with full borrowing power. The only OwnVault change is an `enableLending(manager, debtToken)` function — protocol admin opts in vaults with Aave-compatible collateral by delegating borrowing power to the vault's UserBorrowManager. stataTokens are not used because they sacrifice borrowing power — and we need it.
 
 ---
 
@@ -344,29 +319,30 @@ If Own protocol becomes a significant share of Aave Base wstETH pool:
 
 ### Design Principle: Core + Periphery (OwnVault Unchanged)
 
-OwnVault stays as-is — it accepts awstETH as just another ERC-20 collateral type. All Aave-specific logic lives in periphery contracts. The vault's Aave borrowing power is delegated to a stateful periphery contract (AaveBorrowManager) via a one-time `approveDelegation(type(uint256).max)` at deployment.
+OwnVault stays as-is — it accepts awstETH as just another ERC-20 collateral type. All Aave-specific logic lives in periphery contracts. The vault's Aave borrowing power is delegated to a stateful periphery contract (UserBorrowManager) via `approveDelegation(type(uint256).max)` when lending is enabled.
 
-**Why this works**: The vault holds awstETH → has Aave borrowing power → delegates it to AaveBorrowManager at deployment. AaveBorrowManager borrows from Aave (debt accrues to vault's Aave position), manages per-user lending state, and handles liquidations. Aave's own LTV limits enforce the actual borrowing cap regardless of the unlimited delegation.
+**Why this works**: The vault holds awstETH → has Aave borrowing power → delegates it to its UserBorrowManager. The manager borrows from Aave (debt accrues to vault's Aave position), manages per-user lending state, enforces its own vault-wide debt cap, and handles liquidations. Aave's own LTV limits enforce a hard ceiling on top of the manager's cap.
 
 ### Credit Delegation Setup (Opt-In via enableLending)
 
-Not all vaults hold Aave-compatible collateral. Lending is opt-in: if a vault's collateral is a debt-bearing token (awstETH), the protocol admin enables lending by calling `enableLending()` on that vault.
+Not all vaults hold Aave-compatible collateral. Lending is opt-in: if a vault's collateral is a debt-bearing token (awstETH), the protocol admin enables lending by calling `enableLending()` on that vault, naming the manager and its Aave debt token.
 
 ```
 Deployment:
   1. VaultFactory.createVault(awstETH, ...) → standard OwnVault, no Aave awareness
-  2. Deploy AaveBorrowManager(aavePool, ...)
-  3. Protocol admin calls vault.enableLending(borrowManager)
+  2. BorrowManagerFactory.createBorrowManager(vault, stablecoin, debtToken, targetLtvBps, rateParams)
+     → deploys the vault's single UserBorrowManager (1:1 binding)
+  3. Protocol admin calls vault.enableLending(userBorrowManager, debtToken)
      → Vault internally calls:
-        IDebtToken(debtToken).approveDelegation(borrowManager, type(uint256).max)
-     → Aave LTV enforces actual borrowing limits regardless
+        IDebtToken(debtToken).approveDelegation(userBorrowManager, type(uint256).max)
+     → Aave LTV enforces a hard borrowing limit on top of the manager's cap
 ```
 
 One function added to OwnVault — callable by protocol admin, only when collateral supports it:
 
 ```solidity
-function enableLending(address borrowManager) external onlyAdmin {
-    IDebtToken(debtToken).approveDelegation(borrowManager, type(uint256).max);
+function enableLending(address userBorrowManager, address debtToken) external onlyAdmin {
+    IDebtToken(debtToken).approveDelegation(userBorrowManager, type(uint256).max);
 }
 ```
 
@@ -377,13 +353,15 @@ Vaults with non-Aave collateral (USDC, plain WETH) simply never call this — no
 ```
 src/
 ├── core/
-│   └── OwnVault.sol              -- EXISTING, one function added: enableLending(address) onlyAdmin
+│   ├── OwnVault.sol              -- EXISTING, one function added: enableLending(manager, debtToken) onlyAdmin
+│   ├── UserBorrowManager.sol     -- Stateful: borrows via delegation, per-user lending, liquidation, self-contained debt cap
+│   └── BorrowManagerFactory.sol  -- Deploys one UserBorrowManager per vault (1:1 binding)
 ├── periphery/
 │   ├── AaveRouter.sol            -- Stateless: wstETH → Aave deposit → awstETH → OwnVault
-│   ├── AaveBorrowManager.sol     -- Stateful: borrows via delegation, per-user lending, liquidation
 │   └── LoopRouter.sol            -- Stateless: batches N mint+borrow loops into single tx
 ├── interfaces/
-│   ├── IAaveBorrowManager.sol
+│   ├── IUserBorrowManager.sol
+│   ├── IBorrowManagerFactory.sol
 │   ├── ILoopRouter.sol
 │   └── IAaveV3Pool.sol           -- Minimal Aave V3 Pool interface
 └── libraries/
@@ -408,41 +386,42 @@ Withdraw:
     → User receives wstETH
 ```
 
-### AaveBorrowManager (Periphery — Stateful)
+### UserBorrowManager (Core — Stateful)
 
-Manages all borrowing/lending using delegated credit from OwnVault. This is the only stateful periphery contract.
-
-**LP direct minting (borrow-to-mint):**
-- `borrowAndMint(vault, asset, stablecoinAmount, maxPrice, expiry)`: borrows from Aave via delegation → places mint order via OwnMarket on LP's behalf
-- `repayLPDebt(vault, amount)`: LP repays stablecoin debt → BorrowManager repays Aave
-- `getLPDebt(lp)`: LP's outstanding debt
-- `getLPMaxBorrow(vault, lp)`: LP's remaining borrow capacity (share value * maxBorrowRatio - existing debt)
+Manages all borrowing/lending using delegated credit from OwnVault. One manager is bound 1:1 to a vault via BorrowManagerFactory. It is self-contained — it owns the vault-wide debt cap, utilization tracking, and live Aave rate read directly.
 
 **eToken borrowing (for all users — enables looping):**
-- `borrowAgainstEToken(eTokenAsset, eTokenAmount, stablecoinAmount)`: user deposits eTokens as collateral → BorrowManager borrows from Aave via delegation → sends stablecoins to user
-- `repay(amount)`: user repays → BorrowManager repays Aave → eToken collateral released
-- `liquidate(borrower, debtAmount)`: external liquidator repays debt → receives eToken collateral + bonus
+- `borrow(asset, eTokenAmount, stablecoinAmount, priceData)`: user deposits eTokens as collateral → manager borrows from Aave via delegation → sends stablecoins to user
+- `repay(asset, amount)`: user repays → manager repays Aave → eToken collateral released
+- `liquidate(borrower, asset, priceData)`: external liquidator repays debt → receives eToken collateral + bonus
 
-**State managed by BorrowManager:**
-- Per-LP debt mapping: tracks each LP's borrowed amount and accrued interest
-- Per-borrower debt mapping: tracks eToken collateral deposited and stablecoin debt
+**Self-contained risk controls:**
+- `targetLtvBps` / `setTargetLtvBps(ltvBps)`: admin-configured vault-wide LTV target
+- `maxDebtUSD()`: `collateralValueUSD * targetLtvBps / BPS` — hard cap enforced on every borrow (`BorrowExceedsCap` revert)
+- `totalDebtUSD()`: aggregate outstanding debt across all borrowers
+- `utilizationBps()`: `totalDebtUSD / maxDebtUSD` — drives the premium curve
+- `liveAaveRateBps()`: reads `pool.getReserveData(stablecoin).currentVariableBorrowRate` (RAY → BPS) as the floor
+
+**State managed by the manager:**
+- Per-(borrower, asset) Position: eToken collateral deposited, principal, and accrued interest
+- Per-asset cumulative interest index for accrual
 - Per-borrower health factor: based on eToken oracle price vs debt
 
 **Aave interaction (all via delegated credit):**
 - Borrows: `pool.borrow(usdc, amount, 2, 0, onBehalfOf=vault)` — debt on vault's position
 - Repays: `pool.repay(usdc, amount, 2, onBehalfOf=vault)` — reduces vault's debt
-- Reads: `pool.getUserAccountData(vault)` — vault's Aave health factor, available borrow
+- Reads: `pool.getReserveData(usdc)` — live borrow rate; `pool.getUserAccountData(vault)` — vault's Aave health factor
 
 ### LoopRouter (Periphery — Stateless)
 
-Batches multiple borrow+mint loops into a single transaction for leveraged eToken exposure. Calls AaveBorrowManager internally.
+Batches multiple borrow+mint loops into a single transaction for leveraged eToken exposure. Calls UserBorrowManager internally.
 
 - `leverageMint(asset, amount, loops, maxPrice, expiry)`: executes N loops of mint+borrow
 - `leverageUnwind(asset, loops)`: executes N loops of redeem+repay to close position
 - `calculateMaxLoops(amount, ltv)`: returns max economical loops for given LTV
 - `estimateExposure(amount, ltv, loops)`: preview total exposure for given parameters
 
-Purely a UX convenience — users can manually loop by calling AaveBorrowManager directly.
+Purely a UX convenience — users can manually loop by calling UserBorrowManager directly.
 
 ### InterestRateModel (Library)
 
@@ -456,29 +435,24 @@ Pure library implementing the two-slope rate curve:
 ## Implementation Phases
 
 ### Phase 1: OwnVault Change + AaveRouter
-- Add `enableLending(address)` to OwnVault (`onlyAdmin`)
+- Add `enableLending(manager, debtToken)` to OwnVault (`onlyAdmin`)
 - AaveRouter: stateless periphery for wstETH → Aave → awstETH → OwnVault deposits/withdrawals
 - Deploy OwnVault with awstETH as collateral type
 - Fork tests against Aave V3 on Base
 - No borrowing yet — just yield-bearing collateral with Aave routing
 
-### Phase 2: AaveBorrowManager + LP Direct Minting
-- Deploy AaveBorrowManager, admin calls `vault.enableLending(borrowManager)` to activate
-- Per-LP debt tracking (encumbered shares)
-- `borrowAndMint()` flow: LP borrows via delegation → places mint order
-- `repayLPDebt()` flow: LP repays → BorrowManager repays Aave → shares unencumbered
+### Phase 2: UserBorrowManager + eToken Borrowing + Liquidation
+- BorrowManagerFactory deploys the vault's UserBorrowManager; admin calls `vault.enableLending(manager, debtToken)` to activate
+- `borrow()`: any user deposits eTokens, borrows stablecoins via the manager's delegated credit
+- Self-contained risk controls: `targetLtvBps` debt cap, `utilizationBps`, `liveAaveRateBps`
 - InterestRateModel with utilization-based premium
-- Unit + integration tests
-
-### Phase 3: eToken Borrowing + Liquidation
-- `borrowAgainstEToken()`: any user deposits eTokens, borrows stablecoins via BorrowManager
 - Per-borrower health factor tracking using existing oracle infrastructure
 - External liquidator/keeper flow with liquidation bonus
 - eToken burn on liquidation → exposure reduction (self-healing)
-- Invariant tests: Aave LTV, borrower health, vault solvency
+- Unit + integration + invariant tests: Aave LTV, borrower health, vault solvency
 
-### Phase 4: LoopRouter + Risk Controls
-- LoopRouter periphery: batch N loops of mint+borrow in single tx (calls BorrowManager)
+### Phase 3: LoopRouter + Risk Controls
+- LoopRouter periphery: batch N loops of mint+borrow in single tx (calls UserBorrowManager)
 - Unwind helper: batch N loops of redeem+repay
 - Concentration cap (max % of Aave pool)
 - Automated deleveraging keeper (repay Aave when health factor drops)
@@ -494,12 +468,10 @@ These must hold at all times:
 1. **Aave solvency**: `vault Aave LTV <= 35%` under normal conditions
 2. **Aave safety**: `vault Aave health factor >= 1.5` (target; liquidation at 1.0)
 3. **Own solvency**: `awstETH value >= eToken exposure * collateral ratio` (existing)
-4. **Lending cap**: `totalLent <= 70% * totalETokenExposureValue`
+4. **Manager debt cap**: `totalDebtUSD() <= maxDebtUSD()` (= `collateralValueUSD * targetLtvBps`)
 5. **Borrower health**: `eTokenCollateralValue * liquidationThreshold >= debtValue` per borrower
-6. **LP debt cap**: `lpDebt[lp] <= lpShareValue[lp] * maxBorrowRatio` per LP
-7. **Accounting**: `Aave debt == sum(all LP debt) + sum(all eToken borrower debt)`
-8. **Encumbrance**: LP with outstanding debt cannot withdraw shares below debt coverage threshold
-9. **Concentration**: `vault's Aave deposit <= 25% of total Aave wstETH pool on Base`
+6. **Accounting**: `Aave debt == sum(all eToken borrower debt)`
+7. **Concentration**: `vault's Aave deposit <= 25% of total Aave wstETH pool on Base`
 
 ---
 
@@ -535,8 +507,8 @@ Both designs enable leveraged eToken exposure but via different mechanisms:
 | **Borrowing source** | External ETH whales delegate Aave borrowing power | Vault's own Aave position (LP collateral) |
 | **Who provides capital** | External whale depositors | LPs themselves (their wstETH) |
 | **Leverage mechanism** | MarginAccount proxies, per-user smart wallets | User looping via LoopRouter (simpler) |
-| **LP role** | Passive collateral provider | Active — can mint eTokens from their own borrowing power |
+| **LP role** | Passive collateral provider | Passive collateral provider; earns the lending spread |
 | **Max leverage** | 5-20x (configurable per asset) | ~3.3x theoretical (limited by 70% LTV per loop) |
-| **Complexity** | 3 new contracts + margin accounts | 1 function on OwnVault + 3 periphery contracts |
+| **Complexity** | 3 new contracts + margin accounts | 1 function on OwnVault + UserBorrowManager + routers |
 
-These can coexist: the whale credit delegation (leverage-design.md) provides deep borrowing capacity for high-leverage traders, while this design gives LPs a way to earn yield and take leveraged RWA positions from their existing collateral.
+These can coexist: the whale credit delegation (leverage-design.md) provides deep borrowing capacity for high-leverage traders, while this design lets eToken holders take leveraged RWA positions against the vault's own Aave borrowing power.
