@@ -517,7 +517,7 @@ contract UserBorrowManagerTest is BaseTest {
         uint256 crashPx = 59e18;
         _setOraclePrice(ASSET, crashPx);
 
-        uint256 repay = 2_000e6;
+        uint256 repay = 2000e6;
         usdc.mint(Actors.LIQUIDATOR, repay);
         vm.startPrank(Actors.LIQUIDATOR);
         usdc.approve(address(borrowManager), repay);
@@ -527,7 +527,7 @@ contract UserBorrowManagerTest is BaseTest {
         IUserBorrowManager.Position memory pos = borrowManager.positionOf(Actors.MINTER1, ASSET);
         assertEq(pos.principal, stable - repay, "debt reduced by repay");
 
-        uint256 expectedSeize = uint256(2_000e18) * (BPS + 500) / BPS * PRECISION / crashPx;
+        uint256 expectedSeize = uint256(2000e18) * (BPS + 500) / BPS * PRECISION / crashPx;
         assertApproxEqAbs(eTSLA.balanceOf(Actors.LIQUIDATOR), expectedSeize, 2);
         assertApproxEqAbs(pos.eTokenCollateral, eAmt - expectedSeize, 2);
         assertEq(eTSLA.balanceOf(Actors.MINTER1), 0, "borrower gets nothing on partial");
@@ -546,9 +546,7 @@ contract UserBorrowManagerTest is BaseTest {
         usdc.mint(Actors.LIQUIDATOR, stable);
         vm.startPrank(Actors.LIQUIDATOR);
         usdc.approve(address(borrowManager), stable);
-        vm.expectRevert(
-            abi.encodeWithSelector(IUserBorrowManager.SeizeExceedsCollateral.selector, 105e18, 100e18)
-        );
+        vm.expectRevert(abi.encodeWithSelector(IUserBorrowManager.SeizeExceedsCollateral.selector, 105e18, 100e18));
         borrowManager.liquidate(Actors.MINTER1, ASSET, stable, _priceData(crashPx));
         vm.stopPrank();
     }
@@ -661,7 +659,7 @@ contract UserBorrowManagerTest is BaseTest {
         uint256 crashPx = 84e18; // seize for $8k repay = $8k*1.05/$84 = 100 eTSLA exactly.
         _setOraclePrice(ASSET, crashPx);
 
-        uint256 repay = 8_000e6;
+        uint256 repay = 8000e6;
         usdc.mint(Actors.LIQUIDATOR, repay);
         vm.startPrank(Actors.LIQUIDATOR);
         usdc.approve(address(borrowManager), repay);
@@ -670,8 +668,8 @@ contract UserBorrowManagerTest is BaseTest {
 
         assertEq(borrowManager.positionOf(Actors.MINTER1, ASSET).eTokenCollateral, 0, "collateral stripped");
         residual = borrowManager.debtOf(Actors.MINTER1, ASSET);
-        assertEq(residual, 2_000e6, "residual book debt");
-        assertEq(aavePool.debtOf(address(vault), address(usdc)), 2_000e6, "residual aave debt");
+        assertEq(residual, 2000e6, "residual book debt");
+        assertEq(aavePool.debtOf(address(vault), address(usdc)), 2000e6, "residual aave debt");
     }
 
     function test_absorbBadDebt_fullAbsorb_treasuryEatsAll() public {
@@ -705,14 +703,14 @@ contract UserBorrowManagerTest is BaseTest {
 
         assertEq(aavePool.debtOf(address(vault), address(usdc)), 0, "aave debt cleared");
         // LPs eat the whole $2k loss: caller reimbursed $2k of awstETH at $4k = 0.5e18.
-        uint256 expectedAwst = uint256(2_000e18) * PRECISION / 4000e18;
+        uint256 expectedAwst = uint256(2000e18) * PRECISION / 4000e18;
         assertEq(awstETH.balanceOf(Actors.ADMIN), expectedAwst, "caller reimbursed in awstETH");
         assertEq(awstETH.balanceOf(address(vault)), vaultAwstBefore - expectedAwst, "vault collateral shrank");
     }
 
     function test_absorbBadDebt_partial_splitsLoss() public {
         uint256 residual = _stripToBadDebt(); // $2000
-        uint256 absorb = 1_000e6; // treasury eats $1k, LPs eat $1k.
+        uint256 absorb = 1000e6; // treasury eats $1k, LPs eat $1k.
 
         usdc.mint(Actors.ADMIN, residual);
         vm.startPrank(Actors.ADMIN);
@@ -722,7 +720,7 @@ contract UserBorrowManagerTest is BaseTest {
 
         assertEq(aavePool.debtOf(address(vault), address(usdc)), 0, "aave debt cleared");
         // LP slice $1k → 0.25e18 awstETH back; admin still fronted the full residual.
-        uint256 expectedAwst = uint256(1_000e18) * PRECISION / 4000e18;
+        uint256 expectedAwst = uint256(1000e18) * PRECISION / 4000e18;
         assertEq(awstETH.balanceOf(Actors.ADMIN), expectedAwst, "caller reimbursed LP slice only");
         assertEq(usdc.balanceOf(Actors.ADMIN), 0, "admin fronted the full residual");
     }

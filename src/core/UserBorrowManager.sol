@@ -321,7 +321,8 @@ contract UserBorrowManager is IUserBorrowManager, ReentrancyGuard {
 
         // Close factor: cap a single liquidation while the position is only
         // marginally unhealthy; lift the cap once it is deeply underwater.
-        uint256 maxRepay = hf > CLOSE_FACTOR_HF_THRESHOLD ? currentDebt.mulDiv(liquidationCloseFactorBps, BPS) : currentDebt;
+        uint256 maxRepay =
+            hf > CLOSE_FACTOR_HF_THRESHOLD ? currentDebt.mulDiv(liquidationCloseFactorBps, BPS) : currentDebt;
         if (repayAmount > maxRepay) repayAmount = maxRepay;
 
         // Bonus-based seize; must be coverable by remaining collateral.
