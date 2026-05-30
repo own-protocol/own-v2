@@ -57,6 +57,7 @@ interface IUserBorrowManager {
     );
     event RateParamsUpdated(InterestRateModel.Params params);
     event LiquidationConfigUpdated(uint256 liquidationThresholdBps, uint256 liquidationBonusBps);
+    event TargetLtvBpsUpdated(uint256 oldBps, uint256 newBps);
 
     // ──────────────────────────────────────────────────────────
     //  Errors
@@ -75,6 +76,8 @@ interface IUserBorrowManager {
     error NoPosition(address borrower, bytes32 asset);
     error NotLiquidatable(uint256 healthFactor);
     error InvalidLiquidationConfig();
+    error InvalidLtv();
+    error BorrowExceedsCap(uint256 attempted, uint256 cap);
 
     // ──────────────────────────────────────────────────────────
     //  Borrower flows
@@ -141,6 +144,22 @@ interface IUserBorrowManager {
     /// @notice Maximum loan-to-value at borrow time (BPS).
     function borrowLtvBps() external view returns (uint256);
 
+    /// @notice Vault-wide target Aave LTV (BPS) backing the protocol debt cap.
+    function targetLtvBps() external view returns (uint256);
+
+    /// @notice Total outstanding protocol debt held by this manager, in USD
+    ///         (18 decimals). Includes principal + accrued interest.
+    function totalDebtUSD() external view returns (uint256);
+
+    /// @notice Vault collateral value × `targetLtvBps` (USD, 18 decimals).
+    function maxDebtUSD() external view returns (uint256);
+
+    /// @notice Current utilization (BPS, capped at 10_000): `totalDebtUSD / maxDebtUSD`.
+    function utilizationBps() external view returns (uint256);
+
+    /// @notice Live Aave variable borrow rate for the stablecoin (BPS).
+    function liveAaveRateBps() external view returns (uint256);
+
     /// @notice Per-position view. Returns zero for unopened positions.
     function positionOf(address borrower, bytes32 asset) external view returns (Position memory);
 
@@ -160,4 +179,9 @@ interface IUserBorrowManager {
     ) external;
 
     function setLiquidationConfig(uint256 liquidationThresholdBps_, uint256 liquidationBonusBps_) external;
+
+    /// @notice Set the vault-wide target Aave LTV (BPS) backing the debt cap. Must be < 10_000.
+    function setTargetLtvBps(
+        uint256 ltvBps
+    ) external;
 }

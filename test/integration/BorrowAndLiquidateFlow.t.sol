@@ -5,7 +5,6 @@ import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {BorrowManagerFactory} from "../../src/core/BorrowManagerFactory.sol";
 import {OwnVault} from "../../src/core/OwnVault.sol";
 import {UserBorrowManager} from "../../src/core/UserBorrowManager.sol";
-import {VaultBorrowCoordinator} from "../../src/core/VaultBorrowCoordinator.sol";
 import {VaultFactory} from "../../src/core/VaultFactory.sol";
 import {IUserBorrowManager} from "../../src/interfaces/IUserBorrowManager.sol";
 import {AssetConfig, BPS, PRECISION} from "../../src/interfaces/types/Types.sol";
@@ -31,7 +30,6 @@ contract BorrowAndLiquidateFlowTest is BaseTest {
     VaultFactory public vaultFactory;
     BorrowManagerFactory public bmFactory;
     OwnVault public vault;
-    VaultBorrowCoordinator public coordinator;
     UserBorrowManager public borrowManager;
 
     bytes32 constant ASSET = bytes32("TSLA");
@@ -84,19 +82,11 @@ contract BorrowAndLiquidateFlowTest is BaseTest {
         bmFactory = new BorrowManagerFactory(address(aavePool), address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.BORROW_MANAGER_FACTORY(), address(bmFactory));
 
-        coordinator = new VaultBorrowCoordinator(
-            address(vault), address(aavePool), address(protocolRegistry), address(usdc), 3500
-        );
-
-        (address userBM, address lpBM) = bmFactory.createBorrowManager(
-            address(vault), address(usdc), address(usdcDebt), address(coordinator), market, bytes32("WSTETH"), _params()
-        );
+        address userBM = bmFactory.createBorrowManager(address(vault), address(usdc), address(usdcDebt), 3500, _params());
         borrowManager = UserBorrowManager(userBM);
-        coordinator.registerManager(userBM);
-        coordinator.registerManager(lpBM);
         vm.stopPrank();
 
-        // Seed the vault with awstETH so coordinator's debt cap is non-zero.
+        // Seed the vault with awstETH so the manager's debt cap is non-zero.
         // 1000 wstETH @ $4k = $4M. Cap at 35% LTV = $1.4M, plenty of headroom
         // for the test's $10k borrow.
         vm.prank(address(aavePool));
@@ -121,9 +111,8 @@ contract BorrowAndLiquidateFlowTest is BaseTest {
         vault.enableAsset(ASSET);
         vault.setPaymentToken(address(usdc));
 
-        address lpBMAddr = bmFactory.lpBorrowManagerOf(address(vault));
         vm.prank(Actors.ADMIN);
-        vault.enableLending(address(borrowManager), lpBMAddr, address(usdcDebt));
+        vault.enableLending(address(borrowManager), address(usdcDebt));
         vm.prank(Actors.ADMIN);
         eTSLA.setPassThroughHolder(address(borrowManager), true);
 

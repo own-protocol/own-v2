@@ -4,7 +4,6 @@ pragma solidity 0.8.28;
 import {BorrowManagerFactory} from "../../src/core/BorrowManagerFactory.sol";
 import {OwnVault} from "../../src/core/OwnVault.sol";
 import {UserBorrowManager} from "../../src/core/UserBorrowManager.sol";
-import {VaultBorrowCoordinator} from "../../src/core/VaultBorrowCoordinator.sol";
 import {VaultFactory} from "../../src/core/VaultFactory.sol";
 import {IBorrowManagerFactory} from "../../src/interfaces/IBorrowManagerFactory.sol";
 import {InterestRateModel} from "../../src/libraries/InterestRateModel.sol";
@@ -23,8 +22,9 @@ contract BorrowManagerFactoryTest is BaseTest {
     MockAToken public awstETH;
     MockAaveDebtToken public usdcDebt;
     OwnVault public vault;
-    VaultBorrowCoordinator public coordinator;
     VaultFactory public vaultFactory;
+
+    uint256 constant TARGET_LTV_BPS = 3500;
 
     function _params() internal pure returns (InterestRateModel.Params memory) {
         return InterestRateModel.Params({basePremiumBps: 100, optimalUtilBps: 8000, slope1Bps: 400, slope2Bps: 7500});
@@ -47,10 +47,6 @@ contract BorrowManagerFactoryTest is BaseTest {
 
         // Vault is created via VaultFactory so isRegisteredVault() returns true.
         vault = OwnVault(vaultFactory.createVault(address(awstETH), Actors.VM1, "OwnAwstETH", "owAwstETH", 8000, 2000));
-
-        coordinator = new VaultBorrowCoordinator(
-            address(vault), address(aavePool), address(protocolRegistry), address(usdc), 3500
-        );
 
         factory = new BorrowManagerFactory(address(aavePool), address(protocolRegistry));
         vm.stopPrank();
@@ -76,23 +72,15 @@ contract BorrowManagerFactoryTest is BaseTest {
     //  createBorrowManager
     // ──────────────────────────────────────────────────────────
 
-    address constant MARKET_STUB = address(0xBEEF);
-    bytes32 constant COLLAT = bytes32("WSTETH");
-
     function test_create_succeeds_records1to1Binding() public {
         InterestRateModel.Params memory p = _params();
         vm.prank(Actors.ADMIN);
-        (address userBM, address lpBM) = factory.createBorrowManager(
-            address(vault), address(usdc), address(usdcDebt), address(coordinator), MARKET_STUB, COLLAT, p
-        );
+        address userBM =
+            factory.createBorrowManager(address(vault), address(usdc), address(usdcDebt), TARGET_LTV_BPS, p);
 
         assertNotEq(userBM, address(0));
-        assertNotEq(lpBM, address(0));
-        assertNotEq(userBM, lpBM);
         assertEq(factory.borrowManagerOf(address(vault)), userBM);
-        assertEq(factory.lpBorrowManagerOf(address(vault)), lpBM);
         assertEq(factory.vaultOf(userBM), address(vault));
-        assertEq(factory.vaultOf(lpBM), address(vault));
 
         // User manager wired correctly.
         UserBorrowManager userMgr = UserBorrowManager(userBM);
@@ -100,91 +88,49 @@ contract BorrowManagerFactoryTest is BaseTest {
         assertEq(userMgr.stablecoin(), address(usdc));
         assertEq(userMgr.debtToken(), address(usdcDebt));
         assertEq(userMgr.aavePool(), address(aavePool));
+        assertEq(userMgr.targetLtvBps(), TARGET_LTV_BPS);
     }
 
     function test_create_emitsEvent() public {
         InterestRateModel.Params memory p = _params();
         vm.prank(Actors.ADMIN);
-        // topic1 = vault. Don't pin manager addresses (deploy order-dependent).
+        // topic1 = vault. Don't pin manager address (deploy order-dependent).
         vm.expectEmit(true, false, false, false);
-        emit IBorrowManagerFactory.BorrowManagersCreated(address(vault), address(0), address(0));
-        factory.createBorrowManager(
-            address(vault), address(usdc), address(usdcDebt), address(coordinator), MARKET_STUB, COLLAT, p
-        );
+        emit IBorrowManagerFactory.BorrowManagerCreated(address(vault), address(0));
+        factory.createBorrowManager(address(vault), address(usdc), address(usdcDebt), TARGET_LTV_BPS, p);
     }
 
     function test_create_alreadyExists_reverts() public {
         InterestRateModel.Params memory p = _params();
         vm.prank(Actors.ADMIN);
-        factory.createBorrowManager(
-            address(vault), address(usdc), address(usdcDebt), address(coordinator), MARKET_STUB, COLLAT, p
-        );
+        factory.createBorrowManager(address(vault), address(usdc), address(usdcDebt), TARGET_LTV_BPS, p);
 
         vm.prank(Actors.ADMIN);
         vm.expectRevert(
             abi.encodeWithSelector(IBorrowManagerFactory.VaultAlreadyHasBorrowManager.selector, address(vault))
         );
-        factory.createBorrowManager(
-            address(vault), address(usdc), address(usdcDebt), address(coordinator), MARKET_STUB, COLLAT, p
-        );
+        factory.createBorrowManager(address(vault), address(usdc), address(usdcDebt), TARGET_LTV_BPS, p);
     }
 
     function test_create_unknownVault_reverts() public {
         OwnVault stranger =
             new OwnVault(address(awstETH), "Stranger", "S", address(protocolRegistry), Actors.VM2, 8000, 2000);
-        VaultBorrowCoordinator strangerCoord = new VaultBorrowCoordinator(
-            address(stranger), address(aavePool), address(protocolRegistry), address(usdc), 3500
-        );
 
         InterestRateModel.Params memory p = _params();
         vm.prank(Actors.ADMIN);
         vm.expectRevert(abi.encodeWithSelector(IBorrowManagerFactory.UnknownVault.selector, address(stranger)));
-        factory.createBorrowManager(
-            address(stranger), address(usdc), address(usdcDebt), address(strangerCoord), MARKET_STUB, COLLAT, p
-        );
-    }
-
-    function test_create_coordinatorVaultMismatch_reverts() public {
-        OwnVault other = new OwnVault(address(awstETH), "Other", "O", address(protocolRegistry), Actors.VM1, 8000, 2000);
-        VaultBorrowCoordinator otherCoord = new VaultBorrowCoordinator(
-            address(other), address(aavePool), address(protocolRegistry), address(usdc), 3500
-        );
-
-        InterestRateModel.Params memory p = _params();
-        vm.prank(Actors.ADMIN);
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                IBorrowManagerFactory.CoordinatorVaultMismatch.selector, address(other), address(vault)
-            )
-        );
-        factory.createBorrowManager(
-            address(vault), address(usdc), address(usdcDebt), address(otherCoord), MARKET_STUB, COLLAT, p
-        );
+        factory.createBorrowManager(address(stranger), address(usdc), address(usdcDebt), TARGET_LTV_BPS, p);
     }
 
     function test_create_zeroAddresses_revert() public {
         InterestRateModel.Params memory p = _params();
         vm.startPrank(Actors.ADMIN);
         vm.expectRevert(IBorrowManagerFactory.ZeroAddress.selector);
-        factory.createBorrowManager(
-            address(0), address(usdc), address(usdcDebt), address(coordinator), MARKET_STUB, COLLAT, p
-        );
+        factory.createBorrowManager(address(0), address(usdc), address(usdcDebt), TARGET_LTV_BPS, p);
         vm.expectRevert(IBorrowManagerFactory.ZeroAddress.selector);
-        factory.createBorrowManager(
-            address(vault), address(0), address(usdcDebt), address(coordinator), MARKET_STUB, COLLAT, p
-        );
+        factory.createBorrowManager(address(vault), address(0), address(usdcDebt), TARGET_LTV_BPS, p);
         vm.expectRevert(IBorrowManagerFactory.ZeroAddress.selector);
-        factory.createBorrowManager(
-            address(vault), address(usdc), address(0), address(coordinator), MARKET_STUB, COLLAT, p
-        );
-        vm.expectRevert(IBorrowManagerFactory.ZeroAddress.selector);
-        factory.createBorrowManager(
-            address(vault), address(usdc), address(usdcDebt), address(0), MARKET_STUB, COLLAT, p
-        );
-        vm.expectRevert(IBorrowManagerFactory.ZeroAddress.selector);
-        factory.createBorrowManager(
-            address(vault), address(usdc), address(usdcDebt), address(coordinator), address(0), COLLAT, p
-        );
+        factory.createBorrowManager(address(vault), address(usdc), address(0), TARGET_LTV_BPS, p);
         vm.stopPrank();
     }
 
@@ -192,8 +138,6 @@ contract BorrowManagerFactoryTest is BaseTest {
         InterestRateModel.Params memory p = _params();
         vm.prank(Actors.ATTACKER);
         vm.expectRevert(IBorrowManagerFactory.OnlyAdmin.selector);
-        factory.createBorrowManager(
-            address(vault), address(usdc), address(usdcDebt), address(coordinator), MARKET_STUB, COLLAT, p
-        );
+        factory.createBorrowManager(address(vault), address(usdc), address(usdcDebt), TARGET_LTV_BPS, p);
     }
 }

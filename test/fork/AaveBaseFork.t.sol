@@ -4,7 +4,6 @@ pragma solidity 0.8.28;
 import {OwnVault} from "../../src/core/OwnVault.sol";
 import {ProtocolRegistry} from "../../src/core/ProtocolRegistry.sol";
 import {UserBorrowManager} from "../../src/core/UserBorrowManager.sol";
-import {VaultBorrowCoordinator} from "../../src/core/VaultBorrowCoordinator.sol";
 import {IAaveRouter} from "../../src/interfaces/IAaveRouter.sol";
 import {IAaveV3Pool} from "../../src/interfaces/external/IAaveV3Pool.sol";
 import {InterestRateModel} from "../../src/libraries/InterestRateModel.sol";
@@ -131,24 +130,21 @@ contract AaveBaseForkTest is Test {
     //  Live Aave rate read
     // ──────────────────────────────────────────────────────────
 
-    function test_fork_coordinator_readsLiveAaveRate() public requiresFork {
-        // Wire the coordinator + a borrow manager on the existing fork vault.
+    function test_fork_borrowManager_readsLiveAaveRate() public requiresFork {
+        // Wire a borrow manager on the existing fork vault.
         vm.startPrank(admin);
-        VaultBorrowCoordinator coordinator =
-            new VaultBorrowCoordinator(address(vault), AAVE_V3_POOL_BASE, address(registry), USDC_BASE, 3500);
         borrowManager = new UserBorrowManager(
             address(vault),
             USDC_BASE,
             usdcVariableDebt,
             AAVE_V3_POOL_BASE,
             address(registry),
-            address(coordinator),
+            3500,
             InterestRateModel.Params({basePremiumBps: 100, optimalUtilBps: 8000, slope1Bps: 400, slope2Bps: 7500})
         );
-        coordinator.registerManager(address(borrowManager));
         vm.stopPrank();
 
-        uint256 liveBps = coordinator.liveAaveRateBps();
+        uint256 liveBps = borrowManager.liveAaveRateBps();
         // Sanity: USDC borrow rate on a productive Aave market should be in
         // a normal range (above 0%, below 50%).
         assertGt(liveBps, 0, "non-zero live rate");

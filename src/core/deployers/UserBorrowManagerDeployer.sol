@@ -15,9 +15,10 @@ contract UserBorrowManagerDeployer {
         address debtToken,
         address aavePool,
         address registry,
-        address coordinator,
+        uint256 targetLtvBps,
         InterestRateModel.Params calldata rateParams
     ) external returns (address) {
-        return address(new UserBorrowManager(vault, stablecoin, debtToken, aavePool, registry, coordinator, rateParams));
+        return
+            address(new UserBorrowManager(vault, stablecoin, debtToken, aavePool, registry, targetLtvBps, rateParams));
     }
 }
