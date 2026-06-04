@@ -38,6 +38,10 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     // ──────────────────────────────────────────────────────────
 
     IProtocolRegistry public immutable registry;
+
+    /// @dev Multiplier that scales a collateral-token amount up to 18 decimals: 10**(18 - decimals).
+    uint256 private immutable _collateralScale;
+
     address public vm;
 
     /// @dev Addresses authorised to sign order quotes for this vault (decoupled from `vm`).
@@ -205,6 +209,9 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
         uint256 vmShareBps_
     ) ERC4626(IERC20(asset_)) ERC20(name_, symbol_) {
         if (vmShareBps_ > BPS) revert ShareTooHigh(vmShareBps_, BPS);
+        uint8 collatDecimals = IERC20Metadata(asset_).decimals();
+        if (collatDecimals > 18) revert DecimalsTooHigh(collatDecimals);
+        _collateralScale = 10 ** (18 - collatDecimals);
         registry = IProtocolRegistry(registry_);
         vm = vm_;
         _maxUtilization = maxUtilBps;
@@ -1017,7 +1024,9 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
         (uint256 price,) = IOracleVerifier(oracleAddr).getPrice(collatAsset);
         if (price == 0) return;
 
-        _collateralValueUSD = totalAssets().mulDiv(price, PRECISION);
+        // Normalize the collateral balance to 18 decimals before pricing so the USD value
+        // is on the same scale as exposure (e.g. 6-decimal aUSDC/USDC vs 18-decimal eTokens).
+        _collateralValueUSD = (totalAssets() * _collateralScale).mulDiv(price, PRECISION);
 
         emit CollateralValuationUpdated(_collateralValueUSD, price);
     }

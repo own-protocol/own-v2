@@ -89,6 +89,8 @@ contract OwnMarketTest is BaseTest {
             mockFactory, abi.encodeWithSelector(IVaultFactory.isRegisteredVault.selector, mockVault), abi.encode(true)
         );
         vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.paymentToken.selector), abi.encode(address(usdc)));
+        // Collateral token (18 decimals) — used by force-execution collateral conversion.
+        vm.mockCall(mockVault, abi.encodeWithSignature("asset()"), abi.encode(address(weth)));
         vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.releaseCollateral.selector), abi.encode());
         vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.claimThreshold.selector), abi.encode(CLAIM_THRESHOLD));
         vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.collateralOracleAsset.selector), abi.encode(ETH_ASSET));

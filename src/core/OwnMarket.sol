@@ -461,7 +461,12 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         IOracleVerifier oracle = IOracleVerifier(oracleAddr);
         uint256 fee = oracle.verifyFee(collateralPriceData);
         (uint256 price,) = oracle.verifyPrice{value: fee}(collatAsset, collateralPriceData);
-        return Math.mulDiv(usdValue, PRECISION, price);
+
+        // usdValue and price are 18-decimal, so this yields an 18-decimal collateral amount.
+        // Scale down to the collateral token's decimals (floor — protocol-favorable).
+        uint256 collateral18 = Math.mulDiv(usdValue, PRECISION, price);
+        uint256 collatDecimals = IERC20Metadata(IOwnVault(vault).asset()).decimals();
+        return collateral18 / (10 ** (18 - collatDecimals));
     }
 
     /// @dev Resolve the effective halt price for an asset (admin-set halt price, else latest oracle).
