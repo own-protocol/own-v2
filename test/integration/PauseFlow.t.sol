@@ -71,6 +71,7 @@ contract PauseFlowTest is BaseTest {
 
         vault.setGracePeriod(GRACE_PERIOD);
         vault.setClaimThreshold(CLAIM_THRESHOLD);
+        vault.addQuoteSigner(vm1Signer);
 
         vm.stopPrank();
     }

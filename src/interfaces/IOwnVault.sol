@@ -77,6 +77,7 @@ interface IOwnVault is IERC4626 {
     error ShareTooHigh(uint256 shareBps, uint256 maxBps);
     error OnlyAdmin();
     error OnlyMarket();
+    error OnlyVMOrAdmin();
     error AlreadyQuoteSigner(address signer);
     error NotQuoteSigner(address signer);
     error WithdrawalNotPending(uint256 requestId);
@@ -111,18 +112,18 @@ interface IOwnVault is IERC4626 {
     /// @notice Whether an address is an authorised quote signer for this vault.
     /// @dev    The market verifies that order quotes are signed by an authorised signer.
     ///         Signers are decoupled from the operational `vm` address so a hot signing key
-    ///         (e.g. an HSM/KMS key) need not custody funds. The bound VM is seeded as the
-    ///         initial signer at construction and may be removed once other signers are added.
+    ///         (e.g. an HSM/KMS key) need not custody funds. No signer is registered at
+    ///         construction; signers must be added explicitly before quotes can be filled.
     function isQuoteSigner(
         address account
     ) external view returns (bool);
 
-    /// @notice Authorise a new quote signer. Only callable by the VM.
+    /// @notice Authorise a new quote signer. Callable by the VM or the admin.
     function addQuoteSigner(
         address signer
     ) external;
 
-    /// @notice Revoke a quote signer. Only callable by the VM.
+    /// @notice Revoke a quote signer. Callable by the VM or the admin.
     function removeQuoteSigner(
         address signer
     ) external;

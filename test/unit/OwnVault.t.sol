@@ -846,8 +846,9 @@ contract OwnVaultTest is BaseTest {
     //  Quote signers
     // ──────────────────────────────────────────────────────────
 
-    function test_constructor_seedsVMAsQuoteSigner() public view {
-        assertTrue(vault.isQuoteSigner(Actors.VM1), "vm seeded as signer");
+    function test_constructor_noSignersSeeded() public view {
+        // No signer is registered at construction — not even the bound VM.
+        assertFalse(vault.isQuoteSigner(Actors.VM1), "no signer seeded");
     }
 
     function test_addQuoteSigner_byVM_succeeds() public {
@@ -862,9 +863,16 @@ contract OwnVaultTest is BaseTest {
         assertTrue(vault.isQuoteSigner(signer));
     }
 
-    function test_addQuoteSigner_notVM_reverts() public {
+    function test_addQuoteSigner_byAdmin_succeeds() public {
+        address signer = makeAddr("kmsSigner");
+        vm.prank(Actors.ADMIN);
+        vault.addQuoteSigner(signer);
+        assertTrue(vault.isQuoteSigner(signer));
+    }
+
+    function test_addQuoteSigner_unauthorized_reverts() public {
         vm.prank(Actors.ATTACKER);
-        vm.expectRevert(IOwnVault.OnlyVM.selector);
+        vm.expectRevert(IOwnVault.OnlyVMOrAdmin.selector);
         vault.addQuoteSigner(makeAddr("kmsSigner"));
     }
 
@@ -875,18 +883,35 @@ contract OwnVaultTest is BaseTest {
     }
 
     function test_addQuoteSigner_duplicate_reverts() public {
-        vm.prank(Actors.VM1);
-        vm.expectRevert(abi.encodeWithSelector(IOwnVault.AlreadyQuoteSigner.selector, Actors.VM1));
-        vault.addQuoteSigner(Actors.VM1);
+        address signer = makeAddr("kmsSigner");
+        vm.startPrank(Actors.VM1);
+        vault.addQuoteSigner(signer);
+        vm.expectRevert(abi.encodeWithSelector(IOwnVault.AlreadyQuoteSigner.selector, signer));
+        vault.addQuoteSigner(signer);
+        vm.stopPrank();
     }
 
     function test_removeQuoteSigner_byVM_succeeds() public {
-        vm.expectEmit(true, false, false, false);
-        emit IOwnVault.QuoteSignerRemoved(Actors.VM1);
-        vm.prank(Actors.VM1);
-        vault.removeQuoteSigner(Actors.VM1);
+        address signer = makeAddr("kmsSigner");
+        vm.startPrank(Actors.VM1);
+        vault.addQuoteSigner(signer);
 
-        assertFalse(vault.isQuoteSigner(Actors.VM1), "vm removable as signer");
+        vm.expectEmit(true, false, false, false);
+        emit IOwnVault.QuoteSignerRemoved(signer);
+        vault.removeQuoteSigner(signer);
+        vm.stopPrank();
+
+        assertFalse(vault.isQuoteSigner(signer));
+    }
+
+    function test_removeQuoteSigner_byAdmin_succeeds() public {
+        address signer = makeAddr("kmsSigner");
+        vm.prank(Actors.VM1);
+        vault.addQuoteSigner(signer);
+
+        vm.prank(Actors.ADMIN);
+        vault.removeQuoteSigner(signer);
+        assertFalse(vault.isQuoteSigner(signer));
     }
 
     function test_removeQuoteSigner_notSigner_reverts() public {
@@ -897,6 +922,10 @@ contract OwnVaultTest is BaseTest {
     }
 
     function test_setVM_doesNotChangeSignerSet() public {
+        // Register the current VM as a signer, then rotate the VM.
+        vm.prank(Actors.VM1);
+        vault.addQuoteSigner(Actors.VM1);
+
         address newVM = makeAddr("newVM");
         vm.prank(Actors.ADMIN);
         vault.setVM(newVM);

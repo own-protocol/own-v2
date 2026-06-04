@@ -164,6 +164,11 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
         _;
     }
 
+    modifier onlyVMOrAdmin() {
+        if (msg.sender != vm && msg.sender != Ownable(address(registry)).owner()) revert OnlyVMOrAdmin();
+        _;
+    }
+
     modifier onlyMarket() {
         if (msg.sender != registry.market()) revert OnlyMarket();
         _;
@@ -203,10 +208,6 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
         if (vmShareBps_ > BPS) revert ShareTooHigh(vmShareBps_, BPS);
         registry = IProtocolRegistry(registry_);
         vm = vm_;
-        // Seed the bound VM as the initial quote signer for convenience; it can be
-        // removed once dedicated signing keys are added.
-        _quoteSigners[vm_] = true;
-        emit QuoteSignerAdded(vm_);
         _maxUtilization = maxUtilBps;
         _vaultStatus = VaultStatus.Active;
         _vmShareBps = vmShareBps_;
@@ -785,7 +786,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     /// @inheritdoc IOwnVault
     function addQuoteSigner(
         address signer
-    ) external onlyVM {
+    ) external onlyVMOrAdmin {
         if (signer == address(0)) revert ZeroAddress();
         if (_quoteSigners[signer]) revert AlreadyQuoteSigner(signer);
         _quoteSigners[signer] = true;
@@ -795,7 +796,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     /// @inheritdoc IOwnVault
     function removeQuoteSigner(
         address signer
-    ) external onlyVM {
+    ) external onlyVMOrAdmin {
         if (!_quoteSigners[signer]) revert NotQuoteSigner(signer);
         _quoteSigners[signer] = false;
         emit QuoteSignerRemoved(signer);

@@ -92,10 +92,11 @@ contract AaveBaseForkTest is Test {
         vm.stopPrank();
 
         assertGt(shares, 0, "shares minted");
-        // Aave can credit fewer aTokens than supplied due to integer rounding
-        // on the live liquidity index; tolerate 1 wei.
+        // Aave credits aTokens via two ray-rounding steps against the live liquidity
+        // index: supply mints a scaled balance (rayDiv) and balanceOf reads it back
+        // (rayMul). Each step can round down a wei, so tolerate up to 2 wei of dust.
         uint256 vaultBal = IERC20(awstETH).balanceOf(address(vault));
-        assertApproxEqAbs(vaultBal, amount, 1, "vault holds awstETH");
+        assertApproxEqAbs(vaultBal, amount, 2, "vault holds awstETH");
 
         assertEq(IERC20(WSTETH_BASE).balanceOf(address(router)), 0, "router holds no wstETH");
         assertEq(IERC20(awstETH).balanceOf(address(router)), 0, "router holds no awstETH");

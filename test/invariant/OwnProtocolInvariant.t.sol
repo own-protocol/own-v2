@@ -100,6 +100,7 @@ contract OwnProtocolInvariant is BaseTest {
         vault.setGracePeriod(GRACE_PERIOD);
         vault.setClaimThreshold(CLAIM_THRESHOLD);
         vault.setWithdrawalWaitPeriod(WITHDRAWAL_WAIT);
+        vault.addQuoteSigner(vm1Signer);
 
         vm.stopPrank();
     }

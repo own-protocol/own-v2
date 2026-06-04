@@ -70,6 +70,7 @@ contract MintFlowTest is BaseTest {
 
         vault.setGracePeriod(1 days);
         vault.setClaimThreshold(6 hours);
+        vault.addQuoteSigner(vm1Signer);
 
         vm.stopPrank();
 

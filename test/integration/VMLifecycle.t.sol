@@ -59,6 +59,8 @@ contract VMLifecycleTest is BaseTest {
 
         vault = OwnVault(factory.createVault(address(weth), vm1Signer, "Own WETH Vault", "oWETH", 8000, 2000));
         vault2 = OwnVault(factory.createVault(address(weth), vm2Signer, "Own WETH Vault 2", "oWETH2", 8000, 2000));
+        vault.addQuoteSigner(vm1Signer);
+        vault2.addQuoteSigner(vm2Signer);
 
         eTSLA = new EToken("Own Tesla", "eTSLA", TSLA, address(protocolRegistry), address(usdc));
 
