@@ -27,29 +27,18 @@ New assets can be added by the protocol admin through the Asset Registry.
 
 ### Buyers
 
-Regular users who want exposure to real-world assets. They request a firm price **quote** from a
-VM's quoter service off-chain, then either settle it atomically as a **market order**
-(`executeOrder`) or rest a **limit order** (`placeOrder`) for the VM to fill. Redeemers who can't
-get a quote have an on-chain force-execution path against the oracle price.
+Regular users who want exposure to real-world assets. They place **mint orders** (deposit stablecoins to receive eTokens) or **redeem orders** (deposit eTokens to receive stablecoins).
 
 ### Vault Managers (VMs)
 
 Professional hedge funds, trading firms. They:
 
 - Provide collateral (e.g. WETH) to vaults.
-- Sign firm price **quotes** off-chain (via their quoter service) that users settle on-chain.
-- Fill resting limit orders by submitting their signed quotes (partial fills supported).
+- Claim and mandatorily execute all valid user orders at the user-specified price (validated by the oracle) 
 - Hedge the resulting exposure off-chain.
 - Enable other ETH holders (LPs) to deposit into vault & share fees.
-- Manage the vault's asset exposure and its authorized **quote signers**.
+- Manage the vault's asset exposure
 - Set which assets and payment tokens the vault supports
-
-### Quote Signers
-
-Each vault holds a set of addresses authorized to sign order quotes (managed by the VM or admin via
-`addQuoteSigner` / `removeQuoteSigner`). These are decoupled from the operational `vm` address — a
-hot signing key (e.g. an HSM/KMS key) signs quotes without ever custodying funds. The market accepts
-a quote only if it recovers to one of the vault's authorized signers.
 
 ### Protocol Admin
 
@@ -77,7 +66,7 @@ The protocol consists of 11 contracts organized into three layers:
 | Contract             | File                            | Purpose                                                                                                                                                          |
 | -------------------- | ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **ProtocolRegistry** | `src/core/ProtocolRegistry.sol` | Central registry of all protocol contract addresses. 2-day timelock for address changes. Stores protocol-wide parameters (e.g. `protocolShareBps`).              |
-| **OwnMarket**        | `src/core/OwnMarket.sol`        | RFQ order execution marketplace. Settles market orders atomically against VM-signed quotes, escrows and (partially) fills resting limit orders, and provides redeem force execution against the oracle price.          |
+| **OwnMarket**        | `src/core/OwnMarket.sol`        | Order escrow and execution marketplace. Handles the full order lifecycle: placement, claiming, confirmation, cancellation, expiry, and force execution.          |
 | **OwnVault**         | `src/core/OwnVault.sol`         | ERC-4626 collateral vault. Manages LP deposits/withdrawals (async queues), tracks per-asset exposure and utilization, distributes fees, and supports pause/halt. |
 | **VaultFactory**     | `src/core/VaultFactory.sol`     | Deploys and registers OwnVault instances. Each vault is bound 1:1 to a VM.                                                                                       |
 | **AssetRegistry**    | `src/core/AssetRegistry.sol`    | Whitelists assets, maps tickers to eToken addresses, stores oracle configurations. Supports token migration (post-stock-split).                                  |
@@ -115,125 +104,104 @@ See `docs/own-architecture.png` for the visual architecture diagram.
                                  (ERC-4626 collateral)
                                           |
                     OwnMarket  <----------+
-              (RFQ order execution)
+               (order escrow + execution)
                     |         |
                EToken     OracleVerifier / PythOracleVerifier
-          (mint/burn)      (force-execution price proofs)
+          (mint/burn)      (price verification)
 ```
 
 ---
 
-## 4. Order Execution
+## 4. Order Lifecycle
 
-The protocol uses an offline **RFQ (request-for-quote)** model. A user obtains a firm, VM-signed
-**quote** off-chain and settles it on-chain. The signed quote is the price attestation — the oracle
-is not consulted during normal execution (only on the force path, §5). There are two paths:
+Orders are the core mechanism for minting and redeeming eTokens. The protocol uses an **escrow + claim** model where user funds are escrowed in OwnMarket and vault managers claim orders to execute them off-chain.
 
-- **Market order** — the user submits the signed quote and it settles atomically in one transaction. No on-chain order is persisted.
-- **Limit order** — the user rests an order on-chain (escrowing the input); the VM fills it later with a signed quote whose price satisfies the user's limit. Limit orders support **partial fills**.
+### Order States
 
-### The Quote
+| Status            | Description                                                                                      |
+| ----------------- | ------------------------------------------------------------------------------------------------ |
+| **Open**          | Order placed, funds escrowed. Waiting for a VM to claim.                                         |
+| **Claimed**       | VM has claimed the order. VM received stablecoins (mint) or eTokens are held in escrow (redeem). |
+| **Confirmed**     | VM confirmed execution. eTokens minted to user (mint) or stablecoins sent to user (redeem).      |
+| **Cancelled**     | User cancelled an unclaimed order. Funds returned.                                               |
+| **Expired**       | Order expired without being claimed. Funds returned.                                             |
+| **Closed**        | VM closed an expired claimed order. Funds returned to user.                                      |
+| **ForceExecuted** | User force-executed after grace period with oracle proof.                                        |
 
-A quote is signed off-chain by one of the vault's authorized quote signers (recovered against
-`isQuoteSigner`, §2). It binds: target order id (`0` for a market order), taker, vault, asset, side,
-amount, price, a unique single-use `quoteId`, and an expiry. The signed digest also commits the
-chain id and market address to prevent cross-chain / cross-contract replay, and each quote can be
-used only once.
-
-### Order States (resting limit / redeem orders)
-
-| Status            | Description                                                                                       |
-| ----------------- | ------------------------------------------------------------------------------------------------- |
-| **Open**          | Resting order placed, input escrowed. Fillable by the VM; redeem orders also force-executable after the claim threshold. |
-| **Filled**        | Fully filled — remaining amount reached zero.                                                      |
-| **ForceExecuted** | Redeem order settled at the oracle (or halt) price via force execution.                            |
-| **Cancelled**     | Owner cancelled; remaining escrow returned.                                                        |
-| **Expired**       | Past its good-til-date; remaining escrow returned (callable by anyone).                            |
-
-Market orders execute atomically and are never persisted, so they have no status.
-
-### State Machine (resting order)
+### State Machine
 
 ```
-        placeOrder (escrow input)
-               |
-               v
-             OPEN ──fillOrder (×N, partial)──▶ OPEN ──(remaining = 0)──▶ FILLED
-            / |  \
- cancelOrder/  |   \ forceExecuteOrder (redeem only, after claimThreshold)
-           /   |    \
-          v    |     v
-    CANCELLED  |  FORCE_EXECUTED
-               |
-          expireOrder (after expiry)
-               |
-               v
-            EXPIRED
+         placeMintOrder / placeRedeemOrder
+                    |
+                    v
+                  OPEN
+                /  |  \
+    cancelOrder/   |   \expireOrder
+              /    |    \
+             v     |     v
+        CANCELLED  |  EXPIRED
+                   |
+            claimOrder
+                   |
+                   v
+                CLAIMED
+               /   |   \
+   closeOrder /    |    \ forceExecute
+             /     |     \
+            v      |      v
+         CLOSED    |  FORCE_EXECUTED
+                   |
+            confirmOrder
+                   |
+                   v
+              CONFIRMED
 ```
 
-### Market Mint Flow (atomic, one tx)
+### Mint Order Flow
 
-1. **User** requests a quote; the VM's quoter returns a signed quote (price, expiry).
-2. **User** calls `executeOrder(quote, signature)`:
-   - Stablecoins pulled from the user: `amount - fee` to the VM, `fee` to the vault.
-   - eTokens minted to the user: `eTokens = (amount - fee) * PRECISION / price`.
-   - Vault exposure increased; projected utilization checked.
+1. **User** calls `placeMintOrder(vault, asset, amount, maxPrice, expiry)` depositing stablecoins (e.g. USDC)
+2. **VM** calls `claimOrder(orderId)` — receives `amount - fee` in stablecoins, fee held in escrow
+3. **VM** hedges the exposure off-chain (e.g. buys TSLA on a CEX)
+4. **VM** calls `confirmOrder(orderId, executionPrice)` — protocol mints eTokens to user: `eTokens = (amount - fee) * PRECISION / price`
+5. Fees are deposited into the vault and split between protocol, VM, and LPs
 
-### Market Redeem Flow (atomic, one tx)
+### Redeem Order Flow
 
-1. **User** requests a quote; the VM signs it.
-2. **User** calls `executeOrder(quote, signature)`:
-   - Stablecoins pulled from the VM: gross `= amount * price / PRECISION`, `gross - fee` to the user, `fee` to the vault.
-   - The user's eTokens are burned; vault exposure decreased.
-
-The VM must have approved the market to spend its stablecoins. A relayer may submit on the VM's
-behalf, since the signed quote carries the authorization.
-
-### Limit Order Flow (resting, partial fills)
-
-1. **User** calls `placeOrder(vault, asset, orderType, amount, limitPrice, expiry)` — escrows stablecoins (mint) or eTokens (redeem).
-2. **VM** (or a relayer carrying a VM-signed quote) calls `fillOrder(quote, signature)` for a chunk `≤ remaining`, at a price satisfying the limit. Settlement is identical to the market flows but funded from escrow. Repeat until filled.
-3. `cancelOrder` (owner) or `expireOrder` (anyone, after expiry) returns the remaining escrow.
+1. **User** calls `placeRedeemOrder(vault, asset, eTokenAmount, minPrice, expiry)` depositing eTokens
+2. **VM** calls `claimOrder(orderId)` — eTokens held in market escrow
+3. **VM** unwinds the hedge off-chain (e.g. sells TSLA on a CEX)
+4. **VM** calls `confirmOrder(orderId, executionPrice)` — protocol burns eTokens, sends stablecoins to user: `payout = eTokenAmount * price / PRECISION - fee`
+5. Fees deposited into vault
 
 ### Price Semantics
 
-- **Mint**: `limitPrice` is the **maximum** price per eToken the user will pay — a fill quote must satisfy `quote.price ≤ limitPrice`.
-- **Redeem**: `limitPrice` is the **minimum** price per eToken the user will accept — a fill quote must satisfy `quote.price ≥ limitPrice`. It also acts as the slippage floor for force execution.
-- **Market orders** carry no separate limit — the user accepts the quote's price by submitting it.
+- **Mint orders**: `price` is the **maximum** price per eToken the user will accept (protection against price going up)
+- **Redeem orders**: `price` is the **minimum** price per eToken the user will accept (protection against price going down)
 
 ---
 
 ## 5. Force Execution
 
-Force execution is the user's recourse when a VM will not quote. It applies to **redeem orders
-only** — a redeemer holding eTokens is captive (eTokens convert back to stablecoins only through the
-protocol), whereas an unfilled mint leaves the user holding their stablecoins, free to route
-elsewhere. Forcing a mint would also open an unhedged position against LP collateral, so it is
-disallowed (`ForceMintNotAllowed`).
+Force execution protects users when a VM fails to act on a claimed order. After a **grace period** (e.g. 1 day after claim, or claim threshold for unclaimed orders), the user can force-execute by providing oracle price proofs.
 
-After the vault's **claim threshold** elapses (measured from the order's creation), the owner of a
-resting redeem order can call `forceExecuteOrder(orderId, assetPriceData, collateralPriceData)` to
-settle the remaining amount at the oracle price.
+### Two-Price Proof Mechanism
 
-### Mechanism
+The user must provide:
 
-1. **Asset price proof** (`assetPriceData`) — the current signed price of the asset (e.g. TSLA/USD). During a halt, the admin-set halt price is used instead and no asset proof is needed.
-2. **Collateral price proof** (`collateralPriceData`) — the current signed price of the collateral (e.g. ETH/USD), used to convert the USD value into collateral units.
+1. **Asset price proof** — proves the current price of the asset (e.g. TSLA/USD)
+2. **Collateral price proof** — proves the current price of the collateral (e.g. ETH/USD)
 
-Settlement:
+### Execution Logic
 
-- The oracle price must satisfy the order's `limitPrice` floor, else it reverts (`PriceBelowMinimum`).
-- The remaining eTokens are valued at the oracle price, converted to collateral, and **vault collateral is released to the user** (net of the standard redeem fee, which the vault retains).
-- The escrowed eTokens are burned and vault exposure is reduced.
-
-Because forced redeem prices at the bare oracle price (no VM spread), the **claim threshold delay**
-plus the standard redeem fee keep a fair VM quote the user's preferred path.
+- **If the order price was reachable** (user's limit price was achievable based on oracle data): execute at the user's specified price, with **standard fees charged** (the user still receives the correct asset amount at their set price, and the protocol/LPs earn their fee share)
+- **If the order price was NOT reachable** (market moved against the user): return the escrowed funds — stablecoins (mint) or eTokens (redeem)
 
 ### Timing
 
-| Parameter        | Description                                                              | Default |
+| Parameter        | Description                                                             | Default |
 | ---------------- | ----------------------------------------------------------------------- | ------- |
-| `claimThreshold` | Delay after a redeem order is placed before it can be force-executed     | 6 hours |
+| `gracePeriod`    | Time after claim before force execution is allowed                      | 1 day   |
+| `claimThreshold` | Time after order creation before unclaimed orders can be force-executed | 6 hours |
 
 ---
 
@@ -266,7 +234,7 @@ LPs can deposit native ETH using the **WETHRouter**, which wraps ETH to WETH bef
 
 ## 7. Fee Model
 
-Fees are charged on every settlement — market execution, limit fill, and force execution — and split three ways. The VM's quoted `price` is the pure execution price; the protocol fee is applied on top.
+Fees are charged on every confirmed order and split three ways.
 
 ### Fee Tiers
 
@@ -282,7 +250,7 @@ Maximum fee cap: **500 BPS (5%)** enforced by FeeCalculator.
 
 ### Fee Distribution
 
-On settlement, the fee is split:
+When a VM confirms an order, the fee is split:
 
 1. **Protocol share**: `fee * protocolShareBps / BPS` — sent to treasury via `claimProtocolFees()`
 2. **VM share**: `fee * (BPS - protocolShareBps) / BPS` — claimable by VM via `claimVMFees()`
@@ -292,7 +260,7 @@ The `protocolShareBps` is a global parameter set in ProtocolRegistry.
 
 ### Fees on Force Execution
 
-When a redeem order is force-executed, the standard redeem fee is charged on the collateral payout (same rate as a normal redeem). The fee portion of collateral is retained by the vault, so the protocol and LPs continue to earn regardless of whether the VM fills the order or the user force-executes.
+When an order is force-executed, standard fees are charged (same rates as normal order confirmation). The user still receives their assets at the set price — the fee is deducted as it would be in a normal flow. This ensures the protocol and LPs continue to earn fees regardless of whether the VM confirms or the user force-executes.
 
 ---
 
@@ -348,7 +316,7 @@ The vault tracks two key metrics:
 
 **Utilization ratio** = `totalExposureUSD / collateralValueUSD`
 
-The vault enforces a **max utilization cap** (e.g. 80%). When a mint settles (market execution or a limit fill), the projected utilization is checked — if it would breach the cap, settlement reverts. Redeems reduce exposure and are not capped.
+The vault enforces a **max utilization cap** (e.g. 80%). When a VM claims an order, the projected utilization is checked — if it would breach the cap, the claim reverts.
 
 ### Valuation Updates
 
@@ -363,15 +331,15 @@ These are incremental updates (delta-based) to avoid iterating over all assets.
 
 **Pause** (per-vault or per-asset):
 
-- Blocks market execution, order placement, and fills
-- Resting orders can still be cancelled or expired
+- Prevents new orders from being placed
+- Existing orders can still be confirmed, cancelled, or expired
 - LP operations continue
 
 **Halt** (per-vault or per-asset):
 
-- Full stop on normal execution — mints are blocked, normal redeem execution/fills revert (`TradingHalted`)
-- Admin sets a settlement (halt) price for affected assets
-- Redeemers exit via `forceExecuteOrder`, which settles at the halt price
+- Full stop — no new orders, no confirmations
+- Admin sets settlement prices for affected assets
+- Users can close/settle existing positions at the halt price
 - Used for extreme market events or protocol incidents
 
 ### Vault Status Hierarchy
@@ -396,14 +364,11 @@ Active → Paused → Halted
 | Configure oracles and fees             | Protocol admin                             |
 | Create vaults                          | Protocol admin (via VaultFactory)          |
 | Pause/halt vaults                      | Protocol admin                             |
-| Sign order quotes (off-chain)          | Vault's authorized quote signers           |
-| Add/remove quote signers               | Vault manager or admin                     |
-| Fill resting limit orders              | Anyone with a valid VM-signed quote        |
+| Claim/confirm orders                   | Vault manager (of the specific vault)      |
 | Accept/reject LP deposits              | Vault manager                              |
-| Execute market orders / place orders   | Any user (market order needs a signed quote) |
-| Cancel orders                          | Order owner                                |
-| Force execute redeem orders            | Order owner (after claim threshold)        |
-| Expire resting orders                  | Anyone (permissionless, after expiry)      |
+| Place/cancel orders                    | Any user                                   |
+| Force execute orders                   | Order owner (after grace period)           |
+| Expire unclaimed orders                | Anyone (permissionless)                    |
 | Fulfill withdrawals                    | Anyone (permissionless, if conditions met) |
 
 ### Smart Contract Patterns
@@ -441,38 +406,27 @@ PRECISION = 1e18      // Fixed-point precision for prices and per-share accumula
 | Enum               | Values                                                              | Description                                   |
 | ------------------ | ------------------------------------------------------------------- | --------------------------------------------- |
 | `OrderType`        | Mint, Redeem                                                        | Whether an order is buying or selling eTokens |
-| `OrderStatus`      | Open, Filled, ForceExecuted, Cancelled, Expired                    | Resting-order lifecycle state                 |
+| `OrderStatus`      | Open, Claimed, Confirmed, Cancelled, Expired, Closed, ForceExecuted | Order lifecycle state                         |
 | `WithdrawalStatus` | Pending, Fulfilled, Cancelled                                       | LP withdrawal request state                   |
 | `DepositStatus`    | Pending, Accepted, Rejected, Cancelled                              | LP deposit request state                      |
 | `VaultStatus`      | Active, Paused, Halted                                              | Vault operating state                         |
 
 ### Structs
 
-**Order** — a resting (limit / redeem) order escrowed in the marketplace. Market orders are not persisted as Orders.
+**Order** — an order placed by a user in the escrow marketplace:
 
 - `orderId` (uint256) — unique identifier
 - `user` (address) — who placed it
-- `vault` (address) — vault the order is bound to
+- `orderType` (OrderType) — Mint or Redeem
 - `asset` (bytes32) — asset ticker (e.g. `bytes32("TSLA")`)
-- `orderType` (OrderType) — Mint or Redeem
-- `amount` (uint256) — original input: stablecoin amount (Mint) or eToken amount (Redeem)
-- `filledAmount` (uint256) — cumulative input filled so far (≤ amount)
-- `limitPrice` (uint256) — max price (Mint) or min price (Redeem), 18 decimals
-- `createdAt` (uint256) — placement timestamp
-- `expiry` (uint256) — good-til-date timestamp after which the order can be expired
+- `amount` (uint256) — stablecoin amount (Mint) or eToken amount (Redeem)
+- `price` (uint256) — max price (Mint) or min price (Redeem), 18 decimals
+- `expiry` (uint256) — timestamp after which the order can be expired
 - `status` (OrderStatus) — current lifecycle state
-
-**Quote** — a firm price quote signed off-chain by an authorized vault signer:
-
-- `orderId` (uint256) — target resting order (`0` for a market order)
-- `user` (address) — taker bound to the quote (must be the caller for market orders)
-- `vault` (address) — vault the quote is issued against
-- `asset` (bytes32) — asset ticker
-- `orderType` (OrderType) — Mint or Redeem
-- `amount` (uint256) — input amount this quote fills (≤ remaining for a resting order)
-- `price` (uint256) — execution price per eToken, 18 decimals
-- `quoteId` (uint256) — unique nonce; each quote is single-use
-- `expiry` (uint256) — timestamp after which the quote is invalid
+- `createdAt` (uint256) — placement timestamp
+- `vm` (address) — VM that claimed (zero if unclaimed)
+- `vault` (address) — vault backing the claim (zero if unclaimed)
+- `claimedAt` (uint256) — claim timestamp (zero if unclaimed)
 
 **WithdrawalRequest** — async LP withdrawal:
 

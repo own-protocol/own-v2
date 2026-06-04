@@ -40,15 +40,16 @@ Note: awstETH is rebasing (balance grows over time). The vault tracks LP shares 
 
 OwnVault requires no changes for this flow — it simply receives awstETH as its collateral token. The AaveRouter handles all Aave interaction, same pattern as WstETHRouter.
 
-### eToken Issuance (Unchanged)
+### eToken Issuance (Unchanged by lending)
 
 ```
-Minter places order via OwnMarket → VM claims → VM confirms
+Minter settles a VM-signed quote via OwnMarket (market order, or limit order filled by the VM)
   → eTokens minted at 2x collateral ratio
   → Vault exposure updated (existing logic)
 ```
 
-eToken issuance works exactly as today. The collateral type changes from WETH to awstETH but the flow is identical.
+eToken issuance follows the standard RFQ flow (see `docs/protocol.md` §4). Lending does not change it
+— only the vault's collateral type changes from WETH to awstETH; the issuance and exposure logic is identical.
 
 ### Stablecoin Lending to eToken Holders
 

@@ -57,7 +57,7 @@ WETH_ROUTER=0x...
 | FeeCalculator | Mint/redeem fees by volatility level |
 | PythOracleVerifier | Pyth oracle wrapper (120s max price age) |
 | VaultFactory | Creates OwnVault instances |
-| OwnMarket | Order escrow + execution marketplace |
+| OwnMarket | RFQ order execution marketplace |
 | EToken (TSLA) | eTSLA synthetic token |
 | EToken (GOLD) | eGOLD synthetic token |
 | WETHRouter | Native ETH deposit/redeem wrapper |
@@ -82,8 +82,8 @@ VAULT_ADDRESS=0x...
 |-----------|-------|-------------|
 | Max utilization | 80% (8000 BPS) | Cap on exposure / collateral ratio |
 | VM fee share | 20% (2000 BPS) | VM's portion of the non-protocol fee |
-| Grace period | 1 day | Delay after claim before force execution |
-| Claim threshold | 6 hours | Delay for unclaimed orders before force execution |
+| Grace period | 1 day | Legacy parameter; not used by RFQ order execution |
+| Claim threshold | 6 hours | Delay before a resting redeem order can be force-executed |
 | Collateral oracle | ETH/USD Pyth feed | Used for utilization and force execution calculations |
 
 ## Step 3: Configure Vault (as VM)
@@ -97,6 +97,17 @@ forge script script/ConfigureVault.s.sol --rpc-url base_sepolia --broadcast
 **Configuration applied:**
 - Payment token: MockUSDC
 - Enabled assets: TSLA, GOLD
+
+### Register a quote signer (required)
+
+No quote signer is seeded at vault creation, so the market will reject all quotes until one is
+added. Register the VM's signing key (the address whose private key the quoter service signs with —
+e.g. an HSM/KMS key, or the VM address itself for testing). Callable by the VM or the admin:
+
+```bash
+cast send $VAULT_ADDRESS "addQuoteSigner(address)" <SIGNER_ADDRESS> \
+  --rpc-url base_sepolia --private-key <VM_KEY>
+```
 
 ## Post-Deployment Verification
 
@@ -113,20 +124,30 @@ This mints 1,000,000 USDC (6 decimals).
 
 ### Place a mint order
 
+A **market order** settles a VM-signed quote in one transaction via
+`executeOrder(Quote,bytes)` — the quote and signature come from the VM's quoter service, so it is
+driven by the app/SDK rather than a bare `cast` call. The single-user path you can run directly is a
+**limit order** (`placeOrder`), which escrows funds on-chain for the VM to fill later:
+
 ```bash
 # 1. Approve market to spend USDC
 cast send $MOCK_USDC "approve(address,uint256)" $OWN_MARKET 10000000000 \
   --rpc-url base_sepolia --private-key <USER_KEY>
 
-# 2. Place mint order (10,000 USDC for TSLA at $250)
-cast send $OWN_MARKET "placeMintOrder(address,bytes32,uint256,uint256,uint256)" \
+# 2. Place a limit mint order (10,000 USDC for TSLA, max $250)
+#    orderType: 0 = Mint, 1 = Redeem
+cast send $OWN_MARKET "placeOrder(address,bytes32,uint8,uint256,uint256,uint256)" \
   $VAULT_ADDRESS \
   $(cast --format-bytes32-string "TSLA") \
+  0 \
   10000000000 \
   250000000000000000000 \
   $(( $(date +%s) + 86400 )) \
   --rpc-url base_sepolia --private-key <USER_KEY>
 ```
+
+The VM then fills it by submitting a signed quote to `fillOrder`. If a redeem order goes unfilled,
+the owner can call `forceExecuteOrder` after the claim threshold to settle at the oracle price.
 
 ### LP deposit via WETHRouter (native ETH)
 
