@@ -33,7 +33,6 @@ contract CreateVault is Script {
         OwnVault vault = OwnVault(vaultAddr);
 
         // Admin configuration
-        vault.setGracePeriod(1 days);
         vault.setClaimThreshold(6 hours);
         vault.setCollateralOracleAsset(ETH);
 

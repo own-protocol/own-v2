@@ -78,7 +78,6 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     //  Order execution parameters (read by OwnMarket)
     // ──────────────────────────────────────────────────────────
 
-    uint256 private _gracePeriod;
     uint256 private _claimThreshold;
     bytes32 private _collateralOracleAsset;
 
@@ -696,18 +695,6 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     // ──────────────────────────────────────────────────────────
     //  Order execution parameters
     // ──────────────────────────────────────────────────────────
-
-    /// @inheritdoc IOwnVault
-    function gracePeriod() external view returns (uint256) {
-        return _gracePeriod;
-    }
-
-    /// @inheritdoc IOwnVault
-    function setGracePeriod(
-        uint256 period
-    ) external onlyAdmin {
-        _gracePeriod = period;
-    }
 
     /// @inheritdoc IOwnVault
     function claimThreshold() external view returns (uint256) {

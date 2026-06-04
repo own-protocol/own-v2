@@ -44,8 +44,6 @@ contract AsyncDepositFlowTest is BaseTest {
 
         market = new OwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
-
-        vault.setGracePeriod(1 days);
         vault.setClaimThreshold(6 hours);
 
         eTSLA = new EToken("Own Tesla", "eTSLA", TSLA, address(protocolRegistry), address(usdc));

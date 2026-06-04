@@ -314,15 +314,7 @@ interface IOwnVault is IERC4626 {
     //  Order execution parameters (used by OwnMarket)
     // ──────────────────────────────────────────────────────────
 
-    /// @notice Time after claim before force execution is allowed.
-    function gracePeriod() external view returns (uint256);
-
-    /// @notice Set the grace period. Only callable by admin.
-    function setGracePeriod(
-        uint256 period
-    ) external;
-
-    /// @notice Time after placement before unclaimed redeem force execution is allowed.
+    /// @notice Delay after a resting redeem order is placed before it can be force-executed.
     function claimThreshold() external view returns (uint256);
 
     /// @notice Set the claim threshold. Only callable by admin.

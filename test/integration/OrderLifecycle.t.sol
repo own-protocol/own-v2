@@ -34,7 +34,6 @@ contract OrderLifecycleTest is BaseTest {
     uint256 constant LP_DEPOSIT_WETH = 50_000e18;
     uint256 constant MINT_AMOUNT = 10_000e6;
     uint256 constant ETOKEN_AMOUNT = 40e18;
-    uint256 constant GRACE_PERIOD = 1 days;
     uint256 constant CLAIM_THRESHOLD = 6 hours;
 
     uint256 constant MINT_FEE_BPS = 100;
@@ -72,8 +71,6 @@ contract OrderLifecycleTest is BaseTest {
 
         market = new OwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
-
-        vault.setGracePeriod(GRACE_PERIOD);
         vault.setClaimThreshold(CLAIM_THRESHOLD);
         vault.addQuoteSigner(vm1Signer);
 

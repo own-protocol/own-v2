@@ -42,7 +42,6 @@ contract UpgradeVault is Script {
 
         // ── 3. Configure admin parameters ──
         OwnVault vault = OwnVault(vaultAddr);
-        vault.setGracePeriod(1 days);
         vault.setClaimThreshold(6 hours);
         vault.setCollateralOracleAsset(ETH);
 

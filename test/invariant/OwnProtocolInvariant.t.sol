@@ -45,7 +45,6 @@ contract OwnProtocolInvariant is BaseTest {
     uint256 constant PROTOCOL_SHARE_BPS = 2000;
     uint256 constant MINT_FEE_BPS = 30;
     uint256 constant REDEEM_FEE_BPS = 30;
-    uint256 constant GRACE_PERIOD = 1 days;
     uint256 constant CLAIM_THRESHOLD = 6 hours;
     uint256 constant WITHDRAWAL_WAIT = 1 hours;
     uint256 constant LP_SEED_AMOUNT = 50_000e18; // 50k WETH
@@ -96,9 +95,7 @@ contract OwnProtocolInvariant is BaseTest {
         market = new OwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
 
-        // Vault parameters
-        vault.setGracePeriod(GRACE_PERIOD);
-        vault.setClaimThreshold(CLAIM_THRESHOLD);
+        // Vault parameters        vault.setClaimThreshold(CLAIM_THRESHOLD);
         vault.setWithdrawalWaitPeriod(WITHDRAWAL_WAIT);
         vault.addQuoteSigner(vm1Signer);
 

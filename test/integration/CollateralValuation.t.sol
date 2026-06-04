@@ -69,8 +69,6 @@ contract CollateralValuationTest is BaseTest {
 
         market = new OwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
-
-        vault.setGracePeriod(1 days);
         vault.setClaimThreshold(6 hours);
         vault.addQuoteSigner(vm1Signer);
 
