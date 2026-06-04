@@ -37,7 +37,7 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
         vault = OwnVault(_vault);
         weth = MockERC20(_weth);
         usdc = MockERC20(_usdc);
-        vmAddr = Actors.VM1;
+        vmAddr = vault.vm();
 
         lps.push(Actors.LP1);
         lps.push(Actors.LP2);

@@ -88,10 +88,9 @@ contract OwnProtocolInvariant is BaseTest {
         factory = new VaultFactory(Actors.ADMIN, address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), address(factory));
 
-        // Create vault: WETH collateral, VM1, 80% max util, 20% VM fee share
-        vault = OwnVault(
-            factory.createVault(address(weth), Actors.VM1, "Own ETH Vault", "oETH", MAX_UTIL_BPS, VM_SHARE_BPS)
-        );
+        // Create vault: WETH collateral, vm1Signer (keyed VM for quote signing), 80% max util, 20% VM fee share
+        vault =
+            OwnVault(factory.createVault(address(weth), vm1Signer, "Own ETH Vault", "oETH", MAX_UTIL_BPS, VM_SHARE_BPS));
 
         // Market
         market = new OwnMarket(address(protocolRegistry));
@@ -138,7 +137,7 @@ contract OwnProtocolInvariant is BaseTest {
     }
 
     function _configureVault() private {
-        vm.startPrank(Actors.VM1);
+        vm.startPrank(vm1Signer);
         vault.setPaymentToken(address(usdc));
         vault.enableAsset(TSLA);
         vm.stopPrank();
@@ -149,8 +148,8 @@ contract OwnProtocolInvariant is BaseTest {
     }
 
     function _seedVault() private {
-        _fundWETH(Actors.VM1, LP_SEED_AMOUNT);
-        vm.startPrank(Actors.VM1);
+        _fundWETH(vm1Signer, LP_SEED_AMOUNT);
+        vm.startPrank(vm1Signer);
         weth.approve(address(vault), LP_SEED_AMOUNT);
         vault.deposit(LP_SEED_AMOUNT, Actors.LP1);
         vm.stopPrank();
@@ -159,7 +158,13 @@ contract OwnProtocolInvariant is BaseTest {
     function _deployHandlers() private {
         vaultHandler = new VaultHandler(address(vault), address(weth), address(usdc));
         marketHandler = new MarketHandler(
-            address(market), address(vault), address(feeCalc), address(usdc), address(eTSLA), address(oracle)
+            address(market),
+            address(vault),
+            address(feeCalc),
+            address(usdc),
+            address(eTSLA),
+            address(oracle),
+            vm1SignerPk
         );
         eTokenHandler = new ETokenHandler(address(eTSLA), address(usdc));
 
@@ -179,20 +184,16 @@ contract OwnProtocolInvariant is BaseTest {
         vaultSelectors[6] = VaultHandler.claimLPRewards.selector;
         targetSelector(FuzzSelector({addr: address(vaultHandler), selectors: vaultSelectors}));
 
-        bytes4[] memory marketSelectors = new bytes4[](13);
+        bytes4[] memory marketSelectors = new bytes4[](9);
         marketSelectors[0] = MarketHandler.placeMintOrder.selector;
         marketSelectors[1] = MarketHandler.placeRedeemOrder.selector;
-        marketSelectors[2] = MarketHandler.claimMintOrder.selector;
-        marketSelectors[3] = MarketHandler.claimRedeemOrder.selector;
-        marketSelectors[4] = MarketHandler.confirmMintOrder.selector;
-        marketSelectors[5] = MarketHandler.confirmRedeemOrder.selector;
-        marketSelectors[6] = MarketHandler.cancelMintOrder.selector;
-        marketSelectors[7] = MarketHandler.cancelRedeemOrder.selector;
-        marketSelectors[8] = MarketHandler.expireMintOrder.selector;
-        marketSelectors[9] = MarketHandler.expireRedeemOrder.selector;
-        marketSelectors[10] = MarketHandler.closeMintOrder.selector;
-        marketSelectors[11] = MarketHandler.closeRedeemOrder.selector;
-        marketSelectors[12] = MarketHandler.warpForward.selector;
+        marketSelectors[2] = MarketHandler.fillMintOrder.selector;
+        marketSelectors[3] = MarketHandler.fillRedeemOrder.selector;
+        marketSelectors[4] = MarketHandler.cancelMintOrder.selector;
+        marketSelectors[5] = MarketHandler.cancelRedeemOrder.selector;
+        marketSelectors[6] = MarketHandler.expireMintOrder.selector;
+        marketSelectors[7] = MarketHandler.expireRedeemOrder.selector;
+        marketSelectors[8] = MarketHandler.warpForward.selector;
         targetSelector(FuzzSelector({addr: address(marketHandler), selectors: marketSelectors}));
 
         bytes4[] memory eTokenSelectors = new bytes4[](3);
@@ -243,20 +244,18 @@ contract OwnProtocolInvariant is BaseTest {
         assert(usdcBalance >= protocolFees + vmFees + lpRewards);
     }
 
-    /// @notice INV-04: Market stablecoin balance covers escrowed mint order funds.
+    /// @notice INV-04: Market stablecoin balance covers escrowed open mint orders.
+    ///         Escrow = sum over open MINT orders of (amount - filledAmount).
     function invariant_marketStablecoinEscrow() external view {
         uint256 marketUsdcBalance = usdc.balanceOf(address(market));
-        uint256 escrowedTotal = marketHandler.ghost_escrowedStablecoins() + marketHandler.ghost_escrowedMintFees();
-
-        assert(marketUsdcBalance >= escrowedTotal);
+        assert(marketUsdcBalance >= marketHandler.ghost_escrowedStablecoins());
     }
 
-    /// @notice INV-05: Market eToken balance covers escrowed redeem orders.
+    /// @notice INV-05: Market eToken balance covers escrowed open redeem orders.
+    ///         Escrow = sum over open REDEEM orders of (amount - filledAmount).
     function invariant_marketETokenEscrow() external view {
         uint256 marketETokenBalance = eTSLA.balanceOf(address(market));
-        uint256 escrowedETokens = marketHandler.ghost_escrowedETokens();
-
-        assert(marketETokenBalance >= escrowedETokens);
+        assert(marketETokenBalance >= marketHandler.ghost_escrowedETokens());
     }
 
     // ═════════════════════════════════════════════════════════════

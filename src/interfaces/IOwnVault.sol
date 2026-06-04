@@ -39,6 +39,8 @@ interface IOwnVault is IERC4626 {
     event LPRewardsClaimed(address indexed account, address indexed token, uint256 amount);
 
     event VMUpdated(address indexed oldVM, address indexed newVM);
+    event QuoteSignerAdded(address indexed signer);
+    event QuoteSignerRemoved(address indexed signer);
     event VMShareUpdated(uint256 oldShareBps, uint256 newShareBps);
     event PaymentTokenUpdated(address indexed oldToken, address indexed newToken);
     event AssetEnabled(bytes32 indexed asset);
@@ -75,6 +77,8 @@ interface IOwnVault is IERC4626 {
     error ShareTooHigh(uint256 shareBps, uint256 maxBps);
     error OnlyAdmin();
     error OnlyMarket();
+    error AlreadyQuoteSigner(address signer);
+    error NotQuoteSigner(address signer);
     error WithdrawalNotPending(uint256 requestId);
     error OutstandingFeesExist();
     error WrongFeeToken(address expected, address provided);
@@ -96,9 +100,31 @@ interface IOwnVault is IERC4626 {
     function vm() external view returns (address);
 
     /// @notice Update the vault manager address. Only callable by admin.
+    /// @dev    The VM is the operational / fund-custody address (it receives mint proceeds,
+    ///         funds redeem payouts, and claims VM fees). It is independent of the quote-signer
+    ///         set — changing the VM does not alter authorised quote signers.
     /// @param newVM New VM address.
     function setVM(
         address newVM
+    ) external;
+
+    /// @notice Whether an address is an authorised quote signer for this vault.
+    /// @dev    The market verifies that order quotes are signed by an authorised signer.
+    ///         Signers are decoupled from the operational `vm` address so a hot signing key
+    ///         (e.g. an HSM/KMS key) need not custody funds. The bound VM is seeded as the
+    ///         initial signer at construction and may be removed once other signers are added.
+    function isQuoteSigner(
+        address account
+    ) external view returns (bool);
+
+    /// @notice Authorise a new quote signer. Only callable by the VM.
+    function addQuoteSigner(
+        address signer
+    ) external;
+
+    /// @notice Revoke a quote signer. Only callable by the VM.
+    function removeQuoteSigner(
+        address signer
     ) external;
 
     // ──────────────────────────────────────────────────────────

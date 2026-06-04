@@ -6,7 +6,7 @@ import {BaseTest} from "../helpers/BaseTest.sol";
 
 import {IOwnMarket} from "../../src/interfaces/IOwnMarket.sol";
 import {IOwnVault} from "../../src/interfaces/IOwnVault.sol";
-import {AssetConfig, BPS, OrderStatus, PRECISION} from "../../src/interfaces/types/Types.sol";
+import {AssetConfig, BPS, OrderStatus, OrderType, PRECISION, Quote} from "../../src/interfaces/types/Types.sol";
 
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {FeeCalculator} from "../../src/core/FeeCalculator.sol";
@@ -64,7 +64,7 @@ contract UtilizationLimitTest is BaseTest {
         protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), address(factory));
 
         // Low max utilization: 10%
-        vault = OwnVault(factory.createVault(address(weth), Actors.VM1, "Own ETH Vault", "oETH", MAX_UTIL_BPS, 2000));
+        vault = OwnVault(factory.createVault(address(weth), vm1Signer, "Own ETH Vault", "oETH", MAX_UTIL_BPS, 2000));
 
         market = new OwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
@@ -105,7 +105,7 @@ contract UtilizationLimitTest is BaseTest {
     }
 
     function _configureVault() private {
-        vm.startPrank(Actors.VM1);
+        vm.startPrank(vm1Signer);
         vault.setPaymentToken(address(usdc));
         vault.enableAsset(TSLA);
         vm.stopPrank();
@@ -115,8 +115,8 @@ contract UtilizationLimitTest is BaseTest {
     }
 
     function _depositLPCollateral() private {
-        _fundWETH(Actors.VM1, LP_DEPOSIT_WETH);
-        vm.startPrank(Actors.VM1);
+        _fundWETH(vm1Signer, LP_DEPOSIT_WETH);
+        vm.startPrank(vm1Signer);
         weth.approve(address(vault), LP_DEPOSIT_WETH);
         vault.deposit(LP_DEPOSIT_WETH, Actors.LP1);
         vm.stopPrank();
@@ -126,91 +126,91 @@ contract UtilizationLimitTest is BaseTest {
         _fundUSDC(minter, amount);
         vm.startPrank(minter);
         usdc.approve(address(market), amount);
-        uint256 orderId = market.placeMintOrder(address(vault), TSLA, amount, TSLA_PRICE, expiry);
+        uint256 orderId = market.placeOrder(address(vault), TSLA, OrderType.Mint, amount, TSLA_PRICE, expiry);
         vm.stopPrank();
         return orderId;
+    }
+
+    /// @dev Fill a resting mint order with a VM-signed quote for the full remaining amount.
+    function _fillMint(uint256 orderId, address minter, uint256 amount) internal {
+        Quote memory q = _buildQuote(orderId, minter, address(vault), TSLA, OrderType.Mint, amount, TSLA_PRICE);
+        bytes memory sig = _signQuote(market, q, vm1SignerPk);
+        vm.prank(vm1Signer);
+        market.fillOrder(q, sig);
     }
 
     // ══════════════════════════════════════════════════════════
     //  Test: Claim succeeds when within utilization limit
     // ══════════════════════════════════════════════════════════
 
-    function test_utilization_claimSucceedsWithinLimit() public {
+    function test_utilization_fillSucceedsWithinLimit() public {
         // Collateral = 100 ETH * $3000 = $300,000
         // Max utilization = 10% = $30,000
         // Order = $10,000 = 3.33% utilization → should succeed
         uint256 mintAmount = 10_000e6;
         uint256 orderId = _placeMint(Actors.MINTER1, mintAmount, block.timestamp + 1 days);
 
-        vm.prank(Actors.VM1);
-        market.claimOrder(orderId);
+        // Escrow alone does not add exposure
+        assertEq(vault.utilization(), 0, "utilization unchanged after placement");
 
-        assertEq(uint8(market.getOrder(orderId).status), uint8(OrderStatus.Claimed));
-        // Claim is read-only — exposure not yet updated
-        assertEq(vault.utilization(), 0, "utilization unchanged after claim");
+        _fillMint(orderId, Actors.MINTER1, mintAmount);
+
+        assertEq(uint8(market.getOrder(orderId).status), uint8(OrderStatus.Filled));
+        assertGt(vault.utilization(), 0, "utilization > 0 after fill");
     }
 
     // ══════════════════════════════════════════════════════════
-    //  Test: Claim reverts when utilization would be breached
+    //  Test: Fill reverts when utilization would be breached
     // ══════════════════════════════════════════════════════════
 
-    function test_utilization_claimBlockedWhenBreached() public {
+    function test_utilization_fillBlockedWhenBreached() public {
         // Collateral = 100 ETH * $3000 = $300,000
         // Max utilization = 10% = $30,000
         // Order = $50,000 → 16.6% utilization → should revert
         uint256 bigMintAmount = 50_000e6;
         uint256 orderId = _placeMint(Actors.MINTER1, bigMintAmount, block.timestamp + 1 days);
 
-        vm.prank(Actors.VM1);
+        Quote memory q =
+            _buildQuote(orderId, Actors.MINTER1, address(vault), TSLA, OrderType.Mint, bigMintAmount, TSLA_PRICE);
+        bytes memory sig = _signQuote(market, q, vm1SignerPk);
+
+        vm.prank(vm1Signer);
         vm.expectRevert(); // UtilizationBreached
-        market.claimOrder(orderId);
+        market.fillOrder(q, sig);
     }
 
     // ══════════════════════════════════════════════════════════
-    //  Test: Utilization decreases after confirm
+    //  Test: Utilization updates after fill
     // ══════════════════════════════════════════════════════════
 
-    function test_utilization_updatesAfterConfirm() public {
+    function test_utilization_updatesAfterFill() public {
         uint256 mintAmount = 10_000e6;
         uint256 orderId = _placeMint(Actors.MINTER1, mintAmount, block.timestamp + 1 days);
 
-        vm.prank(Actors.VM1);
-        market.claimOrder(orderId);
+        assertEq(vault.utilization(), 0, "utilization unchanged after placement");
 
-        assertEq(vault.utilization(), 0, "utilization unchanged after claim");
+        _fillMint(orderId, Actors.MINTER1, mintAmount);
 
-        // Confirm mint → exposure increases
-        vm.prank(Actors.VM1);
-        market.confirmOrder(orderId, _buildPriceProof(TSLA_PRICE));
-
-        assertGt(vault.utilization(), 0, "utilization > 0 after mint confirm");
+        assertGt(vault.utilization(), 0, "utilization > 0 after fill");
         assertLe(vault.utilization(), MAX_UTIL_BPS, "utilization within limit");
     }
 
     // ══════════════════════════════════════════════════════════
-    //  Test: Utilization decreases after close
+    //  Test: Cancelling an unfilled order leaves utilization at zero
     // ══════════════════════════════════════════════════════════
 
-    function test_utilization_updatesAfterClose() public {
-        uint256 expiry = block.timestamp + 1 days;
+    function test_utilization_unchangedAfterCancel() public {
         uint256 mintAmount = 10_000e6;
-        uint256 orderId = _placeMint(Actors.MINTER1, mintAmount, expiry);
+        uint256 orderId = _placeMint(Actors.MINTER1, mintAmount, block.timestamp + 1 days);
 
-        vm.prank(Actors.VM1);
-        market.claimOrder(orderId);
+        // Escrow doesn't change exposure
+        assertEq(vault.utilization(), 0, "utilization unchanged after placement");
 
-        // Claim doesn't change exposure
-        assertEq(vault.utilization(), 0, "utilization unchanged after claim");
+        vm.prank(Actors.MINTER1);
+        market.cancelOrder(orderId);
 
-        vm.warp(expiry + 1);
-
-        vm.startPrank(Actors.VM1);
-        usdc.approve(address(market), mintAmount);
-        market.closeOrder(orderId);
-        vm.stopPrank();
-
-        // Close doesn't change exposure (nothing was executed)
-        assertEq(vault.utilization(), 0, "utilization still 0 after close");
+        // Cancel returns escrow — nothing was settled
+        assertEq(vault.utilization(), 0, "utilization still 0 after cancel");
     }
 
     // ══════════════════════════════════════════════════════════
@@ -224,27 +224,20 @@ contract UtilizationLimitTest is BaseTest {
         uint256 orderId1 = _placeMint(Actors.MINTER1, mintAmount, block.timestamp + 1 days);
         uint256 orderId2 = _placeMint(Actors.MINTER2, mintAmount, block.timestamp + 1 days);
 
-        vm.prank(Actors.VM1);
-        market.claimOrder(orderId1);
-        vm.prank(Actors.VM1);
-        market.claimOrder(orderId2);
+        // Escrow alone doesn't change exposure
+        assertEq(vault.utilization(), 0, "utilization unchanged after placements");
 
-        // Claims don't change exposure
-        assertEq(vault.utilization(), 0, "utilization unchanged after claims");
-
-        // Confirm first mint → exposure increases
-        vm.prank(Actors.VM1);
-        market.confirmOrder(orderId1, _buildPriceProof(TSLA_PRICE));
+        // Fill first mint → exposure increases
+        _fillMint(orderId1, Actors.MINTER1, mintAmount);
 
         uint256 utilAfterFirst = vault.utilization();
-        assertGt(utilAfterFirst, 0, "utilization > 0 after first confirm");
+        assertGt(utilAfterFirst, 0, "utilization > 0 after first fill");
 
-        // Confirm second mint → exposure increases further
-        vm.prank(Actors.VM1);
-        market.confirmOrder(orderId2, _buildPriceProof(TSLA_PRICE));
+        // Fill second mint → exposure increases further
+        _fillMint(orderId2, Actors.MINTER2, mintAmount);
 
         uint256 utilAfterSecond = vault.utilization();
-        assertGt(utilAfterSecond, utilAfterFirst, "utilization increased with second confirm");
+        assertGt(utilAfterSecond, utilAfterFirst, "utilization increased with second fill");
     }
 
     // ══════════════════════════════════════════════════════════
@@ -255,10 +248,7 @@ contract UtilizationLimitTest is BaseTest {
         uint256 mintAmount = 10_000e6;
         uint256 orderId = _placeMint(Actors.MINTER1, mintAmount, block.timestamp + 1 days);
 
-        vm.prank(Actors.VM1);
-        market.claimOrder(orderId);
-        vm.prank(Actors.VM1);
-        market.confirmOrder(orderId, _buildPriceProof(TSLA_PRICE));
+        _fillMint(orderId, Actors.MINTER1, mintAmount);
 
         assertGt(vault.utilization(), 0, "utilization > 0 after confirm");
         assertEq(vault.projectedUtilization(), vault.utilization(), "projected == current when no withdrawals");
@@ -269,10 +259,7 @@ contract UtilizationLimitTest is BaseTest {
         uint256 mintAmount = 10_000e6;
         uint256 orderId = _placeMint(Actors.MINTER1, mintAmount, block.timestamp + 1 days);
 
-        vm.prank(Actors.VM1);
-        market.claimOrder(orderId);
-        vm.prank(Actors.VM1);
-        market.confirmOrder(orderId, _buildPriceProof(TSLA_PRICE));
+        _fillMint(orderId, Actors.MINTER1, mintAmount);
 
         uint256 utilBefore = vault.utilization();
         assertGt(utilBefore, 0);
@@ -296,10 +283,7 @@ contract UtilizationLimitTest is BaseTest {
         uint256 mintAmount = 10_000e6;
         uint256 orderId = _placeMint(Actors.MINTER1, mintAmount, block.timestamp + 1 days);
 
-        vm.prank(Actors.VM1);
-        market.claimOrder(orderId);
-        vm.prank(Actors.VM1);
-        market.confirmOrder(orderId, _buildPriceProof(TSLA_PRICE));
+        _fillMint(orderId, Actors.MINTER1, mintAmount);
 
         uint256 lpShares = vault.balanceOf(Actors.LP1);
         vm.prank(Actors.LP1);
@@ -320,10 +304,7 @@ contract UtilizationLimitTest is BaseTest {
         uint256 mintAmount = 10_000e6;
         uint256 orderId = _placeMint(Actors.MINTER1, mintAmount, block.timestamp + 1 days);
 
-        vm.prank(Actors.VM1);
-        market.claimOrder(orderId);
-        vm.prank(Actors.VM1);
-        market.confirmOrder(orderId, _buildPriceProof(TSLA_PRICE));
+        _fillMint(orderId, Actors.MINTER1, mintAmount);
 
         uint256 lpShares = vault.balanceOf(Actors.LP1);
         vm.prank(Actors.LP1);

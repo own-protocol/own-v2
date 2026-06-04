@@ -2,13 +2,15 @@
 pragma solidity 0.8.28;
 
 import {ProtocolRegistry} from "../../src/core/ProtocolRegistry.sol";
-import {BPS, PRECISION} from "../../src/interfaces/types/Types.sol";
+import {IOwnMarket} from "../../src/interfaces/IOwnMarket.sol";
+import {BPS, OrderType, PRECISION, Quote} from "../../src/interfaces/types/Types.sol";
 import {Actors} from "./Actors.sol";
 import {MockAUSDC} from "./MockAUSDC.sol";
 import {MockDEX} from "./MockDEX.sol";
 import {MockERC20} from "./MockERC20.sol";
 import {MockOracleVerifier} from "./MockOracleVerifier.sol";
 import {MockWstETH} from "./MockWstETH.sol";
+import {MessageHashUtils} from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 import {Test} from "forge-std/Test.sol";
 
 /// @title BaseTest — Common setup for all Own Protocol tests
@@ -75,11 +77,62 @@ contract BaseTest is Test {
     //  Setup
     // ──────────────────────────────────────────────────────────
 
+    // ──────────────────────────────────────────────────────────
+    //  VM quote signers (keyed, for RFQ quote signing)
+    // ──────────────────────────────────────────────────────────
+
+    /// @notice Primary VM signer (use as a vault's VM where quote signing is needed).
+    address public vm1Signer;
+    uint256 public vm1SignerPk;
+
+    /// @notice Secondary VM signer (for cross-vault tests).
+    address public vm2Signer;
+    uint256 public vm2SignerPk;
+
     function setUp() public virtual {
+        (vm1Signer, vm1SignerPk) = makeAddrAndKey("vm1Signer");
+        (vm2Signer, vm2SignerPk) = makeAddrAndKey("vm2Signer");
         _deployMockTokens();
         _deployMockInfrastructure();
         _labelActors();
         _setDefaultPrices();
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Utility: RFQ quotes
+    // ──────────────────────────────────────────────────────────
+
+    /// @notice Sign a quote with a VM private key, matching OwnMarket's digest scheme.
+    function _signQuote(IOwnMarket mkt, Quote memory q, uint256 pk) internal view returns (bytes memory) {
+        bytes32 digest = mkt.quoteDigest(q);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(pk, MessageHashUtils.toEthSignedMessageHash(digest));
+        return abi.encodePacked(r, s, v);
+    }
+
+    /// @dev Monotonic nonce so generated quotes are unique within a test run.
+    uint256 private _baseQuoteNonce = 1;
+
+    /// @notice Build a Quote with a fresh nonce and a default 1-day expiry.
+    function _buildQuote(
+        uint256 orderId,
+        address user,
+        address vault,
+        bytes32 asset,
+        OrderType orderType,
+        uint256 amount,
+        uint256 price
+    ) internal returns (Quote memory q) {
+        q = Quote({
+            orderId: orderId,
+            user: user,
+            vault: vault,
+            asset: asset,
+            orderType: orderType,
+            amount: amount,
+            price: price,
+            quoteId: _baseQuoteNonce++,
+            expiry: block.timestamp + 1 days
+        });
     }
 
     // ──────────────────────────────────────────────────────────

@@ -4,7 +4,9 @@ pragma solidity 0.8.28;
 import {Actors} from "../helpers/Actors.sol";
 import {BaseTest} from "../helpers/BaseTest.sol";
 
-import {AssetConfig, BPS, OrderStatus, PRECISION} from "../../src/interfaces/types/Types.sol";
+import {AssetConfig, BPS, OrderStatus, OrderType, PRECISION, Quote} from "../../src/interfaces/types/Types.sol";
+
+import {IOwnMarket} from "../../src/interfaces/IOwnMarket.sol";
 
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {FeeCalculator} from "../../src/core/FeeCalculator.sol";
@@ -13,6 +15,7 @@ import {OwnVault} from "../../src/core/OwnVault.sol";
 import {VaultFactory} from "../../src/core/VaultFactory.sol";
 import {EToken} from "../../src/tokens/EToken.sol";
 
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 /// @title CollateralValuation Integration Test
@@ -62,7 +65,7 @@ contract CollateralValuationTest is BaseTest {
         VaultFactory factory = new VaultFactory(Actors.ADMIN, address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), address(factory));
 
-        vault = OwnVault(factory.createVault(address(weth), Actors.VM1, "Own ETH Vault", "oETH", MAX_UTIL_BPS, 2000));
+        vault = OwnVault(factory.createVault(address(weth), vm1Signer, "Own ETH Vault", "oETH", MAX_UTIL_BPS, 2000));
 
         market = new OwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
@@ -112,7 +115,7 @@ contract CollateralValuationTest is BaseTest {
     }
 
     function _configureVault() private {
-        vm.startPrank(Actors.VM1);
+        vm.startPrank(vm1Signer);
         vault.setPaymentToken(address(usdc));
         vault.enableAsset(TSLA);
         vault.enableAsset(GOLD);
@@ -124,20 +127,39 @@ contract CollateralValuationTest is BaseTest {
     }
 
     function _depositLPCollateral() private {
-        _fundWETH(Actors.VM1, LP_DEPOSIT_WETH);
-        vm.startPrank(Actors.VM1);
+        _fundWETH(vm1Signer, LP_DEPOSIT_WETH);
+        vm.startPrank(vm1Signer);
         weth.approve(address(vault), LP_DEPOSIT_WETH);
         vault.deposit(LP_DEPOSIT_WETH, Actors.LP1);
         vm.stopPrank();
     }
 
-    function _placeMint(bytes32 asset, uint256 amount, uint256 price, uint256 expiry) internal returns (uint256) {
+    /// @dev Market mint for MINTER1 via a VM-signed quote — adds exposure to the vault.
+    function _marketMint(bytes32 asset, uint256 amount, uint256 price) internal {
         _fundUSDC(Actors.MINTER1, amount);
-        vm.startPrank(Actors.MINTER1);
+        vm.prank(Actors.MINTER1);
         usdc.approve(address(market), amount);
-        uint256 orderId = market.placeMintOrder(address(vault), asset, amount, price, expiry);
-        vm.stopPrank();
-        return orderId;
+        Quote memory q = _buildQuote(0, Actors.MINTER1, address(vault), asset, OrderType.Mint, amount, price);
+        bytes memory sig = _signQuote(market, q, vm1SignerPk);
+        vm.prank(Actors.MINTER1);
+        market.executeOrder(q, sig);
+    }
+
+    /// @dev Market redeem of MINTER1's eTokens via a VM-signed quote — removes exposure.
+    function _marketRedeem(bytes32 asset, uint256 eAmount, uint256 price) internal {
+        // VM funds the payout and approves the market to pull it.
+        uint256 grossPayout = Math.mulDiv(eAmount, price, PRECISION * 1e12);
+        _fundUSDC(vm1Signer, grossPayout);
+        vm.prank(vm1Signer);
+        usdc.approve(address(market), grossPayout);
+
+        vm.prank(Actors.MINTER1);
+        IERC20(assetRegistry.getActiveToken(asset)).approve(address(market), eAmount);
+
+        Quote memory q = _buildQuote(0, Actors.MINTER1, address(vault), asset, OrderType.Redeem, eAmount, price);
+        bytes memory sig = _signQuote(market, q, vm1SignerPk);
+        vm.prank(Actors.MINTER1);
+        market.executeOrder(q, sig);
     }
 
     // ══════════════════════════════════════════════════════════
@@ -152,12 +174,7 @@ contract CollateralValuationTest is BaseTest {
         uint256 expectedCollateral = Math.mulDiv(LP_DEPOSIT_WETH, ETH_PRICE, PRECISION);
         assertEq(vault.collateralValueUSD(), expectedCollateral, "collateral value correct");
 
-        uint256 orderId = _placeMint(TSLA, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
-
-        vm.prank(Actors.VM1);
-        market.claimOrder(orderId);
-        vm.prank(Actors.VM1);
-        market.confirmOrder(orderId, _buildPriceProof(TSLA_PRICE));
+        _marketMint(TSLA, MINT_AMOUNT, TSLA_PRICE);
 
         uint256 healthAfterConfirm = vault.healthFactor();
         assertLt(healthAfterConfirm, type(uint256).max, "health decreased from max");
@@ -170,35 +187,16 @@ contract CollateralValuationTest is BaseTest {
     // ══════════════════════════════════════════════════════════
 
     function test_healthFactor_withMintAndRedeem() public {
-        // Mint confirm adds exposure, redeem confirm removes it
-        uint256 orderId = _placeMint(TSLA, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
-
-        vm.prank(Actors.VM1);
-        market.claimOrder(orderId);
-        vm.prank(Actors.VM1);
-        market.confirmOrder(orderId, _buildPriceProof(TSLA_PRICE));
+        // Mint adds exposure, redeem removes it
+        _marketMint(TSLA, MINT_AMOUNT, TSLA_PRICE);
 
         uint256 healthWithExposure = vault.healthFactor();
         assertLt(healthWithExposure, type(uint256).max, "health decreased with mint exposure");
-        assertGt(vault.totalExposureUSD(), 0, "exposure > 0 after mint confirm");
+        assertGt(vault.totalExposureUSD(), 0, "exposure > 0 after mint");
 
-        // Place and execute a redeem to remove exposure
+        // Redeem all eTokens to remove exposure
         uint256 eTokenUnits = Math.mulDiv(MINT_AMOUNT * 1e12, PRECISION, TSLA_PRICE);
-        vm.startPrank(Actors.MINTER1);
-        EToken(address(eTSLA)).approve(address(market), eTokenUnits);
-        uint256 redeemId =
-            market.placeRedeemOrder(address(vault), TSLA, eTokenUnits, TSLA_PRICE, block.timestamp + 1 days);
-        vm.stopPrank();
-
-        // VM needs USDC to pay user on redeem confirm
-        uint256 grossPayout = Math.mulDiv(eTokenUnits, TSLA_PRICE, PRECISION * 1e12);
-        _fundUSDC(Actors.VM1, grossPayout);
-        vm.prank(Actors.VM1);
-        market.claimOrder(redeemId);
-        vm.startPrank(Actors.VM1);
-        usdc.approve(address(market), grossPayout);
-        market.confirmOrder(redeemId, _buildPriceProof(TSLA_PRICE));
-        vm.stopPrank();
+        _marketRedeem(TSLA, eTokenUnits, TSLA_PRICE);
 
         assertEq(vault.healthFactor(), type(uint256).max, "health recovered to max after redeem");
         assertEq(vault.totalExposureUSD(), 0, "exposure back to 0");
@@ -227,13 +225,8 @@ contract CollateralValuationTest is BaseTest {
     // ══════════════════════════════════════════════════════════
 
     function test_assetValuation_updatesWithOraclePrice() public {
-        // Create exposure via mint confirm
-        uint256 orderId = _placeMint(TSLA, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
-
-        vm.prank(Actors.VM1);
-        market.claimOrder(orderId);
-        vm.prank(Actors.VM1);
-        market.confirmOrder(orderId, _buildPriceProof(TSLA_PRICE));
+        // Create exposure via market mint
+        _marketMint(TSLA, MINT_AMOUNT, TSLA_PRICE);
 
         uint256 exposureBefore = vault.totalExposureUSD();
         assertGt(exposureBefore, 0, "exposure > 0");
@@ -252,22 +245,14 @@ contract CollateralValuationTest is BaseTest {
     // ══════════════════════════════════════════════════════════
 
     function test_healthFactor_withMultipleAssets() public {
-        // Place and confirm TSLA order ($10,000)
-        uint256 tslaOrderId = _placeMint(TSLA, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
-        vm.prank(Actors.VM1);
-        market.claimOrder(tslaOrderId);
-        vm.prank(Actors.VM1);
-        market.confirmOrder(tslaOrderId, _buildPriceProof(TSLA_PRICE));
+        // Market mint TSLA ($10,000)
+        _marketMint(TSLA, MINT_AMOUNT, TSLA_PRICE);
 
         uint256 healthAfterTSLA = vault.healthFactor();
         uint256 exposureAfterTSLA = vault.totalExposureUSD();
 
-        // Place and confirm GOLD order ($10,000)
-        uint256 goldOrderId = _placeMint(GOLD, MINT_AMOUNT, GOLD_PRICE, block.timestamp + 1 days);
-        vm.prank(Actors.VM1);
-        market.claimOrder(goldOrderId);
-        vm.prank(Actors.VM1);
-        market.confirmOrder(goldOrderId, _buildPriceProof(GOLD_PRICE));
+        // Market mint GOLD ($10,000)
+        _marketMint(GOLD, MINT_AMOUNT, GOLD_PRICE);
 
         uint256 healthAfterBoth = vault.healthFactor();
         uint256 exposureAfterBoth = vault.totalExposureUSD();
@@ -277,20 +262,7 @@ contract CollateralValuationTest is BaseTest {
 
         // Redeem TSLA → only GOLD exposure remains
         uint256 tslaETokens = Math.mulDiv(MINT_AMOUNT * 1e12, PRECISION, TSLA_PRICE);
-        vm.startPrank(Actors.MINTER1);
-        EToken(address(eTSLA)).approve(address(market), tslaETokens);
-        uint256 tslaRedeemId =
-            market.placeRedeemOrder(address(vault), TSLA, tslaETokens, TSLA_PRICE, block.timestamp + 1 days);
-        vm.stopPrank();
-
-        uint256 tslaPayout = Math.mulDiv(tslaETokens, TSLA_PRICE, PRECISION * 1e12);
-        _fundUSDC(Actors.VM1, tslaPayout);
-        vm.prank(Actors.VM1);
-        market.claimOrder(tslaRedeemId);
-        vm.startPrank(Actors.VM1);
-        usdc.approve(address(market), tslaPayout);
-        market.confirmOrder(tslaRedeemId, _buildPriceProof(TSLA_PRICE));
-        vm.stopPrank();
+        _marketRedeem(TSLA, tslaETokens, TSLA_PRICE);
 
         uint256 healthAfterTSLARedeem = vault.healthFactor();
         assertGt(healthAfterTSLARedeem, healthAfterBoth, "health improved after TSLA redeem");
@@ -298,20 +270,7 @@ contract CollateralValuationTest is BaseTest {
 
         // Redeem GOLD → all clear
         uint256 goldETokens = Math.mulDiv(MINT_AMOUNT * 1e12, PRECISION, GOLD_PRICE);
-        vm.startPrank(Actors.MINTER1);
-        EToken(address(eGOLD)).approve(address(market), goldETokens);
-        uint256 goldRedeemId =
-            market.placeRedeemOrder(address(vault), GOLD, goldETokens, GOLD_PRICE, block.timestamp + 1 days);
-        vm.stopPrank();
-
-        uint256 goldPayout = Math.mulDiv(goldETokens, GOLD_PRICE, PRECISION * 1e12);
-        _fundUSDC(Actors.VM1, goldPayout);
-        vm.prank(Actors.VM1);
-        market.claimOrder(goldRedeemId);
-        vm.startPrank(Actors.VM1);
-        usdc.approve(address(market), goldPayout);
-        market.confirmOrder(goldRedeemId, _buildPriceProof(GOLD_PRICE));
-        vm.stopPrank();
+        _marketRedeem(GOLD, goldETokens, GOLD_PRICE);
 
         assertEq(vault.healthFactor(), type(uint256).max, "health max after all redeemed");
     }
@@ -321,12 +280,7 @@ contract CollateralValuationTest is BaseTest {
     // ══════════════════════════════════════════════════════════
 
     function test_healthFactor_degradesWithCollateralPriceDrop() public {
-        uint256 orderId = _placeMint(TSLA, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
-
-        vm.prank(Actors.VM1);
-        market.claimOrder(orderId);
-        vm.prank(Actors.VM1);
-        market.confirmOrder(orderId, _buildPriceProof(TSLA_PRICE));
+        _marketMint(TSLA, MINT_AMOUNT, TSLA_PRICE);
 
         uint256 healthBefore = vault.healthFactor();
 

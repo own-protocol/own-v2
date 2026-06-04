@@ -13,6 +13,7 @@ import {
     OrderStatus,
     OrderType,
     PRECISION,
+    Quote,
     VaultStatus
 } from "../../src/interfaces/types/Types.sol";
 
@@ -79,7 +80,7 @@ contract HaltWithPriceFlowTest is BaseTest {
         VaultFactory factory = new VaultFactory(Actors.ADMIN, address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), address(factory));
 
-        vault = OwnVault(factory.createVault(address(weth), Actors.VM1, "Own ETH Vault", "oETH", MAX_UTIL_BPS, 2000));
+        vault = OwnVault(factory.createVault(address(weth), vm1Signer, "Own ETH Vault", "oETH", MAX_UTIL_BPS, 2000));
 
         market = new OwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
@@ -130,7 +131,7 @@ contract HaltWithPriceFlowTest is BaseTest {
     }
 
     function _configureVault() private {
-        vm.startPrank(Actors.VM1);
+        vm.startPrank(vm1Signer);
         vault.setPaymentToken(address(usdc));
         vault.enableAsset(TSLA);
         vault.enableAsset(GOLD);
@@ -143,8 +144,8 @@ contract HaltWithPriceFlowTest is BaseTest {
     }
 
     function _depositLPCollateral() private {
-        _fundWETH(Actors.VM1, LP_DEPOSIT_WETH);
-        vm.startPrank(Actors.VM1);
+        _fundWETH(vm1Signer, LP_DEPOSIT_WETH);
+        vm.startPrank(vm1Signer);
         weth.approve(address(vault), LP_DEPOSIT_WETH);
         vault.deposit(LP_DEPOSIT_WETH, Actors.LP1);
         vm.stopPrank();
@@ -158,7 +159,7 @@ contract HaltWithPriceFlowTest is BaseTest {
         _fundUSDC(minter, amount);
         vm.startPrank(minter);
         usdc.approve(address(market), amount);
-        uint256 orderId = market.placeMintOrder(address(vault), TSLA, amount, TSLA_PRICE, expiry);
+        uint256 orderId = market.placeOrder(address(vault), TSLA, OrderType.Mint, amount, TSLA_PRICE, expiry);
         vm.stopPrank();
         return orderId;
     }
@@ -173,7 +174,7 @@ contract HaltWithPriceFlowTest is BaseTest {
         _fundUSDC(minter, amount);
         vm.startPrank(minter);
         usdc.approve(address(market), amount);
-        uint256 orderId = market.placeMintOrder(address(vault), asset, amount, price, expiry);
+        uint256 orderId = market.placeOrder(address(vault), asset, OrderType.Mint, amount, price, expiry);
         vm.stopPrank();
         return orderId;
     }
@@ -181,21 +182,20 @@ contract HaltWithPriceFlowTest is BaseTest {
     function _placeRedeem(address minter, uint256 eAmount, uint256 expiry) internal returns (uint256) {
         vm.startPrank(minter);
         eTSLA.approve(address(market), eAmount);
-        uint256 orderId = market.placeRedeemOrder(address(vault), TSLA, eAmount, TSLA_PRICE, expiry);
+        uint256 orderId = market.placeOrder(address(vault), TSLA, OrderType.Redeem, eAmount, TSLA_PRICE, expiry);
         vm.stopPrank();
         return orderId;
     }
 
+    /// @dev Mint eTokens to `minter` via a market mint settled against a VM-signed quote.
     function _mintETokensViaFlow(address minter, uint256 usdcAmount) internal {
         _fundUSDC(minter, usdcAmount);
-        vm.startPrank(minter);
+        vm.prank(minter);
         usdc.approve(address(market), usdcAmount);
-        uint256 orderId = market.placeMintOrder(address(vault), TSLA, usdcAmount, TSLA_PRICE, block.timestamp + 1 days);
-        vm.stopPrank();
-        vm.prank(Actors.VM1);
-        market.claimOrder(orderId);
-        vm.prank(Actors.VM1);
-        market.confirmOrder(orderId, _buildPriceProof(TSLA_PRICE));
+        Quote memory q = _buildQuote(0, minter, address(vault), TSLA, OrderType.Mint, usdcAmount, TSLA_PRICE);
+        bytes memory sig = _signQuote(market, q, vm1SignerPk);
+        vm.prank(minter);
+        market.executeOrder(q, sig);
     }
 
     function _haltAssetTSLA() private {
@@ -221,39 +221,45 @@ contract HaltWithPriceFlowTest is BaseTest {
         vm.startPrank(Actors.MINTER1);
         usdc.approve(address(market), MINT_AMOUNT);
         vm.expectRevert(abi.encodeWithSelector(IOwnMarket.MintBlockedDuringHalt.selector, TSLA));
-        market.placeMintOrder(address(vault), TSLA, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
+        market.placeOrder(address(vault), TSLA, OrderType.Mint, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
         vm.stopPrank();
     }
 
     // ══════════════════════════════════════════════════════════
-    //  2. Halt blocks mint claim
+    //  2. Halt blocks market mint execution
     // ══════════════════════════════════════════════════════════
 
-    function test_halt_blocksMintClaim() public {
-        uint256 orderId = _placeMint(Actors.MINTER1, MINT_AMOUNT, block.timestamp + 1 days);
+    function test_halt_blocksMintExecute() public {
+        _fundUSDC(Actors.MINTER1, MINT_AMOUNT);
+        vm.prank(Actors.MINTER1);
+        usdc.approve(address(market), MINT_AMOUNT);
 
         _haltAssetTSLA();
 
-        vm.prank(Actors.VM1);
+        Quote memory q = _buildQuote(0, Actors.MINTER1, address(vault), TSLA, OrderType.Mint, MINT_AMOUNT, TSLA_PRICE);
+        bytes memory sig = _signQuote(market, q, vm1SignerPk);
+
+        vm.prank(Actors.MINTER1);
         vm.expectRevert(abi.encodeWithSelector(IOwnMarket.MintBlockedDuringHalt.selector, TSLA));
-        market.claimOrder(orderId);
+        market.executeOrder(q, sig);
     }
 
     // ══════════════════════════════════════════════════════════
-    //  3. Halt blocks mint confirm
+    //  3. Halt blocks filling a resting mint order
     // ══════════════════════════════════════════════════════════
 
-    function test_halt_blocksMintConfirm() public {
+    function test_halt_blocksMintFill() public {
         uint256 orderId = _placeMint(Actors.MINTER1, MINT_AMOUNT, block.timestamp + 1 days);
-
-        vm.prank(Actors.VM1);
-        market.claimOrder(orderId);
 
         _haltAssetTSLA();
 
-        vm.prank(Actors.VM1);
+        Quote memory q =
+            _buildQuote(orderId, Actors.MINTER1, address(vault), TSLA, OrderType.Mint, MINT_AMOUNT, TSLA_PRICE);
+        bytes memory sig = _signQuote(market, q, vm1SignerPk);
+
+        vm.prank(vm1Signer);
         vm.expectRevert(abi.encodeWithSelector(IOwnMarket.MintBlockedDuringHalt.selector, TSLA));
-        market.confirmOrder(orderId, _buildPriceProof(TSLA_PRICE));
+        market.fillOrder(q, sig);
     }
 
     // ══════════════════════════════════════════════════════════
@@ -267,7 +273,8 @@ contract HaltWithPriceFlowTest is BaseTest {
 
         vm.startPrank(Actors.MINTER1);
         eTSLA.approve(address(market), eTokenBal);
-        uint256 orderId = market.placeRedeemOrder(address(vault), TSLA, eTokenBal, TSLA_PRICE, block.timestamp + 1 days);
+        uint256 orderId =
+            market.placeOrder(address(vault), TSLA, OrderType.Redeem, eTokenBal, TSLA_PRICE, block.timestamp + 1 days);
         vm.stopPrank();
 
         Order memory order = market.getOrder(orderId);
@@ -275,132 +282,70 @@ contract HaltWithPriceFlowTest is BaseTest {
     }
 
     // ══════════════════════════════════════════════════════════
-    //  5. Halt allows redeem claim
+    //  5. Halt blocks normal redeem fill (recourse is force execution)
     // ══════════════════════════════════════════════════════════
 
-    function test_halt_allowsRedeemClaim() public {
+    function test_halt_blocksRedeemFill() public {
         _mintETokensViaFlow(Actors.MINTER1, MINT_AMOUNT);
         uint256 eTokenBal = eTSLA.balanceOf(Actors.MINTER1);
         uint256 orderId = _placeRedeem(Actors.MINTER1, eTokenBal, block.timestamp + 1 days);
 
         _haltAssetTSLA();
 
-        vm.prank(Actors.VM1);
-        market.claimOrder(orderId);
+        Quote memory q =
+            _buildQuote(orderId, Actors.MINTER1, address(vault), TSLA, OrderType.Redeem, eTokenBal, TSLA_PRICE);
+        bytes memory sig = _signQuote(market, q, vm1SignerPk);
 
-        Order memory order = market.getOrder(orderId);
-        assertEq(uint8(order.status), uint8(OrderStatus.Claimed), "redeem order claimed during halt");
+        vm.prank(vm1Signer);
+        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.TradingHalted.selector, TSLA));
+        market.fillOrder(q, sig);
     }
 
     // ══════════════════════════════════════════════════════════
-    //  6. Redeem confirm uses halt price
+    //  6. Redeem force execution settles at halt price
     // ══════════════════════════════════════════════════════════
 
-    function test_halt_redeemConfirmUsesHaltPrice() public {
+    function test_halt_redeemForceExecuteUsesHaltPrice() public {
         _mintETokensViaFlow(Actors.MINTER1, MINT_AMOUNT);
         uint256 eTokenBal = eTSLA.balanceOf(Actors.MINTER1);
-        uint256 orderId = _placeRedeem(Actors.MINTER1, eTokenBal, block.timestamp + 1 days);
-
-        vm.prank(Actors.VM1);
-        market.claimOrder(orderId);
+        // Limit price must be <= halt price for force execution to pass, so use a tiny limit.
+        vm.startPrank(Actors.MINTER1);
+        eTSLA.approve(address(market), eTokenBal);
+        uint256 orderId =
+            market.placeOrder(address(vault), TSLA, OrderType.Redeem, eTokenBal, 1, block.timestamp + 7 days);
+        vm.stopPrank();
 
         _haltAssetTSLA();
 
-        // Calculate payout at halt price (not order price)
-        uint256 grossPayout = Math.mulDiv(eTokenBal, HALT_PRICE, PRECISION * 1e12);
-        uint256 fee = Math.mulDiv(grossPayout, REDEEM_FEE_BPS, BPS, Math.Rounding.Ceil);
-        uint256 netPayout = grossPayout - fee;
+        // Past the claim threshold the owner can force execution; halt price is used.
+        vm.warp(block.timestamp + CLAIM_THRESHOLD + 1);
 
-        // VM must fund and approve grossPayout of USDC
-        _fundUSDC(Actors.VM1, grossPayout);
-        vm.startPrank(Actors.VM1);
-        usdc.approve(address(market), grossPayout);
+        // Collateral released = (eTokens * haltPrice / PRECISION) / ETH_PRICE, minus redeem fee.
+        uint256 grossUsd = Math.mulDiv(eTokenBal, HALT_PRICE, PRECISION);
+        uint256 grossCollateral = Math.mulDiv(grossUsd, PRECISION, ETH_PRICE);
+        uint256 feeCollateral = Math.mulDiv(grossCollateral, REDEEM_FEE_BPS, BPS, Math.Rounding.Ceil);
+        uint256 netCollateral = grossCollateral - feeCollateral;
 
-        vm.expectEmit(true, true, true, true);
-        emit IOwnMarket.OrderConfirmedAtHaltPrice(orderId, Actors.VM1, HALT_PRICE, eTokenBal);
-
-        market.confirmOrder(orderId, "");
-        vm.stopPrank();
-
-        // User received net payout at halt price
-        assertEq(usdc.balanceOf(Actors.MINTER1), netPayout, "user received net payout at halt price");
-
-        // eTokens burned
-        assertEq(eTSLA.balanceOf(address(market)), 0, "eTokens burned from market");
-
-        Order memory order = market.getOrder(orderId);
-        assertEq(uint8(order.status), uint8(OrderStatus.Confirmed), "order confirmed");
-    }
-
-    // ══════════════════════════════════════════════════════════
-    //  7. Claimed mint close — no expiry wait during halt
-    // ══════════════════════════════════════════════════════════
-
-    function test_halt_claimedMintCloseNoExpiryWait() public {
-        uint256 expiry = block.timestamp + 7 days;
-        uint256 orderId = _placeMint(Actors.MINTER1, MINT_AMOUNT, expiry);
-
-        vm.prank(Actors.VM1);
-        market.claimOrder(orderId);
-
-        uint256 fee = Math.mulDiv(MINT_AMOUNT, MINT_FEE_BPS, BPS, Math.Rounding.Ceil);
-        uint256 netToVM = MINT_AMOUNT - fee;
-
-        _haltAssetTSLA();
-
-        // Close immediately — no warp to expiry needed
-        vm.startPrank(Actors.VM1);
-        usdc.approve(address(market), netToVM);
-        market.closeOrder(orderId);
-        vm.stopPrank();
-
-        // User gets full refund (net from VM + escrowed fee)
-        assertEq(usdc.balanceOf(Actors.MINTER1), MINT_AMOUNT, "user refunded fully");
-
-        Order memory order = market.getOrder(orderId);
-        assertEq(uint8(order.status), uint8(OrderStatus.Closed), "order closed");
-    }
-
-    // ══════════════════════════════════════════════════════════
-    //  8. Claimed mint force execute — refund during halt
-    // ══════════════════════════════════════════════════════════
-
-    function test_halt_claimedMintForceExecuteRefund() public {
-        uint256 expiry = block.timestamp + 7 days;
-        uint256 orderId = _placeMint(Actors.MINTER1, MINT_AMOUNT, expiry);
-
-        vm.prank(Actors.VM1);
-        market.claimOrder(orderId);
-
-        uint256 fee = Math.mulDiv(MINT_AMOUNT, MINT_FEE_BPS, BPS, Math.Rounding.Ceil);
-
-        uint256 vaultWethBefore = weth.balanceOf(address(vault));
         uint256 userWethBefore = weth.balanceOf(Actors.MINTER1);
-
-        _haltAssetTSLA();
-
-        vm.warp(block.timestamp + GRACE_PERIOD + 1);
 
         bytes memory collateralPriceData = abi.encode(uint256(ETH_PRICE), uint256(block.timestamp));
 
+        vm.expectEmit(true, true, false, true);
+        emit IOwnMarket.OrderForceExecuted(orderId, Actors.MINTER1, eTokenBal, netCollateral);
+
         vm.prank(Actors.MINTER1);
-        market.forceExecute(orderId, "", collateralPriceData);
+        market.forceExecuteOrder(orderId, "", collateralPriceData);
+
+        // User received collateral valued at the halt price; eTokens burned.
+        assertEq(weth.balanceOf(Actors.MINTER1), userWethBefore + netCollateral, "user got collateral at halt price");
+        assertEq(eTSLA.balanceOf(address(market)), 0, "eTokens burned from market");
 
         Order memory order = market.getOrder(orderId);
         assertEq(uint8(order.status), uint8(OrderStatus.ForceExecuted), "order force executed");
-
-        // Calculate expected collateral: net amount converted to WETH
-        uint256 usdValue = (MINT_AMOUNT - fee) * 1e12; // scale 6-decimal USDC to 18
-        uint256 expectedCollateral = Math.mulDiv(usdValue, PRECISION, ETH_PRICE);
-
-        // User receives WETH collateral from vault
-        assertEq(weth.balanceOf(Actors.MINTER1), userWethBefore + expectedCollateral, "user received WETH collateral");
-        assertEq(weth.balanceOf(address(vault)), vaultWethBefore - expectedCollateral, "vault released WETH");
-
-        // Escrowed fee returned as USDC
-        assertEq(usdc.balanceOf(Actors.MINTER1), fee, "escrowed fee returned");
-        assertEq(usdc.balanceOf(address(market)), 0, "market escrow cleared");
     }
+
+    // removed: closeOrder no longer exists in RFQ model (claimed-mint close during halt).
+    // removed: mint force execution no longer exists (mint orders are cancel/expire only).
 
     // ══════════════════════════════════════════════════════════
     //  9. Halt allows cancel (user gets stablecoins back)
@@ -474,17 +419,8 @@ contract HaltWithPriceFlowTest is BaseTest {
 
         assertEq(uint8(vault.vaultStatus()), uint8(VaultStatus.Active), "vault active after unhalt");
 
-        // Place + claim + confirm mint succeeds
-        uint256 orderId = _placeMint(Actors.MINTER1, MINT_AMOUNT, block.timestamp + 1 days);
-
-        vm.prank(Actors.VM1);
-        market.claimOrder(orderId);
-
-        vm.prank(Actors.VM1);
-        market.confirmOrder(orderId, _buildPriceProof(TSLA_PRICE));
-
-        Order memory order = market.getOrder(orderId);
-        assertEq(uint8(order.status), uint8(OrderStatus.Confirmed), "mint confirmed after unhalt");
+        // Market mint succeeds once trading resumes.
+        _mintETokensViaFlow(Actors.MINTER1, MINT_AMOUNT);
         assertGt(eTSLA.balanceOf(Actors.MINTER1), 0, "minter received eTokens");
     }
 
@@ -501,7 +437,7 @@ contract HaltWithPriceFlowTest is BaseTest {
         vm.startPrank(Actors.MINTER1);
         usdc.approve(address(market), MINT_AMOUNT);
         vm.expectRevert(abi.encodeWithSelector(IOwnMarket.MintBlockedDuringHalt.selector, TSLA));
-        market.placeMintOrder(address(vault), TSLA, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
+        market.placeOrder(address(vault), TSLA, OrderType.Mint, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
         vm.stopPrank();
 
         // GOLD mint works

@@ -4,8 +4,11 @@ pragma solidity 0.8.28;
 import {Actors} from "../helpers/Actors.sol";
 import {BaseTest} from "../helpers/BaseTest.sol";
 
+import {IOwnMarket} from "../../src/interfaces/IOwnMarket.sol";
 import {IOwnVault} from "../../src/interfaces/IOwnVault.sol";
-import {AssetConfig, OrderStatus} from "../../src/interfaces/types/Types.sol";
+import {AssetConfig, OrderStatus, OrderType, PRECISION, Quote} from "../../src/interfaces/types/Types.sol";
+
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {FeeCalculator} from "../../src/core/FeeCalculator.sol";
@@ -54,8 +57,8 @@ contract VMLifecycleTest is BaseTest {
         VaultFactory factory = new VaultFactory(Actors.ADMIN, address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), address(factory));
 
-        vault = OwnVault(factory.createVault(address(weth), Actors.VM1, "Own WETH Vault", "oWETH", 8000, 2000));
-        vault2 = OwnVault(factory.createVault(address(weth), Actors.VM2, "Own WETH Vault 2", "oWETH2", 8000, 2000));
+        vault = OwnVault(factory.createVault(address(weth), vm1Signer, "Own WETH Vault", "oWETH", 8000, 2000));
+        vault2 = OwnVault(factory.createVault(address(weth), vm2Signer, "Own WETH Vault 2", "oWETH2", 8000, 2000));
 
         eTSLA = new EToken("Own Tesla", "eTSLA", TSLA, address(protocolRegistry), address(usdc));
 
@@ -77,19 +80,19 @@ contract VMLifecycleTest is BaseTest {
         vm.stopPrank();
 
         // Set payment tokens and enable assets
-        vm.startPrank(Actors.VM1);
+        vm.startPrank(vm1Signer);
         vault.setPaymentToken(address(usdc));
         vault.enableAsset(TSLA);
         vm.stopPrank();
 
-        vm.startPrank(Actors.VM2);
+        vm.startPrank(vm2Signer);
         vault2.setPaymentToken(address(usdc));
         vault2.enableAsset(TSLA);
         vm.stopPrank();
 
         // LP deposits collateral (VM1 must call deposit on behalf of LP)
-        _fundWETH(Actors.VM1, LP_DEPOSIT);
-        vm.startPrank(Actors.VM1);
+        _fundWETH(vm1Signer, LP_DEPOSIT);
+        vm.startPrank(vm1Signer);
         weth.approve(address(vault), LP_DEPOSIT);
         vault.deposit(LP_DEPOSIT, Actors.LP1);
         vm.stopPrank();
@@ -100,60 +103,69 @@ contract VMLifecycleTest is BaseTest {
     // ══════════════════════════════════════════════════════════
 
     function test_vmBinding() public view {
-        assertEq(vault.vm(), Actors.VM1);
-        assertEq(vault2.vm(), Actors.VM2);
+        assertEq(vault.vm(), vm1Signer);
+        assertEq(vault2.vm(), vm2Signer);
     }
 
     // ══════════════════════════════════════════════════════════
-    //  VM identity — only bound VM can claim orders
+    //  VM identity — only the bound VM can sign a fillable quote
     // ══════════════════════════════════════════════════════════
 
-    function test_vmClaimOrder_boundVM_succeeds() public {
+    function test_vmFillOrder_boundVM_succeeds() public {
         _fundUSDC(Actors.MINTER1, MINT_AMOUNT);
         vm.startPrank(Actors.MINTER1);
         usdc.approve(address(market), MINT_AMOUNT);
-        uint256 orderId = market.placeMintOrder(address(vault), TSLA, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
+        uint256 orderId =
+            market.placeOrder(address(vault), TSLA, OrderType.Mint, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
         vm.stopPrank();
 
-        vm.prank(Actors.VM1);
-        market.claimOrder(orderId);
+        Quote memory q =
+            _buildQuote(orderId, Actors.MINTER1, address(vault), TSLA, OrderType.Mint, MINT_AMOUNT, TSLA_PRICE);
+        bytes memory sig = _signQuote(market, q, vm1SignerPk);
 
-        assertEq(uint8(market.getOrder(orderId).status), uint8(OrderStatus.Claimed));
-        assertEq(market.getOrder(orderId).vm, Actors.VM1);
+        vm.prank(vm1Signer);
+        market.fillOrder(q, sig);
+
+        assertEq(uint8(market.getOrder(orderId).status), uint8(OrderStatus.Filled));
+        assertGt(eTSLA.balanceOf(Actors.MINTER1), 0, "minter received eTokens");
     }
 
-    function test_vmClaimOrder_wrongVM_reverts() public {
+    function test_vmFillOrder_wrongVM_reverts() public {
         _fundUSDC(Actors.MINTER1, MINT_AMOUNT);
         vm.startPrank(Actors.MINTER1);
         usdc.approve(address(market), MINT_AMOUNT);
-        uint256 orderId = market.placeMintOrder(address(vault), TSLA, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
+        uint256 orderId =
+            market.placeOrder(address(vault), TSLA, OrderType.Mint, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
         vm.stopPrank();
 
-        // VM2 is bound to vault2, not vault (which is the registered vault)
-        vm.prank(Actors.VM2);
-        vm.expectRevert(abi.encodeWithSignature("OnlyVM()"));
-        market.claimOrder(orderId);
+        // vm2Signer is bound to vault2, not vault — its signature is not vault's VM.
+        Quote memory q =
+            _buildQuote(orderId, Actors.MINTER1, address(vault), TSLA, OrderType.Mint, MINT_AMOUNT, TSLA_PRICE);
+        bytes memory sig = _signQuote(market, q, vm2SignerPk);
+
+        vm.prank(vm2Signer);
+        vm.expectRevert(IOwnMarket.InvalidQuoteSigner.selector);
+        market.fillOrder(q, sig);
     }
 
     // ══════════════════════════════════════════════════════════
-    //  Full lifecycle
+    //  Full lifecycle — market mint against a VM-signed quote
     // ══════════════════════════════════════════════════════════
 
     function test_fullVMLifecycle() public {
-        // 1. Minter places order
         _fundUSDC(Actors.MINTER1, MINT_AMOUNT);
-        vm.startPrank(Actors.MINTER1);
+        vm.prank(Actors.MINTER1);
         usdc.approve(address(market), MINT_AMOUNT);
-        uint256 orderId = market.placeMintOrder(address(vault), TSLA, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
-        vm.stopPrank();
 
-        // 2. VM claims and confirms
-        vm.startPrank(Actors.VM1);
-        market.claimOrder(orderId);
-        market.confirmOrder(orderId, _buildPriceProof(TSLA_PRICE));
-        vm.stopPrank();
+        Quote memory q = _buildQuote(0, Actors.MINTER1, address(vault), TSLA, OrderType.Mint, MINT_AMOUNT, TSLA_PRICE);
+        bytes memory sig = _signQuote(market, q, vm1SignerPk);
 
-        assertEq(uint8(market.getOrder(orderId).status), uint8(OrderStatus.Confirmed));
+        vm.prank(Actors.MINTER1);
+        market.executeOrder(q, sig);
+
+        uint256 expectedETokens = Math.mulDiv(MINT_AMOUNT * 1e12, PRECISION, TSLA_PRICE);
+        assertEq(eTSLA.balanceOf(Actors.MINTER1), expectedETokens, "minter received eTokens");
+        assertEq(usdc.balanceOf(vm1Signer), MINT_AMOUNT, "VM received stablecoins");
     }
 
     // ══════════════════════════════════════════════════════════

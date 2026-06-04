@@ -4,7 +4,8 @@ pragma solidity 0.8.28;
 import {Actors} from "../helpers/Actors.sol";
 import {BaseTest} from "../helpers/BaseTest.sol";
 
-import {AssetConfig, BPS, Order, OrderStatus, OrderType, PRECISION} from "../../src/interfaces/types/Types.sol";
+import {IOwnMarket} from "../../src/interfaces/IOwnMarket.sol";
+import {AssetConfig, BPS, Order, OrderStatus, OrderType, PRECISION, Quote} from "../../src/interfaces/types/Types.sol";
 
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {FeeCalculator} from "../../src/core/FeeCalculator.sol";
@@ -64,7 +65,7 @@ contract RedeemFlowTest is BaseTest {
         VaultFactory factory = new VaultFactory(Actors.ADMIN, address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), address(factory));
 
-        vault = OwnVault(factory.createVault(address(weth), Actors.VM1, "Own ETH Vault", "oETH", MAX_UTIL_BPS, 2000));
+        vault = OwnVault(factory.createVault(address(weth), vm1Signer, "Own ETH Vault", "oETH", MAX_UTIL_BPS, 2000));
 
         market = new OwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
@@ -111,7 +112,7 @@ contract RedeemFlowTest is BaseTest {
     }
 
     function _configureVault() private {
-        vm.startPrank(Actors.VM1);
+        vm.startPrank(vm1Signer);
         vault.setPaymentToken(address(usdc));
         vault.enableAsset(TSLA);
         vm.stopPrank();
@@ -121,8 +122,8 @@ contract RedeemFlowTest is BaseTest {
     }
 
     function _depositLPCollateral() private {
-        _fundWETH(Actors.VM1, LP_DEPOSIT_WETH);
-        vm.startPrank(Actors.VM1);
+        _fundWETH(vm1Signer, LP_DEPOSIT_WETH);
+        vm.startPrank(vm1Signer);
         weth.approve(address(vault), LP_DEPOSIT_WETH);
         vault.deposit(LP_DEPOSIT_WETH, Actors.LP1);
         vm.stopPrank();
@@ -130,14 +131,12 @@ contract RedeemFlowTest is BaseTest {
 
     function _mintETokensToMinter() private {
         _fundUSDC(Actors.MINTER1, MINT_AMOUNT);
-        vm.startPrank(Actors.MINTER1);
+        vm.prank(Actors.MINTER1);
         usdc.approve(address(market), MINT_AMOUNT);
-        uint256 orderId = market.placeMintOrder(address(vault), TSLA, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
-        vm.stopPrank();
-        vm.prank(Actors.VM1);
-        market.claimOrder(orderId);
-        vm.prank(Actors.VM1);
-        market.confirmOrder(orderId, _buildPriceProof(TSLA_PRICE));
+        Quote memory q = _buildQuote(0, Actors.MINTER1, address(vault), TSLA, OrderType.Mint, MINT_AMOUNT, TSLA_PRICE);
+        bytes memory sig = _signQuote(market, q, vm1SignerPk);
+        vm.prank(Actors.MINTER1);
+        market.executeOrder(q, sig);
     }
 
     // ══════════════════════════════════════════════════════════
@@ -148,8 +147,9 @@ contract RedeemFlowTest is BaseTest {
         vm.startPrank(Actors.MINTER1);
         eTSLA.approve(address(market), ETOKEN_AMOUNT);
 
-        uint256 orderId =
-            market.placeRedeemOrder(address(vault), TSLA, ETOKEN_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
+        uint256 orderId = market.placeOrder(
+            address(vault), TSLA, OrderType.Redeem, ETOKEN_AMOUNT, TSLA_PRICE, block.timestamp + 1 days
+        );
         vm.stopPrank();
 
         assertEq(eTSLA.balanceOf(address(market)), ETOKEN_AMOUNT, "eTokens escrowed");
@@ -161,22 +161,21 @@ contract RedeemFlowTest is BaseTest {
         assertEq(order.amount, ETOKEN_AMOUNT);
         assertEq(uint8(order.status), uint8(OrderStatus.Open));
 
-        vm.prank(Actors.VM1);
-        market.claimOrder(orderId);
-
-        order = market.getOrder(orderId);
-        assertEq(uint8(order.status), uint8(OrderStatus.Claimed));
-
-        // VM needs stablecoins to pay user on confirm
+        // VM funds payout and fills the resting redeem order.
         uint256 payout = Math.mulDiv(ETOKEN_AMOUNT, TSLA_PRICE, PRECISION * 10 ** (18 - 6));
-        _fundUSDC(Actors.VM1, payout);
-        vm.startPrank(Actors.VM1);
+        _fundUSDC(vm1Signer, payout);
+        vm.prank(vm1Signer);
         usdc.approve(address(market), payout);
-        market.confirmOrder(orderId, _buildPriceProof(TSLA_PRICE));
-        vm.stopPrank();
+
+        Quote memory q =
+            _buildQuote(orderId, Actors.MINTER1, address(vault), TSLA, OrderType.Redeem, ETOKEN_AMOUNT, TSLA_PRICE);
+        vm.prank(vm1Signer);
+        market.fillOrder(q, _signQuote(market, q, vm1SignerPk));
 
         order = market.getOrder(orderId);
-        assertEq(uint8(order.status), uint8(OrderStatus.Confirmed));
+        assertEq(uint8(order.status), uint8(OrderStatus.Filled));
+        assertEq(usdc.balanceOf(Actors.MINTER1), payout, "minter received payout");
+        assertEq(eTSLA.balanceOf(address(market)), 0, "eTokens burned from escrow");
     }
 
     // ══════════════════════════════════════════════════════════
@@ -187,8 +186,9 @@ contract RedeemFlowTest is BaseTest {
         vm.startPrank(Actors.MINTER1);
         eTSLA.approve(address(market), ETOKEN_AMOUNT);
 
-        uint256 orderId =
-            market.placeRedeemOrder(address(vault), TSLA, ETOKEN_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
+        uint256 orderId = market.placeOrder(
+            address(vault), TSLA, OrderType.Redeem, ETOKEN_AMOUNT, TSLA_PRICE, block.timestamp + 1 days
+        );
 
         assertEq(eTSLA.balanceOf(Actors.MINTER1), 0);
 
@@ -209,7 +209,7 @@ contract RedeemFlowTest is BaseTest {
         vm.startPrank(Actors.MINTER1);
         eTSLA.approve(address(market), ETOKEN_AMOUNT);
 
-        uint256 orderId = market.placeRedeemOrder(address(vault), TSLA, ETOKEN_AMOUNT, TSLA_PRICE, expiry);
+        uint256 orderId = market.placeOrder(address(vault), TSLA, OrderType.Redeem, ETOKEN_AMOUNT, TSLA_PRICE, expiry);
         vm.stopPrank();
 
         vm.warp(expiry + 1);

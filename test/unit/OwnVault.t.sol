@@ -841,6 +841,70 @@ contract OwnVaultTest is BaseTest {
         vault.enableLending(makeAddr("u2"), debt);
         vm.stopPrank();
     }
+
+    // ──────────────────────────────────────────────────────────
+    //  Quote signers
+    // ──────────────────────────────────────────────────────────
+
+    function test_constructor_seedsVMAsQuoteSigner() public view {
+        assertTrue(vault.isQuoteSigner(Actors.VM1), "vm seeded as signer");
+    }
+
+    function test_addQuoteSigner_byVM_succeeds() public {
+        address signer = makeAddr("kmsSigner");
+        assertFalse(vault.isQuoteSigner(signer));
+
+        vm.expectEmit(true, false, false, false);
+        emit IOwnVault.QuoteSignerAdded(signer);
+        vm.prank(Actors.VM1);
+        vault.addQuoteSigner(signer);
+
+        assertTrue(vault.isQuoteSigner(signer));
+    }
+
+    function test_addQuoteSigner_notVM_reverts() public {
+        vm.prank(Actors.ATTACKER);
+        vm.expectRevert(IOwnVault.OnlyVM.selector);
+        vault.addQuoteSigner(makeAddr("kmsSigner"));
+    }
+
+    function test_addQuoteSigner_zeroAddress_reverts() public {
+        vm.prank(Actors.VM1);
+        vm.expectRevert(IOwnVault.ZeroAddress.selector);
+        vault.addQuoteSigner(address(0));
+    }
+
+    function test_addQuoteSigner_duplicate_reverts() public {
+        vm.prank(Actors.VM1);
+        vm.expectRevert(abi.encodeWithSelector(IOwnVault.AlreadyQuoteSigner.selector, Actors.VM1));
+        vault.addQuoteSigner(Actors.VM1);
+    }
+
+    function test_removeQuoteSigner_byVM_succeeds() public {
+        vm.expectEmit(true, false, false, false);
+        emit IOwnVault.QuoteSignerRemoved(Actors.VM1);
+        vm.prank(Actors.VM1);
+        vault.removeQuoteSigner(Actors.VM1);
+
+        assertFalse(vault.isQuoteSigner(Actors.VM1), "vm removable as signer");
+    }
+
+    function test_removeQuoteSigner_notSigner_reverts() public {
+        address notSigner = makeAddr("notSigner");
+        vm.prank(Actors.VM1);
+        vm.expectRevert(abi.encodeWithSelector(IOwnVault.NotQuoteSigner.selector, notSigner));
+        vault.removeQuoteSigner(notSigner);
+    }
+
+    function test_setVM_doesNotChangeSignerSet() public {
+        address newVM = makeAddr("newVM");
+        vm.prank(Actors.ADMIN);
+        vault.setVM(newVM);
+
+        // Old VM remains an authorised signer; new VM is not auto-added.
+        assertTrue(vault.isQuoteSigner(Actors.VM1), "old signer retained");
+        assertFalse(vault.isQuoteSigner(newVM), "new vm not auto-signer");
+    }
 }
 
 /// @dev Inline minimal mock — records the last approveDelegation call so the

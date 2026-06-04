@@ -7,12 +7,14 @@ import {IOwnMarket} from "../../src/interfaces/IOwnMarket.sol";
 
 import {IOwnVault} from "../../src/interfaces/IOwnVault.sol";
 import {IVaultFactory} from "../../src/interfaces/IVaultFactory.sol";
-import {AssetConfig, BPS, Order, OrderStatus, OrderType, PRECISION} from "../../src/interfaces/types/Types.sol";
+import {AssetConfig, BPS, Order, OrderStatus, OrderType, PRECISION, Quote} from "../../src/interfaces/types/Types.sol";
 
 import {FeeCalculator} from "../../src/core/FeeCalculator.sol";
 import {Actors} from "../helpers/Actors.sol";
 import {BaseTest} from "../helpers/BaseTest.sol";
 import {MockERC20} from "../helpers/MockERC20.sol";
+
+import {MessageHashUtils} from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 contract OwnMarketTest is BaseTest {
@@ -25,12 +27,19 @@ contract OwnMarketTest is BaseTest {
     address public mockVault = makeAddr("vault");
     address public mockFactory = makeAddr("factory");
 
+    address public rfqVM;
+    uint256 public rfqVMPk;
+
     uint256 constant DEFAULT_EXPIRY_OFFSET = 1 days;
-    uint256 constant GRACE_PERIOD = 1 days;
     uint256 constant CLAIM_THRESHOLD = 6 hours;
+    bytes32 constant ETH_ASSET = bytes32("ETH");
+
+    uint256 private _quoteNonce = 1;
 
     function setUp() public override {
         super.setUp();
+
+        (rfqVM, rfqVMPk) = makeAddrAndKey("rfqVM");
 
         eTSLAToken = new MockERC20("Own TSLA", "eTSLA", 18);
         vm.label(address(eTSLAToken), "eTSLA");
@@ -63,7 +72,6 @@ contract OwnMarketTest is BaseTest {
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
 
         // Configure ETH oracle for force execution collateral conversion
-        bytes32 ethAsset = bytes32("ETH");
         AssetConfig memory ethConfig = AssetConfig({
             activeToken: address(0),
             legacyTokens: new address[](0),
@@ -71,31 +79,36 @@ contract OwnMarketTest is BaseTest {
             volatilityLevel: 1,
             oracleType: 1
         });
-        assetReg.addAsset(ethAsset, address(weth), ethConfig);
+        assetReg.addAsset(ETH_ASSET, address(weth), ethConfig);
 
         vm.stopPrank();
         vm.label(address(market), "OwnMarket");
 
-        // Mock the factory's isRegisteredVault
+        // Factory + vault mocks
         vm.mockCall(
             mockFactory, abi.encodeWithSelector(IVaultFactory.isRegisteredVault.selector, mockVault), abi.encode(true)
         );
-
-        // Mock the vault's payment token, collateral release, grace period, claim threshold, collateral oracle asset, and asset support
         vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.paymentToken.selector), abi.encode(address(usdc)));
         vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.releaseCollateral.selector), abi.encode());
-        vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.gracePeriod.selector), abi.encode(GRACE_PERIOD));
         vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.claimThreshold.selector), abi.encode(CLAIM_THRESHOLD));
-        vm.mockCall(
-            mockVault, abi.encodeWithSelector(IOwnVault.collateralOracleAsset.selector), abi.encode(bytes32("ETH"))
-        );
+        vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.collateralOracleAsset.selector), abi.encode(ETH_ASSET));
         vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.isAssetSupported.selector), abi.encode(true));
         vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.isEffectivelyPaused.selector), abi.encode(false));
         vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.isEffectivelyHalted.selector), abi.encode(false));
         vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.getAssetHaltPrice.selector), abi.encode(uint256(0)));
+        vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.vm.selector), abi.encode(rfqVM));
+        // Authorised quote signers: rfqVM signs; everyone else is rejected.
+        vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.isQuoteSigner.selector), abi.encode(false));
+        vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.isQuoteSigner.selector, rfqVM), abi.encode(true));
+        vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.updateExposure.selector), abi.encode());
+        vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.depositFees.selector), abi.encode());
+        vm.mockCall(
+            mockVault, abi.encodeWithSelector(IOwnVault.projectedExposureUtilization.selector), abi.encode(uint256(0))
+        );
+        vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.maxUtilization.selector), abi.encode(uint256(BPS)));
 
         _setOraclePrice(TSLA, TSLA_PRICE);
-        _setOraclePrice(ethAsset, ETH_PRICE);
+        _setOraclePrice(ETH_ASSET, ETH_PRICE);
     }
 
     // ──────────────────────────────────────────────────────────
@@ -106,752 +119,608 @@ contract OwnMarketTest is BaseTest {
         return block.timestamp + DEFAULT_EXPIRY_OFFSET;
     }
 
-    function _placeMintOrder(address minter, uint256 stablecoinAmount) internal returns (uint256 orderId) {
-        usdc.mint(minter, stablecoinAmount);
-        vm.startPrank(minter);
-        usdc.approve(address(market), stablecoinAmount);
-        orderId = market.placeMintOrder(mockVault, TSLA, stablecoinAmount, TSLA_PRICE, _defaultExpiry());
-        vm.stopPrank();
+    function _quote(
+        uint256 orderId,
+        address user,
+        OrderType orderType,
+        uint256 amount,
+        uint256 price
+    ) internal returns (Quote memory q) {
+        q = Quote({
+            orderId: orderId,
+            user: user,
+            vault: mockVault,
+            asset: TSLA,
+            orderType: orderType,
+            amount: amount,
+            price: price,
+            quoteId: _quoteNonce++,
+            expiry: _defaultExpiry()
+        });
     }
 
-    function _placeRedeemOrder(address minter, uint256 eTokenAmount) internal returns (uint256 orderId) {
-        eTSLAToken.mint(minter, eTokenAmount);
-        vm.startPrank(minter);
-        eTSLAToken.approve(address(market), eTokenAmount);
-        orderId = market.placeRedeemOrder(mockVault, TSLA, eTokenAmount, TSLA_PRICE, _defaultExpiry());
-        vm.stopPrank();
-    }
-
-    function _mockVault(
-        address vmAddr
-    ) internal {
-        vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.vm.selector), abi.encode(vmAddr));
-        vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.updateExposure.selector), abi.encode());
-        vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.depositFees.selector), abi.encode());
-        vm.mockCall(
-            mockVault, abi.encodeWithSelector(IOwnVault.projectedExposureUtilization.selector), abi.encode(uint256(0))
+    /// @dev Computes the digest locally (mirrors OwnMarket.quoteDigest) rather than calling the
+    ///      contract, so inline use after vm.prank / vm.expectRevert does not consume the cheatcode.
+    function _sign(Quote memory q, uint256 pk) internal view returns (bytes memory) {
+        bytes32 digest = keccak256(
+            abi.encode(
+                q.orderId,
+                q.user,
+                q.vault,
+                q.asset,
+                q.orderType,
+                q.amount,
+                q.price,
+                q.quoteId,
+                q.expiry,
+                block.chainid,
+                address(market)
+            )
         );
-        vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.maxUtilization.selector), abi.encode(uint256(BPS)));
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(pk, MessageHashUtils.toEthSignedMessageHash(digest));
+        return abi.encodePacked(r, s, v);
     }
 
-    function _claimOrder(address vmAddr, uint256 orderId) internal {
-        vm.prank(vmAddr);
-        market.claimOrder(orderId);
+    /// @dev Expected eTokens minted for a stablecoin amount at a price (zero fee path).
+    function _expectedMintOut(uint256 stableAmount, uint256 price) internal pure returns (uint256) {
+        return Math.mulDiv(stableAmount * 1e12, PRECISION, price);
+    }
+
+    /// @dev Expected stablecoin payout for an eToken amount at a price (zero fee path).
+    function _expectedRedeemOut(uint256 eTokenAmount, uint256 price) internal pure returns (uint256) {
+        return Math.mulDiv(eTokenAmount, price, PRECISION * 1e12);
+    }
+
+    function _fundUserForMint(address user, uint256 amount) internal {
+        usdc.mint(user, amount);
+        vm.prank(user);
+        usdc.approve(address(market), amount);
+    }
+
+    function _fundUserForRedeem(address user, uint256 eTokenAmount) internal {
+        eTSLAToken.mint(user, eTokenAmount);
+        vm.prank(user);
+        eTSLAToken.approve(address(market), eTokenAmount);
+    }
+
+    function _fundVMForRedeem(
+        uint256 amount
+    ) internal {
+        usdc.mint(rfqVM, amount);
+        vm.prank(rfqVM);
+        usdc.approve(address(market), amount);
+    }
+
+    function _placeMint(address user, uint256 amount, uint256 limitPrice) internal returns (uint256 orderId) {
+        usdc.mint(user, amount);
+        vm.startPrank(user);
+        usdc.approve(address(market), amount);
+        orderId = market.placeOrder(mockVault, TSLA, OrderType.Mint, amount, limitPrice, _defaultExpiry());
+        vm.stopPrank();
+    }
+
+    function _placeRedeem(address user, uint256 amount, uint256 limitPrice) internal returns (uint256 orderId) {
+        eTSLAToken.mint(user, amount);
+        vm.startPrank(user);
+        eTSLAToken.approve(address(market), amount);
+        orderId = market.placeOrder(mockVault, TSLA, OrderType.Redeem, amount, limitPrice, _defaultExpiry());
+        vm.stopPrank();
     }
 
     // ══════════════════════════════════════════════════════════
-    //  placeMintOrder
+    //  executeOrder — market mint
     // ══════════════════════════════════════════════════════════
 
-    function test_placeMintOrder_succeeds() public {
+    function test_executeOrder_marketMint_succeeds() public {
+        uint256 amount = 1000e6;
+        _fundUserForMint(Actors.MINTER1, amount);
+
+        Quote memory q = _quote(0, Actors.MINTER1, OrderType.Mint, amount, TSLA_PRICE);
+        bytes memory sig = _sign(q, rfqVMPk);
+
+        uint256 expectedOut = _expectedMintOut(amount, TSLA_PRICE);
+
+        vm.expectEmit(true, true, true, true);
+        emit IOwnMarket.OrderExecuted(
+            q.quoteId, Actors.MINTER1, rfqVM, TSLA, uint8(OrderType.Mint), amount, expectedOut
+        );
+
+        vm.prank(Actors.MINTER1);
+        market.executeOrder(q, sig);
+
+        assertEq(usdc.balanceOf(Actors.MINTER1), 0, "minter usdc spent");
+        assertEq(usdc.balanceOf(rfqVM), amount, "vm received stablecoins");
+        assertEq(eTSLAToken.balanceOf(Actors.MINTER1), expectedOut, "minter received eTokens");
+        assertTrue(market.isQuoteUsed(market.quoteDigest(q)), "quote marked used");
+    }
+
+    function test_executeOrder_marketRedeem_succeeds() public {
+        uint256 eTokenAmount = 4e18;
+        uint256 payout = _expectedRedeemOut(eTokenAmount, TSLA_PRICE);
+        _fundUserForRedeem(Actors.MINTER1, eTokenAmount);
+        _fundVMForRedeem(payout);
+
+        Quote memory q = _quote(0, Actors.MINTER1, OrderType.Redeem, eTokenAmount, TSLA_PRICE);
+        bytes memory sig = _sign(q, rfqVMPk);
+
+        vm.prank(Actors.MINTER1);
+        market.executeOrder(q, sig);
+
+        assertEq(eTSLAToken.balanceOf(Actors.MINTER1), 0, "eTokens burned");
+        assertEq(usdc.balanceOf(Actors.MINTER1), payout, "minter received stablecoins");
+        assertEq(usdc.balanceOf(rfqVM), 0, "vm paid out");
+    }
+
+    function test_executeOrder_nonZeroOrderId_reverts() public {
+        Quote memory q = _quote(1, Actors.MINTER1, OrderType.Mint, 1000e6, TSLA_PRICE);
+        bytes memory sig = _sign(q, rfqVMPk);
+        vm.prank(Actors.MINTER1);
+        vm.expectRevert(IOwnMarket.QuoteOrderMismatch.selector);
+        market.executeOrder(q, sig);
+    }
+
+    function test_executeOrder_notQuoteUser_reverts() public {
+        Quote memory q = _quote(0, Actors.MINTER1, OrderType.Mint, 1000e6, TSLA_PRICE);
+        bytes memory sig = _sign(q, rfqVMPk);
+        vm.prank(Actors.MINTER2);
+        vm.expectRevert(IOwnMarket.NotQuoteUser.selector);
+        market.executeOrder(q, sig);
+    }
+
+    function test_executeOrder_wrongSigner_reverts() public {
+        uint256 amount = 1000e6;
+        _fundUserForMint(Actors.MINTER1, amount);
+        Quote memory q = _quote(0, Actors.MINTER1, OrderType.Mint, amount, TSLA_PRICE);
+        (, uint256 wrongPk) = makeAddrAndKey("attacker");
+        bytes memory sig = _sign(q, wrongPk);
+        vm.prank(Actors.MINTER1);
+        vm.expectRevert(IOwnMarket.InvalidQuoteSigner.selector);
+        market.executeOrder(q, sig);
+    }
+
+    function test_executeOrder_separateAuthorisedSigner_succeeds() public {
+        // A signer distinct from the operational vm address can authorise quotes.
+        (address altSigner, uint256 altPk) = makeAddrAndKey("altSigner");
+        vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.isQuoteSigner.selector, altSigner), abi.encode(true));
+
+        uint256 amount = 1000e6;
+        _fundUserForMint(Actors.MINTER1, amount);
+        Quote memory q = _quote(0, Actors.MINTER1, OrderType.Mint, amount, TSLA_PRICE);
+        bytes memory sig = _sign(q, altPk);
+
+        vm.prank(Actors.MINTER1);
+        market.executeOrder(q, sig);
+
+        assertEq(eTSLAToken.balanceOf(Actors.MINTER1), _expectedMintOut(amount, TSLA_PRICE));
+        assertEq(usdc.balanceOf(rfqVM), amount, "funds still flow to operational vm");
+    }
+
+    function test_executeOrder_expiredQuote_reverts() public {
+        uint256 amount = 1000e6;
+        _fundUserForMint(Actors.MINTER1, amount);
+        Quote memory q = _quote(0, Actors.MINTER1, OrderType.Mint, amount, TSLA_PRICE);
+        bytes memory sig = _sign(q, rfqVMPk);
+        vm.warp(q.expiry + 1);
+        vm.prank(Actors.MINTER1);
+        vm.expectRevert(IOwnMarket.QuoteExpired.selector);
+        market.executeOrder(q, sig);
+    }
+
+    function test_executeOrder_replay_reverts() public {
+        uint256 amount = 1000e6;
+        _fundUserForMint(Actors.MINTER1, amount * 2);
+        Quote memory q = _quote(0, Actors.MINTER1, OrderType.Mint, amount, TSLA_PRICE);
+        bytes memory sig = _sign(q, rfqVMPk);
+
+        vm.prank(Actors.MINTER1);
+        market.executeOrder(q, sig);
+
+        vm.prank(Actors.MINTER1);
+        vm.expectRevert(IOwnMarket.QuoteAlreadyUsed.selector);
+        market.executeOrder(q, sig);
+    }
+
+    function test_executeOrder_paused_reverts() public {
+        vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.isEffectivelyPaused.selector), abi.encode(true));
+        Quote memory q = _quote(0, Actors.MINTER1, OrderType.Mint, 1000e6, TSLA_PRICE);
+        bytes memory sig = _sign(q, rfqVMPk);
+        vm.prank(Actors.MINTER1);
+        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.AssetPaused.selector, TSLA));
+        market.executeOrder(q, sig);
+    }
+
+    function test_executeOrder_mintDuringHalt_reverts() public {
+        vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.isEffectivelyHalted.selector), abi.encode(true));
+        Quote memory q = _quote(0, Actors.MINTER1, OrderType.Mint, 1000e6, TSLA_PRICE);
+        bytes memory sig = _sign(q, rfqVMPk);
+        vm.prank(Actors.MINTER1);
+        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.MintBlockedDuringHalt.selector, TSLA));
+        market.executeOrder(q, sig);
+    }
+
+    function test_executeOrder_redeemDuringHalt_reverts() public {
+        vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.isEffectivelyHalted.selector), abi.encode(true));
+        Quote memory q = _quote(0, Actors.MINTER1, OrderType.Redeem, 4e18, TSLA_PRICE);
+        bytes memory sig = _sign(q, rfqVMPk);
+        vm.prank(Actors.MINTER1);
+        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.TradingHalted.selector, TSLA));
+        market.executeOrder(q, sig);
+    }
+
+    // ══════════════════════════════════════════════════════════
+    //  placeOrder
+    // ══════════════════════════════════════════════════════════
+
+    function test_placeOrder_mint_escrowsAndStores() public {
         uint256 amount = 1000e6;
         usdc.mint(Actors.MINTER1, amount);
-
         vm.startPrank(Actors.MINTER1);
         usdc.approve(address(market), amount);
 
-        vm.expectEmit(true, true, false, true);
-        emit IOwnMarket.OrderPlaced(1, Actors.MINTER1, uint8(OrderType.Mint), TSLA, mockVault, amount);
+        vm.expectEmit(true, true, true, true);
+        emit IOwnMarket.OrderPlaced(1, Actors.MINTER1, uint8(OrderType.Mint), TSLA, mockVault, amount, TSLA_PRICE);
 
-        uint256 orderId = market.placeMintOrder(mockVault, TSLA, amount, TSLA_PRICE, _defaultExpiry());
+        uint256 orderId = market.placeOrder(mockVault, TSLA, OrderType.Mint, amount, TSLA_PRICE, _defaultExpiry());
         vm.stopPrank();
 
         assertEq(orderId, 1);
-        assertEq(usdc.balanceOf(address(market)), amount);
-        assertEq(usdc.balanceOf(Actors.MINTER1), 0);
-
+        assertEq(usdc.balanceOf(address(market)), amount, "escrowed");
         Order memory order = market.getOrder(orderId);
         assertEq(order.user, Actors.MINTER1);
         assertEq(uint256(order.orderType), uint256(OrderType.Mint));
-        assertEq(order.asset, TSLA);
         assertEq(order.amount, amount);
-        assertEq(order.price, TSLA_PRICE);
+        assertEq(order.filledAmount, 0);
+        assertEq(order.limitPrice, TSLA_PRICE);
         assertEq(uint256(order.status), uint256(OrderStatus.Open));
-        assertEq(order.vm, address(0));
-        assertEq(order.claimedAt, 0);
     }
 
-    function test_placeMintOrder_zeroAmount_reverts() public {
+    function test_placeOrder_redeem_escrowsETokens() public {
+        uint256 amount = 4e18;
+        _placeRedeem(Actors.MINTER1, amount, TSLA_PRICE);
+        assertEq(eTSLAToken.balanceOf(address(market)), amount, "eTokens escrowed");
+    }
+
+    function test_placeOrder_zeroAmount_reverts() public {
         vm.prank(Actors.MINTER1);
         vm.expectRevert(IOwnMarket.ZeroAmount.selector);
-        market.placeMintOrder(mockVault, TSLA, 0, TSLA_PRICE, _defaultExpiry());
+        market.placeOrder(mockVault, TSLA, OrderType.Mint, 0, TSLA_PRICE, _defaultExpiry());
     }
 
-    function test_placeMintOrder_zeroPrice_reverts() public {
+    function test_placeOrder_zeroLimitPrice_reverts() public {
         vm.prank(Actors.MINTER1);
         vm.expectRevert(IOwnMarket.InvalidPrice.selector);
-        market.placeMintOrder(mockVault, TSLA, 1000e6, 0, _defaultExpiry());
+        market.placeOrder(mockVault, TSLA, OrderType.Mint, 1000e6, 0, _defaultExpiry());
     }
 
-    function test_placeMintOrder_pastExpiry_reverts() public {
-        uint256 amount = 1000e6;
-        usdc.mint(Actors.MINTER1, amount);
-        vm.startPrank(Actors.MINTER1);
-        usdc.approve(address(market), amount);
-        vm.expectRevert(IOwnMarket.InvalidExpiry.selector);
-        market.placeMintOrder(mockVault, TSLA, amount, TSLA_PRICE, block.timestamp - 1);
-        vm.stopPrank();
-    }
-
-    function test_placeMintOrder_inactiveAsset_reverts() public {
+    function test_placeOrder_pastExpiry_reverts() public {
         vm.prank(Actors.MINTER1);
-        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.AssetNotActive.selector, bytes32("FAKE")));
-        market.placeMintOrder(mockVault, bytes32("FAKE"), 1000e6, TSLA_PRICE, _defaultExpiry());
+        vm.expectRevert(IOwnMarket.InvalidExpiry.selector);
+        market.placeOrder(mockVault, TSLA, OrderType.Mint, 1000e6, TSLA_PRICE, block.timestamp);
+    }
+
+    function test_placeOrder_mintDuringHalt_reverts() public {
+        vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.isEffectivelyHalted.selector), abi.encode(true));
+        vm.prank(Actors.MINTER1);
+        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.MintBlockedDuringHalt.selector, TSLA));
+        market.placeOrder(mockVault, TSLA, OrderType.Mint, 1000e6, TSLA_PRICE, _defaultExpiry());
     }
 
     // ══════════════════════════════════════════════════════════
-    //  placeRedeemOrder
+    //  fillOrder — mint
     // ══════════════════════════════════════════════════════════
 
-    function test_placeRedeemOrder_succeeds() public {
-        uint256 eTokenAmount = 4e18;
-        eTSLAToken.mint(Actors.MINTER1, eTokenAmount);
+    function test_fillOrder_mint_fullFill() public {
+        uint256 amount = 1000e6;
+        uint256 orderId = _placeMint(Actors.MINTER1, amount, TSLA_PRICE);
 
-        vm.startPrank(Actors.MINTER1);
-        eTSLAToken.approve(address(market), eTokenAmount);
+        Quote memory q = _quote(orderId, Actors.MINTER1, OrderType.Mint, amount, TSLA_PRICE);
+        bytes memory sig = _sign(q, rfqVMPk);
+
+        vm.prank(rfqVM);
+        market.fillOrder(q, sig);
+
+        assertEq(usdc.balanceOf(rfqVM), amount, "vm received escrowed stablecoins");
+        assertEq(eTSLAToken.balanceOf(Actors.MINTER1), _expectedMintOut(amount, TSLA_PRICE), "minted");
+        Order memory order = market.getOrder(orderId);
+        assertEq(order.filledAmount, amount);
+        assertEq(uint256(order.status), uint256(OrderStatus.Filled));
+    }
+
+    function test_fillOrder_mint_partialThenComplete() public {
+        uint256 amount = 1000e6;
+        uint256 orderId = _placeMint(Actors.MINTER1, amount, TSLA_PRICE);
+
+        // First partial fill: 600
+        Quote memory q1 = _quote(orderId, Actors.MINTER1, OrderType.Mint, 600e6, TSLA_PRICE);
+        vm.prank(rfqVM);
+        market.fillOrder(q1, _sign(q1, rfqVMPk));
+
+        Order memory o1 = market.getOrder(orderId);
+        assertEq(o1.filledAmount, 600e6);
+        assertEq(uint256(o1.status), uint256(OrderStatus.Open), "still open");
+        assertEq(usdc.balanceOf(rfqVM), 600e6);
+        assertEq(usdc.balanceOf(address(market)), 400e6, "remaining escrow");
+
+        // Second fill: remaining 400
+        Quote memory q2 = _quote(orderId, Actors.MINTER1, OrderType.Mint, 400e6, TSLA_PRICE);
+        vm.prank(rfqVM);
+        market.fillOrder(q2, _sign(q2, rfqVMPk));
+
+        Order memory o2 = market.getOrder(orderId);
+        assertEq(o2.filledAmount, amount);
+        assertEq(uint256(o2.status), uint256(OrderStatus.Filled));
+        assertEq(usdc.balanceOf(rfqVM), amount);
+        assertEq(eTSLAToken.balanceOf(Actors.MINTER1), _expectedMintOut(amount, TSLA_PRICE));
+    }
+
+    function test_fillOrder_redeem_partial() public {
+        uint256 amount = 4e18;
+        uint256 orderId = _placeRedeem(Actors.MINTER1, amount, TSLA_PRICE);
+        uint256 fill = 1e18;
+        uint256 payout = _expectedRedeemOut(fill, TSLA_PRICE);
+        _fundVMForRedeem(payout);
+
+        Quote memory q = _quote(orderId, Actors.MINTER1, OrderType.Redeem, fill, TSLA_PRICE);
+        vm.prank(rfqVM);
+        market.fillOrder(q, _sign(q, rfqVMPk));
+
+        assertEq(usdc.balanceOf(Actors.MINTER1), payout, "minter paid");
+        assertEq(eTSLAToken.balanceOf(address(market)), amount - fill, "escrow burned by fill amount");
+        Order memory order = market.getOrder(orderId);
+        assertEq(order.filledAmount, fill);
+        assertEq(uint256(order.status), uint256(OrderStatus.Open));
+    }
+
+    function test_fillOrder_mintLimitViolated_reverts() public {
+        uint256 amount = 1000e6;
+        uint256 orderId = _placeMint(Actors.MINTER1, amount, TSLA_PRICE);
+        // Quote price above the mint limit price
+        Quote memory q = _quote(orderId, Actors.MINTER1, OrderType.Mint, amount, TSLA_PRICE + 1);
+        vm.prank(rfqVM);
+        vm.expectRevert(IOwnMarket.LimitNotSatisfied.selector);
+        market.fillOrder(q, _sign(q, rfqVMPk));
+    }
+
+    function test_fillOrder_redeemLimitViolated_reverts() public {
+        uint256 amount = 4e18;
+        uint256 orderId = _placeRedeem(Actors.MINTER1, amount, TSLA_PRICE);
+        // Quote price below the redeem limit price
+        Quote memory q = _quote(orderId, Actors.MINTER1, OrderType.Redeem, amount, TSLA_PRICE - 1);
+        vm.prank(rfqVM);
+        vm.expectRevert(IOwnMarket.LimitNotSatisfied.selector);
+        market.fillOrder(q, _sign(q, rfqVMPk));
+    }
+
+    function test_fillOrder_exceedsRemaining_reverts() public {
+        uint256 amount = 1000e6;
+        uint256 orderId = _placeMint(Actors.MINTER1, amount, TSLA_PRICE);
+        Quote memory q = _quote(orderId, Actors.MINTER1, OrderType.Mint, amount + 1, TSLA_PRICE);
+        vm.prank(rfqVM);
+        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.FillExceedsRemaining.selector, orderId));
+        market.fillOrder(q, _sign(q, rfqVMPk));
+    }
+
+    function test_fillOrder_termsMismatch_reverts() public {
+        uint256 amount = 1000e6;
+        uint256 orderId = _placeMint(Actors.MINTER1, amount, TSLA_PRICE);
+        // Wrong user in the quote
+        Quote memory q = _quote(orderId, Actors.MINTER2, OrderType.Mint, amount, TSLA_PRICE);
+        vm.prank(rfqVM);
+        vm.expectRevert(IOwnMarket.QuoteTermsMismatch.selector);
+        market.fillOrder(q, _sign(q, rfqVMPk));
+    }
+
+    function test_fillOrder_zeroOrderId_reverts() public {
+        Quote memory q = _quote(0, Actors.MINTER1, OrderType.Mint, 1000e6, TSLA_PRICE);
+        vm.prank(rfqVM);
+        vm.expectRevert(IOwnMarket.QuoteOrderMismatch.selector);
+        market.fillOrder(q, _sign(q, rfqVMPk));
+    }
+
+    function test_fillOrder_alreadyFilled_reverts() public {
+        uint256 amount = 1000e6;
+        uint256 orderId = _placeMint(Actors.MINTER1, amount, TSLA_PRICE);
+        Quote memory q = _quote(orderId, Actors.MINTER1, OrderType.Mint, amount, TSLA_PRICE);
+        vm.prank(rfqVM);
+        market.fillOrder(q, _sign(q, rfqVMPk));
+
+        Quote memory q2 = _quote(orderId, Actors.MINTER1, OrderType.Mint, amount, TSLA_PRICE);
+        vm.prank(rfqVM);
+        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.InvalidOrderStatus.selector, orderId));
+        market.fillOrder(q2, _sign(q2, rfqVMPk));
+    }
+
+    function test_fillOrder_wrongSigner_reverts() public {
+        uint256 amount = 1000e6;
+        uint256 orderId = _placeMint(Actors.MINTER1, amount, TSLA_PRICE);
+        Quote memory q = _quote(orderId, Actors.MINTER1, OrderType.Mint, amount, TSLA_PRICE);
+        (, uint256 wrongPk) = makeAddrAndKey("attacker");
+        vm.prank(rfqVM);
+        vm.expectRevert(IOwnMarket.InvalidQuoteSigner.selector);
+        market.fillOrder(q, _sign(q, wrongPk));
+    }
+
+    // ══════════════════════════════════════════════════════════
+    //  forceExecuteOrder — redeem
+    // ══════════════════════════════════════════════════════════
+
+    function _assetPriceData(
+        uint256 price
+    ) internal view returns (bytes memory) {
+        return abi.encode(price, block.timestamp);
+    }
+
+    function test_forceExecuteOrder_redeem_succeeds() public {
+        uint256 amount = 4e18;
+        uint256 orderId = _placeRedeem(Actors.MINTER1, amount, TSLA_PRICE);
+
+        vm.warp(block.timestamp + CLAIM_THRESHOLD);
+
+        uint256 grossUsd = Math.mulDiv(amount, TSLA_PRICE, PRECISION);
+        uint256 expectedCollateral = Math.mulDiv(grossUsd, PRECISION, ETH_PRICE);
 
         vm.expectEmit(true, true, false, true);
-        emit IOwnMarket.OrderPlaced(1, Actors.MINTER1, uint8(OrderType.Redeem), TSLA, mockVault, eTokenAmount);
+        emit IOwnMarket.OrderForceExecuted(orderId, Actors.MINTER1, amount, expectedCollateral);
 
-        uint256 orderId = market.placeRedeemOrder(mockVault, TSLA, eTokenAmount, TSLA_PRICE, _defaultExpiry());
-        vm.stopPrank();
-
-        assertEq(eTSLAToken.balanceOf(address(market)), eTokenAmount);
-
-        Order memory order = market.getOrder(orderId);
-        assertEq(uint256(order.orderType), uint256(OrderType.Redeem));
-        assertEq(order.amount, eTokenAmount);
-        assertEq(order.price, TSLA_PRICE);
-    }
-
-    function test_placeRedeemOrder_zeroAmount_reverts() public {
         vm.prank(Actors.MINTER1);
-        vm.expectRevert(IOwnMarket.ZeroAmount.selector);
-        market.placeRedeemOrder(mockVault, TSLA, 0, TSLA_PRICE, _defaultExpiry());
-    }
+        market.forceExecuteOrder(orderId, _assetPriceData(TSLA_PRICE), _assetPriceData(ETH_PRICE));
 
-    // ══════════════════════════════════════════════════════════
-    //  claimOrder
-    // ══════════════════════════════════════════════════════════
-
-    function test_claimOrder_mint_succeeds() public {
-        _mockVault(Actors.VM1);
-        uint256 orderId = _placeMintOrder(Actors.MINTER1, 1000e6);
-
-        vm.expectEmit(true, true, false, false);
-        emit IOwnMarket.OrderClaimed(orderId, Actors.VM1);
-
-        _claimOrder(Actors.VM1, orderId);
-
+        assertEq(eTSLAToken.balanceOf(address(market)), 0, "escrowed eTokens burned");
         Order memory order = market.getOrder(orderId);
-        assertEq(uint256(order.status), uint256(OrderStatus.Claimed));
-        assertEq(order.vm, Actors.VM1);
-        assertEq(order.vault, mockVault);
-        assertGt(order.claimedAt, 0);
-
-        // Stablecoins (minus fee, fee is 0 here) transferred to VM
-        assertEq(usdc.balanceOf(Actors.VM1), 1000e6);
-        assertEq(usdc.balanceOf(address(market)), 0);
+        assertEq(order.filledAmount, amount);
+        assertEq(uint256(order.status), uint256(OrderStatus.ForceExecuted));
     }
 
-    function test_claimOrder_redeem_succeeds() public {
-        _mockVault(Actors.VM1);
-        uint256 orderId = _placeRedeemOrder(Actors.MINTER1, 4e18);
-
-        _claimOrder(Actors.VM1, orderId);
-
-        Order memory order = market.getOrder(orderId);
-        assertEq(uint256(order.status), uint256(OrderStatus.Claimed));
-
-        // eTokens stay in escrow
-        assertEq(eTSLAToken.balanceOf(address(market)), 4e18);
-        assertEq(eTSLAToken.balanceOf(Actors.VM1), 0);
+    function test_forceExecuteOrder_beforeWindow_reverts() public {
+        uint256 amount = 4e18;
+        uint256 orderId = _placeRedeem(Actors.MINTER1, amount, TSLA_PRICE);
+        vm.prank(Actors.MINTER1);
+        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.ForceWindowNotElapsed.selector, orderId));
+        market.forceExecuteOrder(orderId, _assetPriceData(TSLA_PRICE), _assetPriceData(ETH_PRICE));
     }
 
-    function test_claimOrder_notOpen_reverts() public {
-        _mockVault(Actors.VM1);
-        uint256 orderId = _placeMintOrder(Actors.MINTER1, 1000e6);
-
-        _claimOrder(Actors.VM1, orderId);
-
-        vm.prank(Actors.VM1);
-        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.InvalidOrderStatus.selector, orderId, OrderStatus.Claimed));
-        market.claimOrder(orderId);
+    function test_forceExecuteOrder_mintOrder_reverts() public {
+        uint256 orderId = _placeMint(Actors.MINTER1, 1000e6, TSLA_PRICE);
+        vm.warp(block.timestamp + CLAIM_THRESHOLD);
+        vm.prank(Actors.MINTER1);
+        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.ForceMintNotAllowed.selector, orderId));
+        market.forceExecuteOrder(orderId, _assetPriceData(TSLA_PRICE), _assetPriceData(ETH_PRICE));
     }
 
-    function test_claimOrder_expired_reverts() public {
-        _mockVault(Actors.VM1);
-        uint256 orderId = _placeMintOrder(Actors.MINTER1, 1000e6);
-
-        vm.warp(block.timestamp + DEFAULT_EXPIRY_OFFSET + 1);
-
-        vm.prank(Actors.VM1);
-        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.OrderExpiredError.selector, orderId));
-        market.claimOrder(orderId);
+    function test_forceExecuteOrder_notOwner_reverts() public {
+        uint256 orderId = _placeRedeem(Actors.MINTER1, 4e18, TSLA_PRICE);
+        vm.warp(block.timestamp + CLAIM_THRESHOLD);
+        vm.prank(Actors.MINTER2);
+        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.OnlyOrderOwner.selector, orderId));
+        market.forceExecuteOrder(orderId, _assetPriceData(TSLA_PRICE), _assetPriceData(ETH_PRICE));
     }
 
-    function test_claimOrder_wrongVM_reverts() public {
-        // Mock vault's vm() to return a different address
-        vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.vm.selector), abi.encode(Actors.VM2));
-        vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.updateExposure.selector), abi.encode());
-        vm.mockCall(
-            mockVault, abi.encodeWithSelector(IOwnVault.projectedExposureUtilization.selector), abi.encode(uint256(0))
-        );
-        vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.maxUtilization.selector), abi.encode(uint256(BPS)));
-
-        uint256 orderId = _placeMintOrder(Actors.MINTER1, 1000e6);
-
-        vm.prank(Actors.VM1);
-        vm.expectRevert(IOwnMarket.OnlyVM.selector);
-        market.claimOrder(orderId);
+    function test_forceExecuteOrder_priceBelowLimit_reverts() public {
+        uint256 amount = 4e18;
+        // limit price higher than the oracle price at force time
+        uint256 orderId = _placeRedeem(Actors.MINTER1, amount, TSLA_PRICE + 1);
+        vm.warp(block.timestamp + CLAIM_THRESHOLD);
+        vm.prank(Actors.MINTER1);
+        vm.expectRevert(IOwnMarket.PriceBelowMinimum.selector);
+        market.forceExecuteOrder(orderId, _assetPriceData(TSLA_PRICE), _assetPriceData(ETH_PRICE));
     }
 
-    function test_claimOrder_utilizationBreached_reverts() public {
-        _mockVault(Actors.VM1);
-        // Override projected utilization to be above max
-        vm.mockCall(
-            mockVault,
-            abi.encodeWithSelector(IOwnVault.projectedExposureUtilization.selector),
-            abi.encode(uint256(9500))
-        );
-        vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.maxUtilization.selector), abi.encode(uint256(9000)));
+    function test_forceExecuteOrder_partiallyFilled_forcesRemaining() public {
+        uint256 amount = 4e18;
+        uint256 orderId = _placeRedeem(Actors.MINTER1, amount, TSLA_PRICE);
 
-        uint256 orderId = _placeMintOrder(Actors.MINTER1, 1000e6);
+        // VM partially fills 1e18
+        uint256 fill = 1e18;
+        _fundVMForRedeem(_expectedRedeemOut(fill, TSLA_PRICE));
+        Quote memory q = _quote(orderId, Actors.MINTER1, OrderType.Redeem, fill, TSLA_PRICE);
+        vm.prank(rfqVM);
+        market.fillOrder(q, _sign(q, rfqVMPk));
 
-        vm.prank(Actors.VM1);
-        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.UtilizationBreached.selector, 9500, 9000));
-        market.claimOrder(orderId);
+        vm.warp(block.timestamp + CLAIM_THRESHOLD);
+
+        uint256 remaining = amount - fill;
+        uint256 grossUsd = Math.mulDiv(remaining, TSLA_PRICE, PRECISION);
+        uint256 expectedCollateral = Math.mulDiv(grossUsd, PRECISION, ETH_PRICE);
+
+        vm.expectEmit(true, true, false, true);
+        emit IOwnMarket.OrderForceExecuted(orderId, Actors.MINTER1, remaining, expectedCollateral);
+
+        vm.prank(Actors.MINTER1);
+        market.forceExecuteOrder(orderId, _assetPriceData(TSLA_PRICE), _assetPriceData(ETH_PRICE));
+
+        assertEq(eTSLAToken.balanceOf(address(market)), 0, "remaining escrow burned");
     }
 
-    // ══════════════════════════════════════════════════════════
-    //  confirmOrder — mint
-    // ══════════════════════════════════════════════════════════
+    function test_forceExecuteOrder_duringHalt_usesHaltPrice() public {
+        uint256 amount = 4e18;
+        uint256 haltPrice = 200e18;
+        uint256 orderId = _placeRedeem(Actors.MINTER1, amount, 0 + 1); // tiny limit so halt price passes
 
-    function test_confirmOrder_mint_succeeds() public {
-        _mockVault(Actors.VM1);
-        uint256 orderId = _placeMintOrder(Actors.MINTER1, 1000e6);
+        vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.isEffectivelyHalted.selector), abi.encode(true));
+        vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.getAssetHaltPrice.selector), abi.encode(haltPrice));
+        vm.warp(block.timestamp + CLAIM_THRESHOLD);
 
-        _claimOrder(Actors.VM1, orderId);
+        uint256 grossUsd = Math.mulDiv(amount, haltPrice, PRECISION);
+        uint256 expectedCollateral = Math.mulDiv(grossUsd, PRECISION, ETH_PRICE);
 
-        vm.prank(Actors.VM1);
-        market.confirmOrder(orderId, _buildPriceProof(TSLA_PRICE));
+        vm.expectEmit(true, true, false, true);
+        emit IOwnMarket.OrderForceExecuted(orderId, Actors.MINTER1, amount, expectedCollateral);
 
-        Order memory order = market.getOrder(orderId);
-        assertEq(uint256(order.status), uint256(OrderStatus.Confirmed));
-
-        // eTokens minted at set price: 1000e6 (USDC) * 1e18 / 250e18 = 4e18 * 1e12 scaling
-        // Actually: (1000e6 * 1e12 * 1e18) / 250e18 = 1000e18 * 1e18 / 250e18 = 4e18
-        assertEq(eTSLAToken.balanceOf(Actors.MINTER1), 4e18);
-    }
-
-    function test_confirmOrder_mint_notClaimed_reverts() public {
-        uint256 orderId = _placeMintOrder(Actors.MINTER1, 1000e6);
-
-        vm.prank(Actors.VM1);
-        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.InvalidOrderStatus.selector, orderId, OrderStatus.Open));
-        market.confirmOrder(orderId, _buildPriceProof(TSLA_PRICE));
-    }
-
-    function test_confirmOrder_mint_wrongVM_reverts() public {
-        _mockVault(Actors.VM1);
-        uint256 orderId = _placeMintOrder(Actors.MINTER1, 1000e6);
-
-        _claimOrder(Actors.VM1, orderId);
-
-        vm.prank(Actors.VM2);
-        vm.expectRevert();
-        market.confirmOrder(orderId, _buildPriceProof(TSLA_PRICE));
+        vm.prank(Actors.MINTER1);
+        market.forceExecuteOrder(orderId, "", _assetPriceData(ETH_PRICE));
     }
 
     // ══════════════════════════════════════════════════════════
-    //  confirmOrder — redeem
+    //  cancelOrder / expireOrder
     // ══════════════════════════════════════════════════════════
 
-    function test_confirmOrder_redeem_succeeds() public {
-        _mockVault(Actors.VM1);
-        uint256 eTokenAmount = 4e18;
-        uint256 orderId = _placeRedeemOrder(Actors.MINTER1, eTokenAmount);
-
-        _claimOrder(Actors.VM1, orderId);
-
-        // VM needs stablecoins to pay user: 4e18 * 250e18 / (1e18 * 1e12) = 1000e6
-        uint256 grossPayout = Math.mulDiv(eTokenAmount, TSLA_PRICE, PRECISION * 1e12);
-        usdc.mint(Actors.VM1, grossPayout);
-        vm.prank(Actors.VM1);
-        usdc.approve(address(market), grossPayout);
-
-        vm.prank(Actors.VM1);
-        market.confirmOrder(orderId, _buildPriceProof(TSLA_PRICE));
-
-        Order memory order = market.getOrder(orderId);
-        assertEq(uint256(order.status), uint256(OrderStatus.Confirmed));
-
-        // User receives stablecoins (no fee since fee is 0)
-        assertEq(usdc.balanceOf(Actors.MINTER1), grossPayout);
-
-        // eTokens burned
-        assertEq(eTSLAToken.balanceOf(address(market)), 0);
+    function test_cancelOrder_mint_returnsEscrow() public {
+        uint256 amount = 1000e6;
+        uint256 orderId = _placeMint(Actors.MINTER1, amount, TSLA_PRICE);
+        vm.prank(Actors.MINTER1);
+        market.cancelOrder(orderId);
+        assertEq(usdc.balanceOf(Actors.MINTER1), amount, "escrow returned");
+        assertEq(uint256(market.getOrder(orderId).status), uint256(OrderStatus.Cancelled));
     }
 
-    // ══════════════════════════════════════════════════════════
-    //  cancelOrder
-    // ══════════════════════════════════════════════════════════
-
-    function test_cancelOrder_mint_returnsStablecoins() public {
-        uint256 orderId = _placeMintOrder(Actors.MINTER1, 1000e6);
-
-        vm.expectEmit(true, true, false, false);
-        emit IOwnMarket.OrderCancelled(orderId, Actors.MINTER1);
+    function test_cancelOrder_partiallyFilled_returnsRemaining() public {
+        uint256 amount = 1000e6;
+        uint256 orderId = _placeMint(Actors.MINTER1, amount, TSLA_PRICE);
+        Quote memory q = _quote(orderId, Actors.MINTER1, OrderType.Mint, 600e6, TSLA_PRICE);
+        vm.prank(rfqVM);
+        market.fillOrder(q, _sign(q, rfqVMPk));
 
         vm.prank(Actors.MINTER1);
         market.cancelOrder(orderId);
-
-        assertEq(usdc.balanceOf(Actors.MINTER1), 1000e6);
-        assertEq(usdc.balanceOf(address(market)), 0);
-
-        Order memory order = market.getOrder(orderId);
-        assertEq(uint256(order.status), uint256(OrderStatus.Cancelled));
-    }
-
-    function test_cancelOrder_redeem_returnsETokens() public {
-        uint256 orderId = _placeRedeemOrder(Actors.MINTER1, 4e18);
-
-        vm.prank(Actors.MINTER1);
-        market.cancelOrder(orderId);
-
-        assertEq(eTSLAToken.balanceOf(Actors.MINTER1), 4e18);
-        assertEq(eTSLAToken.balanceOf(address(market)), 0);
+        assertEq(usdc.balanceOf(Actors.MINTER1), 400e6, "remaining escrow returned");
     }
 
     function test_cancelOrder_notOwner_reverts() public {
-        uint256 orderId = _placeMintOrder(Actors.MINTER1, 1000e6);
-
-        vm.prank(Actors.ATTACKER);
+        uint256 orderId = _placeMint(Actors.MINTER1, 1000e6, TSLA_PRICE);
+        vm.prank(Actors.MINTER2);
         vm.expectRevert(abi.encodeWithSelector(IOwnMarket.OnlyOrderOwner.selector, orderId));
         market.cancelOrder(orderId);
     }
 
-    function test_cancelOrder_afterClaim_reverts() public {
-        _mockVault(Actors.VM1);
-        uint256 orderId = _placeMintOrder(Actors.MINTER1, 1000e6);
-
-        _claimOrder(Actors.VM1, orderId);
-
-        vm.prank(Actors.MINTER1);
-        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.InvalidOrderStatus.selector, orderId, OrderStatus.Claimed));
-        market.cancelOrder(orderId);
-    }
-
-    // ══════════════════════════════════════════════════════════
-    //  expireOrder
-    // ══════════════════════════════════════════════════════════
-
-    function test_expireOrder_mint_afterExpiry_succeeds() public {
-        uint256 orderId = _placeMintOrder(Actors.MINTER1, 1000e6);
-
-        vm.warp(block.timestamp + DEFAULT_EXPIRY_OFFSET + 1);
-
-        vm.expectEmit(true, false, false, false);
-        emit IOwnMarket.OrderExpired(orderId);
-
-        market.expireOrder(orderId);
-
+    function test_expireOrder_returnsEscrowAfterExpiry() public {
+        uint256 amount = 4e18;
+        uint256 orderId = _placeRedeem(Actors.MINTER1, amount, TSLA_PRICE);
         Order memory order = market.getOrder(orderId);
-        assertEq(uint256(order.status), uint256(OrderStatus.Expired));
-        assertEq(usdc.balanceOf(Actors.MINTER1), 1000e6);
-    }
-
-    function test_expireOrder_redeem_afterExpiry_succeeds() public {
-        uint256 orderId = _placeRedeemOrder(Actors.MINTER1, 4e18);
-
-        vm.warp(block.timestamp + DEFAULT_EXPIRY_OFFSET + 1);
+        vm.warp(order.expiry + 1);
         market.expireOrder(orderId);
-
-        assertEq(eTSLAToken.balanceOf(Actors.MINTER1), 4e18);
+        assertEq(eTSLAToken.balanceOf(Actors.MINTER1), amount, "eTokens returned");
+        assertEq(uint256(market.getOrder(orderId).status), uint256(OrderStatus.Expired));
     }
 
     function test_expireOrder_beforeExpiry_reverts() public {
-        uint256 orderId = _placeMintOrder(Actors.MINTER1, 1000e6);
-
+        uint256 orderId = _placeMint(Actors.MINTER1, 1000e6, TSLA_PRICE);
         vm.expectRevert(abi.encodeWithSelector(IOwnMarket.ExpiryNotReached.selector, orderId));
         market.expireOrder(orderId);
     }
 
-    function test_expireOrder_claimedOrder_reverts() public {
-        _mockVault(Actors.VM1);
-        uint256 orderId = _placeMintOrder(Actors.MINTER1, 1000e6);
-
-        _claimOrder(Actors.VM1, orderId);
-
-        vm.warp(block.timestamp + DEFAULT_EXPIRY_OFFSET + 1);
-
-        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.InvalidOrderStatus.selector, orderId, OrderStatus.Claimed));
-        market.expireOrder(orderId);
-    }
-
-    function test_expireOrder_callable_by_anyone() public {
-        uint256 orderId = _placeMintOrder(Actors.MINTER1, 1000e6);
-
-        vm.warp(block.timestamp + DEFAULT_EXPIRY_OFFSET + 1);
-
-        vm.prank(Actors.ATTACKER);
-        market.expireOrder(orderId);
-
-        assertEq(usdc.balanceOf(Actors.MINTER1), 1000e6);
-    }
-
     // ══════════════════════════════════════════════════════════
-    //  closeOrder — VM returns funds for expired claimed order
+    //  Fees
     // ══════════════════════════════════════════════════════════
 
-    function test_closeOrder_mint_succeeds() public {
-        _mockVault(Actors.VM1);
-        uint256 orderId = _placeMintOrder(Actors.MINTER1, 1000e6);
-
-        _claimOrder(Actors.VM1, orderId);
-
-        // Warp past expiry
-        vm.warp(block.timestamp + DEFAULT_EXPIRY_OFFSET + 1);
-
-        // VM must have stablecoins to return (it received them on claim)
-        // VM already has 1000e6 from claim, now needs to send them back
-        vm.startPrank(Actors.VM1);
-        usdc.approve(address(market), 1000e6);
-
-        vm.expectEmit(true, true, false, false);
-        emit IOwnMarket.OrderClosed(orderId, Actors.VM1);
-
-        market.closeOrder(orderId);
-        vm.stopPrank();
-
-        Order memory order = market.getOrder(orderId);
-        assertEq(uint256(order.status), uint256(OrderStatus.Closed));
-
-        // User gets full amount back
-        assertEq(usdc.balanceOf(Actors.MINTER1), 1000e6);
-    }
-
-    function test_closeOrder_redeem_succeeds() public {
-        _mockVault(Actors.VM1);
-        uint256 orderId = _placeRedeemOrder(Actors.MINTER1, 4e18);
-
-        _claimOrder(Actors.VM1, orderId);
-
-        vm.warp(block.timestamp + DEFAULT_EXPIRY_OFFSET + 1);
-
-        vm.expectEmit(true, true, false, false);
-        emit IOwnMarket.OrderClosed(orderId, Actors.VM1);
-
-        vm.prank(Actors.VM1);
-        market.closeOrder(orderId);
-
-        // eTokens returned to user
-        assertEq(eTSLAToken.balanceOf(Actors.MINTER1), 4e18);
-        assertEq(eTSLAToken.balanceOf(address(market)), 0);
-    }
-
-    function test_closeOrder_beforeExpiry_reverts() public {
-        _mockVault(Actors.VM1);
-        uint256 orderId = _placeMintOrder(Actors.MINTER1, 1000e6);
-
-        _claimOrder(Actors.VM1, orderId);
-
-        vm.prank(Actors.VM1);
-        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.ExpiryNotReached.selector, orderId));
-        market.closeOrder(orderId);
-    }
-
-    function test_closeOrder_notClaimed_reverts() public {
-        uint256 orderId = _placeMintOrder(Actors.MINTER1, 1000e6);
-
-        vm.warp(block.timestamp + DEFAULT_EXPIRY_OFFSET + 1);
-
-        vm.prank(Actors.VM1);
-        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.InvalidOrderStatus.selector, orderId, OrderStatus.Open));
-        market.closeOrder(orderId);
-    }
-
-    function test_closeOrder_wrongVM_reverts() public {
-        _mockVault(Actors.VM1);
-        uint256 orderId = _placeMintOrder(Actors.MINTER1, 1000e6);
-
-        _claimOrder(Actors.VM1, orderId);
-
-        vm.warp(block.timestamp + DEFAULT_EXPIRY_OFFSET + 1);
-
-        vm.prank(Actors.VM2);
-        vm.expectRevert();
-        market.closeOrder(orderId);
-    }
-
-    // ══════════════════════════════════════════════════════════
-    //  forceExecute — claimed mint, grace period
-    // ══════════════════════════════════════════════════════════
-
-    function test_forceExecute_claimedMint_afterGracePeriod() public {
-        _mockVault(Actors.VM1);
-        uint256 orderId = _placeMintOrder(Actors.MINTER1, 1000e6);
-
-        _claimOrder(Actors.VM1, orderId);
-
-        // Warp past grace period
-        vm.warp(block.timestamp + GRACE_PERIOD + 1);
-
-        // Mock collateral oracle and release for force execution
-        vm.mockCall(
-            mockVault, abi.encodeWithSelector(IOwnVault.collateralOracleAsset.selector), abi.encode(bytes32("ETH"))
-        );
-        vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.releaseCollateral.selector), abi.encode());
-
-        vm.expectEmit(true, true, false, true);
-        emit IOwnMarket.OrderForceExecuted(orderId, Actors.MINTER1, false);
-
-        // Pass valid ETH price data for collateral conversion
-        bytes memory collateralPriceData = abi.encode(uint256(2000e18), uint256(block.timestamp));
-
-        vm.prank(Actors.MINTER1);
-        market.forceExecute(orderId, "", collateralPriceData);
-
-        Order memory order = market.getOrder(orderId);
-        assertEq(uint256(order.status), uint256(OrderStatus.ForceExecuted));
-    }
-
-    function test_forceExecute_claimedMint_beforeGracePeriod_reverts() public {
-        _mockVault(Actors.VM1);
-        uint256 orderId = _placeMintOrder(Actors.MINTER1, 1000e6);
-
-        _claimOrder(Actors.VM1, orderId);
-
-        vm.prank(Actors.MINTER1);
-        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.GracePeriodNotElapsed.selector, orderId));
-        market.forceExecute(orderId, "", "");
-    }
-
-    function test_forceExecute_notOrderOwner_reverts() public {
-        _mockVault(Actors.VM1);
-        uint256 orderId = _placeMintOrder(Actors.MINTER1, 1000e6);
-
-        _claimOrder(Actors.VM1, orderId);
-
-        vm.warp(block.timestamp + GRACE_PERIOD + 1);
-
-        vm.prank(Actors.ATTACKER);
-        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.OnlyOrderOwner.selector, orderId));
-        market.forceExecute(orderId, "", "");
-    }
-
-    // ══════════════════════════════════════════════════════════
-    //  forceExecute — claimed redeem
-    // ══════════════════════════════════════════════════════════
-
-    function test_forceExecute_claimedRedeem_afterGracePeriod() public {
-        _mockVault(Actors.VM1);
-        uint256 orderId = _placeRedeemOrder(Actors.MINTER1, 4e18);
-
-        _claimOrder(Actors.VM1, orderId);
-
-        vm.warp(block.timestamp + GRACE_PERIOD + 1);
-
-        vm.prank(Actors.MINTER1);
-        market.forceExecute(orderId, "", "");
-
-        Order memory order = market.getOrder(orderId);
-        assertEq(uint256(order.status), uint256(OrderStatus.ForceExecuted));
-
-        // With stub _verifyOHLCProof returning false, eTokens returned to user
-        assertEq(eTSLAToken.balanceOf(Actors.MINTER1), 4e18);
-    }
-
-    // ══════════════════════════════════════════════════════════
-    //  forceExecute — unclaimed redeem (claim threshold)
-    // ══════════════════════════════════════════════════════════
-
-    function test_forceExecute_unclaimedRedeem_afterClaimThreshold() public {
-        uint256 orderId = _placeRedeemOrder(Actors.MINTER1, 4e18);
-
-        vm.warp(block.timestamp + CLAIM_THRESHOLD + 1);
-
-        vm.prank(Actors.MINTER1);
-        market.forceExecute(orderId, "", "");
-
-        Order memory order = market.getOrder(orderId);
-        assertEq(uint256(order.status), uint256(OrderStatus.ForceExecuted));
-
-        // eTokens returned (stub returns price not reachable)
-        assertEq(eTSLAToken.balanceOf(Actors.MINTER1), 4e18);
-    }
-
-    function test_forceExecute_unclaimedRedeem_beforeThreshold_reverts() public {
-        uint256 orderId = _placeRedeemOrder(Actors.MINTER1, 4e18);
-
-        vm.prank(Actors.MINTER1);
-        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.ClaimThresholdNotElapsed.selector, orderId));
-        market.forceExecute(orderId, "", "");
-    }
-
-    function test_forceExecute_unclaimedMint_reverts() public {
-        // Open mint orders cannot be force-executed — only claimed mints and open/claimed redeems
-        uint256 orderId = _placeMintOrder(Actors.MINTER1, 1000e6);
-
-        vm.prank(Actors.MINTER1);
-        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.InvalidOrderStatus.selector, orderId, OrderStatus.Open));
-        market.forceExecute(orderId, "", "");
-    }
-
-    function test_forceExecute_confirmedOrder_reverts() public {
-        _mockVault(Actors.VM1);
-        uint256 orderId = _placeMintOrder(Actors.MINTER1, 1000e6);
-
-        _claimOrder(Actors.VM1, orderId);
-
-        vm.prank(Actors.VM1);
-        market.confirmOrder(orderId, _buildPriceProof(TSLA_PRICE));
-
-        vm.warp(block.timestamp + GRACE_PERIOD + 1);
-
-        vm.prank(Actors.MINTER1);
-        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.InvalidOrderStatus.selector, orderId, OrderStatus.Confirmed));
-        market.forceExecute(orderId, "", "");
-    }
-
-    // ══════════════════════════════════════════════════════════
-    //  Mint with fees
-    // ══════════════════════════════════════════════════════════
-
-    function test_confirmOrder_mint_withFees() public {
-        // Set 1% mint fee for volatility level 2
+    function test_executeOrder_marketMint_withFee() public {
+        // 1% mint fee on volatility level 2
         vm.prank(Actors.ADMIN);
-        feeCalc.setMintFee(2, 100); // 100 BPS = 1%
+        feeCalc.setMintFee(2, 100);
 
-        _mockVault(Actors.VM1);
-        uint256 amount = 10_000e6;
-        uint256 orderId = _placeMintOrder(Actors.MINTER1, amount);
+        uint256 amount = 1000e6;
+        _fundUserForMint(Actors.MINTER1, amount);
 
-        _claimOrder(Actors.VM1, orderId);
+        uint256 fee = Math.mulDiv(amount, 100, BPS, Math.Rounding.Ceil);
+        uint256 net = amount - fee;
+        uint256 expectedOut = _expectedMintOut(net, TSLA_PRICE);
 
-        // Fee = 10000e6 * 100 / 10000 = 100e6 (ceil)
-        uint256 expectedFee = Math.mulDiv(amount, 100, BPS, Math.Rounding.Ceil);
-        uint256 netToVM = amount - expectedFee;
+        Quote memory q = _quote(0, Actors.MINTER1, OrderType.Mint, amount, TSLA_PRICE);
+        vm.prank(Actors.MINTER1);
+        market.executeOrder(q, _sign(q, rfqVMPk));
 
-        // VM got net amount
-        assertEq(usdc.balanceOf(Actors.VM1), netToVM);
-        // Fee escrowed in market
-        assertEq(usdc.balanceOf(address(market)), expectedFee);
-
-        vm.prank(Actors.VM1);
-        market.confirmOrder(orderId, _buildPriceProof(TSLA_PRICE));
-
-        // eTokens minted based on net amount
-        uint256 expectedETokens = Math.mulDiv(netToVM * 1e12, PRECISION, TSLA_PRICE);
-        assertEq(eTSLAToken.balanceOf(Actors.MINTER1), expectedETokens);
-    }
-
-    // ══════════════════════════════════════════════════════════
-    //  Redeem with fees
-    // ══════════════════════════════════════════════════════════
-
-    function test_confirmOrder_redeem_withFees() public {
-        // Set 0.5% redeem fee for volatility level 2
-        vm.prank(Actors.ADMIN);
-        feeCalc.setRedeemFee(2, 50); // 50 BPS = 0.5%
-
-        _mockVault(Actors.VM1);
-        uint256 eTokenAmount = 4e18;
-        uint256 orderId = _placeRedeemOrder(Actors.MINTER1, eTokenAmount);
-
-        _claimOrder(Actors.VM1, orderId);
-
-        // Gross payout: 4e18 * 250e18 / (1e18 * 1e12) = 1000e6
-        uint256 grossPayout = Math.mulDiv(eTokenAmount, TSLA_PRICE, PRECISION * 1e12);
-        uint256 fee = Math.mulDiv(grossPayout, 50, BPS, Math.Rounding.Ceil);
-        uint256 netToUser = grossPayout - fee;
-
-        // VM needs to have stablecoins
-        usdc.mint(Actors.VM1, grossPayout);
-        vm.prank(Actors.VM1);
-        usdc.approve(address(market), grossPayout);
-
-        vm.prank(Actors.VM1);
-        market.confirmOrder(orderId, _buildPriceProof(TSLA_PRICE));
-
-        // User gets net
-        assertEq(usdc.balanceOf(Actors.MINTER1), netToUser);
-        // eTokens burned
-        assertEq(eTSLAToken.balanceOf(address(market)), 0);
-    }
-
-    // ══════════════════════════════════════════════════════════
-    //  Admin functions
-    // ══════════════════════════════════════════════════════════
-
-    // ══════════════════════════════════════════════════════════
-    //  View functions
-    // ══════════════════════════════════════════════════════════
-
-    function test_getOrder_nonExistent_reverts() public {
-        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.OrderNotFound.selector, 999));
-        market.getOrder(999);
-    }
-
-    function test_getOpenOrders_returnsOpenOnly() public {
-        _placeMintOrder(Actors.MINTER1, 1000e6);
-        _placeMintOrder(Actors.MINTER2, 2000e6);
-
-        uint256[] memory openOrders = market.getOpenOrders(TSLA);
-        assertEq(openOrders.length, 2);
-    }
-
-    function test_getUserOrders_returnsUserOrders() public {
-        _placeMintOrder(Actors.MINTER1, 1000e6);
-        _placeMintOrder(Actors.MINTER1, 500e6);
-        _placeMintOrder(Actors.MINTER2, 2000e6);
-
-        uint256[] memory m1Orders = market.getUserOrders(Actors.MINTER1);
-        assertEq(m1Orders.length, 2);
-
-        uint256[] memory m2Orders = market.getUserOrders(Actors.MINTER2);
-        assertEq(m2Orders.length, 1);
-    }
-
-    // ══════════════════════════════════════════════════════════
-    //  Fuzz
-    // ══════════════════════════════════════════════════════════
-
-    function testFuzz_placeMintOrder_anyAmount(
-        uint256 amount
-    ) public {
-        amount = bound(amount, 1, type(uint128).max);
-
-        usdc.mint(Actors.MINTER1, amount);
-        vm.startPrank(Actors.MINTER1);
-        usdc.approve(address(market), amount);
-
-        uint256 orderId = market.placeMintOrder(mockVault, TSLA, amount, TSLA_PRICE, _defaultExpiry());
-        vm.stopPrank();
-
-        Order memory order = market.getOrder(orderId);
-        assertEq(order.amount, amount);
-        assertEq(usdc.balanceOf(address(market)), amount);
-    }
-
-    function testFuzz_fullMintFlow(
-        uint256 amount
-    ) public {
-        amount = bound(amount, 1e6, 1_000_000e6); // 1 USDC to 1M USDC
-
-        _mockVault(Actors.VM1);
-        uint256 orderId = _placeMintOrder(Actors.MINTER1, amount);
-
-        _claimOrder(Actors.VM1, orderId);
-
-        vm.prank(Actors.VM1);
-        market.confirmOrder(orderId, _buildPriceProof(TSLA_PRICE));
-
-        // eTokens should be minted
-        assertGt(eTSLAToken.balanceOf(Actors.MINTER1), 0);
-
-        // Order should be confirmed
-        Order memory order = market.getOrder(orderId);
-        assertEq(uint256(order.status), uint256(OrderStatus.Confirmed));
+        assertEq(usdc.balanceOf(rfqVM), net, "vm gets net");
+        assertEq(eTSLAToken.balanceOf(Actors.MINTER1), expectedOut, "eTokens on net");
+        // Fee held by market (vault.depositFees is mocked to a no-op here)
+        assertEq(usdc.balanceOf(address(market)), fee, "fee retained pending depositFees");
     }
 }

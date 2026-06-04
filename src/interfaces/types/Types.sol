@@ -23,15 +23,16 @@ enum OrderType {
     Redeem
 }
 
-/// @notice Lifecycle status of an order.
+/// @notice Lifecycle status of a resting (limit / redeem) order.
+/// @dev Market orders execute atomically and are never persisted, so they have no status.
+///      A partially filled order stays `Open` until its remaining amount reaches zero,
+///      at which point it becomes `Filled`.
 enum OrderStatus {
     Open,
-    Claimed,
-    Confirmed,
+    Filled,
+    ForceExecuted,
     Cancelled,
-    Expired,
-    Closed,
-    ForceExecuted
+    Expired
 }
 
 /// @notice Lifecycle status of an async LP withdrawal request.
@@ -60,32 +61,62 @@ enum VaultStatus {
 //  Structs
 // ──────────────────────────────────────────────────────────────
 
-/// @notice An order placed by a user in the escrow marketplace.
-/// @param orderId   Unique order identifier.
-/// @param user      Address that placed the order.
-/// @param orderType Mint or Redeem.
-/// @param asset     Asset ticker (e.g. bytes32("TSLA")).
-/// @param amount    Stablecoin amount (Mint) or eToken amount (Redeem).
-/// @param price     Max price per eToken (Mint) or min price per eToken (Redeem). 18 decimals.
-/// @param expiry    Timestamp after which the order can be expired.
-/// @param status    Current order status.
-/// @param createdAt Timestamp when the order was placed.
-/// @param vm        VM that claimed the order (address(0) if unclaimed).
-/// @param vault     Vault backing the claim (address(0) if unclaimed).
-/// @param claimedAt Timestamp of the claim (0 if unclaimed).
+/// @notice A resting (limit / redeem) order escrowed by a user in the marketplace.
+/// @dev Market orders execute atomically via a signed Quote and are never stored as Orders.
+///      The VM (or a relayer) fills a resting order — possibly in several partial chunks —
+///      by submitting VM-signed Quotes whose price satisfies `limitPrice`. Redeem orders
+///      additionally support user force execution at the oracle price after the vault's
+///      claim threshold elapses.
+/// @param orderId      Unique order identifier.
+/// @param user         Address that placed the order.
+/// @param vault        Vault the order is bound to (VM = IOwnVault(vault).vm()).
+/// @param asset        Asset ticker (e.g. bytes32("TSLA")).
+/// @param orderType    Mint or Redeem.
+/// @param amount       Original input amount: stablecoins (Mint) or eTokens (Redeem).
+/// @param filledAmount Cumulative input amount filled so far (≤ amount).
+/// @param limitPrice   Max price per eToken (Mint) or min price per eToken (Redeem). 18 decimals.
+/// @param createdAt    Timestamp when the order was placed.
+/// @param expiry       Timestamp after which the order can be expired (good-til-date).
+/// @param status       Current order status.
 struct Order {
     uint256 orderId;
     address user;
-    OrderType orderType;
+    address vault;
     bytes32 asset;
+    OrderType orderType;
     uint256 amount;
-    uint256 price;
+    uint256 filledAmount;
+    uint256 limitPrice;
+    uint256 createdAt;
     uint256 expiry;
     OrderStatus status;
-    uint256 createdAt;
-    address vm;
+}
+
+/// @notice A firm price quote signed off-chain by a vault's VM.
+/// @dev For a market order `orderId` is 0 and the Quote carries the full order terms;
+///      the taker (`user`) submits it and it executes atomically. For a resting-order
+///      fill `orderId` references the stored Order and `amount` is the chunk to fill
+///      (≤ the order's remaining amount). The signature is verified against
+///      IOwnVault(vault).vm() and binds chainId + market address for replay safety.
+/// @param orderId   Target resting order (0 = market / atomic).
+/// @param user      Taker bound to the quote (must be msg.sender for market orders).
+/// @param vault     Vault the quote is issued against.
+/// @param asset     Asset ticker.
+/// @param orderType Mint or Redeem.
+/// @param amount    Input amount this quote fills: stablecoins (Mint) or eTokens (Redeem).
+/// @param price     Execution price per eToken (18 decimals).
+/// @param quoteId   Unique nonce, enforcing single use per quote.
+/// @param expiry    Timestamp after which the quote is no longer valid.
+struct Quote {
+    uint256 orderId;
+    address user;
     address vault;
-    uint256 claimedAt;
+    bytes32 asset;
+    OrderType orderType;
+    uint256 amount;
+    uint256 price;
+    uint256 quoteId;
+    uint256 expiry;
 }
 
 /// @notice An async LP withdrawal request in the FIFO queue.
