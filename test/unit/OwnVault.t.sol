@@ -374,6 +374,34 @@ contract OwnVaultTest is BaseTest {
         assertEq(pending[1], 2); // LP2's request second
     }
 
+    function test_getPendingWithdrawals_removeMiddle() public {
+        _depositAs(Actors.LP1, 30 ether);
+        uint256 third = vault.balanceOf(Actors.LP1) / 3;
+
+        vm.startPrank(Actors.LP1);
+        uint256 id1 = vault.requestWithdrawal(third);
+        uint256 id2 = vault.requestWithdrawal(third);
+        uint256 id3 = vault.requestWithdrawal(third);
+        // Cancel the middle request — O(1) removal must keep the other two intact.
+        vault.cancelWithdrawal(id2);
+        vm.stopPrank();
+
+        uint256[] memory pending = vault.getPendingWithdrawals();
+        assertEq(pending.length, 2, "two remain");
+
+        bool has1;
+        bool has2;
+        bool has3;
+        for (uint256 i; i < pending.length; ++i) {
+            if (pending[i] == id1) has1 = true;
+            if (pending[i] == id2) has2 = true;
+            if (pending[i] == id3) has3 = true;
+        }
+        assertTrue(has1, "id1 retained");
+        assertTrue(has3, "id3 retained");
+        assertFalse(has2, "id2 removed");
+    }
+
     // ──────────────────────────────────────────────────────────
     //  Vault status and control
     // ──────────────────────────────────────────────────────────

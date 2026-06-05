@@ -25,13 +25,16 @@ import {ERC4626} from "@openzeppelin/contracts/token/ERC20/extensions/ERC4626.so
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+import {EnumerableSet} from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 
 /// @title OwnVault — ERC-4626 collateral vault with async deposit/withdrawal
 /// @notice Single vault holding collateral to back eToken exposure.
 contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     using SafeERC20 for IERC20;
     using Math for uint256;
+    using EnumerableSet for EnumerableSet.UintSet;
 
     // ──────────────────────────────────────────────────────────
     //  Immutables
@@ -103,7 +106,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
 
     uint256 private _nextDepositRequestId = 1;
     mapping(uint256 => DepositRequest) private _depositRequests;
-    uint256[] private _pendingDepositIds;
+    EnumerableSet.UintSet private _pendingDepositIds;
 
     /// @dev Total assets held for pending deposit requests. Excluded from
     ///      totalAssets() so that ERC-4626 share math is not polluted by
@@ -120,7 +123,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
 
     uint256 private _nextRequestId = 1;
     mapping(uint256 => WithdrawalRequest) private _withdrawalRequests;
-    uint256[] private _pendingRequestIds;
+    EnumerableSet.UintSet private _pendingRequestIds;
 
     /// @dev Total shares escrowed for pending withdrawal requests.
     ///      Used by projectedUtilization() to estimate effective collateral.
@@ -272,7 +275,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
             timestamp: block.timestamp,
             status: DepositStatus.Pending
         });
-        _pendingDepositIds.push(requestId);
+        _pendingDepositIds.add(requestId);
 
         emit DepositRequested(requestId, msg.sender, receiver, assets);
     }
@@ -289,7 +292,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
         if (shares < req.minSharesOut) revert InsufficientSharesOut(shares, req.minSharesOut);
         _pendingDepositAssets -= req.assets;
         req.status = DepositStatus.Accepted;
-        _removeFromPendingList(_pendingDepositIds, requestId);
+        _pendingDepositIds.remove(requestId);
         _mint(req.receiver, shares);
 
         emit DepositAccepted(requestId, req.depositor, shares);
@@ -305,7 +308,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
 
         _pendingDepositAssets -= req.assets;
         req.status = DepositStatus.Rejected;
-        _removeFromPendingList(_pendingDepositIds, requestId);
+        _pendingDepositIds.remove(requestId);
         IERC20(asset()).safeTransfer(req.depositor, req.assets);
 
         emit DepositRejected(requestId, req.depositor);
@@ -322,7 +325,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
 
         _pendingDepositAssets -= req.assets;
         req.status = DepositStatus.Cancelled;
-        _removeFromPendingList(_pendingDepositIds, requestId);
+        _pendingDepositIds.remove(requestId);
         IERC20(asset()).safeTransfer(req.depositor, req.assets);
 
         emit DepositCancelled(requestId, req.depositor);
@@ -338,7 +341,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
 
     /// @inheritdoc IOwnVault
     function getPendingDeposits() external view returns (uint256[] memory) {
-        return _pendingDepositIds;
+        return _pendingDepositIds.values();
     }
 
     // ──────────────────────────────────────────────────────────
@@ -362,7 +365,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
             timestamp: block.timestamp,
             status: WithdrawalStatus.Pending
         });
-        _pendingRequestIds.push(requestId);
+        _pendingRequestIds.add(requestId);
 
         emit WithdrawalRequested(requestId, msg.sender, shares);
     }
@@ -379,7 +382,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
         req.status = WithdrawalStatus.Cancelled;
         _pendingWithdrawalShares -= req.shares;
         _transfer(address(this), msg.sender, req.shares);
-        _removeFromPendingList(_pendingRequestIds, requestId);
+        _pendingRequestIds.remove(requestId);
 
         emit WithdrawalCancelled(requestId, msg.sender);
     }
@@ -418,7 +421,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
 
         req.status = WithdrawalStatus.Fulfilled;
         _pendingWithdrawalShares -= shares;
-        _removeFromPendingList(_pendingRequestIds, requestId);
+        _pendingRequestIds.remove(requestId);
 
         _burn(address(this), shares);
         IERC20(asset()).safeTransfer(req.owner, assets);
@@ -436,7 +439,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
 
     /// @inheritdoc IOwnVault
     function getPendingWithdrawals() external view returns (uint256[] memory) {
-        return _pendingRequestIds;
+        return _pendingRequestIds.values();
     }
 
     // ──────────────────────────────────────────────────────────
@@ -909,21 +912,6 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
         uint8 oracleType = IAssetRegistry(registry.assetRegistry()).getOracleType(ticker);
         if (oracleType == 0) return registry.pythOracle();
         return registry.inhouseOracle();
-    }
-
-    /// @dev Swap-and-pop a request ID from a pending list (deposit or withdrawal).
-    function _removeFromPendingList(uint256[] storage list, uint256 requestId) private {
-        uint256 len = list.length;
-        for (uint256 i; i < len;) {
-            if (list[i] == requestId) {
-                list[i] = list[len - 1];
-                list.pop();
-                return;
-            }
-            unchecked {
-                ++i;
-            }
-        }
     }
 
     // ──────────────────────────────────────────────────────────
