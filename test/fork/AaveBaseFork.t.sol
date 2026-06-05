@@ -67,13 +67,11 @@ contract AaveBaseForkTest is Test {
         vm.startPrank(admin);
         registry = new ProtocolRegistry(admin, 2 days);
         registry.setAddress(registry.MARKET(), makeAddr("market"));
-        registry.setAddress(registry.TREASURY(), makeAddr("treasury"));
-        registry.setProtocolShareBps(2000);
 
         router = new AaveRouter(AAVE_V3_POOL_BASE, address(registry));
         router.registerReserve(WSTETH_BASE, awstETH);
 
-        vault = new OwnVault(awstETH, "Own awstETH", "owawstETH", address(registry), address(router), 8000, 2000);
+        vault = new OwnVault(awstETH, "Own awstETH", "owawstETH", address(registry), address(router), 8000);
         vm.stopPrank();
     }
 

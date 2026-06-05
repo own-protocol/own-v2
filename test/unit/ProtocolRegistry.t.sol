@@ -18,9 +18,7 @@ contract ProtocolRegistryTest is BaseTest {
 
     // Cache key constants to avoid external calls consuming vm.prank
     bytes32 MARKET_KEY;
-    bytes32 FEE_CALCULATOR_KEY;
     bytes32 ASSET_REGISTRY_KEY;
-    bytes32 TREASURY_KEY;
 
     address public addr1 = makeAddr("addr1");
     address public addr2 = makeAddr("addr2");
@@ -34,9 +32,7 @@ contract ProtocolRegistryTest is BaseTest {
 
         // Cache keys
         MARKET_KEY = reg.MARKET();
-        FEE_CALCULATOR_KEY = reg.FEE_CALCULATOR();
         ASSET_REGISTRY_KEY = reg.ASSET_REGISTRY();
-        TREASURY_KEY = reg.TREASURY();
     }
 
     // ══════════════════════════════════════════════════════════
@@ -52,10 +48,8 @@ contract ProtocolRegistryTest is BaseTest {
     }
 
     function test_constructor_allGettersReturnZero() public view {
-        assertEq(reg.feeCalculator(), address(0));
         assertEq(reg.market(), address(0));
         assertEq(reg.assetRegistry(), address(0));
-        assertEq(reg.treasury(), address(0));
     }
 
     // ══════════════════════════════════════════════════════════
@@ -64,7 +58,6 @@ contract ProtocolRegistryTest is BaseTest {
 
     function test_constants_correctHashes() public view {
         assertEq(MARKET_KEY, keccak256("MARKET"));
-        assertEq(TREASURY_KEY, keccak256("TREASURY"));
     }
 
     // ══════════════════════════════════════════════════════════
@@ -88,16 +81,12 @@ contract ProtocolRegistryTest is BaseTest {
 
     function test_setAddress_allSlots() public {
         vm.startPrank(Actors.ADMIN);
-        reg.setAddress(FEE_CALCULATOR_KEY, addr2);
         reg.setAddress(MARKET_KEY, makeAddr("market"));
         reg.setAddress(ASSET_REGISTRY_KEY, makeAddr("ar"));
-        reg.setAddress(TREASURY_KEY, makeAddr("treasury"));
         vm.stopPrank();
 
-        assertEq(reg.feeCalculator(), addr2);
         assertEq(reg.market(), makeAddr("market"));
         assertEq(reg.assetRegistry(), makeAddr("ar"));
-        assertEq(reg.treasury(), makeAddr("treasury"));
     }
 
     function test_setAddress_zeroAddress_reverts() public {
@@ -389,19 +378,19 @@ contract ProtocolRegistryTest is BaseTest {
     function test_fullLifecycle_multipleSlots() public {
         vm.startPrank(Actors.ADMIN);
         reg.setAddress(MARKET_KEY, addr1);
-        reg.setAddress(FEE_CALCULATOR_KEY, addr2);
+        reg.setAddress(ASSET_REGISTRY_KEY, addr2);
 
         reg.proposeAddress(MARKET_KEY, addr3);
-        reg.proposeAddress(FEE_CALCULATOR_KEY, addr1);
+        reg.proposeAddress(ASSET_REGISTRY_KEY, addr1);
         vm.stopPrank();
 
         vm.warp(block.timestamp + TIMELOCK_DELAY);
 
         reg.executeTimelock(MARKET_KEY);
-        reg.executeTimelock(FEE_CALCULATOR_KEY);
+        reg.executeTimelock(ASSET_REGISTRY_KEY);
 
         assertEq(reg.market(), addr3);
-        assertEq(reg.feeCalculator(), addr1);
+        assertEq(reg.assetRegistry(), addr1);
     }
 
     // ══════════════════════════════════════════════════════════

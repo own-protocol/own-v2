@@ -14,10 +14,8 @@ contract ProtocolRegistry is IProtocolRegistry, Ownable {
     //  Constants — contract slot keys
     // ──────────────────────────────────────────────────────────────
 
-    bytes32 public constant FEE_CALCULATOR = keccak256("FEE_CALCULATOR");
     bytes32 public constant MARKET = keccak256("MARKET");
     bytes32 public constant ASSET_REGISTRY = keccak256("ASSET_REGISTRY");
-    bytes32 public constant TREASURY = keccak256("TREASURY");
     bytes32 public constant VAULT_FACTORY = keccak256("VAULT_FACTORY");
     bytes32 public constant PYTH_ORACLE = keccak256("PYTH_ORACLE");
     bytes32 public constant INHOUSE_ORACLE = keccak256("INHOUSE_ORACLE");
@@ -47,9 +45,6 @@ contract ProtocolRegistry is IProtocolRegistry, Ownable {
     /// @notice Minimum delay (seconds) before a timelocked change can be executed.
     uint256 public override timelockDelay;
 
-    /// @dev Protocol's share of all order fees in BPS.
-    uint256 private _protocolShareBps;
-
     // ──────────────────────────────────────────────────────────────
     //  Constructor
     // ──────────────────────────────────────────────────────────────
@@ -65,11 +60,6 @@ contract ProtocolRegistry is IProtocolRegistry, Ownable {
     // ──────────────────────────────────────────────────────────────
 
     /// @inheritdoc IProtocolRegistry
-    function feeCalculator() external view override returns (address) {
-        return _addresses[FEE_CALCULATOR];
-    }
-
-    /// @inheritdoc IProtocolRegistry
     function market() external view override returns (address) {
         return _addresses[MARKET];
     }
@@ -77,11 +67,6 @@ contract ProtocolRegistry is IProtocolRegistry, Ownable {
     /// @inheritdoc IProtocolRegistry
     function assetRegistry() external view override returns (address) {
         return _addresses[ASSET_REGISTRY];
-    }
-
-    /// @inheritdoc IProtocolRegistry
-    function treasury() external view override returns (address) {
-        return _addresses[TREASURY];
     }
 
     /// @inheritdoc IProtocolRegistry
@@ -107,19 +92,6 @@ contract ProtocolRegistry is IProtocolRegistry, Ownable {
     /// @inheritdoc IProtocolRegistry
     function borrowManagerFactory() external view override returns (address) {
         return _addresses[BORROW_MANAGER_FACTORY];
-    }
-
-    /// @inheritdoc IProtocolRegistry
-    function protocolShareBps() external view override returns (uint256) {
-        return _protocolShareBps;
-    }
-
-    /// @inheritdoc IProtocolRegistry
-    function setProtocolShareBps(
-        uint256 shareBps
-    ) external override onlyOwner {
-        require(shareBps <= 10_000, "ProtocolRegistry: share > 100%");
-        _protocolShareBps = shareBps;
     }
 
     // ──────────────────────────────────────────────────────────────

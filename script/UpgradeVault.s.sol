@@ -37,7 +37,7 @@ contract UpgradeVault is Script {
         console.log("New VaultFactory:", address(newFactory));
 
         // ── 2. Create vault ──
-        address vaultAddr = newFactory.createVault(WETH, vmAddress, "Own ETH Vault", "oETH", 8000, 0);
+        address vaultAddr = newFactory.createVault(WETH, vmAddress, "Own ETH Vault", "oETH", 8000);
         console.log("New Vault:", vaultAddr);
 
         // ── 3. Configure admin parameters ──

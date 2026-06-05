@@ -648,9 +648,10 @@ contract UserBorrowManager is IUserBorrowManager, ReentrancyGuard {
     /// @dev Repay up to `amount` of the vault's Aave debt on its behalf. Aave
     ///      caps repayment at the outstanding debt and returns the actual amount
     ///      pulled; any surplus (the premium charged above Aave's own rate, or
-    ///      an over-repay once Aave debt is exhausted) is forwarded to the vault.
-    ///      NOTE: this is a raw transfer — the vault does not currently credit it
-    ///      to LP rewards, so the premium accounting is implicit. See audit H3.
+    ///      an over-repay once Aave debt is exhausted) is the protocol's lending
+    ///      fee. It is denominated in the stablecoin — not the vault's collateral
+    ///      asset — so it is forwarded to the VM, who handles yield distribution
+    ///      (offchain split + `shareYield`), and tracked via {LendingFeeAccrued}.
     /// @param amount Stablecoin amount available to repay (already held here).
     function _repayAaveAndSweep(
         uint256 amount
@@ -658,7 +659,9 @@ contract UserBorrowManager is IUserBorrowManager, ReentrancyGuard {
         uint256 actualRepaid = IAaveV3Pool(aavePool).repay(stablecoin, amount, AAVE_VARIABLE_RATE_MODE, vault);
         uint256 surplus = amount > actualRepaid ? amount - actualRepaid : 0;
         if (surplus > 0) {
-            IERC20(stablecoin).safeTransfer(vault, surplus);
+            address vaultVM = IOwnVault(vault).vm();
+            IERC20(stablecoin).safeTransfer(vaultVM, surplus);
+            emit LendingFeeAccrued(vaultVM, surplus);
         }
     }
 }

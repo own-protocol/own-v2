@@ -17,8 +17,8 @@ import {BaseTest} from "../helpers/BaseTest.sol";
 import {MockERC20} from "../helpers/MockERC20.sol";
 
 /// @title OwnVault Unit Tests
-/// @notice Tests ERC-4626 deposit/withdraw, async deposit queue, async withdrawal queue,
-///         health factor, utilization tracking, halt/unhalt, wind-down, and fee management.
+/// @notice Tests ERC-4626 deposit/withdraw (with slippage + inflation-attack resistance), async
+///         deposit/withdrawal queues, health factor, utilization, halt/unhalt, and VM share yield.
 contract OwnVaultTest is BaseTest {
     OwnVault public vault;
 
@@ -31,10 +31,8 @@ contract OwnVaultTest is BaseTest {
 
         vm.startPrank(Actors.ADMIN);
         protocolRegistry.setAddress(protocolRegistry.MARKET(), mockMarket);
-        protocolRegistry.setAddress(protocolRegistry.TREASURY(), Actors.FEE_RECIPIENT);
-        protocolRegistry.setProtocolShareBps(2000);
         vault = new OwnVault(
-            address(weth), "Own WETH Vault", "oWETH", address(protocolRegistry), Actors.VM1, INITIAL_MAX_UTIL, 2000
+            address(weth), "Own WETH Vault", "oWETH", address(protocolRegistry), Actors.VM1, INITIAL_MAX_UTIL
         );
         vm.stopPrank();
         vm.label(address(vault), "OwnVault-WETH");
@@ -121,11 +119,15 @@ contract OwnVaultTest is BaseTest {
     //  ERC-4626: share pricing
     // ──────────────────────────────────────────────────────────
 
-    function test_convertToShares_initiallyOneToOne() public {
+    function test_convertToShares_firstDepositAppliesOffset() public view {
         uint256 assets = 10 ether;
-        uint256 expectedShares = vault.convertToShares(assets);
-        // First deposit: 1:1 (adjusted for decimal difference if any)
-        assertGt(expectedShares, 0);
+        // Virtual-shares offset of 6: first deposit mints assets * 1e6 shares.
+        assertEq(vault.convertToShares(assets), assets * 1e6);
+    }
+
+    function test_decimals_includesOffset() public view {
+        // Share decimals = collateral decimals (18 for WETH) + offset (6).
+        assertEq(vault.decimals(), 24);
     }
 
     function test_convertToAssets_afterDeposit() public {
@@ -150,7 +152,7 @@ contract OwnVaultTest is BaseTest {
         vm.expectEmit(true, true, false, true);
         emit IOwnVault.DepositRequested(1, Actors.LP1, Actors.LP1, depositAmount);
 
-        uint256 requestId = vault.requestDeposit(depositAmount, Actors.LP1);
+        uint256 requestId = vault.requestDeposit(depositAmount, Actors.LP1, 0);
         vm.stopPrank();
 
         assertEq(requestId, 1);
@@ -176,7 +178,7 @@ contract OwnVaultTest is BaseTest {
 
         vm.startPrank(Actors.LP1);
         weth.approve(address(vault), depositAmount);
-        uint256 requestId = vault.requestDeposit(depositAmount, Actors.LP1);
+        uint256 requestId = vault.requestDeposit(depositAmount, Actors.LP1, 0);
         vm.stopPrank();
 
         uint256 expectedShares = vault.previewDeposit(depositAmount);
@@ -202,7 +204,7 @@ contract OwnVaultTest is BaseTest {
 
         vm.startPrank(Actors.LP1);
         weth.approve(address(vault), depositAmount);
-        uint256 requestId = vault.requestDeposit(depositAmount, Actors.LP1);
+        uint256 requestId = vault.requestDeposit(depositAmount, Actors.LP1, 0);
         vm.stopPrank();
 
         vm.expectEmit(true, true, false, false);
@@ -226,7 +228,7 @@ contract OwnVaultTest is BaseTest {
 
         vm.startPrank(Actors.LP1);
         weth.approve(address(vault), depositAmount);
-        uint256 requestId = vault.requestDeposit(depositAmount, Actors.LP1);
+        uint256 requestId = vault.requestDeposit(depositAmount, Actors.LP1, 0);
 
         vm.expectEmit(true, true, false, false);
         emit IOwnVault.DepositCancelled(requestId, Actors.LP1);
@@ -249,7 +251,7 @@ contract OwnVaultTest is BaseTest {
 
         vm.startPrank(Actors.LP1);
         weth.approve(address(vault), depositAmount);
-        uint256 requestId = vault.requestDeposit(depositAmount, Actors.LP1);
+        uint256 requestId = vault.requestDeposit(depositAmount, Actors.LP1, 0);
         vm.stopPrank();
 
         vm.prank(Actors.ATTACKER);
@@ -264,7 +266,7 @@ contract OwnVaultTest is BaseTest {
 
         vm.startPrank(Actors.LP1);
         weth.approve(address(vault), depositAmount);
-        uint256 requestId = vault.requestDeposit(depositAmount, Actors.LP1);
+        uint256 requestId = vault.requestDeposit(depositAmount, Actors.LP1, 0);
         vm.stopPrank();
 
         vm.prank(Actors.ATTACKER);
@@ -509,191 +511,6 @@ contract OwnVaultTest is BaseTest {
         vault.setPaymentToken(address(0));
     }
 
-    function test_setPaymentToken_outstandingFees_reverts() public {
-        // Set payment token first
-        vm.prank(Actors.VM1);
-        vault.setPaymentToken(address(usdc));
-
-        // Deposit fees
-        _depositAs(Actors.LP1, 10 ether);
-        usdc.mint(mockMarket, 100e6);
-        vm.startPrank(mockMarket);
-        usdc.approve(address(vault), 100e6);
-        vault.depositFees(address(usdc), 100e6);
-        vm.stopPrank();
-
-        // Try to change payment token — should fail
-        vm.prank(Actors.VM1);
-        vm.expectRevert(IOwnVault.OutstandingFeesExist.selector);
-        vault.setPaymentToken(address(usds));
-    }
-
-    function test_setPaymentToken_afterFlush_succeeds() public {
-        vm.prank(Actors.VM1);
-        vault.setPaymentToken(address(usdc));
-
-        // Deposit fees
-        _depositAs(Actors.LP1, 10 ether);
-        usdc.mint(mockMarket, 100e6);
-        vm.startPrank(mockMarket);
-        usdc.approve(address(vault), 100e6);
-        vault.depositFees(address(usdc), 100e6);
-        vm.stopPrank();
-
-        // Flush all fees
-        vault.claimProtocolFees();
-        vm.prank(Actors.VM1);
-        vault.claimVMFees();
-
-        // Now change should work (LP rewards are per-share, not blocking)
-        vm.prank(Actors.VM1);
-        vault.setPaymentToken(address(usds));
-
-        assertEq(vault.paymentToken(), address(usds));
-    }
-
-    // ──────────────────────────────────────────────────────────
-    //  Fee management
-    // ──────────────────────────────────────────────────────────
-
-    function test_depositFees_splits_three_ways() public {
-        vm.prank(Actors.VM1);
-        vault.setPaymentToken(address(usdc));
-
-        _depositAs(Actors.LP1, 10 ether);
-
-        uint256 feeAmount = 1000e6;
-        usdc.mint(mockMarket, feeAmount);
-        vm.startPrank(mockMarket);
-        usdc.approve(address(vault), feeAmount);
-
-        vm.expectEmit(true, false, false, true);
-        // protocolShare=20%, vmShare=20% of remainder
-        // protocol = 1000 * 2000 / 10000 = 200 (ceil)
-        // remainder = 800
-        // vm = 800 * 2000 / 10000 = 160
-        // lp = 800 - 160 = 640
-        emit IOwnVault.FeeDeposited(address(usdc), 1000e6, 200e6, 160e6, 640e6);
-
-        vault.depositFees(address(usdc), feeAmount);
-        vm.stopPrank();
-
-        assertEq(vault.accruedProtocolFees(), 200e6);
-        assertEq(vault.accruedVMFees(), 160e6);
-    }
-
-    function test_depositFees_wrongToken_reverts() public {
-        vm.prank(Actors.VM1);
-        vault.setPaymentToken(address(usdc));
-
-        usdt.mint(mockMarket, 100e6);
-        vm.startPrank(mockMarket);
-        usdt.approve(address(vault), 100e6);
-        vm.expectRevert(abi.encodeWithSelector(IOwnVault.WrongFeeToken.selector, address(usdc), address(usdt)));
-        vault.depositFees(address(usdt), 100e6);
-        vm.stopPrank();
-    }
-
-    function test_claimProtocolFees_succeeds() public {
-        vm.prank(Actors.VM1);
-        vault.setPaymentToken(address(usdc));
-
-        _depositAs(Actors.LP1, 10 ether);
-
-        usdc.mint(mockMarket, 100e6);
-        vm.startPrank(mockMarket);
-        usdc.approve(address(vault), 100e6);
-        vault.depositFees(address(usdc), 100e6);
-        vm.stopPrank();
-
-        uint256 protocolFees = vault.accruedProtocolFees();
-        assertGt(protocolFees, 0);
-
-        vault.claimProtocolFees();
-
-        assertEq(vault.accruedProtocolFees(), 0);
-        assertEq(usdc.balanceOf(Actors.FEE_RECIPIENT), protocolFees);
-    }
-
-    function test_claimVMFees_succeeds() public {
-        vm.prank(Actors.VM1);
-        vault.setPaymentToken(address(usdc));
-
-        _depositAs(Actors.LP1, 10 ether);
-
-        usdc.mint(mockMarket, 100e6);
-        vm.startPrank(mockMarket);
-        usdc.approve(address(vault), 100e6);
-        vault.depositFees(address(usdc), 100e6);
-        vm.stopPrank();
-
-        uint256 vmFees = vault.accruedVMFees();
-        assertGt(vmFees, 0);
-
-        vm.prank(Actors.VM1);
-        vault.claimVMFees();
-
-        assertEq(vault.accruedVMFees(), 0);
-        assertEq(usdc.balanceOf(Actors.VM1), vmFees);
-    }
-
-    function test_claimLPRewards_succeeds() public {
-        vm.prank(Actors.VM1);
-        vault.setPaymentToken(address(usdc));
-
-        _depositAs(Actors.LP1, 10 ether);
-
-        usdc.mint(mockMarket, 1000e6);
-        vm.startPrank(mockMarket);
-        usdc.approve(address(vault), 1000e6);
-        vault.depositFees(address(usdc), 1000e6);
-        vm.stopPrank();
-
-        uint256 claimable = vault.claimableLPRewards(Actors.LP1);
-        assertGt(claimable, 0);
-
-        vm.prank(Actors.LP1);
-        uint256 claimed = vault.claimLPRewards();
-
-        assertEq(claimed, claimable);
-        assertEq(usdc.balanceOf(Actors.LP1), claimed);
-    }
-
-    function test_claimProtocolFees_noFees_reverts() public {
-        vm.expectRevert(IOwnVault.NoFeesToClaim.selector);
-        vault.claimProtocolFees();
-    }
-
-    function test_claimVMFees_notVM_reverts() public {
-        vm.prank(Actors.ATTACKER);
-        vm.expectRevert(IOwnVault.OnlyVM.selector);
-        vault.claimVMFees();
-    }
-
-    function test_depositFees_noLPs_redirectsToProtocol() public {
-        vm.prank(Actors.VM1);
-        vault.setPaymentToken(address(usdc));
-
-        // No LPs, no deposits
-        usdc.mint(mockMarket, 100e6);
-        vm.startPrank(mockMarket);
-        usdc.approve(address(vault), 100e6);
-        vault.depositFees(address(usdc), 100e6);
-        vm.stopPrank();
-
-        // Protocol gets its share + LP's share (no LPs to distribute to)
-        // protocol = 20 (ceil), vm = 16, lp = 64 → redirected to protocol
-        // Total protocol = 20 + 64 = 84
-        uint256 protocolFees = vault.accruedProtocolFees();
-        uint256 vmFees = vault.accruedVMFees();
-        assertEq(protocolFees + vmFees, 100e6);
-        assertGt(protocolFees, 20e6); // More than just protocol share
-    }
-
-    function test_treasury_returnsCorrectAddress() public view {
-        assertEq(protocolRegistry.treasury(), Actors.FEE_RECIPIENT);
-    }
-
     // ──────────────────────────────────────────────────────────
     //  Withdrawal wait period
     // ──────────────────────────────────────────────────────────
@@ -933,6 +750,174 @@ contract OwnVaultTest is BaseTest {
         // Old VM remains an authorised signer; new VM is not auto-added.
         assertTrue(vault.isQuoteSigner(Actors.VM1), "old signer retained");
         assertFalse(vault.isQuoteSigner(newVM), "new vm not auto-signer");
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Deposit slippage (minSharesOut)
+    // ──────────────────────────────────────────────────────────
+
+    function test_depositWithMinShares_succeeds() public {
+        uint256 amount = 10 ether;
+        uint256 expected = vault.previewDeposit(amount);
+
+        weth.mint(Actors.VM1, amount);
+        vm.startPrank(Actors.VM1);
+        weth.approve(address(vault), amount);
+        uint256 shares = vault.deposit(amount, Actors.LP1, expected);
+        vm.stopPrank();
+
+        assertEq(shares, expected);
+        assertEq(vault.balanceOf(Actors.LP1), expected);
+    }
+
+    function test_depositWithMinShares_slippageExceeded_reverts() public {
+        uint256 amount = 10 ether;
+        uint256 expected = vault.previewDeposit(amount);
+
+        weth.mint(Actors.VM1, amount);
+        vm.startPrank(Actors.VM1);
+        weth.approve(address(vault), amount);
+        // Demand one more share than achievable.
+        vm.expectRevert(abi.encodeWithSelector(IOwnVault.InsufficientSharesOut.selector, expected, expected + 1));
+        vault.deposit(amount, Actors.LP1, expected + 1);
+        vm.stopPrank();
+    }
+
+    function test_acceptDeposit_belowMinShares_reverts() public {
+        _enableDepositApproval();
+        uint256 amount = 10 ether;
+        uint256 fair = vault.previewDeposit(amount);
+
+        weth.mint(Actors.LP1, amount);
+        vm.startPrank(Actors.LP1);
+        weth.approve(address(vault), amount);
+        // Floor above what the deposit can produce.
+        uint256 requestId = vault.requestDeposit(amount, Actors.LP1, fair + 1);
+        vm.stopPrank();
+
+        vm.prank(Actors.VM1);
+        vm.expectRevert(abi.encodeWithSelector(IOwnVault.InsufficientSharesOut.selector, fair, fair + 1));
+        vault.acceptDeposit(requestId);
+    }
+
+    function test_acceptDeposit_atMinShares_succeeds() public {
+        _enableDepositApproval();
+        uint256 amount = 10 ether;
+        uint256 fair = vault.previewDeposit(amount);
+
+        weth.mint(Actors.LP1, amount);
+        vm.startPrank(Actors.LP1);
+        weth.approve(address(vault), amount);
+        uint256 requestId = vault.requestDeposit(amount, Actors.LP1, fair);
+        vm.stopPrank();
+
+        vm.prank(Actors.VM1);
+        vault.acceptDeposit(requestId);
+
+        assertEq(vault.balanceOf(Actors.LP1), fair);
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  shareYield (VM-distributed LP rewards)
+    // ──────────────────────────────────────────────────────────
+
+    function test_shareYield_raisesSharePrice() public {
+        _depositAs(Actors.LP1, 10 ether);
+        uint256 sharesBefore = vault.balanceOf(Actors.LP1);
+        uint256 assetsBefore = vault.convertToAssets(sharesBefore);
+
+        uint256 yield = 2 ether;
+        weth.mint(Actors.VM1, yield);
+        vm.startPrank(Actors.VM1);
+        weth.approve(address(vault), yield);
+        vault.shareYield(yield);
+        vm.stopPrank();
+
+        // Same shares now redeem for more collateral.
+        assertEq(vault.balanceOf(Actors.LP1), sharesBefore, "shares unchanged");
+        assertEq(vault.totalAssets(), 12 ether, "yield added to assets");
+        assertGt(vault.convertToAssets(sharesBefore), assetsBefore, "share price rose");
+    }
+
+    function test_shareYield_emitsEvent() public {
+        _depositAs(Actors.LP1, 10 ether);
+
+        uint256 yield = 1 ether;
+        weth.mint(Actors.VM1, yield);
+        vm.startPrank(Actors.VM1);
+        weth.approve(address(vault), yield);
+        vm.expectEmit(true, false, false, true);
+        emit IOwnVault.ShareYieldAdded(Actors.VM1, yield);
+        vault.shareYield(yield);
+        vm.stopPrank();
+    }
+
+    function test_shareYield_notVM_reverts() public {
+        _depositAs(Actors.LP1, 10 ether);
+
+        weth.mint(Actors.LP1, 1 ether);
+        vm.startPrank(Actors.LP1);
+        weth.approve(address(vault), 1 ether);
+        vm.expectRevert(IOwnVault.OnlyVM.selector);
+        vault.shareYield(1 ether);
+        vm.stopPrank();
+    }
+
+    function test_shareYield_zeroAmount_reverts() public {
+        _depositAs(Actors.LP1, 10 ether);
+        vm.prank(Actors.VM1);
+        vm.expectRevert(IOwnVault.ZeroAmount.selector);
+        vault.shareYield(0);
+    }
+
+    function test_shareYield_noShares_reverts() public {
+        // Empty vault: nothing to distribute to.
+        weth.mint(Actors.VM1, 1 ether);
+        vm.startPrank(Actors.VM1);
+        weth.approve(address(vault), 1 ether);
+        vm.expectRevert(IOwnVault.NoSharesToReward.selector);
+        vault.shareYield(1 ether);
+        vm.stopPrank();
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Inflation / first-depositor attack resistance (offset 6)
+    // ──────────────────────────────────────────────────────────
+
+    /// @notice An attacker who seeds 1 wei then donates a large amount cannot make a
+    ///         later victim deposit round down to zero shares — the offset makes the
+    ///         attack economically irrational and protects victim value.
+    function test_inflationAttack_victimRetainsValue() public {
+        // Attacker is first depositor with 1 wei.
+        weth.mint(Actors.ATTACKER, 1);
+        vm.startPrank(Actors.ATTACKER);
+        weth.approve(address(vault), 1);
+        vault.deposit(1, Actors.ATTACKER);
+        vm.stopPrank();
+
+        // Attacker donates a large amount directly to inflate the raw balance.
+        uint256 donation = 100 ether;
+        weth.mint(address(vault), donation);
+        uint256 attackerShares = vault.balanceOf(Actors.ATTACKER);
+
+        // Victim deposits a normal amount.
+        uint256 victimDeposit = 10 ether;
+        weth.mint(Actors.LP1, victimDeposit);
+        vm.startPrank(Actors.LP1);
+        weth.approve(address(vault), victimDeposit);
+        uint256 victimShares = vault.deposit(victimDeposit, Actors.LP1);
+        vm.stopPrank();
+
+        // Victim still receives shares (does not round to zero) and retains essentially
+        // all of their value — the donation did not let the attacker steal it.
+        assertGt(victimShares, 0, "victim got non-zero shares");
+        uint256 victimRedeemable = vault.convertToAssets(victimShares);
+        assertGe(victimRedeemable, victimDeposit * 9999 / 10_000, "victim retains ~all value");
+
+        // The attack is a massive loss: the attacker can never recover the donation,
+        // so redeeming all their shares yields far less than the 1 wei + donation they sank.
+        uint256 attackerRedeemable = vault.convertToAssets(attackerShares);
+        assertLt(attackerRedeemable, donation, "attacker cannot recover the donation");
     }
 }
 

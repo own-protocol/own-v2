@@ -31,17 +31,12 @@ interface IOwnVault is IERC4626 {
     event AssetHaltPriceSet(bytes32 indexed asset, uint256 haltPrice);
     event UtilizationUpdated(uint256 newUtilization);
 
-    event FeeDeposited(
-        address indexed token, uint256 totalAmount, uint256 protocolAmount, uint256 vmAmount, uint256 lpAmount
-    );
-    event ProtocolFeesClaimed(address indexed token, uint256 amount);
-    event VMFeesClaimed(address indexed token, uint256 amount);
-    event LPRewardsClaimed(address indexed account, address indexed token, uint256 amount);
+    /// @notice Emitted when the VM adds collateral yield to the vault, raising the share price for all LPs.
+    event ShareYieldAdded(address indexed vm, uint256 amount);
 
     event VMUpdated(address indexed oldVM, address indexed newVM);
     event QuoteSignerAdded(address indexed signer);
     event QuoteSignerRemoved(address indexed signer);
-    event VMShareUpdated(uint256 oldShareBps, uint256 newShareBps);
     event PaymentTokenUpdated(address indexed oldToken, address indexed newToken);
     event AssetEnabled(bytes32 indexed asset);
     event AssetDisabled(bytes32 indexed asset);
@@ -73,16 +68,14 @@ interface IOwnVault is IERC4626 {
     error ZeroAmount();
     error ZeroAddress();
     error AssetIsHalted(bytes32 asset);
-    error NoFeesToClaim();
-    error ShareTooHigh(uint256 shareBps, uint256 maxBps);
+    error NoSharesToReward();
+    error InsufficientSharesOut(uint256 sharesOut, uint256 minSharesOut);
     error OnlyAdmin();
     error OnlyMarket();
     error OnlyVMOrAdmin();
     error AlreadyQuoteSigner(address signer);
     error NotQuoteSigner(address signer);
     error WithdrawalNotPending(uint256 requestId);
-    error OutstandingFeesExist();
-    error WrongFeeToken(address expected, address provided);
     error PaymentTokenCannotBeCollateral();
     error CollateralValueNotInitialized();
     error DecimalsTooHigh(uint256 decimals);
@@ -132,9 +125,20 @@ interface IOwnVault is IERC4626 {
     //  Async deposit queue
     // ──────────────────────────────────────────────────────────
 
+    /// @notice Deposit with slippage protection. Reverts if minted shares < `minSharesOut`.
+    /// @dev    Guards against share-price movement (e.g. a `shareYield` top-up) between
+    ///         transaction submission and execution.
+    function deposit(uint256 assets, address receiver, uint256 minSharesOut) external returns (uint256 shares);
+
     /// @notice Request an async deposit. Assets are escrowed until the VM
     ///         accepts/rejects or the depositor cancels.
-    function requestDeposit(uint256 assets, address receiver) external returns (uint256 requestId);
+    /// @param minSharesOut Minimum shares the depositor will accept at acceptance time.
+    ///        `acceptDeposit` reverts if the previewed shares fall below this floor.
+    function requestDeposit(
+        uint256 assets,
+        address receiver,
+        uint256 minSharesOut
+    ) external returns (uint256 requestId);
 
     /// @notice Accept a pending deposit request. Only callable by the bound VM.
     function acceptDeposit(
@@ -331,32 +335,17 @@ interface IOwnVault is IERC4626 {
     ) external;
 
     // ──────────────────────────────────────────────────────────
-    //  Fee management
+    //  Share yield (VM-distributed LP rewards)
     // ──────────────────────────────────────────────────────────
 
-    /// @notice Deposit order fees into the vault. Called by OwnMarket on confirmation.
-    ///         Splits three ways: protocol / VM / LP. Token must match the current payment token.
-    function depositFees(address token, uint256 amount) external;
-
-    function setVMShareBps(
-        uint256 shareBps
+    /// @notice Add collateral yield to the vault, raising the share price for all LPs.
+    /// @dev    The VM transfers `amount` of the vault's collateral (`asset()`) in. This is the
+    ///         sole onchain channel for LP fee revenue — protocol/VM splits are handled offchain.
+    ///         Reverts when there are no shares to distribute to (`totalSupply() == 0`).
+    /// @param amount Collateral amount (in `asset()` units) to distribute to LPs.
+    function shareYield(
+        uint256 amount
     ) external;
-    function vmShareBps() external view returns (uint256);
-
-    /// @notice Claim accrued protocol fees. Callable by anyone. Transfers to treasury.
-    function claimProtocolFees() external;
-
-    /// @notice Claim accrued VM fees. Only callable by the bound VM.
-    function claimVMFees() external;
-
-    /// @notice Claim accrued LP fee rewards for the caller.
-    function claimLPRewards() external returns (uint256 amount);
-
-    function accruedProtocolFees() external view returns (uint256);
-    function accruedVMFees() external view returns (uint256);
-    function claimableLPRewards(
-        address account
-    ) external view returns (uint256 amount);
 
     // ──────────────────────────────────────────────────────────
     //  Collateral release (force execution)
@@ -401,8 +390,7 @@ interface IOwnVault is IERC4626 {
     //  Payment token
     // ──────────────────────────────────────────────────────────
 
-    /// @notice Set the accepted payment token. Only callable by the bound VM.
-    ///         All outstanding protocol and VM fees must be claimed first.
+    /// @notice Set the accepted payment token (order settlement currency). Only callable by the bound VM.
     function setPaymentToken(
         address token
     ) external;

@@ -11,7 +11,7 @@ import {StdCheats} from "forge-std/StdCheats.sol";
 import {StdUtils} from "forge-std/StdUtils.sol";
 
 /// @title VaultHandler — Invariant test handler for OwnVault
-/// @notice Exercises LP deposit/withdrawal and fee claim flows with fuzzed inputs.
+/// @notice Exercises LP deposit/withdrawal and VM share-yield flows with fuzzed inputs.
 contract VaultHandler is CommonBase, StdCheats, StdUtils {
     OwnVault public vault;
     MockERC20 public weth;
@@ -25,9 +25,7 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
     uint256 public ghost_totalDeposited;
     uint256 public ghost_totalWithdrawn;
     uint256 public ghost_pendingWithdrawalShares;
-    uint256 public ghost_protocolFeesClaimed;
-    uint256 public ghost_vmFeesClaimed;
-    uint256 public ghost_lpFeesClaimed;
+    uint256 public ghost_totalShareYield;
 
     uint256[] public ghost_pendingWithdrawalIds;
 
@@ -125,33 +123,21 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
         _removeGhostWithdrawalId(idx);
     }
 
-    function claimProtocolFees() external {
-        uint256 amount = vault.accruedProtocolFees();
-        if (amount == 0) return;
-
-        vault.claimProtocolFees();
-        ghost_protocolFeesClaimed += amount;
-    }
-
-    function claimVMFees() external {
-        uint256 amount = vault.accruedVMFees();
-        if (amount == 0) return;
-
-        vm.prank(vmAddr);
-        vault.claimVMFees();
-        ghost_vmFeesClaimed += amount;
-    }
-
-    function claimLPRewards(
-        uint256 actorSeed
+    function shareYield(
+        uint256 amount
     ) external {
-        address lp = lps[bound(actorSeed, 0, lps.length - 1)];
-        uint256 claimable = vault.claimableLPRewards(lp);
-        if (claimable == 0) return;
+        // No-op when there are no shares to distribute to (mirrors the contract guard).
+        if (vault.totalSupply() == 0) return;
+        amount = bound(amount, 1e18, 100e18); // 1 to 100 WETH
 
-        vm.prank(lp);
-        uint256 amount = vault.claimLPRewards();
-        ghost_lpFeesClaimed += amount;
+        weth.mint(vmAddr, amount);
+
+        vm.startPrank(vmAddr);
+        weth.approve(address(vault), amount);
+        vault.shareYield(amount);
+        vm.stopPrank();
+
+        ghost_totalShareYield += amount;
     }
 
     // ── Internal helpers ────────────────────────────────────────

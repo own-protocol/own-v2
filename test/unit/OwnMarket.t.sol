@@ -9,7 +9,6 @@ import {IOwnVault} from "../../src/interfaces/IOwnVault.sol";
 import {IVaultFactory} from "../../src/interfaces/IVaultFactory.sol";
 import {AssetConfig, BPS, Order, OrderStatus, OrderType, PRECISION, Quote} from "../../src/interfaces/types/Types.sol";
 
-import {FeeCalculator} from "../../src/core/FeeCalculator.sol";
 import {Actors} from "../helpers/Actors.sol";
 import {BaseTest} from "../helpers/BaseTest.sol";
 import {MockERC20} from "../helpers/MockERC20.sol";
@@ -20,7 +19,6 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 contract OwnMarketTest is BaseTest {
     OwnMarket public market;
     AssetRegistry public assetReg;
-    FeeCalculator public feeCalc;
 
     MockERC20 public eTSLAToken;
 
@@ -58,14 +56,6 @@ contract OwnMarketTest is BaseTest {
 
         vm.startPrank(Actors.ADMIN);
         protocolRegistry.setAddress(protocolRegistry.ASSET_REGISTRY(), address(assetReg));
-        feeCalc = new FeeCalculator(address(protocolRegistry), Actors.ADMIN);
-        feeCalc.setMintFee(1, 0);
-        feeCalc.setMintFee(2, 0);
-        feeCalc.setMintFee(3, 0);
-        feeCalc.setRedeemFee(1, 0);
-        feeCalc.setRedeemFee(2, 0);
-        feeCalc.setRedeemFee(3, 0);
-        protocolRegistry.setAddress(keccak256("FEE_CALCULATOR"), address(feeCalc));
 
         protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), mockFactory);
         market = new OwnMarket(address(protocolRegistry));
@@ -103,7 +93,6 @@ contract OwnMarketTest is BaseTest {
         vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.isQuoteSigner.selector), abi.encode(false));
         vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.isQuoteSigner.selector, rfqVM), abi.encode(true));
         vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.updateExposure.selector), abi.encode());
-        vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.depositFees.selector), abi.encode());
         vm.mockCall(
             mockVault, abi.encodeWithSelector(IOwnVault.projectedExposureUtilization.selector), abi.encode(uint256(0))
         );
@@ -698,31 +687,5 @@ contract OwnMarketTest is BaseTest {
         uint256 orderId = _placeMint(Actors.MINTER1, 1000e6, TSLA_PRICE);
         vm.expectRevert(abi.encodeWithSelector(IOwnMarket.ExpiryNotReached.selector, orderId));
         market.expireOrder(orderId);
-    }
-
-    // ══════════════════════════════════════════════════════════
-    //  Fees
-    // ══════════════════════════════════════════════════════════
-
-    function test_executeOrder_marketMint_withFee() public {
-        // 1% mint fee on volatility level 2
-        vm.prank(Actors.ADMIN);
-        feeCalc.setMintFee(2, 100);
-
-        uint256 amount = 1000e6;
-        _fundUserForMint(Actors.MINTER1, amount);
-
-        uint256 fee = Math.mulDiv(amount, 100, BPS, Math.Rounding.Ceil);
-        uint256 net = amount - fee;
-        uint256 expectedOut = _expectedMintOut(net, TSLA_PRICE);
-
-        Quote memory q = _quote(0, Actors.MINTER1, OrderType.Mint, amount, TSLA_PRICE);
-        vm.prank(Actors.MINTER1);
-        market.executeOrder(q, _sign(q, rfqVMPk));
-
-        assertEq(usdc.balanceOf(rfqVM), net, "vm gets net");
-        assertEq(eTSLAToken.balanceOf(Actors.MINTER1), expectedOut, "eTokens on net");
-        // Fee held by market (vault.depositFees is mocked to a no-op here)
-        assertEq(usdc.balanceOf(address(market)), fee, "fee retained pending depositFees");
     }
 }

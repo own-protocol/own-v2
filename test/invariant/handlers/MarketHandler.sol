@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {FeeCalculator} from "../../../src/core/FeeCalculator.sol";
 import {OwnMarket} from "../../../src/core/OwnMarket.sol";
 import {OwnVault} from "../../../src/core/OwnVault.sol";
 
@@ -25,7 +24,6 @@ import {StdUtils} from "forge-std/StdUtils.sol";
 contract MarketHandler is CommonBase, StdCheats, StdUtils {
     OwnMarket public market;
     OwnVault public vault;
-    FeeCalculator public feeCalc;
     MockERC20 public usdc;
     EToken public eTSLA;
     MockOracleVerifier public oracle;
@@ -57,18 +55,9 @@ contract MarketHandler is CommonBase, StdCheats, StdUtils {
 
     // ── Constructor ─────────────────────────────────────────────
 
-    constructor(
-        address _market,
-        address _vault,
-        address _feeCalc,
-        address _usdc,
-        address _eTSLA,
-        address _oracle,
-        uint256 _vmPk
-    ) {
+    constructor(address _market, address _vault, address _usdc, address _eTSLA, address _oracle, uint256 _vmPk) {
         market = OwnMarket(_market);
         vault = OwnVault(_vault);
-        feeCalc = FeeCalculator(_feeCalc);
         usdc = MockERC20(_usdc);
         eTSLA = EToken(_eTSLA);
         oracle = MockOracleVerifier(_oracle);

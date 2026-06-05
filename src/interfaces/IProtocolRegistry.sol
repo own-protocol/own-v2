@@ -55,17 +55,11 @@ interface IProtocolRegistry {
     //  Getters
     // ──────────────────────────────────────────────────────────────
 
-    /// @notice Returns the FeeCalculator contract address.
-    function feeCalculator() external view returns (address);
-
     /// @notice Returns the OwnMarket contract address.
     function market() external view returns (address);
 
     /// @notice Returns the AssetRegistry contract address.
     function assetRegistry() external view returns (address);
-
-    /// @notice Returns the protocol treasury address.
-    function treasury() external view returns (address);
 
     /// @notice Returns the VaultFactory contract address.
     function vaultFactory() external view returns (address);
@@ -81,15 +75,6 @@ interface IProtocolRegistry {
 
     /// @notice Returns the BorrowManagerFactory contract address.
     function borrowManagerFactory() external view returns (address);
-
-    /// @notice Returns the protocol's share of order fees in BPS.
-    function protocolShareBps() external view returns (uint256);
-
-    /// @notice Set the protocol's share of order fees. Only callable by admin.
-    /// @param shareBps Protocol share in basis points (e.g., 2000 = 20%).
-    function setProtocolShareBps(
-        uint256 shareBps
-    ) external;
 
     /// @notice Returns the timelock delay duration in seconds.
     function timelockDelay() external view returns (uint256);

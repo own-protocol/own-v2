@@ -3,13 +3,12 @@ pragma solidity 0.8.28;
 
 import {IAssetRegistry} from "../interfaces/IAssetRegistry.sol";
 import {IEToken} from "../interfaces/IEToken.sol";
-import {IFeeCalculator} from "../interfaces/IFeeCalculator.sol";
 import {IOracleVerifier} from "../interfaces/IOracleVerifier.sol";
 import {IOwnMarket} from "../interfaces/IOwnMarket.sol";
 import {IOwnVault} from "../interfaces/IOwnVault.sol";
 import {IProtocolRegistry} from "../interfaces/IProtocolRegistry.sol";
 import {IVaultFactory} from "../interfaces/IVaultFactory.sol";
-import {BPS, Order, OrderStatus, OrderType, PRECISION, Quote} from "../interfaces/types/Types.sol";
+import {Order, OrderStatus, OrderType, PRECISION, Quote} from "../interfaces/types/Types.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
@@ -83,8 +82,8 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         _consumeQuote(quote, signature);
 
         uint256 amountOut = quote.orderType == OrderType.Mint
-            ? _settleMint(quote.user, quote.vault, quote.asset, quote.amount, quote.price, false, 0)
-            : _settleRedeem(quote.user, quote.vault, quote.asset, quote.amount, quote.price, false, 0);
+            ? _settleMint(quote.user, quote.vault, quote.asset, quote.amount, quote.price, false)
+            : _settleRedeem(quote.user, quote.vault, quote.asset, quote.amount, quote.price, false);
 
         emit OrderExecuted(
             quote.quoteId, quote.user, vaultContract.vm(), quote.asset, uint8(quote.orderType), quote.amount, amountOut
@@ -187,8 +186,8 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
 
         // Interactions.
         uint256 amountOut = order.orderType == OrderType.Mint
-            ? _settleMint(order.user, order.vault, order.asset, quote.amount, quote.price, true, quote.orderId)
-            : _settleRedeem(order.user, order.vault, order.asset, quote.amount, quote.price, true, quote.orderId);
+            ? _settleMint(order.user, order.vault, order.asset, quote.amount, quote.price, true)
+            : _settleRedeem(order.user, order.vault, order.asset, quote.amount, quote.price, true);
 
         emit OrderFilled(
             quote.orderId, quote.quoteId, IOwnVault(order.vault).vm(), quote.amount, amountOut, newRemaining
@@ -223,20 +222,17 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         // Value the redemption in collateral terms.
         uint256 grossUsd = Math.mulDiv(remaining, price, PRECISION);
         uint256 grossCollateral = _convertToCollateral(order.vault, grossUsd, collateralPriceData);
-        uint256 feeBps = IFeeCalculator(registry.feeCalculator()).getRedeemFee(order.asset, remaining);
-        uint256 feeCollateral = Math.mulDiv(grossCollateral, feeBps, BPS, Math.Rounding.Ceil);
-        uint256 netCollateral = grossCollateral - feeCollateral;
 
         // Effects.
         order.filledAmount = order.amount;
         order.status = OrderStatus.ForceExecuted;
 
         // Interactions: release collateral, burn escrowed eTokens, shrink exposure.
-        vaultContract.releaseCollateral(order.user, netCollateral);
+        vaultContract.releaseCollateral(order.user, grossCollateral);
         IEToken(_activeToken(order.asset)).burn(address(this), remaining);
         vaultContract.updateExposure(order.asset, -int256(remaining), price);
 
-        emit OrderForceExecuted(orderId, order.user, remaining, netCollateral);
+        emit OrderForceExecuted(orderId, order.user, remaining, grossCollateral);
 
         _refundETH();
     }
@@ -341,24 +337,18 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
     // ──────────────────────────────────────────────────────────
 
     /// @dev Settle a mint of `amountIn` stablecoins at `price`. When `fromEscrow` the stablecoins
-    ///      are already held by this contract; otherwise they are pulled from `user`. Net goes to
-    ///      the VM, fee to the vault; eTokens are minted to `user`. Returns the eToken amount minted.
+    ///      are already held by this contract; otherwise they are pulled from `user`. The full
+    ///      amount goes to the VM; eTokens are minted to `user`. Returns the eToken amount minted.
     function _settleMint(
         address user,
         address vault,
         bytes32 asset,
         uint256 amountIn,
         uint256 price,
-        bool fromEscrow,
-        uint256 orderId
+        bool fromEscrow
     ) private returns (uint256 eTokenAmount) {
         address paymentToken = IOwnVault(vault).paymentToken();
-        uint256 feeAmount = Math.mulDiv(
-            amountIn, IFeeCalculator(registry.feeCalculator()).getMintFee(asset, amountIn), BPS, Math.Rounding.Ceil
-        );
-        eTokenAmount = Math.mulDiv(
-            (amountIn - feeAmount) * (10 ** (18 - IERC20Metadata(paymentToken).decimals())), PRECISION, price
-        );
+        eTokenAmount = Math.mulDiv(amountIn * (10 ** (18 - IERC20Metadata(paymentToken).decimals())), PRECISION, price);
 
         // Projected utilization check against the exposure actually being added.
         {
@@ -368,17 +358,11 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
             if (projectedUtil > maxUtil) revert UtilizationBreached(projectedUtil, maxUtil);
         }
 
-        // Route stablecoins: net to VM, fee to vault.
+        // Route the full stablecoin amount to the VM (spread captured offchain).
         if (fromEscrow) {
-            IERC20(paymentToken).safeTransfer(IOwnVault(vault).vm(), amountIn - feeAmount);
+            IERC20(paymentToken).safeTransfer(IOwnVault(vault).vm(), amountIn);
         } else {
-            IERC20(paymentToken).safeTransferFrom(user, IOwnVault(vault).vm(), amountIn - feeAmount);
-            if (feeAmount > 0) IERC20(paymentToken).safeTransferFrom(user, address(this), feeAmount);
-        }
-        if (feeAmount > 0) {
-            IERC20(paymentToken).safeIncreaseAllowance(vault, feeAmount);
-            IOwnVault(vault).depositFees(paymentToken, feeAmount);
-            emit FeeCollected(orderId, paymentToken, feeAmount);
+            IERC20(paymentToken).safeTransferFrom(user, IOwnVault(vault).vm(), amountIn);
         }
 
         // Mint and record exposure.
@@ -386,40 +370,22 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         IOwnVault(vault).updateExposure(asset, int256(eTokenAmount), price);
     }
 
-    /// @dev Settle a redeem of `amountIn` eTokens at `price`. The VM pays stablecoins (net to user,
-    ///      fee to vault). When `fromEscrow` the eTokens are burned from this contract's escrow,
-    ///      otherwise from `user`. Returns the net stablecoin payout to the user.
+    /// @dev Settle a redeem of `amountIn` eTokens at `price`. The VM pays the full stablecoin
+    ///      payout to `user`. When `fromEscrow` the eTokens are burned from this contract's escrow,
+    ///      otherwise from `user`. Returns the stablecoin payout to the user.
     function _settleRedeem(
         address user,
         address vault,
         bytes32 asset,
         uint256 amountIn,
         uint256 price,
-        bool fromEscrow,
-        uint256 orderId
+        bool fromEscrow
     ) private returns (uint256 netPayout) {
         address paymentToken = IOwnVault(vault).paymentToken();
         address vmAddr = IOwnVault(vault).vm();
-        uint256 feeAmount;
-        {
-            uint256 grossPayout =
-                Math.mulDiv(amountIn, price, PRECISION * 10 ** (18 - IERC20Metadata(paymentToken).decimals()));
-            feeAmount = Math.mulDiv(
-                grossPayout,
-                IFeeCalculator(registry.feeCalculator()).getRedeemFee(asset, amountIn),
-                BPS,
-                Math.Rounding.Ceil
-            );
-            netPayout = grossPayout - feeAmount;
-        }
+        netPayout = Math.mulDiv(amountIn, price, PRECISION * 10 ** (18 - IERC20Metadata(paymentToken).decimals()));
 
         IERC20(paymentToken).safeTransferFrom(vmAddr, user, netPayout);
-        if (feeAmount > 0) {
-            IERC20(paymentToken).safeTransferFrom(vmAddr, address(this), feeAmount);
-            IERC20(paymentToken).safeIncreaseAllowance(vault, feeAmount);
-            IOwnVault(vault).depositFees(paymentToken, feeAmount);
-            emit FeeCollected(orderId, paymentToken, feeAmount);
-        }
 
         // Burn the eTokens and shrink exposure.
         IEToken(_activeToken(asset)).burn(fromEscrow ? address(this) : user, amountIn);

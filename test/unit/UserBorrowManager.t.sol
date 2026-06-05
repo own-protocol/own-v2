@@ -56,8 +56,6 @@ contract UserBorrowManagerTest is BaseTest {
         // 2) ProtocolRegistry slots.
         vm.startPrank(Actors.ADMIN);
         protocolRegistry.setAddress(protocolRegistry.MARKET(), mockMarket);
-        protocolRegistry.setAddress(protocolRegistry.TREASURY(), Actors.FEE_RECIPIENT);
-        protocolRegistry.setProtocolShareBps(2000);
 
         // AssetRegistry — register TSLA so eligibility passes.
         assetRegistry = new AssetRegistry(Actors.ADMIN);
@@ -81,9 +79,8 @@ contract UserBorrowManagerTest is BaseTest {
 
         // 4) OwnVault on awstETH. Bound VM = this contract (so we can enable assets).
         vm.prank(Actors.ADMIN);
-        vault = new OwnVault(
-            address(awstETH), "Own awstETH", "owawstETH", address(protocolRegistry), address(this), 8000, 2000
-        );
+        vault =
+            new OwnVault(address(awstETH), "Own awstETH", "owawstETH", address(protocolRegistry), address(this), 8000);
         vault.enableAsset(ASSET);
         // Set USDC as payment token for the vault (required by some flows; not used here).
         vault.setPaymentToken(address(usdc));
@@ -601,6 +598,38 @@ contract UserBorrowManagerTest is BaseTest {
         uint256 debtAfter = borrowManager.debtOf(Actors.MINTER1, ASSET);
         // 8% live + 1% base premium = 9% APR linear.
         assertApproxEqRel(debtAfter, stable * 109 / 100, 1e16);
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Lending fee (premium surplus) routing
+    // ──────────────────────────────────────────────────────────
+
+    /// @notice On repay, the premium charged above Aave's own debt is the lending fee;
+    ///         it is forwarded to the VM (not the vault, since it is denominated in the
+    ///         stablecoin, not the vault collateral) and tracked via LendingFeeAccrued.
+    function test_repay_premiumSurplus_goesToVM() public {
+        _openTypical(Actors.MINTER1);
+
+        skip(365 days); // accrue the premium above Aave's (static mock) debt
+
+        address vmAddr = vault.vm();
+        uint256 managerDebt = borrowManager.debtOf(Actors.MINTER1, ASSET);
+        uint256 aaveDebt = aavePool.debtOf(address(vault), address(usdc));
+        assertGt(managerDebt, aaveDebt, "premium accrued above aave debt");
+        uint256 expectedSurplus = managerDebt - aaveDebt;
+
+        usdc.mint(Actors.MINTER1, managerDebt);
+        uint256 vmBefore = usdc.balanceOf(vmAddr);
+
+        vm.startPrank(Actors.MINTER1);
+        usdc.approve(address(borrowManager), managerDebt);
+        vm.expectEmit(true, false, false, true, address(borrowManager));
+        emit IUserBorrowManager.LendingFeeAccrued(vmAddr, expectedSurplus);
+        borrowManager.repay(ASSET, type(uint256).max);
+        vm.stopPrank();
+
+        assertEq(usdc.balanceOf(vmAddr) - vmBefore, expectedSurplus, "VM received lending fee surplus");
+        assertEq(aavePool.debtOf(address(vault), address(usdc)), 0, "Aave debt cleared");
     }
 
     // ──────────────────────────────────────────────────────────

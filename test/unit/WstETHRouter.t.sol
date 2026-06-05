@@ -27,20 +27,17 @@ contract WstETHRouterTest is BaseTest {
         // Deploy a wstETH vault (wstETH from BaseTest)
         vm.startPrank(Actors.ADMIN);
         protocolRegistry.setAddress(protocolRegistry.MARKET(), mockMarket);
-        protocolRegistry.setAddress(protocolRegistry.TREASURY(), Actors.FEE_RECIPIENT);
         // Deploy the router first so we can set it as the vault's VM
         router = new WstETHRouter(address(wstETH), address(stETH));
 
         // Deploy a wstETH vault with router as the bound VM (router calls deposit directly)
-        protocolRegistry.setProtocolShareBps(2000);
         vault = new OwnVault(
             address(wstETH),
             "Own wstETH Vault",
             "owstETH",
             address(protocolRegistry),
             address(router), // bound VM is the router (it calls deposit directly)
-            8000, // 80% max util
-            2000
+            8000 // 80% max util
         );
         vm.stopPrank();
         vm.label(address(router), "WstETHRouter");

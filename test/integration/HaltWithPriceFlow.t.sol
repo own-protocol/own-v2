@@ -18,7 +18,6 @@ import {
 } from "../../src/interfaces/types/Types.sol";
 
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
-import {FeeCalculator} from "../../src/core/FeeCalculator.sol";
 import {OwnMarket} from "../../src/core/OwnMarket.sol";
 import {OwnVault} from "../../src/core/OwnVault.sol";
 import {VaultFactory} from "../../src/core/VaultFactory.sol";
@@ -37,7 +36,6 @@ contract HaltWithPriceFlowTest is BaseTest {
     OwnVault public vault;
     EToken public eTSLA;
     EToken public eGOLD;
-    FeeCalculator public feeCalc;
 
     uint256 constant MAX_EXPOSURE = 10_000_000e18;
     uint256 constant MAX_UTIL_BPS = 8000;
@@ -45,9 +43,6 @@ contract HaltWithPriceFlowTest is BaseTest {
     uint256 constant MINT_AMOUNT = 10_000e6;
     uint256 constant ETOKEN_AMOUNT = 40e18;
     uint256 constant CLAIM_THRESHOLD = 6 hours;
-
-    uint256 constant MINT_FEE_BPS = 100;
-    uint256 constant REDEEM_FEE_BPS = 50;
 
     uint256 constant HALT_PRICE = 200e18;
 
@@ -64,22 +59,11 @@ contract HaltWithPriceFlowTest is BaseTest {
 
         assetRegistry = new AssetRegistry(Actors.ADMIN);
         protocolRegistry.setAddress(protocolRegistry.ASSET_REGISTRY(), address(assetRegistry));
-        protocolRegistry.setAddress(protocolRegistry.TREASURY(), Actors.FEE_RECIPIENT);
-        protocolRegistry.setProtocolShareBps(2000);
-
-        feeCalc = new FeeCalculator(address(protocolRegistry), Actors.ADMIN);
-        feeCalc.setMintFee(2, MINT_FEE_BPS);
-        feeCalc.setRedeemFee(2, REDEEM_FEE_BPS);
-        feeCalc.setMintFee(1, 0);
-        feeCalc.setMintFee(3, 0);
-        feeCalc.setRedeemFee(1, 0);
-        feeCalc.setRedeemFee(3, 0);
-        protocolRegistry.setAddress(keccak256("FEE_CALCULATOR"), address(feeCalc));
 
         VaultFactory factory = new VaultFactory(Actors.ADMIN, address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), address(factory));
 
-        vault = OwnVault(factory.createVault(address(weth), vm1Signer, "Own ETH Vault", "oETH", MAX_UTIL_BPS, 2000));
+        vault = OwnVault(factory.createVault(address(weth), vm1Signer, "Own ETH Vault", "oETH", MAX_UTIL_BPS));
 
         market = new OwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
@@ -318,24 +302,22 @@ contract HaltWithPriceFlowTest is BaseTest {
         // Past the claim threshold the owner can force execution; halt price is used.
         vm.warp(block.timestamp + CLAIM_THRESHOLD + 1);
 
-        // Collateral released = (eTokens * haltPrice / PRECISION) / ETH_PRICE, minus redeem fee.
+        // Collateral released = (eTokens * haltPrice / PRECISION) / ETH_PRICE (no fee).
         uint256 grossUsd = Math.mulDiv(eTokenBal, HALT_PRICE, PRECISION);
         uint256 grossCollateral = Math.mulDiv(grossUsd, PRECISION, ETH_PRICE);
-        uint256 feeCollateral = Math.mulDiv(grossCollateral, REDEEM_FEE_BPS, BPS, Math.Rounding.Ceil);
-        uint256 netCollateral = grossCollateral - feeCollateral;
 
         uint256 userWethBefore = weth.balanceOf(Actors.MINTER1);
 
         bytes memory collateralPriceData = abi.encode(uint256(ETH_PRICE), uint256(block.timestamp));
 
         vm.expectEmit(true, true, false, true);
-        emit IOwnMarket.OrderForceExecuted(orderId, Actors.MINTER1, eTokenBal, netCollateral);
+        emit IOwnMarket.OrderForceExecuted(orderId, Actors.MINTER1, eTokenBal, grossCollateral);
 
         vm.prank(Actors.MINTER1);
         market.forceExecuteOrder(orderId, "", collateralPriceData);
 
         // User received collateral valued at the halt price; eTokens burned.
-        assertEq(weth.balanceOf(Actors.MINTER1), userWethBefore + netCollateral, "user got collateral at halt price");
+        assertEq(weth.balanceOf(Actors.MINTER1), userWethBefore + grossCollateral, "user got collateral at halt price");
         assertEq(eTSLA.balanceOf(address(market)), 0, "eTokens burned from market");
 
         Order memory order = market.getOrder(orderId);

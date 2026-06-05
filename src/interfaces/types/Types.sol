@@ -151,14 +151,16 @@ struct AssetConfig {
 /// @param requestId  Unique request identifier.
 /// @param depositor  Address that initiated the deposit.
 /// @param receiver   Address that will receive vault shares.
-/// @param assets     Amount of collateral deposited.
-/// @param timestamp  When the request was submitted.
-/// @param status     Current request status.
+/// @param assets       Amount of collateral deposited.
+/// @param minSharesOut Minimum shares the depositor will accept at acceptance time (slippage floor).
+/// @param timestamp    When the request was submitted.
+/// @param status       Current request status.
 struct DepositRequest {
     uint256 requestId;
     address depositor;
     address receiver;
     uint256 assets;
+    uint256 minSharesOut;
     uint256 timestamp;
     DepositStatus status;
 }

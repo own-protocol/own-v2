@@ -29,15 +29,13 @@ interface IVaultFactory {
     /// @param name       Vault share token name.
     /// @param symbol     Vault share token symbol.
     /// @param maxUtilBps Initial max utilization in BPS.
-    /// @param vmShareBps Initial VM fee share (of LP+VM remainder) in BPS.
     /// @return vault The deployed vault address.
     function createVault(
         address collateral,
         address vm,
         string calldata name,
         string calldata symbol,
-        uint256 maxUtilBps,
-        uint256 vmShareBps
+        uint256 maxUtilBps
     ) external returns (address vault);
 
     /// @notice Deregister a vault so it can no longer be used. Only callable by admin.

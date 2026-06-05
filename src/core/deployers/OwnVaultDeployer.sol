@@ -13,9 +13,8 @@ contract OwnVaultDeployer {
         string calldata symbol,
         address registry,
         address vm,
-        uint256 maxUtilBps,
-        uint256 vmShareBps
+        uint256 maxUtilBps
     ) external returns (address) {
-        return address(new OwnVault(collateral, name, symbol, registry, vm, maxUtilBps, vmShareBps));
+        return address(new OwnVault(collateral, name, symbol, registry, vm, maxUtilBps));
     }
 }

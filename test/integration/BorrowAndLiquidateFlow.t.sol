@@ -52,8 +52,6 @@ contract BorrowAndLiquidateFlowTest is BaseTest {
         address market = address(this); // act as MARKET so we can mint eTSLA in tests.
         vm.startPrank(Actors.ADMIN);
         protocolRegistry.setAddress(protocolRegistry.MARKET(), market);
-        protocolRegistry.setAddress(protocolRegistry.TREASURY(), Actors.FEE_RECIPIENT);
-        protocolRegistry.setProtocolShareBps(2000);
 
         // Asset registry + eTSLA.
         assetRegistry = new AssetRegistry(Actors.ADMIN);
@@ -76,8 +74,7 @@ contract BorrowAndLiquidateFlowTest is BaseTest {
         vm.startPrank(Actors.ADMIN);
         vaultFactory = new VaultFactory(Actors.ADMIN, address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), address(vaultFactory));
-        vault =
-            OwnVault(vaultFactory.createVault(address(awstETH), address(this), "Own awstETH", "owawstETH", 8000, 2000));
+        vault = OwnVault(vaultFactory.createVault(address(awstETH), address(this), "Own awstETH", "owawstETH", 8000));
 
         bmFactory = new BorrowManagerFactory(address(aavePool), address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.BORROW_MANAGER_FACTORY(), address(bmFactory));

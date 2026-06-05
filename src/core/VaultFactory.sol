@@ -27,13 +27,12 @@ contract VaultFactory is IVaultFactory, Ownable {
         address vm,
         string calldata name,
         string calldata symbol,
-        uint256 maxUtilBps,
-        uint256 vmShareBps
+        uint256 maxUtilBps
     ) external onlyOwner returns (address vault) {
         if (collateral == address(0)) revert ZeroAddress();
         if (vm == address(0)) revert ZeroAddress();
 
-        vault = _vaultDeployer.deploy(collateral, name, symbol, address(registry), vm, maxUtilBps, vmShareBps);
+        vault = _vaultDeployer.deploy(collateral, name, symbol, address(registry), vm, maxUtilBps);
 
         _isRegistered[vault] = true;
         _vaults.push(vault);

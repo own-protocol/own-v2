@@ -48,8 +48,6 @@ contract AaveRouterTest is BaseTest {
 
         vm.startPrank(Actors.ADMIN);
         protocolRegistry.setAddress(protocolRegistry.MARKET(), mockMarket);
-        protocolRegistry.setAddress(protocolRegistry.TREASURY(), Actors.FEE_RECIPIENT);
-        protocolRegistry.setProtocolShareBps(2000);
 
         router = new AaveRouter(address(aavePool), address(protocolRegistry));
 
@@ -57,13 +55,12 @@ contract AaveRouterTest is BaseTest {
         router.registerReserve(address(wethU), address(aweth));
         router.registerReserve(address(wbtcU), address(awbtc));
 
-        wstETHVault = new OwnVault(
-            address(awstETH), "Own awstETH", "owawstETH", address(protocolRegistry), address(router), 8000, 2000
-        );
+        wstETHVault =
+            new OwnVault(address(awstETH), "Own awstETH", "owawstETH", address(protocolRegistry), address(router), 8000);
         wethVault =
-            new OwnVault(address(aweth), "Own aWETH", "owaWETH", address(protocolRegistry), address(router), 8000, 2000);
+            new OwnVault(address(aweth), "Own aWETH", "owaWETH", address(protocolRegistry), address(router), 8000);
         wbtcVault =
-            new OwnVault(address(awbtc), "Own awBTC", "owawBTC", address(protocolRegistry), address(router), 8000, 2000);
+            new OwnVault(address(awbtc), "Own awBTC", "owawBTC", address(protocolRegistry), address(router), 8000);
         vm.stopPrank();
 
         vm.label(address(router), "AaveRouter");

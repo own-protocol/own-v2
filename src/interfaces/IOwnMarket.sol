@@ -59,9 +59,6 @@ interface IOwnMarket {
     /// @notice Emitted when an expired resting order is closed and its escrow returned.
     event OrderExpired(uint256 indexed orderId);
 
-    /// @notice Emitted when a protocol fee is collected during settlement.
-    event FeeCollected(uint256 indexed orderId, address indexed token, uint256 feeAmount);
-
     // ──────────────────────────────────────────────────────────
     //  Errors
     // ──────────────────────────────────────────────────────────

@@ -9,7 +9,6 @@ import {IOwnVault} from "../../src/interfaces/IOwnVault.sol";
 import {AssetConfig, BPS, Order, OrderStatus, OrderType, PRECISION, Quote} from "../../src/interfaces/types/Types.sol";
 
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
-import {FeeCalculator} from "../../src/core/FeeCalculator.sol";
 import {OwnMarket} from "../../src/core/OwnMarket.sol";
 import {OwnVault} from "../../src/core/OwnVault.sol";
 import {VaultFactory} from "../../src/core/VaultFactory.sol";
@@ -27,7 +26,6 @@ contract OrderLifecycleTest is BaseTest {
     OwnMarket public market;
     OwnVault public vault;
     EToken public eTSLA;
-    FeeCalculator public feeCalc;
 
     uint256 constant MAX_EXPOSURE = 10_000_000e18;
     uint256 constant MAX_UTIL_BPS = 8000;
@@ -35,9 +33,6 @@ contract OrderLifecycleTest is BaseTest {
     uint256 constant MINT_AMOUNT = 10_000e6;
     uint256 constant ETOKEN_AMOUNT = 40e18;
     uint256 constant CLAIM_THRESHOLD = 6 hours;
-
-    uint256 constant MINT_FEE_BPS = 100;
-    uint256 constant REDEEM_FEE_BPS = 50;
 
     function setUp() public override {
         super.setUp();
@@ -52,22 +47,11 @@ contract OrderLifecycleTest is BaseTest {
 
         assetRegistry = new AssetRegistry(Actors.ADMIN);
         protocolRegistry.setAddress(protocolRegistry.ASSET_REGISTRY(), address(assetRegistry));
-        protocolRegistry.setAddress(protocolRegistry.TREASURY(), Actors.FEE_RECIPIENT);
-        protocolRegistry.setProtocolShareBps(2000);
-
-        feeCalc = new FeeCalculator(address(protocolRegistry), Actors.ADMIN);
-        feeCalc.setMintFee(2, MINT_FEE_BPS);
-        feeCalc.setRedeemFee(2, REDEEM_FEE_BPS);
-        feeCalc.setMintFee(1, 0);
-        feeCalc.setMintFee(3, 0);
-        feeCalc.setRedeemFee(1, 0);
-        feeCalc.setRedeemFee(3, 0);
-        protocolRegistry.setAddress(keccak256("FEE_CALCULATOR"), address(feeCalc));
 
         VaultFactory factory = new VaultFactory(Actors.ADMIN, address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), address(factory));
 
-        vault = OwnVault(factory.createVault(address(weth), vm1Signer, "Own ETH Vault", "oETH", MAX_UTIL_BPS, 2000));
+        vault = OwnVault(factory.createVault(address(weth), vm1Signer, "Own ETH Vault", "oETH", MAX_UTIL_BPS));
 
         market = new OwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
@@ -173,12 +157,6 @@ contract OrderLifecycleTest is BaseTest {
         market.executeOrder(q, sig);
     }
 
-    function _mintFee(
-        uint256 amount
-    ) internal pure returns (uint256) {
-        return Math.mulDiv(amount, MINT_FEE_BPS, BPS, Math.Rounding.Ceil);
-    }
-
     function _redeemGrossPayout(
         uint256 eAmount
     ) internal pure returns (uint256) {
@@ -216,14 +194,12 @@ contract OrderLifecycleTest is BaseTest {
         Order memory order = market.getOrder(orderId);
         assertEq(uint8(order.status), uint8(OrderStatus.ForceExecuted));
 
-        // Collateral released = (eTokens * price / PRECISION) / ETH_PRICE, minus redeem fee.
+        // Collateral released = (eTokens * price / PRECISION) / ETH_PRICE (no fee).
         uint256 grossUsd = Math.mulDiv(eTokenBal, TSLA_PRICE, PRECISION);
         uint256 grossCollateral = Math.mulDiv(grossUsd, PRECISION, ETH_PRICE);
-        uint256 feeCollateral = Math.mulDiv(grossCollateral, REDEEM_FEE_BPS, BPS, Math.Rounding.Ceil);
-        uint256 netCollateral = grossCollateral - feeCollateral;
 
-        assertEq(weth.balanceOf(Actors.MINTER1), userWethBefore + netCollateral, "user received WETH collateral");
-        assertEq(weth.balanceOf(address(vault)), vaultWethBefore - netCollateral, "vault released WETH");
+        assertEq(weth.balanceOf(Actors.MINTER1), userWethBefore + grossCollateral, "user received WETH collateral");
+        assertEq(weth.balanceOf(address(vault)), vaultWethBefore - grossCollateral, "vault released WETH");
         assertEq(eTSLA.balanceOf(address(market)), 0, "escrowed eTokens burned");
     }
 
@@ -256,109 +232,6 @@ contract OrderLifecycleTest is BaseTest {
         vm.prank(Actors.MINTER1);
         vm.expectRevert(abi.encodeWithSelector(IOwnMarket.ForceWindowNotElapsed.selector, orderId));
         market.forceExecuteOrder(orderId, assetPriceData, collateralPriceData);
-    }
-
-    // ══════════════════════════════════════════════════════════
-    //  Fee flow — mint (exact 3-way split + claim all)
-    // ══════════════════════════════════════════════════════════
-
-    function test_feeFlow_mint_threWaySplit() public {
-        uint256 orderId = _placeMint(Actors.MINTER1, MINT_AMOUNT, block.timestamp + 1 days);
-        _fillMint(orderId, Actors.MINTER1, MINT_AMOUNT);
-
-        uint256 totalFee = _mintFee(MINT_AMOUNT);
-
-        // Exact 3-way split
-        uint256 protocolAmount = Math.mulDiv(totalFee, 2000, BPS, Math.Rounding.Ceil);
-        uint256 remainder = totalFee - protocolAmount;
-        uint256 vmAmount = Math.mulDiv(remainder, 2000, BPS);
-        uint256 lpAmount = remainder - vmAmount;
-
-        assertEq(vault.accruedProtocolFees(), protocolAmount, "protocol fees exact");
-        assertEq(vault.accruedVMFees(), vmAmount, "VM fees exact");
-        assertEq(vault.claimableLPRewards(Actors.LP1), lpAmount, "LP rewards exact");
-
-        // Verify total adds up
-        assertEq(protocolAmount + vmAmount + lpAmount, totalFee, "fee split sums to total");
-
-        // Claim and verify balances
-        uint256 treasuryBefore = usdc.balanceOf(Actors.FEE_RECIPIENT);
-        vault.claimProtocolFees();
-        assertEq(usdc.balanceOf(Actors.FEE_RECIPIENT), treasuryBefore + protocolAmount, "treasury received");
-
-        uint256 vmBefore = usdc.balanceOf(vm1Signer);
-        vm.prank(vm1Signer);
-        vault.claimVMFees();
-        assertEq(usdc.balanceOf(vm1Signer), vmBefore + vmAmount, "VM received");
-
-        vm.prank(Actors.LP1);
-        vault.claimLPRewards();
-        assertEq(usdc.balanceOf(Actors.LP1), lpAmount, "LP received");
-    }
-
-    // ══════════════════════════════════════════════════════════
-    //  Fee flow — redeem (exact split)
-    // ══════════════════════════════════════════════════════════
-
-    function test_feeFlow_redeem_threWaySplit() public {
-        _mintETokensViaFlow(Actors.MINTER1, MINT_AMOUNT);
-        uint256 eTokenBal = eTSLA.balanceOf(Actors.MINTER1);
-
-        // Claim all mint fees first so they don't interfere with redeem fee assertions
-        vault.claimProtocolFees();
-        vm.prank(vm1Signer);
-        vault.claimVMFees();
-        vm.prank(Actors.LP1);
-        vault.claimLPRewards();
-
-        uint256 orderId = _placeRedeem(Actors.MINTER1, eTokenBal, block.timestamp + 1 days);
-
-        // Snapshot fees right before the redeem fill
-        uint256 protocolBefore = vault.accruedProtocolFees();
-        uint256 vmBefore = vault.accruedVMFees();
-        uint256 lpBefore = vault.claimableLPRewards(Actors.LP1);
-
-        _fillRedeem(orderId, Actors.MINTER1, eTokenBal);
-
-        uint256 grossPayout = _redeemGrossPayout(eTokenBal);
-        uint256 totalFee = Math.mulDiv(grossPayout, REDEEM_FEE_BPS, BPS, Math.Rounding.Ceil);
-
-        // Exact split verification (delta from redeem only)
-        uint256 protocolAmount = Math.mulDiv(totalFee, 2000, BPS, Math.Rounding.Ceil);
-        uint256 remainder = totalFee - protocolAmount;
-        uint256 vmAmount = Math.mulDiv(remainder, 2000, BPS);
-        uint256 lpAmount = remainder - vmAmount;
-
-        assertEq(vault.accruedProtocolFees() - protocolBefore, protocolAmount, "protocol fees exact");
-        assertEq(vault.accruedVMFees() - vmBefore, vmAmount, "VM fees exact");
-        // LP rewards use share-based math; the mint fee deposit via _mintETokensViaFlow
-        // changes totalAssets, causing minor rounding in the per-share reward accumulator.
-        // Tolerance: 1 USDC cent (1e4) covers the share-based rounding.
-        assertApproxEqAbs(vault.claimableLPRewards(Actors.LP1) - lpBefore, lpAmount, 1e5, "LP rewards approx");
-        assertEq(protocolAmount + vmAmount + lpAmount, totalFee, "fee split sums to total");
-
-        // User received net payout
-        assertEq(usdc.balanceOf(Actors.MINTER1), grossPayout - totalFee, "user received net payout");
-    }
-
-    // ══════════════════════════════════════════════════════════
-    //  Payment token swap
-    // ══════════════════════════════════════════════════════════
-
-    function test_paymentTokenSwap_fullFlow() public {
-        _mintETokensViaFlow(Actors.MINTER1, MINT_AMOUNT);
-
-        vm.prank(vm1Signer);
-        vm.expectRevert(IOwnVault.OutstandingFeesExist.selector);
-        vault.setPaymentToken(address(usdt));
-
-        vault.claimProtocolFees();
-        vm.prank(vm1Signer);
-        vault.claimVMFees();
-
-        vm.prank(vm1Signer);
-        vault.setPaymentToken(address(usdt));
-        assertEq(vault.paymentToken(), address(usdt));
     }
 
     // ══════════════════════════════════════════════════════════
@@ -396,9 +269,7 @@ contract OrderLifecycleTest is BaseTest {
         uint256 orderId = _placeMint(Actors.MINTER1, MINT_AMOUNT, block.timestamp + 1 days);
         _fillMint(orderId, Actors.MINTER1, MINT_AMOUNT);
 
-        uint256 fee = _mintFee(MINT_AMOUNT);
-        uint256 net = MINT_AMOUNT - fee;
-        uint256 expectedETokens = Math.mulDiv(net * 1e12, PRECISION, TSLA_PRICE);
+        uint256 expectedETokens = Math.mulDiv(MINT_AMOUNT * 1e12, PRECISION, TSLA_PRICE);
 
         assertEq(eTSLA.balanceOf(Actors.MINTER1), expectedETokens, "exact eToken amount");
         assertGt(expectedETokens, 0, "non-zero eTokens");
@@ -414,12 +285,10 @@ contract OrderLifecycleTest is BaseTest {
         uint256 orderId = _placeRedeem(Actors.MINTER1, eTokenBal, block.timestamp + 1 days);
 
         uint256 grossPayout = _redeemGrossPayout(eTokenBal);
-        uint256 fee = Math.mulDiv(grossPayout, REDEEM_FEE_BPS, BPS, Math.Rounding.Ceil);
-        uint256 netToUser = grossPayout - fee;
 
         _fillRedeem(orderId, Actors.MINTER1, eTokenBal);
 
-        assertEq(usdc.balanceOf(Actors.MINTER1), netToUser, "exact stablecoin payout");
+        assertEq(usdc.balanceOf(Actors.MINTER1), grossPayout, "exact stablecoin payout");
         assertEq(eTSLA.balanceOf(address(market)), 0, "eTokens burned");
         assertEq(eTSLA.balanceOf(Actors.MINTER1), 0, "minter has no eTokens");
     }
@@ -439,9 +308,8 @@ contract OrderLifecycleTest is BaseTest {
         // Fill mint → exposure increases
         _fillMint(orderId, Actors.MINTER1, MINT_AMOUNT);
 
-        // exposureUSD = eTokenUnits * TSLA_PRICE / PRECISION (fee reduces minted amount)
-        uint256 fee = _mintFee(MINT_AMOUNT);
-        uint256 eTokenUnits = Math.mulDiv((MINT_AMOUNT - fee) * 1e12, PRECISION, TSLA_PRICE);
+        // exposureUSD = eTokenUnits * TSLA_PRICE / PRECISION (no fee; full amount minted)
+        uint256 eTokenUnits = Math.mulDiv(MINT_AMOUNT * 1e12, PRECISION, TSLA_PRICE);
         uint256 expectedExposure = Math.mulDiv(eTokenUnits, TSLA_PRICE, PRECISION);
         assertEq(vault.totalExposureUSD(), expectedExposure, "exposure = minted notional after fill");
     }
@@ -587,8 +455,7 @@ contract OrderLifecycleTest is BaseTest {
         assertEq(o2.filledAmount, MINT_AMOUNT, "fully filled");
         assertEq(uint8(o2.status), uint8(OrderStatus.Filled), "order filled");
 
-        // Fee is charged per chunk (ceil rounding), so VM net = total minus per-chunk fees.
-        uint256 expectedVmNet = (firstChunk - _mintFee(firstChunk)) + (secondChunk - _mintFee(secondChunk));
-        assertEq(usdc.balanceOf(vm1Signer), expectedVmNet, "VM received net of both fills");
+        // No fee: VM receives the full amount across both fills.
+        assertEq(usdc.balanceOf(vm1Signer), MINT_AMOUNT, "VM received both fills");
     }
 }

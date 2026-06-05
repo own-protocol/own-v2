@@ -5,7 +5,6 @@ import {Actors} from "../helpers/Actors.sol";
 import {BaseTest} from "../helpers/BaseTest.sol";
 
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
-import {FeeCalculator} from "../../src/core/FeeCalculator.sol";
 import {OwnMarket} from "../../src/core/OwnMarket.sol";
 import {OwnVault} from "../../src/core/OwnVault.sol";
 import {VaultFactory} from "../../src/core/VaultFactory.sol";
@@ -26,7 +25,6 @@ contract OwnProtocolInvariant is BaseTest {
     // ── Protocol contracts ──────────────────────────────────────
 
     AssetRegistry public assetRegistry;
-    FeeCalculator public feeCalc;
     VaultFactory public factory;
     OwnMarket public market;
     OwnVault public vault;
@@ -41,10 +39,6 @@ contract OwnProtocolInvariant is BaseTest {
     // ── Constants ───────────────────────────────────────────────
 
     uint256 constant MAX_UTIL_BPS = 8000;
-    uint256 constant VM_SHARE_BPS = 2000;
-    uint256 constant PROTOCOL_SHARE_BPS = 2000;
-    uint256 constant MINT_FEE_BPS = 30;
-    uint256 constant REDEEM_FEE_BPS = 30;
     uint256 constant CLAIM_THRESHOLD = 6 hours;
     uint256 constant WITHDRAWAL_WAIT = 1 hours;
     uint256 constant LP_SEED_AMOUNT = 50_000e18; // 50k WETH
@@ -69,27 +63,12 @@ contract OwnProtocolInvariant is BaseTest {
         assetRegistry = new AssetRegistry(Actors.ADMIN);
         protocolRegistry.setAddress(protocolRegistry.ASSET_REGISTRY(), address(assetRegistry));
 
-        // Treasury
-        protocolRegistry.setAddress(protocolRegistry.TREASURY(), Actors.FEE_RECIPIENT);
-        protocolRegistry.setProtocolShareBps(PROTOCOL_SHARE_BPS);
-
-        // Fee calculator with non-zero fees
-        feeCalc = new FeeCalculator(address(protocolRegistry), Actors.ADMIN);
-        feeCalc.setMintFee(2, MINT_FEE_BPS);
-        feeCalc.setRedeemFee(2, REDEEM_FEE_BPS);
-        feeCalc.setMintFee(1, 0);
-        feeCalc.setMintFee(3, 0);
-        feeCalc.setRedeemFee(1, 0);
-        feeCalc.setRedeemFee(3, 0);
-        protocolRegistry.setAddress(keccak256("FEE_CALCULATOR"), address(feeCalc));
-
         // Vault factory
         factory = new VaultFactory(Actors.ADMIN, address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), address(factory));
 
-        // Create vault: WETH collateral, vm1Signer (keyed VM for quote signing), 80% max util, 20% VM fee share
-        vault =
-            OwnVault(factory.createVault(address(weth), vm1Signer, "Own ETH Vault", "oETH", MAX_UTIL_BPS, VM_SHARE_BPS));
+        // Create vault: WETH collateral, vm1Signer (keyed VM for quote signing), 80% max util
+        vault = OwnVault(factory.createVault(address(weth), vm1Signer, "Own ETH Vault", "oETH", MAX_UTIL_BPS));
 
         // Market
         market = new OwnMarket(address(protocolRegistry));
@@ -156,13 +135,7 @@ contract OwnProtocolInvariant is BaseTest {
     function _deployHandlers() private {
         vaultHandler = new VaultHandler(address(vault), address(weth), address(usdc));
         marketHandler = new MarketHandler(
-            address(market),
-            address(vault),
-            address(feeCalc),
-            address(usdc),
-            address(eTSLA),
-            address(oracle),
-            vm1SignerPk
+            address(market), address(vault), address(usdc), address(eTSLA), address(oracle), vm1SignerPk
         );
         eTokenHandler = new ETokenHandler(address(eTSLA), address(usdc));
 
@@ -172,14 +145,12 @@ contract OwnProtocolInvariant is BaseTest {
         targetContract(address(eTokenHandler));
 
         // Restrict to handler functions only (exclude ghost getters)
-        bytes4[] memory vaultSelectors = new bytes4[](7);
+        bytes4[] memory vaultSelectors = new bytes4[](5);
         vaultSelectors[0] = VaultHandler.deposit.selector;
         vaultSelectors[1] = VaultHandler.requestWithdrawal.selector;
         vaultSelectors[2] = VaultHandler.fulfillWithdrawal.selector;
         vaultSelectors[3] = VaultHandler.cancelWithdrawal.selector;
-        vaultSelectors[4] = VaultHandler.claimProtocolFees.selector;
-        vaultSelectors[5] = VaultHandler.claimVMFees.selector;
-        vaultSelectors[6] = VaultHandler.claimLPRewards.selector;
+        vaultSelectors[4] = VaultHandler.shareYield.selector;
         targetSelector(FuzzSelector({addr: address(vaultHandler), selectors: vaultSelectors}));
 
         bytes4[] memory marketSelectors = new bytes4[](9);
@@ -226,20 +197,6 @@ contract OwnProtocolInvariant is BaseTest {
         uint256 totalAssetsVal = vault.totalAssets();
 
         assert(vaultBalance >= totalAssetsVal);
-    }
-
-    /// @notice INV-03: Vault payment token balance covers all unclaimed fees.
-    ///         Since collateral=WETH and paymentToken=USDC, fees are in USDC.
-    function invariant_vaultFeeSolvency() external view {
-        uint256 usdcBalance = usdc.balanceOf(address(vault));
-        uint256 protocolFees = vault.accruedProtocolFees();
-        uint256 vmFees = vault.accruedVMFees();
-
-        // Sum claimable LP rewards for known LPs
-        uint256 lpRewards = vault.claimableLPRewards(Actors.LP1) + vault.claimableLPRewards(Actors.LP2)
-            + vault.claimableLPRewards(Actors.LP3);
-
-        assert(usdcBalance >= protocolFees + vmFees + lpRewards);
     }
 
     /// @notice INV-04: Market stablecoin balance covers escrowed open mint orders.

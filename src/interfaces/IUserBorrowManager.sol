@@ -61,6 +61,12 @@ interface IUserBorrowManager {
     event RateParamsUpdated(InterestRateModel.Params params);
     event LiquidationConfigUpdated(uint256 liquidationThresholdBps, uint256 liquidationBonusBps);
     event TargetLtvBpsUpdated(uint256 oldBps, uint256 newBps);
+
+    /// @notice Emitted when lending interest revenue (the premium charged above Aave's own rate)
+    ///         is forwarded to the VM. The VM handles its distribution offchain / via `shareYield`.
+    /// @param vm     The vault manager receiving the lending fee.
+    /// @param amount Stablecoin amount of accrued lending fee.
+    event LendingFeeAccrued(address indexed vm, uint256 amount);
     event BadDebtAbsorbed(
         address indexed borrower,
         bytes32 indexed asset,

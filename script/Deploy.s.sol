@@ -4,7 +4,6 @@ pragma solidity 0.8.28;
 import {Script, console} from "forge-std/Script.sol";
 
 import {AssetRegistry} from "../src/core/AssetRegistry.sol";
-import {FeeCalculator} from "../src/core/FeeCalculator.sol";
 
 import {OwnMarket} from "../src/core/OwnMarket.sol";
 import {ProtocolRegistry} from "../src/core/ProtocolRegistry.sol";
@@ -63,7 +62,6 @@ contract Deploy is Script {
 
     uint256 constant TIMELOCK_DELAY = 10 minutes; // Short delay for testing; increase for production
     uint256 constant PYTH_MAX_PRICE_AGE = 120; // 2 minutes
-    uint256 constant PROTOCOL_SHARE_BPS = 2000; // 20%
 
     // ──────────────────────────────────────────────────────────
     //  Deployment result struct — keeps run() under stack limit
@@ -74,7 +72,6 @@ contract Deploy is Script {
         address weth;
         address registry;
         address assetRegistry;
-        address feeCalc;
         address pythOracle;
         address factory;
         address market;
@@ -102,7 +99,9 @@ contract Deploy is Script {
 
     /// @dev Deploys all contracts and returns addresses in a struct.
     ///      Separated from run() to keep the top-level function stack-lean.
-    function _deploy(address deployer, address treasury) internal returns (Deployed memory d) {
+    function _deploy(
+        address deployer
+    ) internal returns (Deployed memory d) {
         // ── 1. Mock USDC ──────────────────────────────────────
         d.usdc = address(new MockERC20("USD Coin", "USDC", 6));
         console.log("MockUSDC:", d.usdc);
@@ -118,19 +117,7 @@ contract Deploy is Script {
         d.assetRegistry = address(new AssetRegistry(deployer));
         console.log("AssetRegistry:", d.assetRegistry);
 
-        // ── 5. FeeCalculator ──────────────────────────────────
-        d.feeCalc = address(new FeeCalculator(d.registry, deployer));
-        console.log("FeeCalculator:", d.feeCalc);
-
-        FeeCalculator feeCalc = FeeCalculator(d.feeCalc);
-        feeCalc.setMintFee(1, 5); // 0.05%
-        feeCalc.setMintFee(2, 10); // 0.10%
-        feeCalc.setMintFee(3, 50); // 0.50%
-        feeCalc.setRedeemFee(1, 5); // 0.05%
-        feeCalc.setRedeemFee(2, 10); // 0.10%
-        feeCalc.setRedeemFee(3, 50); // 0.50%
-
-        // ── 6. PythOracleVerifier ─────────────────────────────
+        // ── 5. PythOracleVerifier ─────────────────────────────
         d.pythOracle = address(new PythOracleVerifier(deployer, PYTH, PYTH_MAX_PRICE_AGE));
         console.log("PythOracleVerifier:", d.pythOracle);
 
@@ -168,13 +155,10 @@ contract Deploy is Script {
         // ── 11. Register in ProtocolRegistry ──────────────────
         ProtocolRegistry registry = ProtocolRegistry(d.registry);
         registry.setAddress(registry.ASSET_REGISTRY(), d.assetRegistry);
-        registry.setAddress(registry.TREASURY(), treasury);
-        registry.setAddress(keccak256("FEE_CALCULATOR"), d.feeCalc);
         registry.setAddress(registry.VAULT_FACTORY(), d.factory);
         registry.setAddress(registry.MARKET(), d.market);
         registry.setAddress(registry.PYTH_ORACLE(), d.pythOracle);
         registry.setAddress(registry.ETOKEN_FACTORY(), d.etokenFactory);
-        registry.setProtocolShareBps(PROTOCOL_SHARE_BPS);
 
         // ── 12. Add assets ────────────────────────────────────
         AssetRegistry assetRegistry = AssetRegistry(d.assetRegistry);
@@ -218,13 +202,11 @@ contract Deploy is Script {
 
     function run() external {
         address deployer = vm.addr(vm.envUint("DEPLOYER_PRIVATE_KEY"));
-        address treasury = vm.envAddress("TREASURY_ADDRESS");
 
         console.log("Deployer:", deployer);
-        console.log("Treasury:", treasury);
 
         vm.startBroadcast(vm.envUint("DEPLOYER_PRIVATE_KEY"));
-        Deployed memory d = _deploy(deployer, treasury);
+        Deployed memory d = _deploy(deployer);
         vm.stopBroadcast();
 
         console.log("");
@@ -234,7 +216,6 @@ contract Deploy is Script {
         console.log("WETH=", d.weth);
         console.log("PROTOCOL_REGISTRY=", d.registry);
         console.log("ASSET_REGISTRY=", d.assetRegistry);
-        console.log("FEE_CALCULATOR=", d.feeCalc);
         console.log("PYTH_ORACLE=", d.pythOracle);
         console.log("VAULT_FACTORY=", d.factory);
         console.log("OWN_MARKET=", d.market);

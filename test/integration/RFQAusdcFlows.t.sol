@@ -3,7 +3,6 @@ pragma solidity 0.8.28;
 
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {BorrowManagerFactory} from "../../src/core/BorrowManagerFactory.sol";
-import {FeeCalculator} from "../../src/core/FeeCalculator.sol";
 import {OwnMarket} from "../../src/core/OwnMarket.sol";
 import {OwnVault} from "../../src/core/OwnVault.sol";
 import {UserBorrowManager} from "../../src/core/UserBorrowManager.sol";
@@ -23,7 +22,6 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 ///         (4) mint → borrow → repay → redeem, LP deposit/withdraw, and the utilization cap.
 contract RFQAusdcFlowsTest is BaseTest {
     AssetRegistry assetRegistry;
-    FeeCalculator feeCalc;
     OwnMarket market;
     OwnVault vault;
     EToken eTSLA;
@@ -56,15 +54,6 @@ contract RFQAusdcFlowsTest is BaseTest {
         vm.startPrank(Actors.ADMIN);
         assetRegistry = new AssetRegistry(Actors.ADMIN);
         protocolRegistry.setAddress(protocolRegistry.ASSET_REGISTRY(), address(assetRegistry));
-        protocolRegistry.setAddress(protocolRegistry.TREASURY(), Actors.FEE_RECIPIENT);
-        protocolRegistry.setProtocolShareBps(2000);
-
-        feeCalc = new FeeCalculator(address(protocolRegistry), Actors.ADMIN);
-        for (uint8 i = 1; i <= 3; i++) {
-            feeCalc.setMintFee(i, 0);
-            feeCalc.setRedeemFee(i, 0);
-        }
-        protocolRegistry.setAddress(keccak256("FEE_CALCULATOR"), address(feeCalc));
 
         eTSLA = new EToken("Own TSLA", "eTSLA", TSLA, address(protocolRegistry), address(usdc));
         assetRegistry.addAsset(
@@ -92,8 +81,7 @@ contract RFQAusdcFlowsTest is BaseTest {
 
         VaultFactory factory = new VaultFactory(Actors.ADMIN, address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), address(factory));
-        vault =
-            OwnVault(factory.createVault(address(ausdcAToken), vm1Signer, "Own aUSDC", "oaUSDC", MAX_UTIL_BPS, 2000));
+        vault = OwnVault(factory.createVault(address(ausdcAToken), vm1Signer, "Own aUSDC", "oaUSDC", MAX_UTIL_BPS));
         vault.addQuoteSigner(vm1Signer);
 
         market = new OwnMarket(address(protocolRegistry));
@@ -126,7 +114,7 @@ contract RFQAusdcFlowsTest is BaseTest {
         ausdcAToken.mint(Actors.LP1, LP_DEPOSIT);
         vm.startPrank(Actors.LP1);
         ausdcAToken.approve(address(vault), LP_DEPOSIT);
-        uint256 reqId = vault.requestDeposit(LP_DEPOSIT, Actors.LP1);
+        uint256 reqId = vault.requestDeposit(LP_DEPOSIT, Actors.LP1, 0);
         vm.stopPrank();
         vm.prank(vm1Signer);
         vault.acceptDeposit(reqId);
