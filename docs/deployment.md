@@ -26,7 +26,7 @@ Fill in the required values:
 
 ## Step 1: Deploy Core Contracts
 
-Deploys all protocol contracts, registers them in ProtocolRegistry, configures Pyth oracle feeds, adds TSLA + GOLD assets, and sets fee levels.
+Deploys all protocol contracts, registers them in ProtocolRegistry, configures Pyth oracle feeds, adds TSLA + GOLD assets, sets fee levels, and configures global risk parameters (global max utilization + per-asset USD issuance ceilings) on the ExposureManager.
 
 ```bash
 forge script script/Deploy.s.sol --rpc-url base_sepolia --broadcast --verify
@@ -41,6 +41,7 @@ FEE_CALCULATOR=0x...
 PYTH_ORACLE=0x...
 VAULT_FACTORY=0x...
 OWN_MARKET=0x...
+EXPOSURE_MANAGER=0x...
 MOCK_USDC=0x...
 ETOKEN_TSLA=0x...
 ETOKEN_GOLD=0x...
@@ -56,11 +57,16 @@ WETH_ROUTER=0x...
 | AssetRegistry | Asset configs + oracle mappings |
 | FeeCalculator | Mint/redeem fees by volatility level |
 | PythOracleVerifier | Pyth oracle wrapper (120s max price age) |
-| VaultFactory | Creates OwnVault instances |
+| VaultFactory | Creates OwnVault instances + registers them with the ExposureManager |
 | OwnMarket | RFQ order execution marketplace |
+| ExposureManager | Global pooled risk accounting (exposure, marks, utilization, per-asset caps) |
 | EToken (TSLA) | eTSLA synthetic token |
 | EToken (GOLD) | eGOLD synthetic token |
 | WETHRouter | Native ETH deposit/redeem wrapper |
+
+The script also sets the **global max utilization** (80% / 8000 BPS) and a **per-asset USD ceiling**
+(`assetCapUSD`) for each launched asset. A per-asset cap of `0` blocks minting that asset, so this step
+is required before any mint can succeed.
 
 ## Step 2: Create Vault
 
@@ -80,15 +86,17 @@ VAULT_ADDRESS=0x...
 
 | Parameter | Value | Description |
 |-----------|-------|-------------|
-| Max utilization | 80% (8000 BPS) | Cap on exposure / collateral ratio |
+| Collateral asset | `ETH` ticker | Passed to `createVault`; the ExposureManager prices the vault's collateral via this oracle ticker. |
 | VM fee share | 20% (2000 BPS) | VM's portion of the non-protocol fee |
 | Grace period | 1 day | Legacy parameter; not used by RFQ order execution |
 | Claim threshold | 6 hours | Delay before a resting redeem order can be force-executed |
-| Collateral oracle | ETH/USD Pyth feed | Used for utilization and force execution calculations |
+
+> Max utilization is **global**, set once on the ExposureManager in Step 1 — not per vault.
+> `createVault` auto-registers the vault with the ExposureManager.
 
 ## Step 3: Configure Vault (as VM)
 
-Run with the vault manager key. Sets the payment token and enables assets for trading.
+Run with the vault manager key. Sets the payment token.
 
 ```bash
 forge script script/ConfigureVault.s.sol --rpc-url base_sepolia --broadcast
@@ -96,7 +104,11 @@ forge script script/ConfigureVault.s.sol --rpc-url base_sepolia --broadcast
 
 **Configuration applied:**
 - Payment token: MockUSDC
-- Enabled assets: TSLA, GOLD
+
+> Per-vault asset enablement no longer exists — the global AssetRegistry governs which assets are
+> tradeable, and the ExposureManager's per-asset cap governs issuance. Before an asset can be minted, a
+> keeper must pull its price (`ExposureManager.pullAssetPrice`) and the vault's collateral price
+> (`ExposureManager.pullCollateralPrice`) so the marks are non-zero.
 
 ### Register a quote signer (required)
 

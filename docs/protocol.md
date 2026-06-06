@@ -70,7 +70,7 @@ Off-chain entities that sign price attestations for the in-house oracle. Prices 
 
 ## 3. Contract Architecture
 
-The protocol consists of 11 contracts organized into three layers:
+The protocol consists of 13 contracts organized into three layers:
 
 ### Core Contracts
 
@@ -78,9 +78,10 @@ The protocol consists of 11 contracts organized into three layers:
 | -------------------- | ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **ProtocolRegistry** | `src/core/ProtocolRegistry.sol` | Central registry of all protocol contract addresses. 2-day timelock for address changes. Stores protocol-wide parameters (e.g. `protocolShareBps`).              |
 | **OwnMarket**        | `src/core/OwnMarket.sol`        | RFQ order execution marketplace. Settles market orders atomically against VM-signed quotes, escrows and (partially) fills resting limit orders, and provides redeem force execution against the oracle price.          |
-| **OwnVault**         | `src/core/OwnVault.sol`         | ERC-4626 collateral vault. Manages LP deposits/withdrawals (async queues), tracks per-asset exposure and utilization, distributes fees, and supports pause/halt. |
-| **VaultFactory**     | `src/core/VaultFactory.sol`     | Deploys and registers OwnVault instances. Each vault is bound 1:1 to a VM.                                                                                       |
-| **AssetRegistry**    | `src/core/AssetRegistry.sol`    | Whitelists assets, maps tickers to eToken addresses, stores oracle configurations. Supports token migration (post-stock-split).                                  |
+| **OwnVault**         | `src/core/OwnVault.sol`         | ERC-4626 collateral vault. Holds LP collateral (custody), manages async deposit/withdrawal queues, distributes fees/yield, supports lending opt-in, and pause/halt. Risk accounting lives in the ExposureManager, not the vault. |
+| **ExposureManager**  | `src/core/ExposureManager.sol`  | Central, pooled risk accounting for **all** vaults. Owns global exposure, collateral marks, utilization, and the per-asset issuance ceiling. Valued at keeper-cached marks. See §9. |
+| **VaultFactory**     | `src/core/VaultFactory.sol`     | Deploys OwnVault instances and registers them with the ExposureManager. Each vault is bound 1:1 to a VM.                                                          |
+| **AssetRegistry**    | `src/core/AssetRegistry.sol`    | Whitelists assets, maps tickers to eToken addresses, stores oracle configurations. Supports token migration (post-stock-split). Governs which assets are valid for **all** vaults. |
 | **FeeCalculator**    | `src/core/FeeCalculator.sol`    | Per-volatility-level fee lookup. Three tiers (low/medium/high) with separate mint and redeem fee rates. Max cap: 500 BPS (5%).                                   |
 
 ### Oracle Contracts
@@ -109,16 +110,16 @@ See `docs/own-architecture.png` for the visual architecture diagram.
           +---------------+---------------+
           |               |               |
     AssetRegistry    FeeCalculator   VaultFactory
-    (assets, oracles, fees)           (deploys vaults)
+    (assets, oracles, fees)           (deploys + registers vaults)
                                           |
-                                      OwnVault
-                                 (ERC-4626 collateral)
-                                          |
-                    OwnMarket  <----------+
-              (RFQ order execution)
-                    |         |
-               EToken     OracleVerifier / PythOracleVerifier
-          (mint/burn)      (force-execution price proofs)
+                                      OwnVault ───────┐ register / pull collateral price
+                                 (ERC-4626 custody)   |
+                                          |           v
+                    OwnMarket  <----------+      ExposureManager
+              (RFQ order execution) ───────────▶ (global pooled risk:
+                    |         |        open/close   exposure, marks,
+               EToken     OracleVerifier / Pyth      utilization, caps)
+          (mint/burn)      (price marks & proofs) ◀── pull asset price (keepers)
 ```
 
 ---
@@ -175,16 +176,16 @@ Market orders execute atomically and are never persisted, so they have no status
 
 1. **User** requests a quote; the VM's quoter returns a signed quote (price, expiry).
 2. **User** calls `executeOrder(quote, signature)`:
+   - `ExposureManager.openExposure(vault, asset, eTokens)` runs first — an atomic check + commit of the per-asset USD ceiling and global utilization. A breach reverts cleanly before any token moves (§9).
    - Stablecoins pulled from the user: `amount - fee` to the VM, `fee` to the vault.
    - eTokens minted to the user: `eTokens = (amount - fee) * PRECISION / price`.
-   - Vault exposure increased; projected utilization checked.
 
 ### Market Redeem Flow (atomic, one tx)
 
 1. **User** requests a quote; the VM signs it.
 2. **User** calls `executeOrder(quote, signature)`:
    - Stablecoins pulled from the VM: gross `= amount * price / PRECISION`, `gross - fee` to the user, `fee` to the vault.
-   - The user's eTokens are burned; vault exposure decreased.
+   - The user's eTokens are burned; `ExposureManager.closeExposure(vault, asset, units)` reduces global exposure. Any registered vault filling any redeem reduces the global book — there is no "a vault may only close what it opened" constraint.
 
 The VM must have approved the market to spend its stablecoins. A relayer may submit on the VM's
 behalf, since the signed quote carries the authorization.
@@ -329,35 +330,76 @@ The admin can call `switchPrimaryOracle(ticker)` to swap primary and secondary.
 
 ### Collateral Pricing
 
-The vault tracks its collateral value in USD using an oracle for the collateral asset (e.g. ETH/USD). This is used for:
+Each vault's collateral is valued in USD by the **ExposureManager**, using the oracle for the vault's
+collateral asset (e.g. ETH/USD). The collateral ticker is bound at registration
+(`VaultFactory.createVault(..., collateralAsset)`), and the USD mark is refreshed by permissionless
+keeper calls to `pullCollateralPrice(vault)` (§9). The collateral USD value feeds:
 
-- Utilization ratio calculation
-- Force execution collateral-equivalent returns
-- Vault health monitoring
+- Global utilization (§9)
+- Force-execution collateral-equivalent returns (the market reads the vault's collateral ticker via `ExposureManager.vaultCollateralAsset`)
+- The lending debt cap (`UserBorrowManager.maxDebtUSD = collateralMark(vault) × targetLtvBps / BPS`)
 
 ---
 
-## 9. Vault Health and Safety
+## 9. Risk Accounting and Safety
 
-### Utilization Tracking
+All exposure, collateral valuation, and utilization accounting lives in a single **ExposureManager**
+that pools risk globally across every vault. Vaults keep custody, LP shares, yield, and lending; the
+manager owns risk. This replaces the earlier per-vault model.
 
-The vault tracks two key metrics:
+### Pooled Model and Rationale
 
-- **Total exposure (USD)**: sum of all per-asset exposure values (`units * assetPrice`)
-- **Collateral value (USD)**: total collateral in vault \* collateral price
+- **Pooled backing/solvency (global), isolated custody/yield (per vault).** Collateral lives in
+  separate per-collateral ERC-4626 vaults (~5–6 total: USDC, aUSDC, ETH, stETH, …), but only the risk
+  *math* pools. A mint settled through any vault draws on the protocol's global collateral and global
+  exposure book.
+- **Cross-VM loss mutualisation (accepted tradeoff).** A VM default's shortfall is covered by the
+  global pool (all vaults' LPs), Maker-style. This strengthens the eToken's backing; LP risk is
+  mutualised across vaults.
+- **Exposure is purely global per asset** — there is no `(vault, asset)` attribution and no "a vault
+  may only close what it opened" rule. Any registered vault filling any redeem reduces the global book.
+- **Why central.** The mint check is now `check == committed state` by construction (the same path
+  that validates a mint commits it), a real per-asset issuance ceiling caps total eToken supply across
+  vaults, and `OwnVault` bytecode shrinks.
 
-**Utilization ratio** = `totalExposureUSD / collateralValueUSD`
+### Two Caps (both O(1))
 
-The vault enforces a **max utilization cap** (e.g. 80%). When a mint settles (market execution or a limit fill), the projected utilization is checked — if it would breach the cap, settlement reverts. Redeems reduce exposure and are not capped.
+1. **Global utilization cap (solvency):** `globalExposureUSD / globalCollateralUSD ≤ globalMaxUtilizationBps`.
+   `openExposure` (called on every mint settlement / limit fill) atomically checks and commits — if the
+   projected utilization would breach the cap, settlement reverts before any tokens move. Redeems
+   (`closeExposure`) reduce exposure and are never capped.
+2. **Per-asset USD issuance ceiling (concentration):** `globalAssetUnits[asset] × assetMark ≤ assetCapUSD[asset]`.
+   **`assetCapUSD == 0` blocks minting that asset** (safe default — the admin must set a ceiling to
+   enable it). There are no per-vault caps; the global util + per-asset cap + halt/deregister suffice
+   for the small set of admin-vetted vaults.
 
-### Valuation Updates
+Both `globalExposureUSD` and `globalCollateralUSD` are running totals updated on every
+open/close/price-pull — no loops over vaults or assets on any path. Each asset's exact USD contribution
+is stored so every update subtracts precisely what it added (no rounding drift).
 
-Exposure and collateral values are updated by keepers calling:
+### Keeper-Cached Marks (price pulls)
 
-- `updateAssetValuation(asset)` — re-prices a specific asset's exposure using oracle
-- `updateCollateralValuation()` — re-prices vault collateral using oracle
+Exposure and collateral are valued **only** at keeper-cached marks (Maker `spot`-style), never at trade
+prices. Marks are refreshed by **permissionless** calls:
 
-These are incremental updates (delta-based) to avoid iterating over all assets.
+- `pullAssetPrice(asset)` — pulls the asset's oracle price and re-marks global exposure for that asset.
+- `pullCollateralPrice(vault)` — pulls the vault's collateral oracle price and re-marks its collateral USD.
+
+Staleness between pulls is absorbed by the global utilization buffer. A new asset can only be minted
+once **both** its price has been pulled (`assetMark != 0`) **and** `assetCapUSD > 0`.
+
+### Withdrawal Gate
+
+LP withdrawals consult `ExposureManager.withdrawalBreachesUtil(vault, assets)`: `fulfillWithdrawal`
+reverts (`MaxUtilizationExceeded`) if releasing that collateral would push global utilization over the
+cap. The check reads the cached collateral mark (as fresh as the last price pull — intended, per the
+keeper model).
+
+### Registration
+
+Vault registration is factory-driven: `VaultFactory.createVault(collateral, vm, name, symbol, collateralAsset)`
+deploys the vault and calls `ExposureManager.registerVault`. Deregistration goes through the factory too
+and reverts if removing the vault's collateral would breach global utilization.
 
 ### Emergency Controls
 
