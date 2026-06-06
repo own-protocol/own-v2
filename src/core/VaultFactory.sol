@@ -4,7 +4,7 @@ pragma solidity 0.8.28;
 import {IExposureManager} from "../interfaces/IExposureManager.sol";
 import {IProtocolRegistry} from "../interfaces/IProtocolRegistry.sol";
 import {IVaultFactory} from "../interfaces/IVaultFactory.sol";
-import {OwnVaultDeployer} from "./deployers/OwnVaultDeployer.sol";
+import {OwnVault} from "./OwnVault.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
 /// @title VaultFactory — Admin-controlled vault deployment and registry
@@ -12,14 +12,12 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 ///         OwnMarket verifies vaults are registered here before processing orders.
 contract VaultFactory is IVaultFactory, Ownable {
     IProtocolRegistry public immutable registry;
-    OwnVaultDeployer private immutable _vaultDeployer;
 
     address[] private _vaults;
     mapping(address => bool) private _isRegistered;
 
     constructor(address admin_, address registry_) Ownable(admin_) {
         registry = IProtocolRegistry(registry_);
-        _vaultDeployer = new OwnVaultDeployer();
     }
 
     /// @inheritdoc IVaultFactory
@@ -33,7 +31,7 @@ contract VaultFactory is IVaultFactory, Ownable {
         if (collateral == address(0)) revert ZeroAddress();
         if (vm == address(0)) revert ZeroAddress();
 
-        vault = _vaultDeployer.deploy(collateral, name, symbol, address(registry), vm);
+        vault = address(new OwnVault(collateral, name, symbol, address(registry), vm));
 
         _isRegistered[vault] = true;
         _vaults.push(vault);

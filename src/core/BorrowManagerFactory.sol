@@ -6,7 +6,7 @@ import {IProtocolRegistry} from "../interfaces/IProtocolRegistry.sol";
 import {IVaultFactory} from "../interfaces/IVaultFactory.sol";
 import {InterestRateModel} from "../libraries/InterestRateModel.sol";
 
-import {UserBorrowManagerDeployer} from "./deployers/UserBorrowManagerDeployer.sol";
+import {UserBorrowManager} from "./UserBorrowManager.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
 /// @title BorrowManagerFactory — Deploys and tracks per-vault borrow managers
@@ -22,8 +22,6 @@ contract BorrowManagerFactory is IBorrowManagerFactory {
     mapping(address => address) internal _borrowManagerOf;
     mapping(address => address) internal _vaultOf;
 
-    UserBorrowManagerDeployer private immutable _userBmDeployer;
-
     modifier onlyAdmin() {
         if (msg.sender != Ownable(registry).owner()) revert OnlyAdmin();
         _;
@@ -33,7 +31,6 @@ contract BorrowManagerFactory is IBorrowManagerFactory {
         if (aavePool_ == address(0) || registry_ == address(0)) revert ZeroAddress();
         aavePool = aavePool_;
         registry = registry_;
-        _userBmDeployer = new UserBorrowManagerDeployer();
     }
 
     /// @inheritdoc IBorrowManagerFactory
@@ -52,7 +49,7 @@ contract BorrowManagerFactory is IBorrowManagerFactory {
         if (vf != address(0) && !IVaultFactory(vf).isRegisteredVault(vault)) revert UnknownVault(vault);
 
         userBorrowManager =
-            _userBmDeployer.deploy(vault, stablecoin, debtToken, aavePool, registry, targetLtvBps, rateParams);
+            address(new UserBorrowManager(vault, stablecoin, debtToken, aavePool, registry, targetLtvBps, rateParams));
 
         _borrowManagerOf[vault] = userBorrowManager;
         _vaultOf[userBorrowManager] = vault;
