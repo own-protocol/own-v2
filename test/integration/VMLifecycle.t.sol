@@ -44,8 +44,13 @@ contract VMLifecycleTest is BaseTest {
         VaultFactory factory = new VaultFactory(Actors.ADMIN, address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), address(factory));
 
-        vault = OwnVault(factory.createVault(address(weth), vm1Signer, "Own WETH Vault", "oWETH", 8000));
-        vault2 = OwnVault(factory.createVault(address(weth), vm2Signer, "Own WETH Vault 2", "oWETH2", 8000));
+        vm.stopPrank();
+        // Deploy + register the ExposureManager before createVault (which auto-registers the vault).
+        _deployExposureManager();
+        vm.startPrank(Actors.ADMIN);
+
+        vault = OwnVault(factory.createVault(address(weth), vm1Signer, "Own WETH Vault", "oWETH", ETH));
+        vault2 = OwnVault(factory.createVault(address(weth), vm2Signer, "Own WETH Vault 2", "oWETH2", ETH));
         vault.addQuoteSigner(vm1Signer);
         vault2.addQuoteSigner(vm2Signer);
 
@@ -60,21 +65,32 @@ contract VMLifecycleTest is BaseTest {
         });
         assetRegistry.addAsset(TSLA, address(eTSLA), config);
 
+        // Register the WETH collateral ticker so the ExposureManager can resolve its oracle.
+        AssetConfig memory ethConfig = AssetConfig({
+            activeToken: address(weth),
+            legacyTokens: new address[](0),
+            active: true,
+            volatilityLevel: 1,
+            oracleType: 1
+        });
+        assetRegistry.addAsset(ETH, address(weth), ethConfig);
+
         market = new OwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
         vault.setClaimThreshold(6 hours);
 
         vm.stopPrank();
 
-        // Set payment tokens and enable assets
+        // Per-asset issuance ceiling (global util default is set by _deployExposureManager).
+        _setAssetCap(TSLA, DEFAULT_ASSET_CAP_USD);
+
+        // Set payment tokens
         vm.startPrank(vm1Signer);
         vault.setPaymentToken(address(usdc));
-        vault.enableAsset(TSLA);
         vm.stopPrank();
 
         vm.startPrank(vm2Signer);
         vault2.setPaymentToken(address(usdc));
-        vault2.enableAsset(TSLA);
         vm.stopPrank();
 
         // LP deposits collateral (VM1 must call deposit on behalf of LP)
@@ -83,6 +99,11 @@ contract VMLifecycleTest is BaseTest {
         weth.approve(address(vault), LP_DEPOSIT);
         vault.deposit(LP_DEPOSIT, Actors.LP1);
         vm.stopPrank();
+
+        // Seed the manager's marks: collateral for both vaults and asset price.
+        _pokeCollateral(address(vault));
+        _pokeCollateral(address(vault2));
+        _pokeAsset(TSLA);
     }
 
     // ══════════════════════════════════════════════════════════

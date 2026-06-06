@@ -26,15 +26,15 @@ contract CreateVault is Script {
 
         VaultFactory factory = VaultFactory(factoryAddr);
 
-        // Create WETH vault: 80% max utilization
-        address vaultAddr = factory.createVault(WETH, vmAddress, "Own ETH Vault", "oETH", 8000);
+        // Create WETH vault. The collateral oracle ticker (ETH) is registered with the
+        // ExposureManager by the factory; global utilisation is managed centrally.
+        address vaultAddr = factory.createVault(WETH, vmAddress, "Own ETH Vault", "oETH", ETH);
         console.log("Vault created:", vaultAddr);
 
         OwnVault vault = OwnVault(vaultAddr);
 
         // Admin configuration
         vault.setClaimThreshold(6 hours);
-        vault.setCollateralOracleAsset(ETH);
 
         vm.stopBroadcast();
 

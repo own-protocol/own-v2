@@ -36,8 +36,7 @@ contract WstETHRouterTest is BaseTest {
             "Own wstETH Vault",
             "owstETH",
             address(protocolRegistry),
-            address(router), // bound VM is the router (it calls deposit directly)
-            8000 // 80% max util
+            address(router) // bound VM is the router (it calls deposit directly)
         );
         vm.stopPrank();
         vm.label(address(router), "WstETHRouter");

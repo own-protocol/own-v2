@@ -42,9 +42,16 @@ contract BorrowManagerFactoryTest is BaseTest {
 
         vaultFactory = new VaultFactory(Actors.ADMIN, address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), address(vaultFactory));
+        vm.stopPrank();
 
+        // Deploy + register the ExposureManager before createVault (which auto-registers the vault).
+        _deployExposureManager();
+
+        vm.startPrank(Actors.ADMIN);
         // Vault is created via VaultFactory so isRegisteredVault() returns true.
-        vault = OwnVault(vaultFactory.createVault(address(awstETH), Actors.VM1, "OwnAwstETH", "owAwstETH", 8000));
+        vault = OwnVault(
+            vaultFactory.createVault(address(awstETH), Actors.VM1, "OwnAwstETH", "owAwstETH", bytes32("WSTETH"))
+        );
 
         factory = new BorrowManagerFactory(address(aavePool), address(protocolRegistry));
         vm.stopPrank();
@@ -111,7 +118,7 @@ contract BorrowManagerFactoryTest is BaseTest {
     }
 
     function test_create_unknownVault_reverts() public {
-        OwnVault stranger = new OwnVault(address(awstETH), "Stranger", "S", address(protocolRegistry), Actors.VM2, 8000);
+        OwnVault stranger = new OwnVault(address(awstETH), "Stranger", "S", address(protocolRegistry), Actors.VM2);
 
         InterestRateModel.Params memory p = _params();
         vm.prank(Actors.ADMIN);

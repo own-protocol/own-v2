@@ -7,23 +7,23 @@ import {OwnVault} from "../src/core/OwnVault.sol";
 import {ProtocolRegistry} from "../src/core/ProtocolRegistry.sol";
 import {VaultFactory} from "../src/core/VaultFactory.sol";
 
-/// @title UpgradeVault — Deploy new VaultFactory + vault, then propose registry update
+/// @title UpgradeVault — Deploy new VaultFactory, then propose registry update
 /// @notice Run in two phases:
-///   Phase 1: Deploy factory + vault + propose timelock (this script)
-///   Phase 2: After timelock delay, run ExecuteTimelockVaultFactory.s.sol
+///   Phase 1: Deploy factory + propose timelock (this script)
+///   Phase 2: After timelock delay, run ExecuteTimelockVaultFactory (executes the timelock,
+///            then creates + configures the vault through the now-active factory)
+///
+/// @dev Vault creation is deferred to phase 2 because the factory must be the registry's active
+///      VAULT_FACTORY before `createVault` can register the vault with the ExposureManager
+///      (the manager's onlyFactory guard reads `registry.vaultFactory()`).
 ///
 /// Usage:
 ///   forge script script/UpgradeVault.s.sol --rpc-url base_sepolia --broadcast --verify
 contract UpgradeVault is Script {
-    address constant WETH = 0x4200000000000000000000000000000000000006;
-    bytes32 constant ETH = bytes32("ETH");
-
     function run() external {
         address registryAddr = vm.envAddress("PROTOCOL_REGISTRY");
-        address vmAddress = vm.envAddress("VM_ADDRESS");
 
         console.log("ProtocolRegistry:", registryAddr);
-        console.log("VM Address:", vmAddress);
 
         uint256 deployerKey = vm.envUint("DEPLOYER_PRIVATE_KEY");
         address deployer = vm.addr(deployerKey);
@@ -36,16 +36,7 @@ contract UpgradeVault is Script {
         VaultFactory newFactory = new VaultFactory(deployer, registryAddr);
         console.log("New VaultFactory:", address(newFactory));
 
-        // ── 2. Create vault ──
-        address vaultAddr = newFactory.createVault(WETH, vmAddress, "Own ETH Vault", "oETH", 8000);
-        console.log("New Vault:", vaultAddr);
-
-        // ── 3. Configure admin parameters ──
-        OwnVault vault = OwnVault(vaultAddr);
-        vault.setClaimThreshold(6 hours);
-        vault.setCollateralOracleAsset(ETH);
-
-        // ── 4. Propose factory update in ProtocolRegistry (subject to timelock) ──
+        // ── 2. Propose factory update in ProtocolRegistry (subject to timelock) ──
         registry.proposeAddress(registry.VAULT_FACTORY(), address(newFactory));
         console.log("Proposed VAULT_FACTORY update (timelock started)");
 
@@ -55,33 +46,45 @@ contract UpgradeVault is Script {
         console.log("");
         console.log("=== Phase 1 Complete ===");
         console.log("New VaultFactory:", address(newFactory));
-        console.log("New Vault:", vaultAddr);
         console.log("");
         console.log("Timelock delay:", delay, "seconds");
         console.log("After the delay, run:");
-        console.log("  forge script script/ExecuteTimelockVaultFactory.s.sol --rpc-url base_sepolia --broadcast");
-        console.log("");
-        console.log("Then run ConfigureVault.s.sol with the new VAULT_ADDRESS");
+        console.log(
+            "  forge script script/UpgradeVault.s.sol:ExecuteTimelockVaultFactory --rpc-url base_sepolia --broadcast"
+        );
     }
 }
 
-/// @title ExecuteTimelockVaultFactory — Execute the pending VAULT_FACTORY timelock
+/// @title ExecuteTimelockVaultFactory — Execute the pending VAULT_FACTORY timelock, then create the vault
 /// @notice Run after the timelock delay has elapsed from UpgradeVault.
 ///
 /// Usage:
 ///   forge script script/UpgradeVault.s.sol:ExecuteTimelockVaultFactory --rpc-url base_sepolia --broadcast
 contract ExecuteTimelockVaultFactory is Script {
+    address constant WETH = 0x4200000000000000000000000000000000000006;
+    bytes32 constant ETH = bytes32("ETH");
+
     function run() external {
         address registryAddr = vm.envAddress("PROTOCOL_REGISTRY");
+        address vmAddress = vm.envAddress("VM_ADDRESS");
 
         vm.startBroadcast(vm.envUint("DEPLOYER_PRIVATE_KEY"));
 
         ProtocolRegistry registry = ProtocolRegistry(registryAddr);
         registry.executeTimelock(registry.VAULT_FACTORY());
+        console.log("VAULT_FACTORY timelock executed");
+
+        // The new factory is now active, so createVault can register with the ExposureManager.
+        VaultFactory factory = VaultFactory(registry.vaultFactory());
+        address vaultAddr = factory.createVault(WETH, vmAddress, "Own ETH Vault", "oETH", ETH);
+        console.log("New Vault:", vaultAddr);
+
+        OwnVault vault = OwnVault(vaultAddr);
+        vault.setClaimThreshold(6 hours);
 
         vm.stopBroadcast();
 
-        console.log("VAULT_FACTORY timelock executed");
         console.log("New factory:", registry.vaultFactory());
+        console.log("Run ConfigureVault.s.sol with VAULT_ADDRESS=", vaultAddr);
     }
 }

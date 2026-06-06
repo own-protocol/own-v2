@@ -5,6 +5,7 @@ import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {OwnMarket} from "../../src/core/OwnMarket.sol";
 import {IOwnMarket} from "../../src/interfaces/IOwnMarket.sol";
 
+import {IExposureManager} from "../../src/interfaces/IExposureManager.sol";
 import {IOwnVault} from "../../src/interfaces/IOwnVault.sol";
 import {IVaultFactory} from "../../src/interfaces/IVaultFactory.sol";
 import {AssetConfig, BPS, Order, OrderStatus, OrderType, PRECISION, Quote} from "../../src/interfaces/types/Types.sol";
@@ -24,6 +25,7 @@ contract OwnMarketTest is BaseTest {
 
     address public mockVault = makeAddr("vault");
     address public mockFactory = makeAddr("factory");
+    address public mockExposureManager = makeAddr("exposureManager");
 
     address public rfqVM;
     uint256 public rfqVMPk;
@@ -58,6 +60,7 @@ contract OwnMarketTest is BaseTest {
         protocolRegistry.setAddress(protocolRegistry.ASSET_REGISTRY(), address(assetReg));
 
         protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), mockFactory);
+        protocolRegistry.setAddress(protocolRegistry.EXPOSURE_MANAGER(), mockExposureManager);
         market = new OwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
 
@@ -83,8 +86,6 @@ contract OwnMarketTest is BaseTest {
         vm.mockCall(mockVault, abi.encodeWithSignature("asset()"), abi.encode(address(weth)));
         vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.releaseCollateral.selector), abi.encode());
         vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.claimThreshold.selector), abi.encode(CLAIM_THRESHOLD));
-        vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.collateralOracleAsset.selector), abi.encode(ETH_ASSET));
-        vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.isAssetSupported.selector), abi.encode(true));
         vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.isEffectivelyPaused.selector), abi.encode(false));
         vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.isEffectivelyHalted.selector), abi.encode(false));
         vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.getAssetHaltPrice.selector), abi.encode(uint256(0)));
@@ -92,11 +93,16 @@ contract OwnMarketTest is BaseTest {
         // Authorised quote signers: rfqVM signs; everyone else is rejected.
         vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.isQuoteSigner.selector), abi.encode(false));
         vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.isQuoteSigner.selector, rfqVM), abi.encode(true));
-        vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.updateExposure.selector), abi.encode());
+
+        // ExposureManager: exposure accounting is centralised. open/close are no-ops here;
+        // vaultCollateralAsset feeds force-execution collateral conversion.
+        vm.mockCall(mockExposureManager, abi.encodeWithSelector(IExposureManager.openExposure.selector), abi.encode());
+        vm.mockCall(mockExposureManager, abi.encodeWithSelector(IExposureManager.closeExposure.selector), abi.encode());
         vm.mockCall(
-            mockVault, abi.encodeWithSelector(IOwnVault.projectedExposureUtilization.selector), abi.encode(uint256(0))
+            mockExposureManager,
+            abi.encodeWithSelector(IExposureManager.vaultCollateralAsset.selector),
+            abi.encode(ETH_ASSET)
         );
-        vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.maxUtilization.selector), abi.encode(uint256(BPS)));
 
         _setOraclePrice(TSLA, TSLA_PRICE);
         _setOraclePrice(ETH_ASSET, ETH_PRICE);

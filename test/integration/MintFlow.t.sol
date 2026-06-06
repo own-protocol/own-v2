@@ -50,7 +50,12 @@ contract MintFlowTest is BaseTest {
         VaultFactory factory = new VaultFactory(Actors.ADMIN, address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), address(factory));
 
-        vault = OwnVault(factory.createVault(address(weth), vm1Signer, "Own WETH Vault", "oWETH", MAX_UTIL_BPS));
+        vm.stopPrank();
+        // Deploy + register the ExposureManager before createVault (which auto-registers the vault).
+        _deployExposureManager();
+        vm.startPrank(Actors.ADMIN);
+
+        vault = OwnVault(factory.createVault(address(weth), vm1Signer, "Own WETH Vault", "oWETH", ETH));
 
         market = new OwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
@@ -58,6 +63,10 @@ contract MintFlowTest is BaseTest {
         vault.addQuoteSigner(vm1Signer);
 
         vm.stopPrank();
+
+        // Per-asset issuance ceilings (global util default is set by _deployExposureManager).
+        _setAssetCap(TSLA, DEFAULT_ASSET_CAP_USD);
+        _setAssetCap(GOLD, DEFAULT_ASSET_CAP_USD);
 
         vm.label(address(assetRegistry), "AssetRegistry");
         vm.label(address(market), "OwnMarket");
@@ -91,14 +100,22 @@ contract MintFlowTest is BaseTest {
         });
         assetRegistry.addAsset(GOLD, address(eGOLD), goldConfig);
 
+        // Register the WETH collateral ticker so the ExposureManager can resolve its oracle.
+        AssetConfig memory ethConfig = AssetConfig({
+            activeToken: address(weth),
+            legacyTokens: new address[](0),
+            active: true,
+            volatilityLevel: 1,
+            oracleType: 1
+        });
+        assetRegistry.addAsset(ETH, address(weth), ethConfig);
+
         vm.stopPrank();
     }
 
     function _configureVault() private {
         vm.startPrank(vm1Signer);
         vault.setPaymentToken(address(usdc));
-        vault.enableAsset(TSLA);
-        vault.enableAsset(GOLD);
         vm.stopPrank();
     }
 
@@ -108,6 +125,11 @@ contract MintFlowTest is BaseTest {
         weth.approve(address(vault), LP_DEPOSIT);
         vault.deposit(LP_DEPOSIT, Actors.LP1);
         vm.stopPrank();
+
+        // Seed the manager's marks: collateral (so globalCollateralUSD != 0) and asset prices.
+        _pokeCollateral(address(vault));
+        _pokeAsset(TSLA);
+        _pokeAsset(GOLD);
     }
 
     /// @dev Execute a market mint for `minter` against a VM-signed quote (1 tx).

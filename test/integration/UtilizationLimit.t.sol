@@ -36,8 +36,10 @@ contract UtilizationLimitTest is BaseTest {
         _configureAssets();
         _configureVault();
         _depositLPCollateral();
-        // Update collateral valuation AFTER deposit so USD value reflects actual assets
-        vault.updateCollateralValuation();
+        // Seed the manager's marks AFTER deposit so collateral/exposure reflect actual assets.
+        _setAssetCap(TSLA, DEFAULT_ASSET_CAP_USD);
+        _pokeCollateral(address(vault));
+        _pokeAsset(TSLA);
     }
 
     function _deployProtocol() private {
@@ -49,8 +51,13 @@ contract UtilizationLimitTest is BaseTest {
         VaultFactory factory = new VaultFactory(Actors.ADMIN, address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), address(factory));
 
-        // Low max utilization: 10%
-        vault = OwnVault(factory.createVault(address(weth), vm1Signer, "Own ETH Vault", "oETH", MAX_UTIL_BPS));
+        vm.stopPrank();
+        _deployExposureManager();
+        // Low global max utilisation: 10% — easy to trigger a breach.
+        _setGlobalMaxUtil(MAX_UTIL_BPS);
+        vm.startPrank(Actors.ADMIN);
+
+        vault = OwnVault(factory.createVault(address(weth), vm1Signer, "Own ETH Vault", "oETH", ETH));
 
         market = new OwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
@@ -82,7 +89,6 @@ contract UtilizationLimitTest is BaseTest {
             oracleType: 1
         });
         assetRegistry.addAsset(ethAsset, address(weth), ethConfig);
-        vault.setCollateralOracleAsset(ethAsset);
 
         vm.stopPrank();
 
@@ -92,11 +98,7 @@ contract UtilizationLimitTest is BaseTest {
     function _configureVault() private {
         vm.startPrank(vm1Signer);
         vault.setPaymentToken(address(usdc));
-        vault.enableAsset(TSLA);
         vm.stopPrank();
-
-        vault.updateAssetValuation(TSLA);
-        vault.updateCollateralValuation();
     }
 
     function _depositLPCollateral() private {
@@ -136,12 +138,12 @@ contract UtilizationLimitTest is BaseTest {
         uint256 orderId = _placeMint(Actors.MINTER1, mintAmount, block.timestamp + 1 days);
 
         // Escrow alone does not add exposure
-        assertEq(vault.utilization(), 0, "utilization unchanged after placement");
+        assertEq(exposureManager.globalUtilizationBps(), 0, "utilization unchanged after placement");
 
         _fillMint(orderId, Actors.MINTER1, mintAmount);
 
         assertEq(uint8(market.getOrder(orderId).status), uint8(OrderStatus.Filled));
-        assertGt(vault.utilization(), 0, "utilization > 0 after fill");
+        assertGt(exposureManager.globalUtilizationBps(), 0, "utilization > 0 after fill");
     }
 
     // ══════════════════════════════════════════════════════════
@@ -172,12 +174,12 @@ contract UtilizationLimitTest is BaseTest {
         uint256 mintAmount = 10_000e6;
         uint256 orderId = _placeMint(Actors.MINTER1, mintAmount, block.timestamp + 1 days);
 
-        assertEq(vault.utilization(), 0, "utilization unchanged after placement");
+        assertEq(exposureManager.globalUtilizationBps(), 0, "utilization unchanged after placement");
 
         _fillMint(orderId, Actors.MINTER1, mintAmount);
 
-        assertGt(vault.utilization(), 0, "utilization > 0 after fill");
-        assertLe(vault.utilization(), MAX_UTIL_BPS, "utilization within limit");
+        assertGt(exposureManager.globalUtilizationBps(), 0, "utilization > 0 after fill");
+        assertLe(exposureManager.globalUtilizationBps(), MAX_UTIL_BPS, "utilization within limit");
     }
 
     // ══════════════════════════════════════════════════════════
@@ -189,13 +191,13 @@ contract UtilizationLimitTest is BaseTest {
         uint256 orderId = _placeMint(Actors.MINTER1, mintAmount, block.timestamp + 1 days);
 
         // Escrow doesn't change exposure
-        assertEq(vault.utilization(), 0, "utilization unchanged after placement");
+        assertEq(exposureManager.globalUtilizationBps(), 0, "utilization unchanged after placement");
 
         vm.prank(Actors.MINTER1);
         market.cancelOrder(orderId);
 
         // Cancel returns escrow — nothing was settled
-        assertEq(vault.utilization(), 0, "utilization still 0 after cancel");
+        assertEq(exposureManager.globalUtilizationBps(), 0, "utilization still 0 after cancel");
     }
 
     // ══════════════════════════════════════════════════════════
@@ -210,98 +212,83 @@ contract UtilizationLimitTest is BaseTest {
         uint256 orderId2 = _placeMint(Actors.MINTER2, mintAmount, block.timestamp + 1 days);
 
         // Escrow alone doesn't change exposure
-        assertEq(vault.utilization(), 0, "utilization unchanged after placements");
+        assertEq(exposureManager.globalUtilizationBps(), 0, "utilization unchanged after placements");
 
         // Fill first mint → exposure increases
         _fillMint(orderId1, Actors.MINTER1, mintAmount);
 
-        uint256 utilAfterFirst = vault.utilization();
+        uint256 utilAfterFirst = exposureManager.globalUtilizationBps();
         assertGt(utilAfterFirst, 0, "utilization > 0 after first fill");
 
         // Fill second mint → exposure increases further
         _fillMint(orderId2, Actors.MINTER2, mintAmount);
 
-        uint256 utilAfterSecond = vault.utilization();
+        uint256 utilAfterSecond = exposureManager.globalUtilizationBps();
         assertGt(utilAfterSecond, utilAfterFirst, "utilization increased with second fill");
     }
 
     // ══════════════════════════════════════════════════════════
-    //  Projected Utilization
+    //  Withdrawal utilisation gate (ExposureManager.withdrawalBreachesUtil)
     // ══════════════════════════════════════════════════════════
 
-    function test_projectedUtilization_noWithdrawals_matchesUtilization() public {
+    /// @dev A small withdrawal leaves plenty of collateral, so it does not breach utilisation
+    ///      and fulfils cleanly, clearing the pending shares.
+    function test_withdrawal_smallWithdrawal_doesNotBreach() public {
         uint256 mintAmount = 10_000e6;
         uint256 orderId = _placeMint(Actors.MINTER1, mintAmount, block.timestamp + 1 days);
-
         _fillMint(orderId, Actors.MINTER1, mintAmount);
 
-        assertGt(vault.utilization(), 0, "utilization > 0 after confirm");
-        assertEq(vault.projectedUtilization(), vault.utilization(), "projected == current when no withdrawals");
-        assertEq(vault.pendingWithdrawalShares(), 0, "no pending withdrawal shares");
-    }
-
-    function test_projectedUtilization_withPendingWithdrawal_higherThanCurrent() public {
-        uint256 mintAmount = 10_000e6;
-        uint256 orderId = _placeMint(Actors.MINTER1, mintAmount, block.timestamp + 1 days);
-
-        _fillMint(orderId, Actors.MINTER1, mintAmount);
-
-        uint256 utilBefore = vault.utilization();
-        assertGt(utilBefore, 0);
-
-        // LP requests withdrawal of half their shares
+        // Withdraw 10% of collateral: collateral $300k → ~$270k, exposure $10k → util well under 10%.
         uint256 lpShares = vault.balanceOf(Actors.LP1);
+        uint256 shares = lpShares / 10;
+        assertFalse(
+            exposureManager.withdrawalBreachesUtil(address(vault), vault.convertToAssets(shares)),
+            "small withdrawal does not breach"
+        );
+
         vm.prank(Actors.LP1);
-        vault.requestWithdrawal(lpShares / 2);
+        uint256 requestId = vault.requestWithdrawal(shares);
+        assertEq(vault.pendingWithdrawalShares(), shares, "pending shares tracked");
 
-        assertEq(vault.pendingWithdrawalShares(), lpShares / 2, "pending shares tracked");
-
-        // Current utilization unchanged (collateral still in vault)
-        assertEq(vault.utilization(), utilBefore, "current util unchanged");
-
-        // Projected utilization higher (accounts for pending withdrawal)
-        uint256 projected = vault.projectedUtilization();
-        assertGt(projected, utilBefore, "projected > current with pending withdrawal");
-    }
-
-    function test_projectedUtilization_afterFulfill_dropsBack() public {
-        uint256 mintAmount = 10_000e6;
-        uint256 orderId = _placeMint(Actors.MINTER1, mintAmount, block.timestamp + 1 days);
-
-        _fillMint(orderId, Actors.MINTER1, mintAmount);
-
-        uint256 lpShares = vault.balanceOf(Actors.LP1);
-        vm.prank(Actors.LP1);
-        uint256 requestId = vault.requestWithdrawal(lpShares / 4);
-
-        uint256 projectedBefore = vault.projectedUtilization();
-        assertGt(projectedBefore, vault.utilization());
-
-        // Fulfill the withdrawal
         vault.fulfillWithdrawal(requestId);
-
-        // After fulfillment, projected should match current (no pending shares)
         assertEq(vault.pendingWithdrawalShares(), 0, "no pending shares after fulfill");
-        assertEq(vault.projectedUtilization(), vault.utilization(), "projected == current after fulfill");
     }
 
-    function test_projectedUtilization_afterCancel_dropsBack() public {
+    /// @dev A large withdrawal would push utilisation over the cap, so the manager flags it and
+    ///      fulfilWithdrawal reverts.
+    function test_withdrawal_largeWithdrawal_breachesAndBlocksFulfill() public {
         uint256 mintAmount = 10_000e6;
         uint256 orderId = _placeMint(Actors.MINTER1, mintAmount, block.timestamp + 1 days);
+        _fillMint(orderId, Actors.MINTER1, mintAmount);
 
+        // Withdraw 90% of collateral: collateral $300k → ~$30k, exposure $10k → util ~33% > 10% cap.
+        uint256 lpShares = vault.balanceOf(Actors.LP1);
+        uint256 shares = (lpShares * 9) / 10;
+        assertTrue(
+            exposureManager.withdrawalBreachesUtil(address(vault), vault.convertToAssets(shares)),
+            "large withdrawal breaches"
+        );
+
+        vm.prank(Actors.LP1);
+        uint256 requestId = vault.requestWithdrawal(shares);
+
+        vm.expectRevert(IOwnVault.MaxUtilizationExceeded.selector);
+        vault.fulfillWithdrawal(requestId);
+    }
+
+    /// @dev Pending withdrawal shares are tracked on request and cleared on cancel.
+    function test_withdrawal_pendingSharesTrackedAndCleared() public {
+        uint256 mintAmount = 10_000e6;
+        uint256 orderId = _placeMint(Actors.MINTER1, mintAmount, block.timestamp + 1 days);
         _fillMint(orderId, Actors.MINTER1, mintAmount);
 
         uint256 lpShares = vault.balanceOf(Actors.LP1);
         vm.prank(Actors.LP1);
         uint256 requestId = vault.requestWithdrawal(lpShares / 4);
+        assertEq(vault.pendingWithdrawalShares(), lpShares / 4, "pending shares tracked");
 
-        assertGt(vault.projectedUtilization(), vault.utilization());
-
-        // Cancel the withdrawal
         vm.prank(Actors.LP1);
         vault.cancelWithdrawal(requestId);
-
         assertEq(vault.pendingWithdrawalShares(), 0, "no pending shares after cancel");
-        assertEq(vault.projectedUtilization(), vault.utilization(), "projected == current after cancel");
     }
 }

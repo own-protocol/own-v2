@@ -38,7 +38,12 @@ contract AsyncDepositFlowTest is BaseTest {
         VaultFactory factory = new VaultFactory(Actors.ADMIN, address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), address(factory));
 
-        vault = OwnVault(factory.createVault(address(weth), Actors.VM1, "Own WETH Vault", "oWETH", 8000));
+        vm.stopPrank();
+        // Deploy + register the ExposureManager before createVault (which auto-registers the vault).
+        _deployExposureManager();
+        vm.startPrank(Actors.ADMIN);
+
+        vault = OwnVault(factory.createVault(address(weth), Actors.VM1, "Own WETH Vault", "oWETH", ETH));
 
         market = new OwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
@@ -59,7 +64,6 @@ contract AsyncDepositFlowTest is BaseTest {
 
         vm.startPrank(Actors.VM1);
         vault.setPaymentToken(address(usdc));
-        vault.enableAsset(TSLA);
         vm.stopPrank();
 
         vm.prank(Actors.ADMIN);

@@ -3,6 +3,7 @@ pragma solidity 0.8.28;
 
 import {IAssetRegistry} from "../interfaces/IAssetRegistry.sol";
 import {IEToken} from "../interfaces/IEToken.sol";
+import {IExposureManager} from "../interfaces/IExposureManager.sol";
 import {IOracleVerifier} from "../interfaces/IOracleVerifier.sol";
 import {IOwnVault} from "../interfaces/IOwnVault.sol";
 import {IProtocolRegistry} from "../interfaces/IProtocolRegistry.sol";
@@ -95,7 +96,7 @@ contract UserBorrowManager is IUserBorrowManager, ReentrancyGuard {
 
     /// @inheritdoc IUserBorrowManager
     /// @dev Vault-wide target Aave LTV (BPS) that defines the protocol debt
-    ///      cap: `maxDebtUSD = vault.collateralValueUSD() × targetLtvBps / BPS`.
+    ///      cap: `maxDebtUSD = exposureManager.collateralMark(vault) × targetLtvBps / BPS`.
     ///      Distinct from `borrowLtvBps`, which caps an individual position.
     uint256 public override targetLtvBps;
 
@@ -396,7 +397,7 @@ contract UserBorrowManager is IUserBorrowManager, ReentrancyGuard {
         uint256 collateralReleased;
         uint256 lpLoss = residual - absorbAmount;
         if (lpLoss > 0) {
-            bytes32 collatAsset = IOwnVault(vault).collateralOracleAsset();
+            bytes32 collatAsset = IExposureManager(registry.exposureManager()).vaultCollateralAsset(vault);
             uint256 collateralPrice = _verifyPrice(collatAsset, collateralPriceData);
             uint256 lpLossUSD = LendingMath.stableToUSD(lpLoss, _stableDecimals);
             collateralReleased = lpLossUSD.mulDiv(PRECISION, collateralPrice);
@@ -523,7 +524,7 @@ contract UserBorrowManager is IUserBorrowManager, ReentrancyGuard {
 
     /// @inheritdoc IUserBorrowManager
     function maxDebtUSD() public view returns (uint256) {
-        return IOwnVault(vault).collateralValueUSD().mulDiv(targetLtvBps, BPS);
+        return IExposureManager(registry.exposureManager()).collateralMark(vault).mulDiv(targetLtvBps, BPS);
     }
 
     /// @inheritdoc IUserBorrowManager
@@ -605,15 +606,13 @@ contract UserBorrowManager is IUserBorrowManager, ReentrancyGuard {
     //  Internal — eligibility / oracle
     // ──────────────────────────────────────────────────────────
 
-    /// @dev Gate a borrow: the asset must be supported by the vault and active
-    ///      in the registry, the manager must be a registered pass-through
-    ///      holder on the eToken (so dividends earned while collateral is in
-    ///      custody can follow the borrower out), and the asset must not be
-    ///      effectively paused or halted on the vault.
+    /// @dev Gate a borrow: the asset must be active in the registry, the manager
+    ///      must be a registered pass-through holder on the eToken (so dividends
+    ///      earned while collateral is in custody can follow the borrower out),
+    ///      and the asset must not be effectively paused or halted on the vault.
     /// @param asset  Ticker being borrowed against.
     /// @param eToken Resolved active eToken for `asset`.
     function _validateEligibility(bytes32 asset, address eToken) internal view {
-        if (!IOwnVault(vault).isAssetSupported(asset)) revert AssetNotSupportedByVault(asset);
         if (!IAssetRegistry(registry.assetRegistry()).isActiveAsset(asset)) revert AssetNotActive(asset);
         if (!IEToken(eToken).isPassThroughHolder(address(this))) revert PassThroughNotEnabled(eToken);
         if (IOwnVault(vault).isEffectivelyHalted(asset) || IOwnVault(vault).isEffectivelyPaused(asset)) {

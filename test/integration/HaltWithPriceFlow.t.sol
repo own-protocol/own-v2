@@ -63,7 +63,12 @@ contract HaltWithPriceFlowTest is BaseTest {
         VaultFactory factory = new VaultFactory(Actors.ADMIN, address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), address(factory));
 
-        vault = OwnVault(factory.createVault(address(weth), vm1Signer, "Own ETH Vault", "oETH", MAX_UTIL_BPS));
+        vm.stopPrank();
+        // Deploy + register the ExposureManager before createVault (which auto-registers the vault).
+        _deployExposureManager();
+        vm.startPrank(Actors.ADMIN);
+
+        vault = OwnVault(factory.createVault(address(weth), vm1Signer, "Own ETH Vault", "oETH", ETH));
 
         market = new OwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
@@ -71,6 +76,9 @@ contract HaltWithPriceFlowTest is BaseTest {
         vault.addQuoteSigner(vm1Signer);
 
         vm.stopPrank();
+
+        _setAssetCap(TSLA, DEFAULT_ASSET_CAP_USD);
+        _setAssetCap(GOLD, DEFAULT_ASSET_CAP_USD);
     }
 
     function _configureAssets() private {
@@ -105,7 +113,6 @@ contract HaltWithPriceFlowTest is BaseTest {
             oracleType: 1
         });
         assetRegistry.addAsset(ethAsset, address(weth), ethConfig);
-        vault.setCollateralOracleAsset(ethAsset);
 
         vm.stopPrank();
 
@@ -115,14 +122,7 @@ contract HaltWithPriceFlowTest is BaseTest {
     function _configureVault() private {
         vm.startPrank(vm1Signer);
         vault.setPaymentToken(address(usdc));
-        vault.enableAsset(TSLA);
-        vault.enableAsset(GOLD);
         vm.stopPrank();
-
-        // Initialize asset and collateral valuations so exposure tracking works
-        vault.updateAssetValuation(TSLA);
-        vault.updateAssetValuation(GOLD);
-        vault.updateCollateralValuation();
     }
 
     function _depositLPCollateral() private {
@@ -131,6 +131,10 @@ contract HaltWithPriceFlowTest is BaseTest {
         weth.approve(address(vault), LP_DEPOSIT_WETH);
         vault.deposit(LP_DEPOSIT_WETH, Actors.LP1);
         vm.stopPrank();
+
+        _pokeCollateral(address(vault));
+        _pokeAsset(TSLA);
+        _pokeAsset(GOLD);
     }
 
     // ──────────────────────────────────────────────────────────

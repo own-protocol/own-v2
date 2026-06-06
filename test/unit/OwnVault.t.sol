@@ -31,11 +31,14 @@ contract OwnVaultTest is BaseTest {
 
         vm.startPrank(Actors.ADMIN);
         protocolRegistry.setAddress(protocolRegistry.MARKET(), mockMarket);
-        vault = new OwnVault(
-            address(weth), "Own WETH Vault", "oWETH", address(protocolRegistry), Actors.VM1, INITIAL_MAX_UTIL
-        );
+        vault = new OwnVault(address(weth), "Own WETH Vault", "oWETH", address(protocolRegistry), Actors.VM1);
         vm.stopPrank();
         vm.label(address(vault), "OwnVault-WETH");
+
+        // fulfillWithdrawal consults the ExposureManager; register one so the lookup resolves.
+        // The vault is constructed directly (not via the factory), so it is intentionally not
+        // registered with the manager — withdrawalBreachesUtil returns false on empty global state.
+        _deployExposureManager();
     }
 
     // ──────────────────────────────────────────────────────────
@@ -480,38 +483,7 @@ contract OwnVaultTest is BaseTest {
         vault.pause(bytes32("emergency"));
     }
 
-    // ──────────────────────────────────────────────────────────
-    //  Health and utilization
-    // ──────────────────────────────────────────────────────────
-
-    function test_utilization_zeroWithNoExposure() public {
-        _depositAs(Actors.LP1, 10 ether);
-        assertEq(vault.utilization(), 0);
-    }
-
-    function test_maxUtilization_initial() public view {
-        assertEq(vault.maxUtilization(), INITIAL_MAX_UTIL);
-    }
-
-    function test_setMaxUtilization_admin_succeeds() public {
-        vm.prank(Actors.ADMIN);
-        vault.setMaxUtilization(9000);
-
-        assertEq(vault.maxUtilization(), 9000);
-    }
-
-    function test_setMaxUtilization_nonAdmin_reverts() public {
-        vm.prank(Actors.ATTACKER);
-        vm.expectRevert();
-        vault.setMaxUtilization(9000);
-    }
-
-    function test_healthFactor_noExposure_returnsMax() public {
-        _depositAs(Actors.LP1, 10 ether);
-        uint256 hf = vault.healthFactor();
-        // With collateral and no exposure, health factor should be max / very high
-        assertGt(hf, PRECISION);
-    }
+    // Exposure / utilisation / health are now owned by ExposureManager; see ExposureManager.t.sol.
 
     // ──────────────────────────────────────────────────────────
     //  Payment token

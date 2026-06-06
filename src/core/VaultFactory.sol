@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 pragma solidity 0.8.28;
 
+import {IExposureManager} from "../interfaces/IExposureManager.sol";
 import {IProtocolRegistry} from "../interfaces/IProtocolRegistry.sol";
 import {IVaultFactory} from "../interfaces/IVaultFactory.sol";
 import {OwnVaultDeployer} from "./deployers/OwnVaultDeployer.sol";
@@ -27,15 +28,17 @@ contract VaultFactory is IVaultFactory, Ownable {
         address vm,
         string calldata name,
         string calldata symbol,
-        uint256 maxUtilBps
+        bytes32 collateralAsset
     ) external onlyOwner returns (address vault) {
         if (collateral == address(0)) revert ZeroAddress();
         if (vm == address(0)) revert ZeroAddress();
 
-        vault = _vaultDeployer.deploy(collateral, name, symbol, address(registry), vm, maxUtilBps);
+        vault = _vaultDeployer.deploy(collateral, name, symbol, address(registry), vm);
 
         _isRegistered[vault] = true;
         _vaults.push(vault);
+
+        IExposureManager(registry.exposureManager()).registerVault(vault, collateralAsset);
 
         emit VaultCreated(vault, collateral, vm);
     }
@@ -46,6 +49,7 @@ contract VaultFactory is IVaultFactory, Ownable {
     ) external onlyOwner {
         if (!_isRegistered[vault]) revert VaultNotRegistered(vault);
         _isRegistered[vault] = false;
+        IExposureManager(registry.exposureManager()).deregisterVault(vault);
         emit VaultDeregistered(vault);
     }
 

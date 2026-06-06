@@ -71,7 +71,7 @@ contract AaveBaseForkTest is Test {
         router = new AaveRouter(AAVE_V3_POOL_BASE, address(registry));
         router.registerReserve(WSTETH_BASE, awstETH);
 
-        vault = new OwnVault(awstETH, "Own awstETH", "owawstETH", address(registry), address(router), 8000);
+        vault = new OwnVault(awstETH, "Own awstETH", "owawstETH", address(registry), address(router));
         vm.stopPrank();
     }
 

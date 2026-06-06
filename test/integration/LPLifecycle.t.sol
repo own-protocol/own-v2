@@ -40,7 +40,12 @@ contract LPLifecycleTest is BaseTest {
         VaultFactory factory = new VaultFactory(Actors.ADMIN, address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), address(factory));
 
-        vault = OwnVault(factory.createVault(address(weth), Actors.VM1, "Own WETH Vault", "oWETH", 8000));
+        vm.stopPrank();
+        // Deploy + register the ExposureManager before createVault (which auto-registers the vault).
+        _deployExposureManager();
+        vm.startPrank(Actors.ADMIN);
+
+        vault = OwnVault(factory.createVault(address(weth), Actors.VM1, "Own WETH Vault", "oWETH", ETH));
 
         market = new OwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
@@ -59,10 +64,9 @@ contract LPLifecycleTest is BaseTest {
 
         vm.stopPrank();
 
-        // Set payment token and enable asset
+        // Set payment token
         vm.startPrank(Actors.VM1);
         vault.setPaymentToken(address(usdc));
-        vault.enableAsset(TSLA);
         vm.stopPrank();
     }
 
@@ -306,9 +310,10 @@ contract LPLifecycleTest is BaseTest {
         assertEq(vault.asset(), address(weth));
         assertEq(vault.totalAssets(), LP_DEPOSIT);
         assertEq(uint8(vault.vaultStatus()), uint8(VaultStatus.Active));
-        assertEq(vault.maxUtilization(), 8000);
-        assertEq(vault.totalExposureUSD(), 0);
-        assertEq(vault.healthFactor(), type(uint256).max);
-        assertEq(vault.utilization(), 0);
+        assertEq(exposureManager.globalMaxUtilizationBps(), 8000);
+        assertEq(exposureManager.globalExposureUSD(), 0);
+        // TODO(exposure-refactor): vault.healthFactor() removed; no manager equivalent to repoint to.
+        // assertEq(vault.healthFactor(), type(uint256).max);
+        assertEq(exposureManager.globalUtilizationBps(), 0);
     }
 }

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
+import {ExposureManager} from "../../src/core/ExposureManager.sol";
 import {ProtocolRegistry} from "../../src/core/ProtocolRegistry.sol";
 import {IOwnMarket} from "../../src/interfaces/IOwnMarket.sol";
 import {BPS, OrderType, PRECISION, Quote} from "../../src/interfaces/types/Types.sol";
@@ -56,6 +57,9 @@ contract BaseTest is Test {
     /// @notice Mock DEX router for Tier 3 liquidation.
     MockDEX public dex;
 
+    /// @notice Central pooled-exposure manager. Deployed/registered on demand by `_deployExposureManager`.
+    ExposureManager public exposureManager;
+
     // ──────────────────────────────────────────────────────────
     //  Common asset tickers
     // ──────────────────────────────────────────────────────────
@@ -63,6 +67,11 @@ contract BaseTest is Test {
     bytes32 public constant TSLA = bytes32("TSLA");
     bytes32 public constant GOLD = bytes32("GOLD");
     bytes32 public constant TLT = bytes32("TLT");
+    bytes32 public constant ETH = bytes32("ETH");
+
+    /// @dev Default global utilisation cap and per-asset USD ceiling used by test bootstraps.
+    uint256 public constant DEFAULT_MAX_UTIL_BPS = 8000;
+    uint256 public constant DEFAULT_ASSET_CAP_USD = 1_000_000_000e18;
 
     // ──────────────────────────────────────────────────────────
     //  Common prices (18 decimals)
@@ -245,5 +254,53 @@ contract BaseTest is Test {
         oracle.setPrice(TSLA, TSLA_PRICE, block.timestamp);
         oracle.setPrice(GOLD, GOLD_PRICE, block.timestamp);
         oracle.setPrice(TLT, TLT_PRICE, block.timestamp);
+        oracle.setPrice(ETH, ETH_PRICE, block.timestamp);
+        // Collateral oracle tickers used by vaults (so pokeCollateral resolves a price).
+        oracle.setPrice(bytes32("WSTETH"), ETH_PRICE, block.timestamp);
+        oracle.setPrice(bytes32("AUSDC"), 1e18, block.timestamp);
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Utility: ExposureManager
+    // ──────────────────────────────────────────────────────────
+
+    /// @notice Deploy the ExposureManager, register it in the registry (EXPOSURE_MANAGER slot),
+    ///         and set the default global max utilisation. Must be called (as part of protocol
+    ///         deployment) BEFORE any `VaultFactory.createVault`, which auto-registers the vault.
+    function _deployExposureManager() internal {
+        vm.startPrank(Actors.ADMIN);
+        exposureManager = new ExposureManager(protocolRegistry);
+        protocolRegistry.setAddress(protocolRegistry.EXPOSURE_MANAGER(), address(exposureManager));
+        exposureManager.setGlobalMaxUtilizationBps(DEFAULT_MAX_UTIL_BPS);
+        vm.stopPrank();
+        vm.label(address(exposureManager), "ExposureManager");
+    }
+
+    /// @notice Set the per-asset USD issuance ceiling (admin-only).
+    function _setAssetCap(bytes32 asset, uint256 capUSD) internal {
+        vm.prank(Actors.ADMIN);
+        exposureManager.setAssetCapUSD(asset, capUSD);
+    }
+
+    /// @notice Set the global max utilisation in BPS (admin-only).
+    function _setGlobalMaxUtil(
+        uint256 bps
+    ) internal {
+        vm.prank(Actors.ADMIN);
+        exposureManager.setGlobalMaxUtilizationBps(bps);
+    }
+
+    /// @notice Permissionless poke of a vault's collateral mark.
+    function _pokeCollateral(
+        address vault
+    ) internal {
+        exposureManager.pokeCollateral(vault);
+    }
+
+    /// @notice Permissionless poke of an asset's price mark.
+    function _pokeAsset(
+        bytes32 asset
+    ) internal {
+        exposureManager.pokeAssetPrice(asset);
     }
 }

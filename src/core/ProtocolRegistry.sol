@@ -21,6 +21,7 @@ contract ProtocolRegistry is IProtocolRegistry, Ownable {
     bytes32 public constant INHOUSE_ORACLE = keccak256("INHOUSE_ORACLE");
     bytes32 public constant ETOKEN_FACTORY = keccak256("ETOKEN_FACTORY");
     bytes32 public constant BORROW_MANAGER_FACTORY = keccak256("BORROW_MANAGER_FACTORY");
+    bytes32 public constant EXPOSURE_MANAGER = keccak256("EXPOSURE_MANAGER");
 
     // ──────────────────────────────────────────────────────────────
     //  Types
@@ -92,6 +93,11 @@ contract ProtocolRegistry is IProtocolRegistry, Ownable {
     /// @inheritdoc IProtocolRegistry
     function borrowManagerFactory() external view override returns (address) {
         return _addresses[BORROW_MANAGER_FACTORY];
+    }
+
+    /// @inheritdoc IProtocolRegistry
+    function exposureManager() external view override returns (address) {
+        return _addresses[EXPOSURE_MANAGER];
     }
 
     // ──────────────────────────────────────────────────────────────

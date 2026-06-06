@@ -83,7 +83,6 @@ interface IUserBorrowManager {
     error ZeroAmount();
     error ZeroAddress();
     error OnlyAdmin();
-    error AssetNotSupportedByVault(bytes32 asset);
     error AssetNotActive(bytes32 asset);
     error PassThroughNotEnabled(address eToken);
     error VaultEffectivelyHalted();

@@ -53,9 +53,11 @@ contract UserBorrowManagerTest is BaseTest {
         awstETH = MockAToken(aavePool.registerReserve(address(wstETH), "Aave wstETH", "awstETH", 18));
         usdcDebt = MockAaveDebtToken(aavePool.deployVariableDebtToken(address(usdc)));
 
-        // 2) ProtocolRegistry slots.
+        // 2) ProtocolRegistry slots. This contract doubles as MARKET and VAULT_FACTORY so it can
+        //    register the directly-constructed vault with the ExposureManager.
         vm.startPrank(Actors.ADMIN);
         protocolRegistry.setAddress(protocolRegistry.MARKET(), mockMarket);
+        protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), address(this));
 
         // AssetRegistry — register TSLA so eligibility passes.
         assetRegistry = new AssetRegistry(Actors.ADMIN);
@@ -77,13 +79,16 @@ contract UserBorrowManagerTest is BaseTest {
         vm.prank(Actors.ADMIN);
         assetRegistry.addAsset(ASSET, address(eTSLA), cfg);
 
-        // 4) OwnVault on awstETH. Bound VM = this contract (so we can enable assets).
+        // 4) OwnVault on awstETH. Bound VM = this contract.
         vm.prank(Actors.ADMIN);
-        vault =
-            new OwnVault(address(awstETH), "Own awstETH", "owawstETH", address(protocolRegistry), address(this), 8000);
-        vault.enableAsset(ASSET);
+        vault = new OwnVault(address(awstETH), "Own awstETH", "owawstETH", address(protocolRegistry), address(this));
         // Set USDC as payment token for the vault (required by some flows; not used here).
         vault.setPaymentToken(address(usdc));
+
+        // ExposureManager owns collateral marks now; register the vault (this contract is the
+        // registry's VAULT_FACTORY) so maxDebtUSD can read its collateral mark.
+        _deployExposureManager();
+        exposureManager.registerVault(address(vault), bytes32("WSTETH"));
 
         // 5) UserBorrowManager. Wire credit delegation + Aave reserve liquidity.
         // Seed the vault with collateral value so the manager's `maxDebtUSD` is
@@ -147,9 +152,8 @@ contract UserBorrowManagerTest is BaseTest {
         vm.prank(Actors.ADMIN);
         assetRegistry.addAsset(collat, address(awstETH), wstCfg);
 
-        vm.prank(Actors.ADMIN);
-        vault.setCollateralOracleAsset(collat);
-        vault.updateCollateralValuation();
+        // Refresh the vault's collateral mark in the ExposureManager (keeper poke).
+        exposureManager.pokeCollateral(address(vault));
     }
 
     function _giveTSLA(address to, uint256 amount) internal {
@@ -284,10 +288,11 @@ contract UserBorrowManagerTest is BaseTest {
         vm.stopPrank();
     }
 
-    function test_borrow_assetNotSupported_reverts() public {
+    function test_borrow_assetNotActive_reverts() public {
         bytes32 newAsset = bytes32("GOLD");
 
-        // Register GOLD in AssetRegistry but DO NOT enableAsset on the vault.
+        // Register GOLD in the AssetRegistry as INACTIVE. Per-vault asset enablement is gone;
+        // the global AssetRegistry's active flag is what gates borrowing now.
         EToken eGold = new EToken("Own GOLD", "eGOLD", newAsset, address(protocolRegistry), address(usdc));
         AssetConfig memory cfg = AssetConfig({
             activeToken: address(eGold),
@@ -296,16 +301,18 @@ contract UserBorrowManagerTest is BaseTest {
             volatilityLevel: 1,
             oracleType: 1
         });
-        vm.prank(Actors.ADMIN);
+        // addAsset always marks the asset active; deactivate it to exercise the active-gate.
+        vm.startPrank(Actors.ADMIN);
         assetRegistry.addAsset(newAsset, address(eGold), cfg);
-        // Pass-through enabled but vault.isAssetSupported(newAsset) is false.
+        assetRegistry.deactivateAsset(newAsset);
+        vm.stopPrank();
         vm.prank(Actors.ADMIN);
         eGold.setPassThroughHolder(address(borrowManager), true);
 
         eGold.mint(Actors.MINTER1, 1e18);
         vm.startPrank(Actors.MINTER1);
         eGold.approve(address(borrowManager), 1e18);
-        vm.expectRevert(abi.encodeWithSelector(IUserBorrowManager.AssetNotSupportedByVault.selector, newAsset));
+        vm.expectRevert(abi.encodeWithSelector(IUserBorrowManager.AssetNotActive.selector, newAsset));
         borrowManager.borrow(newAsset, 1e18, 100e6, _priceData(2000e18));
         vm.stopPrank();
     }

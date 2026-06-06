@@ -26,7 +26,6 @@ contract RedeemFlowTest is BaseTest {
     OwnVault public vault;
     EToken public eTSLA;
 
-    uint256 constant MAX_UTIL_BPS = 8000;
     uint256 constant LP_DEPOSIT_WETH = 50_000e18;
     uint256 constant MINT_AMOUNT = 10_000e6;
     uint256 constant ETOKEN_AMOUNT = 40e18;
@@ -37,8 +36,6 @@ contract RedeemFlowTest is BaseTest {
         _configureAssets();
         _configureVault();
         _depositLPCollateral();
-        // Update collateral valuation AFTER deposit so USD value reflects actual assets
-        vault.updateCollateralValuation();
         _mintETokensToMinter();
     }
 
@@ -52,7 +49,12 @@ contract RedeemFlowTest is BaseTest {
         VaultFactory factory = new VaultFactory(Actors.ADMIN, address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), address(factory));
 
-        vault = OwnVault(factory.createVault(address(weth), vm1Signer, "Own ETH Vault", "oETH", MAX_UTIL_BPS));
+        vm.stopPrank();
+        // Deploy + register the ExposureManager before createVault (which auto-registers the vault).
+        _deployExposureManager();
+        vm.startPrank(Actors.ADMIN);
+
+        vault = OwnVault(factory.createVault(address(weth), vm1Signer, "Own ETH Vault", "oETH", ETH));
 
         market = new OwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
@@ -60,6 +62,8 @@ contract RedeemFlowTest is BaseTest {
         vault.addQuoteSigner(vm1Signer);
 
         vm.stopPrank();
+
+        _setAssetCap(TSLA, DEFAULT_ASSET_CAP_USD);
 
         vm.label(address(assetRegistry), "AssetRegistry");
         vm.label(address(market), "OwnMarket");
@@ -90,7 +94,6 @@ contract RedeemFlowTest is BaseTest {
             oracleType: 1
         });
         assetRegistry.addAsset(ethAsset, address(weth), ethConfig);
-        vault.setCollateralOracleAsset(ethAsset);
 
         vm.stopPrank();
 
@@ -100,11 +103,7 @@ contract RedeemFlowTest is BaseTest {
     function _configureVault() private {
         vm.startPrank(vm1Signer);
         vault.setPaymentToken(address(usdc));
-        vault.enableAsset(TSLA);
         vm.stopPrank();
-
-        vault.updateAssetValuation(TSLA);
-        vault.updateCollateralValuation();
     }
 
     function _depositLPCollateral() private {
@@ -113,6 +112,9 @@ contract RedeemFlowTest is BaseTest {
         weth.approve(address(vault), LP_DEPOSIT_WETH);
         vault.deposit(LP_DEPOSIT_WETH, Actors.LP1);
         vm.stopPrank();
+
+        _pokeCollateral(address(vault));
+        _pokeAsset(TSLA);
     }
 
     function _mintETokensToMinter() private {

@@ -50,7 +50,12 @@ contract PauseFlowTest is BaseTest {
         VaultFactory factory = new VaultFactory(Actors.ADMIN, address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), address(factory));
 
-        vault = OwnVault(factory.createVault(address(weth), vm1Signer, "Own ETH Vault", "oETH", MAX_UTIL_BPS));
+        vm.stopPrank();
+        // Deploy + register the ExposureManager before createVault (which auto-registers the vault).
+        _deployExposureManager();
+        vm.startPrank(Actors.ADMIN);
+
+        vault = OwnVault(factory.createVault(address(weth), vm1Signer, "Own ETH Vault", "oETH", ETH));
 
         market = new OwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
@@ -92,24 +97,20 @@ contract PauseFlowTest is BaseTest {
             oracleType: 1
         });
         assetRegistry.addAsset(ethAsset, address(weth), ethConfig);
-        vault.setCollateralOracleAsset(ethAsset);
 
         vm.stopPrank();
 
         _setOraclePrice(ethAsset, ETH_PRICE);
+
+        // Per-asset issuance ceilings (global util default is set by _deployExposureManager).
+        _setAssetCap(TSLA, DEFAULT_ASSET_CAP_USD);
+        _setAssetCap(GOLD, DEFAULT_ASSET_CAP_USD);
     }
 
     function _configureVault() private {
         vm.startPrank(vm1Signer);
         vault.setPaymentToken(address(usdc));
-        vault.enableAsset(TSLA);
-        vault.enableAsset(GOLD);
         vm.stopPrank();
-
-        // Initialize asset and collateral valuations so exposure tracking works
-        vault.updateAssetValuation(TSLA);
-        vault.updateAssetValuation(GOLD);
-        vault.updateCollateralValuation();
     }
 
     function _depositLPCollateral() private {
@@ -118,6 +119,11 @@ contract PauseFlowTest is BaseTest {
         weth.approve(address(vault), LP_DEPOSIT_WETH);
         vault.deposit(LP_DEPOSIT_WETH, Actors.LP1);
         vm.stopPrank();
+
+        // Seed the manager's marks: collateral and asset prices.
+        _pokeCollateral(address(vault));
+        _pokeAsset(TSLA);
+        _pokeAsset(GOLD);
     }
 
     function _placeMint(address minter, uint256 amount, uint256 expiry) internal returns (uint256) {

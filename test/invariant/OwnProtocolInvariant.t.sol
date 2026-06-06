@@ -67,8 +67,13 @@ contract OwnProtocolInvariant is BaseTest {
         factory = new VaultFactory(Actors.ADMIN, address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), address(factory));
 
-        // Create vault: WETH collateral, vm1Signer (keyed VM for quote signing), 80% max util
-        vault = OwnVault(factory.createVault(address(weth), vm1Signer, "Own ETH Vault", "oETH", MAX_UTIL_BPS));
+        vm.stopPrank();
+        // ExposureManager must be registered before createVault (which auto-registers the vault).
+        _deployExposureManager();
+        vm.startPrank(Actors.ADMIN);
+
+        // Create vault: WETH collateral, vm1Signer (keyed VM for quote signing). ETH = collateral ticker.
+        vault = OwnVault(factory.createVault(address(weth), vm1Signer, "Own ETH Vault", "oETH", ETH));
 
         // Market
         market = new OwnMarket(address(protocolRegistry));
@@ -104,24 +109,21 @@ contract OwnProtocolInvariant is BaseTest {
             oracleType: 1
         });
         assetRegistry.addAsset(ETH_ASSET, address(weth), ethConfig);
-        vault.setCollateralOracleAsset(ETH_ASSET);
 
         vm.stopPrank();
 
         // Set oracle prices
         _setOraclePrice(ETH_ASSET, ETH_PRICE);
         _setOraclePrice(TSLA, TSLA_PRICE);
+
+        // Per-asset issuance ceiling (global max util set by _deployExposureManager).
+        _setAssetCap(TSLA, DEFAULT_ASSET_CAP_USD);
     }
 
     function _configureVault() private {
         vm.startPrank(vm1Signer);
         vault.setPaymentToken(address(usdc));
-        vault.enableAsset(TSLA);
         vm.stopPrank();
-
-        // Initialize valuations
-        vault.updateAssetValuation(TSLA);
-        vault.updateCollateralValuation();
     }
 
     function _seedVault() private {
@@ -130,6 +132,10 @@ contract OwnProtocolInvariant is BaseTest {
         weth.approve(address(vault), LP_SEED_AMOUNT);
         vault.deposit(LP_SEED_AMOUNT, Actors.LP1);
         vm.stopPrank();
+
+        // Seed the manager's marks so mints have non-zero collateral and an asset price.
+        _pokeCollateral(address(vault));
+        _pokeAsset(TSLA);
     }
 
     function _deployHandlers() private {
@@ -222,12 +228,25 @@ contract OwnProtocolInvariant is BaseTest {
         assert(vault.pendingWithdrawalShares() <= vault.totalSupply());
     }
 
-    /// @notice INV-07: Total exposure USD equals sum of per-asset exposure USD.
+    /// @notice INV-07: Global exposure USD equals Σ globalAssetUnits[a] × assetMark[a] / 1e18.
+    ///         Single asset here, so it reduces to the TSLA term.
     function invariant_exposureConsistency() external view {
-        uint256 totalExp = vault.totalExposureUSD();
-        uint256 sumExp = vault.assetExposureUSD(TSLA);
+        uint256 globalExp = exposureManager.globalExposureUSD();
+        uint256 units = exposureManager.globalAssetUnits(TSLA);
+        uint256 mark = exposureManager.assetMark(TSLA);
+        assert(globalExp == (units * mark) / PRECISION);
+    }
 
-        assert(totalExp == sumExp);
+    /// @notice INV-07b: Global outstanding units for an asset equal the eToken's total supply.
+    ///         openExposure mirrors mint, closeExposure mirrors burn, so they stay in lockstep.
+    function invariant_globalUnitsMatchSupply() external view {
+        assert(exposureManager.globalAssetUnits(TSLA) == eTSLA.totalSupply());
+    }
+
+    /// @notice INV-07c: Global utilisation never exceeds the cap (collateral mark is fixed across the
+    ///         campaign — no keeper pokes — so every gated open keeps utilisation bounded).
+    function invariant_globalUtilizationWithinCap() external view {
+        assert(exposureManager.globalUtilizationBps() <= exposureManager.globalMaxUtilizationBps());
     }
 
     /// @notice INV-08: EToken rewards-per-share accumulator never decreases.
@@ -253,9 +272,9 @@ contract OwnProtocolInvariant is BaseTest {
         assert(vault.pendingWithdrawalShares() == vaultHandler.ghost_pendingWithdrawalShares());
     }
 
-    /// @notice INV-11: Asset exposure never wraps around (no underflow).
+    /// @notice INV-11: Global asset units never wrap around (no underflow).
     function invariant_noExposureUnderflow() external view {
-        assert(vault.assetExposure(TSLA) < type(uint256).max / 2);
+        assert(exposureManager.globalAssetUnits(TSLA) < type(uint256).max / 2);
     }
 
     // ═════════════════════════════════════════════════════════════

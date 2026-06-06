@@ -23,19 +23,19 @@ interface IVaultFactory {
     //  Vault creation (admin only)
     // ──────────────────────────────────────────────────────────
 
-    /// @notice Deploy a new vault. Only callable by protocol admin.
-    /// @param collateral Underlying collateral ERC-20 (e.g. WETH).
-    /// @param vm         Vault manager address bound to this vault.
-    /// @param name       Vault share token name.
-    /// @param symbol     Vault share token symbol.
-    /// @param maxUtilBps Initial max utilization in BPS.
+    /// @notice Deploy a new vault and register it with the ExposureManager. Only callable by protocol admin.
+    /// @param collateral      Underlying collateral ERC-20 (e.g. WETH).
+    /// @param vm              Vault manager address bound to this vault.
+    /// @param name            Vault share token name.
+    /// @param symbol          Vault share token symbol.
+    /// @param collateralAsset Oracle ticker used by the ExposureManager to price this vault's collateral.
     /// @return vault The deployed vault address.
     function createVault(
         address collateral,
         address vm,
         string calldata name,
         string calldata symbol,
-        uint256 maxUtilBps
+        bytes32 collateralAsset
     ) external returns (address vault);
 
     /// @notice Deregister a vault so it can no longer be used. Only callable by admin.

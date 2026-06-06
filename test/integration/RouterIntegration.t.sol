@@ -58,8 +58,7 @@ contract RouterIntegrationTest is BaseTest {
             "Own WETH Vault",
             "oWETH",
             address(protocolRegistry),
-            address(wethRouter), // bound VM is router
-            8000
+            address(wethRouter) // bound VM is router
         );
 
         // wstETH vault with router as VM
@@ -68,8 +67,7 @@ contract RouterIntegrationTest is BaseTest {
             "Own wstETH Vault",
             "owstETH",
             address(protocolRegistry),
-            address(wstethRouter), // bound VM is router
-            8000
+            address(wstethRouter) // bound VM is router
         );
 
         vm.stopPrank();

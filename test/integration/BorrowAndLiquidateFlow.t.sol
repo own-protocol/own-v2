@@ -74,7 +74,15 @@ contract BorrowAndLiquidateFlowTest is BaseTest {
         vm.startPrank(Actors.ADMIN);
         vaultFactory = new VaultFactory(Actors.ADMIN, address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), address(vaultFactory));
-        vault = OwnVault(vaultFactory.createVault(address(awstETH), address(this), "Own awstETH", "owawstETH", 8000));
+        vm.stopPrank();
+
+        // Deploy + register the ExposureManager before createVault (which auto-registers the vault).
+        _deployExposureManager();
+
+        vm.startPrank(Actors.ADMIN);
+        vault = OwnVault(
+            vaultFactory.createVault(address(awstETH), address(this), "Own awstETH", "owawstETH", bytes32("WSTETH"))
+        );
 
         bmFactory = new BorrowManagerFactory(address(aavePool), address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.BORROW_MANAGER_FACTORY(), address(bmFactory));
@@ -100,13 +108,10 @@ contract BorrowAndLiquidateFlowTest is BaseTest {
         });
         vm.prank(Actors.ADMIN);
         assetRegistry.addAsset(collat, address(awstETH), wstCfg);
-        vm.prank(Actors.ADMIN);
-        vault.setCollateralOracleAsset(collat);
-        vault.updateCollateralValuation();
+        // Refresh the vault's collateral mark in the ExposureManager (keeper poke).
+        exposureManager.pokeCollateral(address(vault));
 
-        // Vault setup: enable asset (as bound VM = this contract), set payment
-        // token, opt into lending (delegate credit + register pass-through).
-        vault.enableAsset(ASSET);
+        // Vault setup: set payment token, opt into lending (delegate credit + register pass-through).
         vault.setPaymentToken(address(usdc));
 
         vm.prank(Actors.ADMIN);

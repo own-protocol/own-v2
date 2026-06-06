@@ -51,7 +51,12 @@ contract OrderLifecycleTest is BaseTest {
         VaultFactory factory = new VaultFactory(Actors.ADMIN, address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), address(factory));
 
-        vault = OwnVault(factory.createVault(address(weth), vm1Signer, "Own ETH Vault", "oETH", MAX_UTIL_BPS));
+        vm.stopPrank();
+        // Deploy + register the ExposureManager before createVault (which auto-registers the vault).
+        _deployExposureManager();
+        vm.startPrank(Actors.ADMIN);
+
+        vault = OwnVault(factory.createVault(address(weth), vm1Signer, "Own ETH Vault", "oETH", ETH));
 
         market = new OwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
@@ -83,22 +88,19 @@ contract OrderLifecycleTest is BaseTest {
             oracleType: 1
         });
         assetRegistry.addAsset(ethAsset, address(weth), ethConfig);
-        vault.setCollateralOracleAsset(ethAsset);
 
         vm.stopPrank();
 
         _setOraclePrice(ethAsset, ETH_PRICE);
+
+        // Per-asset issuance ceiling (global util default is set by _deployExposureManager).
+        _setAssetCap(TSLA, DEFAULT_ASSET_CAP_USD);
     }
 
     function _configureVault() private {
         vm.startPrank(vm1Signer);
         vault.setPaymentToken(address(usdc));
-        vault.enableAsset(TSLA);
         vm.stopPrank();
-
-        // Initialize asset and collateral valuations so exposure tracking works
-        vault.updateAssetValuation(TSLA);
-        vault.updateCollateralValuation();
     }
 
     function _depositLPCollateral() private {
@@ -107,6 +109,10 @@ contract OrderLifecycleTest is BaseTest {
         weth.approve(address(vault), LP_DEPOSIT_WETH);
         vault.deposit(LP_DEPOSIT_WETH, Actors.LP1);
         vm.stopPrank();
+
+        // Seed the manager's marks: collateral and asset price.
+        _pokeCollateral(address(vault));
+        _pokeAsset(TSLA);
     }
 
     function _placeMint(address minter, uint256 amount, uint256 expiry) internal returns (uint256) {
@@ -298,12 +304,12 @@ contract OrderLifecycleTest is BaseTest {
     // ══════════════════════════════════════════════════════════
 
     function test_exposureTracking_placeThenFill() public {
-        assertEq(vault.totalExposureUSD(), 0, "initial exposure = 0");
+        assertEq(exposureManager.globalExposureUSD(), 0, "initial exposure = 0");
 
         uint256 orderId = _placeMint(Actors.MINTER1, MINT_AMOUNT, block.timestamp + 1 days);
 
         // Escrow alone does not add exposure
-        assertEq(vault.totalExposureUSD(), 0, "exposure unchanged after placement");
+        assertEq(exposureManager.globalExposureUSD(), 0, "exposure unchanged after placement");
 
         // Fill mint → exposure increases
         _fillMint(orderId, Actors.MINTER1, MINT_AMOUNT);
@@ -311,7 +317,7 @@ contract OrderLifecycleTest is BaseTest {
         // exposureUSD = eTokenUnits * TSLA_PRICE / PRECISION (no fee; full amount minted)
         uint256 eTokenUnits = Math.mulDiv(MINT_AMOUNT * 1e12, PRECISION, TSLA_PRICE);
         uint256 expectedExposure = Math.mulDiv(eTokenUnits, TSLA_PRICE, PRECISION);
-        assertEq(vault.totalExposureUSD(), expectedExposure, "exposure = minted notional after fill");
+        assertEq(exposureManager.globalExposureUSD(), expectedExposure, "exposure = minted notional after fill");
     }
 
     // ══════════════════════════════════════════════════════════
@@ -321,13 +327,13 @@ contract OrderLifecycleTest is BaseTest {
     function test_exposureTracking_cancel() public {
         uint256 orderId = _placeMint(Actors.MINTER1, MINT_AMOUNT, block.timestamp + 1 days);
 
-        assertEq(vault.totalExposureUSD(), 0, "exposure unchanged after placement");
+        assertEq(exposureManager.globalExposureUSD(), 0, "exposure unchanged after placement");
 
         vm.prank(Actors.MINTER1);
         market.cancelOrder(orderId);
 
         // Cancel returns escrow — nothing was executed
-        assertEq(vault.totalExposureUSD(), 0, "exposure still 0 after cancel");
+        assertEq(exposureManager.globalExposureUSD(), 0, "exposure still 0 after cancel");
     }
 
     // ══════════════════════════════════════════════════════════
@@ -337,7 +343,7 @@ contract OrderLifecycleTest is BaseTest {
     function test_exposureTracking_redeemForceExecute() public {
         _mintETokensViaFlow(Actors.MINTER1, MINT_AMOUNT);
         uint256 eTokenBal = eTSLA.balanceOf(Actors.MINTER1);
-        assertGt(vault.totalExposureUSD(), 0, "exposure from mint");
+        assertGt(exposureManager.globalExposureUSD(), 0, "exposure from mint");
 
         vm.startPrank(Actors.MINTER1);
         eTSLA.approve(address(market), eTokenBal);
@@ -354,7 +360,7 @@ contract OrderLifecycleTest is BaseTest {
         market.forceExecuteOrder(orderId, assetPriceData, collateralPriceData);
 
         // Force execution burns the eTokens and shrinks exposure back to zero.
-        assertEq(vault.totalExposureUSD(), 0, "exposure cleared after force execution");
+        assertEq(exposureManager.globalExposureUSD(), 0, "exposure cleared after force execution");
     }
 
     // ══════════════════════════════════════════════════════════

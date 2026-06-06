@@ -29,7 +29,6 @@ interface IOwnVault is IERC4626 {
     event AssetHalted(bytes32 indexed asset);
     event AssetUnhalted(bytes32 indexed asset);
     event AssetHaltPriceSet(bytes32 indexed asset, uint256 haltPrice);
-    event UtilizationUpdated(uint256 newUtilization);
 
     /// @notice Emitted when the VM adds collateral yield to the vault, raising the share price for all LPs.
     event ShareYieldAdded(address indexed vm, uint256 amount);
@@ -38,11 +37,7 @@ interface IOwnVault is IERC4626 {
     event QuoteSignerAdded(address indexed signer);
     event QuoteSignerRemoved(address indexed signer);
     event PaymentTokenUpdated(address indexed oldToken, address indexed newToken);
-    event AssetEnabled(bytes32 indexed asset);
-    event AssetDisabled(bytes32 indexed asset);
     event DepositApprovalUpdated(bool required);
-    event AssetValuationUpdated(bytes32 indexed asset, uint256 exposureUnits, uint256 exposureUSD, uint256 price);
-    event CollateralValuationUpdated(uint256 collateralValueUSD, uint256 price);
     event LendingEnabled(address indexed userBorrowManager, address indexed debtToken);
     event AaveCollateralEnabled(address indexed pool, address indexed underlying);
     event CollateralReleasedForBadDebt(address indexed to, uint256 amount);
@@ -58,7 +53,7 @@ interface IOwnVault is IERC4626 {
     error InvalidHaltPrice();
     error InvalidStatusTransition();
     error InsufficientCollateral();
-    error MaxUtilizationExceeded(uint256 currentUtilization, uint256 maxUtilization);
+    error MaxUtilizationExceeded();
     error WithdrawalRequestNotFound(uint256 requestId);
     error WithdrawalNotReady(uint256 requestId);
     error NotRequestOwner(uint256 requestId, address caller);
@@ -77,10 +72,8 @@ interface IOwnVault is IERC4626 {
     error NotQuoteSigner(address signer);
     error WithdrawalNotPending(uint256 requestId);
     error PaymentTokenCannotBeCollateral();
-    error CollateralValueNotInitialized();
     error DecimalsTooHigh(uint256 decimals);
     error WithdrawalWaitPeriodNotElapsed(uint256 requestId, uint256 readyAt);
-    error PriceNotAvailable(bytes32 asset);
     error DepositApprovalNotRequired();
     error DepositApprovalRequired();
     error LendingAlreadyEnabled();
@@ -247,72 +240,14 @@ interface IOwnVault is IERC4626 {
     ) external view returns (bool);
 
     // ──────────────────────────────────────────────────────────
-    //  Health and utilization
+    //  Withdrawal queue config
     // ──────────────────────────────────────────────────────────
-
-    /// @notice Return the current vault health factor (1e18 = 1.0).
-    ///         healthFactor = collateralValueUSD / totalExposureUSD.
-    function healthFactor() external view returns (uint256);
-
-    /// @notice Return the current vault utilization in BPS.
-    ///         utilization = totalExposureUSD * BPS / collateralValueUSD.
-    function utilization() external view returns (uint256);
-
-    function maxUtilization() external view returns (uint256);
-    function setMaxUtilization(
-        uint256 maxUtilBps
-    ) external;
 
     /// @notice Return the withdrawal wait period in seconds.
     function withdrawalWaitPeriod() external view returns (uint256);
     function setWithdrawalWaitPeriod(
         uint256 period
     ) external;
-
-    /// @notice Return the total exposure in USD across all assets (18 decimals).
-    function totalExposureUSD() external view returns (uint256);
-
-    /// @notice Return the collateral value in USD (18 decimals).
-    function collateralValueUSD() external view returns (uint256);
-
-    /// @notice Return per-asset exposure in raw units (18 decimals).
-    function assetExposure(
-        bytes32 asset
-    ) external view returns (uint256);
-
-    /// @notice Return per-asset exposure in USD (18 decimals).
-    function assetExposureUSD(
-        bytes32 asset
-    ) external view returns (uint256);
-
-    /// @notice Return the timestamp of the last valuation update for an asset.
-    function assetLastUpdated(
-        bytes32 asset
-    ) external view returns (uint256);
-
-    /// @notice Update raw exposure units for an asset. Only callable by OwnMarket.
-    ///         Adjusts per-asset units and per-asset USD value using the provided execution price.
-    /// @param asset Asset ticker.
-    /// @param delta Signed change in raw exposure units.
-    /// @param price Execution price (18 decimals) used to convert units to USD.
-    function updateExposure(bytes32 asset, int256 delta, uint256 price) external;
-
-    /// @notice Returns projected utilisation (BPS) if additionalExposureUSD were added.
-    /// @param additionalExposureUSD Additional USD exposure to project (18 decimals).
-    function projectedExposureUtilization(
-        uint256 additionalExposureUSD
-    ) external view returns (uint256);
-
-    /// @notice Refresh the USD valuation of an asset using its oracle price.
-    ///         Callable by anyone (keeper pattern). Reads price from the asset's primary oracle.
-    /// @param asset Asset ticker to revalue.
-    function updateAssetValuation(
-        bytes32 asset
-    ) external;
-
-    /// @notice Refresh the USD valuation of vault collateral using the collateral oracle.
-    ///         Callable by anyone (keeper pattern).
-    function updateCollateralValuation() external;
 
     // ──────────────────────────────────────────────────────────
     //  Order execution parameters (used by OwnMarket)
@@ -324,14 +259,6 @@ interface IOwnVault is IERC4626 {
     /// @notice Set the claim threshold. Only callable by admin.
     function setClaimThreshold(
         uint256 threshold
-    ) external;
-
-    /// @notice Asset ticker used to look up the collateral price for force execution conversions.
-    function collateralOracleAsset() external view returns (bytes32);
-
-    /// @notice Set the collateral oracle asset. Only callable by admin.
-    function setCollateralOracleAsset(
-        bytes32 asset
     ) external;
 
     // ──────────────────────────────────────────────────────────
@@ -367,26 +294,6 @@ interface IOwnVault is IERC4626 {
     function releaseCollateralForBadDebt(address to, uint256 amount) external;
 
     // ──────────────────────────────────────────────────────────
-    //  Supported assets (VM-controlled)
-    // ──────────────────────────────────────────────────────────
-
-    /// @notice Enable an asset for this vault. Only callable by the bound VM.
-    ///         The asset must exist in the global AssetRegistry.
-    function enableAsset(
-        bytes32 asset
-    ) external;
-
-    /// @notice Disable an asset for this vault. Only callable by the bound VM.
-    function disableAsset(
-        bytes32 asset
-    ) external;
-
-    /// @notice Check if this vault supports a given asset.
-    function isAssetSupported(
-        bytes32 asset
-    ) external view returns (bool);
-
-    // ──────────────────────────────────────────────────────────
     //  Payment token
     // ──────────────────────────────────────────────────────────
 
@@ -413,12 +320,8 @@ interface IOwnVault is IERC4626 {
     function requireDepositApproval() external view returns (bool);
 
     // ──────────────────────────────────────────────────────────
-    //  Projected utilization
+    //  Withdrawal queue accessors
     // ──────────────────────────────────────────────────────────
-
-    /// @notice Return projected utilization in BPS, excluding collateral tied up
-    ///         in pending withdrawal requests. For off-chain monitoring.
-    function projectedUtilization() external view returns (uint256);
 
     /// @notice Return total shares currently escrowed for pending withdrawals.
     function pendingWithdrawalShares() external view returns (uint256);

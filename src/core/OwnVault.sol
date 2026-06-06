@@ -1,17 +1,14 @@
 // SPDX-License-Identifier: BUSL-1.1
 pragma solidity 0.8.28;
 
-import {IAssetRegistry} from "../interfaces/IAssetRegistry.sol";
-import {IOracleVerifier} from "../interfaces/IOracleVerifier.sol";
+import {IExposureManager} from "../interfaces/IExposureManager.sol";
 import {IOwnVault} from "../interfaces/IOwnVault.sol";
 import {IProtocolRegistry} from "../interfaces/IProtocolRegistry.sol";
 import {IAaveDebtToken} from "../interfaces/external/IAaveDebtToken.sol";
 import {IAaveV3Pool} from "../interfaces/external/IAaveV3Pool.sol";
 import {
-    BPS,
     DepositRequest,
     DepositStatus,
-    PRECISION,
     VaultStatus,
     WithdrawalRequest,
     WithdrawalStatus
@@ -26,14 +23,12 @@ import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IER
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
-import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {EnumerableSet} from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 
 /// @title OwnVault — ERC-4626 collateral vault with async deposit/withdrawal
 /// @notice Single vault holding collateral to back eToken exposure.
 contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     using SafeERC20 for IERC20;
-    using Math for uint256;
     using EnumerableSet for EnumerableSet.UintSet;
 
     // ──────────────────────────────────────────────────────────
@@ -41,9 +36,6 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     // ──────────────────────────────────────────────────────────
 
     IProtocolRegistry public immutable registry;
-
-    /// @dev Multiplier that scales a collateral-token amount up to 18 decimals: 10**(18 - decimals).
-    uint256 private immutable _collateralScale;
 
     address public vm;
 
@@ -60,39 +52,16 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     mapping(bytes32 => uint256) private _assetHaltPrice;
 
     // ──────────────────────────────────────────────────────────
-    //  Utilization & health
+    //  Withdrawal queue config
     // ──────────────────────────────────────────────────────────
 
-    uint256 private _maxUtilization;
     uint256 private _withdrawalWaitPeriod;
-
-    /// @dev Per-asset raw exposure in units (18 decimals).
-    mapping(bytes32 => uint256) private _assetExposure;
-
-    /// @dev Per-asset exposure in USD (18 decimals), updated incrementally.
-    mapping(bytes32 => uint256) private _assetExposureUSD;
-
-    /// @dev Per-asset last valuation update timestamp.
-    mapping(bytes32 => uint256) private _assetLastUpdated;
-
-    /// @dev Running total of all per-asset USD exposures. Updated incrementally — never loops.
-    uint256 private _totalExposureUSD;
-
-    /// @dev Collateral value in USD (18 decimals). Updated by keeper or on exposure changes.
-    uint256 private _collateralValueUSD;
 
     // ──────────────────────────────────────────────────────────
     //  Order execution parameters (read by OwnMarket)
     // ──────────────────────────────────────────────────────────
 
     uint256 private _claimThreshold;
-    bytes32 private _collateralOracleAsset;
-
-    // ──────────────────────────────────────────────────────────
-    //  Supported assets (VM-controlled)
-    // ──────────────────────────────────────────────────────────
-
-    mapping(bytes32 => bool) private _supportedAssets;
 
     // ──────────────────────────────────────────────────────────
     //  Payment token (single, VM-controlled)
@@ -180,21 +149,17 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     /// @param symbol_     Vault share symbol.
     /// @param registry_   ProtocolRegistry contract address.
     /// @param vm_         Vault manager address bound to this vault.
-    /// @param maxUtilBps  Initial max utilization in BPS.
     constructor(
         address asset_,
         string memory name_,
         string memory symbol_,
         address registry_,
-        address vm_,
-        uint256 maxUtilBps
+        address vm_
     ) ERC4626(IERC20(asset_)) ERC20(name_, symbol_) {
         uint8 collatDecimals = IERC20Metadata(asset_).decimals();
         if (collatDecimals > 18) revert DecimalsTooHigh(collatDecimals);
-        _collateralScale = 10 ** (18 - collatDecimals);
         registry = IProtocolRegistry(registry_);
         vm = vm_;
-        _maxUtilization = maxUtilBps;
         _vaultStatus = VaultStatus.Active;
     }
 
@@ -404,19 +369,9 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
         uint256 shares = req.shares;
         assets = convertToAssets(shares);
 
-        // Check that withdrawal won't breach max utilization (in USD terms)
-        if (_totalExposureUSD > 0) {
-            // Block withdrawals if collateral value is unknown while exposure exists
-            if (_collateralValueUSD == 0) revert CollateralValueNotInitialized();
-
-            // Estimate collateral value after withdrawal
-            uint256 collateralAfter = _collateralValueUSD - _collateralValueUSD.mulDiv(assets, totalAssets());
-            if (collateralAfter > 0) {
-                uint256 utilizationAfter = _totalExposureUSD.mulDiv(BPS, collateralAfter);
-                if (utilizationAfter > _maxUtilization) {
-                    revert MaxUtilizationExceeded(utilizationAfter, _maxUtilization);
-                }
-            }
+        // Releasing this collateral must not push global utilisation over the cap.
+        if (IExposureManager(registry.exposureManager()).withdrawalBreachesUtil(address(this), assets)) {
+            revert MaxUtilizationExceeded();
         }
 
         req.status = WithdrawalStatus.Fulfilled;
@@ -555,131 +510,12 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     }
 
     // ──────────────────────────────────────────────────────────
-    //  Health and utilization
+    //  Withdrawal queue accessors
     // ──────────────────────────────────────────────────────────
-
-    /// @inheritdoc IOwnVault
-    function healthFactor() external view returns (uint256) {
-        if (_totalExposureUSD == 0) return type(uint256).max;
-        return _collateralValueUSD.mulDiv(PRECISION, _totalExposureUSD);
-    }
-
-    /// @inheritdoc IOwnVault
-    function utilization() external view returns (uint256) {
-        if (_collateralValueUSD == 0) return 0;
-        return _totalExposureUSD.mulDiv(BPS, _collateralValueUSD);
-    }
-
-    /// @inheritdoc IOwnVault
-    function maxUtilization() external view returns (uint256) {
-        return _maxUtilization;
-    }
-
-    /// @inheritdoc IOwnVault
-    function setMaxUtilization(
-        uint256 maxUtilBps
-    ) external onlyAdmin {
-        _maxUtilization = maxUtilBps;
-    }
-
-    /// @inheritdoc IOwnVault
-    function projectedUtilization() external view returns (uint256) {
-        if (_collateralValueUSD == 0) return 0;
-        uint256 total = totalAssets();
-        if (total == 0) return type(uint256).max;
-        uint256 pendingAssets = convertToAssets(_pendingWithdrawalShares);
-        uint256 pendingValueUSD = _collateralValueUSD.mulDiv(pendingAssets, total);
-        uint256 effectiveCollateral = _collateralValueUSD - pendingValueUSD;
-        if (effectiveCollateral == 0) return type(uint256).max;
-        return _totalExposureUSD.mulDiv(BPS, effectiveCollateral);
-    }
-
-    /// @inheritdoc IOwnVault
-    function projectedExposureUtilization(
-        uint256 additionalExposureUSD
-    ) external view returns (uint256) {
-        if (_collateralValueUSD == 0) return 0;
-        return (_totalExposureUSD + additionalExposureUSD).mulDiv(BPS, _collateralValueUSD);
-    }
 
     /// @inheritdoc IOwnVault
     function pendingWithdrawalShares() external view returns (uint256) {
         return _pendingWithdrawalShares;
-    }
-
-    /// @inheritdoc IOwnVault
-    function totalExposureUSD() external view returns (uint256) {
-        return _totalExposureUSD;
-    }
-
-    /// @inheritdoc IOwnVault
-    function collateralValueUSD() external view returns (uint256) {
-        return _collateralValueUSD;
-    }
-
-    /// @inheritdoc IOwnVault
-    function assetExposure(
-        bytes32 asset_
-    ) external view returns (uint256) {
-        return _assetExposure[asset_];
-    }
-
-    /// @inheritdoc IOwnVault
-    function assetExposureUSD(
-        bytes32 asset_
-    ) external view returns (uint256) {
-        return _assetExposureUSD[asset_];
-    }
-
-    /// @inheritdoc IOwnVault
-    function assetLastUpdated(
-        bytes32 asset_
-    ) external view returns (uint256) {
-        return _assetLastUpdated[asset_];
-    }
-
-    /// @inheritdoc IOwnVault
-    function updateExposure(bytes32 asset_, int256 delta, uint256 price) external onlyMarket {
-        // Update raw units
-        if (delta > 0) {
-            _assetExposure[asset_] += uint256(delta);
-        } else if (delta < 0) {
-            _assetExposure[asset_] -= uint256(-delta);
-        }
-
-        // Update USD values using provided execution price
-        uint256 oldUSD = _assetExposureUSD[asset_];
-        uint256 newUSD = _assetExposure[asset_].mulDiv(price, PRECISION);
-        _assetExposureUSD[asset_] = newUSD;
-        _totalExposureUSD = _totalExposureUSD - oldUSD + newUSD;
-
-        // Also refresh collateral value
-        _refreshCollateralValue();
-    }
-
-    /// @inheritdoc IOwnVault
-    function updateAssetValuation(
-        bytes32 asset_
-    ) external {
-        address oracleAddr = _getOracleForAsset(asset_);
-        if (oracleAddr == address(0)) revert PriceNotAvailable(asset_);
-
-        (uint256 price,) = IOracleVerifier(oracleAddr).getPrice(asset_);
-        if (price == 0) revert PriceNotAvailable(asset_);
-
-        uint256 oldUSD = _assetExposureUSD[asset_];
-        uint256 newUSD = _assetExposure[asset_].mulDiv(price, PRECISION);
-
-        _assetExposureUSD[asset_] = newUSD;
-        _totalExposureUSD = _totalExposureUSD - oldUSD + newUSD;
-        _assetLastUpdated[asset_] = block.timestamp;
-
-        emit AssetValuationUpdated(asset_, _assetExposure[asset_], newUSD, price);
-    }
-
-    /// @inheritdoc IOwnVault
-    function updateCollateralValuation() external {
-        _refreshCollateralValue();
     }
 
     /// @inheritdoc IOwnVault
@@ -710,18 +546,6 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
         _claimThreshold = threshold;
     }
 
-    /// @inheritdoc IOwnVault
-    function collateralOracleAsset() external view returns (bytes32) {
-        return _collateralOracleAsset;
-    }
-
-    /// @inheritdoc IOwnVault
-    function setCollateralOracleAsset(
-        bytes32 asset_
-    ) external onlyAdmin {
-        _collateralOracleAsset = asset_;
-    }
-
     // ──────────────────────────────────────────────────────────
     //  Share yield (VM-distributed LP rewards)
     // ──────────────────────────────────────────────────────────
@@ -737,9 +561,6 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
 
         // VM transfers collateral in → totalAssets() rises → share price rises for all LPs.
         IERC20(asset()).safeTransferFrom(msg.sender, address(this), amount);
-
-        // Keep the cached collateral USD valuation in step with the larger balance.
-        _refreshCollateralValue();
 
         emit ShareYieldAdded(msg.sender, amount);
     }
@@ -778,33 +599,6 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
         if (!_quoteSigners[signer]) revert NotQuoteSigner(signer);
         _quoteSigners[signer] = false;
         emit QuoteSignerRemoved(signer);
-    }
-
-    // ──────────────────────────────────────────────────────────
-    //  Supported assets
-    // ──────────────────────────────────────────────────────────
-
-    /// @inheritdoc IOwnVault
-    function enableAsset(
-        bytes32 asset_
-    ) external onlyVM {
-        _supportedAssets[asset_] = true;
-        emit AssetEnabled(asset_);
-    }
-
-    /// @inheritdoc IOwnVault
-    function disableAsset(
-        bytes32 asset_
-    ) external onlyVM {
-        _supportedAssets[asset_] = false;
-        emit AssetDisabled(asset_);
-    }
-
-    /// @inheritdoc IOwnVault
-    function isAssetSupported(
-        bytes32 asset_
-    ) external view returns (bool) {
-        return _supportedAssets[asset_];
     }
 
     // ──────────────────────────────────────────────────────────
@@ -880,41 +674,6 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     }
 
     // ──────────────────────────────────────────────────────────
-    //  Internal — valuation
-    // ──────────────────────────────────────────────────────────
-
-    /// @dev Refresh the collateral value in USD using the collateral oracle.
-    function _refreshCollateralValue() private {
-        bytes32 collatAsset = _collateralOracleAsset;
-        if (collatAsset == bytes32(0)) return;
-
-        address oracleAddr = _getOracleForAsset(collatAsset);
-        if (oracleAddr == address(0)) return;
-
-        (uint256 price,) = IOracleVerifier(oracleAddr).getPrice(collatAsset);
-        if (price == 0) return;
-
-        // Normalize the collateral balance to 18 decimals before pricing so the USD value
-        // is on the same scale as exposure (e.g. 6-decimal aUSDC/USDC vs 18-decimal eTokens).
-        _collateralValueUSD = (totalAssets() * _collateralScale).mulDiv(price, PRECISION);
-
-        emit CollateralValuationUpdated(_collateralValueUSD, price);
-    }
-
-    // ──────────────────────────────────────────────────────────
-    //  Internal — helpers
-    // ──────────────────────────────────────────────────────────
-
-    /// @dev Resolve the oracle address for an asset via ProtocolRegistry.
-    function _getOracleForAsset(
-        bytes32 ticker
-    ) private view returns (address) {
-        uint8 oracleType = IAssetRegistry(registry.assetRegistry()).getOracleType(ticker);
-        if (oracleType == 0) return registry.pythOracle();
-        return registry.inhouseOracle();
-    }
-
-    // ──────────────────────────────────────────────────────────
     //  Collateral release (force execution)
     // ──────────────────────────────────────────────────────────
 
@@ -931,10 +690,9 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
         if (amount == 0) revert ZeroAmount();
         // The borrow manager has already repaid the corresponding Aave debt, so
         // this aToken slice is unlocked. Releasing it shrinks totalAssets, which
-        // socializes the bad-debt loss to LPs via a lower share price; refresh
-        // the cached collateral value so the debt cap tracks the smaller base.
+        // socializes the bad-debt loss to LPs via a lower share price. The global
+        // collateral mark catches up on the next keeper poke of this vault.
         IERC20(asset()).safeTransfer(to, amount);
-        _refreshCollateralValue();
         emit CollateralReleasedForBadDebt(to, amount);
     }
 

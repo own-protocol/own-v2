@@ -7,6 +7,7 @@ import {OwnMarket} from "../../src/core/OwnMarket.sol";
 import {OwnVault} from "../../src/core/OwnVault.sol";
 import {UserBorrowManager} from "../../src/core/UserBorrowManager.sol";
 import {VaultFactory} from "../../src/core/VaultFactory.sol";
+import {IExposureManager} from "../../src/interfaces/IExposureManager.sol";
 import {IOwnMarket} from "../../src/interfaces/IOwnMarket.sol";
 import {AssetConfig, BPS, OrderStatus, OrderType, PRECISION, Quote} from "../../src/interfaces/types/Types.sol";
 import {InterestRateModel} from "../../src/libraries/InterestRateModel.sol";
@@ -81,13 +82,18 @@ contract RFQAusdcFlowsTest is BaseTest {
 
         VaultFactory factory = new VaultFactory(Actors.ADMIN, address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), address(factory));
-        vault = OwnVault(factory.createVault(address(ausdcAToken), vm1Signer, "Own aUSDC", "oaUSDC", MAX_UTIL_BPS));
+
+        vm.stopPrank();
+        // Deploy + register the ExposureManager before createVault (which auto-registers the vault).
+        _deployExposureManager();
+        vm.startPrank(Actors.ADMIN);
+
+        vault = OwnVault(factory.createVault(address(ausdcAToken), vm1Signer, "Own aUSDC", "oaUSDC", AUSDC));
         vault.addQuoteSigner(vm1Signer);
 
         market = new OwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
         vault.setClaimThreshold(6 hours);
-        vault.setCollateralOracleAsset(AUSDC);
         vault.setRequireDepositApproval(true);
 
         // ── Lending: borrow manager over USDC debt against the vault's aUSDC credit ──
@@ -103,8 +109,9 @@ contract RFQAusdcFlowsTest is BaseTest {
         // ── VM config ──
         vm.startPrank(vm1Signer);
         vault.setPaymentToken(address(usdc));
-        vault.enableAsset(TSLA);
         vm.stopPrank();
+
+        _setAssetCap(TSLA, DEFAULT_ASSET_CAP_USD);
 
         _setOraclePrice(TSLA, TSLA_PRICE); // $250
         _setOraclePrice(AUSDC, 1e18); // $1
@@ -118,7 +125,8 @@ contract RFQAusdcFlowsTest is BaseTest {
         vm.stopPrank();
         vm.prank(vm1Signer);
         vault.acceptDeposit(reqId);
-        vault.updateCollateralValuation();
+        _pokeCollateral(address(vault));
+        _pokeAsset(TSLA);
 
         // Fund the VM with stablecoins so it can settle redeem payouts.
         usdc.mint(vm1Signer, 5_000_000e6);
@@ -179,7 +187,7 @@ contract RFQAusdcFlowsTest is BaseTest {
     // ──────────────────────────────────────────────────────────
 
     function test_collateralValue_ausdc_is18DecimalUSD() public view {
-        assertEq(vault.collateralValueUSD(), 1_000_000e18, "collateral USD value (18-dec)");
+        assertEq(exposureManager.collateralMark(address(vault)), 1_000_000e18, "collateral USD value (18-dec)");
     }
 
     // ──────────────────────────────────────────────────────────
@@ -190,7 +198,7 @@ contract RFQAusdcFlowsTest is BaseTest {
         uint256 eOut = _marketMint(Actors.MINTER1, 25_000e6); // $25k @ $250 → 100 eTSLA
         assertEq(eOut, 100e18, "eTSLA minted");
         assertEq(usdc.balanceOf(vm1Signer), 5_000_000e6 + 25_000e6, "stablecoins to VM");
-        assertEq(vault.assetExposure(TSLA), 100e18, "exposure tracked");
+        assertEq(exposureManager.globalAssetUnits(TSLA), 100e18, "exposure tracked");
     }
 
     // ──────────────────────────────────────────────────────────
@@ -208,7 +216,7 @@ contract RFQAusdcFlowsTest is BaseTest {
 
         assertEq(eTSLA.balanceOf(Actors.MINTER1), 0, "eTSLA burned");
         assertEq(usdc.balanceOf(Actors.MINTER1), _expectedRedeemUSDC(eAmount), "USDC paid to user");
-        assertEq(vault.assetExposure(TSLA), 0, "exposure cleared");
+        assertEq(exposureManager.globalAssetUnits(TSLA), 0, "exposure cleared");
     }
 
     // ──────────────────────────────────────────────────────────
@@ -228,7 +236,7 @@ contract RFQAusdcFlowsTest is BaseTest {
         Quote memory f1 = _quote(orderId, Actors.MINTER1, OrderType.Mint, 10_000e6, TSLA_PRICE);
         vm.prank(vm1Signer);
         market.fillOrder(f1, _signQuote(IOwnMarket(address(market)), f1, vm1SignerPk));
-        assertEq(uint256(vault.assetExposure(TSLA)), 40e18, "partial mint exposure");
+        assertEq(uint256(exposureManager.globalAssetUnits(TSLA)), 40e18, "partial mint exposure");
 
         Quote memory f2 = _quote(orderId, Actors.MINTER1, OrderType.Mint, 15_000e6, TSLA_PRICE);
         vm.prank(vm1Signer);
@@ -251,7 +259,7 @@ contract RFQAusdcFlowsTest is BaseTest {
         market.fillOrder(rq, _signQuote(IOwnMarket(address(market)), rq, vm1SignerPk));
 
         assertEq(usdc.balanceOf(Actors.MINTER1), _expectedRedeemUSDC(eAmount), "limit redeem payout");
-        assertEq(vault.assetExposure(TSLA), 0, "exposure cleared");
+        assertEq(exposureManager.globalAssetUnits(TSLA), 0, "exposure cleared");
     }
 
     // ──────────────────────────────────────────────────────────
@@ -304,7 +312,7 @@ contract RFQAusdcFlowsTest is BaseTest {
     function test_5_lp_deposit_and_withdraw() public {
         uint256 shares = vault.balanceOf(Actors.LP1);
         assertGt(shares, 0, "LP received shares on deposit");
-        assertEq(vault.collateralValueUSD(), 1_000_000e18, "collateral valued");
+        assertEq(exposureManager.collateralMark(address(vault)), 1_000_000e18, "collateral valued");
 
         // Withdraw half via the async queue (no exposure → utilization stays at 0).
         uint256 half = shares / 2;
@@ -332,7 +340,7 @@ contract RFQAusdcFlowsTest is BaseTest {
         bytes memory sig = _signQuote(IOwnMarket(address(market)), q, vm1SignerPk);
 
         vm.prank(Actors.MINTER1);
-        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.UtilizationBreached.selector, 9000, MAX_UTIL_BPS));
+        vm.expectRevert(abi.encodeWithSelector(IExposureManager.GlobalUtilizationBreached.selector, 9000, MAX_UTIL_BPS));
         market.executeOrder(q, sig);
     }
 }

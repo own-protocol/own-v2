@@ -5,11 +5,13 @@ import {Script, console} from "forge-std/Script.sol";
 
 import {AssetRegistry} from "../src/core/AssetRegistry.sol";
 
+import {ExposureManager} from "../src/core/ExposureManager.sol";
 import {OwnMarket} from "../src/core/OwnMarket.sol";
 import {ProtocolRegistry} from "../src/core/ProtocolRegistry.sol";
 import {PythOracleVerifier} from "../src/core/PythOracleVerifier.sol";
 import {VaultFactory} from "../src/core/VaultFactory.sol";
 
+import {IProtocolRegistry} from "../src/interfaces/IProtocolRegistry.sol";
 import {AssetConfig} from "../src/interfaces/types/Types.sol";
 import {WETHRouter} from "../src/periphery/WETHRouter.sol";
 import {ETokenFactory} from "../src/tokens/ETokenFactory.sol";
@@ -63,6 +65,12 @@ contract Deploy is Script {
     uint256 constant TIMELOCK_DELAY = 10 minutes; // Short delay for testing; increase for production
     uint256 constant PYTH_MAX_PRICE_AGE = 120; // 2 minutes
 
+    /// @dev Initial global utilisation cap (80%). Solvency bound across all pooled vaults.
+    uint256 constant GLOBAL_MAX_UTIL_BPS = 8000;
+
+    /// @dev Initial per-asset USD issuance ceiling (18-decimal USD). 0 would block minting.
+    uint256 constant ASSET_CAP_USD = 10_000_000e18;
+
     // ──────────────────────────────────────────────────────────
     //  Deployment result struct — keeps run() under stack limit
     // ──────────────────────────────────────────────────────────
@@ -75,6 +83,7 @@ contract Deploy is Script {
         address pythOracle;
         address factory;
         address market;
+        address exposureManager;
         address etokenFactory;
         address eTSLA;
         address eGOLD;
@@ -137,6 +146,10 @@ contract Deploy is Script {
         d.market = address(new OwnMarket(d.registry));
         console.log("OwnMarket:", d.market);
 
+        // ── 8b. ExposureManager ───────────────────────────────
+        d.exposureManager = address(new ExposureManager(IProtocolRegistry(d.registry)));
+        console.log("ExposureManager:", d.exposureManager);
+
         // ── 9. ETokenFactory + ETokens ────────────────────────
         d.etokenFactory = address(new ETokenFactory(deployer, d.registry));
         console.log("ETokenFactory:", d.etokenFactory);
@@ -157,6 +170,7 @@ contract Deploy is Script {
         registry.setAddress(registry.ASSET_REGISTRY(), d.assetRegistry);
         registry.setAddress(registry.VAULT_FACTORY(), d.factory);
         registry.setAddress(registry.MARKET(), d.market);
+        registry.setAddress(registry.EXPOSURE_MANAGER(), d.exposureManager);
         registry.setAddress(registry.PYTH_ORACLE(), d.pythOracle);
         registry.setAddress(registry.ETOKEN_FACTORY(), d.etokenFactory);
 
@@ -198,6 +212,15 @@ contract Deploy is Script {
                 oracleType: 0
             })
         );
+
+        // ── 13. Configure global exposure risk parameters ─────
+        // An asset can only be minted once BOTH its price is poked (assetMark != 0) and its
+        // per-asset cap is non-zero. Caps are set here; keepers poke marks post-deploy.
+        ExposureManager exposureManager = ExposureManager(d.exposureManager);
+        exposureManager.setGlobalMaxUtilizationBps(GLOBAL_MAX_UTIL_BPS);
+        exposureManager.setAssetCapUSD(TSLA, ASSET_CAP_USD);
+        exposureManager.setAssetCapUSD(GOLD, ASSET_CAP_USD);
+        exposureManager.setAssetCapUSD(ETH, ASSET_CAP_USD);
     }
 
     function run() external {
@@ -219,6 +242,7 @@ contract Deploy is Script {
         console.log("PYTH_ORACLE=", d.pythOracle);
         console.log("VAULT_FACTORY=", d.factory);
         console.log("OWN_MARKET=", d.market);
+        console.log("EXPOSURE_MANAGER=", d.exposureManager);
         console.log("ETOKEN_TSLA=", d.eTSLA);
         console.log("ETOKEN_GOLD=", d.eGOLD);
         console.log("WETH_ROUTER=", d.wethRouter);

@@ -56,11 +56,9 @@ contract AaveRouterTest is BaseTest {
         router.registerReserve(address(wbtcU), address(awbtc));
 
         wstETHVault =
-            new OwnVault(address(awstETH), "Own awstETH", "owawstETH", address(protocolRegistry), address(router), 8000);
-        wethVault =
-            new OwnVault(address(aweth), "Own aWETH", "owaWETH", address(protocolRegistry), address(router), 8000);
-        wbtcVault =
-            new OwnVault(address(awbtc), "Own awBTC", "owawBTC", address(protocolRegistry), address(router), 8000);
+            new OwnVault(address(awstETH), "Own awstETH", "owawstETH", address(protocolRegistry), address(router));
+        wethVault = new OwnVault(address(aweth), "Own aWETH", "owaWETH", address(protocolRegistry), address(router));
+        wbtcVault = new OwnVault(address(awbtc), "Own awBTC", "owawBTC", address(protocolRegistry), address(router));
         vm.stopPrank();
 
         vm.label(address(router), "AaveRouter");

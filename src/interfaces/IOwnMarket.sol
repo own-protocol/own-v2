@@ -123,17 +123,11 @@ interface IOwnMarket {
     /// @notice The asset is not active in the registry.
     error AssetNotActive(bytes32 asset);
 
-    /// @notice The claim/fill would breach the vault's max utilization.
-    error UtilizationBreached(uint256 currentUtilization, uint256 maxUtilization);
-
     /// @notice The collateral oracle is not configured.
     error CollateralOracleNotSet();
 
     /// @notice The vault is not registered in the factory.
     error VaultNotRegistered(address vault);
-
-    /// @notice The vault does not support the requested asset.
-    error VaultAssetNotSupported(address vault, bytes32 asset);
 
     /// @notice The vault's payment token is not configured.
     error PaymentTokenNotSet(address vault);

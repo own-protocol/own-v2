@@ -3,6 +3,7 @@ pragma solidity 0.8.28;
 
 import {IAssetRegistry} from "../interfaces/IAssetRegistry.sol";
 import {IEToken} from "../interfaces/IEToken.sol";
+import {IExposureManager} from "../interfaces/IExposureManager.sol";
 import {IOracleVerifier} from "../interfaces/IOracleVerifier.sol";
 import {IOwnMarket} from "../interfaces/IOwnMarket.sol";
 import {IOwnVault} from "../interfaces/IOwnVault.sol";
@@ -227,10 +228,10 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         order.filledAmount = order.amount;
         order.status = OrderStatus.ForceExecuted;
 
-        // Interactions: release collateral, burn escrowed eTokens, shrink exposure.
+        // Interactions: release collateral, burn escrowed eTokens, shrink global exposure.
         vaultContract.releaseCollateral(order.user, grossCollateral);
         IEToken(_activeToken(order.asset)).burn(address(this), remaining);
-        vaultContract.updateExposure(order.asset, -int256(remaining), price);
+        IExposureManager(registry.exposureManager()).closeExposure(order.vault, order.asset, remaining);
 
         emit OrderForceExecuted(orderId, order.user, remaining, grossCollateral);
 
@@ -350,13 +351,9 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         address paymentToken = IOwnVault(vault).paymentToken();
         eTokenAmount = Math.mulDiv(amountIn * (10 ** (18 - IERC20Metadata(paymentToken).decimals())), PRECISION, price);
 
-        // Projected utilization check against the exposure actually being added.
-        {
-            uint256 projectedUtil =
-                IOwnVault(vault).projectedExposureUtilization(Math.mulDiv(eTokenAmount, price, PRECISION));
-            uint256 maxUtil = IOwnVault(vault).maxUtilization();
-            if (projectedUtil > maxUtil) revert UtilizationBreached(projectedUtil, maxUtil);
-        }
+        // Atomic check + commit of global exposure (asset cap + global utilisation) before any
+        // external token movement, so a breach reverts cleanly with no side effects.
+        IExposureManager(registry.exposureManager()).openExposure(vault, asset, eTokenAmount);
 
         // Route the full stablecoin amount to the VM (spread captured offchain).
         if (fromEscrow) {
@@ -365,9 +362,8 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
             IERC20(paymentToken).safeTransferFrom(user, IOwnVault(vault).vm(), amountIn);
         }
 
-        // Mint and record exposure.
+        // Mint the eTokens to the user.
         IEToken(_activeToken(asset)).mint(user, eTokenAmount);
-        IOwnVault(vault).updateExposure(asset, int256(eTokenAmount), price);
     }
 
     /// @dev Settle a redeem of `amountIn` eTokens at `price`. The VM pays the full stablecoin
@@ -387,9 +383,9 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
 
         IERC20(paymentToken).safeTransferFrom(vmAddr, user, netPayout);
 
-        // Burn the eTokens and shrink exposure.
+        // Burn the eTokens and shrink global exposure.
         IEToken(_activeToken(asset)).burn(fromEscrow ? address(this) : user, amountIn);
-        IOwnVault(vault).updateExposure(asset, -int256(amountIn), price);
+        IExposureManager(registry.exposureManager()).closeExposure(vault, asset, amountIn);
     }
 
     /// @dev Return the unfilled escrow to the order owner.
@@ -421,7 +417,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         uint256 usdValue,
         bytes calldata collateralPriceData
     ) private returns (uint256) {
-        bytes32 collatAsset = IOwnVault(vault).collateralOracleAsset();
+        bytes32 collatAsset = IExposureManager(registry.exposureManager()).vaultCollateralAsset(vault);
         address oracleAddr = _getOracleForAsset(collatAsset);
         if (oracleAddr == address(0)) revert CollateralOracleNotSet();
         IOracleVerifier oracle = IOracleVerifier(oracleAddr);
@@ -451,7 +447,9 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
     //  Internal — misc helpers
     // ──────────────────────────────────────────────────────────
 
-    /// @dev Validate that the vault is registered, has a payment token, and supports the asset.
+    /// @dev Validate that the vault is registered, has a payment token, and the asset is active.
+    ///      Per-vault asset enablement is gone — the global AssetRegistry governs validity for
+    ///      all vaults, and the ExposureManager's per-asset cap governs issuance.
     function _validateVaultAndAsset(address vault, bytes32 asset) private view {
         if (!IVaultFactory(registry.vaultFactory()).isRegisteredVault(vault)) {
             revert VaultNotRegistered(vault);
@@ -461,9 +459,6 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         }
         if (!IAssetRegistry(registry.assetRegistry()).isActiveAsset(asset)) {
             revert AssetNotActive(asset);
-        }
-        if (!IOwnVault(vault).isAssetSupported(asset)) {
-            revert VaultAssetNotSupported(vault, asset);
         }
     }
 

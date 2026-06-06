@@ -6,15 +6,13 @@ import {Script, console} from "forge-std/Script.sol";
 import {OwnVault} from "../src/core/OwnVault.sol";
 
 /// @title ConfigureVault — VM-specific vault setup
-/// @notice Run by the vault manager after CreateVault.s.sol.
-///         Sets payment token and enables assets for trading.
+/// @notice Run by the vault manager after CreateVault.s.sol. Sets the payment token.
+///         Per-vault asset enablement is gone — the global AssetRegistry governs which
+///         assets are tradeable, and the ExposureManager's per-asset cap governs issuance.
 ///
 /// Usage:
 ///   forge script script/ConfigureVault.s.sol --rpc-url base_sepolia --broadcast
 contract ConfigureVault is Script {
-    bytes32 constant TSLA = bytes32("TSLA");
-    bytes32 constant GOLD = bytes32("GOLD");
-
     function run() external {
         address vaultAddr = vm.envAddress("VAULT_ADDRESS");
         address mockUSDC = vm.envAddress("MOCK_USDC");
@@ -29,13 +27,6 @@ contract ConfigureVault is Script {
         // Set payment token (stablecoin for mint/redeem orders)
         vault.setPaymentToken(mockUSDC);
         console.log("Payment token set");
-
-        // Enable assets for trading
-        vault.enableAsset(TSLA);
-        console.log("TSLA enabled");
-
-        vault.enableAsset(GOLD);
-        console.log("GOLD enabled");
 
         vm.stopBroadcast();
 
