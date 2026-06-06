@@ -38,8 +38,8 @@ contract UtilizationLimitTest is BaseTest {
         _depositLPCollateral();
         // Seed the manager's marks AFTER deposit so collateral/exposure reflect actual assets.
         _setAssetCap(TSLA, DEFAULT_ASSET_CAP_USD);
-        _pokeCollateral(address(vault));
-        _pokeAsset(TSLA);
+        _pullCollateralPrice(address(vault));
+        _pullAssetPrice(TSLA);
     }
 
     function _deployProtocol() private {

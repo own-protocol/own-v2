@@ -214,8 +214,8 @@ contract Deploy is Script {
         );
 
         // ── 13. Configure global exposure risk parameters ─────
-        // An asset can only be minted once BOTH its price is poked (assetMark != 0) and its
-        // per-asset cap is non-zero. Caps are set here; keepers poke marks post-deploy.
+        // An asset can only be minted once BOTH its price is pulled (assetMark != 0) and its
+        // per-asset cap is non-zero. Caps are set here; keepers pull marks post-deploy.
         ExposureManager exposureManager = ExposureManager(d.exposureManager);
         exposureManager.setGlobalMaxUtilizationBps(GLOBAL_MAX_UTIL_BPS);
         exposureManager.setAssetCapUSD(TSLA, ASSET_CAP_USD);

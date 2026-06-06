@@ -132,9 +132,9 @@ contract HaltWithPriceFlowTest is BaseTest {
         vault.deposit(LP_DEPOSIT_WETH, Actors.LP1);
         vm.stopPrank();
 
-        _pokeCollateral(address(vault));
-        _pokeAsset(TSLA);
-        _pokeAsset(GOLD);
+        _pullCollateralPrice(address(vault));
+        _pullAssetPrice(TSLA);
+        _pullAssetPrice(GOLD);
     }
 
     // ──────────────────────────────────────────────────────────

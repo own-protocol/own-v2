@@ -101,9 +101,9 @@ contract VMLifecycleTest is BaseTest {
         vm.stopPrank();
 
         // Seed the manager's marks: collateral for both vaults and asset price.
-        _pokeCollateral(address(vault));
-        _pokeCollateral(address(vault2));
-        _pokeAsset(TSLA);
+        _pullCollateralPrice(address(vault));
+        _pullCollateralPrice(address(vault2));
+        _pullAssetPrice(TSLA);
     }
 
     // ══════════════════════════════════════════════════════════

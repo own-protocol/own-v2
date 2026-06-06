@@ -113,8 +113,8 @@ contract RedeemFlowTest is BaseTest {
         vault.deposit(LP_DEPOSIT_WETH, Actors.LP1);
         vm.stopPrank();
 
-        _pokeCollateral(address(vault));
-        _pokeAsset(TSLA);
+        _pullCollateralPrice(address(vault));
+        _pullAssetPrice(TSLA);
     }
 
     function _mintETokensToMinter() private {

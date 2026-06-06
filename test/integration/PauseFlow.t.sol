@@ -121,9 +121,9 @@ contract PauseFlowTest is BaseTest {
         vm.stopPrank();
 
         // Seed the manager's marks: collateral and asset prices.
-        _pokeCollateral(address(vault));
-        _pokeAsset(TSLA);
-        _pokeAsset(GOLD);
+        _pullCollateralPrice(address(vault));
+        _pullAssetPrice(TSLA);
+        _pullAssetPrice(GOLD);
     }
 
     function _placeMint(address minter, uint256 amount, uint256 expiry) internal returns (uint256) {

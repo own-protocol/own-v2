@@ -125,8 +125,8 @@ contract RFQAusdcFlowsTest is BaseTest {
         vm.stopPrank();
         vm.prank(vm1Signer);
         vault.acceptDeposit(reqId);
-        _pokeCollateral(address(vault));
-        _pokeAsset(TSLA);
+        _pullCollateralPrice(address(vault));
+        _pullAssetPrice(TSLA);
 
         // Fund the VM with stablecoins so it can settle redeem payouts.
         usdc.mint(vm1Signer, 5_000_000e6);

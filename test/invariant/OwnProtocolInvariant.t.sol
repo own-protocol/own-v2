@@ -134,8 +134,8 @@ contract OwnProtocolInvariant is BaseTest {
         vm.stopPrank();
 
         // Seed the manager's marks so mints have non-zero collateral and an asset price.
-        _pokeCollateral(address(vault));
-        _pokeAsset(TSLA);
+        _pullCollateralPrice(address(vault));
+        _pullAssetPrice(TSLA);
     }
 
     function _deployHandlers() private {
@@ -244,7 +244,7 @@ contract OwnProtocolInvariant is BaseTest {
     }
 
     /// @notice INV-07c: Global utilisation never exceeds the cap (collateral mark is fixed across the
-    ///         campaign — no keeper pokes — so every gated open keeps utilisation bounded).
+    ///         campaign — no keeper price pulls — so every gated open keeps utilisation bounded).
     function invariant_globalUtilizationWithinCap() external view {
         assert(exposureManager.globalUtilizationBps() <= exposureManager.globalMaxUtilizationBps());
     }

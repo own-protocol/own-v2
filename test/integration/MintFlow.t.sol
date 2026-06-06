@@ -127,9 +127,9 @@ contract MintFlowTest is BaseTest {
         vm.stopPrank();
 
         // Seed the manager's marks: collateral (so globalCollateralUSD != 0) and asset prices.
-        _pokeCollateral(address(vault));
-        _pokeAsset(TSLA);
-        _pokeAsset(GOLD);
+        _pullCollateralPrice(address(vault));
+        _pullAssetPrice(TSLA);
+        _pullAssetPrice(GOLD);
     }
 
     /// @dev Execute a market mint for `minter` against a VM-signed quote (1 tx).

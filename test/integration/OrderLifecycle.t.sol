@@ -111,8 +111,8 @@ contract OrderLifecycleTest is BaseTest {
         vm.stopPrank();
 
         // Seed the manager's marks: collateral and asset price.
-        _pokeCollateral(address(vault));
-        _pokeAsset(TSLA);
+        _pullCollateralPrice(address(vault));
+        _pullAssetPrice(TSLA);
     }
 
     function _placeMint(address minter, uint256 amount, uint256 expiry) internal returns (uint256) {

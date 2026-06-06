@@ -152,8 +152,8 @@ contract UserBorrowManagerTest is BaseTest {
         vm.prank(Actors.ADMIN);
         assetRegistry.addAsset(collat, address(awstETH), wstCfg);
 
-        // Refresh the vault's collateral mark in the ExposureManager (keeper poke).
-        exposureManager.pokeCollateral(address(vault));
+        // Refresh the vault's collateral mark in the ExposureManager (keeper price pull).
+        exposureManager.pullCollateralPrice(address(vault));
     }
 
     function _giveTSLA(address to, uint256 amount) internal {

@@ -108,8 +108,8 @@ contract BorrowAndLiquidateFlowTest is BaseTest {
         });
         vm.prank(Actors.ADMIN);
         assetRegistry.addAsset(collat, address(awstETH), wstCfg);
-        // Refresh the vault's collateral mark in the ExposureManager (keeper poke).
-        exposureManager.pokeCollateral(address(vault));
+        // Refresh the vault's collateral mark in the ExposureManager (keeper price pull).
+        exposureManager.pullCollateralPrice(address(vault));
 
         // Vault setup: set payment token, opt into lending (delegate credit + register pass-through).
         vault.setPaymentToken(address(usdc));

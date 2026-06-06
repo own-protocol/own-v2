@@ -14,8 +14,8 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 /// @title ExposureManager — Central, pooled exposure / utilisation / collateral accounting
 /// @notice Owns all global risk math for the protocol. Vaults keep custody, LP shares, yield, and
 ///         lending; this manager pools risk globally. Exposure and collateral are valued only at
-///         keeper-cached marks (Maker `spot`-style) refreshed by permissionless pokes. All paths are
-///         O(1): `_globalExposureUSD` and `_globalCollateralUSD` are running totals.
+///         keeper-cached marks (Maker `spot`-style) refreshed by permissionless price pulls. All
+///         paths are O(1): `_globalExposureUSD` and `_globalCollateralUSD` are running totals.
 /// @dev No external calls reach untrusted code (oracle/vault reads are views), so no ReentrancyGuard.
 contract ExposureManager is IExposureManager {
     using Math for uint256;
@@ -30,7 +30,7 @@ contract ExposureManager is IExposureManager {
     /// @inheritdoc IExposureManager
     uint256 public override globalMaxUtilizationBps;
 
-    /// @dev Running Σ globalAssetUnits[a] × assetMark[a] / 1e18 (18-decimal USD).
+    /// @dev Running Σ _assetExposureUSD[a] — maintained as the exact sum, never drifts (18-decimal USD).
     uint256 private _globalExposureUSD;
 
     /// @dev Running Σ collateralMark[vault] (18-decimal USD).
@@ -41,6 +41,11 @@ contract ExposureManager is IExposureManager {
 
     /// @dev Asset ticker → total outstanding eToken units (18 decimals).
     mapping(bytes32 => uint256) private _globalAssetUnits;
+
+    /// @dev Asset ticker → its exact USD contribution to `_globalExposureUSD`: globalAssetUnits×mark/1e18.
+    ///      Stored (rather than re-derived from a running sum of floored deltas) so every global update
+    ///      subtracts exactly what it previously added — no rounding drift, no underflow.
+    mapping(bytes32 => uint256) private _assetExposureUSD;
 
     /// @dev Asset ticker → per-asset USD issuance ceiling (0 = minting blocked).
     mapping(bytes32 => uint256) private _assetCapUSD;
@@ -109,11 +114,13 @@ contract ExposureManager is IExposureManager {
         uint256 cap = _assetCapUSD[asset];
         if (newAssetUSD > cap) revert AssetCapBreached(asset, newAssetUSD, cap);
 
-        uint256 projExposure = _globalExposureUSD + units.mulDiv(mark, PRECISION);
+        // Re-base this asset's contribution to the bulk value so the running total stays exact.
+        uint256 projExposure = _globalExposureUSD - _assetExposureUSD[asset] + newAssetUSD;
         uint256 projUtil = projExposure.mulDiv(BPS, _globalCollateralUSD);
         if (projUtil > globalMaxUtilizationBps) revert GlobalUtilizationBreached(projUtil, globalMaxUtilizationBps);
 
         _globalAssetUnits[asset] = newUnits;
+        _assetExposureUSD[asset] = newAssetUSD;
         _globalExposureUSD = projExposure;
 
         emit ExposureOpened(vault, asset, units, mark);
@@ -127,9 +134,13 @@ contract ExposureManager is IExposureManager {
         if (have < units) revert InsufficientExposure(asset, have, units);
 
         uint256 mark = _assetMark[asset];
-        _globalAssetUnits[asset] = have - units;
-        // No underflow: this asset's contribution to the running sum is part of `_globalExposureUSD`.
-        _globalExposureUSD -= units.mulDiv(mark, PRECISION);
+        uint256 newUnits = have - units;
+        uint256 newAssetUSD = newUnits.mulDiv(mark, PRECISION);
+        // Subtract this asset's exact stored contribution and re-add the smaller new one. No underflow:
+        // `_assetExposureUSD[asset]` is one of the summands of `_globalExposureUSD` by construction.
+        _globalExposureUSD = _globalExposureUSD - _assetExposureUSD[asset] + newAssetUSD;
+        _assetExposureUSD[asset] = newAssetUSD;
+        _globalAssetUnits[asset] = newUnits;
 
         emit ExposureClosed(vault, asset, units, mark);
     }
@@ -139,22 +150,24 @@ contract ExposureManager is IExposureManager {
     // ──────────────────────────────────────────────────────────
 
     /// @inheritdoc IExposureManager
-    function pokeAssetPrice(
+    function pullAssetPrice(
         bytes32 asset
     ) external override {
         uint256 price = _resolvePrice(asset);
         if (price == 0) revert PriceUnavailable(asset);
 
         uint256 old = _assetMark[asset];
-        uint256 u = _globalAssetUnits[asset];
-        _globalExposureUSD = _globalExposureUSD - u.mulDiv(old, PRECISION) + u.mulDiv(price, PRECISION);
+        uint256 newAssetUSD = _globalAssetUnits[asset].mulDiv(price, PRECISION);
+        // Replace this asset's exact stored contribution with its value at the new mark.
+        _globalExposureUSD = _globalExposureUSD - _assetExposureUSD[asset] + newAssetUSD;
+        _assetExposureUSD[asset] = newAssetUSD;
         _assetMark[asset] = price;
 
-        emit AssetPricePoked(asset, old, price);
+        emit AssetPricePulled(asset, old, price);
     }
 
     /// @inheritdoc IExposureManager
-    function pokeCollateral(
+    function pullCollateralPrice(
         address vault
     ) external override {
         if (!_registered[vault]) revert VaultNotRegistered(vault);
@@ -167,7 +180,7 @@ contract ExposureManager is IExposureManager {
         _globalCollateralUSD = _globalCollateralUSD - old + newMark;
         _collateralMark[vault] = newMark;
 
-        emit CollateralPoked(vault, old, newMark);
+        emit CollateralPricePulled(vault, old, newMark);
     }
 
     // ──────────────────────────────────────────────────────────

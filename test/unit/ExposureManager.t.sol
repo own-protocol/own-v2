@@ -87,14 +87,14 @@ contract ExposureManagerTest is Test {
     //  Helpers
     // ──────────────────────────────────────────────────────────
 
-    /// @dev Register the vault, seed collateral, and poke both marks. $1M collateral.
+    /// @dev Register the vault, seed collateral, and pull both marks. $1M collateral.
     function _bootstrap() internal {
         vm.prank(factory);
         manager.registerVault(address(vault), USDC_TICKER);
 
         vault.setTotalAssets(1_000_000e6); // 1M USDC
-        manager.pokeCollateral(address(vault));
-        manager.pokeAssetPrice(TSLA);
+        manager.pullCollateralPrice(address(vault));
+        manager.pullAssetPrice(TSLA);
 
         vm.prank(admin);
         manager.setAssetCapUSD(TSLA, ASSET_CAP);
@@ -158,62 +158,62 @@ contract ExposureManagerTest is Test {
     }
 
     // ──────────────────────────────────────────────────────────
-    //  Poke — collateral
+    //  Price pull — collateral
     // ──────────────────────────────────────────────────────────
 
-    function test_pokeCollateral_setsMarkAndGlobal() public {
+    function test_pullCollateralPrice_setsMarkAndGlobal() public {
         vm.prank(factory);
         manager.registerVault(address(vault), USDC_TICKER);
         vault.setTotalAssets(1_000_000e6);
 
-        manager.pokeCollateral(address(vault));
+        manager.pullCollateralPrice(address(vault));
 
         assertEq(manager.collateralMark(address(vault)), 1_000_000e18);
         assertEq(manager.globalCollateralUSD(), 1_000_000e18);
     }
 
-    function test_pokeCollateral_secondPokeReplacesContribution() public {
+    function test_pullCollateralPrice_secondPullReplacesContribution() public {
         vm.prank(factory);
         manager.registerVault(address(vault), USDC_TICKER);
 
         vault.setTotalAssets(1_000_000e6);
-        manager.pokeCollateral(address(vault));
+        manager.pullCollateralPrice(address(vault));
         vault.setTotalAssets(500_000e6);
-        manager.pokeCollateral(address(vault));
+        manager.pullCollateralPrice(address(vault));
 
         assertEq(manager.globalCollateralUSD(), 500_000e18);
     }
 
-    function test_pokeCollateral_notRegistered_reverts() public {
+    function test_pullCollateralPrice_notRegistered_reverts() public {
         vm.expectRevert(abi.encodeWithSelector(IExposureManager.VaultNotRegistered.selector, address(vault)));
-        manager.pokeCollateral(address(vault));
+        manager.pullCollateralPrice(address(vault));
     }
 
     // ──────────────────────────────────────────────────────────
-    //  Poke — asset price
+    //  Price pull — asset price
     // ──────────────────────────────────────────────────────────
 
-    function test_pokeAssetPrice_setsMark() public {
-        manager.pokeAssetPrice(TSLA);
+    function test_pullAssetPricePrice_setsMark() public {
+        manager.pullAssetPrice(TSLA);
         assertEq(manager.assetMark(TSLA), TSLA_MARK);
     }
 
-    function test_pokeAssetPrice_remarksExposure() public {
+    function test_pullAssetPricePrice_remarksExposure() public {
         _bootstrap();
         _open(1000e18); // $100k exposure
         assertEq(manager.globalExposureUSD(), 100_000e18);
 
         oracle.setPrice(TSLA, 200e18); // price doubles
-        manager.pokeAssetPrice(TSLA);
+        manager.pullAssetPrice(TSLA);
 
         assertEq(manager.assetMark(TSLA), 200e18);
         assertEq(manager.globalExposureUSD(), 200_000e18);
     }
 
-    function test_pokeAssetPrice_unavailable_reverts() public {
+    function test_pullAssetPricePrice_unavailable_reverts() public {
         // Asset has no oracle price → oracle's getPrice reverts.
         vm.expectRevert(abi.encodeWithSelector(IOracleVerifier.PriceNotAvailable.selector, bytes32("GOLD")));
-        manager.pokeAssetPrice(bytes32("GOLD"));
+        manager.pullAssetPrice(bytes32("GOLD"));
     }
 
     // ──────────────────────────────────────────────────────────
@@ -253,11 +253,11 @@ contract ExposureManagerTest is Test {
     }
 
     function test_openExposure_priceUnavailable_reverts() public {
-        // Registered + collateral poked, but asset price never poked → mark == 0.
+        // Registered + collateral pulled, but asset price never pulled → mark == 0.
         vm.prank(factory);
         manager.registerVault(address(vault), USDC_TICKER);
         vault.setTotalAssets(1_000_000e6);
-        manager.pokeCollateral(address(vault));
+        manager.pullCollateralPrice(address(vault));
 
         vm.expectRevert(abi.encodeWithSelector(IExposureManager.PriceUnavailable.selector, TSLA));
         vm.prank(market);
@@ -265,10 +265,10 @@ contract ExposureManagerTest is Test {
     }
 
     function test_openExposure_collateralNotInitialized_reverts() public {
-        // Registered + price poked, but no collateral poked → global collateral == 0.
+        // Registered + price pulled, but no collateral pulled → global collateral == 0.
         vm.prank(factory);
         manager.registerVault(address(vault), USDC_TICKER);
-        manager.pokeAssetPrice(TSLA);
+        manager.pullAssetPrice(TSLA);
         vm.prank(admin);
         manager.setAssetCapUSD(TSLA, ASSET_CAP);
 
@@ -281,8 +281,8 @@ contract ExposureManagerTest is Test {
         vm.prank(factory);
         manager.registerVault(address(vault), USDC_TICKER);
         vault.setTotalAssets(1_000_000e6);
-        manager.pokeCollateral(address(vault));
-        manager.pokeAssetPrice(TSLA);
+        manager.pullCollateralPrice(address(vault));
+        manager.pullAssetPrice(TSLA);
         // assetCapUSD left at 0 (default).
 
         vm.expectRevert(abi.encodeWithSelector(IExposureManager.AssetCapBreached.selector, TSLA, 100_000e18, 0));
@@ -361,6 +361,29 @@ contract ExposureManagerTest is Test {
         _open(1000e18);
         _close(1000e18);
         assertEq(manager.globalAssetUnits(TSLA), 0);
+        assertEq(manager.globalExposureUSD(), 0);
+    }
+
+    /// @dev Regression: with a sub-$1 mark, dust opens floor their USD contribution to 0, so a
+    ///      naive running-sum total would underflow when a differently-grouped close (or a price
+    ///      pull) subtracts the bulk term. The stored per-asset USD makes every subtraction exact.
+    function test_closeExposure_dustRoundingNoUnderflow() public {
+        _bootstrap();
+        oracle.setPrice(TSLA, 4e17); // $0.40 → floor(1 wei * 0.4e18 / 1e18) == 0
+        manager.pullAssetPrice(TSLA);
+
+        _open(1);
+        _open(1);
+        _open(1);
+        assertEq(manager.globalAssetUnits(TSLA), 3);
+
+        // Closing all three at once subtracts the bulk floor(3 * 0.4) = 1; must not underflow.
+        _close(3);
+        assertEq(manager.globalAssetUnits(TSLA), 0);
+        assertEq(manager.globalExposureUSD(), 0);
+
+        // A price pull on the now-empty book is also safe.
+        manager.pullAssetPrice(TSLA);
         assertEq(manager.globalExposureUSD(), 0);
     }
 

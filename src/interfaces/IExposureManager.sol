@@ -11,8 +11,9 @@ pragma solidity 0.8.28;
 ///              `assetCapUSD == 0` blocks minting that asset (safe default).
 ///
 ///         Exposure and collateral are valued exclusively at keeper-cached marks (Maker `spot`-style),
-///         refreshed by permissionless pokes. Staleness between pokes is absorbed by the utilisation
-///         buffer. There is no `(vault, asset)` attribution — exposure is purely global per asset.
+///         refreshed by permissionless price pulls. Staleness between pulls is absorbed by the
+///         utilisation buffer. There is no `(vault, asset)` attribution — exposure is purely global
+///         per asset.
 interface IExposureManager {
     // ──────────────────────────────────────────────────────────
     //  Events
@@ -41,17 +42,17 @@ interface IExposureManager {
     /// @param markUSD Asset mark used to value the units (18 decimals).
     event ExposureClosed(address indexed vault, bytes32 indexed asset, uint256 units, uint256 markUSD);
 
-    /// @notice Emitted when an asset's price mark is refreshed by a poke.
+    /// @notice Emitted when an asset's price mark is pulled fresh from the oracle.
     /// @param asset   Asset ticker.
     /// @param oldMark Previous mark (18 decimals).
     /// @param newMark New mark (18 decimals).
-    event AssetPricePoked(bytes32 indexed asset, uint256 oldMark, uint256 newMark);
+    event AssetPricePulled(bytes32 indexed asset, uint256 oldMark, uint256 newMark);
 
-    /// @notice Emitted when a vault's collateral mark is refreshed by a poke.
+    /// @notice Emitted when a vault's collateral mark is pulled fresh from the oracle.
     /// @param vault      The vault address.
     /// @param oldMarkUSD Previous collateral mark (18-decimal USD).
     /// @param newMarkUSD New collateral mark (18-decimal USD).
-    event CollateralPoked(address indexed vault, uint256 oldMarkUSD, uint256 newMarkUSD);
+    event CollateralPricePulled(address indexed vault, uint256 oldMarkUSD, uint256 newMarkUSD);
 
     /// @notice Emitted when an asset's per-asset USD issuance ceiling is set.
     /// @param asset  Asset ticker.
@@ -97,10 +98,10 @@ interface IExposureManager {
     /// @notice Not enough outstanding exposure to close the requested units.
     error InsufficientExposure(bytes32 asset, uint256 have, uint256 want);
 
-    /// @notice No collateral has been poked yet (global collateral is zero).
+    /// @notice No collateral has been pulled yet (global collateral is zero).
     error CollateralNotInitialized();
 
-    /// @notice No price mark is available for the asset (never poked, or poke returned zero).
+    /// @notice No price mark is available for the asset (never pulled, or the pull returned zero).
     error PriceUnavailable(bytes32 asset);
 
     /// @notice Deregistering the vault would push global utilisation over the cap.
@@ -126,15 +127,15 @@ interface IExposureManager {
     //  Keeper — permissionless
     // ──────────────────────────────────────────────────────────
 
-    /// @notice Refresh an asset's price mark from its oracle and re-mark global exposure.
+    /// @notice Pull an asset's price fresh from its oracle and re-mark global exposure.
     /// @param asset Asset ticker.
-    function pokeAssetPrice(
+    function pullAssetPrice(
         bytes32 asset
     ) external;
 
-    /// @notice Refresh a vault's collateral mark from its current assets and oracle price.
+    /// @notice Pull a vault's collateral price fresh from the oracle and re-mark its collateral.
     /// @param vault The vault address.
-    function pokeCollateral(
+    function pullCollateralPrice(
         address vault
     ) external;
 

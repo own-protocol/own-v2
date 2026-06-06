@@ -255,7 +255,7 @@ contract BaseTest is Test {
         oracle.setPrice(GOLD, GOLD_PRICE, block.timestamp);
         oracle.setPrice(TLT, TLT_PRICE, block.timestamp);
         oracle.setPrice(ETH, ETH_PRICE, block.timestamp);
-        // Collateral oracle tickers used by vaults (so pokeCollateral resolves a price).
+        // Collateral oracle tickers used by vaults (so pullCollateralPrice resolves a price).
         oracle.setPrice(bytes32("WSTETH"), ETH_PRICE, block.timestamp);
         oracle.setPrice(bytes32("AUSDC"), 1e18, block.timestamp);
     }
@@ -290,17 +290,17 @@ contract BaseTest is Test {
         exposureManager.setGlobalMaxUtilizationBps(bps);
     }
 
-    /// @notice Permissionless poke of a vault's collateral mark.
-    function _pokeCollateral(
+    /// @notice Permissionless price pull of a vault's collateral mark.
+    function _pullCollateralPrice(
         address vault
     ) internal {
-        exposureManager.pokeCollateral(vault);
+        exposureManager.pullCollateralPrice(vault);
     }
 
-    /// @notice Permissionless poke of an asset's price mark.
-    function _pokeAsset(
+    /// @notice Permissionless price pull of an asset's price mark.
+    function _pullAssetPrice(
         bytes32 asset
     ) internal {
-        exposureManager.pokeAssetPrice(asset);
+        exposureManager.pullAssetPrice(asset);
     }
 }

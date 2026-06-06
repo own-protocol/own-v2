@@ -95,7 +95,6 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     EnumerableSet.UintSet private _pendingRequestIds;
 
     /// @dev Total shares escrowed for pending withdrawal requests.
-    ///      Used by projectedUtilization() to estimate effective collateral.
     uint256 private _pendingWithdrawalShares;
 
     // ──────────────────────────────────────────────────────────
@@ -691,7 +690,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
         // The borrow manager has already repaid the corresponding Aave debt, so
         // this aToken slice is unlocked. Releasing it shrinks totalAssets, which
         // socializes the bad-debt loss to LPs via a lower share price. The global
-        // collateral mark catches up on the next keeper poke of this vault.
+        // collateral mark catches up on the next keeper price pull for this vault.
         IERC20(asset()).safeTransfer(to, amount);
         emit CollateralReleasedForBadDebt(to, amount);
     }

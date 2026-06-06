@@ -42,9 +42,9 @@ contract CollateralValuationTest is BaseTest {
         // Seed the manager's marks AFTER deposit so collateral/exposure reflect actual assets.
         _setAssetCap(TSLA, DEFAULT_ASSET_CAP_USD);
         _setAssetCap(GOLD, DEFAULT_ASSET_CAP_USD);
-        _pokeCollateral(address(vault));
-        _pokeAsset(TSLA);
-        _pokeAsset(GOLD);
+        _pullCollateralPrice(address(vault));
+        _pullAssetPrice(TSLA);
+        _pullAssetPrice(GOLD);
     }
 
     /// @dev Reproduces the old vault healthFactor semantics from the manager's globals:
@@ -208,7 +208,7 @@ contract CollateralValuationTest is BaseTest {
         // ETH price doubles
         uint256 newEthPrice = ETH_PRICE * 2;
         _setOraclePrice(ETH_ASSET, newEthPrice);
-        exposureManager.pokeCollateral(address(vault));
+        exposureManager.pullCollateralPrice(address(vault));
 
         uint256 expectedCollateral = Math.mulDiv(LP_DEPOSIT_WETH, newEthPrice, PRECISION);
         assertEq(exposureManager.collateralMark(address(vault)), expectedCollateral, "collateral doubled");
@@ -229,7 +229,7 @@ contract CollateralValuationTest is BaseTest {
         // TSLA price doubles
         uint256 newTslaPrice = TSLA_PRICE * 2;
         _setOraclePrice(TSLA, newTslaPrice);
-        exposureManager.pokeAssetPrice(TSLA);
+        exposureManager.pullAssetPrice(TSLA);
 
         uint256 exposureAfter = exposureManager.globalExposureUSD();
         assertEq(exposureAfter, exposureBefore * 2, "exposure doubled with price");
@@ -281,7 +281,7 @@ contract CollateralValuationTest is BaseTest {
 
         // ETH price drops 50%
         _setOraclePrice(ETH_ASSET, ETH_PRICE / 2);
-        exposureManager.pokeCollateral(address(vault));
+        exposureManager.pullCollateralPrice(address(vault));
 
         uint256 healthAfter = _healthFactor();
         assertLt(healthAfter, healthBefore, "health decreased with collateral price drop");
