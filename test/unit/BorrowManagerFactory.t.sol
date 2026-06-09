@@ -44,8 +44,8 @@ contract BorrowManagerFactoryTest is BaseTest {
         protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), address(vaultFactory));
         vm.stopPrank();
 
-        // Deploy + register the ExposureManager before createVault (which auto-registers the vault).
-        _deployExposureManager();
+        // Deploy + register the VaultManager before createVault (which auto-registers the vault).
+        _deployVaultManager();
 
         vm.startPrank(Actors.ADMIN);
         // Vault is created via VaultFactory so isRegisteredVault() returns true.

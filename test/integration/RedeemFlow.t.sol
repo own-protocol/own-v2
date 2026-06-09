@@ -50,18 +50,19 @@ contract RedeemFlowTest is BaseTest {
         protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), address(factory));
 
         vm.stopPrank();
-        // Deploy + register the ExposureManager before createVault (which auto-registers the vault).
-        _deployExposureManager();
+        // Deploy + register the VaultManager before createVault (which auto-registers the vault).
+        _deployVaultManager();
         vm.startPrank(Actors.ADMIN);
 
         vault = OwnVault(factory.createVault(address(weth), vm1Signer, "Own ETH Vault", "oETH", ETH));
 
         market = new OwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
-        vault.setClaimThreshold(6 hours);
-        vault.addQuoteSigner(vm1Signer);
 
         vm.stopPrank();
+
+        _setClaimThreshold(6 hours);
+        _registerSigner(vm1Signer, Actors.VM1);
 
         _setAssetCap(TSLA, DEFAULT_ASSET_CAP_USD);
 
@@ -101,9 +102,7 @@ contract RedeemFlowTest is BaseTest {
     }
 
     function _configureVault() private {
-        vm.startPrank(vm1Signer);
-        vault.setPaymentToken(address(usdc));
-        vm.stopPrank();
+        _setPaymentToken(address(usdc));
     }
 
     function _depositLPCollateral() private {
@@ -121,7 +120,7 @@ contract RedeemFlowTest is BaseTest {
         _fundUSDC(Actors.MINTER1, MINT_AMOUNT);
         vm.prank(Actors.MINTER1);
         usdc.approve(address(market), MINT_AMOUNT);
-        Quote memory q = _buildQuote(0, Actors.MINTER1, address(vault), TSLA, OrderType.Mint, MINT_AMOUNT, TSLA_PRICE);
+        Quote memory q = _buildQuote(0, Actors.MINTER1, TSLA, OrderType.Mint, MINT_AMOUNT, TSLA_PRICE);
         bytes memory sig = _signQuote(market, q, vm1SignerPk);
         vm.prank(Actors.MINTER1);
         market.executeOrder(q, sig);
@@ -135,9 +134,7 @@ contract RedeemFlowTest is BaseTest {
         vm.startPrank(Actors.MINTER1);
         eTSLA.approve(address(market), ETOKEN_AMOUNT);
 
-        uint256 orderId = market.placeOrder(
-            address(vault), TSLA, OrderType.Redeem, ETOKEN_AMOUNT, TSLA_PRICE, block.timestamp + 1 days
-        );
+        uint256 orderId = market.placeOrder(TSLA, OrderType.Redeem, ETOKEN_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
         vm.stopPrank();
 
         assertEq(eTSLA.balanceOf(address(market)), ETOKEN_AMOUNT, "eTokens escrowed");
@@ -149,14 +146,13 @@ contract RedeemFlowTest is BaseTest {
         assertEq(order.amount, ETOKEN_AMOUNT);
         assertEq(uint8(order.status), uint8(OrderStatus.Open));
 
-        // VM funds payout and fills the resting redeem order.
+        // The signer's linked address funds the payout; the resting redeem order is filled.
         uint256 payout = Math.mulDiv(ETOKEN_AMOUNT, TSLA_PRICE, PRECISION * 10 ** (18 - 6));
-        _fundUSDC(vm1Signer, payout);
-        vm.prank(vm1Signer);
+        _fundUSDC(Actors.VM1, payout);
+        vm.prank(Actors.VM1);
         usdc.approve(address(market), payout);
 
-        Quote memory q =
-            _buildQuote(orderId, Actors.MINTER1, address(vault), TSLA, OrderType.Redeem, ETOKEN_AMOUNT, TSLA_PRICE);
+        Quote memory q = _buildQuote(orderId, Actors.MINTER1, TSLA, OrderType.Redeem, ETOKEN_AMOUNT, TSLA_PRICE);
         vm.prank(vm1Signer);
         market.fillOrder(q, _signQuote(market, q, vm1SignerPk));
 
@@ -174,9 +170,7 @@ contract RedeemFlowTest is BaseTest {
         vm.startPrank(Actors.MINTER1);
         eTSLA.approve(address(market), ETOKEN_AMOUNT);
 
-        uint256 orderId = market.placeOrder(
-            address(vault), TSLA, OrderType.Redeem, ETOKEN_AMOUNT, TSLA_PRICE, block.timestamp + 1 days
-        );
+        uint256 orderId = market.placeOrder(TSLA, OrderType.Redeem, ETOKEN_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
 
         assertEq(eTSLA.balanceOf(Actors.MINTER1), 0);
 
@@ -197,7 +191,7 @@ contract RedeemFlowTest is BaseTest {
         vm.startPrank(Actors.MINTER1);
         eTSLA.approve(address(market), ETOKEN_AMOUNT);
 
-        uint256 orderId = market.placeOrder(address(vault), TSLA, OrderType.Redeem, ETOKEN_AMOUNT, TSLA_PRICE, expiry);
+        uint256 orderId = market.placeOrder(TSLA, OrderType.Redeem, ETOKEN_AMOUNT, TSLA_PRICE, expiry);
         vm.stopPrank();
 
         vm.warp(expiry + 1);

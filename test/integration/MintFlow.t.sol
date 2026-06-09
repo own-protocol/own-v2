@@ -51,20 +51,22 @@ contract MintFlowTest is BaseTest {
         protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), address(factory));
 
         vm.stopPrank();
-        // Deploy + register the ExposureManager before createVault (which auto-registers the vault).
-        _deployExposureManager();
+        // Deploy + register the VaultManager before createVault (which auto-registers the vault).
+        _deployVaultManager();
         vm.startPrank(Actors.ADMIN);
 
         vault = OwnVault(factory.createVault(address(weth), vm1Signer, "Own WETH Vault", "oWETH", ETH));
 
         market = new OwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
-        vault.setClaimThreshold(6 hours);
-        vault.addQuoteSigner(vm1Signer);
 
         vm.stopPrank();
 
-        // Per-asset issuance ceilings (global util default is set by _deployExposureManager).
+        // Global controls now live on the VaultManager.
+        _setClaimThreshold(6 hours);
+        _registerSigner(vm1Signer, Actors.VM1);
+
+        // Per-asset issuance ceilings (global util default is set by _deployVaultManager).
         _setAssetCap(TSLA, DEFAULT_ASSET_CAP_USD);
         _setAssetCap(GOLD, DEFAULT_ASSET_CAP_USD);
 
@@ -100,7 +102,7 @@ contract MintFlowTest is BaseTest {
         });
         assetRegistry.addAsset(GOLD, address(eGOLD), goldConfig);
 
-        // Register the WETH collateral ticker so the ExposureManager can resolve its oracle.
+        // Register the WETH collateral ticker so the VaultManager can resolve its oracle.
         AssetConfig memory ethConfig = AssetConfig({
             activeToken: address(weth),
             legacyTokens: new address[](0),
@@ -114,9 +116,8 @@ contract MintFlowTest is BaseTest {
     }
 
     function _configureVault() private {
-        vm.startPrank(vm1Signer);
-        vault.setPaymentToken(address(usdc));
-        vm.stopPrank();
+        // Payment token is now a global VaultManager setting.
+        _setPaymentToken(address(usdc));
     }
 
     function _depositLPCollateral() private {
@@ -137,7 +138,7 @@ contract MintFlowTest is BaseTest {
         _fundUSDC(minter, amount);
         vm.prank(minter);
         usdc.approve(address(market), amount);
-        Quote memory q = _buildQuote(0, minter, address(vault), asset, OrderType.Mint, amount, price);
+        Quote memory q = _buildQuote(0, minter, asset, OrderType.Mint, amount, price);
         bytes memory sig = _signQuote(market, q, vm1SignerPk);
         vm.prank(minter);
         market.executeOrder(q, sig);
@@ -153,17 +154,17 @@ contract MintFlowTest is BaseTest {
         vm.prank(Actors.MINTER1);
         usdc.approve(address(market), MINT_AMOUNT);
 
-        Quote memory q = _buildQuote(0, Actors.MINTER1, address(vault), TSLA, OrderType.Mint, MINT_AMOUNT, TSLA_PRICE);
+        Quote memory q = _buildQuote(0, Actors.MINTER1, TSLA, OrderType.Mint, MINT_AMOUNT, TSLA_PRICE);
         bytes memory sig = _signQuote(market, q, vm1SignerPk);
 
         vm.prank(Actors.MINTER1);
         market.executeOrder(q, sig);
 
-        // Verify eTokens minted to user, net stablecoins to VM
+        // Verify eTokens minted to user, net stablecoins to the signer's linked address
         uint256 expectedETokens = Math.mulDiv(MINT_AMOUNT * 1e12, PRECISION, TSLA_PRICE);
         assertEq(eTSLA.balanceOf(Actors.MINTER1), expectedETokens, "minter received eTokens");
         assertGt(expectedETokens, 0, "non-zero eTokens minted");
-        assertEq(usdc.balanceOf(vm1Signer), MINT_AMOUNT, "VM received stablecoins");
+        assertEq(usdc.balanceOf(Actors.VM1), MINT_AMOUNT, "linked address received stablecoins");
         assertEq(usdc.balanceOf(address(market)), 0, "no escrow for market order");
     }
 
@@ -175,8 +176,7 @@ contract MintFlowTest is BaseTest {
         _fundUSDC(Actors.MINTER1, MINT_AMOUNT);
         vm.startPrank(Actors.MINTER1);
         usdc.approve(address(market), MINT_AMOUNT);
-        uint256 orderId =
-            market.placeOrder(address(vault), TSLA, OrderType.Mint, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
+        uint256 orderId = market.placeOrder(TSLA, OrderType.Mint, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
         vm.stopPrank();
 
         assertEq(usdc.balanceOf(address(market)), MINT_AMOUNT, "stablecoins escrowed");
@@ -187,8 +187,7 @@ contract MintFlowTest is BaseTest {
         assertEq(order.amount, MINT_AMOUNT);
         assertEq(uint8(order.status), uint8(OrderStatus.Open));
 
-        Quote memory q =
-            _buildQuote(orderId, Actors.MINTER1, address(vault), TSLA, OrderType.Mint, MINT_AMOUNT, TSLA_PRICE);
+        Quote memory q = _buildQuote(orderId, Actors.MINTER1, TSLA, OrderType.Mint, MINT_AMOUNT, TSLA_PRICE);
         vm.prank(vm1Signer);
         market.fillOrder(q, _signQuote(market, q, vm1SignerPk));
 
@@ -197,7 +196,7 @@ contract MintFlowTest is BaseTest {
 
         uint256 expectedETokens = Math.mulDiv(MINT_AMOUNT * 1e12, PRECISION, TSLA_PRICE);
         assertEq(eTSLA.balanceOf(Actors.MINTER1), expectedETokens, "minter received eTokens");
-        assertEq(usdc.balanceOf(vm1Signer), MINT_AMOUNT, "VM received escrowed stablecoins");
+        assertEq(usdc.balanceOf(Actors.VM1), MINT_AMOUNT, "linked address received escrowed stablecoins");
         assertEq(usdc.balanceOf(address(market)), 0, "market escrow cleared");
     }
 
@@ -210,8 +209,7 @@ contract MintFlowTest is BaseTest {
 
         vm.startPrank(Actors.MINTER1);
         usdc.approve(address(market), MINT_AMOUNT);
-        uint256 orderId =
-            market.placeOrder(address(vault), TSLA, OrderType.Mint, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
+        uint256 orderId = market.placeOrder(TSLA, OrderType.Mint, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
 
         assertEq(usdc.balanceOf(Actors.MINTER1), 0);
         assertEq(usdc.balanceOf(address(market)), MINT_AMOUNT);
@@ -236,7 +234,7 @@ contract MintFlowTest is BaseTest {
 
         vm.startPrank(Actors.MINTER1);
         usdc.approve(address(market), MINT_AMOUNT);
-        uint256 orderId = market.placeOrder(address(vault), TSLA, OrderType.Mint, MINT_AMOUNT, TSLA_PRICE, expiry);
+        uint256 orderId = market.placeOrder(TSLA, OrderType.Mint, MINT_AMOUNT, TSLA_PRICE, expiry);
         vm.stopPrank();
 
         vm.warp(expiry + 1);
@@ -258,8 +256,7 @@ contract MintFlowTest is BaseTest {
 
         vm.startPrank(Actors.MINTER1);
         usdc.approve(address(market), MINT_AMOUNT);
-        uint256 orderId =
-            market.placeOrder(address(vault), TSLA, OrderType.Mint, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
+        uint256 orderId = market.placeOrder(TSLA, OrderType.Mint, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
         vm.stopPrank();
 
         vm.prank(Actors.MINTER2);
@@ -275,7 +272,7 @@ contract MintFlowTest is BaseTest {
         vm.startPrank(Actors.MINTER1);
         usdc.approve(address(market), MINT_AMOUNT);
         vm.expectRevert(abi.encodeWithSignature("ZeroAmount()"));
-        market.placeOrder(address(vault), TSLA, OrderType.Mint, 0, TSLA_PRICE, block.timestamp + 1 days);
+        market.placeOrder(TSLA, OrderType.Mint, 0, TSLA_PRICE, block.timestamp + 1 days);
         vm.stopPrank();
     }
 
@@ -289,7 +286,7 @@ contract MintFlowTest is BaseTest {
         vm.startPrank(Actors.MINTER1);
         usdc.approve(address(market), MINT_AMOUNT);
         vm.expectRevert(abi.encodeWithSignature("InvalidExpiry()"));
-        market.placeOrder(address(vault), TSLA, OrderType.Mint, MINT_AMOUNT, TSLA_PRICE, block.timestamp);
+        market.placeOrder(TSLA, OrderType.Mint, MINT_AMOUNT, TSLA_PRICE, block.timestamp);
         vm.stopPrank();
     }
 
@@ -302,8 +299,7 @@ contract MintFlowTest is BaseTest {
 
         vm.startPrank(Actors.MINTER1);
         usdc.approve(address(market), MINT_AMOUNT);
-        uint256 orderId =
-            market.placeOrder(address(vault), TSLA, OrderType.Mint, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
+        uint256 orderId = market.placeOrder(TSLA, OrderType.Mint, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
         vm.stopPrank();
 
         uint256[] memory userOrders = market.getUserOrders(Actors.MINTER1);

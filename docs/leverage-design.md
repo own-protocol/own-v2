@@ -63,7 +63,7 @@ UserBorrowManager borrows stablecoins from Aave on behalf of the vault
   → Variable premium increases with lending utilization (auto-recovery)
 ```
 
-The manager is self-contained: it enforces its own vault-wide debt cap (`maxDebtUSD` = `ExposureManager.collateralMark(vault) * targetLtvBps`), computes `utilizationBps` from its own outstanding debt, and reads the live Aave borrow rate (`liveAaveRateBps`) directly from the pool's USDC reserve.
+The manager is self-contained: it enforces its own vault-wide debt cap (`maxDebtUSD` = `VaultManager.collateralMark(vault) * targetLtvBps`), computes `utilizationBps` from its own outstanding debt, and reads the live Aave borrow rate (`liveAaveRateBps`) directly from the pool's USDC reserve.
 
 ### User Looping (Leveraged eToken Exposure)
 
@@ -116,6 +116,26 @@ Borrower underwater (eToken price drops)
   → Vault recovers stablecoins → repays Aave → LTV improves
   → Both health factors improve simultaneously (self-healing)
 ```
+
+### Lending During Pause / Halt
+
+Lending tracks the global trading controls on the `VaultManager`:
+
+- **Asset trading paused or halted** → new `borrow()` is blocked (`VaultEffectivelyHalted`). `repay()` and `liquidate()` stay open so positions can keep de-risking.
+- **Permanent asset halt** → leveraged positions are unwound per-borrower via `settleHaltedPosition(borrower, asset)` (callable by anyone — keeper, borrower, or admin):
+
+```
+settleHaltedPosition(borrower, asset)
+  → seize the eToken collateral needed to cover the debt at the fixed halt price
+  → redeem that slice via OwnMarket.redeemHalted → stablecoins from the halt redeem address
+  → repay the vault's Aave debt with the proceeds (surplus swept to the manager)
+  → return any excess eToken collateral to the borrower; shrink global exposure
+  → if collateral can't cover the debt, the shortfall is a zero-collateral residual for absorbBadDebt
+```
+
+> Because settlement sources stablecoins through `redeemHalted`, the **halt redeem address must be
+> funded to cover borrowed-against eTokens too** — not just freely-held ones. The MVP assumes the
+> global payment token equals the borrow stablecoin (USDC) so redeem proceeds repay Aave directly.
 
 ### LP Withdrawal
 
@@ -398,7 +418,7 @@ Manages all borrowing/lending using delegated credit from OwnVault. One manager 
 
 **Self-contained risk controls:**
 - `targetLtvBps` / `setTargetLtvBps(ltvBps)`: admin-configured vault-wide LTV target
-- `maxDebtUSD()`: `ExposureManager.collateralMark(vault) * targetLtvBps / BPS` — hard cap enforced on every borrow (`BorrowExceedsCap` revert)
+- `maxDebtUSD()`: `VaultManager.collateralMark(vault) * targetLtvBps / BPS` — hard cap enforced on every borrow (`BorrowExceedsCap` revert)
 - `totalDebtUSD()`: aggregate outstanding debt across all borrowers
 - `utilizationBps()`: `totalDebtUSD / maxDebtUSD` — drives the premium curve
 - `liveAaveRateBps()`: reads `pool.getReserveData(stablecoin).currentVariableBorrowRate` (RAY → BPS) as the floor
@@ -469,7 +489,7 @@ These must hold at all times:
 1. **Aave solvency**: `vault Aave LTV <= 35%` under normal conditions
 2. **Aave safety**: `vault Aave health factor >= 1.5` (target; liquidation at 1.0)
 3. **Own solvency**: `awstETH value >= eToken exposure * collateral ratio` (existing)
-4. **Manager debt cap**: `totalDebtUSD() <= maxDebtUSD()` (= `ExposureManager.collateralMark(vault) * targetLtvBps`)
+4. **Manager debt cap**: `totalDebtUSD() <= maxDebtUSD()` (= `VaultManager.collateralMark(vault) * targetLtvBps`)
 5. **Borrower health**: `eTokenCollateralValue * liquidationThreshold >= debtValue` per borrower
 6. **Accounting**: `Aave debt == sum(all eToken borrower debt)`
 7. **Concentration**: `vault's Aave deposit <= 25% of total Aave wstETH pool on Base`

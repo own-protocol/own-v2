@@ -3,7 +3,6 @@ pragma solidity 0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
 
-import {OwnVault} from "../src/core/OwnVault.sol";
 import {ProtocolRegistry} from "../src/core/ProtocolRegistry.sol";
 import {VaultFactory} from "../src/core/VaultFactory.sol";
 
@@ -14,7 +13,7 @@ import {VaultFactory} from "../src/core/VaultFactory.sol";
 ///            then creates + configures the vault through the now-active factory)
 ///
 /// @dev Vault creation is deferred to phase 2 because the factory must be the registry's active
-///      VAULT_FACTORY before `createVault` can register the vault with the ExposureManager
+///      VAULT_FACTORY before `createVault` can register the vault with the VaultManager
 ///      (the manager's onlyFactory guard reads `registry.vaultFactory()`).
 ///
 /// Usage:
@@ -74,13 +73,10 @@ contract ExecuteTimelockVaultFactory is Script {
         registry.executeTimelock(registry.VAULT_FACTORY());
         console.log("VAULT_FACTORY timelock executed");
 
-        // The new factory is now active, so createVault can register with the ExposureManager.
+        // The new factory is now active, so createVault can register with the VaultManager.
         VaultFactory factory = VaultFactory(registry.vaultFactory());
         address vaultAddr = factory.createVault(WETH, vmAddress, "Own ETH Vault", "oETH", ETH);
         console.log("New Vault:", vaultAddr);
-
-        OwnVault vault = OwnVault(vaultAddr);
-        vault.setClaimThreshold(6 hours);
 
         vm.stopBroadcast();
 

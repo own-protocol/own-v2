@@ -54,7 +54,7 @@ contract UserBorrowManagerTest is BaseTest {
         usdcDebt = MockAaveDebtToken(aavePool.deployVariableDebtToken(address(usdc)));
 
         // 2) ProtocolRegistry slots. This contract doubles as MARKET and VAULT_FACTORY so it can
-        //    register the directly-constructed vault with the ExposureManager.
+        //    register the directly-constructed vault with the VaultManager.
         vm.startPrank(Actors.ADMIN);
         protocolRegistry.setAddress(protocolRegistry.MARKET(), mockMarket);
         protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), address(this));
@@ -82,13 +82,13 @@ contract UserBorrowManagerTest is BaseTest {
         // 4) OwnVault on awstETH. Bound VM = this contract.
         vm.prank(Actors.ADMIN);
         vault = new OwnVault(address(awstETH), "Own awstETH", "owawstETH", address(protocolRegistry), address(this));
-        // Set USDC as payment token for the vault (required by some flows; not used here).
-        vault.setPaymentToken(address(usdc));
 
-        // ExposureManager owns collateral marks now; register the vault (this contract is the
+        // VaultManager owns collateral marks now; register the vault (this contract is the
         // registry's VAULT_FACTORY) so maxDebtUSD can read its collateral mark.
-        _deployExposureManager();
-        exposureManager.registerVault(address(vault), bytes32("WSTETH"));
+        _deployVaultManager();
+        // Set the global payment token (required by some flows; not used here).
+        _setPaymentToken(address(usdc));
+        vaultManager.registerVault(address(vault), bytes32("WSTETH"));
 
         // 5) UserBorrowManager. Wire credit delegation + Aave reserve liquidity.
         // Seed the vault with collateral value so the manager's `maxDebtUSD` is
@@ -152,8 +152,8 @@ contract UserBorrowManagerTest is BaseTest {
         vm.prank(Actors.ADMIN);
         assetRegistry.addAsset(collat, address(awstETH), wstCfg);
 
-        // Refresh the vault's collateral mark in the ExposureManager (keeper price pull).
-        exposureManager.pullCollateralPrice(address(vault));
+        // Refresh the vault's collateral mark in the VaultManager (keeper price pull).
+        vaultManager.pullCollateralPrice(address(vault));
     }
 
     function _giveTSLA(address to, uint256 amount) internal {
@@ -343,8 +343,9 @@ contract UserBorrowManagerTest is BaseTest {
     }
 
     function test_borrow_vaultHalted_reverts() public {
-        vm.prank(Actors.ADMIN);
-        vault.haltVault();
+        // Lending eligibility now reads the global VaultManager pause/halt state, not the
+        // per-vault status: a permanently halted asset blocks new borrows.
+        _haltAsset(ASSET, TSLA_PX);
 
         _giveTSLA(Actors.MINTER1, 1e18);
         vm.startPrank(Actors.MINTER1);
@@ -619,7 +620,7 @@ contract UserBorrowManagerTest is BaseTest {
 
         skip(365 days); // accrue the premium above Aave's (static mock) debt
 
-        address vmAddr = vault.vm();
+        address vmAddr = vault.manager();
         uint256 managerDebt = borrowManager.debtOf(Actors.MINTER1, ASSET);
         uint256 aaveDebt = aavePool.debtOf(address(vault), address(usdc));
         assertGt(managerDebt, aaveDebt, "premium accrued above aave debt");

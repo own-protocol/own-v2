@@ -5,9 +5,9 @@ import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {OwnMarket} from "../../src/core/OwnMarket.sol";
 import {IOwnMarket} from "../../src/interfaces/IOwnMarket.sol";
 
-import {IExposureManager} from "../../src/interfaces/IExposureManager.sol";
 import {IOwnVault} from "../../src/interfaces/IOwnVault.sol";
 import {IVaultFactory} from "../../src/interfaces/IVaultFactory.sol";
+import {IVaultManager} from "../../src/interfaces/IVaultManager.sol";
 import {AssetConfig, BPS, Order, OrderStatus, OrderType, PRECISION, Quote} from "../../src/interfaces/types/Types.sol";
 
 import {Actors} from "../helpers/Actors.sol";
@@ -25,7 +25,8 @@ contract OwnMarketTest is BaseTest {
 
     address public mockVault = makeAddr("vault");
     address public mockFactory = makeAddr("factory");
-    address public mockExposureManager = makeAddr("exposureManager");
+    address public mockVaultManager = makeAddr("vaultManager");
+    address public haltFund = makeAddr("haltFund");
 
     address public rfqVM;
     uint256 public rfqVMPk;
@@ -60,7 +61,7 @@ contract OwnMarketTest is BaseTest {
         protocolRegistry.setAddress(protocolRegistry.ASSET_REGISTRY(), address(assetReg));
 
         protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), mockFactory);
-        protocolRegistry.setAddress(protocolRegistry.EXPOSURE_MANAGER(), mockExposureManager);
+        protocolRegistry.setAddress(protocolRegistry.VAULT_MANAGER(), mockVaultManager);
         market = new OwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
 
@@ -81,27 +82,39 @@ contract OwnMarketTest is BaseTest {
         vm.mockCall(
             mockFactory, abi.encodeWithSelector(IVaultFactory.isRegisteredVault.selector, mockVault), abi.encode(true)
         );
-        vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.paymentToken.selector), abi.encode(address(usdc)));
         // Collateral token (18 decimals) — used by force-execution collateral conversion.
         vm.mockCall(mockVault, abi.encodeWithSignature("asset()"), abi.encode(address(weth)));
         vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.releaseCollateral.selector), abi.encode());
-        vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.claimThreshold.selector), abi.encode(CLAIM_THRESHOLD));
-        vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.isEffectivelyPaused.selector), abi.encode(false));
-        vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.isEffectivelyHalted.selector), abi.encode(false));
-        vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.getAssetHaltPrice.selector), abi.encode(uint256(0)));
-        vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.vm.selector), abi.encode(rfqVM));
-        // Authorised quote signers: rfqVM signs; everyone else is rejected.
-        vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.isQuoteSigner.selector), abi.encode(false));
-        vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.isQuoteSigner.selector, rfqVM), abi.encode(true));
 
-        // ExposureManager: exposure accounting is centralised. open/close are no-ops here;
-        // vaultCollateralAsset feeds force-execution collateral conversion.
-        vm.mockCall(mockExposureManager, abi.encodeWithSelector(IExposureManager.openExposure.selector), abi.encode());
-        vm.mockCall(mockExposureManager, abi.encodeWithSelector(IExposureManager.closeExposure.selector), abi.encode());
+        // VaultManager mocks: control surface + exposure accounting are centralised here.
+        // Global payment token + claim threshold + halt fund.
         vm.mockCall(
-            mockExposureManager,
-            abi.encodeWithSelector(IExposureManager.vaultCollateralAsset.selector),
-            abi.encode(ETH_ASSET)
+            mockVaultManager, abi.encodeWithSelector(IVaultManager.paymentToken.selector), abi.encode(address(usdc))
+        );
+        vm.mockCall(
+            mockVaultManager, abi.encodeWithSelector(IVaultManager.claimThreshold.selector), abi.encode(CLAIM_THRESHOLD)
+        );
+        vm.mockCall(
+            mockVaultManager, abi.encodeWithSelector(IVaultManager.haltRedeemAddress.selector), abi.encode(haltFund)
+        );
+        // Trading status: not paused, not halted by default.
+        vm.mockCall(mockVaultManager, abi.encodeWithSelector(IVaultManager.isTradingPaused.selector), abi.encode(false));
+        vm.mockCall(mockVaultManager, abi.encodeWithSelector(IVaultManager.isAssetHalted.selector), abi.encode(false));
+        vm.mockCall(
+            mockVaultManager, abi.encodeWithSelector(IVaultManager.assetHaltPrice.selector), abi.encode(uint256(0))
+        );
+        // Global signer registry: rfqVM signs; everyone else is rejected. Funds settle to rfqVM.
+        vm.mockCall(mockVaultManager, abi.encodeWithSelector(IVaultManager.isSigner.selector), abi.encode(false));
+        vm.mockCall(mockVaultManager, abi.encodeWithSelector(IVaultManager.isSigner.selector, rfqVM), abi.encode(true));
+        vm.mockCall(
+            mockVaultManager, abi.encodeWithSelector(IVaultManager.signerLinkedAddress.selector), abi.encode(rfqVM)
+        );
+        // Exposure accounting: open/close are no-ops here; vaultCollateralAsset feeds force-exec
+        // collateral conversion.
+        vm.mockCall(mockVaultManager, abi.encodeWithSelector(IVaultManager.openExposure.selector), abi.encode());
+        vm.mockCall(mockVaultManager, abi.encodeWithSelector(IVaultManager.closeExposure.selector), abi.encode());
+        vm.mockCall(
+            mockVaultManager, abi.encodeWithSelector(IVaultManager.vaultCollateralAsset.selector), abi.encode(ETH_ASSET)
         );
 
         _setOraclePrice(TSLA, TSLA_PRICE);
@@ -126,7 +139,6 @@ contract OwnMarketTest is BaseTest {
         q = Quote({
             orderId: orderId,
             user: user,
-            vault: mockVault,
             asset: TSLA,
             orderType: orderType,
             amount: amount,
@@ -143,7 +155,6 @@ contract OwnMarketTest is BaseTest {
             abi.encode(
                 q.orderId,
                 q.user,
-                q.vault,
                 q.asset,
                 q.orderType,
                 q.amount,
@@ -192,7 +203,7 @@ contract OwnMarketTest is BaseTest {
         usdc.mint(user, amount);
         vm.startPrank(user);
         usdc.approve(address(market), amount);
-        orderId = market.placeOrder(mockVault, TSLA, OrderType.Mint, amount, limitPrice, _defaultExpiry());
+        orderId = market.placeOrder(TSLA, OrderType.Mint, amount, limitPrice, _defaultExpiry());
         vm.stopPrank();
     }
 
@@ -200,7 +211,7 @@ contract OwnMarketTest is BaseTest {
         eTSLAToken.mint(user, amount);
         vm.startPrank(user);
         eTSLAToken.approve(address(market), amount);
-        orderId = market.placeOrder(mockVault, TSLA, OrderType.Redeem, amount, limitPrice, _defaultExpiry());
+        orderId = market.placeOrder(TSLA, OrderType.Redeem, amount, limitPrice, _defaultExpiry());
         vm.stopPrank();
     }
 
@@ -276,9 +287,16 @@ contract OwnMarketTest is BaseTest {
     }
 
     function test_executeOrder_separateAuthorisedSigner_succeeds() public {
-        // A signer distinct from the operational vm address can authorise quotes.
+        // A signer distinct from the settlement (linked) address can authorise quotes.
         (address altSigner, uint256 altPk) = makeAddrAndKey("altSigner");
-        vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.isQuoteSigner.selector, altSigner), abi.encode(true));
+        vm.mockCall(
+            mockVaultManager, abi.encodeWithSelector(IVaultManager.isSigner.selector, altSigner), abi.encode(true)
+        );
+        vm.mockCall(
+            mockVaultManager,
+            abi.encodeWithSelector(IVaultManager.signerLinkedAddress.selector, altSigner),
+            abi.encode(rfqVM)
+        );
 
         uint256 amount = 1000e6;
         _fundUserForMint(Actors.MINTER1, amount);
@@ -318,7 +336,7 @@ contract OwnMarketTest is BaseTest {
     }
 
     function test_executeOrder_paused_reverts() public {
-        vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.isEffectivelyPaused.selector), abi.encode(true));
+        vm.mockCall(mockVaultManager, abi.encodeWithSelector(IVaultManager.isTradingPaused.selector), abi.encode(true));
         Quote memory q = _quote(0, Actors.MINTER1, OrderType.Mint, 1000e6, TSLA_PRICE);
         bytes memory sig = _sign(q, rfqVMPk);
         vm.prank(Actors.MINTER1);
@@ -327,7 +345,7 @@ contract OwnMarketTest is BaseTest {
     }
 
     function test_executeOrder_mintDuringHalt_reverts() public {
-        vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.isEffectivelyHalted.selector), abi.encode(true));
+        vm.mockCall(mockVaultManager, abi.encodeWithSelector(IVaultManager.isAssetHalted.selector), abi.encode(true));
         Quote memory q = _quote(0, Actors.MINTER1, OrderType.Mint, 1000e6, TSLA_PRICE);
         bytes memory sig = _sign(q, rfqVMPk);
         vm.prank(Actors.MINTER1);
@@ -336,7 +354,7 @@ contract OwnMarketTest is BaseTest {
     }
 
     function test_executeOrder_redeemDuringHalt_reverts() public {
-        vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.isEffectivelyHalted.selector), abi.encode(true));
+        vm.mockCall(mockVaultManager, abi.encodeWithSelector(IVaultManager.isAssetHalted.selector), abi.encode(true));
         Quote memory q = _quote(0, Actors.MINTER1, OrderType.Redeem, 4e18, TSLA_PRICE);
         bytes memory sig = _sign(q, rfqVMPk);
         vm.prank(Actors.MINTER1);
@@ -355,9 +373,9 @@ contract OwnMarketTest is BaseTest {
         usdc.approve(address(market), amount);
 
         vm.expectEmit(true, true, true, true);
-        emit IOwnMarket.OrderPlaced(1, Actors.MINTER1, uint8(OrderType.Mint), TSLA, mockVault, amount, TSLA_PRICE);
+        emit IOwnMarket.OrderPlaced(1, Actors.MINTER1, uint8(OrderType.Mint), TSLA, amount, TSLA_PRICE);
 
-        uint256 orderId = market.placeOrder(mockVault, TSLA, OrderType.Mint, amount, TSLA_PRICE, _defaultExpiry());
+        uint256 orderId = market.placeOrder(TSLA, OrderType.Mint, amount, TSLA_PRICE, _defaultExpiry());
         vm.stopPrank();
 
         assertEq(orderId, 1);
@@ -380,26 +398,26 @@ contract OwnMarketTest is BaseTest {
     function test_placeOrder_zeroAmount_reverts() public {
         vm.prank(Actors.MINTER1);
         vm.expectRevert(IOwnMarket.ZeroAmount.selector);
-        market.placeOrder(mockVault, TSLA, OrderType.Mint, 0, TSLA_PRICE, _defaultExpiry());
+        market.placeOrder(TSLA, OrderType.Mint, 0, TSLA_PRICE, _defaultExpiry());
     }
 
     function test_placeOrder_zeroLimitPrice_reverts() public {
         vm.prank(Actors.MINTER1);
         vm.expectRevert(IOwnMarket.InvalidPrice.selector);
-        market.placeOrder(mockVault, TSLA, OrderType.Mint, 1000e6, 0, _defaultExpiry());
+        market.placeOrder(TSLA, OrderType.Mint, 1000e6, 0, _defaultExpiry());
     }
 
     function test_placeOrder_pastExpiry_reverts() public {
         vm.prank(Actors.MINTER1);
         vm.expectRevert(IOwnMarket.InvalidExpiry.selector);
-        market.placeOrder(mockVault, TSLA, OrderType.Mint, 1000e6, TSLA_PRICE, block.timestamp);
+        market.placeOrder(TSLA, OrderType.Mint, 1000e6, TSLA_PRICE, block.timestamp);
     }
 
     function test_placeOrder_mintDuringHalt_reverts() public {
-        vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.isEffectivelyHalted.selector), abi.encode(true));
+        vm.mockCall(mockVaultManager, abi.encodeWithSelector(IVaultManager.isAssetHalted.selector), abi.encode(true));
         vm.prank(Actors.MINTER1);
         vm.expectRevert(abi.encodeWithSelector(IOwnMarket.MintBlockedDuringHalt.selector, TSLA));
-        market.placeOrder(mockVault, TSLA, OrderType.Mint, 1000e6, TSLA_PRICE, _defaultExpiry());
+        market.placeOrder(TSLA, OrderType.Mint, 1000e6, TSLA_PRICE, _defaultExpiry());
     }
 
     // ══════════════════════════════════════════════════════════
@@ -560,7 +578,7 @@ contract OwnMarketTest is BaseTest {
         emit IOwnMarket.OrderForceExecuted(orderId, Actors.MINTER1, amount, expectedCollateral);
 
         vm.prank(Actors.MINTER1);
-        market.forceExecuteOrder(orderId, _assetPriceData(TSLA_PRICE), _assetPriceData(ETH_PRICE));
+        market.forceExecuteOrder(orderId, mockVault, _assetPriceData(TSLA_PRICE), _assetPriceData(ETH_PRICE));
 
         assertEq(eTSLAToken.balanceOf(address(market)), 0, "escrowed eTokens burned");
         Order memory order = market.getOrder(orderId);
@@ -573,7 +591,7 @@ contract OwnMarketTest is BaseTest {
         uint256 orderId = _placeRedeem(Actors.MINTER1, amount, TSLA_PRICE);
         vm.prank(Actors.MINTER1);
         vm.expectRevert(abi.encodeWithSelector(IOwnMarket.ForceWindowNotElapsed.selector, orderId));
-        market.forceExecuteOrder(orderId, _assetPriceData(TSLA_PRICE), _assetPriceData(ETH_PRICE));
+        market.forceExecuteOrder(orderId, mockVault, _assetPriceData(TSLA_PRICE), _assetPriceData(ETH_PRICE));
     }
 
     function test_forceExecuteOrder_mintOrder_reverts() public {
@@ -581,7 +599,7 @@ contract OwnMarketTest is BaseTest {
         vm.warp(block.timestamp + CLAIM_THRESHOLD);
         vm.prank(Actors.MINTER1);
         vm.expectRevert(abi.encodeWithSelector(IOwnMarket.ForceMintNotAllowed.selector, orderId));
-        market.forceExecuteOrder(orderId, _assetPriceData(TSLA_PRICE), _assetPriceData(ETH_PRICE));
+        market.forceExecuteOrder(orderId, mockVault, _assetPriceData(TSLA_PRICE), _assetPriceData(ETH_PRICE));
     }
 
     function test_forceExecuteOrder_notOwner_reverts() public {
@@ -589,7 +607,7 @@ contract OwnMarketTest is BaseTest {
         vm.warp(block.timestamp + CLAIM_THRESHOLD);
         vm.prank(Actors.MINTER2);
         vm.expectRevert(abi.encodeWithSelector(IOwnMarket.OnlyOrderOwner.selector, orderId));
-        market.forceExecuteOrder(orderId, _assetPriceData(TSLA_PRICE), _assetPriceData(ETH_PRICE));
+        market.forceExecuteOrder(orderId, mockVault, _assetPriceData(TSLA_PRICE), _assetPriceData(ETH_PRICE));
     }
 
     function test_forceExecuteOrder_priceBelowLimit_reverts() public {
@@ -599,7 +617,7 @@ contract OwnMarketTest is BaseTest {
         vm.warp(block.timestamp + CLAIM_THRESHOLD);
         vm.prank(Actors.MINTER1);
         vm.expectRevert(IOwnMarket.PriceBelowMinimum.selector);
-        market.forceExecuteOrder(orderId, _assetPriceData(TSLA_PRICE), _assetPriceData(ETH_PRICE));
+        market.forceExecuteOrder(orderId, mockVault, _assetPriceData(TSLA_PRICE), _assetPriceData(ETH_PRICE));
     }
 
     function test_forceExecuteOrder_partiallyFilled_forcesRemaining() public {
@@ -623,28 +641,66 @@ contract OwnMarketTest is BaseTest {
         emit IOwnMarket.OrderForceExecuted(orderId, Actors.MINTER1, remaining, expectedCollateral);
 
         vm.prank(Actors.MINTER1);
-        market.forceExecuteOrder(orderId, _assetPriceData(TSLA_PRICE), _assetPriceData(ETH_PRICE));
+        market.forceExecuteOrder(orderId, mockVault, _assetPriceData(TSLA_PRICE), _assetPriceData(ETH_PRICE));
 
         assertEq(eTSLAToken.balanceOf(address(market)), 0, "remaining escrow burned");
     }
 
-    function test_forceExecuteOrder_duringHalt_usesHaltPrice() public {
+    /// @dev Force execution is now disabled for a permanently halted asset; holders must use
+    ///      {redeemHalted} instead. (Previously the force path settled at the halt price.)
+    function test_forceExecuteOrder_duringHalt_reverts() public {
         uint256 amount = 4e18;
-        uint256 haltPrice = 200e18;
-        uint256 orderId = _placeRedeem(Actors.MINTER1, amount, 0 + 1); // tiny limit so halt price passes
+        uint256 orderId = _placeRedeem(Actors.MINTER1, amount, 0 + 1); // tiny limit
 
-        vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.isEffectivelyHalted.selector), abi.encode(true));
-        vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.getAssetHaltPrice.selector), abi.encode(haltPrice));
+        vm.mockCall(mockVaultManager, abi.encodeWithSelector(IVaultManager.isAssetHalted.selector), abi.encode(true));
         vm.warp(block.timestamp + CLAIM_THRESHOLD);
 
-        uint256 grossUsd = Math.mulDiv(amount, haltPrice, PRECISION);
-        uint256 expectedCollateral = Math.mulDiv(grossUsd, PRECISION, ETH_PRICE);
+        vm.prank(Actors.MINTER1);
+        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.ForceDisabledDuringHalt.selector, TSLA));
+        market.forceExecuteOrder(orderId, mockVault, _assetPriceData(TSLA_PRICE), _assetPriceData(ETH_PRICE));
+    }
+
+    // ══════════════════════════════════════════════════════════
+    //  redeemHalted — permanent halt settlement
+    // ══════════════════════════════════════════════════════════
+
+    function test_redeemHalted_succeeds() public {
+        uint256 eTokenAmount = 4e18;
+        uint256 haltPrice = 200e18;
+
+        // Halt the asset at a fixed price and fund the halt redeem address.
+        vm.mockCall(mockVaultManager, abi.encodeWithSelector(IVaultManager.isAssetHalted.selector), abi.encode(true));
+        vm.mockCall(
+            mockVaultManager, abi.encodeWithSelector(IVaultManager.assetHaltPrice.selector), abi.encode(haltPrice)
+        );
+
+        // Caller holds the eTokens to redeem.
+        eTSLAToken.mint(Actors.MINTER1, eTokenAmount);
+
+        // Halt fund holds stables and approves the market to pull them.
+        // payout = eTokenAmount * haltPrice / (1e18 * 1e12)  (usdc has 6 decimals).
+        uint256 payout = Math.mulDiv(eTokenAmount, haltPrice, PRECISION * 1e12);
+        usdc.mint(haltFund, payout);
+        vm.prank(haltFund);
+        usdc.approve(address(market), payout);
 
         vm.expectEmit(true, true, false, true);
-        emit IOwnMarket.OrderForceExecuted(orderId, Actors.MINTER1, amount, expectedCollateral);
+        emit IOwnMarket.OrderRedeemedHalted(Actors.MINTER1, TSLA, eTokenAmount, payout);
 
         vm.prank(Actors.MINTER1);
-        market.forceExecuteOrder(orderId, "", _assetPriceData(ETH_PRICE));
+        uint256 got = market.redeemHalted(TSLA, eTokenAmount);
+
+        assertEq(got, payout, "payout returned");
+        assertEq(usdc.balanceOf(Actors.MINTER1), payout, "caller received stables");
+        assertEq(usdc.balanceOf(haltFund), 0, "halt fund drained");
+        assertEq(eTSLAToken.balanceOf(Actors.MINTER1), 0, "eTokens burned");
+    }
+
+    function test_redeemHalted_notHalted_reverts() public {
+        eTSLAToken.mint(Actors.MINTER1, 1e18);
+        vm.prank(Actors.MINTER1);
+        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.AssetNotHalted.selector, TSLA));
+        market.redeemHalted(TSLA, 1e18);
     }
 
     // ══════════════════════════════════════════════════════════

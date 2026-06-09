@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: BUSL-1.1
 pragma solidity 0.8.28;
 
-import {IExposureManager} from "../interfaces/IExposureManager.sol";
 import {IOwnVault} from "../interfaces/IOwnVault.sol";
 import {IProtocolRegistry} from "../interfaces/IProtocolRegistry.sol";
+import {IVaultManager} from "../interfaces/IVaultManager.sol";
 import {IAaveDebtToken} from "../interfaces/external/IAaveDebtToken.sol";
 import {IAaveV3Pool} from "../interfaces/external/IAaveV3Pool.sol";
 import {
@@ -37,37 +37,20 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
 
     IProtocolRegistry public immutable registry;
 
-    address public vm;
-
-    /// @dev Addresses authorised to sign order quotes for this vault (decoupled from `vm`).
-    mapping(address => bool) private _quoteSigners;
+    /// @notice Operational / fund-custody manager bound to this vault.
+    address public manager;
 
     // ──────────────────────────────────────────────────────────
     //  Vault status
     // ──────────────────────────────────────────────────────────
 
     VaultStatus private _vaultStatus;
-    mapping(bytes32 => bool) private _assetPaused;
-    mapping(bytes32 => bool) private _assetHalted;
-    mapping(bytes32 => uint256) private _assetHaltPrice;
 
     // ──────────────────────────────────────────────────────────
     //  Withdrawal queue config
     // ──────────────────────────────────────────────────────────
 
     uint256 private _withdrawalWaitPeriod;
-
-    // ──────────────────────────────────────────────────────────
-    //  Order execution parameters (read by OwnMarket)
-    // ──────────────────────────────────────────────────────────
-
-    uint256 private _claimThreshold;
-
-    // ──────────────────────────────────────────────────────────
-    //  Payment token (single, VM-controlled)
-    // ──────────────────────────────────────────────────────────
-
-    address private _paymentToken;
 
     // ──────────────────────────────────────────────────────────
     //  Async deposit queue
@@ -113,13 +96,13 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
         _;
     }
 
-    modifier onlyVM() {
-        if (msg.sender != vm) revert OnlyVM();
+    modifier onlyManager() {
+        if (msg.sender != manager) revert OnlyManager();
         _;
     }
 
-    modifier onlyVMOrAdmin() {
-        if (msg.sender != vm && msg.sender != Ownable(address(registry)).owner()) revert OnlyVMOrAdmin();
+    modifier onlyManagerOrAdmin() {
+        if (msg.sender != manager && msg.sender != Ownable(address(registry)).owner()) revert OnlyManagerOrAdmin();
         _;
     }
 
@@ -147,18 +130,18 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     /// @param name_       Vault share name.
     /// @param symbol_     Vault share symbol.
     /// @param registry_   ProtocolRegistry contract address.
-    /// @param vm_         Vault manager address bound to this vault.
+    /// @param manager_    Vault manager (operator) address bound to this vault.
     constructor(
         address asset_,
         string memory name_,
         string memory symbol_,
         address registry_,
-        address vm_
+        address manager_
     ) ERC4626(IERC20(asset_)) ERC20(name_, symbol_) {
         uint8 collatDecimals = IERC20Metadata(asset_).decimals();
         if (collatDecimals > 18) revert DecimalsTooHigh(collatDecimals);
         registry = IProtocolRegistry(registry_);
-        vm = vm_;
+        manager = manager_;
         _vaultStatus = VaultStatus.Active;
     }
 
@@ -185,7 +168,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     /// @dev Shared deposit path. Enforces the optional approval gate and a `minSharesOut`
     ///      slippage floor against share-price movement before execution.
     function _depositWithMin(uint256 assets, address receiver, uint256 minSharesOut) private returns (uint256 shares) {
-        if (_requireDepositApproval && msg.sender != vm) revert DepositApprovalRequired();
+        if (_requireDepositApproval && msg.sender != manager) revert DepositApprovalRequired();
         shares = super.deposit(assets, receiver);
         if (shares < minSharesOut) revert InsufficientSharesOut(shares, minSharesOut);
     }
@@ -193,7 +176,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     function mint(
         uint256 shares,
         address receiver
-    ) public override(ERC4626, IERC4626) whenDepositsAllowed onlyVM nonReentrant returns (uint256) {
+    ) public override(ERC4626, IERC4626) whenDepositsAllowed onlyManager nonReentrant returns (uint256) {
         return super.mint(shares, receiver);
     }
 
@@ -247,7 +230,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     /// @inheritdoc IOwnVault
     function acceptDeposit(
         uint256 requestId
-    ) external onlyVM nonReentrant {
+    ) external onlyManager nonReentrant {
         DepositRequest storage req = _depositRequests[requestId];
         if (req.depositor == address(0)) revert DepositRequestNotFound(requestId);
         if (req.status != DepositStatus.Pending) revert DepositRequestNotPending(requestId);
@@ -265,7 +248,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     /// @inheritdoc IOwnVault
     function rejectDeposit(
         uint256 requestId
-    ) external onlyVM nonReentrant {
+    ) external onlyManager nonReentrant {
         DepositRequest storage req = _depositRequests[requestId];
         if (req.depositor == address(0)) revert DepositRequestNotFound(requestId);
         if (req.status != DepositStatus.Pending) revert DepositRequestNotPending(requestId);
@@ -317,6 +300,8 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
         uint256 shares
     ) external nonReentrant returns (uint256 requestId) {
         if (shares == 0) revert ZeroAmount();
+        // Pause freezes both deposits and withdrawals; halt still allows withdrawals.
+        if (_vaultStatus == VaultStatus.Paused) revert VaultIsPaused();
 
         _transfer(msg.sender, address(this), shares);
         _pendingWithdrawalShares += shares;
@@ -358,19 +343,23 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
         WithdrawalRequest storage req = _withdrawalRequests[requestId];
         if (req.owner == address(0)) revert WithdrawalRequestNotFound(requestId);
         if (req.status != WithdrawalStatus.Pending) revert WithdrawalNotPending(requestId);
-
-        // Enforce wait period
-        uint256 readyAt = req.timestamp + _withdrawalWaitPeriod;
-        if (block.timestamp < readyAt) {
-            revert WithdrawalWaitPeriodNotElapsed(requestId, readyAt);
-        }
+        // Pause freezes withdrawals entirely.
+        if (_vaultStatus == VaultStatus.Paused) revert VaultIsPaused();
 
         uint256 shares = req.shares;
         assets = convertToAssets(shares);
 
-        // Releasing this collateral must not push global utilisation over the cap.
-        if (IExposureManager(registry.exposureManager()).withdrawalBreachesUtil(address(this), assets)) {
-            revert MaxUtilizationExceeded();
+        // A halted vault is an emergency wind-down: its collateral is already excluded from the
+        // global pool, so LP exits are immediate and unconditional (no wait period, no util check).
+        // Active vaults enforce the wait period and the global utilisation cap.
+        if (_vaultStatus != VaultStatus.Halted) {
+            uint256 readyAt = req.timestamp + _withdrawalWaitPeriod;
+            if (block.timestamp < readyAt) {
+                revert WithdrawalWaitPeriodNotElapsed(requestId, readyAt);
+            }
+            if (IVaultManager(registry.vaultManager()).withdrawalBreachesUtil(address(this), assets)) {
+                revert MaxUtilizationExceeded();
+            }
         }
 
         req.status = WithdrawalStatus.Fulfilled;
@@ -405,51 +394,32 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
         return _vaultStatus;
     }
 
-    // ── Pause ────────────────────────────────────────────────
+    // ── Pause (temporary; blocks deposits AND withdrawals) ──
 
     /// @inheritdoc IOwnVault
     function pause(
         bytes32 reason
-    ) external onlyAdmin {
+    ) external onlyManagerOrAdmin {
         if (_vaultStatus != VaultStatus.Active) revert InvalidStatusTransition();
         _vaultStatus = VaultStatus.Paused;
         emit VaultPaused(reason);
     }
 
     /// @inheritdoc IOwnVault
-    function unpause() external onlyAdmin {
+    function unpause() external onlyManagerOrAdmin {
         if (_vaultStatus != VaultStatus.Paused) revert InvalidStatusTransition();
         _vaultStatus = VaultStatus.Active;
         emit VaultUnpaused();
     }
 
-    /// @inheritdoc IOwnVault
-    function pauseAsset(bytes32 asset_, bytes32 reason) external onlyAdmin {
-        _assetPaused[asset_] = true;
-        emit AssetPaused(asset_, reason);
-    }
-
-    /// @inheritdoc IOwnVault
-    function unpauseAsset(
-        bytes32 asset_
-    ) external onlyAdmin {
-        _assetPaused[asset_] = false;
-        emit AssetUnpaused(asset_);
-    }
-
-    /// @inheritdoc IOwnVault
-    function isAssetPaused(
-        bytes32 asset_
-    ) external view returns (bool) {
-        return _assetPaused[asset_];
-    }
-
-    // ── Halt ─────────────────────────────────────────────────
+    // ── Halt (emergency wind-down; deposits off, instant withdrawals) ──
 
     /// @inheritdoc IOwnVault
     function haltVault() external onlyAdmin {
         if (_vaultStatus != VaultStatus.Active) revert InvalidStatusTransition();
         _vaultStatus = VaultStatus.Halted;
+        // Drop this vault's collateral from the global risk pool.
+        IVaultManager(registry.vaultManager()).onVaultHalted();
         emit VaultHalted();
     }
 
@@ -457,55 +427,9 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     function unhalt() external onlyAdmin {
         if (_vaultStatus != VaultStatus.Halted) revert InvalidStatusTransition();
         _vaultStatus = VaultStatus.Active;
+        // Re-include this vault's collateral in the global risk pool.
+        IVaultManager(registry.vaultManager()).onVaultUnhalted();
         emit VaultUnhalted();
-    }
-
-    /// @inheritdoc IOwnVault
-    function haltAsset(bytes32 asset_, uint256 haltPrice) external onlyAdmin {
-        if (haltPrice == 0) revert InvalidHaltPrice();
-        _assetHalted[asset_] = true;
-        _assetHaltPrice[asset_] = haltPrice;
-        emit AssetHalted(asset_);
-        emit AssetHaltPriceSet(asset_, haltPrice);
-    }
-
-    /// @inheritdoc IOwnVault
-    function unhaltAsset(
-        bytes32 asset_
-    ) external onlyAdmin {
-        _assetHalted[asset_] = false;
-        _assetHaltPrice[asset_] = 0;
-        emit AssetUnhalted(asset_);
-    }
-
-    /// @inheritdoc IOwnVault
-    function isAssetHalted(
-        bytes32 asset_
-    ) external view returns (bool) {
-        return _assetHalted[asset_];
-    }
-
-    /// @inheritdoc IOwnVault
-    function getAssetHaltPrice(
-        bytes32 asset_
-    ) external view returns (uint256) {
-        return _assetHaltPrice[asset_];
-    }
-
-    // ── Combined query helpers ───────────────────────────────
-
-    /// @inheritdoc IOwnVault
-    function isEffectivelyPaused(
-        bytes32 asset_
-    ) external view returns (bool) {
-        return _vaultStatus == VaultStatus.Paused || _assetPaused[asset_];
-    }
-
-    /// @inheritdoc IOwnVault
-    function isEffectivelyHalted(
-        bytes32 asset_
-    ) external view returns (bool) {
-        return _vaultStatus == VaultStatus.Halted || _assetHalted[asset_];
     }
 
     // ──────────────────────────────────────────────────────────
@@ -530,98 +454,32 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     }
 
     // ──────────────────────────────────────────────────────────
-    //  Order execution parameters
-    // ──────────────────────────────────────────────────────────
-
-    /// @inheritdoc IOwnVault
-    function claimThreshold() external view returns (uint256) {
-        return _claimThreshold;
-    }
-
-    /// @inheritdoc IOwnVault
-    function setClaimThreshold(
-        uint256 threshold
-    ) external onlyAdmin {
-        _claimThreshold = threshold;
-    }
-
-    // ──────────────────────────────────────────────────────────
-    //  Share yield (VM-distributed LP rewards)
+    //  Share yield (manager-distributed LP rewards)
     // ──────────────────────────────────────────────────────────
 
     /// @inheritdoc IOwnVault
     function shareYield(
         uint256 amount
-    ) external onlyVM nonReentrant {
+    ) external onlyManager nonReentrant {
         if (amount == 0) revert ZeroAmount();
         // Cannot distribute yield with no shares outstanding; the assets would otherwise
         // accrue to whoever deposits first.
         if (totalSupply() == 0) revert NoSharesToReward();
 
-        // VM transfers collateral in → totalAssets() rises → share price rises for all LPs.
+        // Manager transfers collateral in → totalAssets() rises → share price rises for all LPs.
         IERC20(asset()).safeTransferFrom(msg.sender, address(this), amount);
 
         emit ShareYieldAdded(msg.sender, amount);
     }
 
     /// @inheritdoc IOwnVault
-    function setVM(
-        address newVM
+    function setManager(
+        address newManager
     ) external onlyAdmin {
-        if (newVM == address(0)) revert ZeroAddress();
-        address oldVM = vm;
-        vm = newVM;
-        emit VMUpdated(oldVM, newVM);
-    }
-
-    /// @inheritdoc IOwnVault
-    function isQuoteSigner(
-        address account
-    ) external view returns (bool) {
-        return _quoteSigners[account];
-    }
-
-    /// @inheritdoc IOwnVault
-    function addQuoteSigner(
-        address signer
-    ) external onlyVMOrAdmin {
-        if (signer == address(0)) revert ZeroAddress();
-        if (_quoteSigners[signer]) revert AlreadyQuoteSigner(signer);
-        _quoteSigners[signer] = true;
-        emit QuoteSignerAdded(signer);
-    }
-
-    /// @inheritdoc IOwnVault
-    function removeQuoteSigner(
-        address signer
-    ) external onlyVMOrAdmin {
-        if (!_quoteSigners[signer]) revert NotQuoteSigner(signer);
-        _quoteSigners[signer] = false;
-        emit QuoteSignerRemoved(signer);
-    }
-
-    // ──────────────────────────────────────────────────────────
-    //  Payment token management
-    // ──────────────────────────────────────────────────────────
-
-    /// @inheritdoc IOwnVault
-    function setPaymentToken(
-        address token
-    ) external onlyVM {
-        if (token == address(0)) revert ZeroAddress();
-        if (token == asset()) revert PaymentTokenCannotBeCollateral();
-        uint256 decimals = IERC20Metadata(token).decimals();
-        if (decimals > 18) revert DecimalsTooHigh(decimals);
-
-        address oldToken = _paymentToken;
-        _paymentToken = token;
-
-        emit PaymentTokenUpdated(oldToken, token);
-    }
-
-    /// @inheritdoc IOwnVault
-    function paymentToken() external view returns (address) {
-        return _paymentToken;
+        if (newManager == address(0)) revert ZeroAddress();
+        address oldManager = manager;
+        manager = newManager;
+        emit ManagerUpdated(oldManager, newManager);
     }
 
     // ──────────────────────────────────────────────────────────

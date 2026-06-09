@@ -26,7 +26,7 @@ Fill in the required values:
 
 ## Step 1: Deploy Core Contracts
 
-Deploys all protocol contracts, registers them in ProtocolRegistry, configures Pyth oracle feeds, adds TSLA + GOLD assets, sets fee levels, and configures global risk parameters (global max utilization + per-asset USD issuance ceilings) on the ExposureManager.
+Deploys all protocol contracts, registers them in ProtocolRegistry, configures Pyth oracle feeds, adds TSLA + GOLD assets, and configures global parameters on the VaultManager: max utilization, per-asset USD issuance ceilings, and the single global payment token (MockUSDC).
 
 ```bash
 forge script script/Deploy.s.sol --rpc-url base_sepolia --broadcast --verify
@@ -41,7 +41,7 @@ FEE_CALCULATOR=0x...
 PYTH_ORACLE=0x...
 VAULT_FACTORY=0x...
 OWN_MARKET=0x...
-EXPOSURE_MANAGER=0x...
+VAULT_MANAGER=0x...
 MOCK_USDC=0x...
 ETOKEN_TSLA=0x...
 ETOKEN_GOLD=0x...
@@ -57,16 +57,16 @@ WETH_ROUTER=0x...
 | AssetRegistry | Asset configs + oracle mappings |
 | FeeCalculator | Mint/redeem fees by volatility level |
 | PythOracleVerifier | Pyth oracle wrapper (120s max price age) |
-| VaultFactory | Creates OwnVault instances + registers them with the ExposureManager |
+| VaultFactory | Creates OwnVault instances + registers them with the VaultManager |
 | OwnMarket | RFQ order execution marketplace |
-| ExposureManager | Global pooled risk accounting (exposure, marks, utilization, per-asset caps) |
+| VaultManager | Global pooled risk accounting + control hub (exposure, marks, utilization, per-asset caps, signer registry, payment token, pause, halt, claim threshold) |
 | EToken (TSLA) | eTSLA synthetic token |
 | EToken (GOLD) | eGOLD synthetic token |
 | WETHRouter | Native ETH deposit/redeem wrapper |
 
-The script also sets the **global max utilization** (80% / 8000 BPS) and a **per-asset USD ceiling**
-(`assetCapUSD`) for each launched asset. A per-asset cap of `0` blocks minting that asset, so this step
-is required before any mint can succeed.
+The script also sets the **global max utilization** (80% / 8000 BPS), a **per-asset USD ceiling**
+(`assetCapUSD`) for each launched asset, and the **global payment token** (MockUSDC). A per-asset cap
+of `0` blocks minting that asset, so this step is required before any mint can succeed.
 
 ## Step 2: Create Vault
 
@@ -86,39 +86,41 @@ VAULT_ADDRESS=0x...
 
 | Parameter | Value | Description |
 |-----------|-------|-------------|
-| Collateral asset | `ETH` ticker | Passed to `createVault`; the ExposureManager prices the vault's collateral via this oracle ticker. |
-| VM fee share | 20% (2000 BPS) | VM's portion of the non-protocol fee |
-| Grace period | 1 day | Legacy parameter; not used by RFQ order execution |
-| Claim threshold | 6 hours | Delay before a resting redeem order can be force-executed |
+| Collateral asset | `ETH` ticker | Passed to `createVault`; the VaultManager prices the vault's collateral via this oracle ticker. |
+| `manager` | `VM_ADDRESS` | The vault's operator (accepts LP deposits, distributes yield, can pause the vault). |
 
-> Max utilization is **global**, set once on the ExposureManager in Step 1 — not per vault.
-> `createVault` auto-registers the vault with the ExposureManager.
+> Order-execution parameters (payment token, signers, claim threshold) are **global** on the
+> VaultManager, not per vault. Max utilization is likewise set once in Step 1. `createVault`
+> auto-registers the vault with the VaultManager.
 
-## Step 3: Configure Vault (as VM)
+## Step 3: Configure Global Order Settlement (as admin)
 
-Run with the vault manager key. Sets the payment token.
+The global payment token is already set in Step 1. The remaining global setup — registering a quote
+signer and setting the claim threshold — is admin-run on the VaultManager. (The
+`ConfigureVault.s.sol` script re-sets the global payment token if you need to change it.)
 
-```bash
-forge script script/ConfigureVault.s.sol --rpc-url base_sepolia --broadcast
-```
-
-**Configuration applied:**
-- Payment token: MockUSDC
-
-> Per-vault asset enablement no longer exists — the global AssetRegistry governs which assets are
-> tradeable, and the ExposureManager's per-asset cap governs issuance. Before an asset can be minted, a
-> keeper must pull its price (`ExposureManager.pullAssetPrice`) and the vault's collateral price
-> (`ExposureManager.pullCollateralPrice`) so the marks are non-zero.
+> Per-vault asset enablement does not exist — the global AssetRegistry governs which assets are
+> tradeable, and the VaultManager's per-asset cap governs issuance. Before an asset can be minted, a
+> keeper must pull its price (`VaultManager.pullAssetPrice`) and the vault's collateral price
+> (`VaultManager.pullCollateralPrice`) so the marks are non-zero.
 
 ### Register a quote signer (required)
 
-No quote signer is seeded at vault creation, so the market will reject all quotes until one is
-added. Register the VM's signing key (the address whose private key the quoter service signs with —
-e.g. an HSM/KMS key, or the VM address itself for testing). Callable by the VM or the admin:
+No quote signer is seeded at deployment, so the market will reject all quotes until one is
+registered. Signers are **global** and admin-managed on the VaultManager. Each signer carries a
+**linked settlement address** (mint proceeds flow to it; redeem payouts come from it). Register the
+signing key (e.g. an HSM/KMS key) with its linked funding wallet:
 
 ```bash
-cast send $VAULT_ADDRESS "addQuoteSigner(address)" <SIGNER_ADDRESS> \
-  --rpc-url base_sepolia --private-key <VM_KEY>
+cast send $VAULT_MANAGER "registerSigner(address,address)" <SIGNER_ADDRESS> <LINKED_ADDRESS> \
+  --rpc-url base_sepolia --private-key $DEPLOYER_PRIVATE_KEY
+```
+
+### Set the claim threshold (optional)
+
+```bash
+cast send $VAULT_MANAGER "setClaimThreshold(uint256)" 21600 \
+  --rpc-url base_sepolia --private-key $DEPLOYER_PRIVATE_KEY
 ```
 
 ## Post-Deployment Verification
@@ -136,10 +138,11 @@ This mints 1,000,000 USDC (6 decimals).
 
 ### Place a mint order
 
-A **market order** settles a VM-signed quote in one transaction via
-`executeOrder(Quote,bytes)` — the quote and signature come from the VM's quoter service, so it is
+A **market order** settles a signer-issued quote in one transaction via
+`executeOrder(Quote,bytes)` — the quote and signature come from a maker's quoter service, so it is
 driven by the app/SDK rather than a bare `cast` call. The single-user path you can run directly is a
-**limit order** (`placeOrder`), which escrows funds on-chain for the VM to fill later:
+**limit order** (`placeOrder`), which escrows funds on-chain for a maker to fill later. Orders are
+vault-less — no vault argument:
 
 ```bash
 # 1. Approve market to spend USDC
@@ -148,8 +151,7 @@ cast send $MOCK_USDC "approve(address,uint256)" $OWN_MARKET 10000000000 \
 
 # 2. Place a limit mint order (10,000 USDC for TSLA, max $250)
 #    orderType: 0 = Mint, 1 = Redeem
-cast send $OWN_MARKET "placeOrder(address,bytes32,uint8,uint256,uint256,uint256)" \
-  $VAULT_ADDRESS \
+cast send $OWN_MARKET "placeOrder(bytes32,uint8,uint256,uint256,uint256)" \
   $(cast --format-bytes32-string "TSLA") \
   0 \
   10000000000 \
@@ -158,8 +160,9 @@ cast send $OWN_MARKET "placeOrder(address,bytes32,uint8,uint256,uint256,uint256)
   --rpc-url base_sepolia --private-key <USER_KEY>
 ```
 
-The VM then fills it by submitting a signed quote to `fillOrder`. If a redeem order goes unfilled,
-the owner can call `forceExecuteOrder` after the claim threshold to settle at the oracle price.
+A maker then fills it by submitting a signed quote to `fillOrder`. If a redeem order goes unfilled,
+the owner can call `forceExecuteOrder(orderId, vault, ...)` after the claim threshold — naming the
+registered vault to draw collateral from — to settle at the oracle price.
 
 ### LP deposit via WETHRouter (native ETH)
 

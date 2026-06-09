@@ -52,18 +52,19 @@ contract OrderLifecycleTest is BaseTest {
         protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), address(factory));
 
         vm.stopPrank();
-        // Deploy + register the ExposureManager before createVault (which auto-registers the vault).
-        _deployExposureManager();
+        // Deploy + register the VaultManager before createVault (which auto-registers the vault).
+        _deployVaultManager();
         vm.startPrank(Actors.ADMIN);
 
         vault = OwnVault(factory.createVault(address(weth), vm1Signer, "Own ETH Vault", "oETH", ETH));
 
         market = new OwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
-        vault.setClaimThreshold(CLAIM_THRESHOLD);
-        vault.addQuoteSigner(vm1Signer);
 
         vm.stopPrank();
+
+        _setClaimThreshold(CLAIM_THRESHOLD);
+        _registerSigner(vm1Signer, Actors.VM1);
     }
 
     function _configureAssets() private {
@@ -93,14 +94,12 @@ contract OrderLifecycleTest is BaseTest {
 
         _setOraclePrice(ethAsset, ETH_PRICE);
 
-        // Per-asset issuance ceiling (global util default is set by _deployExposureManager).
+        // Per-asset issuance ceiling (global util default is set by _deployVaultManager).
         _setAssetCap(TSLA, DEFAULT_ASSET_CAP_USD);
     }
 
     function _configureVault() private {
-        vm.startPrank(vm1Signer);
-        vault.setPaymentToken(address(usdc));
-        vm.stopPrank();
+        _setPaymentToken(address(usdc));
     }
 
     function _depositLPCollateral() private {
@@ -119,7 +118,7 @@ contract OrderLifecycleTest is BaseTest {
         _fundUSDC(minter, amount);
         vm.startPrank(minter);
         usdc.approve(address(market), amount);
-        uint256 orderId = market.placeOrder(address(vault), TSLA, OrderType.Mint, amount, TSLA_PRICE, expiry);
+        uint256 orderId = market.placeOrder(TSLA, OrderType.Mint, amount, TSLA_PRICE, expiry);
         vm.stopPrank();
         return orderId;
     }
@@ -127,26 +126,27 @@ contract OrderLifecycleTest is BaseTest {
     function _placeRedeem(address minter, uint256 eAmount, uint256 expiry) internal returns (uint256) {
         vm.startPrank(minter);
         eTSLA.approve(address(market), eAmount);
-        uint256 orderId = market.placeOrder(address(vault), TSLA, OrderType.Redeem, eAmount, TSLA_PRICE, expiry);
+        uint256 orderId = market.placeOrder(TSLA, OrderType.Redeem, eAmount, TSLA_PRICE, expiry);
         vm.stopPrank();
         return orderId;
     }
 
     /// @dev Fill a resting mint order in full with a VM-signed quote.
     function _fillMint(uint256 orderId, address minter, uint256 amount) internal {
-        Quote memory q = _buildQuote(orderId, minter, address(vault), TSLA, OrderType.Mint, amount, TSLA_PRICE);
+        Quote memory q = _buildQuote(orderId, minter, TSLA, OrderType.Mint, amount, TSLA_PRICE);
         bytes memory sig = _signQuote(market, q, vm1SignerPk);
         vm.prank(vm1Signer);
         market.fillOrder(q, sig);
     }
 
-    /// @dev Fill a resting redeem order in full with a VM-signed quote (VM funds the payout).
+    /// @dev Fill a resting redeem order in full with a VM-signed quote. The signer's linked
+    ///      address funds the payout.
     function _fillRedeem(uint256 orderId, address minter, uint256 eAmount) internal {
         uint256 grossPayout = _redeemGrossPayout(eAmount);
-        _fundUSDC(vm1Signer, grossPayout);
-        vm.prank(vm1Signer);
+        _fundUSDC(Actors.VM1, grossPayout);
+        vm.prank(Actors.VM1);
         usdc.approve(address(market), grossPayout);
-        Quote memory q = _buildQuote(orderId, minter, address(vault), TSLA, OrderType.Redeem, eAmount, TSLA_PRICE);
+        Quote memory q = _buildQuote(orderId, minter, TSLA, OrderType.Redeem, eAmount, TSLA_PRICE);
         bytes memory sig = _signQuote(market, q, vm1SignerPk);
         vm.prank(vm1Signer);
         market.fillOrder(q, sig);
@@ -157,7 +157,7 @@ contract OrderLifecycleTest is BaseTest {
         _fundUSDC(minter, usdcAmount);
         vm.prank(minter);
         usdc.approve(address(market), usdcAmount);
-        Quote memory q = _buildQuote(0, minter, address(vault), TSLA, OrderType.Mint, usdcAmount, TSLA_PRICE);
+        Quote memory q = _buildQuote(0, minter, TSLA, OrderType.Mint, usdcAmount, TSLA_PRICE);
         bytes memory sig = _signQuote(market, q, vm1SignerPk);
         vm.prank(minter);
         market.executeOrder(q, sig);
@@ -182,8 +182,7 @@ contract OrderLifecycleTest is BaseTest {
         // Tiny limit price so the oracle price always satisfies it.
         vm.startPrank(Actors.MINTER1);
         eTSLA.approve(address(market), eTokenBal);
-        uint256 orderId =
-            market.placeOrder(address(vault), TSLA, OrderType.Redeem, eTokenBal, 1, block.timestamp + 7 days);
+        uint256 orderId = market.placeOrder(TSLA, OrderType.Redeem, eTokenBal, 1, block.timestamp + 7 days);
         vm.stopPrank();
 
         uint256 vaultWethBefore = weth.balanceOf(address(vault));
@@ -195,7 +194,7 @@ contract OrderLifecycleTest is BaseTest {
         bytes memory collateralPriceData = abi.encode(uint256(ETH_PRICE), uint256(block.timestamp));
 
         vm.prank(Actors.MINTER1);
-        market.forceExecuteOrder(orderId, assetPriceData, collateralPriceData);
+        market.forceExecuteOrder(orderId, address(vault), assetPriceData, collateralPriceData);
 
         Order memory order = market.getOrder(orderId);
         assertEq(uint8(order.status), uint8(OrderStatus.ForceExecuted));
@@ -220,7 +219,7 @@ contract OrderLifecycleTest is BaseTest {
 
         vm.prank(Actors.MINTER1);
         vm.expectRevert(abi.encodeWithSelector(IOwnMarket.ForceMintNotAllowed.selector, orderId));
-        market.forceExecuteOrder(orderId, "", "");
+        market.forceExecuteOrder(orderId, address(vault), "", "");
     }
 
     // ══════════════════════════════════════════════════════════
@@ -237,7 +236,7 @@ contract OrderLifecycleTest is BaseTest {
 
         vm.prank(Actors.MINTER1);
         vm.expectRevert(abi.encodeWithSelector(IOwnMarket.ForceWindowNotElapsed.selector, orderId));
-        market.forceExecuteOrder(orderId, assetPriceData, collateralPriceData);
+        market.forceExecuteOrder(orderId, address(vault), assetPriceData, collateralPriceData);
     }
 
     // ══════════════════════════════════════════════════════════
@@ -304,12 +303,12 @@ contract OrderLifecycleTest is BaseTest {
     // ══════════════════════════════════════════════════════════
 
     function test_exposureTracking_placeThenFill() public {
-        assertEq(exposureManager.globalExposureUSD(), 0, "initial exposure = 0");
+        assertEq(vaultManager.globalExposureUSD(), 0, "initial exposure = 0");
 
         uint256 orderId = _placeMint(Actors.MINTER1, MINT_AMOUNT, block.timestamp + 1 days);
 
         // Escrow alone does not add exposure
-        assertEq(exposureManager.globalExposureUSD(), 0, "exposure unchanged after placement");
+        assertEq(vaultManager.globalExposureUSD(), 0, "exposure unchanged after placement");
 
         // Fill mint → exposure increases
         _fillMint(orderId, Actors.MINTER1, MINT_AMOUNT);
@@ -317,7 +316,7 @@ contract OrderLifecycleTest is BaseTest {
         // exposureUSD = eTokenUnits * TSLA_PRICE / PRECISION (no fee; full amount minted)
         uint256 eTokenUnits = Math.mulDiv(MINT_AMOUNT * 1e12, PRECISION, TSLA_PRICE);
         uint256 expectedExposure = Math.mulDiv(eTokenUnits, TSLA_PRICE, PRECISION);
-        assertEq(exposureManager.globalExposureUSD(), expectedExposure, "exposure = minted notional after fill");
+        assertEq(vaultManager.globalExposureUSD(), expectedExposure, "exposure = minted notional after fill");
     }
 
     // ══════════════════════════════════════════════════════════
@@ -327,13 +326,13 @@ contract OrderLifecycleTest is BaseTest {
     function test_exposureTracking_cancel() public {
         uint256 orderId = _placeMint(Actors.MINTER1, MINT_AMOUNT, block.timestamp + 1 days);
 
-        assertEq(exposureManager.globalExposureUSD(), 0, "exposure unchanged after placement");
+        assertEq(vaultManager.globalExposureUSD(), 0, "exposure unchanged after placement");
 
         vm.prank(Actors.MINTER1);
         market.cancelOrder(orderId);
 
         // Cancel returns escrow — nothing was executed
-        assertEq(exposureManager.globalExposureUSD(), 0, "exposure still 0 after cancel");
+        assertEq(vaultManager.globalExposureUSD(), 0, "exposure still 0 after cancel");
     }
 
     // ══════════════════════════════════════════════════════════
@@ -343,12 +342,11 @@ contract OrderLifecycleTest is BaseTest {
     function test_exposureTracking_redeemForceExecute() public {
         _mintETokensViaFlow(Actors.MINTER1, MINT_AMOUNT);
         uint256 eTokenBal = eTSLA.balanceOf(Actors.MINTER1);
-        assertGt(exposureManager.globalExposureUSD(), 0, "exposure from mint");
+        assertGt(vaultManager.globalExposureUSD(), 0, "exposure from mint");
 
         vm.startPrank(Actors.MINTER1);
         eTSLA.approve(address(market), eTokenBal);
-        uint256 orderId =
-            market.placeOrder(address(vault), TSLA, OrderType.Redeem, eTokenBal, 1, block.timestamp + 7 days);
+        uint256 orderId = market.placeOrder(TSLA, OrderType.Redeem, eTokenBal, 1, block.timestamp + 7 days);
         vm.stopPrank();
 
         vm.warp(block.timestamp + CLAIM_THRESHOLD + 1);
@@ -357,10 +355,10 @@ contract OrderLifecycleTest is BaseTest {
         bytes memory collateralPriceData = abi.encode(uint256(ETH_PRICE), uint256(block.timestamp));
 
         vm.prank(Actors.MINTER1);
-        market.forceExecuteOrder(orderId, assetPriceData, collateralPriceData);
+        market.forceExecuteOrder(orderId, address(vault), assetPriceData, collateralPriceData);
 
         // Force execution burns the eTokens and shrinks exposure back to zero.
-        assertEq(exposureManager.globalExposureUSD(), 0, "exposure cleared after force execution");
+        assertEq(vaultManager.globalExposureUSD(), 0, "exposure cleared after force execution");
     }
 
     // ══════════════════════════════════════════════════════════
@@ -371,8 +369,7 @@ contract OrderLifecycleTest is BaseTest {
         uint256 orderId = _placeMint(Actors.MINTER1, MINT_AMOUNT, block.timestamp + 1 days);
         _fillMint(orderId, Actors.MINTER1, MINT_AMOUNT);
 
-        Quote memory q =
-            _buildQuote(orderId, Actors.MINTER1, address(vault), TSLA, OrderType.Mint, MINT_AMOUNT, TSLA_PRICE);
+        Quote memory q = _buildQuote(orderId, Actors.MINTER1, TSLA, OrderType.Mint, MINT_AMOUNT, TSLA_PRICE);
         bytes memory sig = _signQuote(market, q, vm1SignerPk);
 
         vm.prank(vm1Signer);
@@ -389,7 +386,7 @@ contract OrderLifecycleTest is BaseTest {
         vm.prank(Actors.MINTER1);
         usdc.approve(address(market), MINT_AMOUNT * 2);
 
-        Quote memory q = _buildQuote(0, Actors.MINTER1, address(vault), TSLA, OrderType.Mint, MINT_AMOUNT, TSLA_PRICE);
+        Quote memory q = _buildQuote(0, Actors.MINTER1, TSLA, OrderType.Mint, MINT_AMOUNT, TSLA_PRICE);
         bytes memory sig = _signQuote(market, q, vm1SignerPk);
 
         vm.prank(Actors.MINTER1);
@@ -431,7 +428,7 @@ contract OrderLifecycleTest is BaseTest {
 
         vm.prank(Actors.MINTER1);
         vm.expectRevert(abi.encodeWithSelector(IOwnMarket.InvalidOrderStatus.selector, orderId));
-        market.forceExecuteOrder(orderId, assetPriceData, collateralPriceData);
+        market.forceExecuteOrder(orderId, address(vault), assetPriceData, collateralPriceData);
     }
 
     // ══════════════════════════════════════════════════════════
@@ -442,8 +439,7 @@ contract OrderLifecycleTest is BaseTest {
         uint256 orderId = _placeMint(Actors.MINTER1, MINT_AMOUNT, block.timestamp + 1 days);
 
         uint256 firstChunk = MINT_AMOUNT * 6 / 10;
-        Quote memory q1 =
-            _buildQuote(orderId, Actors.MINTER1, address(vault), TSLA, OrderType.Mint, firstChunk, TSLA_PRICE);
+        Quote memory q1 = _buildQuote(orderId, Actors.MINTER1, TSLA, OrderType.Mint, firstChunk, TSLA_PRICE);
         vm.prank(vm1Signer);
         market.fillOrder(q1, _signQuote(market, q1, vm1SignerPk));
 
@@ -452,8 +448,7 @@ contract OrderLifecycleTest is BaseTest {
         assertEq(uint8(o1.status), uint8(OrderStatus.Open), "still open after partial fill");
 
         uint256 secondChunk = MINT_AMOUNT - firstChunk;
-        Quote memory q2 =
-            _buildQuote(orderId, Actors.MINTER1, address(vault), TSLA, OrderType.Mint, secondChunk, TSLA_PRICE);
+        Quote memory q2 = _buildQuote(orderId, Actors.MINTER1, TSLA, OrderType.Mint, secondChunk, TSLA_PRICE);
         vm.prank(vm1Signer);
         market.fillOrder(q2, _signQuote(market, q2, vm1SignerPk));
 
@@ -462,6 +457,6 @@ contract OrderLifecycleTest is BaseTest {
         assertEq(uint8(o2.status), uint8(OrderStatus.Filled), "order filled");
 
         // No fee: VM receives the full amount across both fills.
-        assertEq(usdc.balanceOf(vm1Signer), MINT_AMOUNT, "VM received both fills");
+        assertEq(usdc.balanceOf(Actors.VM1), MINT_AMOUNT, "linked address received both fills");
     }
 }

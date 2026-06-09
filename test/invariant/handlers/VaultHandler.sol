@@ -18,7 +18,8 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
     MockERC20 public usdc;
 
     address[] public lps;
-    address public vmAddr;
+    /// @dev The vault's bound manager (operator) — distributes share yield.
+    address public managerAddr;
 
     // ── Ghost variables ─────────────────────────────────────────
 
@@ -35,7 +36,7 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
         vault = OwnVault(_vault);
         weth = MockERC20(_weth);
         usdc = MockERC20(_usdc);
-        vmAddr = vault.vm();
+        managerAddr = vault.manager();
 
         lps.push(Actors.LP1);
         lps.push(Actors.LP2);
@@ -130,9 +131,9 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
         if (vault.totalSupply() == 0) return;
         amount = bound(amount, 1e18, 100e18); // 1 to 100 WETH
 
-        weth.mint(vmAddr, amount);
+        weth.mint(managerAddr, amount);
 
-        vm.startPrank(vmAddr);
+        vm.startPrank(managerAddr);
         weth.approve(address(vault), amount);
         vault.shareYield(amount);
         vm.stopPrank();

@@ -39,15 +39,14 @@ contract AsyncDepositFlowTest is BaseTest {
         protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), address(factory));
 
         vm.stopPrank();
-        // Deploy + register the ExposureManager before createVault (which auto-registers the vault).
-        _deployExposureManager();
+        // Deploy + register the VaultManager before createVault (which auto-registers the vault).
+        _deployVaultManager();
         vm.startPrank(Actors.ADMIN);
 
         vault = OwnVault(factory.createVault(address(weth), Actors.VM1, "Own WETH Vault", "oWETH", ETH));
 
         market = new OwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
-        vault.setClaimThreshold(6 hours);
 
         eTSLA = new EToken("Own Tesla", "eTSLA", TSLA, address(protocolRegistry), address(usdc));
 
@@ -62,9 +61,9 @@ contract AsyncDepositFlowTest is BaseTest {
 
         vm.stopPrank();
 
-        vm.startPrank(Actors.VM1);
-        vault.setPaymentToken(address(usdc));
-        vm.stopPrank();
+        // Global controls now live on the VaultManager.
+        _setClaimThreshold(6 hours);
+        _setPaymentToken(address(usdc));
 
         vm.prank(Actors.ADMIN);
         vault.setRequireDepositApproval(true);
@@ -252,7 +251,6 @@ contract AsyncDepositFlowTest is BaseTest {
 
     function test_asyncDeposit_whileHalted_reverts() public {
         vm.startPrank(Actors.ADMIN);
-        vault.haltAsset(TSLA, TSLA_PRICE);
         vault.haltVault();
         vm.stopPrank();
 
@@ -277,7 +275,7 @@ contract AsyncDepositFlowTest is BaseTest {
         vm.stopPrank();
 
         vm.prank(Actors.LP2);
-        vm.expectRevert(IOwnVault.OnlyVM.selector);
+        vm.expectRevert(IOwnVault.OnlyManager.selector);
         vault.acceptDeposit(requestId);
     }
 
@@ -294,7 +292,7 @@ contract AsyncDepositFlowTest is BaseTest {
         vm.stopPrank();
 
         vm.prank(Actors.LP2);
-        vm.expectRevert(IOwnVault.OnlyVM.selector);
+        vm.expectRevert(IOwnVault.OnlyManager.selector);
         vault.rejectDeposit(requestId);
     }
 

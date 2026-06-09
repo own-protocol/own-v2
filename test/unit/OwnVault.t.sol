@@ -31,14 +31,21 @@ contract OwnVaultTest is BaseTest {
 
         vm.startPrank(Actors.ADMIN);
         protocolRegistry.setAddress(protocolRegistry.MARKET(), mockMarket);
+        // ADMIN doubles as the VAULT_FACTORY so it can register the directly-constructed vault.
+        protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), Actors.ADMIN);
+        // Minimal asset registry so VaultManager price resolution (onVaultUnhalted) works.
+        protocolRegistry.setAddress(protocolRegistry.ASSET_REGISTRY(), address(new StubAssetRegistryForVault()));
         vault = new OwnVault(address(weth), "Own WETH Vault", "oWETH", address(protocolRegistry), Actors.VM1);
         vm.stopPrank();
         vm.label(address(vault), "OwnVault-WETH");
 
-        // fulfillWithdrawal consults the ExposureManager; register one so the lookup resolves.
-        // The vault is constructed directly (not via the factory), so it is intentionally not
-        // registered with the manager — withdrawalBreachesUtil returns false on empty global state.
-        _deployExposureManager();
+        // fulfillWithdrawal consults the VaultManager (withdrawalBreachesUtil); haltVault/unhalt
+        // notify it too. Deploy it and register the vault (collateral ticker "ETH" so onVaultUnhalted
+        // can resolve a price). With zero collateral mark and no exposure, withdrawalBreachesUtil
+        // still returns false, so the deposit/withdrawal tests are unaffected.
+        _deployVaultManager();
+        vm.prank(Actors.ADMIN);
+        vaultManager.registerVault(address(vault), ETH);
     }
 
     // ──────────────────────────────────────────────────────────
@@ -258,7 +265,7 @@ contract OwnVaultTest is BaseTest {
         vm.stopPrank();
 
         vm.prank(Actors.ATTACKER);
-        vm.expectRevert(IOwnVault.OnlyVM.selector);
+        vm.expectRevert(IOwnVault.OnlyManager.selector);
         vault.acceptDeposit(requestId);
     }
 
@@ -442,30 +449,7 @@ contract OwnVaultTest is BaseTest {
         assertEq(uint256(vault.vaultStatus()), uint256(VaultStatus.Active));
     }
 
-    function test_haltAsset_succeeds() public {
-        vm.expectEmit(true, false, false, false);
-        emit IOwnVault.AssetHalted(TSLA);
-
-        vm.prank(Actors.ADMIN);
-        vault.haltAsset(TSLA, TSLA_PRICE);
-
-        assertTrue(vault.isAssetHalted(TSLA));
-        assertEq(vault.getAssetHaltPrice(TSLA), TSLA_PRICE);
-    }
-
-    function test_unhaltAsset_succeeds() public {
-        vm.startPrank(Actors.ADMIN);
-        vault.haltAsset(TSLA, TSLA_PRICE);
-
-        vm.expectEmit(true, false, false, false);
-        emit IOwnVault.AssetUnhalted(TSLA);
-
-        vault.unhaltAsset(TSLA);
-        vm.stopPrank();
-
-        assertFalse(vault.isAssetHalted(TSLA));
-        assertEq(vault.getAssetHaltPrice(TSLA), 0);
-    }
+    // Per-asset halt moved to VaultManager (permanent); see VaultManager.t.sol.
 
     function test_pause_admin_succeeds() public {
         vm.expectEmit(true, false, false, false);
@@ -483,33 +467,8 @@ contract OwnVaultTest is BaseTest {
         vault.pause(bytes32("emergency"));
     }
 
-    // Exposure / utilisation / health are now owned by ExposureManager; see ExposureManager.t.sol.
-
-    // ──────────────────────────────────────────────────────────
-    //  Payment token
-    // ──────────────────────────────────────────────────────────
-
-    function test_setPaymentToken_VM_succeeds() public {
-        vm.expectEmit(true, true, false, false);
-        emit IOwnVault.PaymentTokenUpdated(address(0), address(usdc));
-
-        vm.prank(Actors.VM1);
-        vault.setPaymentToken(address(usdc));
-
-        assertEq(vault.paymentToken(), address(usdc));
-    }
-
-    function test_setPaymentToken_notVM_reverts() public {
-        vm.prank(Actors.ATTACKER);
-        vm.expectRevert(IOwnVault.OnlyVM.selector);
-        vault.setPaymentToken(address(usdc));
-    }
-
-    function test_setPaymentToken_zeroAddress_reverts() public {
-        vm.prank(Actors.VM1);
-        vm.expectRevert(IOwnVault.ZeroAddress.selector);
-        vault.setPaymentToken(address(0));
-    }
+    // Exposure / utilisation / health are now owned by VaultManager; see VaultManager.t.sol.
+    // Payment token moved to VaultManager (global); see VaultManager.t.sol.
 
     // ──────────────────────────────────────────────────────────
     //  Withdrawal wait period
@@ -660,96 +619,35 @@ contract OwnVaultTest is BaseTest {
     }
 
     // ──────────────────────────────────────────────────────────
-    //  Quote signers
+    //  Manager binding
     // ──────────────────────────────────────────────────────────
+    // Quote signers moved to the global signer registry on VaultManager; see VaultManager.t.sol.
 
-    function test_constructor_noSignersSeeded() public view {
-        // No signer is registered at construction — not even the bound VM.
-        assertFalse(vault.isQuoteSigner(Actors.VM1), "no signer seeded");
+    function test_constructor_bindsManager() public view {
+        assertEq(vault.manager(), Actors.VM1, "manager bound at construction");
     }
 
-    function test_addQuoteSigner_byVM_succeeds() public {
-        address signer = makeAddr("kmsSigner");
-        assertFalse(vault.isQuoteSigner(signer));
+    function test_setManager_byAdmin_succeeds() public {
+        address newManager = makeAddr("newManager");
 
-        vm.expectEmit(true, false, false, false);
-        emit IOwnVault.QuoteSignerAdded(signer);
-        vm.prank(Actors.VM1);
-        vault.addQuoteSigner(signer);
-
-        assertTrue(vault.isQuoteSigner(signer));
-    }
-
-    function test_addQuoteSigner_byAdmin_succeeds() public {
-        address signer = makeAddr("kmsSigner");
+        vm.expectEmit(true, true, false, false);
+        emit IOwnVault.ManagerUpdated(Actors.VM1, newManager);
         vm.prank(Actors.ADMIN);
-        vault.addQuoteSigner(signer);
-        assertTrue(vault.isQuoteSigner(signer));
+        vault.setManager(newManager);
+
+        assertEq(vault.manager(), newManager);
     }
 
-    function test_addQuoteSigner_unauthorized_reverts() public {
+    function test_setManager_notAdmin_reverts() public {
         vm.prank(Actors.ATTACKER);
-        vm.expectRevert(IOwnVault.OnlyVMOrAdmin.selector);
-        vault.addQuoteSigner(makeAddr("kmsSigner"));
+        vm.expectRevert(IOwnVault.OnlyAdmin.selector);
+        vault.setManager(makeAddr("newManager"));
     }
 
-    function test_addQuoteSigner_zeroAddress_reverts() public {
-        vm.prank(Actors.VM1);
+    function test_setManager_zeroAddress_reverts() public {
+        vm.prank(Actors.ADMIN);
         vm.expectRevert(IOwnVault.ZeroAddress.selector);
-        vault.addQuoteSigner(address(0));
-    }
-
-    function test_addQuoteSigner_duplicate_reverts() public {
-        address signer = makeAddr("kmsSigner");
-        vm.startPrank(Actors.VM1);
-        vault.addQuoteSigner(signer);
-        vm.expectRevert(abi.encodeWithSelector(IOwnVault.AlreadyQuoteSigner.selector, signer));
-        vault.addQuoteSigner(signer);
-        vm.stopPrank();
-    }
-
-    function test_removeQuoteSigner_byVM_succeeds() public {
-        address signer = makeAddr("kmsSigner");
-        vm.startPrank(Actors.VM1);
-        vault.addQuoteSigner(signer);
-
-        vm.expectEmit(true, false, false, false);
-        emit IOwnVault.QuoteSignerRemoved(signer);
-        vault.removeQuoteSigner(signer);
-        vm.stopPrank();
-
-        assertFalse(vault.isQuoteSigner(signer));
-    }
-
-    function test_removeQuoteSigner_byAdmin_succeeds() public {
-        address signer = makeAddr("kmsSigner");
-        vm.prank(Actors.VM1);
-        vault.addQuoteSigner(signer);
-
-        vm.prank(Actors.ADMIN);
-        vault.removeQuoteSigner(signer);
-        assertFalse(vault.isQuoteSigner(signer));
-    }
-
-    function test_removeQuoteSigner_notSigner_reverts() public {
-        address notSigner = makeAddr("notSigner");
-        vm.prank(Actors.VM1);
-        vm.expectRevert(abi.encodeWithSelector(IOwnVault.NotQuoteSigner.selector, notSigner));
-        vault.removeQuoteSigner(notSigner);
-    }
-
-    function test_setVM_doesNotChangeSignerSet() public {
-        // Register the current VM as a signer, then rotate the VM.
-        vm.prank(Actors.VM1);
-        vault.addQuoteSigner(Actors.VM1);
-
-        address newVM = makeAddr("newVM");
-        vm.prank(Actors.ADMIN);
-        vault.setVM(newVM);
-
-        // Old VM remains an authorised signer; new VM is not auto-added.
-        assertTrue(vault.isQuoteSigner(Actors.VM1), "old signer retained");
-        assertFalse(vault.isQuoteSigner(newVM), "new vm not auto-signer");
+        vault.setManager(address(0));
     }
 
     // ──────────────────────────────────────────────────────────
@@ -858,7 +756,7 @@ contract OwnVaultTest is BaseTest {
         weth.mint(Actors.LP1, 1 ether);
         vm.startPrank(Actors.LP1);
         weth.approve(address(vault), 1 ether);
-        vm.expectRevert(IOwnVault.OnlyVM.selector);
+        vm.expectRevert(IOwnVault.OnlyManager.selector);
         vault.shareYield(1 ether);
         vm.stopPrank();
     }
@@ -918,6 +816,16 @@ contract OwnVaultTest is BaseTest {
         // so redeeming all their shares yields far less than the 1 wei + donation they sank.
         uint256 attackerRedeemable = vault.convertToAssets(attackerShares);
         assertLt(attackerRedeemable, donation, "attacker cannot recover the donation");
+    }
+}
+
+/// @dev Minimal asset registry stub: every asset uses the in-house oracle. Lets the VaultManager
+///      resolve a collateral price during onVaultUnhalted.
+contract StubAssetRegistryForVault {
+    function getOracleType(
+        bytes32
+    ) external pure returns (uint8) {
+        return 1; // in-house
     }
 }
 

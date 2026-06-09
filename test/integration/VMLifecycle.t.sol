@@ -17,8 +17,9 @@ import {VaultFactory} from "../../src/core/VaultFactory.sol";
 import {EToken} from "../../src/tokens/EToken.sol";
 
 /// @title VMLifecycle Integration Test
-/// @notice Tests VM binding to vault, order claiming, and VM identity verification.
-///         VaultManager no longer exists — VM identity is checked via vault.vm().
+/// @notice Tests manager binding to vault, order filling, and signer identity verification.
+///         The vault operator is now `vault.manager()`; quote signers are a global registry
+///         on the VaultManager (mint proceeds / redeem payouts flow to each signer's linked address).
 contract VMLifecycleTest is BaseTest {
     AssetRegistry public assetRegistry;
     OwnMarket public market;
@@ -45,14 +46,12 @@ contract VMLifecycleTest is BaseTest {
         protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), address(factory));
 
         vm.stopPrank();
-        // Deploy + register the ExposureManager before createVault (which auto-registers the vault).
-        _deployExposureManager();
+        // Deploy + register the VaultManager before createVault (which auto-registers the vault).
+        _deployVaultManager();
         vm.startPrank(Actors.ADMIN);
 
         vault = OwnVault(factory.createVault(address(weth), vm1Signer, "Own WETH Vault", "oWETH", ETH));
         vault2 = OwnVault(factory.createVault(address(weth), vm2Signer, "Own WETH Vault 2", "oWETH2", ETH));
-        vault.addQuoteSigner(vm1Signer);
-        vault2.addQuoteSigner(vm2Signer);
 
         eTSLA = new EToken("Own Tesla", "eTSLA", TSLA, address(protocolRegistry), address(usdc));
 
@@ -65,7 +64,7 @@ contract VMLifecycleTest is BaseTest {
         });
         assetRegistry.addAsset(TSLA, address(eTSLA), config);
 
-        // Register the WETH collateral ticker so the ExposureManager can resolve its oracle.
+        // Register the WETH collateral ticker so the VaultManager can resolve its oracle.
         AssetConfig memory ethConfig = AssetConfig({
             activeToken: address(weth),
             legacyTokens: new address[](0),
@@ -77,21 +76,19 @@ contract VMLifecycleTest is BaseTest {
 
         market = new OwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
-        vault.setClaimThreshold(6 hours);
 
         vm.stopPrank();
 
-        // Per-asset issuance ceiling (global util default is set by _deployExposureManager).
+        // Global controls now live on the VaultManager.
+        _setClaimThreshold(6 hours);
+        // vm2Signer is intentionally NOT registered, so its quotes are rejected (wrong-VM test).
+        _registerSigner(vm1Signer, Actors.VM1);
+
+        // Per-asset issuance ceiling (global util default is set by _deployVaultManager).
         _setAssetCap(TSLA, DEFAULT_ASSET_CAP_USD);
 
-        // Set payment tokens
-        vm.startPrank(vm1Signer);
-        vault.setPaymentToken(address(usdc));
-        vm.stopPrank();
-
-        vm.startPrank(vm2Signer);
-        vault2.setPaymentToken(address(usdc));
-        vm.stopPrank();
+        // Global payment token for all vaults.
+        _setPaymentToken(address(usdc));
 
         // LP deposits collateral (VM1 must call deposit on behalf of LP)
         _fundWETH(vm1Signer, LP_DEPOSIT);
@@ -107,12 +104,12 @@ contract VMLifecycleTest is BaseTest {
     }
 
     // ══════════════════════════════════════════════════════════
-    //  VM binding — vault.vm() returns correct VM
+    //  Manager binding — vault.manager() returns correct operator
     // ══════════════════════════════════════════════════════════
 
     function test_vmBinding() public view {
-        assertEq(vault.vm(), vm1Signer);
-        assertEq(vault2.vm(), vm2Signer);
+        assertEq(vault.manager(), vm1Signer);
+        assertEq(vault2.manager(), vm2Signer);
     }
 
     // ══════════════════════════════════════════════════════════
@@ -123,12 +120,10 @@ contract VMLifecycleTest is BaseTest {
         _fundUSDC(Actors.MINTER1, MINT_AMOUNT);
         vm.startPrank(Actors.MINTER1);
         usdc.approve(address(market), MINT_AMOUNT);
-        uint256 orderId =
-            market.placeOrder(address(vault), TSLA, OrderType.Mint, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
+        uint256 orderId = market.placeOrder(TSLA, OrderType.Mint, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
         vm.stopPrank();
 
-        Quote memory q =
-            _buildQuote(orderId, Actors.MINTER1, address(vault), TSLA, OrderType.Mint, MINT_AMOUNT, TSLA_PRICE);
+        Quote memory q = _buildQuote(orderId, Actors.MINTER1, TSLA, OrderType.Mint, MINT_AMOUNT, TSLA_PRICE);
         bytes memory sig = _signQuote(market, q, vm1SignerPk);
 
         vm.prank(vm1Signer);
@@ -142,13 +137,11 @@ contract VMLifecycleTest is BaseTest {
         _fundUSDC(Actors.MINTER1, MINT_AMOUNT);
         vm.startPrank(Actors.MINTER1);
         usdc.approve(address(market), MINT_AMOUNT);
-        uint256 orderId =
-            market.placeOrder(address(vault), TSLA, OrderType.Mint, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
+        uint256 orderId = market.placeOrder(TSLA, OrderType.Mint, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
         vm.stopPrank();
 
-        // vm2Signer is bound to vault2, not vault — its signature is not vault's VM.
-        Quote memory q =
-            _buildQuote(orderId, Actors.MINTER1, address(vault), TSLA, OrderType.Mint, MINT_AMOUNT, TSLA_PRICE);
+        // vm2Signer is not a registered global signer — its signature is rejected.
+        Quote memory q = _buildQuote(orderId, Actors.MINTER1, TSLA, OrderType.Mint, MINT_AMOUNT, TSLA_PRICE);
         bytes memory sig = _signQuote(market, q, vm2SignerPk);
 
         vm.prank(vm2Signer);
@@ -165,7 +158,7 @@ contract VMLifecycleTest is BaseTest {
         vm.prank(Actors.MINTER1);
         usdc.approve(address(market), MINT_AMOUNT);
 
-        Quote memory q = _buildQuote(0, Actors.MINTER1, address(vault), TSLA, OrderType.Mint, MINT_AMOUNT, TSLA_PRICE);
+        Quote memory q = _buildQuote(0, Actors.MINTER1, TSLA, OrderType.Mint, MINT_AMOUNT, TSLA_PRICE);
         bytes memory sig = _signQuote(market, q, vm1SignerPk);
 
         vm.prank(Actors.MINTER1);
@@ -173,7 +166,8 @@ contract VMLifecycleTest is BaseTest {
 
         uint256 expectedETokens = Math.mulDiv(MINT_AMOUNT * 1e12, PRECISION, TSLA_PRICE);
         assertEq(eTSLA.balanceOf(Actors.MINTER1), expectedETokens, "minter received eTokens");
-        assertEq(usdc.balanceOf(vm1Signer), MINT_AMOUNT, "VM received stablecoins");
+        // Mint proceeds flow to the signer's linked settlement address (Actors.VM1).
+        assertEq(usdc.balanceOf(Actors.VM1), MINT_AMOUNT, "linked address received stablecoins");
     }
 
     // ══════════════════════════════════════════════════════════
@@ -194,7 +188,7 @@ contract VMLifecycleTest is BaseTest {
     }
 
     function test_vmSetPaymentToken() public view {
-        assertEq(vault.paymentToken(), address(usdc));
-        assertEq(vault2.paymentToken(), address(usdc));
+        // Payment token is now a single global setting on the VaultManager.
+        assertEq(vaultManager.paymentToken(), address(usdc));
     }
 }

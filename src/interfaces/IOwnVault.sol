@@ -24,19 +24,11 @@ interface IOwnVault is IERC4626 {
     event VaultUnpaused();
     event VaultHalted();
     event VaultUnhalted();
-    event AssetPaused(bytes32 indexed asset, bytes32 indexed reason);
-    event AssetUnpaused(bytes32 indexed asset);
-    event AssetHalted(bytes32 indexed asset);
-    event AssetUnhalted(bytes32 indexed asset);
-    event AssetHaltPriceSet(bytes32 indexed asset, uint256 haltPrice);
 
-    /// @notice Emitted when the VM adds collateral yield to the vault, raising the share price for all LPs.
-    event ShareYieldAdded(address indexed vm, uint256 amount);
+    /// @notice Emitted when the manager adds collateral yield to the vault, raising the share price for all LPs.
+    event ShareYieldAdded(address indexed manager, uint256 amount);
 
-    event VMUpdated(address indexed oldVM, address indexed newVM);
-    event QuoteSignerAdded(address indexed signer);
-    event QuoteSignerRemoved(address indexed signer);
-    event PaymentTokenUpdated(address indexed oldToken, address indexed newToken);
+    event ManagerUpdated(address indexed oldManager, address indexed newManager);
     event DepositApprovalUpdated(bool required);
     event LendingEnabled(address indexed userBorrowManager, address indexed debtToken);
     event AaveCollateralEnabled(address indexed pool, address indexed underlying);
@@ -46,11 +38,10 @@ interface IOwnVault is IERC4626 {
     //  Errors
     // ──────────────────────────────────────────────────────────
 
-    error OnlyVM();
+    error OnlyManager();
     error DirectWithdrawalDisabled();
     error VaultIsPaused();
     error VaultIsHalted();
-    error InvalidHaltPrice();
     error InvalidStatusTransition();
     error InsufficientCollateral();
     error MaxUtilizationExceeded();
@@ -62,16 +53,12 @@ interface IOwnVault is IERC4626 {
     error OnlyDepositor(uint256 requestId);
     error ZeroAmount();
     error ZeroAddress();
-    error AssetIsHalted(bytes32 asset);
     error NoSharesToReward();
     error InsufficientSharesOut(uint256 sharesOut, uint256 minSharesOut);
     error OnlyAdmin();
     error OnlyMarket();
-    error OnlyVMOrAdmin();
-    error AlreadyQuoteSigner(address signer);
-    error NotQuoteSigner(address signer);
+    error OnlyManagerOrAdmin();
     error WithdrawalNotPending(uint256 requestId);
-    error PaymentTokenCannotBeCollateral();
     error DecimalsTooHigh(uint256 decimals);
     error WithdrawalWaitPeriodNotElapsed(uint256 requestId, uint256 readyAt);
     error DepositApprovalNotRequired();
@@ -80,38 +67,20 @@ interface IOwnVault is IERC4626 {
     error OnlyBorrowManager();
 
     // ──────────────────────────────────────────────────────────
-    //  VM binding
+    //  Manager binding
     // ──────────────────────────────────────────────────────────
 
-    /// @notice Return the address of the vault's bound VM.
-    function vm() external view returns (address);
+    /// @notice Return the address of the vault's bound manager (operator).
+    function manager() external view returns (address);
 
-    /// @notice Update the vault manager address. Only callable by admin.
-    /// @dev    The VM is the operational / fund-custody address (it receives mint proceeds,
-    ///         funds redeem payouts, and claims VM fees). It is independent of the quote-signer
-    ///         set — changing the VM does not alter authorised quote signers.
-    /// @param newVM New VM address.
-    function setVM(
-        address newVM
-    ) external;
-
-    /// @notice Whether an address is an authorised quote signer for this vault.
-    /// @dev    The market verifies that order quotes are signed by an authorised signer.
-    ///         Signers are decoupled from the operational `vm` address so a hot signing key
-    ///         (e.g. an HSM/KMS key) need not custody funds. No signer is registered at
-    ///         construction; signers must be added explicitly before quotes can be filled.
-    function isQuoteSigner(
-        address account
-    ) external view returns (bool);
-
-    /// @notice Authorise a new quote signer. Callable by the VM or the admin.
-    function addQuoteSigner(
-        address signer
-    ) external;
-
-    /// @notice Revoke a quote signer. Callable by the VM or the admin.
-    function removeQuoteSigner(
-        address signer
+    /// @notice Update the vault's manager (operator) address. Only callable by admin.
+    /// @dev    The manager runs the vault: accepts/rejects LP deposits, distributes share yield,
+    ///         and can pause the vault. Order settlement no longer flows through it — quotes are
+    ///         authorised by the global signer registry on VaultManager and funds flow to/from
+    ///         each signer's linked address.
+    /// @param newManager New manager address.
+    function setManager(
+        address newManager
     ) external;
 
     // ──────────────────────────────────────────────────────────
@@ -183,61 +152,22 @@ interface IOwnVault is IERC4626 {
 
     function vaultStatus() external view returns (VaultStatus);
 
-    /// @notice Pause the vault. Blocks new orders, claims, and LP deposits.
+    /// @notice Pause the vault — temporary freeze of both LP deposits and withdrawals.
+    ///         Callable by the vault's manager or the admin.
     function pause(
         bytes32 reason
     ) external;
 
-    /// @notice Unpause the vault. Resumes normal operation.
+    /// @notice Unpause the vault. Callable by the vault's manager or the admin.
     function unpause() external;
 
-    /// @notice Pause a specific asset. Blocks new orders and claims for this asset.
-    function pauseAsset(bytes32 asset, bytes32 reason) external;
-
-    /// @notice Unpause a specific asset.
-    function unpauseAsset(
-        bytes32 asset
-    ) external;
-
-    /// @notice Check if a specific asset is paused.
-    function isAssetPaused(
-        bytes32 asset
-    ) external view returns (bool);
-
-    /// @notice Halt the vault. Set per-asset halt prices via haltAsset before or after.
-    ///         Assets without a halt price use the latest oracle price for redemptions.
+    /// @notice Halt the vault — emergency wind-down. Deposits stop; LP withdrawals become instant
+    ///         (no wait period, no utilisation check). The vault's collateral is excluded from the
+    ///         global risk pool while halted. Admin only.
     function haltVault() external;
 
-    /// @notice Unhalt the vault. Does NOT clear per-asset halt prices.
+    /// @notice Unhalt the vault, re-including its collateral in the global risk pool. Admin only.
     function unhalt() external;
-
-    /// @notice Halt a specific asset with a settlement price.
-    function haltAsset(bytes32 asset, uint256 haltPrice) external;
-
-    /// @notice Unhalt a specific asset. Clears the halt price.
-    function unhaltAsset(
-        bytes32 asset
-    ) external;
-
-    /// @notice Check if a specific asset is halted.
-    function isAssetHalted(
-        bytes32 asset
-    ) external view returns (bool);
-
-    /// @notice Return the halt settlement price for an asset (0 if not halted).
-    function getAssetHaltPrice(
-        bytes32 asset
-    ) external view returns (uint256);
-
-    /// @notice Check if an asset is effectively paused (vault paused OR asset paused).
-    function isEffectivelyPaused(
-        bytes32 asset
-    ) external view returns (bool);
-
-    /// @notice Check if an asset is effectively halted (vault halted OR asset halted).
-    function isEffectivelyHalted(
-        bytes32 asset
-    ) external view returns (bool);
 
     // ──────────────────────────────────────────────────────────
     //  Withdrawal queue config
@@ -250,24 +180,12 @@ interface IOwnVault is IERC4626 {
     ) external;
 
     // ──────────────────────────────────────────────────────────
-    //  Order execution parameters (used by OwnMarket)
-    // ──────────────────────────────────────────────────────────
-
-    /// @notice Delay after a resting redeem order is placed before it can be force-executed.
-    function claimThreshold() external view returns (uint256);
-
-    /// @notice Set the claim threshold. Only callable by admin.
-    function setClaimThreshold(
-        uint256 threshold
-    ) external;
-
-    // ──────────────────────────────────────────────────────────
-    //  Share yield (VM-distributed LP rewards)
+    //  Share yield (manager-distributed LP rewards)
     // ──────────────────────────────────────────────────────────
 
     /// @notice Add collateral yield to the vault, raising the share price for all LPs.
-    /// @dev    The VM transfers `amount` of the vault's collateral (`asset()`) in. This is the
-    ///         sole onchain channel for LP fee revenue — protocol/VM splits are handled offchain.
+    /// @dev    The manager transfers `amount` of the vault's collateral (`asset()`) in. This is the
+    ///         sole onchain channel for LP fee revenue — protocol/manager splits are handled offchain.
     ///         Reverts when there are no shares to distribute to (`totalSupply() == 0`).
     /// @param amount Collateral amount (in `asset()` units) to distribute to LPs.
     function shareYield(
@@ -292,18 +210,6 @@ interface IOwnVault is IERC4626 {
     /// @param to     Recipient (the caller that fronted the residual repayment).
     /// @param amount aToken amount to release.
     function releaseCollateralForBadDebt(address to, uint256 amount) external;
-
-    // ──────────────────────────────────────────────────────────
-    //  Payment token
-    // ──────────────────────────────────────────────────────────
-
-    /// @notice Set the accepted payment token (order settlement currency). Only callable by the bound VM.
-    function setPaymentToken(
-        address token
-    ) external;
-
-    /// @notice Return the accepted payment token address.
-    function paymentToken() external view returns (address);
 
     // ──────────────────────────────────────────────────────────
     //  Deposit approval

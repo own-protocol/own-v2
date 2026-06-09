@@ -3,12 +3,12 @@ pragma solidity 0.8.28;
 
 import {IAssetRegistry} from "../interfaces/IAssetRegistry.sol";
 import {IEToken} from "../interfaces/IEToken.sol";
-import {IExposureManager} from "../interfaces/IExposureManager.sol";
 import {IOracleVerifier} from "../interfaces/IOracleVerifier.sol";
 import {IOwnMarket} from "../interfaces/IOwnMarket.sol";
 import {IOwnVault} from "../interfaces/IOwnVault.sol";
 import {IProtocolRegistry} from "../interfaces/IProtocolRegistry.sol";
 import {IVaultFactory} from "../interfaces/IVaultFactory.sol";
+import {IVaultManager} from "../interfaces/IVaultManager.sol";
 import {Order, OrderStatus, OrderType, PRECISION, Quote} from "../interfaces/types/Types.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
@@ -20,12 +20,15 @@ import {MessageHashUtils} from "@openzeppelin/contracts/utils/cryptography/Messa
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 /// @title OwnMarket — RFQ order execution marketplace
-/// @notice Orders settle against firm, VM-signed quotes. Market orders execute atomically in a
-///         single transaction; limit / redeem orders rest on-chain (escrowing the input) and are
-///         filled — possibly in partial chunks — by the VM or a relayer carrying a VM-signed quote.
+/// @notice Orders settle against firm, signer-issued quotes authorised by the global signer
+///         registry on VaultManager. Mint proceeds flow to the signer's linked settlement
+///         address; redeem payouts come from it. All orders use the single global payment token.
+///         Market orders execute atomically; limit / redeem orders rest on-chain (escrowing the
+///         input) and are filled — possibly partially — by a relayer carrying a signed quote.
 ///         Redeem orders additionally let the user force execution at the oracle price after the
-///         vault's claim threshold, as recourse against an unresponsive VM. Mint orders have no
-///         force path. The oracle is only consulted on the force path.
+///         global claim threshold, releasing the order's bound vault collateral as recourse against
+///         an unresponsive maker. Trading pause blocks execution and force-execute; a permanently
+///         halted asset blocks both and is redeemed via {redeemHalted} from the halt redeem address.
 contract OwnMarket is IOwnMarket, ReentrancyGuard {
     using SafeERC20 for IERC20;
     using ECDSA for bytes32;
@@ -70,24 +73,18 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         if (msg.sender != quote.user) revert NotQuoteUser();
         if (quote.amount == 0) revert ZeroAmount();
         if (quote.price == 0) revert InvalidPrice();
-        _validateVaultAndAsset(quote.vault, quote.asset);
-
-        IOwnVault vaultContract = IOwnVault(quote.vault);
-        if (vaultContract.isEffectivelyPaused(quote.asset)) revert AssetPaused(quote.asset);
-        if (vaultContract.isEffectivelyHalted(quote.asset)) {
-            if (quote.orderType == OrderType.Mint) revert MintBlockedDuringHalt(quote.asset);
-            revert TradingHalted(quote.asset);
-        }
+        _validateAsset(quote.asset);
+        _checkTradeable(quote.asset, quote.orderType);
 
         // Effects: consume the quote before any value movement.
-        _consumeQuote(quote, signature);
+        address maker = _consumeQuote(quote, signature);
 
         uint256 amountOut = quote.orderType == OrderType.Mint
-            ? _settleMint(quote.user, quote.vault, quote.asset, quote.amount, quote.price, false)
-            : _settleRedeem(quote.user, quote.vault, quote.asset, quote.amount, quote.price, false);
+            ? _settleMint(quote.user, maker, quote.asset, quote.amount, quote.price, false)
+            : _settleRedeem(quote.user, maker, quote.asset, quote.amount, quote.price, false);
 
         emit OrderExecuted(
-            quote.quoteId, quote.user, vaultContract.vm(), quote.asset, uint8(quote.orderType), quote.amount, amountOut
+            quote.quoteId, quote.user, maker, quote.asset, uint8(quote.orderType), quote.amount, amountOut
         );
     }
 
@@ -97,7 +94,6 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
 
     /// @inheritdoc IOwnMarket
     function placeOrder(
-        address vault,
         bytes32 asset,
         OrderType orderType,
         uint256 amount,
@@ -107,19 +103,13 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         if (amount == 0) revert ZeroAmount();
         if (limitPrice == 0) revert InvalidPrice();
         if (expiry <= block.timestamp) revert InvalidExpiry();
-        _validateVaultAndAsset(vault, asset);
-
-        IOwnVault vaultContract = IOwnVault(vault);
-        if (vaultContract.isEffectivelyPaused(asset)) revert AssetPaused(asset);
-        if (orderType == OrderType.Mint && vaultContract.isEffectivelyHalted(asset)) {
-            revert MintBlockedDuringHalt(asset);
-        }
+        _validateAsset(asset);
+        _checkTradeable(asset, orderType);
 
         orderId = _nextOrderId++;
         _orders[orderId] = Order({
             orderId: orderId,
             user: msg.sender,
-            vault: vault,
             asset: asset,
             orderType: orderType,
             amount: amount,
@@ -133,12 +123,12 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
 
         // Escrow the input.
         if (orderType == OrderType.Mint) {
-            IERC20(vaultContract.paymentToken()).safeTransferFrom(msg.sender, address(this), amount);
+            IERC20(_paymentToken()).safeTransferFrom(msg.sender, address(this), amount);
         } else {
             IERC20(_activeToken(asset)).safeTransferFrom(msg.sender, address(this), amount);
         }
 
-        emit OrderPlaced(orderId, msg.sender, uint8(orderType), asset, vault, amount, limitPrice);
+        emit OrderPlaced(orderId, msg.sender, uint8(orderType), asset, amount, limitPrice);
     }
 
     /// @inheritdoc IOwnMarket
@@ -153,10 +143,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         if (quote.price == 0) revert InvalidPrice();
 
         // The quote must describe the same order.
-        if (
-            quote.user != order.user || quote.vault != order.vault || quote.asset != order.asset
-                || quote.orderType != order.orderType
-        ) {
+        if (quote.user != order.user || quote.asset != order.asset || quote.orderType != order.orderType) {
             revert QuoteTermsMismatch();
         }
 
@@ -170,34 +157,26 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
             if (quote.price < order.limitPrice) revert LimitNotSatisfied();
         }
 
-        {
-            IOwnVault vaultContract = IOwnVault(order.vault);
-            if (vaultContract.isEffectivelyPaused(order.asset)) revert AssetPaused(order.asset);
-            if (vaultContract.isEffectivelyHalted(order.asset)) {
-                if (order.orderType == OrderType.Mint) revert MintBlockedDuringHalt(order.asset);
-                revert TradingHalted(order.asset);
-            }
-        }
+        _checkTradeable(order.asset, order.orderType);
 
         // Effects.
-        _consumeQuote(quote, signature);
+        address maker = _consumeQuote(quote, signature);
         order.filledAmount += quote.amount;
         uint256 newRemaining = remaining - quote.amount;
         if (newRemaining == 0) order.status = OrderStatus.Filled;
 
         // Interactions.
         uint256 amountOut = order.orderType == OrderType.Mint
-            ? _settleMint(order.user, order.vault, order.asset, quote.amount, quote.price, true)
-            : _settleRedeem(order.user, order.vault, order.asset, quote.amount, quote.price, true);
+            ? _settleMint(order.user, maker, order.asset, quote.amount, quote.price, true)
+            : _settleRedeem(order.user, maker, order.asset, quote.amount, quote.price, true);
 
-        emit OrderFilled(
-            quote.orderId, quote.quoteId, IOwnVault(order.vault).vm(), quote.amount, amountOut, newRemaining
-        );
+        emit OrderFilled(quote.orderId, quote.quoteId, maker, quote.amount, amountOut, newRemaining);
     }
 
     /// @inheritdoc IOwnMarket
     function forceExecuteOrder(
         uint256 orderId,
+        address vault,
         bytes calldata assetPriceData,
         bytes calldata collateralPriceData
     ) external payable nonReentrant {
@@ -206,36 +185,61 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         if (order.user != msg.sender) revert OnlyOrderOwner(orderId);
         if (order.status != OrderStatus.Open) revert InvalidOrderStatus(orderId);
         if (order.orderType != OrderType.Redeem) revert ForceMintNotAllowed(orderId);
+        // The caller names the collateral source; it must be a registered vault.
+        if (!IVaultFactory(registry.vaultFactory()).isRegisteredVault(vault)) revert VaultNotRegistered(vault);
 
-        IOwnVault vaultContract = IOwnVault(order.vault);
-        if (block.timestamp < order.createdAt + vaultContract.claimThreshold()) {
+        IVaultManager vmgr = IVaultManager(registry.vaultManager());
+        // Pause and halt both disable the force path.
+        if (vmgr.isTradingPaused(order.asset)) revert AssetPaused(order.asset);
+        if (vmgr.isAssetHalted(order.asset)) revert ForceDisabledDuringHalt(order.asset);
+        if (block.timestamp < order.createdAt + vmgr.claimThreshold()) {
             revert ForceWindowNotElapsed(orderId);
         }
 
         uint256 remaining = order.amount - order.filledAmount;
 
-        // Resolve the settlement price (halt price during halt, else a fresh oracle proof).
-        uint256 price = vaultContract.isEffectivelyHalted(order.asset)
-            ? _resolveHaltPrice(order.vault, order.asset)
-            : _verifyAssetPrice(order.asset, assetPriceData);
+        // Settle at a fresh oracle proof for the asset.
+        uint256 price = _verifyAssetPrice(order.asset, assetPriceData);
         if (price < order.limitPrice) revert PriceBelowMinimum();
 
         // Value the redemption in collateral terms.
         uint256 grossUsd = Math.mulDiv(remaining, price, PRECISION);
-        uint256 grossCollateral = _convertToCollateral(order.vault, grossUsd, collateralPriceData);
+        uint256 grossCollateral = _convertToCollateral(vault, grossUsd, collateralPriceData);
 
         // Effects.
         order.filledAmount = order.amount;
         order.status = OrderStatus.ForceExecuted;
 
         // Interactions: release collateral, burn escrowed eTokens, shrink global exposure.
-        vaultContract.releaseCollateral(order.user, grossCollateral);
+        IOwnVault(vault).releaseCollateral(order.user, grossCollateral);
         IEToken(_activeToken(order.asset)).burn(address(this), remaining);
-        IExposureManager(registry.exposureManager()).closeExposure(order.vault, order.asset, remaining);
+        vmgr.closeExposure(order.asset, remaining);
 
         emit OrderForceExecuted(orderId, order.user, remaining, grossCollateral);
 
         _refundETH();
+    }
+
+    /// @inheritdoc IOwnMarket
+    function redeemHalted(bytes32 asset, uint256 eTokenAmount) external nonReentrant returns (uint256 payout) {
+        if (eTokenAmount == 0) revert ZeroAmount();
+
+        IVaultManager vmgr = IVaultManager(registry.vaultManager());
+        if (!vmgr.isAssetHalted(asset)) revert AssetNotHalted(asset);
+        uint256 haltPrice = vmgr.assetHaltPrice(asset);
+        if (haltPrice == 0) revert InvalidHaltPrice();
+        address haltAddr = vmgr.haltRedeemAddress();
+        if (haltAddr == address(0)) revert HaltRedeemAddressNotSet();
+
+        address pay = _paymentToken();
+        payout = Math.mulDiv(eTokenAmount, haltPrice, PRECISION * 10 ** (18 - IERC20Metadata(pay).decimals()));
+
+        // Pull stables from the halt fund to the caller, burn the eTokens, shrink global exposure.
+        IERC20(pay).safeTransferFrom(haltAddr, msg.sender, payout);
+        IEToken(_activeToken(asset)).burn(msg.sender, eTokenAmount);
+        vmgr.closeExposure(asset, eTokenAmount);
+
+        emit OrderRedeemedHalted(msg.sender, asset, eTokenAmount, payout);
     }
 
     /// @inheritdoc IOwnMarket
@@ -304,7 +308,6 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
             abi.encode(
                 quote.orderId,
                 quote.user,
-                quote.vault,
                 quote.asset,
                 quote.orderType,
                 quote.amount,
@@ -321,15 +324,16 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
     //  Internal — quote verification
     // ──────────────────────────────────────────────────────────
 
-    /// @dev Validate expiry, replay, and signer (an authorised quote signer of the vault),
-    ///      then mark the quote used. The signer set is independent of the vault's operational
-    ///      `vm` address, which remains the fund source/sink.
-    function _consumeQuote(Quote calldata quote, bytes calldata signature) private {
+    /// @dev Validate expiry, replay, and signer (an authorised global signer), then mark the
+    ///      quote used. Returns the signer's linked settlement address (mint sink / redeem source).
+    function _consumeQuote(Quote calldata quote, bytes calldata signature) private returns (address maker) {
         if (block.timestamp > quote.expiry) revert QuoteExpired();
         bytes32 digest = quoteDigest(quote);
         if (_usedQuotes[digest]) revert QuoteAlreadyUsed();
         address signer = digest.toEthSignedMessageHash().recover(signature);
-        if (!IOwnVault(quote.vault).isQuoteSigner(signer)) revert InvalidQuoteSigner();
+        IVaultManager vmgr = IVaultManager(registry.vaultManager());
+        if (!vmgr.isSigner(signer)) revert InvalidQuoteSigner();
+        maker = vmgr.signerLinkedAddress(signer);
         _usedQuotes[digest] = true;
     }
 
@@ -339,60 +343,59 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
 
     /// @dev Settle a mint of `amountIn` stablecoins at `price`. When `fromEscrow` the stablecoins
     ///      are already held by this contract; otherwise they are pulled from `user`. The full
-    ///      amount goes to the VM; eTokens are minted to `user`. Returns the eToken amount minted.
+    ///      amount goes to the maker (signer's linked address); eTokens are minted to `user`.
     function _settleMint(
         address user,
-        address vault,
+        address maker,
         bytes32 asset,
         uint256 amountIn,
         uint256 price,
         bool fromEscrow
     ) private returns (uint256 eTokenAmount) {
-        address paymentToken = IOwnVault(vault).paymentToken();
-        eTokenAmount = Math.mulDiv(amountIn * (10 ** (18 - IERC20Metadata(paymentToken).decimals())), PRECISION, price);
+        address pay = _paymentToken();
+        eTokenAmount = Math.mulDiv(amountIn * (10 ** (18 - IERC20Metadata(pay).decimals())), PRECISION, price);
 
         // Atomic check + commit of global exposure (asset cap + global utilisation) before any
         // external token movement, so a breach reverts cleanly with no side effects.
-        IExposureManager(registry.exposureManager()).openExposure(vault, asset, eTokenAmount);
+        IVaultManager(registry.vaultManager()).openExposure(asset, eTokenAmount);
 
-        // Route the full stablecoin amount to the VM (spread captured offchain).
+        // Route the full stablecoin amount to the maker (spread captured offchain).
         if (fromEscrow) {
-            IERC20(paymentToken).safeTransfer(IOwnVault(vault).vm(), amountIn);
+            IERC20(pay).safeTransfer(maker, amountIn);
         } else {
-            IERC20(paymentToken).safeTransferFrom(user, IOwnVault(vault).vm(), amountIn);
+            IERC20(pay).safeTransferFrom(user, maker, amountIn);
         }
 
         // Mint the eTokens to the user.
         IEToken(_activeToken(asset)).mint(user, eTokenAmount);
     }
 
-    /// @dev Settle a redeem of `amountIn` eTokens at `price`. The VM pays the full stablecoin
+    /// @dev Settle a redeem of `amountIn` eTokens at `price`. The maker pays the full stablecoin
     ///      payout to `user`. When `fromEscrow` the eTokens are burned from this contract's escrow,
     ///      otherwise from `user`. Returns the stablecoin payout to the user.
     function _settleRedeem(
         address user,
-        address vault,
+        address maker,
         bytes32 asset,
         uint256 amountIn,
         uint256 price,
         bool fromEscrow
     ) private returns (uint256 netPayout) {
-        address paymentToken = IOwnVault(vault).paymentToken();
-        address vmAddr = IOwnVault(vault).vm();
-        netPayout = Math.mulDiv(amountIn, price, PRECISION * 10 ** (18 - IERC20Metadata(paymentToken).decimals()));
+        address pay = _paymentToken();
+        netPayout = Math.mulDiv(amountIn, price, PRECISION * 10 ** (18 - IERC20Metadata(pay).decimals()));
 
-        IERC20(paymentToken).safeTransferFrom(vmAddr, user, netPayout);
+        IERC20(pay).safeTransferFrom(maker, user, netPayout);
 
         // Burn the eTokens and shrink global exposure.
         IEToken(_activeToken(asset)).burn(fromEscrow ? address(this) : user, amountIn);
-        IExposureManager(registry.exposureManager()).closeExposure(vault, asset, amountIn);
+        IVaultManager(registry.vaultManager()).closeExposure(asset, amountIn);
     }
 
     /// @dev Return the unfilled escrow to the order owner.
     function _returnEscrow(Order storage order, uint256 remaining) private {
         if (remaining == 0) return;
         if (order.orderType == OrderType.Mint) {
-            IERC20(IOwnVault(order.vault).paymentToken()).safeTransfer(order.user, remaining);
+            IERC20(_paymentToken()).safeTransfer(order.user, remaining);
         } else {
             IERC20(_activeToken(order.asset)).safeTransfer(order.user, remaining);
         }
@@ -417,7 +420,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         uint256 usdValue,
         bytes calldata collateralPriceData
     ) private returns (uint256) {
-        bytes32 collatAsset = IExposureManager(registry.exposureManager()).vaultCollateralAsset(vault);
+        bytes32 collatAsset = IVaultManager(registry.vaultManager()).vaultCollateralAsset(vault);
         address oracleAddr = _getOracleForAsset(collatAsset);
         if (oracleAddr == address(0)) revert CollateralOracleNotSet();
         IOracleVerifier oracle = IOracleVerifier(oracleAddr);
@@ -431,35 +434,34 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         return collateral18 / (10 ** (18 - collatDecimals));
     }
 
-    /// @dev Resolve the effective halt price for an asset (admin-set halt price, else latest oracle).
-    function _resolveHaltPrice(address vault, bytes32 asset) private view returns (uint256 price) {
-        price = IOwnVault(vault).getAssetHaltPrice(asset);
-        if (price > 0) return price;
-
-        address oracleAddr = _getOracleForAsset(asset);
-        if (oracleAddr != address(0)) {
-            (price,) = IOracleVerifier(oracleAddr).getPrice(asset);
-        }
-        if (price == 0) revert InvalidHaltPrice();
-    }
-
     // ──────────────────────────────────────────────────────────
     //  Internal — misc helpers
     // ──────────────────────────────────────────────────────────
 
-    /// @dev Validate that the vault is registered, has a payment token, and the asset is active.
-    ///      Per-vault asset enablement is gone — the global AssetRegistry governs validity for
-    ///      all vaults, and the ExposureManager's per-asset cap governs issuance.
-    function _validateVaultAndAsset(address vault, bytes32 asset) private view {
-        if (!IVaultFactory(registry.vaultFactory()).isRegisteredVault(vault)) {
-            revert VaultNotRegistered(vault);
+    /// @dev Trading-status gate shared by execute/fill/place: revert if the asset's trading is
+    ///      paused, or if it is halted (mint blocked; redeem routed through {redeemHalted}).
+    function _checkTradeable(bytes32 asset, OrderType orderType) private view {
+        IVaultManager vmgr = IVaultManager(registry.vaultManager());
+        if (vmgr.isTradingPaused(asset)) revert AssetPaused(asset);
+        if (vmgr.isAssetHalted(asset)) {
+            if (orderType == OrderType.Mint) revert MintBlockedDuringHalt(asset);
+            revert TradingHalted(asset);
         }
-        if (IOwnVault(vault).paymentToken() == address(0)) {
-            revert PaymentTokenNotSet(vault);
-        }
+    }
+
+    /// @dev Validate that the asset is active in the AssetRegistry.
+    function _validateAsset(
+        bytes32 asset
+    ) private view {
         if (!IAssetRegistry(registry.assetRegistry()).isActiveAsset(asset)) {
             revert AssetNotActive(asset);
         }
+    }
+
+    /// @dev Resolve and validate the global payment token.
+    function _paymentToken() private view returns (address token) {
+        token = IVaultManager(registry.vaultManager()).paymentToken();
+        if (token == address(0)) revert PaymentTokenNotSet();
     }
 
     /// @dev Resolve the active eToken for an asset via the AssetRegistry.

@@ -3,11 +3,12 @@ pragma solidity 0.8.28;
 
 import {IAssetRegistry} from "../interfaces/IAssetRegistry.sol";
 import {IEToken} from "../interfaces/IEToken.sol";
-import {IExposureManager} from "../interfaces/IExposureManager.sol";
 import {IOracleVerifier} from "../interfaces/IOracleVerifier.sol";
+import {IOwnMarket} from "../interfaces/IOwnMarket.sol";
 import {IOwnVault} from "../interfaces/IOwnVault.sol";
 import {IProtocolRegistry} from "../interfaces/IProtocolRegistry.sol";
 import {IUserBorrowManager} from "../interfaces/IUserBorrowManager.sol";
+import {IVaultManager} from "../interfaces/IVaultManager.sol";
 import {IAaveV3Pool} from "../interfaces/external/IAaveV3Pool.sol";
 import {InterestRateModel} from "../libraries/InterestRateModel.sol";
 import {LendingMath} from "../libraries/LendingMath.sol";
@@ -96,7 +97,7 @@ contract UserBorrowManager is IUserBorrowManager, ReentrancyGuard {
 
     /// @inheritdoc IUserBorrowManager
     /// @dev Vault-wide target Aave LTV (BPS) that defines the protocol debt
-    ///      cap: `maxDebtUSD = exposureManager.collateralMark(vault) × targetLtvBps / BPS`.
+    ///      cap: `maxDebtUSD = vaultManager.collateralMark(vault) × targetLtvBps / BPS`.
     ///      Distinct from `borrowLtvBps`, which caps an individual position.
     uint256 public override targetLtvBps;
 
@@ -397,7 +398,7 @@ contract UserBorrowManager is IUserBorrowManager, ReentrancyGuard {
         uint256 collateralReleased;
         uint256 lpLoss = residual - absorbAmount;
         if (lpLoss > 0) {
-            bytes32 collatAsset = IExposureManager(registry.exposureManager()).vaultCollateralAsset(vault);
+            bytes32 collatAsset = IVaultManager(registry.vaultManager()).vaultCollateralAsset(vault);
             uint256 collateralPrice = _verifyPrice(collatAsset, collateralPriceData);
             uint256 lpLossUSD = LendingMath.stableToUSD(lpLoss, _stableDecimals);
             collateralReleased = lpLossUSD.mulDiv(PRECISION, collateralPrice);
@@ -407,6 +408,70 @@ contract UserBorrowManager is IUserBorrowManager, ReentrancyGuard {
         }
 
         emit BadDebtAbsorbed(borrower, asset, msg.sender, residual, absorbAmount, collateralReleased);
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Halt settlement
+    // ──────────────────────────────────────────────────────────
+
+    /// @inheritdoc IUserBorrowManager
+    /// @dev Unwinds a position during a permanent asset halt. The eToken collateral needed to
+    ///      cover the position's debt at the fixed halt price is seized and redeemed for
+    ///      stablecoins through the market's halt redeem path (paid from the halt redeem address),
+    ///      the proceeds repay the vault's Aave debt, and any excess collateral is returned to the
+    ///      borrower. Assumes the global payment token equals this manager's borrow stablecoin
+    ///      (both USDC in the MVP) so redeem proceeds can repay the Aave loan directly. If the
+    ///      collateral cannot fully cover the debt, the shortfall is left as a zero-collateral
+    ///      residual for {absorbBadDebt}.
+    function settleHaltedPosition(address borrower, bytes32 asset) external nonReentrant {
+        Position storage p = _positions[borrower][asset];
+        if (p.principal == 0) revert NoPosition(borrower, asset);
+
+        IVaultManager vmgr = IVaultManager(registry.vaultManager());
+        if (!vmgr.isAssetHalted(asset)) revert AssetNotHalted(asset);
+        uint256 haltPrice = vmgr.assetHaltPrice(asset);
+
+        _accrue();
+        uint256 idx = _index;
+        uint256 currentDebt = LendingMath.scaledToActual(p.principal, idx);
+
+        // eTokens needed to cover the debt at the halt price (ceil — cover the full debt),
+        // capped at the position's collateral.
+        uint256 debtUSD = LendingMath.stableToUSD(currentDebt, _stableDecimals);
+        uint256 eTokenToCover = debtUSD.mulDiv(PRECISION, haltPrice, Math.Rounding.Ceil);
+        uint256 collateral = p.eTokenCollateral;
+        if (eTokenToCover > collateral) eTokenToCover = collateral;
+
+        // Redeem the covering slice at the halt redeem address for stablecoins; the market burns
+        // the manager's eTokens and shrinks global exposure.
+        uint256 proceeds;
+        if (eTokenToCover > 0) {
+            proceeds = IOwnMarket(registry.market()).redeemHalted(asset, eTokenToCover);
+        }
+
+        // Repay the vault's Aave debt; surplus (over-cover from ceil rounding) sweeps to the manager.
+        if (proceeds > 0) _repayAaveAndSweep(proceeds);
+
+        // Reduce book debt by the proceeds (capped at the position's debt).
+        uint256 scaledRepay = proceeds >= currentDebt ? p.principal : LendingMath.actualToScaled(proceeds, idx);
+        if (scaledRepay > p.principal) scaledRepay = p.principal;
+        _totalScaledDebt -= scaledRepay;
+
+        uint256 returnedToBorrower = collateral - eTokenToCover;
+        address eToken = _resolveActiveEToken(asset);
+
+        if (scaledRepay == p.principal) {
+            // Debt fully cleared — return any leftover collateral and close the position.
+            delete _positions[borrower][asset];
+            if (returnedToBorrower > 0) IERC20(eToken).safeTransfer(borrower, returnedToBorrower);
+        } else {
+            // Collateral exhausted before debt — leave a zero-collateral residual for absorbBadDebt.
+            p.principal -= scaledRepay;
+            p.eTokenCollateral = returnedToBorrower;
+            p.interestIndex = idx;
+        }
+
+        emit HaltPositionSettled(borrower, asset, eTokenToCover, proceeds, returnedToBorrower);
     }
 
     // ──────────────────────────────────────────────────────────
@@ -524,7 +589,7 @@ contract UserBorrowManager is IUserBorrowManager, ReentrancyGuard {
 
     /// @inheritdoc IUserBorrowManager
     function maxDebtUSD() public view returns (uint256) {
-        return IExposureManager(registry.exposureManager()).collateralMark(vault).mulDiv(targetLtvBps, BPS);
+        return IVaultManager(registry.vaultManager()).collateralMark(vault).mulDiv(targetLtvBps, BPS);
     }
 
     /// @inheritdoc IUserBorrowManager
@@ -615,7 +680,9 @@ contract UserBorrowManager is IUserBorrowManager, ReentrancyGuard {
     function _validateEligibility(bytes32 asset, address eToken) internal view {
         if (!IAssetRegistry(registry.assetRegistry()).isActiveAsset(asset)) revert AssetNotActive(asset);
         if (!IEToken(eToken).isPassThroughHolder(address(this))) revert PassThroughNotEnabled(eToken);
-        if (IOwnVault(vault).isEffectivelyHalted(asset) || IOwnVault(vault).isEffectivelyPaused(asset)) {
+        IVaultManager vmgr = IVaultManager(registry.vaultManager());
+        // Lending pauses with trading: no new borrows while the asset is paused or halted.
+        if (vmgr.isAssetHalted(asset) || vmgr.isTradingPaused(asset)) {
             revert VaultEffectivelyHalted();
         }
     }
@@ -658,9 +725,9 @@ contract UserBorrowManager is IUserBorrowManager, ReentrancyGuard {
         uint256 actualRepaid = IAaveV3Pool(aavePool).repay(stablecoin, amount, AAVE_VARIABLE_RATE_MODE, vault);
         uint256 surplus = amount > actualRepaid ? amount - actualRepaid : 0;
         if (surplus > 0) {
-            address vaultVM = IOwnVault(vault).vm();
-            IERC20(stablecoin).safeTransfer(vaultVM, surplus);
-            emit LendingFeeAccrued(vaultVM, surplus);
+            address vaultManager = IOwnVault(vault).manager();
+            IERC20(stablecoin).safeTransfer(vaultManager, surplus);
+            emit LendingFeeAccrued(vaultManager, surplus);
         }
     }
 }

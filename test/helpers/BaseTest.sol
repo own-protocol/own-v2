@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {ExposureManager} from "../../src/core/ExposureManager.sol";
 import {ProtocolRegistry} from "../../src/core/ProtocolRegistry.sol";
+import {VaultManager} from "../../src/core/VaultManager.sol";
 import {IOwnMarket} from "../../src/interfaces/IOwnMarket.sol";
 import {BPS, OrderType, PRECISION, Quote} from "../../src/interfaces/types/Types.sol";
 import {Actors} from "./Actors.sol";
@@ -57,8 +57,8 @@ contract BaseTest is Test {
     /// @notice Mock DEX router for Tier 3 liquidation.
     MockDEX public dex;
 
-    /// @notice Central pooled-exposure manager. Deployed/registered on demand by `_deployExposureManager`.
-    ExposureManager public exposureManager;
+    /// @notice Central pooled risk + control manager. Deployed/registered on demand by `_deployVaultManager`.
+    VaultManager public vaultManager;
 
     // ──────────────────────────────────────────────────────────
     //  Common asset tickers
@@ -121,11 +121,11 @@ contract BaseTest is Test {
     /// @dev Monotonic nonce so generated quotes are unique within a test run.
     uint256 private _baseQuoteNonce = 1;
 
-    /// @notice Build a Quote with a fresh nonce and a default 1-day expiry.
+    /// @notice Build a Quote with a fresh nonce and a default 1-day expiry. Quotes are vault-less:
+    ///         the signer is a global protocol signer and funds flow to/from its linked address.
     function _buildQuote(
         uint256 orderId,
         address user,
-        address vault,
         bytes32 asset,
         OrderType orderType,
         uint256 amount,
@@ -134,7 +134,6 @@ contract BaseTest is Test {
         q = Quote({
             orderId: orderId,
             user: user,
-            vault: vault,
             asset: asset,
             orderType: orderType,
             amount: amount,
@@ -261,25 +260,25 @@ contract BaseTest is Test {
     }
 
     // ──────────────────────────────────────────────────────────
-    //  Utility: ExposureManager
+    //  Utility: VaultManager
     // ──────────────────────────────────────────────────────────
 
-    /// @notice Deploy the ExposureManager, register it in the registry (EXPOSURE_MANAGER slot),
+    /// @notice Deploy the VaultManager, register it in the registry (VAULT_MANAGER slot),
     ///         and set the default global max utilisation. Must be called (as part of protocol
     ///         deployment) BEFORE any `VaultFactory.createVault`, which auto-registers the vault.
-    function _deployExposureManager() internal {
+    function _deployVaultManager() internal {
         vm.startPrank(Actors.ADMIN);
-        exposureManager = new ExposureManager(protocolRegistry);
-        protocolRegistry.setAddress(protocolRegistry.EXPOSURE_MANAGER(), address(exposureManager));
-        exposureManager.setGlobalMaxUtilizationBps(DEFAULT_MAX_UTIL_BPS);
+        vaultManager = new VaultManager(protocolRegistry);
+        protocolRegistry.setAddress(protocolRegistry.VAULT_MANAGER(), address(vaultManager));
+        vaultManager.setGlobalMaxUtilizationBps(DEFAULT_MAX_UTIL_BPS);
         vm.stopPrank();
-        vm.label(address(exposureManager), "ExposureManager");
+        vm.label(address(vaultManager), "VaultManager");
     }
 
     /// @notice Set the per-asset USD issuance ceiling (admin-only).
     function _setAssetCap(bytes32 asset, uint256 capUSD) internal {
         vm.prank(Actors.ADMIN);
-        exposureManager.setAssetCapUSD(asset, capUSD);
+        vaultManager.setAssetCapUSD(asset, capUSD);
     }
 
     /// @notice Set the global max utilisation in BPS (admin-only).
@@ -287,20 +286,70 @@ contract BaseTest is Test {
         uint256 bps
     ) internal {
         vm.prank(Actors.ADMIN);
-        exposureManager.setGlobalMaxUtilizationBps(bps);
+        vaultManager.setGlobalMaxUtilizationBps(bps);
+    }
+
+    /// @notice Set the global order-settlement payment token (admin-only).
+    function _setPaymentToken(
+        address token
+    ) internal {
+        vm.prank(Actors.ADMIN);
+        vaultManager.setPaymentToken(token);
+    }
+
+    /// @notice Register a global quote signer with its linked settlement address (admin-only).
+    function _registerSigner(address signer, address linked) internal {
+        vm.prank(Actors.ADMIN);
+        vaultManager.registerSigner(signer, linked);
+    }
+
+    /// @notice Set the global claim threshold (admin-only).
+    function _setClaimThreshold(
+        uint256 threshold
+    ) internal {
+        vm.prank(Actors.ADMIN);
+        vaultManager.setClaimThreshold(threshold);
+    }
+
+    /// @notice Permanently halt an asset at a fixed price (admin-only).
+    function _haltAsset(bytes32 asset, uint256 haltPrice) internal {
+        vm.prank(Actors.ADMIN);
+        vaultManager.haltAsset(asset, haltPrice);
+    }
+
+    /// @notice Set the halt redeem address holding stables (admin-only).
+    function _setHaltRedeemAddress(
+        address addr
+    ) internal {
+        vm.prank(Actors.ADMIN);
+        vaultManager.setHaltRedeemAddress(addr);
+    }
+
+    /// @notice Toggle the global trading pause (admin-only).
+    function _setTradingPaused(
+        bool paused
+    ) internal {
+        vm.prank(Actors.ADMIN);
+        vaultManager.setTradingPaused(paused);
+    }
+
+    /// @notice Toggle per-asset trading pause (admin-only).
+    function _setAssetTradingPaused(bytes32 asset, bool paused) internal {
+        vm.prank(Actors.ADMIN);
+        vaultManager.setAssetTradingPaused(asset, paused);
     }
 
     /// @notice Permissionless price pull of a vault's collateral mark.
     function _pullCollateralPrice(
         address vault
     ) internal {
-        exposureManager.pullCollateralPrice(vault);
+        vaultManager.pullCollateralPrice(vault);
     }
 
     /// @notice Permissionless price pull of an asset's price mark.
     function _pullAssetPrice(
         bytes32 asset
     ) internal {
-        exposureManager.pullAssetPrice(asset);
+        vaultManager.pullAssetPrice(asset);
     }
 }

@@ -5,6 +5,7 @@ import {OwnMarket} from "../../../src/core/OwnMarket.sol";
 import {OwnVault} from "../../../src/core/OwnVault.sol";
 
 import {IOwnMarket} from "../../../src/interfaces/IOwnMarket.sol";
+import {IVaultManager} from "../../../src/interfaces/IVaultManager.sol";
 import {BPS, Order, OrderStatus, OrderType, PRECISION, Quote} from "../../../src/interfaces/types/Types.sol";
 import {EToken} from "../../../src/tokens/EToken.sol";
 
@@ -34,7 +35,9 @@ contract MarketHandler is CommonBase, StdCheats, StdUtils {
     uint256 public constant ETH_PRICE = 3000e18;
 
     address[] public minters;
-    address public vmAddr;
+    /// @dev The global signer's linked settlement address: mint proceeds flow to it,
+    ///      redeem payouts are funded from it.
+    address public linkedAddr;
     uint256 public vmPk;
 
     // ── Ghost variables ─────────────────────────────────────────
@@ -62,7 +65,9 @@ contract MarketHandler is CommonBase, StdCheats, StdUtils {
         eTSLA = EToken(_eTSLA);
         oracle = MockOracleVerifier(_oracle);
         vmPk = _vmPk;
-        vmAddr = vault.vm();
+        // The keyed signer (vmPk -> vm1Signer) is registered globally with Actors.VM1 as its
+        // linked settlement address, so mint proceeds and redeem payouts settle through VM1.
+        linkedAddr = Actors.VM1;
 
         minters.push(Actors.MINTER1);
         minters.push(Actors.MINTER2);
@@ -81,7 +86,7 @@ contract MarketHandler is CommonBase, StdCheats, StdUtils {
 
         vm.startPrank(minter);
         usdc.approve(address(market), amount);
-        uint256 orderId = market.placeOrder(address(vault), TSLA, OrderType.Mint, amount, TSLA_PRICE, expiry);
+        uint256 orderId = market.placeOrder(TSLA, OrderType.Mint, amount, TSLA_PRICE, expiry);
         vm.stopPrank();
 
         ghost_escrowedStablecoins += amount;
@@ -101,7 +106,7 @@ contract MarketHandler is CommonBase, StdCheats, StdUtils {
 
         vm.startPrank(minter);
         eTSLA.approve(address(market), amount);
-        uint256 orderId = market.placeOrder(address(vault), TSLA, OrderType.Redeem, amount, TSLA_PRICE, expiry);
+        uint256 orderId = market.placeOrder(TSLA, OrderType.Redeem, amount, TSLA_PRICE, expiry);
         vm.stopPrank();
 
         ghost_escrowedETokens += amount;
@@ -161,11 +166,11 @@ contract MarketHandler is CommonBase, StdCheats, StdUtils {
         uint256 remaining = order.amount - order.filledAmount;
         uint256 fill = bound(fillSeed, 1, remaining);
 
-        // VM funds the gross payout (net to user + fee to vault).
+        // The signer's linked address funds the gross payout (net to user + fee to vault).
         uint256 decimals = IERC20Metadata(address(usdc)).decimals();
         uint256 grossPayout = Math.mulDiv(fill, TSLA_PRICE, PRECISION * 10 ** (18 - decimals));
-        usdc.mint(vmAddr, grossPayout);
-        vm.prank(vmAddr);
+        usdc.mint(linkedAddr, grossPayout);
+        vm.prank(linkedAddr);
         usdc.approve(address(market), grossPayout);
 
         Quote memory q = _quote(orderId, order.user, OrderType.Redeem, fill, TSLA_PRICE);
@@ -295,8 +300,9 @@ contract MarketHandler is CommonBase, StdCheats, StdUtils {
             return;
         }
 
-        // Warp past the claim threshold so force execution is allowed.
-        uint256 forceTime = order.createdAt + vault.claimThreshold() + 1;
+        // Warp past the (now global) claim threshold so force execution is allowed.
+        uint256 claimThreshold = IVaultManager(market.registry().vaultManager()).claimThreshold();
+        uint256 forceTime = order.createdAt + claimThreshold + 1;
         if (block.timestamp < forceTime) {
             vm.warp(forceTime);
         }
@@ -308,7 +314,7 @@ contract MarketHandler is CommonBase, StdCheats, StdUtils {
 
         uint256 remaining = order.amount - order.filledAmount;
         vm.prank(order.user);
-        try market.forceExecuteOrder(orderId, assetPriceData, collateralPriceData) {
+        try market.forceExecuteOrder(orderId, address(vault), assetPriceData, collateralPriceData) {
             ghost_escrowedETokens -= remaining;
             _removeFromArray(ghost_openRedeemIds, idx);
         } catch {
@@ -350,7 +356,6 @@ contract MarketHandler is CommonBase, StdCheats, StdUtils {
         q = Quote({
             orderId: orderId,
             user: user,
-            vault: address(vault),
             asset: TSLA,
             orderType: orderType,
             amount: amount,

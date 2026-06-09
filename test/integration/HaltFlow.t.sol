@@ -5,6 +5,7 @@ import {Actors} from "../helpers/Actors.sol";
 import {BaseTest} from "../helpers/BaseTest.sol";
 
 import {IOwnVault} from "../../src/interfaces/IOwnVault.sol";
+import {IVaultManager} from "../../src/interfaces/IVaultManager.sol";
 import {AssetConfig, BPS, OrderStatus, VaultStatus} from "../../src/interfaces/types/Types.sol";
 
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
@@ -40,15 +41,14 @@ contract HaltFlowTest is BaseTest {
         protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), address(factory));
 
         vm.stopPrank();
-        // Deploy + register the ExposureManager before createVault (which auto-registers the vault).
-        _deployExposureManager();
+        // Deploy + register the VaultManager before createVault (which auto-registers the vault).
+        _deployVaultManager();
         vm.startPrank(Actors.ADMIN);
 
         vault = OwnVault(factory.createVault(address(weth), Actors.VM1, "Own WETH Vault", "oWETH", ETH));
 
         market = new OwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
-        vault.setClaimThreshold(6 hours);
 
         eTSLA = new EToken("Own Tesla", "eTSLA", TSLA, address(protocolRegistry), address(usdc));
 
@@ -61,12 +61,21 @@ contract HaltFlowTest is BaseTest {
         });
         assetRegistry.addAsset(TSLA, address(eTSLA), config);
 
+        // Register the WETH collateral ticker so the VaultManager can resolve its oracle.
+        AssetConfig memory ethConfig = AssetConfig({
+            activeToken: address(weth),
+            legacyTokens: new address[](0),
+            active: true,
+            volatilityLevel: 1,
+            oracleType: 1
+        });
+        assetRegistry.addAsset(ETH, address(weth), ethConfig);
+
         vm.stopPrank();
 
-        // Set payment token
-        vm.startPrank(Actors.VM1);
-        vault.setPaymentToken(address(usdc));
-        vm.stopPrank();
+        // Global controls now live on the VaultManager.
+        _setClaimThreshold(6 hours);
+        _setPaymentToken(address(usdc));
 
         // LP deposits (via VM1)
         _fundWETH(Actors.VM1, LP_DEPOSIT);
@@ -74,11 +83,15 @@ contract HaltFlowTest is BaseTest {
         weth.approve(address(vault), LP_DEPOSIT);
         vault.deposit(LP_DEPOSIT, Actors.LP1);
         vm.stopPrank();
+
+        // Seed the vault's collateral mark so the global pool is non-zero.
+        _pullCollateralPrice(address(vault));
     }
 
+    /// @dev Vault-status halt (emergency wind-down). Asset-level halt is a separate global
+    ///      concept tested elsewhere; here we only exercise the vault status transition.
     function _haltVault() private {
         vm.startPrank(Actors.ADMIN);
-        vault.haltAsset(TSLA, TSLA_PRICE);
         vault.haltVault();
         vm.stopPrank();
     }
@@ -127,18 +140,18 @@ contract HaltFlowTest is BaseTest {
         assertGt(vault.balanceOf(Actors.LP2), 0);
     }
 
-    function test_pause_onlyAdmin() public {
+    function test_pause_onlyManagerOrAdmin() public {
         vm.prank(Actors.ATTACKER);
-        vm.expectRevert(IOwnVault.OnlyAdmin.selector);
+        vm.expectRevert(IOwnVault.OnlyManagerOrAdmin.selector);
         vault.pause(bytes32("attack"));
     }
 
-    function test_unpause_onlyAdmin() public {
+    function test_unpause_onlyManagerOrAdmin() public {
         vm.prank(Actors.ADMIN);
         vault.pause(bytes32("emergency"));
 
         vm.prank(Actors.ATTACKER);
-        vm.expectRevert(IOwnVault.OnlyAdmin.selector);
+        vm.expectRevert(IOwnVault.OnlyManagerOrAdmin.selector);
         vault.unpause();
     }
 
@@ -224,93 +237,77 @@ contract HaltFlowTest is BaseTest {
     // ══════════════════════════════════════════════════════════
 
     function test_haltAsset_setsFlag() public {
-        vm.prank(Actors.ADMIN);
-        vault.haltAsset(TSLA, TSLA_PRICE);
+        _haltAsset(TSLA, TSLA_PRICE);
 
-        assertTrue(vault.isAssetHalted(TSLA));
-        assertFalse(vault.isAssetHalted(GOLD));
-        assertEq(vault.getAssetHaltPrice(TSLA), TSLA_PRICE);
+        assertTrue(vaultManager.isAssetHalted(TSLA));
+        assertFalse(vaultManager.isAssetHalted(GOLD));
+        assertEq(vaultManager.assetHaltPrice(TSLA), TSLA_PRICE);
     }
 
-    function test_unhaltAsset_clearsFlagAndPrice() public {
-        vm.startPrank(Actors.ADMIN);
-        vault.haltAsset(TSLA, TSLA_PRICE);
-        assertTrue(vault.isAssetHalted(TSLA));
+    /// @dev Asset halt is now PERMANENT (no unhalt). Re-halting reverts AssetAlreadyHalted.
+    function test_haltAsset_isPermanent() public {
+        _haltAsset(TSLA, TSLA_PRICE);
+        assertTrue(vaultManager.isAssetHalted(TSLA));
 
-        vault.unhaltAsset(TSLA);
-        assertFalse(vault.isAssetHalted(TSLA));
-        assertEq(vault.getAssetHaltPrice(TSLA), 0);
-        vm.stopPrank();
+        vm.prank(Actors.ADMIN);
+        vm.expectRevert(abi.encodeWithSelector(IVaultManager.AssetAlreadyHalted.selector, TSLA));
+        vaultManager.haltAsset(TSLA, TSLA_PRICE);
     }
 
     function test_haltAsset_zeroPriceReverts() public {
         vm.prank(Actors.ADMIN);
-        vm.expectRevert(IOwnVault.InvalidHaltPrice.selector);
-        vault.haltAsset(TSLA, 0);
+        vm.expectRevert(IVaultManager.InvalidHaltPrice.selector);
+        vaultManager.haltAsset(TSLA, 0);
     }
 
     function test_haltAsset_onlyAdmin() public {
         vm.prank(Actors.ATTACKER);
-        vm.expectRevert(IOwnVault.OnlyAdmin.selector);
-        vault.haltAsset(TSLA, TSLA_PRICE);
+        vm.expectRevert(IVaultManager.OnlyAdmin.selector);
+        vaultManager.haltAsset(TSLA, TSLA_PRICE);
     }
 
     // ══════════════════════════════════════════════════════════
-    //  Per-asset pause
+    //  Per-asset trading pause (global VaultManager control)
     // ══════════════════════════════════════════════════════════
 
     function test_pauseAsset_setsFlag() public {
-        vm.prank(Actors.ADMIN);
-        vault.pauseAsset(TSLA, bytes32("oracle issue"));
+        _setAssetTradingPaused(TSLA, true);
 
-        assertTrue(vault.isAssetPaused(TSLA));
-        assertFalse(vault.isAssetPaused(GOLD));
+        assertTrue(vaultManager.isTradingPaused(TSLA));
+        assertFalse(vaultManager.isTradingPaused(GOLD));
     }
 
     function test_unpauseAsset_clearsFlag() public {
-        vm.startPrank(Actors.ADMIN);
-        vault.pauseAsset(TSLA, bytes32("oracle issue"));
-        assertTrue(vault.isAssetPaused(TSLA));
+        _setAssetTradingPaused(TSLA, true);
+        assertTrue(vaultManager.isTradingPaused(TSLA));
 
-        vault.unpauseAsset(TSLA);
-        assertFalse(vault.isAssetPaused(TSLA));
-        vm.stopPrank();
+        _setAssetTradingPaused(TSLA, false);
+        assertFalse(vaultManager.isTradingPaused(TSLA));
     }
 
     // ══════════════════════════════════════════════════════════
-    //  Combined query helpers
+    //  Trading-pause scope (global vs per-asset)
     // ══════════════════════════════════════════════════════════
 
-    function test_isEffectivelyPaused_vaultPaused() public {
-        vm.prank(Actors.ADMIN);
-        vault.pause(bytes32("emergency"));
+    function test_globalTradingPause_affectsAllAssets() public {
+        _setTradingPaused(true);
 
-        assertTrue(vault.isEffectivelyPaused(TSLA));
-        assertTrue(vault.isEffectivelyPaused(GOLD));
+        assertTrue(vaultManager.isTradingPaused(TSLA));
+        assertTrue(vaultManager.isTradingPaused(GOLD));
     }
 
-    function test_isEffectivelyPaused_assetPaused() public {
-        vm.prank(Actors.ADMIN);
-        vault.pauseAsset(TSLA, bytes32("oracle issue"));
+    function test_assetTradingPause_isScopedToAsset() public {
+        _setAssetTradingPaused(TSLA, true);
 
-        assertTrue(vault.isEffectivelyPaused(TSLA));
-        assertFalse(vault.isEffectivelyPaused(GOLD));
+        assertTrue(vaultManager.isTradingPaused(TSLA));
+        assertFalse(vaultManager.isTradingPaused(GOLD));
     }
 
-    function test_isEffectivelyHalted_vaultHalted() public {
-        _haltVault();
+    function test_assetHalt_isScopedToAsset() public {
+        _haltAsset(TSLA, TSLA_PRICE);
 
-        assertTrue(vault.isEffectivelyHalted(TSLA));
-        // GOLD is not in the halt assets list, but vault is halted
-        assertTrue(vault.isEffectivelyHalted(GOLD));
-    }
-
-    function test_isEffectivelyHalted_assetHalted() public {
-        vm.prank(Actors.ADMIN);
-        vault.haltAsset(TSLA, TSLA_PRICE);
-
-        assertTrue(vault.isEffectivelyHalted(TSLA));
-        assertFalse(vault.isEffectivelyHalted(GOLD));
+        assertTrue(vaultManager.isAssetHalted(TSLA));
+        assertFalse(vaultManager.isAssetHalted(GOLD));
     }
 
     // ══════════════════════════════════════════════════════════
@@ -351,16 +348,15 @@ contract HaltFlowTest is BaseTest {
     // ══════════════════════════════════════════════════════════
 
     function test_haltUnhaltCycle() public {
+        // Vault-status halt is reversible (asset-level halt is a separate permanent concept).
         vm.startPrank(Actors.ADMIN);
 
-        vault.haltAsset(TSLA, TSLA_PRICE);
         vault.haltVault();
         assertEq(uint8(vault.vaultStatus()), uint8(VaultStatus.Halted));
 
         vault.unhalt();
         assertEq(uint8(vault.vaultStatus()), uint8(VaultStatus.Active));
 
-        vault.haltAsset(TSLA, TSLA_PRICE);
         vault.haltVault();
         assertEq(uint8(vault.vaultStatus()), uint8(VaultStatus.Halted));
 

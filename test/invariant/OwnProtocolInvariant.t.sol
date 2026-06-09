@@ -68,8 +68,8 @@ contract OwnProtocolInvariant is BaseTest {
         protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), address(factory));
 
         vm.stopPrank();
-        // ExposureManager must be registered before createVault (which auto-registers the vault).
-        _deployExposureManager();
+        // VaultManager must be registered before createVault (which auto-registers the vault).
+        _deployVaultManager();
         vm.startPrank(Actors.ADMIN);
 
         // Create vault: WETH collateral, vm1Signer (keyed VM for quote signing). ETH = collateral ticker.
@@ -79,11 +79,16 @@ contract OwnProtocolInvariant is BaseTest {
         market = new OwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
 
-        // Vault parameters        vault.setClaimThreshold(CLAIM_THRESHOLD);
+        // Vault parameters
         vault.setWithdrawalWaitPeriod(WITHDRAWAL_WAIT);
-        vault.addQuoteSigner(vm1Signer);
 
         vm.stopPrank();
+
+        // Global controls now live on the VaultManager.
+        // Register the keyed VM signer with Actors.VM1 as its linked settlement address
+        // (mint proceeds flow to it; redeem payouts come from it).
+        _setClaimThreshold(CLAIM_THRESHOLD);
+        _registerSigner(vm1Signer, Actors.VM1);
     }
 
     function _configureAssets() private {
@@ -116,14 +121,13 @@ contract OwnProtocolInvariant is BaseTest {
         _setOraclePrice(ETH_ASSET, ETH_PRICE);
         _setOraclePrice(TSLA, TSLA_PRICE);
 
-        // Per-asset issuance ceiling (global max util set by _deployExposureManager).
+        // Per-asset issuance ceiling (global max util set by _deployVaultManager).
         _setAssetCap(TSLA, DEFAULT_ASSET_CAP_USD);
     }
 
     function _configureVault() private {
-        vm.startPrank(vm1Signer);
-        vault.setPaymentToken(address(usdc));
-        vm.stopPrank();
+        // Payment token is now a global VaultManager setting.
+        _setPaymentToken(address(usdc));
     }
 
     function _seedVault() private {
@@ -231,22 +235,22 @@ contract OwnProtocolInvariant is BaseTest {
     /// @notice INV-07: Global exposure USD equals Σ globalAssetUnits[a] × assetMark[a] / 1e18.
     ///         Single asset here, so it reduces to the TSLA term.
     function invariant_exposureConsistency() external view {
-        uint256 globalExp = exposureManager.globalExposureUSD();
-        uint256 units = exposureManager.globalAssetUnits(TSLA);
-        uint256 mark = exposureManager.assetMark(TSLA);
+        uint256 globalExp = vaultManager.globalExposureUSD();
+        uint256 units = vaultManager.globalAssetUnits(TSLA);
+        uint256 mark = vaultManager.assetMark(TSLA);
         assert(globalExp == (units * mark) / PRECISION);
     }
 
     /// @notice INV-07b: Global outstanding units for an asset equal the eToken's total supply.
     ///         openExposure mirrors mint, closeExposure mirrors burn, so they stay in lockstep.
     function invariant_globalUnitsMatchSupply() external view {
-        assert(exposureManager.globalAssetUnits(TSLA) == eTSLA.totalSupply());
+        assert(vaultManager.globalAssetUnits(TSLA) == eTSLA.totalSupply());
     }
 
     /// @notice INV-07c: Global utilisation never exceeds the cap (collateral mark is fixed across the
     ///         campaign — no keeper price pulls — so every gated open keeps utilisation bounded).
     function invariant_globalUtilizationWithinCap() external view {
-        assert(exposureManager.globalUtilizationBps() <= exposureManager.globalMaxUtilizationBps());
+        assert(vaultManager.globalUtilizationBps() <= vaultManager.globalMaxUtilizationBps());
     }
 
     /// @notice INV-08: EToken rewards-per-share accumulator never decreases.
@@ -274,7 +278,7 @@ contract OwnProtocolInvariant is BaseTest {
 
     /// @notice INV-11: Global asset units never wrap around (no underflow).
     function invariant_noExposureUnderflow() external view {
-        assert(exposureManager.globalAssetUnits(TSLA) < type(uint256).max / 2);
+        assert(vaultManager.globalAssetUnits(TSLA) < type(uint256).max / 2);
     }
 
     // ═════════════════════════════════════════════════════════════

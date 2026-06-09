@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: BUSL-1.1
 pragma solidity 0.8.28;
 
-import {IExposureManager} from "../interfaces/IExposureManager.sol";
 import {IProtocolRegistry} from "../interfaces/IProtocolRegistry.sol";
 import {IVaultFactory} from "../interfaces/IVaultFactory.sol";
+import {IVaultManager} from "../interfaces/IVaultManager.sol";
 import {OwnVault} from "./OwnVault.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
@@ -23,22 +23,22 @@ contract VaultFactory is IVaultFactory, Ownable {
     /// @inheritdoc IVaultFactory
     function createVault(
         address collateral,
-        address vm,
+        address manager,
         string calldata name,
         string calldata symbol,
         bytes32 collateralAsset
     ) external onlyOwner returns (address vault) {
         if (collateral == address(0)) revert ZeroAddress();
-        if (vm == address(0)) revert ZeroAddress();
+        if (manager == address(0)) revert ZeroAddress();
 
-        vault = address(new OwnVault(collateral, name, symbol, address(registry), vm));
+        vault = address(new OwnVault(collateral, name, symbol, address(registry), manager));
 
         _isRegistered[vault] = true;
         _vaults.push(vault);
 
-        IExposureManager(registry.exposureManager()).registerVault(vault, collateralAsset);
+        IVaultManager(registry.vaultManager()).registerVault(vault, collateralAsset);
 
-        emit VaultCreated(vault, collateral, vm);
+        emit VaultCreated(vault, collateral, manager);
     }
 
     /// @inheritdoc IVaultFactory
@@ -47,7 +47,7 @@ contract VaultFactory is IVaultFactory, Ownable {
     ) external onlyOwner {
         if (!_isRegistered[vault]) revert VaultNotRegistered(vault);
         _isRegistered[vault] = false;
-        IExposureManager(registry.exposureManager()).deregisterVault(vault);
+        IVaultManager(registry.vaultManager()).deregisterVault(vault);
         emit VaultDeregistered(vault);
     }
 

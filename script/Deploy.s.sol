@@ -5,11 +5,11 @@ import {Script, console} from "forge-std/Script.sol";
 
 import {AssetRegistry} from "../src/core/AssetRegistry.sol";
 
-import {ExposureManager} from "../src/core/ExposureManager.sol";
 import {OwnMarket} from "../src/core/OwnMarket.sol";
 import {ProtocolRegistry} from "../src/core/ProtocolRegistry.sol";
 import {PythOracleVerifier} from "../src/core/PythOracleVerifier.sol";
 import {VaultFactory} from "../src/core/VaultFactory.sol";
+import {VaultManager} from "../src/core/VaultManager.sol";
 
 import {IProtocolRegistry} from "../src/interfaces/IProtocolRegistry.sol";
 import {AssetConfig} from "../src/interfaces/types/Types.sol";
@@ -83,7 +83,7 @@ contract Deploy is Script {
         address pythOracle;
         address factory;
         address market;
-        address exposureManager;
+        address vaultManager;
         address etokenFactory;
         address eTSLA;
         address eGOLD;
@@ -146,9 +146,9 @@ contract Deploy is Script {
         d.market = address(new OwnMarket(d.registry));
         console.log("OwnMarket:", d.market);
 
-        // ── 8b. ExposureManager ───────────────────────────────
-        d.exposureManager = address(new ExposureManager(IProtocolRegistry(d.registry)));
-        console.log("ExposureManager:", d.exposureManager);
+        // ── 8b. VaultManager ──────────────────────────────────
+        d.vaultManager = address(new VaultManager(IProtocolRegistry(d.registry)));
+        console.log("VaultManager:", d.vaultManager);
 
         // ── 9. ETokenFactory + ETokens ────────────────────────
         d.etokenFactory = address(new ETokenFactory(deployer, d.registry));
@@ -170,7 +170,7 @@ contract Deploy is Script {
         registry.setAddress(registry.ASSET_REGISTRY(), d.assetRegistry);
         registry.setAddress(registry.VAULT_FACTORY(), d.factory);
         registry.setAddress(registry.MARKET(), d.market);
-        registry.setAddress(registry.EXPOSURE_MANAGER(), d.exposureManager);
+        registry.setAddress(registry.VAULT_MANAGER(), d.vaultManager);
         registry.setAddress(registry.PYTH_ORACLE(), d.pythOracle);
         registry.setAddress(registry.ETOKEN_FACTORY(), d.etokenFactory);
 
@@ -213,14 +213,16 @@ contract Deploy is Script {
             })
         );
 
-        // ── 13. Configure global exposure risk parameters ─────
+        // ── 13. Configure global risk parameters + payment token ─────
         // An asset can only be minted once BOTH its price is pulled (assetMark != 0) and its
         // per-asset cap is non-zero. Caps are set here; keepers pull marks post-deploy.
-        ExposureManager exposureManager = ExposureManager(d.exposureManager);
-        exposureManager.setGlobalMaxUtilizationBps(GLOBAL_MAX_UTIL_BPS);
-        exposureManager.setAssetCapUSD(TSLA, ASSET_CAP_USD);
-        exposureManager.setAssetCapUSD(GOLD, ASSET_CAP_USD);
-        exposureManager.setAssetCapUSD(ETH, ASSET_CAP_USD);
+        VaultManager vaultManager = VaultManager(d.vaultManager);
+        vaultManager.setGlobalMaxUtilizationBps(GLOBAL_MAX_UTIL_BPS);
+        vaultManager.setAssetCapUSD(TSLA, ASSET_CAP_USD);
+        vaultManager.setAssetCapUSD(GOLD, ASSET_CAP_USD);
+        vaultManager.setAssetCapUSD(ETH, ASSET_CAP_USD);
+        // Single global order-settlement currency for all vaults.
+        vaultManager.setPaymentToken(d.usdc);
     }
 
     function run() external {
@@ -242,7 +244,7 @@ contract Deploy is Script {
         console.log("PYTH_ORACLE=", d.pythOracle);
         console.log("VAULT_FACTORY=", d.factory);
         console.log("OWN_MARKET=", d.market);
-        console.log("EXPOSURE_MANAGER=", d.exposureManager);
+        console.log("VAULT_MANAGER=", d.vaultManager);
         console.log("ETOKEN_TSLA=", d.eTSLA);
         console.log("ETOKEN_GOLD=", d.eGOLD);
         console.log("WETH_ROUTER=", d.wethRouter);

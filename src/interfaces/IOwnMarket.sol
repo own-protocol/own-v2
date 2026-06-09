@@ -18,10 +18,11 @@ interface IOwnMarket {
     // ──────────────────────────────────────────────────────────
 
     /// @notice Emitted when a market order settles atomically against a signed quote.
+    /// @param maker The signer's linked settlement address (mint sink / redeem source).
     event OrderExecuted(
         uint256 indexed quoteId,
         address indexed user,
-        address indexed vm,
+        address indexed maker,
         bytes32 asset,
         uint8 orderType,
         uint256 amountIn,
@@ -34,7 +35,6 @@ interface IOwnMarket {
         address indexed user,
         uint8 orderType,
         bytes32 indexed asset,
-        address vault,
         uint256 amount,
         uint256 limitPrice
     );
@@ -44,7 +44,7 @@ interface IOwnMarket {
     event OrderFilled(
         uint256 indexed orderId,
         uint256 indexed quoteId,
-        address indexed vm,
+        address indexed maker,
         uint256 fillAmount,
         uint256 amountOut,
         uint256 remaining
@@ -52,6 +52,9 @@ interface IOwnMarket {
 
     /// @notice Emitted when a user force-executes the remaining amount of a redeem order.
     event OrderForceExecuted(uint256 indexed orderId, address indexed user, uint256 fillAmount, uint256 collateralOut);
+
+    /// @notice Emitted when a holder redeems a halted asset against the halt redeem address.
+    event OrderRedeemedHalted(address indexed user, bytes32 indexed asset, uint256 eTokenAmount, uint256 payout);
 
     /// @notice Emitted when a user cancels the remaining amount of a resting order.
     event OrderCancelled(uint256 indexed orderId, address indexed user);
@@ -96,7 +99,7 @@ interface IOwnMarket {
     /// @notice The quote has passed its expiry.
     error QuoteExpired();
 
-    /// @notice The recovered quote signer is not the vault's VM.
+    /// @notice The recovered quote signer is not an authorised protocol signer.
     error InvalidQuoteSigner();
 
     /// @notice The quote has already been used (replay protection).
@@ -129,17 +132,26 @@ interface IOwnMarket {
     /// @notice The vault is not registered in the factory.
     error VaultNotRegistered(address vault);
 
-    /// @notice The vault's payment token is not configured.
-    error PaymentTokenNotSet(address vault);
+    /// @notice The global payment token is not configured.
+    error PaymentTokenNotSet();
 
-    /// @notice The asset is paused (vault-wide or per-asset).
+    /// @notice Trading for the asset is paused (global or per-asset).
     error AssetPaused(bytes32 asset);
 
     /// @notice Mint operations are blocked because the asset is halted.
     error MintBlockedDuringHalt(bytes32 asset);
 
-    /// @notice Normal trading is blocked because the asset is halted; use force execution (redeem).
+    /// @notice Normal trading is blocked because the asset is halted; use redeemHalted instead.
     error TradingHalted(bytes32 asset);
+
+    /// @notice Force execution is disabled for a halted asset; use redeemHalted instead.
+    error ForceDisabledDuringHalt(bytes32 asset);
+
+    /// @notice The asset is not halted (redeemHalted is only valid for halted assets).
+    error AssetNotHalted(bytes32 asset);
+
+    /// @notice The halt redeem address is not configured.
+    error HaltRedeemAddressNotSet();
 
     /// @notice No oracle is configured for the asset.
     error AssetOracleNotSet(bytes32 asset);
@@ -166,9 +178,9 @@ interface IOwnMarket {
     //  Resting orders (limit / redeem)
     // ──────────────────────────────────────────────────────────
 
-    /// @notice Place a resting limit / redeem order, escrowing the input.
+    /// @notice Place a resting limit / redeem order, escrowing the input. Orders are vault-less;
+    ///         the collateral source for a forced redeem is named at force-execution time.
     ///         Mint escrows stablecoins; redeem escrows eTokens. Returned on cancel / expire.
-    /// @param vault      Vault to trade against (must be registered and support the asset).
     /// @param asset      Asset ticker.
     /// @param orderType  Mint or Redeem.
     /// @param amount     Input amount: stablecoins (Mint) or eTokens (Redeem).
@@ -176,7 +188,6 @@ interface IOwnMarket {
     /// @param expiry     Good-til-date timestamp after which the order can be expired.
     /// @return orderId   The unique order identifier.
     function placeOrder(
-        address vault,
         bytes32 asset,
         OrderType orderType,
         uint256 amount,
@@ -193,18 +204,31 @@ interface IOwnMarket {
     function fillOrder(Quote calldata quote, bytes calldata signature) external;
 
     /// @notice Force-execute the remaining amount of a redeem order at the oracle price,
-    ///         once the vault's claim threshold has elapsed. User recourse against an
-    ///         unresponsive VM. Releases vault collateral to the user and burns the escrowed eTokens.
+    ///         once the global claim threshold has elapsed. User recourse against an
+    ///         unresponsive maker. The caller names the registered `vault` to draw collateral
+    ///         from; releases that vault's collateral to the user and burns the escrowed eTokens.
+    ///         Disabled while trading is paused or the asset is halted.
     /// @dev    For Pyth oracle: caller must send ETH to cover verifyPrice fees; unused ETH is refunded.
     ///         For the in-house oracle, msg.value should be 0.
     /// @param orderId             Redeem order to force-execute.
+    /// @param vault               Registered vault to release collateral from.
     /// @param assetPriceData      Signed oracle price proof for the asset (eToken → USD).
     /// @param collateralPriceData Signed oracle price proof for the collateral (USD → collateral).
     function forceExecuteOrder(
         uint256 orderId,
+        address vault,
         bytes calldata assetPriceData,
         bytes calldata collateralPriceData
     ) external payable;
+
+    /// @notice Redeem a permanently halted asset at its fixed halt price. The payout is the global
+    ///         payment token, pulled from the halt redeem address configured on VaultManager.
+    ///         Burns `eTokenAmount` from the caller and reduces global exposure. Reverts if the
+    ///         asset is not halted, the halt redeem address is unset, or it lacks stables/allowance.
+    /// @param asset        Asset ticker (must be halted).
+    /// @param eTokenAmount eToken amount to redeem.
+    /// @return payout      Payment-token amount paid to the caller.
+    function redeemHalted(bytes32 asset, uint256 eTokenAmount) external returns (uint256 payout);
 
     /// @notice Cancel the remaining amount of a resting order and return its escrow.
     /// @param orderId Order to cancel.

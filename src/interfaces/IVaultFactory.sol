@@ -9,7 +9,7 @@ interface IVaultFactory {
     //  Events
     // ──────────────────────────────────────────────────────────
 
-    event VaultCreated(address indexed vault, address indexed collateral, address indexed vm);
+    event VaultCreated(address indexed vault, address indexed collateral, address indexed manager);
     event VaultDeregistered(address indexed vault);
 
     // ──────────────────────────────────────────────────────────
@@ -23,16 +23,16 @@ interface IVaultFactory {
     //  Vault creation (admin only)
     // ──────────────────────────────────────────────────────────
 
-    /// @notice Deploy a new vault and register it with the ExposureManager. Only callable by protocol admin.
+    /// @notice Deploy a new vault and register it with the VaultManager. Only callable by protocol admin.
     /// @param collateral      Underlying collateral ERC-20 (e.g. WETH).
-    /// @param vm              Vault manager address bound to this vault.
+    /// @param manager         Vault manager (operator) address bound to this vault.
     /// @param name            Vault share token name.
     /// @param symbol          Vault share token symbol.
-    /// @param collateralAsset Oracle ticker used by the ExposureManager to price this vault's collateral.
+    /// @param collateralAsset Oracle ticker used by the VaultManager to price this vault's collateral.
     /// @return vault The deployed vault address.
     function createVault(
         address collateral,
-        address vm,
+        address manager,
         string calldata name,
         string calldata symbol,
         bytes32 collateralAsset

@@ -76,8 +76,8 @@ contract BorrowAndLiquidateFlowTest is BaseTest {
         protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), address(vaultFactory));
         vm.stopPrank();
 
-        // Deploy + register the ExposureManager before createVault (which auto-registers the vault).
-        _deployExposureManager();
+        // Deploy + register the VaultManager before createVault (which auto-registers the vault).
+        _deployVaultManager();
 
         vm.startPrank(Actors.ADMIN);
         vault = OwnVault(
@@ -108,11 +108,11 @@ contract BorrowAndLiquidateFlowTest is BaseTest {
         });
         vm.prank(Actors.ADMIN);
         assetRegistry.addAsset(collat, address(awstETH), wstCfg);
-        // Refresh the vault's collateral mark in the ExposureManager (keeper price pull).
-        exposureManager.pullCollateralPrice(address(vault));
+        // Refresh the vault's collateral mark in the VaultManager (keeper price pull).
+        vaultManager.pullCollateralPrice(address(vault));
 
-        // Vault setup: set payment token, opt into lending (delegate credit + register pass-through).
-        vault.setPaymentToken(address(usdc));
+        // Payment token is now a global VaultManager setting.
+        _setPaymentToken(address(usdc));
 
         vm.prank(Actors.ADMIN);
         vault.enableLending(address(borrowManager), address(usdcDebt));

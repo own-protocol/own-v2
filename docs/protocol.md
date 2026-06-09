@@ -28,28 +28,35 @@ New assets can be added by the protocol admin through the Asset Registry.
 ### Buyers
 
 Regular users who want exposure to real-world assets. They request a firm price **quote** from a
-VM's quoter service off-chain, then either settle it atomically as a **market order**
-(`executeOrder`) or rest a **limit order** (`placeOrder`) for the VM to fill. Redeemers who can't
+maker's quoter service off-chain, then either settle it atomically as a **market order**
+(`executeOrder`) or rest a **limit order** (`placeOrder`) for a maker to fill. Redeemers who can't
 get a quote have an on-chain force-execution path against the oracle price.
 
-### Vault Managers (VMs)
+### Vault Managers (the per-vault `manager`)
 
-Professional hedge funds, trading firms. They:
+> **Terminology:** the **`VaultManager`** contract (§9) is the global risk + control hub. Each
+> `OwnVault` separately has an operator address stored as `manager` (formerly `vm`). "Vault manager"
+> below refers to that per-vault `manager` operator.
 
-- Provide collateral (e.g. WETH) to vaults.
-- Sign firm price **quotes** off-chain (via their quoter service) that users settle on-chain.
-- Fill resting limit orders by submitting their signed quotes (partial fills supported).
-- Hedge the resulting exposure off-chain.
-- Enable other ETH holders (LPs) to deposit into vault & share fees.
-- Manage the vault's asset exposure and its authorized **quote signers**.
-- Set which assets and payment tokens the vault supports
+Professional hedge funds / trading firms that operate a vault. They:
 
-### Quote Signers
+- Provide collateral (e.g. WETH) to their vault.
+- Enable other ETH holders (LPs) to deposit into the vault & share fees (accept/reject LP deposits).
+- Distribute LP yield (`shareYield`).
+- Can **pause** their vault (freeze LP deposits + withdrawals) — shared with the admin.
+- Hedge the protocol's exposure off-chain.
 
-Each vault holds a set of addresses authorized to sign order quotes (managed by the VM or admin via
-`addQuoteSigner` / `removeQuoteSigner`). These are decoupled from the operational `vm` address — a
-hot signing key (e.g. an HSM/KMS key) signs quotes without ever custodying funds. The market accepts
-a quote only if it recovers to one of the vault's authorized signers.
+Order settlement no longer flows through the per-vault `manager`. Quotes are authorized by a
+**global signer registry** and funds flow to/from each signer's linked address (see below). A maker
+that signs quotes need not be the same entity as any vault's `manager`.
+
+### Quote Signers (global registry)
+
+Authorized signers live in a single **global registry on the `VaultManager`** (admin-managed via
+`registerSigner` / `updateSignerLinkedAddress` / `removeSigner`), not per-vault. Each signer carries
+a **linked settlement address**: mint proceeds flow **to** it and redeem payouts come **from** it.
+This decouples the hot signing key (e.g. an HSM/KMS key) from the wallet that custodies funds. The
+market accepts a quote only if it recovers to a registered signer (`isSigner`).
 
 ### Protocol Admin
 
@@ -58,7 +65,10 @@ Governance entity (multisig) that:
 - Registers contracts in the Protocol Registry (with timelock)
 - Adds/deactivates assets in the Asset Registry
 - Configures oracle sources and fee levels
-- Can pause/halt vaults in emergencies
+- Manages global controls on the `VaultManager`: the signer registry, the single global **payment
+  token**, the global **claim threshold**, **trading pause** (global + per-asset), permanent
+  **asset halt** + **halt redeem address**, the per-asset issuance cap, and global max utilization
+- Can **halt** a vault (emergency wind-down) in addition to pausing it
 
 Trust level: trusted (timelock-governed).
 
@@ -77,12 +87,12 @@ The protocol consists of 13 contracts organized into three layers:
 | Contract             | File                            | Purpose                                                                                                                                                          |
 | -------------------- | ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **ProtocolRegistry** | `src/core/ProtocolRegistry.sol` | Central registry of all protocol contract addresses. 2-day timelock for address changes. Stores protocol-wide parameters (e.g. `protocolShareBps`).              |
-| **OwnMarket**        | `src/core/OwnMarket.sol`        | RFQ order execution marketplace. Settles market orders atomically against VM-signed quotes, escrows and (partially) fills resting limit orders, and provides redeem force execution against the oracle price.          |
-| **OwnVault**         | `src/core/OwnVault.sol`         | ERC-4626 collateral vault. Holds LP collateral (custody), manages async deposit/withdrawal queues, distributes fees/yield, supports lending opt-in, and pause/halt. Risk accounting lives in the ExposureManager, not the vault. |
-| **ExposureManager**  | `src/core/ExposureManager.sol`  | Central, pooled risk accounting for **all** vaults. Owns global exposure, collateral marks, utilization, and the per-asset issuance ceiling. Valued at keeper-cached marks. See §9. |
-| **VaultFactory**     | `src/core/VaultFactory.sol`     | Deploys OwnVault instances and registers them with the ExposureManager. Each vault is bound 1:1 to a VM.                                                          |
+| **OwnMarket**        | `src/core/OwnMarket.sol`        | RFQ order execution marketplace. Settles market orders atomically against signer-issued quotes, escrows and (partially) fills resting limit orders, provides redeem force execution against the oracle price, and the halted-asset redeem path. |
+| **OwnVault**         | `src/core/OwnVault.sol`         | ERC-4626 collateral vault. Holds LP collateral (custody), manages async deposit/withdrawal queues, distributes yield, supports lending opt-in, and vault-level pause/halt. Risk accounting and order controls live in the VaultManager, not the vault. Operator address: `manager`. |
+| **VaultManager**     | `src/core/VaultManager.sol`     | Central, pooled risk accounting **and** global control hub for **all** vaults. Owns global exposure, collateral marks, utilization, the per-asset issuance ceiling, the signer registry, the global payment token, trading pause, permanent asset halt + halt redeem address, and the claim threshold. Valued at keeper-cached marks. See §9. |
+| **VaultFactory**     | `src/core/VaultFactory.sol`     | Deploys OwnVault instances and registers them with the VaultManager. Each vault is bound 1:1 to a `manager`.                                                          |
 | **AssetRegistry**    | `src/core/AssetRegistry.sol`    | Whitelists assets, maps tickers to eToken addresses, stores oracle configurations. Supports token migration (post-stock-split). Governs which assets are valid for **all** vaults. |
-| **FeeCalculator**    | `src/core/FeeCalculator.sol`    | Per-volatility-level fee lookup. Three tiers (low/medium/high) with separate mint and redeem fee rates. Max cap: 500 BPS (5%).                                   |
+| **FeeCalculator** _(planned)_ | `src/core/FeeCalculator.sol` | Per-volatility-level fee lookup (planned; not yet in `src/`). Three tiers (low/medium/high) with separate mint and redeem fee rates. Max cap: 500 BPS (5%). |
 
 ### Oracle Contracts
 
@@ -115,39 +125,42 @@ See `docs/own-architecture.png` for the visual architecture diagram.
                                       OwnVault ───────┐ register / pull collateral price
                                  (ERC-4626 custody)   |
                                           |           v
-                    OwnMarket  <----------+      ExposureManager
-              (RFQ order execution) ───────────▶ (global pooled risk:
-                    |         |        open/close   exposure, marks,
-               EToken     OracleVerifier / Pyth      utilization, caps)
-          (mint/burn)      (price marks & proofs) ◀── pull asset price (keepers)
+                    OwnMarket  <----------+      VaultManager
+              (RFQ order execution) ───────────▶ (global pooled risk + controls:
+                    |         |        open/close   exposure, marks, utilization,
+               EToken     OracleVerifier / Pyth      caps, signers, payment token,
+          (mint/burn)      (price marks & proofs)     pause, halt, claim threshold)
+                                                  ◀── pull asset price (keepers)
 ```
 
 ---
 
 ## 4. Order Execution
 
-The protocol uses an offline **RFQ (request-for-quote)** model. A user obtains a firm, VM-signed
+The protocol uses an offline **RFQ (request-for-quote)** model. A user obtains a firm, signer-issued
 **quote** off-chain and settles it on-chain. The signed quote is the price attestation — the oracle
 is not consulted during normal execution (only on the force path, §5). There are two paths:
 
 - **Market order** — the user submits the signed quote and it settles atomically in one transaction. No on-chain order is persisted.
-- **Limit order** — the user rests an order on-chain (escrowing the input); the VM fills it later with a signed quote whose price satisfies the user's limit. Limit orders support **partial fills**.
+- **Limit order** — the user rests an order on-chain (escrowing the input); a maker fills it later with a signed quote whose price satisfies the user's limit. Limit orders support **partial fills**.
 
 ### The Quote
 
-A quote is signed off-chain by one of the vault's authorized quote signers (recovered against
-`isQuoteSigner`, §2). It binds: target order id (`0` for a market order), taker, vault, asset, side,
-amount, price, a unique single-use `quoteId`, and an expiry. The signed digest also commits the
-chain id and market address to prevent cross-chain / cross-contract replay, and each quote can be
-used only once.
+A quote is signed off-chain by one of the **globally-registered** quote signers (recovered against
+`VaultManager.isSigner`, §2). It is **vault-less** — it binds: target order id (`0` for a market
+order), taker, asset, side, amount, price, a unique single-use `quoteId`, and an expiry. The signed
+digest also commits the chain id and market address to prevent cross-chain / cross-contract replay,
+and each quote can be used only once. The settlement counterparty is the signer's **linked address**
+(mint proceeds go to it; redeem payouts come from it), and the order currency is the single global
+**payment token** — neither is carried in the quote.
 
 ### Order States (resting limit / redeem orders)
 
 | Status            | Description                                                                                       |
 | ----------------- | ------------------------------------------------------------------------------------------------- |
-| **Open**          | Resting order placed, input escrowed. Fillable by the VM; redeem orders also force-executable after the claim threshold. |
+| **Open**          | Resting order placed, input escrowed. Fillable by a maker; redeem orders also force-executable after the claim threshold. |
 | **Filled**        | Fully filled — remaining amount reached zero.                                                      |
-| **ForceExecuted** | Redeem order settled at the oracle (or halt) price via force execution.                            |
+| **ForceExecuted** | Redeem order settled at the oracle price via force execution against a caller-named vault.          |
 | **Cancelled**     | Owner cancelled; remaining escrow returned.                                                        |
 | **Expired**       | Past its good-til-date; remaining escrow returned (callable by anyone).                            |
 
@@ -174,26 +187,26 @@ Market orders execute atomically and are never persisted, so they have no status
 
 ### Market Mint Flow (atomic, one tx)
 
-1. **User** requests a quote; the VM's quoter returns a signed quote (price, expiry).
+1. **User** requests a quote; a maker's quoter returns a signed quote (price, expiry).
 2. **User** calls `executeOrder(quote, signature)`:
-   - `ExposureManager.openExposure(vault, asset, eTokens)` runs first — an atomic check + commit of the per-asset USD ceiling and global utilization. A breach reverts cleanly before any token moves (§9).
-   - Stablecoins pulled from the user: `amount - fee` to the VM, `fee` to the vault.
-   - eTokens minted to the user: `eTokens = (amount - fee) * PRECISION / price`.
+   - `VaultManager.openExposure(asset, eTokens)` runs first — an atomic check + commit of the per-asset USD ceiling and global utilization. A breach reverts cleanly before any token moves (§9).
+   - The full payment-token `amount` is pulled from the user to the signer's **linked address** (the maker captures its spread off-chain).
+   - eTokens minted to the user: `eTokens = amount * PRECISION / price` (decimal-adjusted for the payment token).
 
 ### Market Redeem Flow (atomic, one tx)
 
-1. **User** requests a quote; the VM signs it.
+1. **User** requests a quote; a registered signer signs it.
 2. **User** calls `executeOrder(quote, signature)`:
-   - Stablecoins pulled from the VM: gross `= amount * price / PRECISION`, `gross - fee` to the user, `fee` to the vault.
-   - The user's eTokens are burned; `ExposureManager.closeExposure(vault, asset, units)` reduces global exposure. Any registered vault filling any redeem reduces the global book — there is no "a vault may only close what it opened" constraint.
+   - Payment tokens are pulled from the signer's **linked address** to the user: `payout = amount * price / PRECISION` (decimal-adjusted).
+   - The user's eTokens are burned; `VaultManager.closeExposure(asset, units)` reduces global exposure. Exposure is purely global per asset — there is no "a vault may only close what it opened" constraint.
 
-The VM must have approved the market to spend its stablecoins. A relayer may submit on the VM's
-behalf, since the signed quote carries the authorization.
+The signer's linked address must have approved the market to spend its payment tokens. A relayer may
+submit on the user's behalf, since the signed quote carries the authorization.
 
 ### Limit Order Flow (resting, partial fills)
 
-1. **User** calls `placeOrder(vault, asset, orderType, amount, limitPrice, expiry)` — escrows stablecoins (mint) or eTokens (redeem).
-2. **VM** (or a relayer carrying a VM-signed quote) calls `fillOrder(quote, signature)` for a chunk `≤ remaining`, at a price satisfying the limit. Settlement is identical to the market flows but funded from escrow. Repeat until filled.
+1. **User** calls `placeOrder(asset, orderType, amount, limitPrice, expiry)` — escrows payment tokens (mint) or eTokens (redeem). Orders are vault-less.
+2. A maker (or relayer carrying a signed quote) calls `fillOrder(quote, signature)` for a chunk `≤ remaining`, at a price satisfying the limit. Settlement is identical to the market flows but funded from escrow. Repeat until filled.
 3. `cancelOrder` (owner) or `expireOrder` (anyone, after expiry) returns the remaining escrow.
 
 ### Price Semantics
@@ -206,50 +219,56 @@ behalf, since the signed quote carries the authorization.
 
 ## 5. Force Execution
 
-Force execution is the user's recourse when a VM will not quote. It applies to **redeem orders
+Force execution is the user's recourse when no maker will quote. It applies to **redeem orders
 only** — a redeemer holding eTokens is captive (eTokens convert back to stablecoins only through the
 protocol), whereas an unfilled mint leaves the user holding their stablecoins, free to route
 elsewhere. Forcing a mint would also open an unhedged position against LP collateral, so it is
 disallowed (`ForceMintNotAllowed`).
 
-After the vault's **claim threshold** elapses (measured from the order's creation), the owner of a
-resting redeem order can call `forceExecuteOrder(orderId, assetPriceData, collateralPriceData)` to
-settle the remaining amount at the oracle price.
+After the global **claim threshold** elapses (measured from the order's creation), the owner of a
+resting redeem order calls
+`forceExecuteOrder(orderId, vault, assetPriceData, collateralPriceData)` to settle the remaining
+amount at the oracle price. **The caller names the collateral-source `vault`** at this point — orders
+are vault-less, so the redeemer freely chooses which registered vault to draw collateral from (the
+choice was always theirs; it is simply deferred to force time). The named vault must be registered
+(`VaultNotRegistered` otherwise).
 
 ### Mechanism
 
-1. **Asset price proof** (`assetPriceData`) — the current signed price of the asset (e.g. TSLA/USD). During a halt, the admin-set halt price is used instead and no asset proof is needed.
-2. **Collateral price proof** (`collateralPriceData`) — the current signed price of the collateral (e.g. ETH/USD), used to convert the USD value into collateral units.
+1. **Asset price proof** (`assetPriceData`) — the current signed price of the asset (e.g. TSLA/USD).
+2. **Collateral price proof** (`collateralPriceData`) — the current signed price of the named vault's collateral (e.g. ETH/USD), used to convert the USD value into collateral units.
 
 Settlement:
 
 - The oracle price must satisfy the order's `limitPrice` floor, else it reverts (`PriceBelowMinimum`).
-- The remaining eTokens are valued at the oracle price, converted to collateral, and **vault collateral is released to the user** (net of the standard redeem fee, which the vault retains).
-- The escrowed eTokens are burned and vault exposure is reduced.
+- The remaining eTokens are valued at the oracle price, converted to the named vault's collateral, and **that vault's collateral is released to the user**.
+- The escrowed eTokens are burned and global exposure is reduced.
 
-Because forced redeem prices at the bare oracle price (no VM spread), the **claim threshold delay**
-plus the standard redeem fee keep a fair VM quote the user's preferred path.
+Force execution is **disabled while trading is paused** (`AssetPaused`) **or the asset is halted**
+(`ForceDisabledDuringHalt`). A permanently halted asset is instead redeemed via `redeemHalted` (§9).
+Because forced redeem prices at the bare oracle price (no maker spread), the **claim threshold delay**
+keeps a fair maker quote the user's preferred path.
 
 ### Timing
 
 | Parameter        | Description                                                              | Default |
 | ---------------- | ----------------------------------------------------------------------- | ------- |
-| `claimThreshold` | Delay after a redeem order is placed before it can be force-executed     | 6 hours |
+| `claimThreshold` | Global delay after a redeem order is placed before it can be force-executed | 6 hours |
 
 ---
 
 ## 6. LP Operations
 
-Liquidity providers deposit collateral into vaults and receive ERC-4626 shares. Both deposits and withdrawals are async (queue-based) to give VMs control over vault composition.
+Liquidity providers deposit collateral into vaults and receive ERC-4626 shares. Both deposits and withdrawals are async (queue-based) to give the vault's `manager` control over vault composition.
 
 ### Deposit Flow
 
-1. LP calls `requestDeposit(assets, receiver)` — collateral transferred to vault, creates a pending request
-2. VM calls `acceptDeposit(requestId)` — vault shares minted to receiver at current exchange rate
-3. Alternatively, VM calls `rejectDeposit(requestId)` — collateral returned to depositor
-4. LP can call `cancelDeposit(requestId)` before VM decision — collateral returned
+1. LP calls `requestDeposit(assets, receiver, minSharesOut)` — collateral transferred to vault, creates a pending request
+2. The `manager` calls `acceptDeposit(requestId)` — vault shares minted to receiver at current exchange rate (reverts if previewed shares < `minSharesOut`)
+3. Alternatively, the `manager` calls `rejectDeposit(requestId)` — collateral returned to depositor
+4. LP can call `cancelDeposit(requestId)` before the manager's decision — collateral returned
 
-**Direct deposits** via `deposit()` / `mint()` are also supported (standard ERC-4626), but async is the primary path.
+**Direct deposits** via `deposit()` / `mint()` are also supported (standard ERC-4626), but async is the primary path. (Async is required only when the vault has `requireDepositApproval` enabled.)
 
 ### Withdrawal Flow
 
@@ -259,6 +278,11 @@ Liquidity providers deposit collateral into vaults and receive ERC-4626 shares. 
    - Vault utilization remains within bounds after withdrawal
 3. LP can call `cancelWithdrawal(requestId)` to get shares back
 
+**Vault status interacts with withdrawals:** a **paused** vault freezes both deposits *and*
+withdrawals; a **halted** vault (emergency wind-down) blocks deposits but makes withdrawals
+**instant** — the wait period and the utilization check are both bypassed, since a halted vault's
+collateral is already excluded from the global risk pool (§9).
+
 ### ETH Routing
 
 LPs can deposit native ETH using the **WETHRouter**, which wraps ETH to WETH before depositing into WETH-collateral vaults. Similarly, **WstETHRouter** handles stETH wrapping for wstETH-collateral vaults.
@@ -267,7 +291,13 @@ LPs can deposit native ETH using the **WETHRouter**, which wraps ETH to WETH bef
 
 ## 7. Fee Model
 
-Fees are charged on every settlement — market execution, limit fill, and force execution — and split three ways. The VM's quoted `price` is the pure execution price; the protocol fee is applied on top.
+> **Implementation status:** the current `OwnMarket` settlement routes the **full** payment-token
+> amount to/from the signer's linked address and applies **no on-chain fee** — the maker captures its
+> spread (and any protocol economics) off-chain. The tiered on-chain fee split described below is the
+> planned `FeeCalculator`/`FeeAccrual` model and is not yet wired into settlement.
+
+Under the planned model, fees are charged on settlement and split three ways. The maker's quoted
+`price` is the pure execution price; the protocol fee is applied on top.
 
 ### Fee Tiers
 
@@ -293,7 +323,10 @@ The `protocolShareBps` is a global parameter set in ProtocolRegistry.
 
 ### Fees on Force Execution
 
-When a redeem order is force-executed, the standard redeem fee is charged on the collateral payout (same rate as a normal redeem). The fee portion of collateral is retained by the vault, so the protocol and LPs continue to earn regardless of whether the VM fills the order or the user force-executes.
+In the current code, force execution releases the full oracle-valued collateral to the redeemer with
+no fee deducted. Under the planned fee model, the standard redeem fee would be charged on the
+collateral payout so the protocol and LPs earn regardless of whether a maker fills the order or the
+user force-executes.
 
 ---
 
@@ -330,22 +363,23 @@ The admin can call `switchPrimaryOracle(ticker)` to swap primary and secondary.
 
 ### Collateral Pricing
 
-Each vault's collateral is valued in USD by the **ExposureManager**, using the oracle for the vault's
+Each vault's collateral is valued in USD by the **VaultManager**, using the oracle for the vault's
 collateral asset (e.g. ETH/USD). The collateral ticker is bound at registration
 (`VaultFactory.createVault(..., collateralAsset)`), and the USD mark is refreshed by permissionless
 keeper calls to `pullCollateralPrice(vault)` (§9). The collateral USD value feeds:
 
 - Global utilization (§9)
-- Force-execution collateral-equivalent returns (the market reads the vault's collateral ticker via `ExposureManager.vaultCollateralAsset`)
+- Force-execution collateral-equivalent returns (the market reads the caller-named vault's collateral ticker via `VaultManager.vaultCollateralAsset`)
 - The lending debt cap (`UserBorrowManager.maxDebtUSD = collateralMark(vault) × targetLtvBps / BPS`)
 
 ---
 
 ## 9. Risk Accounting and Safety
 
-All exposure, collateral valuation, and utilization accounting lives in a single **ExposureManager**
+All exposure, collateral valuation, and utilization accounting lives in a single **VaultManager**
 that pools risk globally across every vault. Vaults keep custody, LP shares, yield, and lending; the
-manager owns risk. This replaces the earlier per-vault model.
+VaultManager owns risk **and** the global order-control surface (signers, payment token, trading
+pause, asset halt, claim threshold). This replaces the earlier per-vault model.
 
 ### Pooled Model and Rationale
 
@@ -390,40 +424,55 @@ once **both** its price has been pulled (`assetMark != 0`) **and** `assetCapUSD 
 
 ### Withdrawal Gate
 
-LP withdrawals consult `ExposureManager.withdrawalBreachesUtil(vault, assets)`: `fulfillWithdrawal`
-reverts (`MaxUtilizationExceeded`) if releasing that collateral would push global utilization over the
-cap. The check reads the cached collateral mark (as fresh as the last price pull — intended, per the
-keeper model).
+For an **active** vault, LP withdrawals consult `VaultManager.withdrawalBreachesUtil(vault, assets)`:
+`fulfillWithdrawal` reverts (`MaxUtilizationExceeded`) if releasing that collateral would push global
+utilization over the cap. The check reads the cached collateral mark (as fresh as the last price pull
+— intended, per the keeper model). A **halted** vault bypasses this check entirely (its collateral is
+already excluded from the pool); a **paused** vault blocks withdrawals outright.
 
 ### Registration
 
-Vault registration is factory-driven: `VaultFactory.createVault(collateral, vm, name, symbol, collateralAsset)`
-deploys the vault and calls `ExposureManager.registerVault`. Deregistration goes through the factory too
+Vault registration is factory-driven: `VaultFactory.createVault(collateral, manager, name, symbol, collateralAsset)`
+deploys the vault and calls `VaultManager.registerVault`. Deregistration goes through the factory too
 and reverts if removing the vault's collateral would breach global utilization.
 
 ### Emergency Controls
 
-**Pause** (per-vault or per-asset):
+There are two independent axes: **global trading controls** (on the VaultManager, asset-scoped) and
+**vault-status controls** (on each OwnVault).
 
-- Blocks market execution, order placement, and fills
-- Resting orders can still be cancelled or expired
-- LP operations continue
+**Trading pause** — global VaultManager control, admin-set, temporary:
 
-**Halt** (per-vault or per-asset):
+- `setTradingPaused(bool)` (global) and `setAssetTradingPaused(asset, bool)` (per-asset); query `isTradingPaused(asset)`.
+- Blocks market execution, order placement, fills, **and force-execution** for the asset.
+- Resting orders can still be cancelled or expired; LP operations continue.
 
-- Full stop on normal execution — mints are blocked, normal redeem execution/fills revert (`TradingHalted`)
-- Admin sets a settlement (halt) price for affected assets
-- Redeemers exit via `forceExecuteOrder`, which settles at the halt price
-- Used for extreme market events or protocol incidents
+**Asset halt** — global VaultManager control, admin-set, **permanent**:
+
+- `haltAsset(asset, haltPrice)` permanently freezes an asset at a fixed settlement price (no unhalt).
+- Mints are blocked (`MintBlockedDuringHalt`), normal redeem execution/fills revert (`TradingHalted`), and force-execution is disabled (`ForceDisabledDuringHalt`).
+- Holders redeem via `redeemHalted(asset, eTokenAmount)`: the payout is the **global payment token**, pulled from the admin-set **halt redeem address** at the halt price, and the eTokens are burned (global exposure shrinks). Reverts if the asset is not halted, the halt redeem address is unset, or it lacks stables/allowance. The admin must size the halt fund to cover all outstanding units of the asset (including those locked as lending collateral — see §11/lending).
+
+**Vault pause** — per-vault (OwnVault), callable by the vault's `manager` **or** the admin, temporary:
+
+- Freezes both LP deposits **and** withdrawals. Does not by itself stop trading of an asset.
+
+**Vault halt** — per-vault (OwnVault), **admin only**, emergency wind-down:
+
+- Blocks deposits; LP withdrawals become **instant** (no wait period, no utilization check).
+- The vault's collateral is **excluded from the global risk pool** (`onVaultHalted`); unhalt re-includes it (`onVaultUnhalted`). A **paused** vault's collateral, by contrast, still counts toward the pool.
 
 ### Vault Status Hierarchy
 
 ```
-Active → Paused → Halted
+Active → Paused → Halted       (per-vault status, OwnVault)
   ↑         |        |
   +---------+--------+
      (can be reversed)
 ```
+
+Asset-level **trading pause** (reversible) and **asset halt** (permanent) are separate, global
+VaultManager states — orthogonal to a vault's own status.
 
 ---
 
@@ -437,14 +486,18 @@ Active → Paused → Halted
 | Add/deactivate assets                  | Protocol admin                             |
 | Configure oracles and fees             | Protocol admin                             |
 | Create vaults                          | Protocol admin (via VaultFactory)          |
-| Pause/halt vaults                      | Protocol admin                             |
-| Sign order quotes (off-chain)          | Vault's authorized quote signers           |
-| Add/remove quote signers               | Vault manager or admin                     |
-| Fill resting limit orders              | Anyone with a valid VM-signed quote        |
-| Accept/reject LP deposits              | Vault manager                              |
+| Pause a vault (deposits + withdrawals) | Vault's `manager` or admin                 |
+| Halt a vault (wind-down)               | Protocol admin                             |
+| Trading pause / asset halt (global)    | Protocol admin (VaultManager)              |
+| Set payment token / claim threshold / halt redeem address | Protocol admin (VaultManager) |
+| Register/update/remove quote signers   | Protocol admin (VaultManager)              |
+| Sign order quotes (off-chain)          | Globally-registered signers                |
+| Fill resting limit orders              | Anyone with a valid signed quote           |
+| Accept/reject LP deposits              | Vault's `manager`                          |
 | Execute market orders / place orders   | Any user (market order needs a signed quote) |
 | Cancel orders                          | Order owner                                |
-| Force execute redeem orders            | Order owner (after claim threshold)        |
+| Force execute redeem orders            | Order owner (after claim threshold, names the vault) |
+| Redeem a halted asset                  | Any holder (`redeemHalted`)                |
 | Expire resting orders                  | Anyone (permissionless, after expiry)      |
 | Fulfill withdrawals                    | Anyone (permissionless, if conditions met) |
 
@@ -494,27 +547,30 @@ PRECISION = 1e18      // Fixed-point precision for prices and per-share accumula
 
 - `orderId` (uint256) — unique identifier
 - `user` (address) — who placed it
-- `vault` (address) — vault the order is bound to
 - `asset` (bytes32) — asset ticker (e.g. `bytes32("TSLA")`)
 - `orderType` (OrderType) — Mint or Redeem
-- `amount` (uint256) — original input: stablecoin amount (Mint) or eToken amount (Redeem)
+- `amount` (uint256) — original input: payment-token amount (Mint) or eToken amount (Redeem)
 - `filledAmount` (uint256) — cumulative input filled so far (≤ amount)
 - `limitPrice` (uint256) — max price (Mint) or min price (Redeem), 18 decimals
 - `createdAt` (uint256) — placement timestamp
 - `expiry` (uint256) — good-til-date timestamp after which the order can be expired
 - `status` (OrderStatus) — current lifecycle state
 
-**Quote** — a firm price quote signed off-chain by an authorized vault signer:
+Orders are vault-less; the collateral-source vault for a forced redeem is named at force-execution time.
+
+**Quote** — a firm price quote signed off-chain by a globally-registered signer:
 
 - `orderId` (uint256) — target resting order (`0` for a market order)
 - `user` (address) — taker bound to the quote (must be the caller for market orders)
-- `vault` (address) — vault the quote is issued against
 - `asset` (bytes32) — asset ticker
 - `orderType` (OrderType) — Mint or Redeem
 - `amount` (uint256) — input amount this quote fills (≤ remaining for a resting order)
 - `price` (uint256) — execution price per eToken, 18 decimals
 - `quoteId` (uint256) — unique nonce; each quote is single-use
 - `expiry` (uint256) — timestamp after which the quote is invalid
+
+The quote carries no vault and no payment token: the settlement counterparty is the signer's linked
+address and the currency is the global payment token.
 
 **WithdrawalRequest** — async LP withdrawal:
 
@@ -530,6 +586,7 @@ PRECISION = 1e18      // Fixed-point precision for prices and per-share accumula
 - `depositor` (address) — who initiated
 - `receiver` (address) — who receives vault shares
 - `assets` (uint256) — collateral amount deposited
+- `minSharesOut` (uint256) — slippage floor; `acceptDeposit` reverts if previewed shares fall below it
 - `timestamp` (uint256) — when submitted
 - `status` (DepositStatus)
 
@@ -545,9 +602,10 @@ PRECISION = 1e18      // Fixed-point precision for prices and per-share accumula
 - `primaryOracle` (address) — main IOracleVerifier
 - `secondaryOracle` (address) — backup (zero if none)
 
-**VMConfig** — vault manager state:
+**VMConfig** — legacy vault-manager state struct (defined in `Types.sol` but unused by the current
+contracts; retained for reference / future use):
 
-- `maxExposure` (uint256) — max USD notional the VM will hedge (18 decimals)
+- `maxExposure` (uint256) — max USD notional the manager will hedge (18 decimals)
 - `currentExposure` (uint256) — current outstanding notional (18 decimals)
 - `registered` (bool) — whether registered
 - `active` (bool) — whether currently active

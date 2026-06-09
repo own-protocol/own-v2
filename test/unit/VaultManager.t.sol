@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {ExposureManager} from "../../src/core/ExposureManager.sol";
-
 import {ProtocolRegistry} from "../../src/core/ProtocolRegistry.sol";
-import {IExposureManager} from "../../src/interfaces/IExposureManager.sol";
+import {VaultManager} from "../../src/core/VaultManager.sol";
 import {IOracleVerifier} from "../../src/interfaces/IOracleVerifier.sol";
 import {IProtocolRegistry} from "../../src/interfaces/IProtocolRegistry.sol";
+import {IVaultManager} from "../../src/interfaces/IVaultManager.sol";
 import {Actors} from "../helpers/Actors.sol";
 import {MockERC20} from "../helpers/MockERC20.sol";
 import {MockOracleVerifier} from "../helpers/MockOracleVerifier.sol";
@@ -39,8 +38,8 @@ contract StubVault {
     }
 }
 
-contract ExposureManagerTest is Test {
-    ExposureManager internal manager;
+contract VaultManagerTest is Test {
+    VaultManager internal manager;
     ProtocolRegistry internal registry;
     StubAssetRegistry internal assetRegistry;
     MockOracleVerifier internal oracle;
@@ -74,7 +73,7 @@ contract ExposureManagerTest is Test {
         registry.setAddress(registry.PYTH_ORACLE(), address(oracle));
         vm.stopPrank();
 
-        manager = new ExposureManager(IProtocolRegistry(address(registry)));
+        manager = new VaultManager(IProtocolRegistry(address(registry)));
 
         oracle.setPrice(TSLA, TSLA_MARK);
         oracle.setPrice(USDC_TICKER, USDC_MARK);
@@ -104,14 +103,14 @@ contract ExposureManagerTest is Test {
         uint256 units
     ) internal {
         vm.prank(market);
-        manager.openExposure(address(vault), TSLA, units);
+        manager.openExposure(TSLA, units);
     }
 
     function _close(
         uint256 units
     ) internal {
         vm.prank(market);
-        manager.closeExposure(address(vault), TSLA, units);
+        manager.closeExposure(TSLA, units);
     }
 
     // ──────────────────────────────────────────────────────────
@@ -119,8 +118,8 @@ contract ExposureManagerTest is Test {
     // ──────────────────────────────────────────────────────────
 
     function test_constructor_zeroRegistry_reverts() public {
-        vm.expectRevert(IExposureManager.ZeroAddress.selector);
-        new ExposureManager(IProtocolRegistry(address(0)));
+        vm.expectRevert(IVaultManager.ZeroAddress.selector);
+        new VaultManager(IProtocolRegistry(address(0)));
     }
 
     // ──────────────────────────────────────────────────────────
@@ -129,7 +128,7 @@ contract ExposureManagerTest is Test {
 
     function test_registerVault_setsStateAndScale() public {
         vm.expectEmit(true, true, false, true);
-        emit IExposureManager.VaultRegistered(address(vault), USDC_TICKER);
+        emit IVaultManager.VaultRegistered(address(vault), USDC_TICKER);
         vm.prank(factory);
         manager.registerVault(address(vault), USDC_TICKER);
 
@@ -137,13 +136,13 @@ contract ExposureManagerTest is Test {
     }
 
     function test_registerVault_onlyFactory_reverts() public {
-        vm.expectRevert(IExposureManager.OnlyFactory.selector);
+        vm.expectRevert(IVaultManager.OnlyFactory.selector);
         vm.prank(admin);
         manager.registerVault(address(vault), USDC_TICKER);
     }
 
     function test_registerVault_zeroVault_reverts() public {
-        vm.expectRevert(IExposureManager.ZeroAddress.selector);
+        vm.expectRevert(IVaultManager.ZeroAddress.selector);
         vm.prank(factory);
         manager.registerVault(address(0), USDC_TICKER);
     }
@@ -152,7 +151,7 @@ contract ExposureManagerTest is Test {
         vm.prank(factory);
         manager.registerVault(address(vault), USDC_TICKER);
 
-        vm.expectRevert(abi.encodeWithSelector(IExposureManager.VaultAlreadyRegistered.selector, address(vault)));
+        vm.expectRevert(abi.encodeWithSelector(IVaultManager.VaultAlreadyRegistered.selector, address(vault)));
         vm.prank(factory);
         manager.registerVault(address(vault), USDC_TICKER);
     }
@@ -185,7 +184,7 @@ contract ExposureManagerTest is Test {
     }
 
     function test_pullCollateralPrice_notRegistered_reverts() public {
-        vm.expectRevert(abi.encodeWithSelector(IExposureManager.VaultNotRegistered.selector, address(vault)));
+        vm.expectRevert(abi.encodeWithSelector(IVaultManager.VaultNotRegistered.selector, address(vault)));
         manager.pullCollateralPrice(address(vault));
     }
 
@@ -223,8 +222,8 @@ contract ExposureManagerTest is Test {
     function test_openExposure_happy() public {
         _bootstrap();
 
-        vm.expectEmit(true, true, false, true);
-        emit IExposureManager.ExposureOpened(address(vault), TSLA, 1000e18, TSLA_MARK);
+        vm.expectEmit(true, false, false, true);
+        emit IVaultManager.ExposureOpened(TSLA, 1000e18, TSLA_MARK);
         _open(1000e18);
 
         assertEq(manager.globalAssetUnits(TSLA), 1000e18);
@@ -234,22 +233,16 @@ contract ExposureManagerTest is Test {
 
     function test_openExposure_onlyMarket_reverts() public {
         _bootstrap();
-        vm.expectRevert(IExposureManager.OnlyMarket.selector);
+        vm.expectRevert(IVaultManager.OnlyMarket.selector);
         vm.prank(admin);
-        manager.openExposure(address(vault), TSLA, 1000e18);
-    }
-
-    function test_openExposure_notRegistered_reverts() public {
-        vm.expectRevert(abi.encodeWithSelector(IExposureManager.VaultNotRegistered.selector, address(vault)));
-        vm.prank(market);
-        manager.openExposure(address(vault), TSLA, 1000e18);
+        manager.openExposure(TSLA, 1000e18);
     }
 
     function test_openExposure_zeroUnits_reverts() public {
         _bootstrap();
-        vm.expectRevert(IExposureManager.ZeroAmount.selector);
+        vm.expectRevert(IVaultManager.ZeroAmount.selector);
         vm.prank(market);
-        manager.openExposure(address(vault), TSLA, 0);
+        manager.openExposure(TSLA, 0);
     }
 
     function test_openExposure_priceUnavailable_reverts() public {
@@ -259,22 +252,20 @@ contract ExposureManagerTest is Test {
         vault.setTotalAssets(1_000_000e6);
         manager.pullCollateralPrice(address(vault));
 
-        vm.expectRevert(abi.encodeWithSelector(IExposureManager.PriceUnavailable.selector, TSLA));
+        vm.expectRevert(abi.encodeWithSelector(IVaultManager.PriceUnavailable.selector, TSLA));
         vm.prank(market);
-        manager.openExposure(address(vault), TSLA, 1000e18);
+        manager.openExposure(TSLA, 1000e18);
     }
 
     function test_openExposure_collateralNotInitialized_reverts() public {
-        // Registered + price pulled, but no collateral pulled → global collateral == 0.
-        vm.prank(factory);
-        manager.registerVault(address(vault), USDC_TICKER);
+        // Asset price pulled, but no collateral pulled → global collateral == 0.
         manager.pullAssetPrice(TSLA);
         vm.prank(admin);
         manager.setAssetCapUSD(TSLA, ASSET_CAP);
 
-        vm.expectRevert(IExposureManager.CollateralNotInitialized.selector);
+        vm.expectRevert(IVaultManager.CollateralNotInitialized.selector);
         vm.prank(market);
-        manager.openExposure(address(vault), TSLA, 1000e18);
+        manager.openExposure(TSLA, 1000e18);
     }
 
     function test_openExposure_assetCapZero_blocksMinting() public {
@@ -285,9 +276,9 @@ contract ExposureManagerTest is Test {
         manager.pullAssetPrice(TSLA);
         // assetCapUSD left at 0 (default).
 
-        vm.expectRevert(abi.encodeWithSelector(IExposureManager.AssetCapBreached.selector, TSLA, 100_000e18, 0));
+        vm.expectRevert(abi.encodeWithSelector(IVaultManager.AssetCapBreached.selector, TSLA, 100_000e18, 0));
         vm.prank(market);
-        manager.openExposure(address(vault), TSLA, 1000e18);
+        manager.openExposure(TSLA, 1000e18);
     }
 
     function test_openExposure_assetCapBreached_reverts() public {
@@ -296,17 +287,17 @@ contract ExposureManagerTest is Test {
         manager.setAssetCapUSD(TSLA, 50_000e18); // $50k cap
 
         // 600 units * $100 = $60k > $50k cap.
-        vm.expectRevert(abi.encodeWithSelector(IExposureManager.AssetCapBreached.selector, TSLA, 60_000e18, 50_000e18));
+        vm.expectRevert(abi.encodeWithSelector(IVaultManager.AssetCapBreached.selector, TSLA, 60_000e18, 50_000e18));
         vm.prank(market);
-        manager.openExposure(address(vault), TSLA, 600e18);
+        manager.openExposure(TSLA, 600e18);
     }
 
     function test_openExposure_globalUtilizationBreached_reverts() public {
         _bootstrap();
         // collateral $1M, max util 80% → ceiling $800k. 9000 units * $100 = $900k → 9000 bps.
-        vm.expectRevert(abi.encodeWithSelector(IExposureManager.GlobalUtilizationBreached.selector, 9000, MAX_UTIL_BPS));
+        vm.expectRevert(abi.encodeWithSelector(IVaultManager.GlobalUtilizationBreached.selector, 9000, MAX_UTIL_BPS));
         vm.prank(market);
-        manager.openExposure(address(vault), TSLA, 9000e18);
+        manager.openExposure(TSLA, 9000e18);
     }
 
     function test_openExposure_atUtilizationBoundary_succeeds() public {
@@ -324,8 +315,8 @@ contract ExposureManagerTest is Test {
         _bootstrap();
         _open(1000e18);
 
-        vm.expectEmit(true, true, false, true);
-        emit IExposureManager.ExposureClosed(address(vault), TSLA, 400e18, TSLA_MARK);
+        vm.expectEmit(true, false, false, true);
+        emit IVaultManager.ExposureClosed(TSLA, 400e18, TSLA_MARK);
         _close(400e18);
 
         assertEq(manager.globalAssetUnits(TSLA), 600e18);
@@ -335,25 +326,25 @@ contract ExposureManagerTest is Test {
     function test_closeExposure_onlyMarket_reverts() public {
         _bootstrap();
         _open(1000e18);
-        vm.expectRevert(IExposureManager.OnlyMarket.selector);
+        vm.expectRevert(IVaultManager.OnlyMarket.selector);
         vm.prank(admin);
-        manager.closeExposure(address(vault), TSLA, 100e18);
+        manager.closeExposure(TSLA, 100e18);
     }
 
     function test_closeExposure_zeroUnits_reverts() public {
         _bootstrap();
         _open(1000e18);
-        vm.expectRevert(IExposureManager.ZeroAmount.selector);
+        vm.expectRevert(IVaultManager.ZeroAmount.selector);
         vm.prank(market);
-        manager.closeExposure(address(vault), TSLA, 0);
+        manager.closeExposure(TSLA, 0);
     }
 
     function test_closeExposure_insufficient_reverts() public {
         _bootstrap();
         _open(100e18);
-        vm.expectRevert(abi.encodeWithSelector(IExposureManager.InsufficientExposure.selector, TSLA, 100e18, 200e18));
+        vm.expectRevert(abi.encodeWithSelector(IVaultManager.InsufficientExposure.selector, TSLA, 100e18, 200e18));
         vm.prank(market);
-        manager.closeExposure(address(vault), TSLA, 200e18);
+        manager.closeExposure(TSLA, 200e18);
     }
 
     function test_openThenClose_roundTrips() public {
@@ -403,13 +394,13 @@ contract ExposureManagerTest is Test {
 
     function test_deregisterVault_onlyFactory_reverts() public {
         _bootstrap();
-        vm.expectRevert(IExposureManager.OnlyFactory.selector);
+        vm.expectRevert(IVaultManager.OnlyFactory.selector);
         vm.prank(admin);
         manager.deregisterVault(address(vault));
     }
 
     function test_deregisterVault_notRegistered_reverts() public {
-        vm.expectRevert(abi.encodeWithSelector(IExposureManager.VaultNotRegistered.selector, address(vault)));
+        vm.expectRevert(abi.encodeWithSelector(IVaultManager.VaultNotRegistered.selector, address(vault)));
         vm.prank(factory);
         manager.deregisterVault(address(vault));
     }
@@ -419,7 +410,7 @@ contract ExposureManagerTest is Test {
         _open(7000e18); // $700k exposure, $1M collateral → 70%
 
         // Removing the only collateral source leaves projCollateral == 0 with live exposure.
-        vm.expectRevert(IExposureManager.DeregisterWouldBreachUtilization.selector);
+        vm.expectRevert(IVaultManager.DeregisterWouldBreachUtilization.selector);
         vm.prank(factory);
         manager.deregisterVault(address(vault));
     }
@@ -455,35 +446,323 @@ contract ExposureManagerTest is Test {
     }
 
     // ──────────────────────────────────────────────────────────
-    //  Admin setters
+    //  onVaultHalted / onVaultUnhalted — collateral exclusion
+    // ──────────────────────────────────────────────────────────
+
+    function test_onVaultHalted_excludesCollateral() public {
+        _bootstrap(); // $1M collateral pooled.
+
+        vm.expectEmit(true, false, false, true);
+        emit IVaultManager.VaultCollateralExcluded(address(vault), 1_000_000e18);
+        vm.prank(address(vault));
+        manager.onVaultHalted();
+
+        assertTrue(manager.isVaultExcluded(address(vault)));
+        assertEq(manager.globalCollateralUSD(), 0, "collateral dropped from pool");
+        assertEq(manager.collateralMark(address(vault)), 0);
+    }
+
+    function test_onVaultHalted_onlyRegisteredVault_reverts() public {
+        _bootstrap();
+        vm.expectRevert(IVaultManager.OnlyRegisteredVault.selector);
+        vm.prank(admin);
+        manager.onVaultHalted();
+    }
+
+    function test_onVaultHalted_alreadyExcluded_reverts() public {
+        _bootstrap();
+        vm.prank(address(vault));
+        manager.onVaultHalted();
+
+        vm.expectRevert(abi.encodeWithSelector(IVaultManager.VaultAlreadyExcluded.selector, address(vault)));
+        vm.prank(address(vault));
+        manager.onVaultHalted();
+    }
+
+    function test_onVaultUnhalted_reincludesCollateral() public {
+        _bootstrap();
+        vm.prank(address(vault));
+        manager.onVaultHalted();
+        assertEq(manager.globalCollateralUSD(), 0);
+
+        vm.expectEmit(true, false, false, true);
+        emit IVaultManager.VaultCollateralReincluded(address(vault), 1_000_000e18);
+        vm.prank(address(vault));
+        manager.onVaultUnhalted();
+
+        assertFalse(manager.isVaultExcluded(address(vault)));
+        assertEq(manager.globalCollateralUSD(), 1_000_000e18, "collateral re-pooled");
+    }
+
+    function test_pullCollateralPrice_whileExcluded_reverts() public {
+        _bootstrap();
+        vm.prank(address(vault));
+        manager.onVaultHalted();
+
+        vm.expectRevert(abi.encodeWithSelector(IVaultManager.VaultAlreadyExcluded.selector, address(vault)));
+        manager.pullCollateralPrice(address(vault));
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Admin setters — risk params
     // ──────────────────────────────────────────────────────────
 
     function test_setAssetCapUSD_onlyAdmin_reverts() public {
-        vm.expectRevert(IExposureManager.OnlyAdmin.selector);
+        vm.expectRevert(IVaultManager.OnlyAdmin.selector);
         vm.prank(market);
         manager.setAssetCapUSD(TSLA, ASSET_CAP);
     }
 
     function test_setAssetCapUSD_emits() public {
         vm.expectEmit(true, false, false, true);
-        emit IExposureManager.AssetCapUpdated(TSLA, ASSET_CAP);
+        emit IVaultManager.AssetCapUpdated(TSLA, ASSET_CAP);
         vm.prank(admin);
         manager.setAssetCapUSD(TSLA, ASSET_CAP);
         assertEq(manager.assetCapUSD(TSLA), ASSET_CAP);
     }
 
     function test_setGlobalMaxUtilizationBps_onlyAdmin_reverts() public {
-        vm.expectRevert(IExposureManager.OnlyAdmin.selector);
+        vm.expectRevert(IVaultManager.OnlyAdmin.selector);
         vm.prank(market);
         manager.setGlobalMaxUtilizationBps(5000);
     }
 
     function test_setGlobalMaxUtilizationBps_emits() public {
         vm.expectEmit(false, false, false, true);
-        emit IExposureManager.GlobalMaxUtilizationUpdated(MAX_UTIL_BPS, 5000);
+        emit IVaultManager.GlobalMaxUtilizationUpdated(MAX_UTIL_BPS, 5000);
         vm.prank(admin);
         manager.setGlobalMaxUtilizationBps(5000);
         assertEq(manager.globalMaxUtilizationBps(), 5000);
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Admin — signer registry
+    // ──────────────────────────────────────────────────────────
+
+    function test_registerSigner_setsLinkedAddress() public {
+        address signer = makeAddr("signer");
+        address linked = makeAddr("linked");
+
+        vm.expectEmit(true, true, false, false);
+        emit IVaultManager.SignerRegistered(signer, linked);
+        vm.prank(admin);
+        manager.registerSigner(signer, linked);
+
+        assertTrue(manager.isSigner(signer));
+        assertEq(manager.signerLinkedAddress(signer), linked);
+    }
+
+    function test_registerSigner_onlyAdmin_reverts() public {
+        vm.expectRevert(IVaultManager.OnlyAdmin.selector);
+        vm.prank(market);
+        manager.registerSigner(makeAddr("signer"), makeAddr("linked"));
+    }
+
+    function test_registerSigner_zeroAddress_reverts() public {
+        vm.startPrank(admin);
+        vm.expectRevert(IVaultManager.ZeroAddress.selector);
+        manager.registerSigner(address(0), makeAddr("linked"));
+        vm.expectRevert(IVaultManager.ZeroAddress.selector);
+        manager.registerSigner(makeAddr("signer"), address(0));
+        vm.stopPrank();
+    }
+
+    function test_registerSigner_alreadySigner_reverts() public {
+        address signer = makeAddr("signer");
+        vm.startPrank(admin);
+        manager.registerSigner(signer, makeAddr("linked"));
+        vm.expectRevert(abi.encodeWithSelector(IVaultManager.AlreadySigner.selector, signer));
+        manager.registerSigner(signer, makeAddr("linked2"));
+        vm.stopPrank();
+    }
+
+    function test_updateSignerLinkedAddress_succeeds() public {
+        address signer = makeAddr("signer");
+        address linked2 = makeAddr("linked2");
+        vm.startPrank(admin);
+        manager.registerSigner(signer, makeAddr("linked"));
+
+        vm.expectEmit(true, true, false, false);
+        emit IVaultManager.SignerLinkedAddressUpdated(signer, linked2);
+        manager.updateSignerLinkedAddress(signer, linked2);
+        vm.stopPrank();
+
+        assertEq(manager.signerLinkedAddress(signer), linked2);
+    }
+
+    function test_updateSignerLinkedAddress_notSigner_reverts() public {
+        address signer = makeAddr("signer");
+        vm.prank(admin);
+        vm.expectRevert(abi.encodeWithSelector(IVaultManager.NotSigner.selector, signer));
+        manager.updateSignerLinkedAddress(signer, makeAddr("linked"));
+    }
+
+    function test_removeSigner_succeeds() public {
+        address signer = makeAddr("signer");
+        vm.startPrank(admin);
+        manager.registerSigner(signer, makeAddr("linked"));
+
+        vm.expectEmit(true, false, false, false);
+        emit IVaultManager.SignerRemoved(signer);
+        manager.removeSigner(signer);
+        vm.stopPrank();
+
+        assertFalse(manager.isSigner(signer));
+        assertEq(manager.signerLinkedAddress(signer), address(0));
+    }
+
+    function test_removeSigner_notSigner_reverts() public {
+        address signer = makeAddr("signer");
+        vm.prank(admin);
+        vm.expectRevert(abi.encodeWithSelector(IVaultManager.NotSigner.selector, signer));
+        manager.removeSigner(signer);
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Admin — payment token
+    // ──────────────────────────────────────────────────────────
+
+    function test_setPaymentToken_succeeds() public {
+        vm.expectEmit(true, true, false, false);
+        emit IVaultManager.PaymentTokenUpdated(address(0), address(usdc));
+        vm.prank(admin);
+        manager.setPaymentToken(address(usdc));
+        assertEq(manager.paymentToken(), address(usdc));
+    }
+
+    function test_setPaymentToken_onlyAdmin_reverts() public {
+        vm.expectRevert(IVaultManager.OnlyAdmin.selector);
+        vm.prank(market);
+        manager.setPaymentToken(address(usdc));
+    }
+
+    function test_setPaymentToken_zeroAddress_reverts() public {
+        vm.prank(admin);
+        vm.expectRevert(IVaultManager.ZeroAddress.selector);
+        manager.setPaymentToken(address(0));
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Admin — trading pause
+    // ──────────────────────────────────────────────────────────
+
+    function test_setTradingPaused_global() public {
+        vm.expectEmit(false, false, false, true);
+        emit IVaultManager.TradingPausedUpdated(true);
+        vm.prank(admin);
+        manager.setTradingPaused(true);
+        assertTrue(manager.isTradingPaused(TSLA));
+
+        vm.prank(admin);
+        manager.setTradingPaused(false);
+        assertFalse(manager.isTradingPaused(TSLA));
+    }
+
+    function test_setTradingPaused_onlyAdmin_reverts() public {
+        vm.expectRevert(IVaultManager.OnlyAdmin.selector);
+        vm.prank(market);
+        manager.setTradingPaused(true);
+    }
+
+    function test_setAssetTradingPaused_perAsset() public {
+        vm.expectEmit(true, false, false, true);
+        emit IVaultManager.AssetTradingPausedUpdated(TSLA, true);
+        vm.prank(admin);
+        manager.setAssetTradingPaused(TSLA, true);
+        assertTrue(manager.isTradingPaused(TSLA));
+        // Other assets remain unpaused.
+        assertFalse(manager.isTradingPaused(bytes32("GOLD")));
+    }
+
+    function test_setAssetTradingPaused_onlyAdmin_reverts() public {
+        vm.expectRevert(IVaultManager.OnlyAdmin.selector);
+        vm.prank(market);
+        manager.setAssetTradingPaused(TSLA, true);
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Admin — asset halt (permanent)
+    // ──────────────────────────────────────────────────────────
+
+    function test_haltAsset_succeeds() public {
+        vm.expectEmit(true, false, false, true);
+        emit IVaultManager.AssetHalted(TSLA, TSLA_MARK);
+        vm.prank(admin);
+        manager.haltAsset(TSLA, TSLA_MARK);
+
+        assertTrue(manager.isAssetHalted(TSLA));
+        assertEq(manager.assetHaltPrice(TSLA), TSLA_MARK);
+        // Halt re-marks the asset price to the fixed halt price.
+        assertEq(manager.assetMark(TSLA), TSLA_MARK);
+    }
+
+    function test_haltAsset_remarksExposureAtHaltPrice() public {
+        _bootstrap();
+        _open(1000e18); // $100k at $100 mark
+
+        // Halt at $200 → exposure re-marks to $200k.
+        vm.prank(admin);
+        manager.haltAsset(TSLA, 200e18);
+        assertEq(manager.globalExposureUSD(), 200_000e18);
+    }
+
+    function test_haltAsset_onlyAdmin_reverts() public {
+        vm.expectRevert(IVaultManager.OnlyAdmin.selector);
+        vm.prank(market);
+        manager.haltAsset(TSLA, TSLA_MARK);
+    }
+
+    function test_haltAsset_zeroPrice_reverts() public {
+        vm.prank(admin);
+        vm.expectRevert(IVaultManager.InvalidHaltPrice.selector);
+        manager.haltAsset(TSLA, 0);
+    }
+
+    function test_haltAsset_alreadyHalted_reverts() public {
+        vm.startPrank(admin);
+        manager.haltAsset(TSLA, TSLA_MARK);
+        vm.expectRevert(abi.encodeWithSelector(IVaultManager.AssetAlreadyHalted.selector, TSLA));
+        manager.haltAsset(TSLA, TSLA_MARK);
+        vm.stopPrank();
+    }
+
+    function test_setHaltRedeemAddress_succeeds() public {
+        address addr = makeAddr("haltFund");
+        vm.expectEmit(true, true, false, false);
+        emit IVaultManager.HaltRedeemAddressUpdated(address(0), addr);
+        vm.prank(admin);
+        manager.setHaltRedeemAddress(addr);
+        assertEq(manager.haltRedeemAddress(), addr);
+    }
+
+    function test_setHaltRedeemAddress_onlyAdmin_reverts() public {
+        vm.expectRevert(IVaultManager.OnlyAdmin.selector);
+        vm.prank(market);
+        manager.setHaltRedeemAddress(makeAddr("haltFund"));
+    }
+
+    function test_setHaltRedeemAddress_zeroAddress_reverts() public {
+        vm.prank(admin);
+        vm.expectRevert(IVaultManager.ZeroAddress.selector);
+        manager.setHaltRedeemAddress(address(0));
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Admin — claim threshold
+    // ──────────────────────────────────────────────────────────
+
+    function test_setClaimThreshold_succeeds() public {
+        vm.expectEmit(false, false, false, true);
+        emit IVaultManager.ClaimThresholdUpdated(0, 6 hours);
+        vm.prank(admin);
+        manager.setClaimThreshold(6 hours);
+        assertEq(manager.claimThreshold(), 6 hours);
+    }
+
+    function test_setClaimThreshold_onlyAdmin_reverts() public {
+        vm.expectRevert(IVaultManager.OnlyAdmin.selector);
+        vm.prank(market);
+        manager.setClaimThreshold(6 hours);
     }
 
     // ──────────────────────────────────────────────────────────

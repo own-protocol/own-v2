@@ -76,8 +76,8 @@ interface IProtocolRegistry {
     /// @notice Returns the BorrowManagerFactory contract address.
     function borrowManagerFactory() external view returns (address);
 
-    /// @notice Returns the ExposureManager contract address.
-    function exposureManager() external view returns (address);
+    /// @notice Returns the VaultManager contract address.
+    function vaultManager() external view returns (address);
 
     /// @notice Returns the timelock delay duration in seconds.
     function timelockDelay() external view returns (uint256);

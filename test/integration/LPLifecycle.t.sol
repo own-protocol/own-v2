@@ -41,15 +41,14 @@ contract LPLifecycleTest is BaseTest {
         protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), address(factory));
 
         vm.stopPrank();
-        // Deploy + register the ExposureManager before createVault (which auto-registers the vault).
-        _deployExposureManager();
+        // Deploy + register the VaultManager before createVault (which auto-registers the vault).
+        _deployVaultManager();
         vm.startPrank(Actors.ADMIN);
 
         vault = OwnVault(factory.createVault(address(weth), Actors.VM1, "Own WETH Vault", "oWETH", ETH));
 
         market = new OwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
-        vault.setClaimThreshold(6 hours);
 
         eTSLA = new EToken("Own Tesla", "eTSLA", TSLA, address(protocolRegistry), address(usdc));
 
@@ -64,10 +63,9 @@ contract LPLifecycleTest is BaseTest {
 
         vm.stopPrank();
 
-        // Set payment token
-        vm.startPrank(Actors.VM1);
-        vault.setPaymentToken(address(usdc));
-        vm.stopPrank();
+        // Global controls now live on the VaultManager.
+        _setClaimThreshold(6 hours);
+        _setPaymentToken(address(usdc));
     }
 
     // ──────────────────────────────────────────────────────────
@@ -310,10 +308,10 @@ contract LPLifecycleTest is BaseTest {
         assertEq(vault.asset(), address(weth));
         assertEq(vault.totalAssets(), LP_DEPOSIT);
         assertEq(uint8(vault.vaultStatus()), uint8(VaultStatus.Active));
-        assertEq(exposureManager.globalMaxUtilizationBps(), 8000);
-        assertEq(exposureManager.globalExposureUSD(), 0);
+        assertEq(vaultManager.globalMaxUtilizationBps(), 8000);
+        assertEq(vaultManager.globalExposureUSD(), 0);
         // TODO(exposure-refactor): vault.healthFactor() removed; no manager equivalent to repoint to.
         // assertEq(vault.healthFactor(), type(uint256).max);
-        assertEq(exposureManager.globalUtilizationBps(), 0);
+        assertEq(vaultManager.globalUtilizationBps(), 0);
     }
 }

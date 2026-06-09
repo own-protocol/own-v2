@@ -63,10 +63,10 @@ interface IUserBorrowManager {
     event TargetLtvBpsUpdated(uint256 oldBps, uint256 newBps);
 
     /// @notice Emitted when lending interest revenue (the premium charged above Aave's own rate)
-    ///         is forwarded to the VM. The VM handles its distribution offchain / via `shareYield`.
-    /// @param vm     The vault manager receiving the lending fee.
-    /// @param amount Stablecoin amount of accrued lending fee.
-    event LendingFeeAccrued(address indexed vm, uint256 amount);
+    ///         is forwarded to the manager. The manager handles distribution offchain / via `shareYield`.
+    /// @param manager The vault manager (operator) receiving the lending fee.
+    /// @param amount  Stablecoin amount of accrued lending fee.
+    event LendingFeeAccrued(address indexed manager, uint256 amount);
     event BadDebtAbsorbed(
         address indexed borrower,
         bytes32 indexed asset,
@@ -74,6 +74,20 @@ interface IUserBorrowManager {
         uint256 residualRepaid,
         uint256 treasuryAbsorbed,
         uint256 collateralReleased
+    );
+
+    /// @notice Emitted when a leveraged position is unwound during a permanent asset halt.
+    /// @param borrower            Position owner.
+    /// @param asset               Halted asset ticker.
+    /// @param eTokenRedeemed      eToken collateral seized and redeemed at the halt price.
+    /// @param debtRepaid          Stablecoin debt cleared from the proceeds.
+    /// @param collateralReturned  eToken collateral returned to the borrower (excess over debt).
+    event HaltPositionSettled(
+        address indexed borrower,
+        bytes32 indexed asset,
+        uint256 eTokenRedeemed,
+        uint256 debtRepaid,
+        uint256 collateralReturned
     );
 
     // ──────────────────────────────────────────────────────────
@@ -96,6 +110,7 @@ interface IUserBorrowManager {
     error BorrowExceedsCap(uint256 attempted, uint256 cap);
     error SeizeExceedsCollateral(uint256 seize, uint256 available);
     error PositionStillCollateralized(uint256 collateral);
+    error AssetNotHalted(bytes32 asset);
 
     // ──────────────────────────────────────────────────────────
     //  Borrower flows
@@ -160,6 +175,16 @@ interface IUserBorrowManager {
         uint256 absorbAmount,
         bytes calldata collateralPriceData
     ) external payable;
+
+    /// @notice Unwind a leveraged position during a permanent asset halt. Seizes the eToken
+    ///         collateral needed to cover the position's debt at the halt price, redeems it for
+    ///         stablecoins via the market's halt redeem path, repays the vault's Aave debt, and
+    ///         returns any excess collateral to the borrower. Callable by anyone (keeper, borrower,
+    ///         or admin). If collateral cannot cover the debt, the shortfall remains as a
+    ///         zero-collateral residual to be closed via {absorbBadDebt}.
+    /// @param  borrower Position owner.
+    /// @param  asset    Halted asset ticker.
+    function settleHaltedPosition(address borrower, bytes32 asset) external;
 
     // ──────────────────────────────────────────────────────────
     //  Views

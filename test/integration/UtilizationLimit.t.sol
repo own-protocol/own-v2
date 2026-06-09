@@ -52,7 +52,7 @@ contract UtilizationLimitTest is BaseTest {
         protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), address(factory));
 
         vm.stopPrank();
-        _deployExposureManager();
+        _deployVaultManager();
         // Low global max utilisation: 10% — easy to trigger a breach.
         _setGlobalMaxUtil(MAX_UTIL_BPS);
         vm.startPrank(Actors.ADMIN);
@@ -61,10 +61,11 @@ contract UtilizationLimitTest is BaseTest {
 
         market = new OwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
-        vault.setClaimThreshold(CLAIM_THRESHOLD);
-        vault.addQuoteSigner(vm1Signer);
 
         vm.stopPrank();
+
+        _setClaimThreshold(CLAIM_THRESHOLD);
+        _registerSigner(vm1Signer, Actors.VM1);
     }
 
     function _configureAssets() private {
@@ -96,9 +97,7 @@ contract UtilizationLimitTest is BaseTest {
     }
 
     function _configureVault() private {
-        vm.startPrank(vm1Signer);
-        vault.setPaymentToken(address(usdc));
-        vm.stopPrank();
+        _setPaymentToken(address(usdc));
     }
 
     function _depositLPCollateral() private {
@@ -113,14 +112,14 @@ contract UtilizationLimitTest is BaseTest {
         _fundUSDC(minter, amount);
         vm.startPrank(minter);
         usdc.approve(address(market), amount);
-        uint256 orderId = market.placeOrder(address(vault), TSLA, OrderType.Mint, amount, TSLA_PRICE, expiry);
+        uint256 orderId = market.placeOrder(TSLA, OrderType.Mint, amount, TSLA_PRICE, expiry);
         vm.stopPrank();
         return orderId;
     }
 
     /// @dev Fill a resting mint order with a VM-signed quote for the full remaining amount.
     function _fillMint(uint256 orderId, address minter, uint256 amount) internal {
-        Quote memory q = _buildQuote(orderId, minter, address(vault), TSLA, OrderType.Mint, amount, TSLA_PRICE);
+        Quote memory q = _buildQuote(orderId, minter, TSLA, OrderType.Mint, amount, TSLA_PRICE);
         bytes memory sig = _signQuote(market, q, vm1SignerPk);
         vm.prank(vm1Signer);
         market.fillOrder(q, sig);
@@ -138,12 +137,12 @@ contract UtilizationLimitTest is BaseTest {
         uint256 orderId = _placeMint(Actors.MINTER1, mintAmount, block.timestamp + 1 days);
 
         // Escrow alone does not add exposure
-        assertEq(exposureManager.globalUtilizationBps(), 0, "utilization unchanged after placement");
+        assertEq(vaultManager.globalUtilizationBps(), 0, "utilization unchanged after placement");
 
         _fillMint(orderId, Actors.MINTER1, mintAmount);
 
         assertEq(uint8(market.getOrder(orderId).status), uint8(OrderStatus.Filled));
-        assertGt(exposureManager.globalUtilizationBps(), 0, "utilization > 0 after fill");
+        assertGt(vaultManager.globalUtilizationBps(), 0, "utilization > 0 after fill");
     }
 
     // ══════════════════════════════════════════════════════════
@@ -157,8 +156,7 @@ contract UtilizationLimitTest is BaseTest {
         uint256 bigMintAmount = 50_000e6;
         uint256 orderId = _placeMint(Actors.MINTER1, bigMintAmount, block.timestamp + 1 days);
 
-        Quote memory q =
-            _buildQuote(orderId, Actors.MINTER1, address(vault), TSLA, OrderType.Mint, bigMintAmount, TSLA_PRICE);
+        Quote memory q = _buildQuote(orderId, Actors.MINTER1, TSLA, OrderType.Mint, bigMintAmount, TSLA_PRICE);
         bytes memory sig = _signQuote(market, q, vm1SignerPk);
 
         vm.prank(vm1Signer);
@@ -174,12 +172,12 @@ contract UtilizationLimitTest is BaseTest {
         uint256 mintAmount = 10_000e6;
         uint256 orderId = _placeMint(Actors.MINTER1, mintAmount, block.timestamp + 1 days);
 
-        assertEq(exposureManager.globalUtilizationBps(), 0, "utilization unchanged after placement");
+        assertEq(vaultManager.globalUtilizationBps(), 0, "utilization unchanged after placement");
 
         _fillMint(orderId, Actors.MINTER1, mintAmount);
 
-        assertGt(exposureManager.globalUtilizationBps(), 0, "utilization > 0 after fill");
-        assertLe(exposureManager.globalUtilizationBps(), MAX_UTIL_BPS, "utilization within limit");
+        assertGt(vaultManager.globalUtilizationBps(), 0, "utilization > 0 after fill");
+        assertLe(vaultManager.globalUtilizationBps(), MAX_UTIL_BPS, "utilization within limit");
     }
 
     // ══════════════════════════════════════════════════════════
@@ -191,13 +189,13 @@ contract UtilizationLimitTest is BaseTest {
         uint256 orderId = _placeMint(Actors.MINTER1, mintAmount, block.timestamp + 1 days);
 
         // Escrow doesn't change exposure
-        assertEq(exposureManager.globalUtilizationBps(), 0, "utilization unchanged after placement");
+        assertEq(vaultManager.globalUtilizationBps(), 0, "utilization unchanged after placement");
 
         vm.prank(Actors.MINTER1);
         market.cancelOrder(orderId);
 
         // Cancel returns escrow — nothing was settled
-        assertEq(exposureManager.globalUtilizationBps(), 0, "utilization still 0 after cancel");
+        assertEq(vaultManager.globalUtilizationBps(), 0, "utilization still 0 after cancel");
     }
 
     // ══════════════════════════════════════════════════════════
@@ -212,23 +210,23 @@ contract UtilizationLimitTest is BaseTest {
         uint256 orderId2 = _placeMint(Actors.MINTER2, mintAmount, block.timestamp + 1 days);
 
         // Escrow alone doesn't change exposure
-        assertEq(exposureManager.globalUtilizationBps(), 0, "utilization unchanged after placements");
+        assertEq(vaultManager.globalUtilizationBps(), 0, "utilization unchanged after placements");
 
         // Fill first mint → exposure increases
         _fillMint(orderId1, Actors.MINTER1, mintAmount);
 
-        uint256 utilAfterFirst = exposureManager.globalUtilizationBps();
+        uint256 utilAfterFirst = vaultManager.globalUtilizationBps();
         assertGt(utilAfterFirst, 0, "utilization > 0 after first fill");
 
         // Fill second mint → exposure increases further
         _fillMint(orderId2, Actors.MINTER2, mintAmount);
 
-        uint256 utilAfterSecond = exposureManager.globalUtilizationBps();
+        uint256 utilAfterSecond = vaultManager.globalUtilizationBps();
         assertGt(utilAfterSecond, utilAfterFirst, "utilization increased with second fill");
     }
 
     // ══════════════════════════════════════════════════════════
-    //  Withdrawal utilisation gate (ExposureManager.withdrawalBreachesUtil)
+    //  Withdrawal utilisation gate (VaultManager.withdrawalBreachesUtil)
     // ══════════════════════════════════════════════════════════
 
     /// @dev A small withdrawal leaves plenty of collateral, so it does not breach utilisation
@@ -242,7 +240,7 @@ contract UtilizationLimitTest is BaseTest {
         uint256 lpShares = vault.balanceOf(Actors.LP1);
         uint256 shares = lpShares / 10;
         assertFalse(
-            exposureManager.withdrawalBreachesUtil(address(vault), vault.convertToAssets(shares)),
+            vaultManager.withdrawalBreachesUtil(address(vault), vault.convertToAssets(shares)),
             "small withdrawal does not breach"
         );
 
@@ -265,7 +263,7 @@ contract UtilizationLimitTest is BaseTest {
         uint256 lpShares = vault.balanceOf(Actors.LP1);
         uint256 shares = (lpShares * 9) / 10;
         assertTrue(
-            exposureManager.withdrawalBreachesUtil(address(vault), vault.convertToAssets(shares)),
+            vaultManager.withdrawalBreachesUtil(address(vault), vault.convertToAssets(shares)),
             "large withdrawal breaches"
         );
 

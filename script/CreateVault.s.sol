@@ -3,7 +3,6 @@ pragma solidity 0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
 
-import {OwnVault} from "../src/core/OwnVault.sol";
 import {VaultFactory} from "../src/core/VaultFactory.sol";
 
 /// @title CreateVault — Create a WETH vault and configure admin parameters
@@ -16,10 +15,10 @@ contract CreateVault is Script {
     bytes32 constant ETH = bytes32("ETH");
 
     function run() external {
-        address vmAddress = vm.envAddress("VM_ADDRESS");
+        address managerAddress = vm.envAddress("VM_ADDRESS");
         address factoryAddr = vm.envAddress("VAULT_FACTORY");
 
-        console.log("VM Address:", vmAddress);
+        console.log("Manager Address:", managerAddress);
         console.log("VaultFactory:", factoryAddr);
 
         vm.startBroadcast(vm.envUint("DEPLOYER_PRIVATE_KEY"));
@@ -27,14 +26,10 @@ contract CreateVault is Script {
         VaultFactory factory = VaultFactory(factoryAddr);
 
         // Create WETH vault. The collateral oracle ticker (ETH) is registered with the
-        // ExposureManager by the factory; global utilisation is managed centrally.
-        address vaultAddr = factory.createVault(WETH, vmAddress, "Own ETH Vault", "oETH", ETH);
+        // VaultManager by the factory; global utilisation, payment token, and the claim
+        // threshold are managed centrally on the VaultManager.
+        address vaultAddr = factory.createVault(WETH, managerAddress, "Own ETH Vault", "oETH", ETH);
         console.log("Vault created:", vaultAddr);
-
-        OwnVault vault = OwnVault(vaultAddr);
-
-        // Admin configuration
-        vault.setClaimThreshold(6 hours);
 
         vm.stopBroadcast();
 
@@ -42,7 +37,5 @@ contract CreateVault is Script {
         console.log("=== Vault Created ===");
         console.log("Update .env with:");
         console.log("VAULT_ADDRESS=", vaultAddr);
-        console.log("");
-        console.log("Next: run ConfigureVault.s.sol with VM_PRIVATE_KEY");
     }
 }
