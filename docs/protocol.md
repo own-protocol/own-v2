@@ -370,7 +370,7 @@ keeper calls to `pullCollateralPrice(vault)` (§9). The collateral USD value fee
 
 - Global utilization (§9)
 - Force-execution collateral-equivalent returns (the market reads the caller-named vault's collateral ticker via `VaultManager.vaultCollateralAsset`)
-- The lending debt cap (`UserBorrowManager.maxDebtUSD = collateralMark(vault) × targetLtvBps / BPS`)
+- The lending debt cap (`BorrowManager.maxDebtUSD = collateralMark(vault) × targetLtvBps / BPS`)
 
 ---
 

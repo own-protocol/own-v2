@@ -4,6 +4,7 @@ pragma solidity 0.8.28;
 import {ProtocolRegistry} from "../../src/core/ProtocolRegistry.sol";
 import {VaultManager} from "../../src/core/VaultManager.sol";
 import {IOwnMarket} from "../../src/interfaces/IOwnMarket.sol";
+import {IOwnVault} from "../../src/interfaces/IOwnVault.sol";
 import {BPS, OrderType, PRECISION, Quote} from "../../src/interfaces/types/Types.sol";
 import {Actors} from "./Actors.sol";
 import {MockAUSDC} from "./MockAUSDC.sol";
@@ -297,6 +298,15 @@ contract BaseTest is Test {
         vaultManager.setPaymentToken(token);
     }
 
+    /// @notice Set the protocol treasury address in the registry (bad-debt collateral sink).
+    function _setTreasury(
+        address treasury_
+    ) internal {
+        bytes32 key = protocolRegistry.TREASURY();
+        vm.prank(Actors.ADMIN);
+        protocolRegistry.setAddress(key, treasury_);
+    }
+
     /// @notice Register a global quote signer with its linked settlement address (admin-only).
     function _registerSigner(address signer, address linked) internal {
         vm.prank(Actors.ADMIN);
@@ -351,5 +361,14 @@ contract BaseTest is Test {
         bytes32 asset
     ) internal {
         vaultManager.pullAssetPrice(asset);
+    }
+
+    /// @notice Wire Aave-backed lending on a vault (admin): authorise the borrow manager and grant it
+    ///         unlimited Aave credit delegation via the manager-scoped `grantCreditDelegation`.
+    function _enableAaveLending(address vault, address manager, address debtToken) internal {
+        vm.startPrank(Actors.ADMIN);
+        IOwnVault(vault).setBorrowManager(manager);
+        IOwnVault(vault).grantCreditDelegation(debtToken);
+        vm.stopPrank();
     }
 }

@@ -2,12 +2,13 @@
 pragma solidity 0.8.28;
 
 import {IAssetRegistry} from "../interfaces/IAssetRegistry.sol";
+
+import {IBorrowManager} from "../interfaces/IBorrowManager.sol";
 import {IEToken} from "../interfaces/IEToken.sol";
 import {IOracleVerifier} from "../interfaces/IOracleVerifier.sol";
 import {IOwnMarket} from "../interfaces/IOwnMarket.sol";
 import {IOwnVault} from "../interfaces/IOwnVault.sol";
 import {IProtocolRegistry} from "../interfaces/IProtocolRegistry.sol";
-import {IUserBorrowManager} from "../interfaces/IUserBorrowManager.sol";
 import {IVaultManager} from "../interfaces/IVaultManager.sol";
 import {IAaveV3Pool} from "../interfaces/external/IAaveV3Pool.sol";
 import {InterestRateModel} from "../libraries/InterestRateModel.sol";
@@ -21,22 +22,25 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
-/// @title UserBorrowManager — User borrowing against eTokens via vault Aave credit
-/// @notice One-per-vault stateful manager. Borrowers deposit eTokens as
-///         collateral; the manager borrows the vault's stablecoin (USDC) from
-///         Aave V3 via credit delegation and forwards it to the borrower. Each
-///         (borrower, asset) carries its own position. Interest accrues on a
-///         single global cumulative index using a two-slope utilization curve
-///         (the borrow rate is vault-wide, so one index prices every position).
-///         Liquidation is signed-price gated and partial: the liquidator names
-///         a repay amount, capped by an HF-gated close factor, and the
-///         bonus-based seize must fit the position's remaining collateral.
+/// @title BorrowManager — eToken-collateralised borrowing (Aave-funded)
+/// @notice One-per-vault stateful borrow manager implementing the venue-neutral {IBorrowManager}.
+///         Borrowers deposit eTokens as collateral; the manager borrows the protocol's stablecoin
+///         (USDC) and forwards it to the borrower. Each (borrower, asset) carries its own position.
+///         Interest accrues on a single global cumulative index using a two-slope utilization curve
+///         (the borrow rate is vault-wide, so one index prices every position). Liquidation is
+///         signed-price gated and partial: the liquidator names a repay amount, capped by an
+///         HF-gated close factor, and the bonus-based seize must fit the position's remaining
+///         collateral.
 ///
-///         The manager is self-contained: it tracks its own outstanding debt,
-///         enforces a vault-wide hard cap (`targetLtvBps` × vault collateral),
-///         derives utilization for the rate curve, and reads the live Aave
-///         borrow rate directly.
-contract UserBorrowManager is IUserBorrowManager, ReentrancyGuard {
+///         **Funding source (Aave V3):** this implementation sources the loaned stablecoin from
+///         Aave V3 via the vault's credit delegation — `pool.borrow(onBehalf=vault)` /
+///         `pool.repay(onBehalf=vault)` — and reads the live Aave variable borrow rate as its base
+///         rate. A future Morpho or in-house manager can implement {IBorrowManager} with a different
+///         funding source while reusing the same vault, market, and risk wiring.
+///
+///         The manager is self-contained: it tracks its own outstanding debt, enforces a vault-wide
+///         hard cap (`targetLtvBps` × vault collateral), and derives utilization for the rate curve.
+contract BorrowManager is IBorrowManager, ReentrancyGuard {
     using SafeERC20 for IERC20;
     using Math for uint256;
 
@@ -62,8 +66,8 @@ contract UserBorrowManager is IUserBorrowManager, ReentrancyGuard {
 
     address public immutable override vault;
     address public immutable override stablecoin;
-    address public immutable override debtToken;
-    address public immutable override aavePool;
+    address public immutable debtToken;
+    address public immutable aavePool;
     IProtocolRegistry public immutable registry;
 
     /// @dev Decimals of the borrow stablecoin (cached for USD conversion).
@@ -76,17 +80,17 @@ contract UserBorrowManager is IUserBorrowManager, ReentrancyGuard {
     InterestRateModel.Params internal _rateParams;
 
     /// @dev Floor for the Aave-side rate (BPS, annualized). The accrual loop
-    ///      uses `max(floor, liveAaveRateBps())` so the protocol always charges
+    ///      uses `max(floor, baseRateBps())` so the protocol always charges
     ///      at least the live Aave variable borrow rate plus the premium curve.
     ///      Admin can raise the floor for additional safety; the live read
     ///      protects LPs even when the admin is silent.
     uint256 public minAaveBorrowRateBps;
 
-    /// @inheritdoc IUserBorrowManager
+    /// @inheritdoc IBorrowManager
     uint256 public override liquidationThresholdBps;
-    /// @inheritdoc IUserBorrowManager
+    /// @inheritdoc IBorrowManager
     uint256 public override liquidationBonusBps;
-    /// @inheritdoc IUserBorrowManager
+    /// @inheritdoc IBorrowManager
     uint256 public override borrowLtvBps;
 
     /// @notice Max fraction of a position's debt (BPS) one liquidation may repay
@@ -95,7 +99,7 @@ contract UserBorrowManager is IUserBorrowManager, ReentrancyGuard {
     ///         to 100% so deeply underwater positions can be wound down in one go.
     uint256 public liquidationCloseFactorBps;
 
-    /// @inheritdoc IUserBorrowManager
+    /// @inheritdoc IBorrowManager
     /// @dev Vault-wide target Aave LTV (BPS) that defines the protocol debt
     ///      cap: `maxDebtUSD = vaultManager.collateralMark(vault) × targetLtvBps / BPS`.
     ///      Distinct from `borrowLtvBps`, which caps an individual position.
@@ -179,7 +183,7 @@ contract UserBorrowManager is IUserBorrowManager, ReentrancyGuard {
     //  Borrow
     // ──────────────────────────────────────────────────────────
 
-    /// @inheritdoc IUserBorrowManager
+    /// @inheritdoc IBorrowManager
     function borrow(
         bytes32 asset,
         uint256 eTokenAmount,
@@ -235,7 +239,7 @@ contract UserBorrowManager is IUserBorrowManager, ReentrancyGuard {
     //  Repay
     // ──────────────────────────────────────────────────────────
 
-    /// @inheritdoc IUserBorrowManager
+    /// @inheritdoc IBorrowManager
     function repay(bytes32 asset, uint256 amount) external nonReentrant returns (uint256 collateralReleased) {
         Position storage p = _positions[msg.sender][asset];
         if (p.principal == 0) revert NoPosition(msg.sender, asset);
@@ -288,7 +292,7 @@ contract UserBorrowManager is IUserBorrowManager, ReentrancyGuard {
     //  Liquidate
     // ──────────────────────────────────────────────────────────
 
-    /// @inheritdoc IUserBorrowManager
+    /// @inheritdoc IBorrowManager
     function liquidate(
         address borrower,
         bytes32 asset,
@@ -362,16 +366,17 @@ contract UserBorrowManager is IUserBorrowManager, ReentrancyGuard {
     //  Bad debt
     // ──────────────────────────────────────────────────────────
 
-    /// @inheritdoc IUserBorrowManager
+    /// @inheritdoc IBorrowManager
     /// @dev Bad debt only arises once a position's collateral is fully consumed
     ///      by liquidations, leaving uncollateralized book debt that still backs
     ///      a live Aave loan on the vault. The admin (acting for the treasury)
     ///      fronts the full residual stablecoin to repay that Aave loan and clear
     ///      the book debt; `absorbAmount` decides how the realized loss splits:
-    ///      the treasury eats `absorbAmount`, and the remainder is reimbursed to
-    ///      the caller in vault collateral (aToken) — socializing it to LPs via
-    ///      the now-smaller collateral base. The aToken slice is unlocked because
-    ///      the matching Aave debt is repaid first.
+    ///      the treasury eats `absorbAmount`, and the remainder is released as
+    ///      vault collateral (aToken) to the protocol treasury — socializing it to
+    ///      LPs via the now-smaller collateral base. The aToken slice is unlocked
+    ///      because the matching Aave debt is repaid first. The collateral always
+    ///      goes to the registry treasury, never to the caller.
     function absorbBadDebt(
         address borrower,
         bytes32 asset,
@@ -403,7 +408,10 @@ contract UserBorrowManager is IUserBorrowManager, ReentrancyGuard {
             uint256 lpLossUSD = LendingMath.stableToUSD(lpLoss, _stableDecimals);
             collateralReleased = lpLossUSD.mulDiv(PRECISION, collateralPrice);
             if (collateralReleased > 0) {
-                IOwnVault(vault).releaseCollateralForBadDebt(msg.sender, collateralReleased);
+                // Collateral is released to the protocol treasury (fixed in the vault), not to the
+                // caller — the caller fronts the stablecoin; the treasury receives the LP-socialized
+                // collateral slice.
+                IOwnVault(vault).releaseCollateralForBadDebt(collateralReleased);
             }
         }
 
@@ -414,7 +422,7 @@ contract UserBorrowManager is IUserBorrowManager, ReentrancyGuard {
     //  Halt settlement
     // ──────────────────────────────────────────────────────────
 
-    /// @inheritdoc IUserBorrowManager
+    /// @inheritdoc IBorrowManager
     /// @dev Unwinds a position during a permanent asset halt. The eToken collateral needed to
     ///      cover the position's debt at the fixed halt price is seized and redeemed for
     ///      stablecoins through the market's halt redeem path (paid from the halt redeem address),
@@ -478,7 +486,7 @@ contract UserBorrowManager is IUserBorrowManager, ReentrancyGuard {
     //  Views
     // ──────────────────────────────────────────────────────────
 
-    /// @inheritdoc IUserBorrowManager
+    /// @inheritdoc IBorrowManager
     function rateParams()
         external
         view
@@ -488,12 +496,12 @@ contract UserBorrowManager is IUserBorrowManager, ReentrancyGuard {
         return (p.basePremiumBps, p.optimalUtilBps, p.slope1Bps, p.slope2Bps);
     }
 
-    /// @inheritdoc IUserBorrowManager
+    /// @inheritdoc IBorrowManager
     function positionOf(address borrower, bytes32 asset) external view returns (Position memory) {
         return _positions[borrower][asset];
     }
 
-    /// @inheritdoc IUserBorrowManager
+    /// @inheritdoc IBorrowManager
     function debtOf(address borrower, bytes32 asset) external view returns (uint256) {
         Position memory p = _positions[borrower][asset];
         if (p.principal == 0) return 0;
@@ -501,7 +509,7 @@ contract UserBorrowManager is IUserBorrowManager, ReentrancyGuard {
         return LendingMath.scaledToActual(p.principal, idx);
     }
 
-    /// @inheritdoc IUserBorrowManager
+    /// @inheritdoc IBorrowManager
     function healthFactor(address borrower, bytes32 asset, uint256 oraclePrice) external view returns (uint256) {
         Position memory p = _positions[borrower][asset];
         if (p.principal == 0) return type(uint256).max;
@@ -516,7 +524,7 @@ contract UserBorrowManager is IUserBorrowManager, ReentrancyGuard {
     //  Admin
     // ──────────────────────────────────────────────────────────
 
-    /// @inheritdoc IUserBorrowManager
+    /// @inheritdoc IBorrowManager
     function setRateParams(
         InterestRateModel.Params calldata params
     ) external onlyAdmin {
@@ -524,7 +532,7 @@ contract UserBorrowManager is IUserBorrowManager, ReentrancyGuard {
         emit RateParamsUpdated(params);
     }
 
-    /// @inheritdoc IUserBorrowManager
+    /// @inheritdoc IBorrowManager
     function setLiquidationConfig(uint256 liquidationThresholdBps_, uint256 liquidationBonusBps_) external onlyAdmin {
         if (
             liquidationThresholdBps_ == 0 || liquidationThresholdBps_ > BPS || liquidationThresholdBps_ <= borrowLtvBps
@@ -561,7 +569,7 @@ contract UserBorrowManager is IUserBorrowManager, ReentrancyGuard {
         liquidationCloseFactorBps = closeFactorBps;
     }
 
-    /// @inheritdoc IUserBorrowManager
+    /// @inheritdoc IBorrowManager
     function setTargetLtvBps(
         uint256 ltvBps
     ) external onlyAdmin {
@@ -574,7 +582,7 @@ contract UserBorrowManager is IUserBorrowManager, ReentrancyGuard {
     //  Debt / cap / utilization / rate
     // ──────────────────────────────────────────────────────────
 
-    /// @inheritdoc IUserBorrowManager
+    /// @inheritdoc IBorrowManager
     /// @dev `totalScaledDebt × index` is the protocol's outstanding stablecoin
     ///      debt; lift it to 18-decimal USD. O(1) — one global index, no
     ///      per-asset iteration. Reads the *stored* index (not projected):
@@ -587,12 +595,12 @@ contract UserBorrowManager is IUserBorrowManager, ReentrancyGuard {
         return LendingMath.stableToUSD(totalStable, _stableDecimals);
     }
 
-    /// @inheritdoc IUserBorrowManager
+    /// @inheritdoc IBorrowManager
     function maxDebtUSD() public view returns (uint256) {
         return IVaultManager(registry.vaultManager()).collateralMark(vault).mulDiv(targetLtvBps, BPS);
     }
 
-    /// @inheritdoc IUserBorrowManager
+    /// @inheritdoc IBorrowManager
     function utilizationBps() public view returns (uint256) {
         uint256 cap = maxDebtUSD();
         if (cap == 0) return 0;
@@ -600,8 +608,8 @@ contract UserBorrowManager is IUserBorrowManager, ReentrancyGuard {
         return util > BPS ? BPS : util;
     }
 
-    /// @inheritdoc IUserBorrowManager
-    function liveAaveRateBps() public view returns (uint256) {
+    /// @inheritdoc IBorrowManager
+    function baseRateBps() public view returns (uint256) {
         IAaveV3Pool.ReserveDataLegacy memory data = IAaveV3Pool(aavePool).getReserveData(stablecoin);
         return uint256(data.currentVariableBorrowRate).mulDiv(BPS, RAY);
     }
@@ -658,11 +666,11 @@ contract UserBorrowManager is IUserBorrowManager, ReentrancyGuard {
         return _aaveRateWithFloor() + InterestRateModel.premium(utilizationBps(), _rateParams);
     }
 
-    /// @dev The Aave-side rate component: `max(liveAaveRateBps, minAaveBorrowRateBps)`.
+    /// @dev The Aave-side rate component: `max(baseRateBps, minAaveBorrowRateBps)`.
     ///      The live read protects LPs even if the admin never sets a floor; the
     ///      floor lets the admin charge more for safety.
     function _aaveRateWithFloor() internal view returns (uint256) {
-        uint256 live = liveAaveRateBps();
+        uint256 live = baseRateBps();
         uint256 floor = minAaveBorrowRateBps;
         return live > floor ? live : floor;
     }

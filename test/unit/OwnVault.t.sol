@@ -553,7 +553,7 @@ contract OwnVaultTest is BaseTest {
     }
 
     // ──────────────────────────────────────────────────────────
-    //  enableLending (Aave credit delegation)
+    //  Lending opt-in (setBorrowManager + grantCreditDelegation)
     // ──────────────────────────────────────────────────────────
 
     /// @dev Mock variable debt token recording the last approveDelegation call.
@@ -562,60 +562,79 @@ contract OwnVaultTest is BaseTest {
         return address(new MockDebtTokenForVault());
     }
 
-    function test_enableLending_setsManagerAndApprovesDelegation() public {
+    function test_setBorrowManager_setsManager() public {
         address userBM = makeAddr("userBM");
-        address debt = _deployDebtTokenMock();
-
         assertEq(vault.borrowManager(), address(0));
 
         vm.prank(Actors.ADMIN);
-        vault.enableLending(userBM, debt);
+        vault.setBorrowManager(userBM);
 
         assertEq(vault.borrowManager(), userBM);
-        assertEq(MockDebtTokenForVault(debt).borrowAllowance(address(vault), userBM), type(uint256).max);
     }
 
-    function test_enableLending_emitsEvent() public {
+    function test_setBorrowManager_emitsEvent() public {
         address userBM = makeAddr("userBM");
-        address debt = _deployDebtTokenMock();
-
         vm.prank(Actors.ADMIN);
-        vm.expectEmit(true, true, false, false);
-        emit IOwnVault.LendingEnabled(userBM, debt);
-        vault.enableLending(userBM, debt);
+        vm.expectEmit(true, false, false, false);
+        emit IOwnVault.LendingEnabled(userBM);
+        vault.setBorrowManager(userBM);
     }
 
-    function test_enableLending_zeroUserManager_reverts() public {
-        address debt = _deployDebtTokenMock();
+    function test_setBorrowManager_zeroManager_reverts() public {
         vm.prank(Actors.ADMIN);
         vm.expectRevert(IOwnVault.ZeroAddress.selector);
-        vault.enableLending(address(0), debt);
+        vault.setBorrowManager(address(0));
     }
 
-    function test_enableLending_zeroDebtToken_reverts() public {
-        vm.prank(Actors.ADMIN);
-        vm.expectRevert(IOwnVault.ZeroAddress.selector);
-        vault.enableLending(makeAddr("userBM"), address(0));
-    }
-
-    function test_enableLending_onlyAdmin() public {
-        address debt = _deployDebtTokenMock();
-        address userBM = makeAddr("userBM");
+    function test_setBorrowManager_onlyAdmin() public {
         vm.prank(Actors.ATTACKER);
         vm.expectRevert(IOwnVault.OnlyAdmin.selector);
-        vault.enableLending(userBM, debt);
+        vault.setBorrowManager(makeAddr("userBM"));
     }
 
-    function test_enableLending_alreadyEnabled_reverts() public {
+    function test_setBorrowManager_alreadyEnabled_reverts() public {
+        vm.startPrank(Actors.ADMIN);
+        vault.setBorrowManager(makeAddr("userBM"));
+        vm.expectRevert(IOwnVault.LendingAlreadyEnabled.selector);
+        vault.setBorrowManager(makeAddr("u2"));
+        vm.stopPrank();
+    }
+
+    function test_grantCreditDelegation_delegatesToBoundManager() public {
         address userBM = makeAddr("userBM");
         address debt = _deployDebtTokenMock();
 
         vm.startPrank(Actors.ADMIN);
-        vault.enableLending(userBM, debt);
-
-        vm.expectRevert(IOwnVault.LendingAlreadyEnabled.selector);
-        vault.enableLending(makeAddr("u2"), debt);
+        vault.setBorrowManager(userBM);
+        vault.grantCreditDelegation(debt);
         vm.stopPrank();
+
+        // Beneficiary is the bound manager — never an admin-chosen address.
+        assertEq(MockDebtTokenForVault(debt).borrowAllowance(address(vault), userBM), type(uint256).max);
+    }
+
+    function test_grantCreditDelegation_requiresManager_reverts() public {
+        address debt = _deployDebtTokenMock();
+        vm.prank(Actors.ADMIN);
+        vm.expectRevert(IOwnVault.LendingNotEnabled.selector);
+        vault.grantCreditDelegation(debt);
+    }
+
+    function test_grantCreditDelegation_zeroToken_reverts() public {
+        vm.startPrank(Actors.ADMIN);
+        vault.setBorrowManager(makeAddr("userBM"));
+        vm.expectRevert(IOwnVault.ZeroAddress.selector);
+        vault.grantCreditDelegation(address(0));
+        vm.stopPrank();
+    }
+
+    function test_grantCreditDelegation_onlyAdmin() public {
+        address debt = _deployDebtTokenMock();
+        vm.prank(Actors.ADMIN);
+        vault.setBorrowManager(makeAddr("userBM"));
+        vm.prank(Actors.ATTACKER);
+        vm.expectRevert(IOwnVault.OnlyAdmin.selector);
+        vault.grantCreditDelegation(debt);
     }
 
     // ──────────────────────────────────────────────────────────

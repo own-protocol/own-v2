@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
+import {BorrowManager} from "../../src/core/BorrowManager.sol";
 import {OwnVault} from "../../src/core/OwnVault.sol";
 import {ProtocolRegistry} from "../../src/core/ProtocolRegistry.sol";
-import {UserBorrowManager} from "../../src/core/UserBorrowManager.sol";
 import {IAaveRouter} from "../../src/interfaces/IAaveRouter.sol";
 import {IAaveV3Pool} from "../../src/interfaces/external/IAaveV3Pool.sol";
 import {InterestRateModel} from "../../src/libraries/InterestRateModel.sol";
@@ -17,7 +17,7 @@ import {Test} from "forge-std/Test.sol";
 /// @notice Skipped if `BASE_RPC` is not set. Otherwise:
 ///         - Verifies the AaveRouter deposit/withdraw round-trip against the
 ///           real Aave V3 Pool, real wstETH, and real awstETH.
-///         - Verifies UserBorrowManager's live rate read returns a sensible
+///         - Verifies BorrowManager's live rate read returns a sensible
 ///           non-zero rate from Aave's USDC reserve.
 contract AaveBaseForkTest is Test {
     // Base mainnet addresses (canonical, verified against Aave V3 deployments).
@@ -35,7 +35,7 @@ contract AaveBaseForkTest is Test {
     ProtocolRegistry public registry;
     AaveRouter public router;
     OwnVault public vault;
-    UserBorrowManager public borrowManager;
+    BorrowManager public borrowManager;
 
     bool internal _forkActive;
 
@@ -132,7 +132,7 @@ contract AaveBaseForkTest is Test {
     function test_fork_borrowManager_readsLiveAaveRate() public requiresFork {
         // Wire a borrow manager on the existing fork vault.
         vm.startPrank(admin);
-        borrowManager = new UserBorrowManager(
+        borrowManager = new BorrowManager(
             address(vault),
             USDC_BASE,
             usdcVariableDebt,
@@ -143,7 +143,7 @@ contract AaveBaseForkTest is Test {
         );
         vm.stopPrank();
 
-        uint256 liveBps = borrowManager.liveAaveRateBps();
+        uint256 liveBps = borrowManager.baseRateBps();
         // Sanity: USDC borrow rate on a productive Aave market should be in
         // a normal range (above 0%, below 50%).
         assertGt(liveBps, 0, "non-zero live rate");

@@ -30,8 +30,8 @@ interface IOwnVault is IERC4626 {
 
     event ManagerUpdated(address indexed oldManager, address indexed newManager);
     event DepositApprovalUpdated(bool required);
-    event LendingEnabled(address indexed userBorrowManager, address indexed debtToken);
-    event AaveCollateralEnabled(address indexed pool, address indexed underlying);
+    event LendingEnabled(address indexed borrowManager);
+    event CreditDelegationGranted(address indexed creditToken, address indexed borrowManager);
     event CollateralReleasedForBadDebt(address indexed to, uint256 amount);
 
     // ──────────────────────────────────────────────────────────
@@ -64,7 +64,9 @@ interface IOwnVault is IERC4626 {
     error DepositApprovalNotRequired();
     error DepositApprovalRequired();
     error LendingAlreadyEnabled();
+    error LendingNotEnabled();
     error OnlyBorrowManager();
+    error TreasuryNotSet();
 
     // ──────────────────────────────────────────────────────────
     //  Manager binding
@@ -202,14 +204,18 @@ interface IOwnVault is IERC4626 {
     /// @param amount Amount of collateral to release.
     function releaseCollateral(address to, uint256 amount) external;
 
-    /// @notice Release collateral (aToken) to cover bad debt the borrow manager
-    ///         could not recover from a liquidated position. Only callable by the
-    ///         bound borrow manager, which must have already repaid the matching
-    ///         Aave debt so the slice is unlocked. Shrinks totalAssets, so the
-    ///         loss is socialized to LPs via a lower share price.
-    /// @param to     Recipient (the caller that fronted the residual repayment).
-    /// @param amount aToken amount to release.
-    function releaseCollateralForBadDebt(address to, uint256 amount) external;
+    /// @notice Release collateral (aToken) to cover bad debt the borrow manager could not recover
+    ///         from a liquidated position. Only callable by the bound borrow manager, which must
+    ///         have already repaid the matching Aave debt so the slice is unlocked. Shrinks
+    ///         totalAssets, so the loss is socialized to LPs via a lower share price.
+    /// @dev    The recipient is fixed to the protocol treasury (`ProtocolRegistry.treasury()`) — not
+    ///         a caller-supplied address — so a malicious borrow manager can never exfiltrate
+    ///         collateral to an external wallet; it can only move it into protocol-controlled hands.
+    ///         Reverts (`TreasuryNotSet`) if the treasury is unconfigured.
+    /// @param amount aToken amount to release to the treasury.
+    function releaseCollateralForBadDebt(
+        uint256 amount
+    ) external;
 
     // ──────────────────────────────────────────────────────────
     //  Deposit approval
@@ -233,28 +239,28 @@ interface IOwnVault is IERC4626 {
     function pendingWithdrawalShares() external view returns (uint256);
 
     // ──────────────────────────────────────────────────────────
-    //  Lending opt-in
+    //  Lending opt-in (provider-neutral)
     // ──────────────────────────────────────────────────────────
 
-    /// @notice Authorise the user-borrowing manager for this vault and approve
-    ///         unlimited credit delegation on the matching Aave variable debt
-    ///         token. The delegation is what lets the manager call
-    ///         `IAaveV3Pool.borrow(..., onBehalfOf=vault)`. One-shot per vault:
-    ///         reverts if lending is already enabled.
-    /// @dev    Aave's LTV / collateral checks still bound the actual borrowable
-    ///         amount regardless of the unlimited delegation.
-    /// @param userBorrowManager Borrow manager for users borrowing against eTokens.
-    /// @param debtToken         Aave variable debt token (must implement IAaveDebtToken).
-    function enableLending(address userBorrowManager, address debtToken) external;
+    /// @notice Authorise the vault's borrow manager — the address allowed to call
+    ///         `releaseCollateralForBadDebt`. One-shot per vault: reverts if lending is already
+    ///         enabled. Provider-neutral: venue-specific authorization (credit delegation / on-behalf
+    ///         authorization) is granted separately via the scoped helpers below.
+    /// @param manager_ Borrow manager (implements IBorrowManager) bound to this vault.
+    function setBorrowManager(
+        address manager_
+    ) external;
 
-    /// @notice Mark `underlying` as Aave collateral for this vault. Required
-    ///         once the vault holds aTokens for the reserve so its Aave
-    ///         account-data reflects the collateral and the borrow manager
-    ///         can borrow against it. Idempotent at the Aave level.
-    /// @param pool       Aave V3 Pool.
-    /// @param underlying Reserve underlying (e.g. wstETH).
-    function enableAaveCollateral(address pool, address underlying) external;
+    /// @notice Grant the bound borrow manager unlimited borrow credit delegation on `creditToken`
+    ///         (the Aave-style `approveDelegation` pattern). Admin-only; requires lending enabled.
+    /// @dev    Safe by construction: the delegated party is always the bound borrow manager (never an
+    ///         admin-chosen address), and a delegation grant moves no vault assets — even a malicious
+    ///         `creditToken` cannot use it to pull the vault's collateral.
+    /// @param creditToken The debt/credit token to delegate on (e.g. an Aave variable debt token).
+    function grantCreditDelegation(
+        address creditToken
+    ) external;
 
-    /// @notice Address of the user-borrowing manager (zero if lending not enabled).
+    /// @notice Address of the borrow manager (zero if lending not enabled).
     function borrowManager() external view returns (address);
 }

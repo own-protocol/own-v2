@@ -4,8 +4,7 @@ pragma solidity 0.8.28;
 import {IOwnVault} from "../interfaces/IOwnVault.sol";
 import {IProtocolRegistry} from "../interfaces/IProtocolRegistry.sol";
 import {IVaultManager} from "../interfaces/IVaultManager.sol";
-import {IAaveDebtToken} from "../interfaces/external/IAaveDebtToken.sol";
-import {IAaveV3Pool} from "../interfaces/external/IAaveV3Pool.sol";
+import {ICreditDelegation} from "../interfaces/external/ILendingVenue.sol";
 import {
     DepositRequest,
     DepositStatus,
@@ -500,29 +499,29 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     }
 
     // ──────────────────────────────────────────────────────────
-    //  Lending opt-in
+    //  Lending opt-in (provider-neutral)
     // ──────────────────────────────────────────────────────────
 
     /// @inheritdoc IOwnVault
-    function enableLending(address userBorrowManager, address debtToken) external onlyAdmin {
-        if (userBorrowManager == address(0) || debtToken == address(0)) {
-            revert ZeroAddress();
-        }
+    function setBorrowManager(
+        address manager_
+    ) external onlyAdmin {
+        if (manager_ == address(0)) revert ZeroAddress();
         if (_borrowManager != address(0)) revert LendingAlreadyEnabled();
-
-        _borrowManager = userBorrowManager;
-
-        // Per-spender delegation — the manager can call pool.borrow(... onBehalfOf=vault).
-        IAaveDebtToken(debtToken).approveDelegation(userBorrowManager, type(uint256).max);
-
-        emit LendingEnabled(userBorrowManager, debtToken);
+        _borrowManager = manager_;
+        emit LendingEnabled(manager_);
     }
 
     /// @inheritdoc IOwnVault
-    function enableAaveCollateral(address pool, address underlying) external onlyAdmin {
-        if (pool == address(0) || underlying == address(0)) revert ZeroAddress();
-        IAaveV3Pool(pool).setUserUseReserveAsCollateral(underlying, true);
-        emit AaveCollateralEnabled(pool, underlying);
+    function grantCreditDelegation(
+        address creditToken
+    ) external onlyAdmin {
+        if (_borrowManager == address(0)) revert LendingNotEnabled();
+        if (creditToken == address(0)) revert ZeroAddress();
+        // Beneficiary is ALWAYS the bound borrow manager — never an admin-chosen address — and this
+        // grants borrow delegation only; it cannot move the vault's collateral.
+        ICreditDelegation(creditToken).approveDelegation(_borrowManager, type(uint256).max);
+        emit CreditDelegationGranted(creditToken, _borrowManager);
     }
 
     /// @inheritdoc IOwnVault
@@ -542,13 +541,18 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     }
 
     /// @inheritdoc IOwnVault
-    function releaseCollateralForBadDebt(address to, uint256 amount) external onlyBorrowManager nonReentrant {
-        if (to == address(0)) revert ZeroAddress();
+    function releaseCollateralForBadDebt(
+        uint256 amount
+    ) external onlyBorrowManager nonReentrant {
         if (amount == 0) revert ZeroAmount();
-        // The borrow manager has already repaid the corresponding Aave debt, so
-        // this aToken slice is unlocked. Releasing it shrinks totalAssets, which
-        // socializes the bad-debt loss to LPs via a lower share price. The global
-        // collateral mark catches up on the next keeper price pull for this vault.
+        // Destination is the protocol treasury (from the registry) — NOT a caller-supplied address.
+        // This bounds the blast radius if the borrow manager is ever malicious: collateral can only
+        // ever be moved into protocol-controlled hands, never to an external wallet.
+        address to = registry.treasury();
+        if (to == address(0)) revert TreasuryNotSet();
+        // The borrow manager has already repaid the corresponding Aave debt, so this aToken slice is
+        // unlocked. Releasing it shrinks totalAssets, which socializes the bad-debt loss to LPs via a
+        // lower share price. The global collateral mark catches up on the next keeper price pull.
         IERC20(asset()).safeTransfer(to, amount);
         emit CollateralReleasedForBadDebt(to, amount);
     }

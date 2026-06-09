@@ -4,9 +4,9 @@ pragma solidity 0.8.28;
 import {InterestRateModel} from "../libraries/InterestRateModel.sol";
 
 /// @title IBorrowManagerFactory — Deploys and tracks per-vault borrow managers
-/// @notice One UserBorrowManager per vault (1:1 binding) for users borrowing
+/// @notice One BorrowManager per vault (1:1 binding) for users borrowing
 ///         against eTokens. Deployed in a single admin-gated call that lines up
-///         with the vault wiring (`enableLending`).
+///         with the vault wiring (`setBorrowManager`).
 interface IBorrowManagerFactory {
     /// @notice Emitted when a new borrow manager is deployed.
     event BorrowManagerCreated(address indexed vault, address indexed userBorrowManager);
@@ -16,13 +16,13 @@ interface IBorrowManagerFactory {
     error VaultAlreadyHasBorrowManager(address vault);
     error UnknownVault(address vault);
 
-    /// @notice Deploy a UserBorrowManager for `vault`. One-shot per vault.
+    /// @notice Deploy a BorrowManager for `vault`. One-shot per vault.
     /// @param vault            OwnVault to bind the manager to.
     /// @param stablecoin       Stablecoin asset that will be borrowed (e.g. USDC).
-    /// @param debtToken        Aave variable debt token paired with `stablecoin`.
+    /// @param debtToken        Aave variable debt token paired with `stablecoin` (used for the vault's credit delegation).
     /// @param targetLtvBps     Vault-wide target Aave LTV (BPS) backing the debt cap.
     /// @param rateParams       Initial interest-rate curve params.
-    /// @return userBorrowManager Address of the deployed UserBorrowManager.
+    /// @return userBorrowManager Address of the deployed BorrowManager.
     function createBorrowManager(
         address vault,
         address stablecoin,

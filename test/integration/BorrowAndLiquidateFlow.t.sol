@@ -2,11 +2,12 @@
 pragma solidity 0.8.28;
 
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
+
+import {BorrowManager} from "../../src/core/BorrowManager.sol";
 import {BorrowManagerFactory} from "../../src/core/BorrowManagerFactory.sol";
 import {OwnVault} from "../../src/core/OwnVault.sol";
-import {UserBorrowManager} from "../../src/core/UserBorrowManager.sol";
 import {VaultFactory} from "../../src/core/VaultFactory.sol";
-import {IUserBorrowManager} from "../../src/interfaces/IUserBorrowManager.sol";
+import {IBorrowManager} from "../../src/interfaces/IBorrowManager.sol";
 import {AssetConfig, BPS, PRECISION} from "../../src/interfaces/types/Types.sol";
 import {InterestRateModel} from "../../src/libraries/InterestRateModel.sol";
 import {EToken} from "../../src/tokens/EToken.sol";
@@ -30,7 +31,7 @@ contract BorrowAndLiquidateFlowTest is BaseTest {
     VaultFactory public vaultFactory;
     BorrowManagerFactory public bmFactory;
     OwnVault public vault;
-    UserBorrowManager public borrowManager;
+    BorrowManager public borrowManager;
 
     bytes32 constant ASSET = bytes32("TSLA");
     uint256 constant TSLA_PX = 250e18;
@@ -89,7 +90,7 @@ contract BorrowAndLiquidateFlowTest is BaseTest {
 
         address userBM =
             bmFactory.createBorrowManager(address(vault), address(usdc), address(usdcDebt), 3500, _params());
-        borrowManager = UserBorrowManager(userBM);
+        borrowManager = BorrowManager(userBM);
         vm.stopPrank();
 
         // Seed the vault with awstETH so the manager's debt cap is non-zero.
@@ -114,8 +115,7 @@ contract BorrowAndLiquidateFlowTest is BaseTest {
         // Payment token is now a global VaultManager setting.
         _setPaymentToken(address(usdc));
 
-        vm.prank(Actors.ADMIN);
-        vault.enableLending(address(borrowManager), address(usdcDebt));
+        _enableAaveLending(address(vault), address(borrowManager), address(usdcDebt));
         vm.prank(Actors.ADMIN);
         eTSLA.setPassThroughHolder(address(borrowManager), true);
 
@@ -182,7 +182,7 @@ contract BorrowAndLiquidateFlowTest is BaseTest {
         vm.stopPrank();
 
         // Position closed.
-        IUserBorrowManager.Position memory pos = borrowManager.positionOf(Actors.MINTER1, ASSET);
+        IBorrowManager.Position memory pos = borrowManager.positionOf(Actors.MINTER1, ASSET);
         assertEq(pos.principal, 0);
 
         // Aave debt cleared on the vault.

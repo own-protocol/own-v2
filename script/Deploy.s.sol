@@ -171,6 +171,8 @@ contract Deploy is Script {
         registry.setAddress(registry.VAULT_FACTORY(), d.factory);
         registry.setAddress(registry.MARKET(), d.market);
         registry.setAddress(registry.VAULT_MANAGER(), d.vaultManager);
+        // Protocol treasury — bad-debt collateral sink. Defaults to the deployer/admin if unset.
+        registry.setAddress(registry.TREASURY(), vm.envOr("TREASURY_ADDRESS", deployer));
         registry.setAddress(registry.PYTH_ORACLE(), d.pythOracle);
         registry.setAddress(registry.ETOKEN_FACTORY(), d.etokenFactory);
 

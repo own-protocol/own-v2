@@ -79,6 +79,9 @@ interface IProtocolRegistry {
     /// @notice Returns the VaultManager contract address.
     function vaultManager() external view returns (address);
 
+    /// @notice Returns the protocol treasury address (bad-debt collateral sink, fee recipient).
+    function treasury() external view returns (address);
+
     /// @notice Returns the timelock delay duration in seconds.
     function timelockDelay() external view returns (uint256);
 

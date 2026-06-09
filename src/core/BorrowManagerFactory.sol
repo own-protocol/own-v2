@@ -6,11 +6,11 @@ import {IProtocolRegistry} from "../interfaces/IProtocolRegistry.sol";
 import {IVaultFactory} from "../interfaces/IVaultFactory.sol";
 import {InterestRateModel} from "../libraries/InterestRateModel.sol";
 
-import {UserBorrowManager} from "./UserBorrowManager.sol";
+import {BorrowManager} from "./BorrowManager.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
 /// @title BorrowManagerFactory — Deploys and tracks per-vault borrow managers
-/// @notice Admin-gated. Per vault, deploys a single `UserBorrowManager`.
+/// @notice Admin-gated. Per vault, deploys a single `BorrowManager`.
 ///         1:1 binding per vault. Reverts if the vault is unknown to the
 ///         VaultFactory or already has a manager.
 contract BorrowManagerFactory is IBorrowManagerFactory {
@@ -49,7 +49,7 @@ contract BorrowManagerFactory is IBorrowManagerFactory {
         if (vf != address(0) && !IVaultFactory(vf).isRegisteredVault(vault)) revert UnknownVault(vault);
 
         userBorrowManager =
-            address(new UserBorrowManager(vault, stablecoin, debtToken, aavePool, registry, targetLtvBps, rateParams));
+            address(new BorrowManager(vault, stablecoin, debtToken, aavePool, registry, targetLtvBps, rateParams));
 
         _borrowManagerOf[vault] = userBorrowManager;
         _vaultOf[userBorrowManager] = vault;

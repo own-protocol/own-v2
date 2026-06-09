@@ -2,12 +2,13 @@
 pragma solidity 0.8.28;
 
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
-import {OwnVault} from "../../src/core/OwnVault.sol";
-import {UserBorrowManager} from "../../src/core/UserBorrowManager.sol";
 
+import {BorrowManager} from "../../src/core/BorrowManager.sol";
+import {OwnVault} from "../../src/core/OwnVault.sol";
+
+import {IBorrowManager} from "../../src/interfaces/IBorrowManager.sol";
 import {IEToken} from "../../src/interfaces/IEToken.sol";
 import {IOwnVault} from "../../src/interfaces/IOwnVault.sol";
-import {IUserBorrowManager} from "../../src/interfaces/IUserBorrowManager.sol";
 import {AssetConfig, BPS, PRECISION} from "../../src/interfaces/types/Types.sol";
 import {InterestRateModel} from "../../src/libraries/InterestRateModel.sol";
 import {EToken} from "../../src/tokens/EToken.sol";
@@ -18,17 +19,17 @@ import {MockAToken, MockAaveDebtToken, MockAaveV3Pool} from "../helpers/MockAave
 import {MockERC20} from "../helpers/MockERC20.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
-/// @title UserBorrowManager Unit Tests
+/// @title BorrowManager Unit Tests
 /// @notice Covers borrow / repay / liquidate flows, eligibility gating,
 ///         interest accrual, and admin guards.
-contract UserBorrowManagerTest is BaseTest {
+contract BorrowManagerTest is BaseTest {
     AssetRegistry public assetRegistry;
     EToken public eTSLA;
     MockAaveV3Pool public aavePool;
     MockAToken public awstETH;
     MockAaveDebtToken public usdcDebt;
     OwnVault public vault;
-    UserBorrowManager public borrowManager;
+    BorrowManager public borrowManager;
 
     uint256 constant TARGET_LTV_BPS = 3500;
 
@@ -90,13 +91,13 @@ contract UserBorrowManagerTest is BaseTest {
         _setPaymentToken(address(usdc));
         vaultManager.registerVault(address(vault), bytes32("WSTETH"));
 
-        // 5) UserBorrowManager. Wire credit delegation + Aave reserve liquidity.
+        // 5) BorrowManager. Wire credit delegation + Aave reserve liquidity.
         // Seed the vault with collateral value so the manager's `maxDebtUSD` is
         // non-zero — otherwise every borrow trips the cap. Real flows would have
         // LPs deposit awstETH; here we mint awstETH to the vault and refresh.
         _seedVaultCollateral(1_000_000e18); // $1M USD-denominated collateral.
 
-        borrowManager = new UserBorrowManager(
+        borrowManager = new BorrowManager(
             address(vault),
             address(usdc),
             address(usdcDebt),
@@ -105,11 +106,10 @@ contract UserBorrowManagerTest is BaseTest {
             TARGET_LTV_BPS,
             _params()
         );
-        vm.label(address(borrowManager), "UserBorrowManager");
+        vm.label(address(borrowManager), "BorrowManager");
 
-        // enableLending: vault delegates borrow allowance to the manager via the debt token.
-        vm.prank(Actors.ADMIN);
-        vault.enableLending(address(borrowManager), address(usdcDebt));
+        // Wire lending: authorise the manager + grant Aave credit delegation.
+        _enableAaveLending(address(vault), address(borrowManager), address(usdcDebt));
 
         // Register the manager as a pass-through holder on eTSLA so dividends route.
         vm.prank(Actors.ADMIN);
@@ -120,6 +120,9 @@ contract UserBorrowManagerTest is BaseTest {
 
         // Default oracle price.
         _setOraclePrice(ASSET, TSLA_PX);
+
+        // Bad-debt collateral is released to the protocol treasury.
+        _setTreasury(Actors.FEE_RECIPIENT);
     }
 
     // ──────────────────────────────────────────────────────────
@@ -195,8 +198,8 @@ contract UserBorrowManagerTest is BaseTest {
 
     function test_constructor_zeroAddresses_revert() public {
         InterestRateModel.Params memory p = _params();
-        vm.expectRevert(IUserBorrowManager.ZeroAddress.selector);
-        new UserBorrowManager(
+        vm.expectRevert(IBorrowManager.ZeroAddress.selector);
+        new BorrowManager(
             address(0),
             address(usdc),
             address(usdcDebt),
@@ -205,8 +208,8 @@ contract UserBorrowManagerTest is BaseTest {
             TARGET_LTV_BPS,
             p
         );
-        vm.expectRevert(IUserBorrowManager.ZeroAddress.selector);
-        new UserBorrowManager(
+        vm.expectRevert(IBorrowManager.ZeroAddress.selector);
+        new BorrowManager(
             address(vault),
             address(0),
             address(usdcDebt),
@@ -219,12 +222,12 @@ contract UserBorrowManagerTest is BaseTest {
 
     function test_constructor_invalidLtv_revert() public {
         InterestRateModel.Params memory p = _params();
-        vm.expectRevert(IUserBorrowManager.InvalidLtv.selector);
-        new UserBorrowManager(
+        vm.expectRevert(IBorrowManager.InvalidLtv.selector);
+        new BorrowManager(
             address(vault), address(usdc), address(usdcDebt), address(aavePool), address(protocolRegistry), 0, p
         );
-        vm.expectRevert(IUserBorrowManager.InvalidLtv.selector);
-        new UserBorrowManager(
+        vm.expectRevert(IBorrowManager.InvalidLtv.selector);
+        new BorrowManager(
             address(vault), address(usdc), address(usdcDebt), address(aavePool), address(protocolRegistry), BPS, p
         );
     }
@@ -236,7 +239,7 @@ contract UserBorrowManagerTest is BaseTest {
     function test_borrow_succeeds_recordsPositionAndPaysOut() public {
         (uint256 eAmt, uint256 stable) = _openTypical(Actors.MINTER1);
 
-        IUserBorrowManager.Position memory pos = borrowManager.positionOf(Actors.MINTER1, ASSET);
+        IBorrowManager.Position memory pos = borrowManager.positionOf(Actors.MINTER1, ASSET);
         assertEq(pos.eTokenCollateral, eAmt);
         // principal stored as scaled debt; at index = PRECISION it equals stable amount.
         assertEq(pos.principal, stable);
@@ -260,7 +263,7 @@ contract UserBorrowManagerTest is BaseTest {
         vm.startPrank(Actors.MINTER1);
         eTSLA.approve(address(borrowManager), eAmt);
         vm.expectEmit(true, true, false, true);
-        emit IUserBorrowManager.Borrowed(Actors.MINTER1, ASSET, eAmt, stable, TSLA_PX);
+        emit IBorrowManager.Borrowed(Actors.MINTER1, ASSET, eAmt, stable, TSLA_PX);
         borrowManager.borrow(ASSET, eAmt, stable, _priceData(TSLA_PX));
         vm.stopPrank();
     }
@@ -270,9 +273,9 @@ contract UserBorrowManagerTest is BaseTest {
     // ──────────────────────────────────────────────────────────
 
     function test_borrow_zeroAmounts_revert() public {
-        vm.expectRevert(IUserBorrowManager.ZeroAmount.selector);
+        vm.expectRevert(IBorrowManager.ZeroAmount.selector);
         borrowManager.borrow(ASSET, 0, 100, _priceData(TSLA_PX));
-        vm.expectRevert(IUserBorrowManager.ZeroAmount.selector);
+        vm.expectRevert(IBorrowManager.ZeroAmount.selector);
         borrowManager.borrow(ASSET, 100, 0, _priceData(TSLA_PX));
     }
 
@@ -283,7 +286,7 @@ contract UserBorrowManagerTest is BaseTest {
         _giveTSLA(Actors.MINTER1, 50e18);
         vm.startPrank(Actors.MINTER1);
         eTSLA.approve(address(borrowManager), 50e18);
-        vm.expectRevert(abi.encodeWithSelector(IUserBorrowManager.PositionAlreadyOpen.selector, Actors.MINTER1, ASSET));
+        vm.expectRevert(abi.encodeWithSelector(IBorrowManager.PositionAlreadyOpen.selector, Actors.MINTER1, ASSET));
         borrowManager.borrow(ASSET, 50e18, 1000e6, _priceData(TSLA_PX));
         vm.stopPrank();
     }
@@ -312,7 +315,7 @@ contract UserBorrowManagerTest is BaseTest {
         eGold.mint(Actors.MINTER1, 1e18);
         vm.startPrank(Actors.MINTER1);
         eGold.approve(address(borrowManager), 1e18);
-        vm.expectRevert(abi.encodeWithSelector(IUserBorrowManager.AssetNotActive.selector, newAsset));
+        vm.expectRevert(abi.encodeWithSelector(IBorrowManager.AssetNotActive.selector, newAsset));
         borrowManager.borrow(newAsset, 1e18, 100e6, _priceData(2000e18));
         vm.stopPrank();
     }
@@ -325,7 +328,7 @@ contract UserBorrowManagerTest is BaseTest {
         _giveTSLA(Actors.MINTER1, 100e18);
         vm.startPrank(Actors.MINTER1);
         eTSLA.approve(address(borrowManager), 100e18);
-        vm.expectRevert(abi.encodeWithSelector(IUserBorrowManager.PassThroughNotEnabled.selector, address(eTSLA)));
+        vm.expectRevert(abi.encodeWithSelector(IBorrowManager.PassThroughNotEnabled.selector, address(eTSLA)));
         borrowManager.borrow(ASSET, 100e18, 1000e6, _priceData(TSLA_PX));
         vm.stopPrank();
     }
@@ -350,7 +353,7 @@ contract UserBorrowManagerTest is BaseTest {
         _giveTSLA(Actors.MINTER1, 1e18);
         vm.startPrank(Actors.MINTER1);
         eTSLA.approve(address(borrowManager), 1e18);
-        vm.expectRevert(IUserBorrowManager.VaultEffectivelyHalted.selector);
+        vm.expectRevert(IBorrowManager.VaultEffectivelyHalted.selector);
         borrowManager.borrow(ASSET, 1e18, 100e6, _priceData(TSLA_PX));
         vm.stopPrank();
     }
@@ -370,7 +373,7 @@ contract UserBorrowManagerTest is BaseTest {
         vm.stopPrank();
 
         assertEq(released, eAmt, "all collateral released");
-        IUserBorrowManager.Position memory pos = borrowManager.positionOf(Actors.MINTER1, ASSET);
+        IBorrowManager.Position memory pos = borrowManager.positionOf(Actors.MINTER1, ASSET);
         assertEq(pos.principal, 0);
         assertEq(pos.eTokenCollateral, 0);
         assertEq(eTSLA.balanceOf(Actors.MINTER1), eAmt, "borrower has eToken back");
@@ -389,14 +392,14 @@ contract UserBorrowManagerTest is BaseTest {
         vm.stopPrank();
 
         assertEq(released, eAmt / 2, "half collateral released");
-        IUserBorrowManager.Position memory pos = borrowManager.positionOf(Actors.MINTER1, ASSET);
+        IBorrowManager.Position memory pos = borrowManager.positionOf(Actors.MINTER1, ASSET);
         assertEq(pos.eTokenCollateral, eAmt - released);
         assertEq(pos.principal, stable - half);
     }
 
     function test_repay_noPosition_reverts() public {
         vm.startPrank(Actors.MINTER1);
-        vm.expectRevert(abi.encodeWithSelector(IUserBorrowManager.NoPosition.selector, Actors.MINTER1, ASSET));
+        vm.expectRevert(abi.encodeWithSelector(IBorrowManager.NoPosition.selector, Actors.MINTER1, ASSET));
         borrowManager.repay(ASSET, 1);
         vm.stopPrank();
     }
@@ -423,7 +426,7 @@ contract UserBorrowManagerTest is BaseTest {
         vm.stopPrank();
 
         // Position closed.
-        IUserBorrowManager.Position memory pos = borrowManager.positionOf(Actors.MINTER1, ASSET);
+        IBorrowManager.Position memory pos = borrowManager.positionOf(Actors.MINTER1, ASSET);
         assertEq(pos.principal, 0);
 
         // Liquidator received all 100 eTSLA; borrower gets 0 residual.
@@ -497,7 +500,7 @@ contract UserBorrowManagerTest is BaseTest {
 
         // Only $5k pulled from the liquidator; position remains open at ~$5k.
         assertEq(usdc.balanceOf(Actors.LIQUIDATOR), stable - 5000e6, "only half repaid");
-        IUserBorrowManager.Position memory pos = borrowManager.positionOf(Actors.MINTER1, ASSET);
+        IBorrowManager.Position memory pos = borrowManager.positionOf(Actors.MINTER1, ASSET);
         assertEq(pos.principal, 5000e6, "half debt remains");
 
         // Seize = $5k * 1.05 / $60 = 87.5 eTSLA; collateral shrinks to 112.5.
@@ -529,7 +532,7 @@ contract UserBorrowManagerTest is BaseTest {
         borrowManager.liquidate(Actors.MINTER1, ASSET, repay, _priceData(crashPx));
         vm.stopPrank();
 
-        IUserBorrowManager.Position memory pos = borrowManager.positionOf(Actors.MINTER1, ASSET);
+        IBorrowManager.Position memory pos = borrowManager.positionOf(Actors.MINTER1, ASSET);
         assertEq(pos.principal, stable - repay, "debt reduced by repay");
 
         uint256 expectedSeize = uint256(2000e18) * (BPS + 500) / BPS * PRECISION / crashPx;
@@ -551,7 +554,7 @@ contract UserBorrowManagerTest is BaseTest {
         usdc.mint(Actors.LIQUIDATOR, stable);
         vm.startPrank(Actors.LIQUIDATOR);
         usdc.approve(address(borrowManager), stable);
-        vm.expectRevert(abi.encodeWithSelector(IUserBorrowManager.SeizeExceedsCollateral.selector, 105e18, 100e18));
+        vm.expectRevert(abi.encodeWithSelector(IBorrowManager.SeizeExceedsCollateral.selector, 105e18, 100e18));
         borrowManager.liquidate(Actors.MINTER1, ASSET, stable, _priceData(crashPx));
         vm.stopPrank();
     }
@@ -577,7 +580,7 @@ contract UserBorrowManagerTest is BaseTest {
     function test_liveRate_readFromAave_inBps() public {
         // 5% APR in RAY = 5e25. The manager reads Aave's live rate directly.
         aavePool.setCurrentVariableBorrowRate(address(usdc), uint128(5 * 1e25));
-        assertEq(borrowManager.liveAaveRateBps(), 500);
+        assertEq(borrowManager.baseRateBps(), 500);
     }
 
     function test_floor_liftsRateWhenLiveBelow() public {
@@ -632,7 +635,7 @@ contract UserBorrowManagerTest is BaseTest {
         vm.startPrank(Actors.MINTER1);
         usdc.approve(address(borrowManager), managerDebt);
         vm.expectEmit(true, false, false, true, address(borrowManager));
-        emit IUserBorrowManager.LendingFeeAccrued(vmAddr, expectedSurplus);
+        emit IBorrowManager.LendingFeeAccrued(vmAddr, expectedSurplus);
         borrowManager.repay(ASSET, type(uint256).max);
         vm.stopPrank();
 
@@ -648,7 +651,7 @@ contract UserBorrowManagerTest is BaseTest {
         InterestRateModel.Params memory np = _params();
         np.basePremiumBps = 200;
         vm.prank(Actors.ATTACKER);
-        vm.expectRevert(IUserBorrowManager.OnlyAdmin.selector);
+        vm.expectRevert(IBorrowManager.OnlyAdmin.selector);
         borrowManager.setRateParams(np);
 
         vm.prank(Actors.ADMIN);
@@ -661,7 +664,7 @@ contract UserBorrowManagerTest is BaseTest {
         // threshold ≤ ltv → revert.
         uint256 ltv = borrowManager.borrowLtvBps();
         vm.prank(Actors.ADMIN);
-        vm.expectRevert(IUserBorrowManager.InvalidLiquidationConfig.selector);
+        vm.expectRevert(IBorrowManager.InvalidLiquidationConfig.selector);
         borrowManager.setLiquidationConfig(ltv, 500);
 
         vm.prank(Actors.ADMIN);
@@ -674,7 +677,7 @@ contract UserBorrowManagerTest is BaseTest {
         // ltv >= threshold → revert.
         uint256 threshold = borrowManager.liquidationThresholdBps();
         vm.prank(Actors.ADMIN);
-        vm.expectRevert(IUserBorrowManager.InvalidLiquidationConfig.selector);
+        vm.expectRevert(IBorrowManager.InvalidLiquidationConfig.selector);
         borrowManager.setBorrowLtvBps(threshold);
 
         vm.prank(Actors.ADMIN);
@@ -722,7 +725,8 @@ contract UserBorrowManagerTest is BaseTest {
         // Position + Aave debt cleared.
         assertEq(borrowManager.positionOf(Actors.MINTER1, ASSET).principal, 0);
         assertEq(aavePool.debtOf(address(vault), address(usdc)), 0, "aave debt cleared");
-        // Caller absorbed everything: no collateral released, LPs untouched.
+        // Caller absorbed everything: no collateral released, LPs + treasury untouched.
+        assertEq(awstETH.balanceOf(Actors.FEE_RECIPIENT), 0, "no collateral to treasury");
         assertEq(awstETH.balanceOf(Actors.ADMIN), 0, "no collateral to caller");
         assertEq(awstETH.balanceOf(address(vault)), vaultAwstBefore, "LP collateral untouched");
         assertEq(usdc.balanceOf(Actors.ADMIN), 0, "admin fronted the full residual");
@@ -739,9 +743,10 @@ contract UserBorrowManagerTest is BaseTest {
         vm.stopPrank();
 
         assertEq(aavePool.debtOf(address(vault), address(usdc)), 0, "aave debt cleared");
-        // LPs eat the whole $2k loss: caller reimbursed $2k of awstETH at $4k = 0.5e18.
+        // LPs eat the whole $2k loss: treasury receives $2k of awstETH at $4k = 0.5e18.
         uint256 expectedAwst = uint256(2000e18) * PRECISION / 4000e18;
-        assertEq(awstETH.balanceOf(Actors.ADMIN), expectedAwst, "caller reimbursed in awstETH");
+        assertEq(awstETH.balanceOf(Actors.FEE_RECIPIENT), expectedAwst, "treasury received the released collateral");
+        assertEq(awstETH.balanceOf(Actors.ADMIN), 0, "caller received no collateral");
         assertEq(awstETH.balanceOf(address(vault)), vaultAwstBefore - expectedAwst, "vault collateral shrank");
     }
 
@@ -756,23 +761,23 @@ contract UserBorrowManagerTest is BaseTest {
         vm.stopPrank();
 
         assertEq(aavePool.debtOf(address(vault), address(usdc)), 0, "aave debt cleared");
-        // LP slice $1k → 0.25e18 awstETH back; admin still fronted the full residual.
+        // LP slice $1k → 0.25e18 awstETH to the treasury; admin still fronted the full residual.
         uint256 expectedAwst = uint256(1000e18) * PRECISION / 4000e18;
-        assertEq(awstETH.balanceOf(Actors.ADMIN), expectedAwst, "caller reimbursed LP slice only");
+        assertEq(awstETH.balanceOf(Actors.FEE_RECIPIENT), expectedAwst, "treasury received the LP slice");
         assertEq(usdc.balanceOf(Actors.ADMIN), 0, "admin fronted the full residual");
     }
 
     function test_absorbBadDebt_stillCollateralized_reverts() public {
         _openTypical(Actors.MINTER1); // healthy, full collateral.
         vm.prank(Actors.ADMIN);
-        vm.expectRevert(abi.encodeWithSelector(IUserBorrowManager.PositionStillCollateralized.selector, 100e18));
+        vm.expectRevert(abi.encodeWithSelector(IBorrowManager.PositionStillCollateralized.selector, 100e18));
         borrowManager.absorbBadDebt(Actors.MINTER1, ASSET, 0, _priceData(4000e18));
     }
 
     function test_absorbBadDebt_onlyAdmin() public {
         _stripToBadDebt();
         vm.prank(Actors.ATTACKER);
-        vm.expectRevert(IUserBorrowManager.OnlyAdmin.selector);
+        vm.expectRevert(IBorrowManager.OnlyAdmin.selector);
         borrowManager.absorbBadDebt(Actors.MINTER1, ASSET, 0, _priceData(4000e18));
     }
 }

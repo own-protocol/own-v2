@@ -2,10 +2,11 @@
 pragma solidity 0.8.28;
 
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
+
+import {BorrowManager} from "../../src/core/BorrowManager.sol";
 import {BorrowManagerFactory} from "../../src/core/BorrowManagerFactory.sol";
 import {OwnMarket} from "../../src/core/OwnMarket.sol";
 import {OwnVault} from "../../src/core/OwnVault.sol";
-import {UserBorrowManager} from "../../src/core/UserBorrowManager.sol";
 import {VaultFactory} from "../../src/core/VaultFactory.sol";
 import {IOwnMarket} from "../../src/interfaces/IOwnMarket.sol";
 import {IVaultManager} from "../../src/interfaces/IVaultManager.sol";
@@ -18,7 +19,7 @@ import {MockAToken, MockAaveDebtToken, MockAaveV3Pool} from "../helpers/MockAave
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 /// @title RFQ happy-path verification — aUSDC (6-decimal) collateral, LP deposits, and lending.
-/// @notice Drives the real OwnMarket + OwnVault + UserBorrowManager (mock Aave pool) end to end:
+/// @notice Drives the real OwnMarket + OwnVault + BorrowManager (mock Aave pool) end to end:
 ///         (1) market mint, (2) market redeem, (3) limit mint+redeem with partial fills,
 ///         (4) mint → borrow → repay → redeem, LP deposit/withdraw, and the utilization cap.
 contract RFQAusdcFlowsTest is BaseTest {
@@ -30,7 +31,7 @@ contract RFQAusdcFlowsTest is BaseTest {
     MockAToken ausdcAToken;
     MockAaveDebtToken usdcDebt;
     BorrowManagerFactory bmFactory;
-    UserBorrowManager borrowManager;
+    BorrowManager borrowManager;
 
     bytes32 constant AUSDC = bytes32("AUSDC");
     uint256 constant MAX_UTIL_BPS = 8000;
@@ -97,10 +98,11 @@ contract RFQAusdcFlowsTest is BaseTest {
         // ── Lending: borrow manager over USDC debt against the vault's aUSDC credit ──
         bmFactory = new BorrowManagerFactory(address(aavePool), address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.BORROW_MANAGER_FACTORY(), address(bmFactory));
-        borrowManager = UserBorrowManager(
+        borrowManager = BorrowManager(
             bmFactory.createBorrowManager(address(vault), address(usdc), address(usdcDebt), 3500, _params())
         );
-        vault.enableLending(address(borrowManager), address(usdcDebt));
+        vault.setBorrowManager(address(borrowManager));
+        vault.grantCreditDelegation(address(usdcDebt));
         eTSLA.setPassThroughHolder(address(borrowManager), true);
         vm.stopPrank();
 

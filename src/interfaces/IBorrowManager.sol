@@ -3,19 +3,21 @@ pragma solidity 0.8.28;
 
 import {InterestRateModel} from "../libraries/InterestRateModel.sol";
 
-/// @title IUserBorrowManager — User borrowing against eTokens via vault Aave credit
-/// @notice Borrowers post eTokens as collateral, the manager borrows the
-///         vault's stablecoin (USDC) from Aave V3 via credit delegation, and
-///         hands the stablecoin to the borrower. Each (borrower, asset)
-///         carries its own position. Liquidation is signed-price gated and
-///         partial: the liquidator names a repay amount, capped by an
-///         HF-gated close factor, and the bonus-based seize must fit the
-///         position's remaining collateral.
+/// @title IBorrowManager — Provider-neutral borrow-manager interface
+/// @notice Borrowers post eTokens as collateral and borrow the protocol's stablecoin (e.g. USDC),
+///         handed to the borrower. Each (borrower, asset) carries its own position. Liquidation is
+///         signed-price gated and partial: the liquidator names a repay amount, capped by an
+///         HF-gated close factor, and the bonus-based seize must fit the position's remaining
+///         collateral.
 ///
-///         Pooled per-asset eToken custody: the manager holds one balance of
-///         each eToken across all borrowers; per-position bookkeeping tracks
-///         each borrower's share.
-interface IUserBorrowManager {
+///         Pooled per-asset eToken custody: the manager holds one balance of each eToken across all
+///         borrowers; per-position bookkeeping tracks each borrower's share.
+///
+///         This interface is venue-neutral — it says nothing about where the loaned stablecoin
+///         comes from. The current implementation (`BorrowManager`) sources it from Aave V3 via the
+///         vault's credit delegation; a future Morpho or in-house manager can implement the same
+///         interface with a different funding source.
+interface IBorrowManager {
     // ──────────────────────────────────────────────────────────
     //  Types
     // ──────────────────────────────────────────────────────────
@@ -196,12 +198,6 @@ interface IUserBorrowManager {
     /// @notice Stablecoin borrowed via this manager (e.g. USDC).
     function stablecoin() external view returns (address);
 
-    /// @notice Aave variable debt token for the stablecoin.
-    function debtToken() external view returns (address);
-
-    /// @notice Aave V3 Pool address.
-    function aavePool() external view returns (address);
-
     /// @notice Interest rate curve parameters.
     function rateParams()
         external
@@ -231,8 +227,9 @@ interface IUserBorrowManager {
     /// @notice Current utilization (BPS, capped at 10_000): `totalDebtUSD / maxDebtUSD`.
     function utilizationBps() external view returns (uint256);
 
-    /// @notice Live Aave variable borrow rate for the stablecoin (BPS).
-    function liveAaveRateBps() external view returns (uint256);
+    /// @notice The venue's base borrow rate for the stablecoin (BPS), before the protocol premium.
+    ///         For the Aave-backed `BorrowManager` this is the live Aave variable borrow rate.
+    function baseRateBps() external view returns (uint256);
 
     /// @notice Per-position view. Returns zero for unopened positions.
     function positionOf(address borrower, bytes32 asset) external view returns (Position memory);
