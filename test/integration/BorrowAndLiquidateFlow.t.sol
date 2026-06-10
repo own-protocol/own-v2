@@ -4,9 +4,7 @@ pragma solidity 0.8.28;
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 
 import {BorrowManager} from "../../src/core/BorrowManager.sol";
-import {BorrowManagerFactory} from "../../src/core/BorrowManagerFactory.sol";
 import {OwnVault} from "../../src/core/OwnVault.sol";
-import {VaultFactory} from "../../src/core/VaultFactory.sol";
 import {IBorrowManager} from "../../src/interfaces/IBorrowManager.sol";
 import {AssetConfig, BPS, PRECISION} from "../../src/interfaces/types/Types.sol";
 import {InterestRateModel} from "../../src/libraries/InterestRateModel.sol";
@@ -28,8 +26,6 @@ contract BorrowAndLiquidateFlowTest is BaseTest {
     MockAaveV3Pool public aavePool;
     MockAToken public awstETH;
     MockAaveDebtToken public usdcDebt;
-    VaultFactory public vaultFactory;
-    BorrowManagerFactory public bmFactory;
     OwnVault public vault;
     BorrowManager public borrowManager;
 
@@ -71,26 +67,22 @@ contract BorrowAndLiquidateFlowTest is BaseTest {
         vm.prank(Actors.ADMIN);
         assetRegistry.addAsset(ASSET, address(eTSLA), cfg);
 
-        // Vault & borrow manager factories.
-        vm.startPrank(Actors.ADMIN);
-        vaultFactory = new VaultFactory(Actors.ADMIN, address(protocolRegistry));
-        protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), address(vaultFactory));
-        vm.stopPrank();
-
-        // Deploy + register the VaultManager before createVault (which auto-registers the vault).
+        // Deploy + register the VaultManager before registering the vault (admin-gated).
         _deployVaultManager();
 
         vm.startPrank(Actors.ADMIN);
-        vault = OwnVault(
-            vaultFactory.createVault(address(awstETH), address(this), "Own awstETH", "owawstETH", bytes32("WSTETH"))
+        vault = new OwnVault(address(awstETH), "Own awstETH", "owawstETH", address(protocolRegistry), address(this));
+        vaultManager.registerVault(address(vault), bytes32("WSTETH"));
+
+        borrowManager = new BorrowManager(
+            address(vault),
+            address(usdc),
+            address(usdcDebt),
+            address(aavePool),
+            address(protocolRegistry),
+            3500,
+            _params()
         );
-
-        bmFactory = new BorrowManagerFactory(address(aavePool), address(protocolRegistry));
-        protocolRegistry.setAddress(protocolRegistry.BORROW_MANAGER_FACTORY(), address(bmFactory));
-
-        address userBM =
-            bmFactory.createBorrowManager(address(vault), address(usdc), address(usdcDebt), 3500, _params());
-        borrowManager = BorrowManager(userBM);
         vm.stopPrank();
 
         // Seed the vault with awstETH so the manager's debt cap is non-zero.

@@ -6,7 +6,6 @@ import {OwnMarket} from "../../src/core/OwnMarket.sol";
 import {IOwnMarket} from "../../src/interfaces/IOwnMarket.sol";
 
 import {IOwnVault} from "../../src/interfaces/IOwnVault.sol";
-import {IVaultFactory} from "../../src/interfaces/IVaultFactory.sol";
 import {IVaultManager} from "../../src/interfaces/IVaultManager.sol";
 import {AssetConfig, BPS, Order, OrderStatus, OrderType, PRECISION, Quote} from "../../src/interfaces/types/Types.sol";
 
@@ -24,7 +23,6 @@ contract OwnMarketTest is BaseTest {
     MockERC20 public eTSLAToken;
 
     address public mockVault = makeAddr("vault");
-    address public mockFactory = makeAddr("factory");
     address public mockVaultManager = makeAddr("vaultManager");
     address public haltFund = makeAddr("haltFund");
 
@@ -60,7 +58,6 @@ contract OwnMarketTest is BaseTest {
         vm.startPrank(Actors.ADMIN);
         protocolRegistry.setAddress(protocolRegistry.ASSET_REGISTRY(), address(assetReg));
 
-        protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), mockFactory);
         protocolRegistry.setAddress(protocolRegistry.VAULT_MANAGER(), mockVaultManager);
         market = new OwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
@@ -78,9 +75,11 @@ contract OwnMarketTest is BaseTest {
         vm.stopPrank();
         vm.label(address(market), "OwnMarket");
 
-        // Factory + vault mocks
+        // VaultManager registration mock: forceExecuteOrder checks isRegisteredVault on the manager.
         vm.mockCall(
-            mockFactory, abi.encodeWithSelector(IVaultFactory.isRegisteredVault.selector, mockVault), abi.encode(true)
+            mockVaultManager,
+            abi.encodeWithSelector(IVaultManager.isRegisteredVault.selector, mockVault),
+            abi.encode(true)
         );
         // Collateral token (18 decimals) — used by force-execution collateral conversion.
         vm.mockCall(mockVault, abi.encodeWithSignature("asset()"), abi.encode(address(weth)));

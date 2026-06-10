@@ -48,6 +48,11 @@ contract VaultManager is IVaultManager {
     mapping(address => uint256) private _collateralScale;
     mapping(address => uint256) private _collateralMark;
 
+    /// @dev Enumerable set of registered vaults (ops/indexing convenience; no on-chain iteration).
+    address[] private _vaultList;
+    /// @dev Vault → 1-based index into `_vaultList` (0 = not present), for O(1) swap-remove.
+    mapping(address => uint256) private _vaultIndex;
+
     /// @dev Vault → whether its collateral is currently excluded from the global pool (halted vault).
     mapping(address => bool) private _excluded;
 
@@ -82,11 +87,6 @@ contract VaultManager is IVaultManager {
 
     modifier onlyMarket() {
         if (msg.sender != registry.market()) revert OnlyMarket();
-        _;
-    }
-
-    modifier onlyFactory() {
-        if (msg.sender != registry.vaultFactory()) revert OnlyFactory();
         _;
     }
 
@@ -209,11 +209,11 @@ contract VaultManager is IVaultManager {
     }
 
     // ──────────────────────────────────────────────────────────
-    //  Registration — factory only
+    //  Registration — admin only
     // ──────────────────────────────────────────────────────────
 
     /// @inheritdoc IVaultManager
-    function registerVault(address vault, bytes32 collateralAsset) external override onlyFactory {
+    function registerVault(address vault, bytes32 collateralAsset) external override onlyAdmin {
         if (vault == address(0)) revert ZeroAddress();
         if (_registered[vault]) revert VaultAlreadyRegistered(vault);
 
@@ -221,13 +221,16 @@ contract VaultManager is IVaultManager {
         _vaultCollateralAsset[vault] = collateralAsset;
         _collateralScale[vault] = 10 ** (18 - IERC20Metadata(IERC4626(vault).asset()).decimals());
 
+        _vaultList.push(vault);
+        _vaultIndex[vault] = _vaultList.length; // 1-based
+
         emit VaultRegistered(vault, collateralAsset);
     }
 
     /// @inheritdoc IVaultManager
     function deregisterVault(
         address vault
-    ) external override onlyFactory {
+    ) external override onlyAdmin {
         if (!_registered[vault]) revert VaultNotRegistered(vault);
 
         // Removing this collateral must not push global utilisation over the cap.
@@ -238,6 +241,17 @@ contract VaultManager is IVaultManager {
             }
         }
         _globalCollateralUSD = projCollateral;
+
+        // O(1) swap-remove from the enumerable list.
+        uint256 idx = _vaultIndex[vault]; // 1-based
+        uint256 lastIdx = _vaultList.length;
+        if (idx != lastIdx) {
+            address lastVault = _vaultList[lastIdx - 1];
+            _vaultList[idx - 1] = lastVault;
+            _vaultIndex[lastVault] = idx;
+        }
+        _vaultList.pop();
+        delete _vaultIndex[vault];
 
         delete _collateralMark[vault];
         delete _registered[vault];
@@ -529,6 +543,11 @@ contract VaultManager is IVaultManager {
         address vault
     ) external view override returns (bool) {
         return _registered[vault];
+    }
+
+    /// @inheritdoc IVaultManager
+    function getAllVaults() external view override returns (address[] memory) {
+        return _vaultList;
     }
 
     // ──────────────────────────────────────────────────────────

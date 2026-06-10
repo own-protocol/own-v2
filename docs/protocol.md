@@ -80,7 +80,7 @@ Off-chain entities that sign price attestations for the in-house oracle. Prices 
 
 ## 3. Contract Architecture
 
-The protocol consists of 13 contracts organized into three layers:
+The protocol is organized into three layers (vaults are deployed directly and registered on the VaultManager — there is no vault or borrow-manager factory):
 
 ### Core Contracts
 
@@ -89,8 +89,7 @@ The protocol consists of 13 contracts organized into three layers:
 | **ProtocolRegistry** | `src/core/ProtocolRegistry.sol` | Central registry of all protocol contract addresses. 2-day timelock for address changes. Stores protocol-wide parameters (e.g. `protocolShareBps`).              |
 | **OwnMarket**        | `src/core/OwnMarket.sol`        | RFQ order execution marketplace. Settles market orders atomically against signer-issued quotes, escrows and (partially) fills resting limit orders, provides redeem force execution against the oracle price, and the halted-asset redeem path. |
 | **OwnVault**         | `src/core/OwnVault.sol`         | ERC-4626 collateral vault. Holds LP collateral (custody), manages async deposit/withdrawal queues, distributes yield, supports lending opt-in, and vault-level pause/halt. Risk accounting and order controls live in the VaultManager, not the vault. Operator address: `manager`. |
-| **VaultManager**     | `src/core/VaultManager.sol`     | Central, pooled risk accounting **and** global control hub for **all** vaults. Owns global exposure, collateral marks, utilization, the per-asset issuance ceiling, the signer registry, the global payment token, trading pause, permanent asset halt + halt redeem address, and the claim threshold. Valued at keeper-cached marks. See §9. |
-| **VaultFactory**     | `src/core/VaultFactory.sol`     | Deploys OwnVault instances and registers them with the VaultManager. Each vault is bound 1:1 to a `manager`.                                                          |
+| **VaultManager**     | `src/core/VaultManager.sol`     | Central, pooled risk accounting **and** global control hub for **all** vaults. Owns global exposure, collateral marks, utilization, the per-asset issuance ceiling, **the vault registry/allowlist** (admin `registerVault`/`deregisterVault` + `getAllVaults`), the signer registry, the global payment token, trading pause, permanent asset halt + halt redeem address, and the claim threshold. Valued at keeper-cached marks. See §9. |
 | **AssetRegistry**    | `src/core/AssetRegistry.sol`    | Whitelists assets, maps tickers to eToken addresses, stores oracle configurations. Supports token migration (post-stock-split). Governs which assets are valid for **all** vaults. |
 | **FeeCalculator** _(planned)_ | `src/core/FeeCalculator.sol` | Per-volatility-level fee lookup (planned; not yet in `src/`). Three tiers (low/medium/high) with separate mint and redeem fee rates. Max cap: 500 BPS (5%). |
 
@@ -117,12 +116,11 @@ See `docs/own-architecture.png` for the visual architecture diagram.
                     ProtocolRegistry
                     (address registry + timelock)
                           |
-          +---------------+---------------+
-          |               |               |
-    AssetRegistry    FeeCalculator   VaultFactory
-    (assets, oracles, fees)           (deploys + registers vaults)
-                                          |
-                                      OwnVault ───────┐ register / pull collateral price
+          +---------------+
+          |               |
+    AssetRegistry    FeeCalculator
+    (assets, oracles, fees)
+                                      OwnVault ───────┐ admin registers vault / keeper pulls collateral price
                                  (ERC-4626 custody)   |
                                           |           v
                     OwnMarket  <----------+      VaultManager
@@ -365,7 +363,7 @@ The admin can call `switchPrimaryOracle(ticker)` to swap primary and secondary.
 
 Each vault's collateral is valued in USD by the **VaultManager**, using the oracle for the vault's
 collateral asset (e.g. ETH/USD). The collateral ticker is bound at registration
-(`VaultFactory.createVault(..., collateralAsset)`), and the USD mark is refreshed by permissionless
+(`VaultManager.registerVault(vault, collateralAsset)`), and the USD mark is refreshed by permissionless
 keeper calls to `pullCollateralPrice(vault)` (§9). The collateral USD value feeds:
 
 - Global utilization (§9)
@@ -432,9 +430,11 @@ already excluded from the pool); a **paused** vault blocks withdrawals outright.
 
 ### Registration
 
-Vault registration is factory-driven: `VaultFactory.createVault(collateral, manager, name, symbol, collateralAsset)`
-deploys the vault and calls `VaultManager.registerVault`. Deregistration goes through the factory too
-and reverts if removing the vault's collateral would breach global utilization.
+Vault registration is admin-driven: the admin deploys an `OwnVault` directly and calls
+`VaultManager.registerVault(vault, collateralAsset)` (admin-only). The VaultManager holds the vault
+allowlist (`isRegisteredVault`, `getAllVaults`) used by the market's force-execute path.
+`deregisterVault` (admin-only) removes a vault and reverts if removing its collateral would breach
+global utilization. There is no vault factory.
 
 ### Emergency Controls
 
@@ -485,7 +485,7 @@ VaultManager states — orthogonal to a vault's own status.
 | Register contracts in ProtocolRegistry | Protocol admin (with timelock)             |
 | Add/deactivate assets                  | Protocol admin                             |
 | Configure oracles and fees             | Protocol admin                             |
-| Create vaults                          | Protocol admin (via VaultFactory)          |
+| Deploy + register / deregister vaults  | Protocol admin (registerVault on VaultManager) |
 | Pause a vault (deposits + withdrawals) | Vault's `manager` or admin                 |
 | Halt a vault (wind-down)               | Protocol admin                             |
 | Trading pause / asset halt (global)    | Protocol admin (VaultManager)              |

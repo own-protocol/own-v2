@@ -16,11 +16,9 @@ contract ProtocolRegistry is IProtocolRegistry, Ownable {
 
     bytes32 public constant MARKET = keccak256("MARKET");
     bytes32 public constant ASSET_REGISTRY = keccak256("ASSET_REGISTRY");
-    bytes32 public constant VAULT_FACTORY = keccak256("VAULT_FACTORY");
     bytes32 public constant PYTH_ORACLE = keccak256("PYTH_ORACLE");
     bytes32 public constant INHOUSE_ORACLE = keccak256("INHOUSE_ORACLE");
     bytes32 public constant ETOKEN_FACTORY = keccak256("ETOKEN_FACTORY");
-    bytes32 public constant BORROW_MANAGER_FACTORY = keccak256("BORROW_MANAGER_FACTORY");
     bytes32 public constant VAULT_MANAGER = keccak256("VAULT_MANAGER");
     bytes32 public constant TREASURY = keccak256("TREASURY");
 
@@ -72,11 +70,6 @@ contract ProtocolRegistry is IProtocolRegistry, Ownable {
     }
 
     /// @inheritdoc IProtocolRegistry
-    function vaultFactory() external view override returns (address) {
-        return _addresses[VAULT_FACTORY];
-    }
-
-    /// @inheritdoc IProtocolRegistry
     function pythOracle() external view override returns (address) {
         return _addresses[PYTH_ORACLE];
     }
@@ -89,11 +82,6 @@ contract ProtocolRegistry is IProtocolRegistry, Ownable {
     /// @inheritdoc IProtocolRegistry
     function etokenFactory() external view override returns (address) {
         return _addresses[ETOKEN_FACTORY];
-    }
-
-    /// @inheritdoc IProtocolRegistry
-    function borrowManagerFactory() external view override returns (address) {
-        return _addresses[BORROW_MANAGER_FACTORY];
     }
 
     /// @inheritdoc IProtocolRegistry

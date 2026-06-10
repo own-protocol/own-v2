@@ -31,8 +31,6 @@ contract OwnVaultTest is BaseTest {
 
         vm.startPrank(Actors.ADMIN);
         protocolRegistry.setAddress(protocolRegistry.MARKET(), mockMarket);
-        // ADMIN doubles as the VAULT_FACTORY so it can register the directly-constructed vault.
-        protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), Actors.ADMIN);
         // Minimal asset registry so VaultManager price resolution (onVaultUnhalted) works.
         protocolRegistry.setAddress(protocolRegistry.ASSET_REGISTRY(), address(new StubAssetRegistryForVault()));
         vault = new OwnVault(address(weth), "Own WETH Vault", "oWETH", address(protocolRegistry), Actors.VM1);

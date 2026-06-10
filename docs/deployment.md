@@ -39,7 +39,6 @@ PROTOCOL_REGISTRY=0x...
 ASSET_REGISTRY=0x...
 FEE_CALCULATOR=0x...
 PYTH_ORACLE=0x...
-VAULT_FACTORY=0x...
 OWN_MARKET=0x...
 VAULT_MANAGER=0x...
 MOCK_USDC=0x...
@@ -57,7 +56,6 @@ WETH_ROUTER=0x...
 | AssetRegistry | Asset configs + oracle mappings |
 | FeeCalculator | Mint/redeem fees by volatility level |
 | PythOracleVerifier | Pyth oracle wrapper (120s max price age) |
-| VaultFactory | Creates OwnVault instances + registers them with the VaultManager |
 | OwnMarket | RFQ order execution marketplace |
 | VaultManager | Global pooled risk accounting + control hub (exposure, marks, utilization, per-asset caps, signer registry, payment token, pause, halt, claim threshold) |
 | EToken (TSLA) | eTSLA synthetic token |
@@ -70,7 +68,8 @@ of `0` blocks minting that asset, so this step is required before any mint can s
 
 ## Step 2: Create Vault
 
-Creates a WETH-collateral vault and configures admin parameters. Run with the deployer key.
+Deploys a WETH-collateral `OwnVault` directly and registers it on the VaultManager (admin-only).
+Run with the deployer key. There is no vault factory.
 
 ```bash
 forge script script/CreateVault.s.sol --rpc-url base_sepolia --broadcast
@@ -86,12 +85,12 @@ VAULT_ADDRESS=0x...
 
 | Parameter | Value | Description |
 |-----------|-------|-------------|
-| Collateral asset | `ETH` ticker | Passed to `createVault`; the VaultManager prices the vault's collateral via this oracle ticker. |
+| Collateral asset | `ETH` ticker | Passed to `VaultManager.registerVault(vault, collateralAsset)`; the VaultManager prices the vault's collateral via this oracle ticker. |
 | `manager` | `VM_ADDRESS` | The vault's operator (accepts LP deposits, distributes yield, can pause the vault). |
 
 > Order-execution parameters (payment token, signers, claim threshold) are **global** on the
-> VaultManager, not per vault. Max utilization is likewise set once in Step 1. `createVault`
-> auto-registers the vault with the VaultManager.
+> VaultManager, not per vault. Max utilization is likewise set once in Step 1. The script deploys the
+> vault and calls `registerVault` on the VaultManager, which holds the vault allowlist + risk pool.
 
 ## Step 3: Configure Global Order Settlement (as admin)
 

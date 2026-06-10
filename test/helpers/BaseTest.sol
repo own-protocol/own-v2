@@ -266,7 +266,7 @@ contract BaseTest is Test {
 
     /// @notice Deploy the VaultManager, register it in the registry (VAULT_MANAGER slot),
     ///         and set the default global max utilisation. Must be called (as part of protocol
-    ///         deployment) BEFORE any `VaultFactory.createVault`, which auto-registers the vault.
+    ///         deployment) BEFORE registering any vault (registerVault is admin-gated on the VaultManager).
     function _deployVaultManager() internal {
         vm.startPrank(Actors.ADMIN);
         vaultManager = new VaultManager(protocolRegistry);

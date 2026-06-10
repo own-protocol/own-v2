@@ -8,7 +8,6 @@ import {AssetRegistry} from "../src/core/AssetRegistry.sol";
 import {OwnMarket} from "../src/core/OwnMarket.sol";
 import {ProtocolRegistry} from "../src/core/ProtocolRegistry.sol";
 import {PythOracleVerifier} from "../src/core/PythOracleVerifier.sol";
-import {VaultFactory} from "../src/core/VaultFactory.sol";
 import {VaultManager} from "../src/core/VaultManager.sol";
 
 import {IProtocolRegistry} from "../src/interfaces/IProtocolRegistry.sol";
@@ -81,7 +80,6 @@ contract Deploy is Script {
         address registry;
         address assetRegistry;
         address pythOracle;
-        address factory;
         address market;
         address vaultManager;
         address etokenFactory;
@@ -138,10 +136,6 @@ contract Deploy is Script {
         pythOracle.setFeedId(GOLD, 0, XAU_FEED);
         pythOracle.setFeedId(ETH, 0, ETH_FEED);
 
-        // ── 7. VaultFactory ───────────────────────────────────
-        d.factory = address(new VaultFactory(deployer, d.registry));
-        console.log("VaultFactory:", d.factory);
-
         // ── 8. OwnMarket ──────────────────────────────────────
         d.market = address(new OwnMarket(d.registry));
         console.log("OwnMarket:", d.market);
@@ -168,7 +162,6 @@ contract Deploy is Script {
         // ── 11. Register in ProtocolRegistry ──────────────────
         ProtocolRegistry registry = ProtocolRegistry(d.registry);
         registry.setAddress(registry.ASSET_REGISTRY(), d.assetRegistry);
-        registry.setAddress(registry.VAULT_FACTORY(), d.factory);
         registry.setAddress(registry.MARKET(), d.market);
         registry.setAddress(registry.VAULT_MANAGER(), d.vaultManager);
         // Protocol treasury — bad-debt collateral sink. Defaults to the deployer/admin if unset.
@@ -244,7 +237,6 @@ contract Deploy is Script {
         console.log("PROTOCOL_REGISTRY=", d.registry);
         console.log("ASSET_REGISTRY=", d.assetRegistry);
         console.log("PYTH_ORACLE=", d.pythOracle);
-        console.log("VAULT_FACTORY=", d.factory);
         console.log("OWN_MARKET=", d.market);
         console.log("VAULT_MANAGER=", d.vaultManager);
         console.log("ETOKEN_TSLA=", d.eTSLA);

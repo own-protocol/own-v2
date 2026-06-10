@@ -61,9 +61,6 @@ interface IProtocolRegistry {
     /// @notice Returns the AssetRegistry contract address.
     function assetRegistry() external view returns (address);
 
-    /// @notice Returns the VaultFactory contract address.
-    function vaultFactory() external view returns (address);
-
     /// @notice Returns the PythOracleVerifier contract address.
     function pythOracle() external view returns (address);
 
@@ -72,9 +69,6 @@ interface IProtocolRegistry {
 
     /// @notice Returns the ETokenFactory contract address.
     function etokenFactory() external view returns (address);
-
-    /// @notice Returns the BorrowManagerFactory contract address.
-    function borrowManagerFactory() external view returns (address);
 
     /// @notice Returns the VaultManager contract address.
     function vaultManager() external view returns (address);

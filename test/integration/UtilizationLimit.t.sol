@@ -11,7 +11,6 @@ import {AssetConfig, BPS, OrderStatus, OrderType, PRECISION, Quote} from "../../
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {OwnMarket} from "../../src/core/OwnMarket.sol";
 import {OwnVault} from "../../src/core/OwnVault.sol";
-import {VaultFactory} from "../../src/core/VaultFactory.sol";
 import {EToken} from "../../src/tokens/EToken.sol";
 
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
@@ -48,16 +47,14 @@ contract UtilizationLimitTest is BaseTest {
         assetRegistry = new AssetRegistry(Actors.ADMIN);
         protocolRegistry.setAddress(protocolRegistry.ASSET_REGISTRY(), address(assetRegistry));
 
-        VaultFactory factory = new VaultFactory(Actors.ADMIN, address(protocolRegistry));
-        protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), address(factory));
-
         vm.stopPrank();
         _deployVaultManager();
         // Low global max utilisation: 10% — easy to trigger a breach.
         _setGlobalMaxUtil(MAX_UTIL_BPS);
         vm.startPrank(Actors.ADMIN);
 
-        vault = OwnVault(factory.createVault(address(weth), vm1Signer, "Own ETH Vault", "oETH", ETH));
+        vault = new OwnVault(address(weth), "Own ETH Vault", "oETH", address(protocolRegistry), vm1Signer);
+        vaultManager.registerVault(address(vault), ETH);
 
         market = new OwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));

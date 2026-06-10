@@ -54,11 +54,9 @@ contract BorrowManagerTest is BaseTest {
         awstETH = MockAToken(aavePool.registerReserve(address(wstETH), "Aave wstETH", "awstETH", 18));
         usdcDebt = MockAaveDebtToken(aavePool.deployVariableDebtToken(address(usdc)));
 
-        // 2) ProtocolRegistry slots. This contract doubles as MARKET and VAULT_FACTORY so it can
-        //    register the directly-constructed vault with the VaultManager.
+        // 2) ProtocolRegistry slots. This contract doubles as MARKET.
         vm.startPrank(Actors.ADMIN);
         protocolRegistry.setAddress(protocolRegistry.MARKET(), mockMarket);
-        protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), address(this));
 
         // AssetRegistry — register TSLA so eligibility passes.
         assetRegistry = new AssetRegistry(Actors.ADMIN);
@@ -84,11 +82,12 @@ contract BorrowManagerTest is BaseTest {
         vm.prank(Actors.ADMIN);
         vault = new OwnVault(address(awstETH), "Own awstETH", "owawstETH", address(protocolRegistry), address(this));
 
-        // VaultManager owns collateral marks now; register the vault (this contract is the
-        // registry's VAULT_FACTORY) so maxDebtUSD can read its collateral mark.
+        // VaultManager owns collateral marks now; register the vault (admin-gated)
+        // so maxDebtUSD can read its collateral mark.
         _deployVaultManager();
         // Set the global payment token (required by some flows; not used here).
         _setPaymentToken(address(usdc));
+        vm.prank(Actors.ADMIN);
         vaultManager.registerVault(address(vault), bytes32("WSTETH"));
 
         // 5) BorrowManager. Wire credit delegation + Aave reserve liquidity.

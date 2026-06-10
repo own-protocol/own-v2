@@ -63,7 +63,6 @@ interface IVaultManager {
     // ──────────────────────────────────────────────────────────
 
     error OnlyMarket();
-    error OnlyFactory();
     error OnlyAdmin();
     error OnlyRegisteredVault();
     error ZeroAddress();
@@ -107,10 +106,14 @@ interface IVaultManager {
     ) external;
 
     // ──────────────────────────────────────────────────────────
-    //  Registration — factory only
+    //  Registration — admin only
     // ──────────────────────────────────────────────────────────
 
+    /// @notice Register an admin-deployed vault and cache its collateral scaling. Admin-only.
     function registerVault(address vault, bytes32 collateralAsset) external;
+
+    /// @notice Deregister a vault, removing its collateral from the global pool. Reverts if removing
+    ///         it would breach global utilisation. Admin-only.
     function deregisterVault(
         address vault
     ) external;
@@ -244,4 +247,7 @@ interface IVaultManager {
     function isRegisteredVault(
         address vault
     ) external view returns (bool);
+
+    /// @notice All currently-registered vault addresses (ops/indexing; not used on-chain).
+    function getAllVaults() external view returns (address[] memory);
 }

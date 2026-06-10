@@ -48,7 +48,7 @@ contract VaultManagerTest is Test {
 
     address internal admin = Actors.ADMIN;
     address internal market = makeAddr("market");
-    address internal factory = makeAddr("factory");
+    address internal nonAdmin = makeAddr("nonAdmin");
 
     bytes32 internal constant TSLA = bytes32("TSLA");
     bytes32 internal constant USDC_TICKER = bytes32("USDC");
@@ -67,7 +67,6 @@ contract VaultManagerTest is Test {
 
         vm.startPrank(admin);
         registry.setAddress(registry.MARKET(), market);
-        registry.setAddress(registry.VAULT_FACTORY(), factory);
         registry.setAddress(registry.ASSET_REGISTRY(), address(assetRegistry));
         registry.setAddress(registry.INHOUSE_ORACLE(), address(oracle));
         registry.setAddress(registry.PYTH_ORACLE(), address(oracle));
@@ -88,7 +87,7 @@ contract VaultManagerTest is Test {
 
     /// @dev Register the vault, seed collateral, and pull both marks. $1M collateral.
     function _bootstrap() internal {
-        vm.prank(factory);
+        vm.prank(admin);
         manager.registerVault(address(vault), USDC_TICKER);
 
         vault.setTotalAssets(1_000_000e6); // 1M USDC
@@ -129,31 +128,41 @@ contract VaultManagerTest is Test {
     function test_registerVault_setsStateAndScale() public {
         vm.expectEmit(true, true, false, true);
         emit IVaultManager.VaultRegistered(address(vault), USDC_TICKER);
-        vm.prank(factory);
+        vm.prank(admin);
         manager.registerVault(address(vault), USDC_TICKER);
 
         assertTrue(manager.isRegisteredVault(address(vault)));
     }
 
-    function test_registerVault_onlyFactory_reverts() public {
-        vm.expectRevert(IVaultManager.OnlyFactory.selector);
-        vm.prank(admin);
+    function test_registerVault_onlyAdmin_reverts() public {
+        vm.expectRevert(IVaultManager.OnlyAdmin.selector);
+        vm.prank(nonAdmin);
         manager.registerVault(address(vault), USDC_TICKER);
     }
 
     function test_registerVault_zeroVault_reverts() public {
         vm.expectRevert(IVaultManager.ZeroAddress.selector);
-        vm.prank(factory);
+        vm.prank(admin);
         manager.registerVault(address(0), USDC_TICKER);
     }
 
     function test_registerVault_alreadyRegistered_reverts() public {
-        vm.prank(factory);
+        vm.prank(admin);
         manager.registerVault(address(vault), USDC_TICKER);
 
         vm.expectRevert(abi.encodeWithSelector(IVaultManager.VaultAlreadyRegistered.selector, address(vault)));
-        vm.prank(factory);
+        vm.prank(admin);
         manager.registerVault(address(vault), USDC_TICKER);
+    }
+
+    function test_getAllVaults_returnsRegisteredVaults() public {
+        assertEq(manager.getAllVaults().length, 0);
+        vm.prank(admin);
+        manager.registerVault(address(vault), USDC_TICKER);
+
+        address[] memory all = manager.getAllVaults();
+        assertEq(all.length, 1);
+        assertEq(all[0], address(vault));
     }
 
     // ──────────────────────────────────────────────────────────
@@ -161,7 +170,7 @@ contract VaultManagerTest is Test {
     // ──────────────────────────────────────────────────────────
 
     function test_pullCollateralPrice_setsMarkAndGlobal() public {
-        vm.prank(factory);
+        vm.prank(admin);
         manager.registerVault(address(vault), USDC_TICKER);
         vault.setTotalAssets(1_000_000e6);
 
@@ -172,7 +181,7 @@ contract VaultManagerTest is Test {
     }
 
     function test_pullCollateralPrice_secondPullReplacesContribution() public {
-        vm.prank(factory);
+        vm.prank(admin);
         manager.registerVault(address(vault), USDC_TICKER);
 
         vault.setTotalAssets(1_000_000e6);
@@ -247,7 +256,7 @@ contract VaultManagerTest is Test {
 
     function test_openExposure_priceUnavailable_reverts() public {
         // Registered + collateral pulled, but asset price never pulled → mark == 0.
-        vm.prank(factory);
+        vm.prank(admin);
         manager.registerVault(address(vault), USDC_TICKER);
         vault.setTotalAssets(1_000_000e6);
         manager.pullCollateralPrice(address(vault));
@@ -269,7 +278,7 @@ contract VaultManagerTest is Test {
     }
 
     function test_openExposure_assetCapZero_blocksMinting() public {
-        vm.prank(factory);
+        vm.prank(admin);
         manager.registerVault(address(vault), USDC_TICKER);
         vault.setTotalAssets(1_000_000e6);
         manager.pullCollateralPrice(address(vault));
@@ -384,7 +393,7 @@ contract VaultManagerTest is Test {
 
     function test_deregisterVault_noExposure_succeeds() public {
         _bootstrap();
-        vm.prank(factory);
+        vm.prank(admin);
         manager.deregisterVault(address(vault));
 
         assertFalse(manager.isRegisteredVault(address(vault)));
@@ -392,16 +401,16 @@ contract VaultManagerTest is Test {
         assertEq(manager.collateralMark(address(vault)), 0);
     }
 
-    function test_deregisterVault_onlyFactory_reverts() public {
+    function test_deregisterVault_onlyAdmin_reverts() public {
         _bootstrap();
-        vm.expectRevert(IVaultManager.OnlyFactory.selector);
-        vm.prank(admin);
+        vm.expectRevert(IVaultManager.OnlyAdmin.selector);
+        vm.prank(nonAdmin);
         manager.deregisterVault(address(vault));
     }
 
     function test_deregisterVault_notRegistered_reverts() public {
         vm.expectRevert(abi.encodeWithSelector(IVaultManager.VaultNotRegistered.selector, address(vault)));
-        vm.prank(factory);
+        vm.prank(admin);
         manager.deregisterVault(address(vault));
     }
 
@@ -411,7 +420,7 @@ contract VaultManagerTest is Test {
 
         // Removing the only collateral source leaves projCollateral == 0 with live exposure.
         vm.expectRevert(IVaultManager.DeregisterWouldBreachUtilization.selector);
-        vm.prank(factory);
+        vm.prank(admin);
         manager.deregisterVault(address(vault));
     }
 

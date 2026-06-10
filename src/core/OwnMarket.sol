@@ -7,7 +7,6 @@ import {IOracleVerifier} from "../interfaces/IOracleVerifier.sol";
 import {IOwnMarket} from "../interfaces/IOwnMarket.sol";
 import {IOwnVault} from "../interfaces/IOwnVault.sol";
 import {IProtocolRegistry} from "../interfaces/IProtocolRegistry.sol";
-import {IVaultFactory} from "../interfaces/IVaultFactory.sol";
 import {IVaultManager} from "../interfaces/IVaultManager.sol";
 import {Order, OrderStatus, OrderType, PRECISION, Quote} from "../interfaces/types/Types.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -185,10 +184,10 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         if (order.user != msg.sender) revert OnlyOrderOwner(orderId);
         if (order.status != OrderStatus.Open) revert InvalidOrderStatus(orderId);
         if (order.orderType != OrderType.Redeem) revert ForceMintNotAllowed(orderId);
-        // The caller names the collateral source; it must be a registered vault.
-        if (!IVaultFactory(registry.vaultFactory()).isRegisteredVault(vault)) revert VaultNotRegistered(vault);
 
         IVaultManager vmgr = IVaultManager(registry.vaultManager());
+        // The caller names the collateral source; it must be a registered vault.
+        if (!vmgr.isRegisteredVault(vault)) revert VaultNotRegistered(vault);
         // Pause and halt both disable the force path.
         if (vmgr.isTradingPaused(order.asset)) revert AssetPaused(order.asset);
         if (vmgr.isAssetHalted(order.asset)) revert ForceDisabledDuringHalt(order.asset);

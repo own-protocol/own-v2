@@ -7,7 +7,6 @@ import {BaseTest} from "../helpers/BaseTest.sol";
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {OwnMarket} from "../../src/core/OwnMarket.sol";
 import {OwnVault} from "../../src/core/OwnVault.sol";
-import {VaultFactory} from "../../src/core/VaultFactory.sol";
 
 import {AssetConfig, PRECISION} from "../../src/interfaces/types/Types.sol";
 import {EToken} from "../../src/tokens/EToken.sol";
@@ -25,7 +24,6 @@ contract OwnProtocolInvariant is BaseTest {
     // ── Protocol contracts ──────────────────────────────────────
 
     AssetRegistry public assetRegistry;
-    VaultFactory public factory;
     OwnMarket public market;
     OwnVault public vault;
     EToken public eTSLA;
@@ -63,17 +61,14 @@ contract OwnProtocolInvariant is BaseTest {
         assetRegistry = new AssetRegistry(Actors.ADMIN);
         protocolRegistry.setAddress(protocolRegistry.ASSET_REGISTRY(), address(assetRegistry));
 
-        // Vault factory
-        factory = new VaultFactory(Actors.ADMIN, address(protocolRegistry));
-        protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), address(factory));
-
         vm.stopPrank();
-        // VaultManager must be registered before createVault (which auto-registers the vault).
+        // VaultManager must be registered before registering the vault (admin-gated).
         _deployVaultManager();
         vm.startPrank(Actors.ADMIN);
 
         // Create vault: WETH collateral, vm1Signer (keyed VM for quote signing). ETH = collateral ticker.
-        vault = OwnVault(factory.createVault(address(weth), vm1Signer, "Own ETH Vault", "oETH", ETH));
+        vault = new OwnVault(address(weth), "Own ETH Vault", "oETH", address(protocolRegistry), vm1Signer);
+        vaultManager.registerVault(address(vault), ETH);
 
         // Market
         market = new OwnMarket(address(protocolRegistry));

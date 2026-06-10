@@ -4,10 +4,8 @@ pragma solidity 0.8.28;
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 
 import {BorrowManager} from "../../src/core/BorrowManager.sol";
-import {BorrowManagerFactory} from "../../src/core/BorrowManagerFactory.sol";
 import {OwnMarket} from "../../src/core/OwnMarket.sol";
 import {OwnVault} from "../../src/core/OwnVault.sol";
-import {VaultFactory} from "../../src/core/VaultFactory.sol";
 import {IOwnMarket} from "../../src/interfaces/IOwnMarket.sol";
 import {IVaultManager} from "../../src/interfaces/IVaultManager.sol";
 import {AssetConfig, BPS, OrderStatus, OrderType, PRECISION, Quote} from "../../src/interfaces/types/Types.sol";
@@ -30,7 +28,6 @@ contract RFQAusdcFlowsTest is BaseTest {
     MockAaveV3Pool aavePool;
     MockAToken ausdcAToken;
     MockAaveDebtToken usdcDebt;
-    BorrowManagerFactory bmFactory;
     BorrowManager borrowManager;
 
     bytes32 constant AUSDC = bytes32("AUSDC");
@@ -81,25 +78,27 @@ contract RFQAusdcFlowsTest is BaseTest {
             })
         );
 
-        VaultFactory factory = new VaultFactory(Actors.ADMIN, address(protocolRegistry));
-        protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), address(factory));
-
         vm.stopPrank();
-        // Deploy + register the VaultManager before createVault (which auto-registers the vault).
+        // Deploy + register the VaultManager before registering the vault (admin-gated).
         _deployVaultManager();
         vm.startPrank(Actors.ADMIN);
 
-        vault = OwnVault(factory.createVault(address(ausdcAToken), vm1Signer, "Own aUSDC", "oaUSDC", AUSDC));
+        vault = new OwnVault(address(ausdcAToken), "Own aUSDC", "oaUSDC", address(protocolRegistry), vm1Signer);
+        vaultManager.registerVault(address(vault), AUSDC);
 
         market = new OwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
         vault.setRequireDepositApproval(true);
 
         // ── Lending: borrow manager over USDC debt against the vault's aUSDC credit ──
-        bmFactory = new BorrowManagerFactory(address(aavePool), address(protocolRegistry));
-        protocolRegistry.setAddress(protocolRegistry.BORROW_MANAGER_FACTORY(), address(bmFactory));
-        borrowManager = BorrowManager(
-            bmFactory.createBorrowManager(address(vault), address(usdc), address(usdcDebt), 3500, _params())
+        borrowManager = new BorrowManager(
+            address(vault),
+            address(usdc),
+            address(usdcDebt),
+            address(aavePool),
+            address(protocolRegistry),
+            3500,
+            _params()
         );
         vault.setBorrowManager(address(borrowManager));
         vault.grantCreditDelegation(address(usdcDebt));

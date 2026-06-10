@@ -10,7 +10,6 @@ import {AssetConfig, DepositRequest, DepositStatus} from "../../src/interfaces/t
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {OwnMarket} from "../../src/core/OwnMarket.sol";
 import {OwnVault} from "../../src/core/OwnVault.sol";
-import {VaultFactory} from "../../src/core/VaultFactory.sol";
 import {EToken} from "../../src/tokens/EToken.sol";
 
 /// @title AsyncDepositFlow Integration Test
@@ -35,15 +34,13 @@ contract AsyncDepositFlowTest is BaseTest {
 
         protocolRegistry.setAddress(protocolRegistry.ASSET_REGISTRY(), address(assetRegistry));
 
-        VaultFactory factory = new VaultFactory(Actors.ADMIN, address(protocolRegistry));
-        protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), address(factory));
-
         vm.stopPrank();
-        // Deploy + register the VaultManager before createVault (which auto-registers the vault).
+        // Deploy + register the VaultManager before registering the vault (admin-gated).
         _deployVaultManager();
         vm.startPrank(Actors.ADMIN);
 
-        vault = OwnVault(factory.createVault(address(weth), Actors.VM1, "Own WETH Vault", "oWETH", ETH));
+        vault = new OwnVault(address(weth), "Own WETH Vault", "oWETH", address(protocolRegistry), Actors.VM1);
+        vaultManager.registerVault(address(vault), ETH);
 
         market = new OwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
