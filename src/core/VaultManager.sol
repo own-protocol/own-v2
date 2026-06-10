@@ -290,6 +290,20 @@ contract VaultManager is IVaultManager {
     }
 
     /// @inheritdoc IVaultManager
+    function onCollateralReleased(
+        uint256 assets
+    ) external override onlyRegisteredVault {
+        uint256 mark = _collateralMark[msg.sender];
+        if (mark == 0) return; // excluded/unmarked vault — nothing in the pool to reduce
+        uint256 ta = IERC4626(msg.sender).totalAssets();
+        uint256 removedUSD = ta == 0 ? mark : mark.mulDiv(assets, ta);
+        if (removedUSD > mark) removedUSD = mark;
+        _collateralMark[msg.sender] = mark - removedUSD;
+        _globalCollateralUSD -= removedUSD;
+        emit CollateralMarkReduced(msg.sender, assets, removedUSD);
+    }
+
+    /// @inheritdoc IVaultManager
     function isVaultExcluded(
         address vault
     ) external view override returns (bool) {

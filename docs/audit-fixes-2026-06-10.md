@@ -15,7 +15,7 @@ updated as findings are remediated.
 | C-01 | Critical | `verifyPrice` has no staleness check; stale signed prices drain collateral | **Fixed** |
 | H-01 | High | `forceExecuteOrder` accepts a halted (wind-down) vault as collateral source | **Fixed** |
 | H-02 | High | Resting redeem escrow stranded after `migrateToken` (stock split) | **Fixed** |
-| H-03 | High | Withdrawal util gate combines a stale cached mark with live `totalAssets` | Open |
+| H-03 | High | Withdrawal util gate combines a stale cached mark with live `totalAssets` | **Fixed** |
 
 ---
 
@@ -188,3 +188,47 @@ Two items were left as documented recommendations (Low / operational): keep `mig
 unredeemable — liveness only), and an optional `migrateToken` `newToken == oldToken` guard.
 
 Full suite: **634 passing**.
+
+---
+
+## H-03 — Withdrawal gate reads a stale collateral mark after a bad-debt release (High) — **Fixed**
+
+### Root cause
+
+`VaultManager.withdrawalBreachesUtil` decides LP exits by netting against `_globalCollateralUSD`, a
+sum of keeper-cached marks. `OwnVault.releaseCollateralForBadDebt` transferred vault collateral to the
+treasury and shrank real `totalAssets` immediately, but did **not** update the cached mark ("catches
+up on the next keeper pull"). In the window between the write-off and the next `pullCollateralPrice`,
+`_globalCollateralUSD` overstated real collateral, so the gate under-reported utilization and allowed
+withdrawals it should have blocked — letting fast LPs exit ahead of the socialized loss. The window is
+front-runnable by transaction ordering, so controlling the keepers does not close it unless the
+refresh is atomic with the release.
+
+### Fix
+
+Make the mark update atomic with the release. `OwnVault.releaseCollateralForBadDebt` now calls
+`VaultManager.onCollateralReleased(amount)` **before** transferring, and the manager decrements
+`_collateralMark[vault]` and `_globalCollateralUSD` proportionally (`mark × assets / totalAssets`,
+the same basis the gate uses). No stale window remains, and no operational dependency on a timely
+keeper pull. (Price drift between pulls is still handled by the keeper model, as designed — only the
+protocol-caused step reduction is now synchronous.)
+
+### Files
+
+- `src/core/VaultManager.sol` (+`IVaultManager`) — `onCollateralReleased` (`onlyRegisteredVault`) +
+  `CollateralMarkReduced` event.
+- `src/core/OwnVault.sol` — call `onCollateralReleased` before the bad-debt transfer.
+
+### Tests
+
+- `test/unit/VaultManager.t.sol`: `test_onCollateralReleased_reducesMarkProportionally`,
+  `test_onCollateralReleased_onlyRegisteredVault_reverts`,
+  `test_badDebtRelease_tightensWithdrawalGate` (gate blocks post-release where it was stale-allowed).
+
+### Note
+
+Force-execution's `releaseCollateral` is the same class but self-limiting (it reduces exposure in the
+same call, so collateral and exposure drop together). Left as-is for now; the same
+`onCollateralReleased` call could be added there for full symmetry if desired.
+
+Full suite: **637 passing**.

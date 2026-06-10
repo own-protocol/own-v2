@@ -45,6 +45,7 @@ interface IVaultManager {
 
     /// @notice Emitted when a registered vault notifies its halt/unhalt transition.
     event VaultCollateralExcluded(address indexed vault, uint256 removedMarkUSD);
+    event CollateralMarkReduced(address indexed vault, uint256 assets, uint256 removedMarkUSD);
     event VaultCollateralReincluded(address indexed vault, uint256 addedMarkUSD);
 
     // ── Control surface ──────────────────────────────────────
@@ -129,6 +130,14 @@ interface IVaultManager {
 
     /// @notice Called by a vault leaving Halted status: re-pull its collateral mark.
     function onVaultUnhalted() external;
+
+    /// @notice Called by a vault BEFORE it transfers collateral out of the pool (bad-debt release),
+    ///         so the cached mark and global collateral drop atomically with the real assets — no
+    ///         stale window for the withdrawal gate. Reduces the mark proportionally to `assets`.
+    /// @param assets Collateral token amount about to leave the vault.
+    function onCollateralReleased(
+        uint256 assets
+    ) external;
 
     /// @notice Whether a registered vault's collateral is currently excluded from the pool.
     function isVaultExcluded(

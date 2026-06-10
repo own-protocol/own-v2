@@ -550,9 +550,11 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
         // ever be moved into protocol-controlled hands, never to an external wallet.
         address to = registry.treasury();
         if (to == address(0)) revert TreasuryNotSet();
+        // Drop the cached collateral mark before moving assets, so the withdrawal gate never sees a
+        // stale-high collateral total between this release and the next keeper price pull.
+        IVaultManager(registry.vaultManager()).onCollateralReleased(amount);
         // The borrow manager has already repaid the corresponding Aave debt, so this aToken slice is
-        // unlocked. Releasing it shrinks totalAssets, which socializes the bad-debt loss to LPs via a
-        // lower share price. The global collateral mark catches up on the next keeper price pull.
+        // unlocked. Releasing it shrinks totalAssets, socializing the bad-debt loss to LPs.
         IERC20(asset()).safeTransfer(to, amount);
         emit CollateralReleasedForBadDebt(to, amount);
     }

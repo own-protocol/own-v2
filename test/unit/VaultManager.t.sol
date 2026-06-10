@@ -272,6 +272,48 @@ contract VaultManagerTest is Test {
         manager.applySplit(TSLA, 0);
     }
 
+    // ──────────────────────────────────────────────────────────
+    //  onCollateralReleased (H-03: bad-debt mark sync)
+    // ──────────────────────────────────────────────────────────
+
+    function test_onCollateralReleased_reducesMarkProportionally() public {
+        _bootstrap(); // mark = $1,000,000; totalAssets = 1,000,000 USDC
+        uint256 markBefore = manager.collateralMark(address(vault));
+        uint256 globalBefore = manager.globalCollateralUSD();
+
+        // Release 200k USDC (20% of the vault) — proportional 20% of the mark.
+        vm.prank(address(vault));
+        manager.onCollateralReleased(200_000e6);
+
+        assertEq(manager.collateralMark(address(vault)), markBefore - 200_000e18, "mark -20%");
+        assertEq(manager.globalCollateralUSD(), globalBefore - 200_000e18, "global collateral -20%");
+    }
+
+    function test_onCollateralReleased_onlyRegisteredVault_reverts() public {
+        _bootstrap();
+        vm.expectRevert(IVaultManager.OnlyRegisteredVault.selector);
+        vm.prank(admin);
+        manager.onCollateralReleased(1e6);
+    }
+
+    /// @dev H-03: after a bad-debt release, the withdrawal gate blocks an exit it would have allowed
+    ///      with a stale (un-synced) collateral mark.
+    function test_badDebtRelease_tightensWithdrawalGate() public {
+        _bootstrap();
+        _open(7000e18); // $700k exposure vs $1M collateral → 70% util (cap 80%)
+
+        // Before the release, a tiny withdrawal is allowed (70% util).
+        assertFalse(manager.withdrawalBreachesUtil(address(vault), 1e6), "allowed pre-release");
+
+        // Bad debt: the vault releases 200k USDC. Mark syncs here; the real transfer drops totalAssets.
+        vm.prank(address(vault));
+        manager.onCollateralReleased(200_000e6);
+        vault.setTotalAssets(800_000e6);
+
+        // True util is now 700k / 800k = 87.5% > 80% → the gate blocks (would have been stale-allowed).
+        assertTrue(manager.withdrawalBreachesUtil(address(vault), 1e6), "blocked post-release");
+    }
+
     function test_openExposure_onlyMarket_reverts() public {
         _bootstrap();
         vm.expectRevert(IVaultManager.OnlyMarket.selector);
