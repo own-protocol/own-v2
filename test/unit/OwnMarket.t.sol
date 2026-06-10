@@ -822,6 +822,26 @@ contract OwnMarketTest is BaseTest {
         market.forceExecuteOrder(orderId, mockVault, _assetPriceData(TSLA_PRICE), _assetPriceData(ETH_PRICE));
     }
 
+    /// @dev I-1 regression: a mint order filled after the global payment token changes settles in the
+    ///      token escrowed at placement, not the new payment token.
+    function test_fillMint_afterPaymentTokenChange_settlesInEscrowToken() public {
+        uint256 amount = 1000e6;
+        uint256 orderId = _placeMint(Actors.MINTER1, amount, TSLA_PRICE); // escrows usdc
+
+        MockERC20 usdc2 = new MockERC20("USD Coin 2", "USDC2", 6);
+        vm.mockCall(
+            mockVaultManager, abi.encodeWithSelector(IVaultManager.paymentToken.selector), abi.encode(address(usdc2))
+        );
+
+        uint256 makerBefore = usdc.balanceOf(rfqVM);
+        Quote memory q = _quote(orderId, Actors.MINTER1, OrderType.Mint, amount, TSLA_PRICE);
+        vm.prank(rfqVM);
+        market.fillOrder(q, _sign(q, rfqVMPk));
+
+        assertEq(usdc.balanceOf(rfqVM), makerBefore + amount, "maker paid in original escrow token");
+        assertEq(eTSLAToken.balanceOf(Actors.MINTER1), _expectedMintOut(amount, TSLA_PRICE), "eTokens minted");
+    }
+
     // ══════════════════════════════════════════════════════════
     //  redeemHalted — permanent halt settlement
     // ══════════════════════════════════════════════════════════

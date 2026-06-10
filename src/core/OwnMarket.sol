@@ -79,7 +79,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         address maker = _consumeQuote(quote, signature);
 
         uint256 amountOut = quote.orderType == OrderType.Mint
-            ? _settleMint(quote.user, maker, quote.asset, quote.amount, quote.price, false)
+            ? _settleMint(quote.user, maker, quote.asset, quote.amount, quote.price, false, _paymentToken())
             : _settleRedeem(quote.user, maker, quote.asset, quote.amount, quote.price, false);
 
         emit OrderExecuted(
@@ -170,7 +170,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
 
         // Interactions.
         uint256 amountOut = order.orderType == OrderType.Mint
-            ? _settleMint(order.user, maker, order.asset, quote.amount, quote.price, true)
+            ? _settleMint(order.user, maker, order.asset, quote.amount, quote.price, true, order.escrowToken)
             : _settleRedeem(order.user, maker, order.asset, quote.amount, quote.price, true);
 
         emit OrderFilled(quote.orderId, quote.quoteId, maker, quote.amount, amountOut, newRemaining);
@@ -381,10 +381,12 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         bytes32 asset,
         uint256 amountIn,
         uint256 price,
-        bool fromEscrow
+        bool fromEscrow,
+        address payToken
     ) private returns (uint256 eTokenAmount) {
-        address pay = _paymentToken();
-        eTokenAmount = Math.mulDiv(amountIn * (10 ** (18 - IERC20Metadata(pay).decimals())), PRECISION, price);
+        // Escrow fills settle in the token escrowed at placement (payToken == order.escrowToken),
+        // so a later payment-token change cannot mismatch the escrow.
+        eTokenAmount = Math.mulDiv(amountIn * (10 ** (18 - IERC20Metadata(payToken).decimals())), PRECISION, price);
 
         // Atomic check + commit of global exposure (asset cap + global utilisation) before any
         // external token movement, so a breach reverts cleanly with no side effects.
@@ -392,9 +394,9 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
 
         // Route the full stablecoin amount to the maker (spread captured offchain).
         if (fromEscrow) {
-            IERC20(pay).safeTransfer(maker, amountIn);
+            IERC20(payToken).safeTransfer(maker, amountIn);
         } else {
-            IERC20(pay).safeTransferFrom(user, maker, amountIn);
+            IERC20(payToken).safeTransferFrom(user, maker, amountIn);
         }
 
         // Mint the eTokens to the user.

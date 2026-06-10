@@ -175,4 +175,16 @@ in `docs/protocol.md` §13):
 - `test/integration/RFQAusdcFlows.t.sol` — convert-then-redeem; `settleHaltedPosition` with legacy
   collateral.
 
-Full suite: **633 passing**.
+### Post-fix hardening (re-audit)
+
+A re-audit of the H-02 changes surfaced one consistency gap, now fixed: `_settleMint` settled escrow
+fills using the *current* payment token rather than the token escrowed at placement, so a mint order
+filled after a global payment-token change could mismatch its escrow. `_settleMint` now takes the
+settlement token explicitly — `order.escrowToken` for fills, the current payment token for market
+orders. Test: `test_fillMint_afterPaymentTokenChange_settlesInEscrowToken`.
+
+Two items were left as documented recommendations (Low / operational): keep `migrateToken` +
+`applySplit` in one multisig transaction (skipping `applySplit` makes converted tokens temporarily
+unredeemable — liveness only), and an optional `migrateToken` `newToken == oldToken` guard.
+
+Full suite: **634 passing**.
