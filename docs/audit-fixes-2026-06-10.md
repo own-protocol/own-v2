@@ -1,0 +1,97 @@
+# Own Protocol v2 — Audit Remediation Log
+
+**Started:** 2026-06-10
+**Branch:** `lending`
+**Source audit:** [`docs/audit-2026-06-09.md`](./audit-2026-06-09.md)
+
+This document tracks the fixes applied for findings in the 2026-06-09 audit. Each entry records the
+root cause, the fix, the files touched, and the regression tests that lock the behavior in. It is
+updated as findings are remediated.
+
+## Status
+
+| ID | Severity | Title | Status |
+|----|----------|-------|--------|
+| C-01 | Critical | `verifyPrice` has no staleness check; stale signed prices drain collateral | **Fixed** |
+| H-01 | High | `forceExecuteOrder` accepts a halted (wind-down) vault as collateral source | Open |
+| H-02 | High | Resting redeem escrow stranded after `migrateToken` (stock split) | Open |
+| H-03 | High | Withdrawal util gate combines a stale cached mark with live `totalAssets` | Open |
+
+---
+
+## C-01 — `verifyPrice` staleness / price-manipulation (Critical) — **Fixed**
+
+### Root cause
+
+The inline proof path `OracleVerifier.verifyPrice` (and the Pyth equivalent) verified only the
+signature and `price != 0` — it never bounded the proof's `timestamp`. The signed digest carries no
+nonce, so **every price the signer ever produced is a valid proof forever.** Because all consumers
+pass caller-supplied `priceData`, an attacker could replay the most favorable historical price:
+
+- **Force-redeem** settled at the *submitted* asset price (only required `price >= limitPrice`) and
+  converted to collateral at a *submitted* collateral price — pick the highest asset price + lowest
+  collateral price to over-release vault collateral.
+- **Borrow / liquidate / absorbBadDebt** valued collateral / health at a submitted price — pick a
+  stale high price to over-borrow, or a stale low price to force a liquidation.
+
+This was pre-existing on `main` as well (the force-redeem collateral-over-release vector); the
+`lending` branch widened it to borrowing and liquidation.
+
+### Fix
+
+The freshness rule is context-specific, so it lives in the **consumers**, not in `verifyPrice`
+(which stays a pure signature primitive returning `(price, timestamp)` — it must still accept old
+prices for the force-redeem *asset* leg).
+
+1. **Force-redeem asset leg — settle at the limit, prove reachability in-window.**
+   `OwnMarket.forceExecuteOrder` now requires the asset proof's timestamp to fall in the order's live
+   window `[createdAt, now]` and to reach the limit, then values the payout at the user's own
+   `limitPrice` — *not* the submitted price. A replayed/cherry-picked asset proof can no longer
+   inflate settlement. (Mirrors the pre-refactor `main` semantics: the user is owed a fill at their
+   limit, not the best price in the window.)
+
+2. **Force-redeem collateral leg — must be current.**
+   `OwnMarket._convertToCollateral` rejects a collateral proof whose timestamp is in the future or
+   older than `registry.priceMaxAge()`.
+
+3. **Borrow / liquidate / absorbBadDebt — must be current.**
+   `BorrowManager._verifyPrice` rejects a price proof that is future-dated or older than
+   `registry.priceMaxAge()`.
+
+4. **Governance-tunable freshness.**
+   `ProtocolRegistry` gained `priceMaxAge` — set explicitly in the constructor (reverts on zero) and
+   updatable by governance via `setPriceMaxAge` (immediate, `onlyOwner`). Both consumers read it, so
+   there is a single tunable source of truth. Deployment value: `2 minutes`.
+
+### Files
+
+- `src/core/OracleVerifier.sol` — unchanged primitive (documented: no max-age here, by design).
+- `src/core/OwnMarket.sol` — asset-leg window check + settle-at-limit; collateral-leg staleness check.
+- `src/core/BorrowManager.sol` — `_verifyPrice` freshness check.
+- `src/core/ProtocolRegistry.sol` (+ `IProtocolRegistry`) — `priceMaxAge` param (constructor + setter).
+- `src/interfaces/IOwnMarket.sol` — `AssetPriceProofOutsideWindow`, `StaleCollateralPrice` errors.
+- `src/interfaces/IBorrowManager.sol` — `StalePrice(timestamp, maxAge)` error.
+
+### Tests
+
+- `test/unit/OwnMarket.t.sol`:
+  - `test_forceExecuteOrder_settlesAtLimitNotProof` — payout valued at limit even with a 2× proof.
+  - `test_forceExecuteOrder_assetProofWithinWindow_succeeds` — old-but-in-window proof accepted.
+  - `test_forceExecuteOrder_assetProofBeforeWindow_reverts` — proof predating the order rejected.
+  - `test_forceExecuteOrder_staleCollateralPrice_reverts` — stale collateral proof rejected.
+- `test/unit/BorrowManager.t.sol`: `test_borrow_stalePrice_reverts`.
+- `test/unit/ProtocolRegistry.t.sol`: `test_constructor_setsPriceMaxAge`,
+  `test_constructor_zeroPriceMaxAge_reverts`, `test_setPriceMaxAge_updatesAndEmits`,
+  `test_setPriceMaxAge_onlyOwner_reverts`, `test_setPriceMaxAge_zero_reverts`.
+- Updated `test/integration/OrderLifecycle.t.sol` force-exec tests to the settle-at-limit semantics.
+
+Full suite: **616 passing**.
+
+### Residual / follow-ups
+
+- **Intra-window replay (bounded, by design):** the collateral / borrow legs accept any
+  validly-signed price within `priceMaxAge`. Impact is bounded to intra-window price drift. Full
+  closure would require a monotonic sequence number in the signed digest — tracked as hardening, not
+  a blocker.
+- **`main` carries the same root flaw.** This fix is on `lending`; if `main` is the deployed
+  testnet code, the equivalent fix must land there too.
