@@ -138,6 +138,10 @@ interface IOwnMarket {
     /// @notice The vault is not registered in the factory.
     error VaultNotRegistered(address vault);
 
+    /// @notice The named vault's collateral is excluded from the global pool (halted / winding down),
+    ///         so it cannot be drawn on for force execution.
+    error VaultExcludedFromPool(address vault);
+
     /// @notice The global payment token is not configured.
     error PaymentTokenNotSet();
 

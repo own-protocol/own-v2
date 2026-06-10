@@ -13,7 +13,7 @@ updated as findings are remediated.
 | ID | Severity | Title | Status |
 |----|----------|-------|--------|
 | C-01 | Critical | `verifyPrice` has no staleness check; stale signed prices drain collateral | **Fixed** |
-| H-01 | High | `forceExecuteOrder` accepts a halted (wind-down) vault as collateral source | Open |
+| H-01 | High | `forceExecuteOrder` accepts a halted (wind-down) vault as collateral source | **Fixed** |
 | H-02 | High | Resting redeem escrow stranded after `migrateToken` (stock split) | Open |
 | H-03 | High | Withdrawal util gate combines a stale cached mark with live `totalAssets` | Open |
 
@@ -95,3 +95,33 @@ Full suite: **616 passing**.
   a blocker.
 - **`main` carries the same root flaw.** This fix is on `lending`; if `main` is the deployed
   testnet code, the equivalent fix must land there too.
+
+---
+
+## H-01 — Force-execution can drain a halted (excluded) vault (High) — **Fixed**
+
+### Root cause
+
+`forceExecuteOrder` let the caller name *any registered* vault as the collateral source. A halted
+vault has had its collateral excluded from the global risk pool (`onVaultHalted`) and is winding down
+to its LPs via instant withdrawals — it no longer backs any exposure. But `releaseCollateral` is
+`onlyMarket` with no status check, so a redeemer could name the halted vault, drain its collateral,
+while `closeExposure` reduced the *global* book that other vaults were backing. The halted vault's
+LPs (who were mid-exit) absorbed the loss.
+
+### Fix
+
+`forceExecuteOrder` now rejects an excluded vault: after the `isRegisteredVault` check it calls
+`vmgr.isVaultExcluded(vault)` and reverts `VaultExcludedFromPool(vault)`.
+
+### Files
+
+- `src/core/OwnMarket.sol` — `isVaultExcluded` guard in `forceExecuteOrder`.
+- `src/interfaces/IOwnMarket.sol` — `VaultExcludedFromPool(address vault)` error.
+
+### Tests
+
+- `test/unit/OwnMarket.t.sol`: `test_forceExecuteOrder_excludedVault_reverts` (+ default
+  `isVaultExcluded → false` mock in `setUp`).
+
+Full suite: **617 passing**.

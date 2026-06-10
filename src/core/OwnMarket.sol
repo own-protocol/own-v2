@@ -186,8 +186,8 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         if (order.orderType != OrderType.Redeem) revert ForceMintNotAllowed(orderId);
 
         IVaultManager vmgr = IVaultManager(registry.vaultManager());
-        // The caller names the collateral source; it must be a registered vault.
         if (!vmgr.isRegisteredVault(vault)) revert VaultNotRegistered(vault);
+        if (vmgr.isVaultExcluded(vault)) revert VaultExcludedFromPool(vault);
         // Pause and halt both disable the force path.
         if (vmgr.isTradingPaused(order.asset)) revert AssetPaused(order.asset);
         if (vmgr.isAssetHalted(order.asset)) revert ForceDisabledDuringHalt(order.asset);

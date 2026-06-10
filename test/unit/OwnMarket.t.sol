@@ -81,6 +81,12 @@ contract OwnMarketTest is BaseTest {
             abi.encodeWithSelector(IVaultManager.isRegisteredVault.selector, mockVault),
             abi.encode(true)
         );
+        // Vault not excluded from the global pool by default (force-execute rejects excluded vaults).
+        vm.mockCall(
+            mockVaultManager,
+            abi.encodeWithSelector(IVaultManager.isVaultExcluded.selector, mockVault),
+            abi.encode(false)
+        );
         // Collateral token (18 decimals) — used by force-execution collateral conversion.
         vm.mockCall(mockVault, abi.encodeWithSignature("asset()"), abi.encode(address(weth)));
         vm.mockCall(mockVault, abi.encodeWithSelector(IOwnVault.releaseCollateral.selector), abi.encode());
@@ -656,6 +662,24 @@ contract OwnMarketTest is BaseTest {
 
         vm.prank(Actors.MINTER1);
         vm.expectRevert(abi.encodeWithSelector(IOwnMarket.ForceDisabledDuringHalt.selector, TSLA));
+        market.forceExecuteOrder(orderId, mockVault, _assetPriceData(TSLA_PRICE), _assetPriceData(ETH_PRICE));
+    }
+
+    /// @dev H-01 regression: a halted/excluded vault (collateral removed from the global pool and
+    ///      winding down to its LPs) cannot be named as the force-execute collateral source.
+    function test_forceExecuteOrder_excludedVault_reverts() public {
+        uint256 amount = 4e18;
+        uint256 orderId = _placeRedeem(Actors.MINTER1, amount, TSLA_PRICE);
+        vm.warp(block.timestamp + CLAIM_THRESHOLD);
+
+        vm.mockCall(
+            mockVaultManager,
+            abi.encodeWithSelector(IVaultManager.isVaultExcluded.selector, mockVault),
+            abi.encode(true)
+        );
+
+        vm.prank(Actors.MINTER1);
+        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.VaultExcludedFromPool.selector, mockVault));
         market.forceExecuteOrder(orderId, mockVault, _assetPriceData(TSLA_PRICE), _assetPriceData(ETH_PRICE));
     }
 
