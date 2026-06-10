@@ -57,6 +57,7 @@ interface IVaultManager {
     event AssetHalted(bytes32 indexed asset, uint256 haltPrice);
     event HaltRedeemAddressUpdated(address indexed oldAddr, address indexed newAddr);
     event ClaimThresholdUpdated(uint256 oldThreshold, uint256 newThreshold);
+    event SplitApplied(bytes32 indexed asset, uint256 ratio, uint256 newUnits, uint256 newMark);
 
     // ──────────────────────────────────────────────────────────
     //  Errors
@@ -79,6 +80,7 @@ interface IVaultManager {
     error AlreadySigner(address signer);
     error AssetAlreadyHalted(bytes32 asset);
     error InvalidHaltPrice();
+    error InvalidRatio();
     error VaultAlreadyExcluded(address vault);
 
     // ──────────────────────────────────────────────────────────
@@ -138,6 +140,12 @@ interface IVaultManager {
     // ──────────────────────────────────────────────────────────
 
     function setAssetCapUSD(bytes32 asset, uint256 capUSD) external;
+
+    /// @notice Re-denominate an asset's exposure for a stock split: units *= ratio, mark /= ratio.
+    ///         USD exposure is invariant. Admin-only; run while the asset is paused.
+    /// @param asset Asset ticker.
+    /// @param ratio New units per old unit, 1e18-scaled (e.g. 3:1 split => 3e18).
+    function applySplit(bytes32 asset, uint256 ratio) external;
     function setGlobalMaxUtilizationBps(
         uint256 bps
     ) external;

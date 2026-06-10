@@ -240,6 +240,38 @@ contract VaultManagerTest is Test {
         assertEq(manager.globalUtilizationBps(), 1000); // 100k / 1M = 10%
     }
 
+    // ──────────────────────────────────────────────────────────
+    //  applySplit
+    // ──────────────────────────────────────────────────────────
+
+    function test_applySplit_redenominatesUnitsAndMark_usdInvariant() public {
+        _bootstrap();
+        _open(1000e18);
+        uint256 usdBefore = manager.globalExposureUSD();
+
+        vm.prank(admin);
+        manager.applySplit(TSLA, 3e18); // 3:1 split
+
+        assertEq(manager.globalAssetUnits(TSLA), 3000e18, "units x3");
+        assertEq(manager.assetMark(TSLA), TSLA_MARK / 3, "mark /3");
+        assertEq(manager.globalExposureUSD(), usdBefore, "USD exposure invariant across split");
+    }
+
+    function test_applySplit_onlyAdmin_reverts() public {
+        _bootstrap();
+        _open(1000e18);
+        vm.expectRevert(IVaultManager.OnlyAdmin.selector);
+        vm.prank(market);
+        manager.applySplit(TSLA, 3e18);
+    }
+
+    function test_applySplit_zeroRatio_reverts() public {
+        _bootstrap();
+        vm.expectRevert(IVaultManager.InvalidRatio.selector);
+        vm.prank(admin);
+        manager.applySplit(TSLA, 0);
+    }
+
     function test_openExposure_onlyMarket_reverts() public {
         _bootstrap();
         vm.expectRevert(IVaultManager.OnlyMarket.selector);

@@ -228,8 +228,12 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
 
         // Record position. principal is scaled debt: actual debt grows via index.
         uint256 scaledDebt = LendingMath.actualToScaled(stablecoinAmount, idx);
-        _positions[msg.sender][asset] =
-            Position({eTokenCollateral: eTokenAmount, principal: scaledDebt, interestIndex: idx});
+        _positions[msg.sender][asset] = Position({
+            eTokenCollateral: eTokenAmount,
+            principal: scaledDebt,
+            interestIndex: idx,
+            collateralToken: eToken
+        });
         _totalScaledDebt += scaledDebt;
 
         emit Borrowed(msg.sender, asset, eTokenAmount, stablecoinAmount, oraclePrice);
@@ -250,6 +254,8 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
         uint256 currentDebt = LendingMath.scaledToActual(p.principal, idx);
         uint256 repayAmount = amount > currentDebt ? currentDebt : amount;
         if (repayAmount == 0) revert ZeroAmount();
+
+        address collateralToken = p.collateralToken;
 
         // Pull stablecoin from caller.
         IERC20(stablecoin).safeTransferFrom(msg.sender, address(this), repayAmount);
@@ -277,12 +283,9 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
             _totalScaledDebt -= scaledRepay;
         }
 
-        // Send eToken collateral back. Pass-through holders mapping must include
-        // the manager so dividends earned during the borrow window follow the
-        // borrower on this transfer.
+        // Return the exact token posted (may be a legacy token after a migration; borrower converts).
         if (collateralReleased > 0) {
-            address eToken = _resolveActiveEToken(asset);
-            IERC20(eToken).safeTransfer(msg.sender, collateralReleased);
+            IERC20(collateralToken).safeTransfer(msg.sender, collateralReleased);
         }
 
         emit Repaid(msg.sender, asset, repayAmount, collateralReleased, _positions[msg.sender][asset].principal);
@@ -319,10 +322,11 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
     ///      leftover debt becomes a zero-collateral residual for {absorbBadDebt}.
     function _liquidate(address borrower, bytes32 asset, uint256 repayAmount, uint256 oraclePrice) internal {
         Position storage p = _positions[borrower][asset];
+        // Value the posted collateral at its effective price (legacy collateral scales by split ratio).
+        uint256 price = _effectivePrice(p.collateralToken, asset, oraclePrice);
         uint256 currentDebt = LendingMath.scaledToActual(p.principal, _index);
-        uint256 hf = LendingMath.healthFactor(
-            p.eTokenCollateral, currentDebt, oraclePrice, liquidationThresholdBps, _stableDecimals
-        );
+        uint256 hf =
+            LendingMath.healthFactor(p.eTokenCollateral, currentDebt, price, liquidationThresholdBps, _stableDecimals);
         if (hf >= PRECISION) revert NotLiquidatable(hf);
 
         // Close factor: cap a single liquidation while the position is only
@@ -332,14 +336,14 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
         if (repayAmount > maxRepay) repayAmount = maxRepay;
 
         // Bonus-based seize; must be coverable by remaining collateral.
-        uint256 seize = LendingMath.seizeAmount(repayAmount, oraclePrice, liquidationBonusBps, _stableDecimals);
+        uint256 seize = LendingMath.seizeAmount(repayAmount, price, liquidationBonusBps, _stableDecimals);
         if (seize > p.eTokenCollateral) revert SeizeExceedsCollateral(seize, p.eTokenCollateral);
 
         // Pull the repay from the liquidator, forward to Aave.
         IERC20(stablecoin).safeTransferFrom(msg.sender, address(this), repayAmount);
         _repayAaveAndSweep(repayAmount);
 
-        address eToken = _resolveActiveEToken(asset);
+        address eToken = p.collateralToken;
         uint256 returnedToBorrower;
         if (repayAmount == currentDebt) {
             // Full close — release any collateral left after the seize.
@@ -443,6 +447,15 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
         uint256 idx = _index;
         uint256 currentDebt = LendingMath.scaledToActual(p.principal, idx);
 
+        // The halt redemption settles the active token only; convert legacy collateral first.
+        address eToken = _resolveActiveEToken(asset);
+        if (p.collateralToken != eToken && p.eTokenCollateral > 0) {
+            uint256 converted =
+                IOwnMarket(registry.market()).convertLegacy(asset, p.collateralToken, p.eTokenCollateral);
+            p.eTokenCollateral = converted;
+            p.collateralToken = eToken;
+        }
+
         // eTokens needed to cover the debt at the halt price (ceil — cover the full debt),
         // capped at the position's collateral.
         uint256 debtUSD = LendingMath.stableToUSD(currentDebt, _stableDecimals);
@@ -466,7 +479,6 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
         _totalScaledDebt -= scaledRepay;
 
         uint256 returnedToBorrower = collateral - eTokenToCover;
-        address eToken = _resolveActiveEToken(asset);
 
         if (scaledRepay == p.principal) {
             // Debt fully cleared — return any leftover collateral and close the position.
@@ -515,9 +527,9 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
         if (p.principal == 0) return type(uint256).max;
         uint256 idx = _projectedIndex();
         uint256 currentDebt = LendingMath.scaledToActual(p.principal, idx);
-        return LendingMath.healthFactor(
-            p.eTokenCollateral, currentDebt, oraclePrice, liquidationThresholdBps, _stableDecimals
-        );
+        uint256 price = _effectivePrice(p.collateralToken, asset, oraclePrice);
+        return
+            LendingMath.healthFactor(p.eTokenCollateral, currentDebt, price, liquidationThresholdBps, _stableDecimals);
     }
 
     // ──────────────────────────────────────────────────────────
@@ -701,6 +713,18 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
         bytes32 asset
     ) internal view returns (address) {
         return IAssetRegistry(registry.assetRegistry()).getActiveToken(asset);
+    }
+
+    /// @dev Price of one `collateralToken` unit given the active asset price. Active collateral uses
+    ///      the raw price; legacy collateral scales by its split ratio (legacyUnits × ratio = active).
+    function _effectivePrice(
+        address collateralToken,
+        bytes32 asset,
+        uint256 activePrice
+    ) internal view returns (uint256) {
+        if (collateralToken == _resolveActiveEToken(asset)) return activePrice;
+        uint256 ratio = IAssetRegistry(registry.assetRegistry()).legacyRatioToActive(collateralToken);
+        return activePrice.mulDiv(ratio, PRECISION);
     }
 
     /// @dev Verify a signed price proof for `asset` via its primary oracle and

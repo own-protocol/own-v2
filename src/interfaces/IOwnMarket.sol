@@ -56,6 +56,11 @@ interface IOwnMarket {
     /// @notice Emitted when a holder redeems a halted asset against the halt redeem address.
     event OrderRedeemedHalted(address indexed user, bytes32 indexed asset, uint256 eTokenAmount, uint256 payout);
 
+    /// @notice Emitted when a holder converts a legacy token to the active token after a migration.
+    event LegacyConverted(
+        address indexed user, bytes32 indexed asset, address indexed legacyToken, uint256 amountIn, uint256 amountOut
+    );
+
     /// @notice Emitted when a user cancels the remaining amount of a resting order.
     event OrderCancelled(uint256 indexed orderId, address indexed user);
 
@@ -163,6 +168,15 @@ interface IOwnMarket {
     /// @notice The halt redeem address is not configured.
     error HaltRedeemAddressNotSet();
 
+    /// @notice The order's escrowed token was migrated to a legacy token; recover via cancel/expire.
+    error OrderTokenMigrated(uint256 orderId);
+
+    /// @notice The token is not a legacy token of the asset.
+    error NotLegacyToken(address token);
+
+    /// @notice No conversion ratio is configured for the legacy token.
+    error RatioNotSet(address token);
+
     /// @notice No oracle is configured for the asset.
     error AssetOracleNotSet(bytes32 asset);
 
@@ -239,6 +253,15 @@ interface IOwnMarket {
     /// @param eTokenAmount eToken amount to redeem.
     /// @return payout      Payment-token amount paid to the caller.
     function redeemHalted(bytes32 asset, uint256 eTokenAmount) external returns (uint256 payout);
+
+    /// @notice Convert a legacy token to the current active token at the asset's migration ratio.
+    /// @dev Burns `amount` legacy and mints `amount * ratio / 1e18` active to the caller. Allowed
+    ///      while trading is paused/halted so legacy holders can always reach the active token.
+    /// @param asset       Asset ticker.
+    /// @param legacyToken Legacy token to convert.
+    /// @param amount      Legacy token amount to convert.
+    /// @return newAmount  Active token amount minted.
+    function convertLegacy(bytes32 asset, address legacyToken, uint256 amount) external returns (uint256 newAmount);
 
     /// @notice Cancel the remaining amount of a resting order and return its escrow.
     /// @param orderId Order to cancel.

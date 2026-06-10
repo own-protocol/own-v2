@@ -621,3 +621,70 @@ contracts; retained for reference / future use):
 | **ERC-4626** | OwnVault implements the tokenized vault standard for LP shares            |
 | **ERC-7540** | OwnVault follows the async deposit/withdrawal pattern (request → fulfill) |
 | **EIP-712**  | Used for typed structured data hashing in permit signatures               |
+
+---
+
+## 13. Token Migration (Stock Splits)
+
+When an underlying asset undergoes a corporate action that changes its denomination (e.g. a stock
+split), the asset keeps its ticker but its eToken is **migrated**: the current eToken becomes a
+**legacy** token and a new eToken becomes active. A 1e18-scaled `ratio` defines new tokens per old
+token (a 3:1 split → `ratio = 3e18`).
+
+### Convert-first model
+
+Legacy tokens are **not directly redeemable or tradeable**. A holder's only on-chain action with a
+legacy token is to convert it to the current active token:
+
+```
+OwnMarket.convertLegacy(asset, legacyToken, amount)
+  → burns `amount` legacy, mints `amount × ratio / 1e18` active to the caller
+```
+
+After conversion the holder uses the normal redeem/trade paths. `convertLegacy` is intentionally
+**exempt from trading pause and asset halt** — it is a 1:1 re-denomination (no price exposure), so
+legacy holders can always reach the active token, and therefore redemption, even while trading is
+frozen. Conversion does not change global exposure (see `applySplit` below); it only re-denominates
+the holder's tokens.
+
+Each legacy token stores a single ratio that converts it **directly to the current active token**.
+On every subsequent split, prior legacy ratios are re-based (multiplied by the new ratio), so a token
+two splits back still converts to the live active token in one call.
+
+### Exposure re-denomination (`VaultManager.applySplit`)
+
+A split is **USD-neutral** for protocol exposure — only the unit count and per-unit mark change.
+`applySplit(asset, ratio)` (admin) sets `globalAssetUnits *= ratio` and `assetMark /= ratio`, leaving
+the per-asset exposure USD and the per-asset USD cap invariant. This must run during the split so the
+keeper-cached mark and the unit book stay consistent.
+
+### Resting orders across a migration
+
+A resting order snapshots the exact token it escrowed (`Order.escrowToken`). After a migration:
+
+- `cancelOrder` / `expireOrder` return the **original** escrowed (now legacy) token — never stranded.
+- `fillOrder` / `forceExecuteOrder` on a redeem order whose escrow is now a legacy token revert
+  (`OrderTokenMigrated`); the owner cancels to recover the original token and converts it.
+
+### Borrow positions across a migration
+
+A borrow position snapshots the exact eToken posted (`Position.collateralToken`). The position is
+left untouched by the split — it stays denominated in the legacy token and is **valued at its split
+ratio**: `effectivePrice = activePrice × legacyRatio`. As a result:
+
+- The position's health factor is **unchanged** the instant a split is applied (collateral amount
+  constant, effective price tracks the active token). A split alone never triggers a liquidation.
+- `repay` returns the original (legacy) collateral; the borrower converts it afterward.
+- `liquidate` values and seizes the legacy collateral at its effective price; the liquidator converts
+  the seized tokens.
+- `settleHaltedPosition` (used when the asset is later halted) converts the position's legacy
+  collateral to the active token internally, then settles at the halt price via `redeemHalted`.
+
+### Admin runbook for a split
+
+1. Pause the asset's trading (`setAssetTradingPaused(asset, true)`).
+2. Deploy the new eToken; `AssetRegistry.migrateToken(ticker, newToken, ratio)`.
+3. `VaultManager.applySplit(asset, ratio)`; push the split-adjusted oracle price and pull the mark.
+4. Unpause (`setAssetTradingPaused(asset, false)`).
+5. Holders call `convertLegacy`; borrowers' positions continue and resolve through normal
+   repay/liquidate/settle.

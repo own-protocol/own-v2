@@ -6,6 +6,7 @@ import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {BorrowManager} from "../../src/core/BorrowManager.sol";
 import {OwnMarket} from "../../src/core/OwnMarket.sol";
 import {OwnVault} from "../../src/core/OwnVault.sol";
+import {IBorrowManager} from "../../src/interfaces/IBorrowManager.sol";
 import {IOwnMarket} from "../../src/interfaces/IOwnMarket.sol";
 import {IVaultManager} from "../../src/interfaces/IVaultManager.sol";
 import {AssetConfig, BPS, OrderStatus, OrderType, PRECISION, Quote} from "../../src/interfaces/types/Types.sol";
@@ -339,5 +340,70 @@ contract RFQAusdcFlowsTest is BaseTest {
         vm.prank(Actors.MINTER1);
         vm.expectRevert(abi.encodeWithSelector(IVaultManager.GlobalUtilizationBreached.selector, 9000, MAX_UTIL_BPS));
         market.executeOrder(q, sig);
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Token migration (stock split)
+    // ──────────────────────────────────────────────────────────
+
+    /// @dev Apply a 3:1 split to TSLA (new active token, re-denominated exposure, 1/3 price).
+    function _split3to1() internal returns (EToken v2, uint256 newPx) {
+        v2 = new EToken("Own TSLA v2", "eTSLAv2", TSLA, address(protocolRegistry), address(usdc));
+        vm.startPrank(Actors.ADMIN);
+        assetRegistry.migrateToken(TSLA, address(v2), 3e18);
+        vaultManager.applySplit(TSLA, 3e18);
+        vm.stopPrank();
+        newPx = TSLA_PRICE / 3;
+        _setOraclePrice(TSLA, newPx);
+        _pullAssetPrice(TSLA);
+    }
+
+    /// @dev Holder path: mint → split → convertLegacy → redeem the converted active token.
+    function test_migration_convertLegacyThenRedeem() public {
+        _marketMint(Actors.MINTER1, 25_000e6); // 100 eTSLA, exposure 100 units
+        (EToken v2, uint256 newPx) = _split3to1();
+
+        vm.prank(Actors.MINTER1);
+        uint256 out = market.convertLegacy(TSLA, address(eTSLA), 100e18);
+        assertEq(out, 300e18, "3x active tokens");
+        assertEq(eTSLA.balanceOf(Actors.MINTER1), 0, "legacy burned");
+        assertEq(v2.balanceOf(Actors.MINTER1), 300e18, "active minted");
+
+        // The converted (active) tokens redeem normally; exposure clears.
+        Quote memory q = _quote(0, Actors.MINTER1, OrderType.Redeem, 300e18, newPx);
+        bytes memory sig = _signQuote(IOwnMarket(address(market)), q, vm1SignerPk);
+        vm.prank(Actors.MINTER1);
+        market.executeOrder(q, sig);
+
+        assertEq(v2.balanceOf(Actors.MINTER1), 0, "converted tokens redeemed");
+        assertEq(vaultManager.globalAssetUnits(TSLA), 0, "exposure cleared");
+    }
+
+    /// @dev Borrow path under a later halt: a legacy-collateral position is settled by converting the
+    ///      collateral to the active token internally, redeeming at the halt price, and repaying Aave.
+    function test_migration_settleHaltedPosition_legacyCollateral() public {
+        _marketMint(Actors.MINTER1, 25_000e6); // 100 eTSLA
+        uint256 eAmt = 100e18;
+        uint256 stable = 10_000e6;
+        vm.startPrank(Actors.MINTER1);
+        eTSLA.approve(address(borrowManager), eAmt);
+        borrowManager.borrow(TSLA, eAmt, stable, _priceData(TSLA_PRICE));
+        vm.stopPrank();
+        assertEq(eTSLA.balanceOf(address(borrowManager)), eAmt, "legacy collateral in custody");
+
+        (EToken v2,) = _split3to1();
+
+        // Halt the asset at the split-adjusted price; halt fund = VM1 (USDC + market approval set up).
+        uint256 haltPx = TSLA_PRICE / 3;
+        _haltAsset(TSLA, haltPx);
+        _setHaltRedeemAddress(Actors.VM1);
+
+        borrowManager.settleHaltedPosition(Actors.MINTER1, TSLA);
+
+        IBorrowManager.Position memory pos = borrowManager.positionOf(Actors.MINTER1, TSLA);
+        assertEq(pos.principal, 0, "position settled");
+        assertEq(aavePool.debtOf(address(vault), address(usdc)), 0, "aave debt cleared");
+        // Cover needed ~120 active tokens (10k debt / $83.33, ceil); 300 - 120 = ~180 to borrower.
+        assertApproxEqAbs(v2.balanceOf(Actors.MINTER1), 180e18, 1, "surplus active collateral returned");
     }
 }

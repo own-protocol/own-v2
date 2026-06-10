@@ -219,4 +219,69 @@ contract BorrowAndLiquidateFlowTest is BaseTest {
         assertApproxEqAbs(eTSLA.claimableRewards(Actors.MINTER1), reward, 1);
         assertEq(eTSLA.claimableRewards(address(borrowManager)), 0);
     }
+
+    /// @dev A 3:1 split mid-borrow: the position stays in the legacy token, stays correctly valued
+    ///      (HF preserved), and repay returns the original (legacy) token.
+    function test_borrowAcrossSplit_positionContinuesInLegacyToken() public {
+        uint256 eAmt = 100e18;
+        uint256 stable = 10_000e6;
+        eTSLA.mint(Actors.MINTER1, eAmt);
+        vm.startPrank(Actors.MINTER1);
+        eTSLA.approve(address(borrowManager), eAmt);
+        borrowManager.borrow(ASSET, eAmt, stable, _priceData(TSLA_PX));
+        vm.stopPrank();
+
+        uint256 hfBefore = borrowManager.healthFactor(Actors.MINTER1, ASSET, TSLA_PX);
+
+        // 3:1 split — new active token, ratio 3, active oracle price drops to ~1/3.
+        vm.prank(Actors.ADMIN);
+        assetRegistry.migrateToken(ASSET, makeAddr("eTSLAv2"), 3e18);
+        uint256 newPx = TSLA_PX / 3;
+
+        // Legacy collateral valued at ratio x newPx == its pre-split value: HF preserved.
+        uint256 hfAfter = borrowManager.healthFactor(Actors.MINTER1, ASSET, newPx);
+        assertApproxEqAbs(hfAfter, hfBefore, 1e9, "HF preserved across split");
+
+        IBorrowManager.Position memory pos = borrowManager.positionOf(Actors.MINTER1, ASSET);
+        assertEq(pos.collateralToken, address(eTSLA), "collateral token snapshotted");
+
+        // Repay in full → original (legacy) eTSLA returned; borrower converts separately.
+        usdc.mint(Actors.MINTER1, stable);
+        vm.startPrank(Actors.MINTER1);
+        usdc.approve(address(borrowManager), stable);
+        borrowManager.repay(ASSET, type(uint256).max);
+        vm.stopPrank();
+        assertEq(eTSLA.balanceOf(Actors.MINTER1), eAmt, "original (legacy) collateral returned");
+    }
+
+    /// @dev A legacy-collateral position is liquidatable at its effective (ratio-scaled) price, and
+    ///      the liquidator seizes the original (legacy) token.
+    function test_liquidateLegacyPosition_atEffectivePrice() public {
+        uint256 eAmt = 100e18;
+        uint256 stable = 10_000e6;
+        eTSLA.mint(Actors.MINTER1, eAmt);
+        vm.startPrank(Actors.MINTER1);
+        eTSLA.approve(address(borrowManager), eAmt);
+        borrowManager.borrow(ASSET, eAmt, stable, _priceData(TSLA_PX));
+        vm.stopPrank();
+
+        // 3:1 split, then the active price crashes to $40 (effective = $120 for the legacy token).
+        vm.prank(Actors.ADMIN);
+        assetRegistry.migrateToken(ASSET, makeAddr("eTSLAv2"), 3e18);
+        uint256 activeCrashPx = 40e18; // effective 120e18 → HF 0.96 → partial close (close factor 50%)
+        _setOraclePrice(ASSET, activeCrashPx);
+
+        // Partial repay of 4000 USDC → seize = 4000 * 1.05 / 120 = 35 eTSLA (legacy).
+        uint256 repay = 4000e6;
+        usdc.mint(Actors.LIQUIDATOR, repay);
+        vm.startPrank(Actors.LIQUIDATOR);
+        usdc.approve(address(borrowManager), repay);
+        borrowManager.liquidate(Actors.MINTER1, ASSET, repay, _priceData(activeCrashPx));
+        vm.stopPrank();
+
+        assertEq(eTSLA.balanceOf(Actors.LIQUIDATOR), 35e18, "liquidator seized legacy collateral");
+        IBorrowManager.Position memory pos = borrowManager.positionOf(Actors.MINTER1, ASSET);
+        assertEq(pos.eTokenCollateral, eAmt - 35e18, "collateral reduced");
+        assertEq(pos.collateralToken, address(eTSLA), "still legacy token");
+    }
 }

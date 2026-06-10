@@ -105,6 +105,8 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         _validateAsset(asset);
         _checkTradeable(asset, orderType);
 
+        address escrowToken = orderType == OrderType.Mint ? _paymentToken() : _activeToken(asset);
+
         orderId = _nextOrderId++;
         _orders[orderId] = Order({
             orderId: orderId,
@@ -116,16 +118,12 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
             limitPrice: limitPrice,
             createdAt: block.timestamp,
             expiry: expiry,
-            status: OrderStatus.Open
+            status: OrderStatus.Open,
+            escrowToken: escrowToken
         });
         _userOrders[msg.sender].push(orderId);
 
-        // Escrow the input.
-        if (orderType == OrderType.Mint) {
-            IERC20(_paymentToken()).safeTransferFrom(msg.sender, address(this), amount);
-        } else {
-            IERC20(_activeToken(asset)).safeTransferFrom(msg.sender, address(this), amount);
-        }
+        IERC20(escrowToken).safeTransferFrom(msg.sender, address(this), amount);
 
         emit OrderPlaced(orderId, msg.sender, uint8(orderType), asset, amount, limitPrice);
     }
@@ -144,6 +142,12 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         // The quote must describe the same order.
         if (quote.user != order.user || quote.asset != order.asset || quote.orderType != order.orderType) {
             revert QuoteTermsMismatch();
+        }
+
+        // A redeem order escrowed in a now-legacy token cannot be filled; the owner cancels/expires
+        // to recover the original token and converts it.
+        if (order.orderType == OrderType.Redeem && order.escrowToken != _activeToken(order.asset)) {
+            revert OrderTokenMigrated(quote.orderId);
         }
 
         uint256 remaining = order.amount - order.filledAmount;
@@ -184,6 +188,8 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         if (order.user != msg.sender) revert OnlyOrderOwner(orderId);
         if (order.status != OrderStatus.Open) revert InvalidOrderStatus(orderId);
         if (order.orderType != OrderType.Redeem) revert ForceMintNotAllowed(orderId);
+        // A redeem order escrowed in a now-legacy token cannot be force-executed; cancel to recover.
+        if (order.escrowToken != _activeToken(order.asset)) revert OrderTokenMigrated(orderId);
 
         IVaultManager vmgr = IVaultManager(registry.vaultManager());
         if (!vmgr.isRegisteredVault(vault)) revert VaultNotRegistered(vault);
@@ -239,6 +245,32 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         vmgr.closeExposure(asset, eTokenAmount);
 
         emit OrderRedeemedHalted(msg.sender, asset, eTokenAmount, payout);
+    }
+
+    /// @inheritdoc IOwnMarket
+    function convertLegacy(
+        bytes32 asset,
+        address legacyToken,
+        uint256 amount
+    ) external nonReentrant returns (uint256 newAmount) {
+        if (amount == 0) revert ZeroAmount();
+
+        IAssetRegistry ar = IAssetRegistry(registry.assetRegistry());
+        address active = ar.getActiveToken(asset);
+        if (legacyToken == active || !ar.isValidToken(asset, legacyToken)) revert NotLegacyToken(legacyToken);
+        uint256 ratio = ar.legacyRatioToActive(legacyToken);
+        if (ratio == 0) revert RatioNotSet(legacyToken);
+
+        // 1:ratio re-denomination — exposure is split-invariant (handled by VaultManager.applySplit),
+        // so no open/close exposure here. Intentionally allowed while trading is paused/halted so
+        // legacy holders can always reach the active token (and thus redemption).
+        newAmount = Math.mulDiv(amount, ratio, PRECISION);
+        if (newAmount == 0) revert ZeroAmount();
+
+        IEToken(legacyToken).burn(msg.sender, amount);
+        IEToken(active).mint(msg.sender, newAmount);
+
+        emit LegacyConverted(msg.sender, asset, legacyToken, amount, newAmount);
     }
 
     /// @inheritdoc IOwnMarket
@@ -393,11 +425,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
     /// @dev Return the unfilled escrow to the order owner.
     function _returnEscrow(Order storage order, uint256 remaining) private {
         if (remaining == 0) return;
-        if (order.orderType == OrderType.Mint) {
-            IERC20(_paymentToken()).safeTransfer(order.user, remaining);
-        } else {
-            IERC20(_activeToken(order.asset)).safeTransfer(order.user, remaining);
-        }
+        IERC20(order.escrowToken).safeTransfer(order.user, remaining);
     }
 
     // ──────────────────────────────────────────────────────────

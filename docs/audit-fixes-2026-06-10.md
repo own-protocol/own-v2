@@ -14,7 +14,7 @@ updated as findings are remediated.
 |----|----------|-------|--------|
 | C-01 | Critical | `verifyPrice` has no staleness check; stale signed prices drain collateral | **Fixed** |
 | H-01 | High | `forceExecuteOrder` accepts a halted (wind-down) vault as collateral source | **Fixed** |
-| H-02 | High | Resting redeem escrow stranded after `migrateToken` (stock split) | Open |
+| H-02 | High | Resting redeem escrow stranded after `migrateToken` (stock split) | **Fixed** |
 | H-03 | High | Withdrawal util gate combines a stale cached mark with live `totalAssets` | Open |
 
 ---
@@ -125,3 +125,54 @@ LPs (who were mid-exit) absorbed the loss.
   `isVaultExcluded → false` mock in `setUp`).
 
 Full suite: **617 passing**.
+
+---
+
+## H-02 — Resting redeem escrow stranded after `migrateToken` (High) — **Fixed**
+
+### Root cause
+
+A resting redeem order escrowed the eToken resolved at placement, but every later path re-resolved
+`getActiveToken`. After a stock-split `migrateToken`, the market held the *old* token while
+cancel/expire/fill/force all targeted the *new* one — so escrow recovery reverted and the user's
+legacy eTokens were locked permanently. The same staleness affected borrow positions (collateral
+held in the old token; all paths resolved the new one) and left legacy holders with no redemption
+path at all.
+
+### Fix
+
+Token migration is now a first-class, end-to-end flow built on a **convert-first** model (full design
+in `docs/protocol.md` §13):
+
+- **`Order.escrowToken`** snapshots the escrowed token at `placeOrder`; `_returnEscrow` returns it, so
+  cancel/expire always recover the original token. `fillOrder`/`forceExecuteOrder` on a migrated
+  redeem order revert `OrderTokenMigrated` (recover via cancel/convert).
+- **`OwnMarket.convertLegacy`** burns a legacy token and mints the active token at the migration
+  ratio. Pause/halt-exempt so legacy holders can always reach redemption.
+- **`AssetRegistry.migrateToken(ticker, newToken, ratio)`** records a per-legacy-token ratio,
+  re-based on each split so any legacy token converts directly to the live active token.
+- **`VaultManager.applySplit(asset, ratio)`** re-denominates exposure (`units *= ratio`,
+  `mark /= ratio`), USD-invariant.
+- **`Position.collateralToken`** snapshots borrow collateral; repay/liquidate act on the stored
+  token, valued at `activePrice × legacyRatio`. A split never moves a position's health factor;
+  `settleHaltedPosition` converts legacy collateral to active internally before halt settlement.
+
+### Files
+
+- `src/core/AssetRegistry.sol` (+`IAssetRegistry`) — ratio storage, `migrateToken(ratio)`, getter.
+- `src/core/VaultManager.sol` (+`IVaultManager`) — `applySplit`.
+- `src/core/OwnMarket.sol` (+`IOwnMarket`, `Types.Order`) — `convertLegacy`, `escrowToken`, migrated-order guards.
+- `src/core/BorrowManager.sol` (+`IBorrowManager`) — `Position.collateralToken`, `_effectivePrice`, legacy-aware repay/liquidate/settle.
+
+### Tests
+
+- `test/unit/AssetRegistry.t.sol` — ratio set + compounding across splits, zero-ratio revert.
+- `test/unit/VaultManager.t.sol` — `applySplit` USD invariance, access/zero-ratio reverts.
+- `test/unit/OwnMarket.t.sol` — `convertLegacy` (forward, active-token revert, halted-exempt);
+  cancel returns original token; fill/force revert after migration.
+- `test/integration/BorrowAndLiquidateFlow.t.sol` — HF preserved across split; repay returns legacy;
+  liquidation at effective price.
+- `test/integration/RFQAusdcFlows.t.sol` — convert-then-redeem; `settleHaltedPosition` with legacy
+  collateral.
+
+Full suite: **633 passing**.

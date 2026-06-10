@@ -23,15 +23,18 @@ interface IBorrowManager {
     // ──────────────────────────────────────────────────────────
 
     /// @notice A user's borrow position for one asset.
-    /// @param eTokenCollateral Amount of the asset's eToken posted (18 dec).
+    /// @param eTokenCollateral Amount of the posted eToken (18 dec), in `collateralToken` units.
     /// @param principal        Scaled stablecoin debt; actual debt is
     ///                         `principal × index / PRECISION`.
     /// @param interestIndex    Snapshot of the manager's global interest index
     ///                         at the position's last touch (informational).
+    /// @param collateralToken  The exact eToken posted. Snapshotted so a later migration does not
+    ///                         strand the collateral; legacy collateral is valued at its split ratio.
     struct Position {
         uint256 eTokenCollateral;
         uint256 principal;
         uint256 interestIndex;
+        address collateralToken;
     }
 
     // ──────────────────────────────────────────────────────────

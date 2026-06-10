@@ -746,6 +746,83 @@ contract OwnMarketTest is BaseTest {
     }
 
     // ══════════════════════════════════════════════════════════
+    //  convertLegacy + migration (H-02)
+    // ══════════════════════════════════════════════════════════
+
+    /// @dev Migrate TSLA to a fresh active token at `ratio`; returns the new active token.
+    function _migrate(
+        uint256 ratio
+    ) internal returns (MockERC20 v2) {
+        v2 = new MockERC20("Own TSLA v2", "eTSLAv2", 18);
+        vm.prank(Actors.ADMIN);
+        assetReg.migrateToken(TSLA, address(v2), ratio);
+    }
+
+    function test_convertLegacy_forwardSplit_mintsActive() public {
+        MockERC20 v2 = _migrate(3e18); // 3:1
+        eTSLAToken.mint(Actors.MINTER1, 100e18); // legacy balance
+
+        vm.prank(Actors.MINTER1);
+        uint256 out = market.convertLegacy(TSLA, address(eTSLAToken), 100e18);
+
+        assertEq(out, 300e18, "3x new tokens");
+        assertEq(eTSLAToken.balanceOf(Actors.MINTER1), 0, "legacy burned");
+        assertEq(v2.balanceOf(Actors.MINTER1), 300e18, "active minted");
+    }
+
+    function test_convertLegacy_activeToken_reverts() public {
+        // Before any migration eTSLAToken is the active token, not a legacy.
+        eTSLAToken.mint(Actors.MINTER1, 1e18);
+        vm.prank(Actors.MINTER1);
+        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.NotLegacyToken.selector, address(eTSLAToken)));
+        market.convertLegacy(TSLA, address(eTSLAToken), 1e18);
+    }
+
+    function test_convertLegacy_allowedDuringHalt() public {
+        _migrate(2e18);
+        eTSLAToken.mint(Actors.MINTER1, 50e18);
+        vm.mockCall(mockVaultManager, abi.encodeWithSelector(IVaultManager.isAssetHalted.selector), abi.encode(true));
+
+        vm.prank(Actors.MINTER1);
+        uint256 out = market.convertLegacy(TSLA, address(eTSLAToken), 50e18);
+        assertEq(out, 100e18, "conversion works even while halted");
+    }
+
+    function test_cancelOrder_afterMigration_returnsOriginalToken() public {
+        uint256 amount = 4e18;
+        uint256 orderId = _placeRedeem(Actors.MINTER1, amount, TSLA_PRICE); // escrows eTSLAToken
+        _migrate(3e18); // active token is now v2; eTSLAToken is legacy
+
+        vm.prank(Actors.MINTER1);
+        market.cancelOrder(orderId);
+
+        // The ORIGINAL escrowed token is returned, not the new active token.
+        assertEq(eTSLAToken.balanceOf(Actors.MINTER1), amount, "original token returned");
+    }
+
+    function test_fillOrder_afterMigration_reverts() public {
+        uint256 amount = 4e18;
+        uint256 orderId = _placeRedeem(Actors.MINTER1, amount, TSLA_PRICE);
+        _migrate(3e18);
+
+        Quote memory q = _quote(orderId, Actors.MINTER1, OrderType.Redeem, amount, TSLA_PRICE);
+        vm.prank(rfqVM);
+        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.OrderTokenMigrated.selector, orderId));
+        market.fillOrder(q, _sign(q, rfqVMPk));
+    }
+
+    function test_forceExecuteOrder_afterMigration_reverts() public {
+        uint256 amount = 4e18;
+        uint256 orderId = _placeRedeem(Actors.MINTER1, amount, TSLA_PRICE);
+        _migrate(3e18);
+        vm.warp(block.timestamp + CLAIM_THRESHOLD);
+
+        vm.prank(Actors.MINTER1);
+        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.OrderTokenMigrated.selector, orderId));
+        market.forceExecuteOrder(orderId, mockVault, _assetPriceData(TSLA_PRICE), _assetPriceData(ETH_PRICE));
+    }
+
+    // ══════════════════════════════════════════════════════════
     //  redeemHalted — permanent halt settlement
     // ══════════════════════════════════════════════════════════
 

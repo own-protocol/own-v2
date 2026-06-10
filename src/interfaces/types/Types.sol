@@ -77,6 +77,8 @@ enum VaultStatus {
 /// @param createdAt    Timestamp when the order was placed.
 /// @param expiry       Timestamp after which the order can be expired (good-til-date).
 /// @param status       Current order status.
+/// @param escrowToken  Token escrowed at placement (payment token for Mint, eToken for Redeem).
+///                     Snapshotted so a later token migration cannot strand the escrow.
 struct Order {
     uint256 orderId;
     address user;
@@ -88,6 +90,7 @@ struct Order {
     uint256 createdAt;
     uint256 expiry;
     OrderStatus status;
+    address escrowToken;
 }
 
 /// @notice A firm price quote signed off-chain by a protocol-authorised signer.

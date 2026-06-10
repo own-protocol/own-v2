@@ -307,6 +307,16 @@ contract VaultManager is IVaultManager {
     }
 
     /// @inheritdoc IVaultManager
+    function applySplit(bytes32 asset, uint256 ratio) external override onlyAdmin {
+        if (ratio == 0) revert InvalidRatio();
+        // USD exposure is split-invariant: only the unit count and per-unit mark are re-denominated.
+        _globalAssetUnits[asset] = _globalAssetUnits[asset].mulDiv(ratio, PRECISION);
+        uint256 mark = _assetMark[asset];
+        if (mark != 0) _assetMark[asset] = mark.mulDiv(PRECISION, ratio);
+        emit SplitApplied(asset, ratio, _globalAssetUnits[asset], _assetMark[asset]);
+    }
+
+    /// @inheritdoc IVaultManager
     function setGlobalMaxUtilizationBps(
         uint256 bps
     ) external override onlyAdmin {
