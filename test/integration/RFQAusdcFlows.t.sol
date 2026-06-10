@@ -103,7 +103,7 @@ contract RFQAusdcFlowsTest is BaseTest {
         );
         vault.setBorrowManager(address(borrowManager));
         vault.grantCreditDelegation(address(usdcDebt));
-        eTSLA.setPassThroughHolder(address(borrowManager), true);
+        // Borrowing is enabled for every asset by default.
         vm.stopPrank();
 
         // ── Global protocol config (now on the VaultManager) ──

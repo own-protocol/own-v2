@@ -67,6 +67,12 @@ interface IBorrowManager {
     event LiquidationConfigUpdated(uint256 liquidationThresholdBps, uint256 liquidationBonusBps);
     event TargetLtvBpsUpdated(uint256 oldBps, uint256 newBps);
 
+    /// @notice Emitted when the admin changes whether borrowing against an asset is allowed on this
+    ///         manager. Borrowing is enabled for every asset by default.
+    /// @param asset      Asset ticker.
+    /// @param borrowable True if borrowing against `asset` is now allowed.
+    event AssetBorrowableUpdated(bytes32 indexed asset, bool borrowable);
+
     /// @notice Emitted when lending interest revenue (the premium charged above Aave's own rate)
     ///         is forwarded to the manager. The manager handles distribution offchain / via `shareYield`.
     /// @param manager The vault manager (operator) receiving the lending fee.
@@ -95,6 +101,13 @@ interface IBorrowManager {
         uint256 collateralReturned
     );
 
+    /// @notice Emitted when dividends accrued on pooled collateral (forfeited by borrowers for the
+    ///         borrow term) are swept to the vault manager as protocol revenue.
+    /// @param eToken      The eToken whose dividends were swept.
+    /// @param beneficiary The vault manager receiving the dividends.
+    /// @param amount      Reward tokens forwarded.
+    event DividendsSwept(address indexed eToken, address indexed beneficiary, uint256 amount);
+
     // ──────────────────────────────────────────────────────────
     //  Errors
     // ──────────────────────────────────────────────────────────
@@ -103,7 +116,7 @@ interface IBorrowManager {
     error ZeroAddress();
     error OnlyAdmin();
     error AssetNotActive(bytes32 asset);
-    error PassThroughNotEnabled(address eToken);
+    error AssetNotBorrowable(bytes32 asset);
     error VaultEffectivelyHalted();
     error ETokenMismatch(address expected, address actual);
     error InsufficientCollateral(uint256 requested, uint256 maxAllowed);
@@ -117,6 +130,7 @@ interface IBorrowManager {
     error PositionStillCollateralized(uint256 collateral);
     error AssetNotHalted(bytes32 asset);
     error StalePrice(uint256 timestamp, uint256 maxAge);
+    error NoDividendsToSweep();
 
     // ──────────────────────────────────────────────────────────
     //  Borrower flows
@@ -192,6 +206,17 @@ interface IBorrowManager {
     /// @param  asset    Halted asset ticker.
     function settleHaltedPosition(address borrower, bytes32 asset) external;
 
+    /// @notice Sweep dividends accrued on the manager's pooled collateral to the vault manager.
+    /// @dev    Permissionless (keeper-friendly): the beneficiary is always the bound vault's manager,
+    ///         so the destination is fixed. Borrowers forfeit dividends for the borrow term; this
+    ///         routes that revenue to the VM, mirroring the lending-premium sweep. Reverts when the
+    ///         manager has no claimable dividends on `eToken`.
+    /// @param  eToken The eToken (active or legacy) whose pooled dividends to sweep.
+    /// @return amount Reward tokens forwarded to the vault manager.
+    function sweepDividends(
+        address eToken
+    ) external returns (uint256 amount);
+
     // ──────────────────────────────────────────────────────────
     //  Views
     // ──────────────────────────────────────────────────────────
@@ -245,6 +270,12 @@ interface IBorrowManager {
     ///         return `type(uint256).max`.
     function healthFactor(address borrower, bytes32 asset, uint256 oraclePrice) external view returns (uint256);
 
+    /// @notice Whether borrowing against `asset` is currently enabled on this manager. True by
+    ///         default; false only for assets the admin has explicitly disabled.
+    function isAssetBorrowable(
+        bytes32 asset
+    ) external view returns (bool);
+
     // ──────────────────────────────────────────────────────────
     //  Admin
     // ──────────────────────────────────────────────────────────
@@ -259,4 +290,11 @@ interface IBorrowManager {
     function setTargetLtvBps(
         uint256 ltvBps
     ) external;
+
+    /// @notice Enable or disable borrowing against `asset` on this manager. Admin-only. Borrowing is
+    ///         enabled for every asset by default; this only needs calling to disable (or re-enable) a
+    ///         specific asset. Keyed by ticker so the setting survives stock-split token migrations.
+    /// @param asset      Asset ticker.
+    /// @param borrowable True to allow borrowing against `asset`, false to block it.
+    function setAssetBorrowable(bytes32 asset, bool borrowable) external;
 }

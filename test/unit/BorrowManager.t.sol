@@ -110,9 +110,7 @@ contract BorrowManagerTest is BaseTest {
         // Wire lending: authorise the manager + grant Aave credit delegation.
         _enableAaveLending(address(vault), address(borrowManager), address(usdcDebt));
 
-        // Register the manager as a pass-through holder on eTSLA so dividends route.
-        vm.prank(Actors.ADMIN);
-        eTSLA.setPassThroughHolder(address(borrowManager), true);
+        // Borrowing is enabled for every asset by default — no per-asset opt-in needed.
 
         // Seed Aave with USDC liquidity so borrows can pay out.
         usdc.mint(address(aavePool), 1_000_000e6);
@@ -324,8 +322,6 @@ contract BorrowManagerTest is BaseTest {
         assetRegistry.addAsset(newAsset, address(eGold), cfg);
         assetRegistry.deactivateAsset(newAsset);
         vm.stopPrank();
-        vm.prank(Actors.ADMIN);
-        eGold.setPassThroughHolder(address(borrowManager), true);
 
         eGold.mint(Actors.MINTER1, 1e18);
         vm.startPrank(Actors.MINTER1);
@@ -335,15 +331,15 @@ contract BorrowManagerTest is BaseTest {
         vm.stopPrank();
     }
 
-    function test_borrow_passThroughNotEnabled_reverts() public {
-        // Disable pass-through on eTSLA.
+    function test_borrow_assetNotBorrowable_reverts() public {
+        // Disable borrowing against TSLA.
         vm.prank(Actors.ADMIN);
-        eTSLA.setPassThroughHolder(address(borrowManager), false);
+        borrowManager.setAssetBorrowable(ASSET, false);
 
         _giveTSLA(Actors.MINTER1, 100e18);
         vm.startPrank(Actors.MINTER1);
         eTSLA.approve(address(borrowManager), 100e18);
-        vm.expectRevert(abi.encodeWithSelector(IBorrowManager.PassThroughNotEnabled.selector, address(eTSLA)));
+        vm.expectRevert(abi.encodeWithSelector(IBorrowManager.AssetNotBorrowable.selector, ASSET));
         borrowManager.borrow(ASSET, 100e18, 1000e6, _priceData(TSLA_PX));
         vm.stopPrank();
     }
@@ -794,5 +790,65 @@ contract BorrowManagerTest is BaseTest {
         vm.prank(Actors.ATTACKER);
         vm.expectRevert(IBorrowManager.OnlyAdmin.selector);
         borrowManager.absorbBadDebt(Actors.MINTER1, ASSET, 0, _priceData(4000e18));
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Dividend sweep (Option A: borrowers forfeit, VM collects)
+    // ──────────────────────────────────────────────────────────
+
+    /// @dev Deposit a dividend while the manager holds collateral, then sweep it to the VM
+    ///      (this contract is the vault's manager).
+    function test_sweepDividends_forwardsToVM() public {
+        _openTypical(Actors.MINTER1); // manager now holds 100 eTSLA.
+
+        uint256 reward = 300e6;
+        usdc.mint(address(this), reward);
+        usdc.approve(address(eTSLA), reward);
+        eTSLA.depositRewards(reward);
+
+        assertEq(eTSLA.claimableRewards(address(borrowManager)), reward, "manager accrued the dividend");
+
+        address vmgr = vault.manager(); // == address(this)
+        uint256 vmBefore = usdc.balanceOf(vmgr);
+
+        vm.expectEmit(true, true, false, true);
+        emit IBorrowManager.DividendsSwept(address(eTSLA), vmgr, reward);
+        uint256 swept = borrowManager.sweepDividends(address(eTSLA));
+
+        assertEq(swept, reward);
+        assertEq(usdc.balanceOf(vmgr) - vmBefore, reward, "VM received the dividend");
+        assertEq(eTSLA.claimableRewards(address(borrowManager)), 0, "manager bucket drained");
+    }
+
+    function test_sweepDividends_noDividends_reverts() public {
+        _openTypical(Actors.MINTER1);
+        vm.expectRevert(IBorrowManager.NoDividendsToSweep.selector);
+        borrowManager.sweepDividends(address(eTSLA));
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Borrowable gate (admin)
+    // ──────────────────────────────────────────────────────────
+
+    function test_setAssetBorrowable_defaultEnabled_togglesAndEmits() public {
+        bytes32 asset = bytes32("GOLD");
+        // Enabled by default with no admin action.
+        assertTrue(borrowManager.isAssetBorrowable(asset));
+
+        vm.prank(Actors.ADMIN);
+        vm.expectEmit(true, false, false, true);
+        emit IBorrowManager.AssetBorrowableUpdated(asset, false);
+        borrowManager.setAssetBorrowable(asset, false);
+        assertFalse(borrowManager.isAssetBorrowable(asset));
+
+        vm.prank(Actors.ADMIN);
+        borrowManager.setAssetBorrowable(asset, true);
+        assertTrue(borrowManager.isAssetBorrowable(asset));
+    }
+
+    function test_setAssetBorrowable_onlyAdmin() public {
+        vm.prank(Actors.ATTACKER);
+        vm.expectRevert(IBorrowManager.OnlyAdmin.selector);
+        borrowManager.setAssetBorrowable(ASSET, true);
     }
 }

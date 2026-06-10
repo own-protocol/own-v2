@@ -108,8 +108,7 @@ contract BorrowAndLiquidateFlowTest is BaseTest {
         _setPaymentToken(address(usdc));
 
         _enableAaveLending(address(vault), address(borrowManager), address(usdcDebt));
-        vm.prank(Actors.ADMIN);
-        eTSLA.setPassThroughHolder(address(borrowManager), true);
+        // Borrowing is enabled for every asset by default.
 
         _setOraclePrice(ASSET, TSLA_PX);
     }
@@ -122,8 +121,8 @@ contract BorrowAndLiquidateFlowTest is BaseTest {
 
     /// @dev End-to-end: borrow → dividend deposit while collateral in custody →
     ///      price crashes → liquidate. Verifies position close, Aave debt
-    ///      cleared, liquidator gets eTokens AND the dividends earned during
-    ///      the borrow window (per the locked design).
+    ///      cleared, liquidator gets the eTokens but NOT the dividends — those are
+    ///      forfeited (Option A) and sweep to the vault manager.
     function test_endToEnd_borrowDividendCrashLiquidate() public {
         uint256 eAmt = 100e18;
         uint256 stable = 10_000e6; // 40% LTV at $250.
@@ -184,14 +183,20 @@ contract BorrowAndLiquidateFlowTest is BaseTest {
         assertApproxEqAbs(eTSLA.balanceOf(Actors.LIQUIDATOR), eAmt, 1, "liquidator gets all collateral");
         assertApproxEqAbs(eTSLA.balanceOf(Actors.MINTER1), 0, 1, "no residual to borrower");
 
-        // Dividends from the borrow window followed the eTokens to the liquidator.
-        assertApproxEqAbs(eTSLA.claimableRewards(Actors.LIQUIDATOR), reward, 1);
-        assertEq(eTSLA.claimableRewards(address(borrowManager)), 0);
+        // Option A: dividends are forfeited — the liquidator gets none; the manager retains them.
+        assertEq(eTSLA.claimableRewards(Actors.LIQUIDATOR), 0, "liquidator gets no dividends");
+        assertApproxEqAbs(eTSLA.claimableRewards(address(borrowManager)), reward, 1, "manager retains dividends");
+
+        // The forfeited dividends sweep to the vault manager (this contract).
+        uint256 vmBefore = usdc.balanceOf(address(this));
+        borrowManager.sweepDividends(address(eTSLA));
+        assertApproxEqAbs(usdc.balanceOf(address(this)) - vmBefore, reward, 1, "dividends swept to VM");
+        assertEq(eTSLA.claimableRewards(address(borrowManager)), 0, "manager bucket drained");
     }
 
-    /// @dev End-to-end: borrow → repay in full → dividend earned during borrow
-    ///      pass-through to borrower on collateral return.
-    function test_endToEnd_borrowDividendRepay_dividendsFollowBorrower() public {
+    /// @dev End-to-end: borrow → dividend earned during borrow → repay in full. Option A: the
+    ///      dividend is forfeited by the borrower and sweeps to the vault manager.
+    function test_endToEnd_borrowDividendRepay_dividendsForfeitedToVM() public {
         uint256 eAmt = 100e18;
         uint256 stable = 10_000e6;
 
@@ -215,9 +220,15 @@ contract BorrowAndLiquidateFlowTest is BaseTest {
         vm.stopPrank();
 
         assertEq(eTSLA.balanceOf(Actors.MINTER1), eAmt, "collateral returned");
-        // Borrower picks up dividends earned during the borrow window.
-        assertApproxEqAbs(eTSLA.claimableRewards(Actors.MINTER1), reward, 1);
-        assertEq(eTSLA.claimableRewards(address(borrowManager)), 0);
+        // Borrower forfeits dividends earned during the borrow window; the manager retains them.
+        assertEq(eTSLA.claimableRewards(Actors.MINTER1), 0, "borrower forfeits dividends");
+        assertApproxEqAbs(eTSLA.claimableRewards(address(borrowManager)), reward, 1, "manager retains dividends");
+
+        // The forfeited dividends sweep to the vault manager (this contract).
+        uint256 vmBefore = usdc.balanceOf(address(this));
+        borrowManager.sweepDividends(address(eTSLA));
+        assertApproxEqAbs(usdc.balanceOf(address(this)) - vmBefore, reward, 1, "dividends swept to VM");
+        assertEq(eTSLA.claimableRewards(address(borrowManager)), 0, "manager bucket drained");
     }
 
     /// @dev A 3:1 split mid-borrow: the position stays in the legacy token, stays correctly valued

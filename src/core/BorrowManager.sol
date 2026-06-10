@@ -105,6 +105,11 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
     ///      Distinct from `borrowLtvBps`, which caps an individual position.
     uint256 public override targetLtvBps;
 
+    /// @dev Per-asset borrow blocklist. Borrowing is enabled for every asset by default; admin can
+    ///      disable specific tickers (e.g. thin liquidity unsafe as collateral). Keyed by ticker so
+    ///      the setting survives stock-split token migrations.
+    mapping(bytes32 => bool) private _assetBorrowDisabled;
+
     // ──────────────────────────────────────────────────────────
     //  Global debt state
     // ──────────────────────────────────────────────────────────
@@ -194,7 +199,7 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
         if (_positions[msg.sender][asset].principal != 0) revert PositionAlreadyOpen(msg.sender, asset);
 
         address eToken = _resolveActiveEToken(asset);
-        _validateEligibility(asset, eToken);
+        _validateEligibility(asset);
 
         uint256 oraclePrice = _verifyPrice(asset, priceData);
 
@@ -495,6 +500,26 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
     }
 
     // ──────────────────────────────────────────────────────────
+    //  Collateral dividends (forfeited to the VM)
+    // ──────────────────────────────────────────────────────────
+
+    /// @inheritdoc IBorrowManager
+    function sweepDividends(
+        address eToken
+    ) external nonReentrant returns (uint256 amount) {
+        amount = IEToken(eToken).claimableRewards(address(this));
+        if (amount == 0) revert NoDividendsToSweep();
+
+        // Realize the pooled dividends, then forward them to the VM (fixed destination), matching the
+        // premium sweep in {_repayAaveAndSweep}. The VM handles downstream distribution off-chain.
+        IEToken(eToken).claimRewards();
+        address beneficiary = IOwnVault(vault).manager();
+        IERC20(IEToken(eToken).rewardToken()).safeTransfer(beneficiary, amount);
+
+        emit DividendsSwept(eToken, beneficiary, amount);
+    }
+
+    // ──────────────────────────────────────────────────────────
     //  Views
     // ──────────────────────────────────────────────────────────
 
@@ -506,6 +531,13 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
     {
         InterestRateModel.Params memory p = _rateParams;
         return (p.basePremiumBps, p.optimalUtilBps, p.slope1Bps, p.slope2Bps);
+    }
+
+    /// @inheritdoc IBorrowManager
+    function isAssetBorrowable(
+        bytes32 asset
+    ) external view returns (bool) {
+        return !_assetBorrowDisabled[asset];
     }
 
     /// @inheritdoc IBorrowManager
@@ -588,6 +620,12 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
         if (ltvBps == 0 || ltvBps >= BPS) revert InvalidLtv();
         emit TargetLtvBpsUpdated(targetLtvBps, ltvBps);
         targetLtvBps = ltvBps;
+    }
+
+    /// @inheritdoc IBorrowManager
+    function setAssetBorrowable(bytes32 asset, bool borrowable) external onlyAdmin {
+        _assetBorrowDisabled[asset] = !borrowable;
+        emit AssetBorrowableUpdated(asset, borrowable);
     }
 
     // ──────────────────────────────────────────────────────────
@@ -691,15 +729,14 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
     //  Internal — eligibility / oracle
     // ──────────────────────────────────────────────────────────
 
-    /// @dev Gate a borrow: the asset must be active in the registry, the manager
-    ///      must be a registered pass-through holder on the eToken (so dividends
-    ///      earned while collateral is in custody can follow the borrower out),
-    ///      and the asset must not be effectively paused or halted on the vault.
-    /// @param asset  Ticker being borrowed against.
-    /// @param eToken Resolved active eToken for `asset`.
-    function _validateEligibility(bytes32 asset, address eToken) internal view {
+    /// @dev Gate a borrow: the asset must be active in the registry, admin-enabled for borrowing on
+    ///      this manager, and not effectively paused or halted on the vault.
+    /// @param asset Ticker being borrowed against.
+    function _validateEligibility(
+        bytes32 asset
+    ) internal view {
         if (!IAssetRegistry(registry.assetRegistry()).isActiveAsset(asset)) revert AssetNotActive(asset);
-        if (!IEToken(eToken).isPassThroughHolder(address(this))) revert PassThroughNotEnabled(eToken);
+        if (_assetBorrowDisabled[asset]) revert AssetNotBorrowable(asset);
         IVaultManager vmgr = IVaultManager(registry.vaultManager());
         // Lending pauses with trading: no new borrows while the asset is paused or halted.
         if (vmgr.isAssetHalted(asset) || vmgr.isTradingPaused(asset)) {
