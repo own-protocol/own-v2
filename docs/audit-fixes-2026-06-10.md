@@ -217,18 +217,16 @@ protocol-caused step reduction is now synchronous.)
 
 - `src/core/VaultManager.sol` (+`IVaultManager`) — `onCollateralReleased` (`onlyRegisteredVault`) +
   `CollateralMarkReduced` event.
-- `src/core/OwnVault.sol` — call `onCollateralReleased` before the bad-debt transfer.
+- `src/core/OwnVault.sol` — call `onCollateralReleased` before transferring in **both** collateral-out
+  paths: `releaseCollateralForBadDebt` and `releaseCollateral` (force execution). Both leave the
+  cached mark honest; the same root cause is closed in both places rather than only the bad-debt one.
 
 ### Tests
 
 - `test/unit/VaultManager.t.sol`: `test_onCollateralReleased_reducesMarkProportionally`,
   `test_onCollateralReleased_onlyRegisteredVault_reverts`,
   `test_badDebtRelease_tightensWithdrawalGate` (gate blocks post-release where it was stale-allowed).
-
-### Note
-
-Force-execution's `releaseCollateral` is the same class but self-limiting (it reduces exposure in the
-same call, so collateral and exposure drop together). Left as-is for now; the same
-`onCollateralReleased` call could be added there for full symmetry if desired.
+- `test/integration/OrderLifecycle.t.sol`: `test_forceExecute_redeem_releasesCollateral` asserts the
+  mark syncs down on force-execution release.
 
 Full suite: **637 passing**.

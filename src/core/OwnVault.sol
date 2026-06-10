@@ -537,6 +537,8 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     function releaseCollateral(address to, uint256 amount) external onlyMarket nonReentrant {
         if (to == address(0)) revert ZeroAddress();
         if (amount == 0) revert ZeroAmount();
+        // Sync the cached mark before assets leave, so the withdrawal gate never reads stale-high.
+        IVaultManager(registry.vaultManager()).onCollateralReleased(amount);
         IERC20(asset()).safeTransfer(to, amount);
     }
 

@@ -185,6 +185,7 @@ contract OrderLifecycleTest is BaseTest {
 
         uint256 vaultWethBefore = weth.balanceOf(address(vault));
         uint256 userWethBefore = weth.balanceOf(Actors.MINTER1);
+        uint256 markBefore = vaultManager.collateralMark(address(vault));
 
         vm.warp(block.timestamp + CLAIM_THRESHOLD + 1);
 
@@ -204,6 +205,8 @@ contract OrderLifecycleTest is BaseTest {
 
         assertEq(weth.balanceOf(Actors.MINTER1), userWethBefore + grossCollateral, "user received WETH collateral");
         assertEq(weth.balanceOf(address(vault)), vaultWethBefore - grossCollateral, "vault released WETH");
+        // H-03: the cached collateral mark is synced down as collateral leaves (no stale window).
+        assertLt(vaultManager.collateralMark(address(vault)), markBefore, "mark synced down on release");
         assertEq(eTSLA.balanceOf(address(market)), 0, "escrowed eTokens burned");
     }
 
