@@ -113,6 +113,7 @@ interface IBorrowManager {
     error SeizeExceedsCollateral(uint256 seize, uint256 available);
     error PositionStillCollateralized(uint256 collateral);
     error AssetNotHalted(bytes32 asset);
+    error StalePrice(uint256 timestamp, uint256 maxAge);
 
     // ──────────────────────────────────────────────────────────
     //  Borrower flows

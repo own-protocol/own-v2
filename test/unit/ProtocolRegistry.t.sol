@@ -15,6 +15,7 @@ contract ProtocolRegistryTest is BaseTest {
     ProtocolRegistry public reg;
 
     uint256 constant TIMELOCK_DELAY = 2 days;
+    uint256 constant PRICE_MAX_AGE = 2 minutes;
 
     // Cache key constants to avoid external calls consuming vm.prank
     bytes32 MARKET_KEY;
@@ -27,7 +28,7 @@ contract ProtocolRegistryTest is BaseTest {
     function setUp() public override {
         super.setUp();
 
-        reg = new ProtocolRegistry(Actors.ADMIN, TIMELOCK_DELAY);
+        reg = new ProtocolRegistry(Actors.ADMIN, TIMELOCK_DELAY, PRICE_MAX_AGE);
         vm.label(address(reg), "ProtocolRegistry");
 
         // Cache keys
@@ -50,6 +51,39 @@ contract ProtocolRegistryTest is BaseTest {
     function test_constructor_allGettersReturnZero() public view {
         assertEq(reg.market(), address(0));
         assertEq(reg.assetRegistry(), address(0));
+    }
+
+    // ══════════════════════════════════════════════════════════
+    //  priceMaxAge (governance-tunable risk param)
+    // ══════════════════════════════════════════════════════════
+
+    function test_constructor_setsPriceMaxAge() public view {
+        assertEq(reg.priceMaxAge(), PRICE_MAX_AGE);
+    }
+
+    function test_constructor_zeroPriceMaxAge_reverts() public {
+        vm.expectRevert(IProtocolRegistry.InvalidPriceMaxAge.selector);
+        new ProtocolRegistry(Actors.ADMIN, TIMELOCK_DELAY, 0);
+    }
+
+    function test_setPriceMaxAge_updatesAndEmits() public {
+        vm.expectEmit(false, false, false, true);
+        emit IProtocolRegistry.PriceMaxAgeUpdated(PRICE_MAX_AGE, 5 minutes);
+        vm.prank(Actors.ADMIN);
+        reg.setPriceMaxAge(5 minutes);
+        assertEq(reg.priceMaxAge(), 5 minutes);
+    }
+
+    function test_setPriceMaxAge_onlyOwner_reverts() public {
+        vm.prank(addr1);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, addr1));
+        reg.setPriceMaxAge(5 minutes);
+    }
+
+    function test_setPriceMaxAge_zero_reverts() public {
+        vm.prank(Actors.ADMIN);
+        vm.expectRevert(IProtocolRegistry.InvalidPriceMaxAge.selector);
+        reg.setPriceMaxAge(0);
     }
 
     // ══════════════════════════════════════════════════════════
@@ -419,7 +453,7 @@ contract ProtocolRegistryTest is BaseTest {
     ) public {
         delay = bound(delay, 1, 365 days);
 
-        ProtocolRegistry customReg = new ProtocolRegistry(Actors.ADMIN, delay);
+        ProtocolRegistry customReg = new ProtocolRegistry(Actors.ADMIN, delay, PRICE_MAX_AGE);
         bytes32 key = customReg.MARKET();
 
         vm.startPrank(Actors.ADMIN);

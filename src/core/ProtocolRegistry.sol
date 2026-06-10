@@ -45,14 +45,20 @@ contract ProtocolRegistry is IProtocolRegistry, Ownable {
     /// @notice Minimum delay (seconds) before a timelocked change can be executed.
     uint256 public override timelockDelay;
 
+    /// @dev Governance-tunable max age for inline "current price" proofs. See {priceMaxAge}.
+    uint256 private _priceMaxAge;
+
     // ──────────────────────────────────────────────────────────────
     //  Constructor
     // ──────────────────────────────────────────────────────────────
 
     /// @param admin_         Initial owner (governance multisig).
     /// @param timelockDelay_ Delay in seconds for timelocked changes (e.g. 172800 = 48 hours).
-    constructor(address admin_, uint256 timelockDelay_) Ownable(admin_) {
+    /// @param priceMaxAge_   Max age (seconds) for inline "current price" proofs. Must be non-zero.
+    constructor(address admin_, uint256 timelockDelay_, uint256 priceMaxAge_) Ownable(admin_) {
+        if (priceMaxAge_ == 0) revert InvalidPriceMaxAge();
         timelockDelay = timelockDelay_;
+        _priceMaxAge = priceMaxAge_;
     }
 
     // ──────────────────────────────────────────────────────────────
@@ -92,6 +98,25 @@ contract ProtocolRegistry is IProtocolRegistry, Ownable {
     /// @inheritdoc IProtocolRegistry
     function treasury() external view override returns (address) {
         return _addresses[TREASURY];
+    }
+
+    /// @inheritdoc IProtocolRegistry
+    function priceMaxAge() external view override returns (uint256) {
+        return _priceMaxAge;
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    //  Risk parameters (governance, immediate)
+    // ──────────────────────────────────────────────────────────────
+
+    /// @inheritdoc IProtocolRegistry
+    function setPriceMaxAge(
+        uint256 newMaxAge
+    ) external override onlyOwner {
+        if (newMaxAge == 0) revert InvalidPriceMaxAge();
+        uint256 old = _priceMaxAge;
+        _priceMaxAge = newMaxAge;
+        emit PriceMaxAgeUpdated(old, newMaxAge);
     }
 
     // ──────────────────────────────────────────────────────────────

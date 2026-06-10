@@ -59,7 +59,7 @@ contract VaultManagerTest is Test {
     uint256 internal constant ASSET_CAP = 1_000_000e18; // $1M
 
     function setUp() public {
-        registry = new ProtocolRegistry(admin, 0);
+        registry = new ProtocolRegistry(admin, 0, 2 minutes);
         assetRegistry = new StubAssetRegistry();
         oracle = new MockOracleVerifier();
         usdc = new MockERC20("USD Coin", "USDC", 6);

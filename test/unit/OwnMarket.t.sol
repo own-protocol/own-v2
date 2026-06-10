@@ -659,6 +659,68 @@ contract OwnMarketTest is BaseTest {
         market.forceExecuteOrder(orderId, mockVault, _assetPriceData(TSLA_PRICE), _assetPriceData(ETH_PRICE));
     }
 
+    /// @dev C-01 regression: settlement is valued at the user's limitPrice, NOT the submitted asset
+    ///      proof. A redeemer who supplies an inflated (but limit-satisfying, in-window) asset price
+    ///      cannot increase the collateral released.
+    function test_forceExecuteOrder_settlesAtLimitNotProof() public {
+        uint256 amount = 4e18;
+        uint256 orderId = _placeRedeem(Actors.MINTER1, amount, TSLA_PRICE); // limit = TSLA_PRICE
+        vm.warp(block.timestamp + CLAIM_THRESHOLD);
+
+        // Payout is valued at the LIMIT, even though the proof carries 2× the price.
+        uint256 grossUsdAtLimit = Math.mulDiv(amount, TSLA_PRICE, PRECISION);
+        uint256 expectedCollateral = Math.mulDiv(grossUsdAtLimit, PRECISION, ETH_PRICE);
+
+        vm.expectEmit(true, true, false, true);
+        emit IOwnMarket.OrderForceExecuted(orderId, Actors.MINTER1, amount, expectedCollateral);
+
+        vm.prank(Actors.MINTER1);
+        market.forceExecuteOrder(orderId, mockVault, _assetPriceData(TSLA_PRICE * 2), _assetPriceData(ETH_PRICE));
+    }
+
+    /// @dev C-01 regression: an asset proof from within the order's live window [createdAt, now]
+    ///      is accepted even though it predates `now` — the user is owed the fill they were due.
+    function test_forceExecuteOrder_assetProofWithinWindow_succeeds() public {
+        uint256 amount = 4e18;
+        uint256 orderId = _placeRedeem(Actors.MINTER1, amount, TSLA_PRICE);
+        uint256 createdAt = block.timestamp;
+        vm.warp(block.timestamp + CLAIM_THRESHOLD);
+
+        // Asset proof timestamped at placement (old, but in window); collateral proof is current.
+        bytes memory assetData = abi.encode(uint256(TSLA_PRICE), createdAt);
+        vm.prank(Actors.MINTER1);
+        market.forceExecuteOrder(orderId, mockVault, assetData, _assetPriceData(ETH_PRICE));
+
+        assertEq(uint256(market.getOrder(orderId).status), uint256(OrderStatus.ForceExecuted));
+    }
+
+    /// @dev C-01 regression: an asset proof timestamped before the order existed is rejected.
+    function test_forceExecuteOrder_assetProofBeforeWindow_reverts() public {
+        uint256 amount = 4e18;
+        uint256 orderId = _placeRedeem(Actors.MINTER1, amount, TSLA_PRICE);
+        uint256 createdAt = block.timestamp;
+        vm.warp(block.timestamp + CLAIM_THRESHOLD);
+
+        bytes memory assetData = abi.encode(uint256(TSLA_PRICE), createdAt - 1); // predates the order
+        vm.prank(Actors.MINTER1);
+        vm.expectRevert(IOwnMarket.AssetPriceProofOutsideWindow.selector);
+        market.forceExecuteOrder(orderId, mockVault, assetData, _assetPriceData(ETH_PRICE));
+    }
+
+    /// @dev C-01 regression: the collateral leg must be current — a stale collateral proof reverts,
+    ///      blocking the "supply an old low ETH price to over-release collateral" vector.
+    function test_forceExecuteOrder_staleCollateralPrice_reverts() public {
+        uint256 amount = 4e18;
+        uint256 orderId = _placeRedeem(Actors.MINTER1, amount, TSLA_PRICE);
+        vm.warp(block.timestamp + CLAIM_THRESHOLD);
+
+        // Collateral proof older than the freshness window (15 min).
+        bytes memory collatData = abi.encode(uint256(ETH_PRICE), block.timestamp - 16 minutes);
+        vm.prank(Actors.MINTER1);
+        vm.expectRevert(IOwnMarket.StaleCollateralPrice.selector);
+        market.forceExecuteOrder(orderId, mockVault, _assetPriceData(TSLA_PRICE), collatData);
+    }
+
     // ══════════════════════════════════════════════════════════
     //  redeemHalted — permanent halt settlement
     // ══════════════════════════════════════════════════════════

@@ -278,6 +278,22 @@ contract BorrowManagerTest is BaseTest {
         borrowManager.borrow(ASSET, 100, 0, _priceData(TSLA_PX));
     }
 
+    /// @dev C-01 regression: borrow values collateral at a current price; a stale price proof reverts,
+    ///      blocking the "supply an old high eToken price to over-borrow" vector.
+    function test_borrow_stalePrice_reverts() public {
+        vm.warp(block.timestamp + 1 hours); // ensure now > freshness window
+        uint256 maxAge = protocolRegistry.priceMaxAge();
+        uint256 eAmt = 100e18;
+        _giveTSLA(Actors.MINTER1, eAmt);
+        vm.startPrank(Actors.MINTER1);
+        eTSLA.approve(address(borrowManager), eAmt);
+        uint256 staleTs = block.timestamp - maxAge - 1; // older than the freshness window
+        bytes memory stale = abi.encode(uint256(TSLA_PX), staleTs);
+        vm.expectRevert(abi.encodeWithSelector(IBorrowManager.StalePrice.selector, staleTs, maxAge));
+        borrowManager.borrow(ASSET, eAmt, 10_000e6, stale);
+        vm.stopPrank();
+    }
+
     function test_borrow_alreadyOpenPosition_reverts() public {
         _openTypical(Actors.MINTER1);
 

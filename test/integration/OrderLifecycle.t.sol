@@ -176,10 +176,11 @@ contract OrderLifecycleTest is BaseTest {
     function test_forceExecute_redeem_releasesCollateral() public {
         _mintETokensViaFlow(Actors.MINTER1, MINT_AMOUNT);
         uint256 eTokenBal = eTSLA.balanceOf(Actors.MINTER1);
-        // Tiny limit price so the oracle price always satisfies it.
+        // Limit = the price the user wants; force execution settles at this limit (the proof only
+        // proves the limit was reachable in the window).
         vm.startPrank(Actors.MINTER1);
         eTSLA.approve(address(market), eTokenBal);
-        uint256 orderId = market.placeOrder(TSLA, OrderType.Redeem, eTokenBal, 1, block.timestamp + 7 days);
+        uint256 orderId = market.placeOrder(TSLA, OrderType.Redeem, eTokenBal, TSLA_PRICE, block.timestamp + 7 days);
         vm.stopPrank();
 
         uint256 vaultWethBefore = weth.balanceOf(address(vault));
@@ -196,7 +197,8 @@ contract OrderLifecycleTest is BaseTest {
         Order memory order = market.getOrder(orderId);
         assertEq(uint8(order.status), uint8(OrderStatus.ForceExecuted));
 
-        // Collateral released = (eTokens * price / PRECISION) / ETH_PRICE (no fee).
+        // Collateral released = (eTokens * limitPrice / PRECISION) / ETH_PRICE (no fee).
+        // limitPrice == TSLA_PRICE here, so the figure matches the order's settle-at-limit value.
         uint256 grossUsd = Math.mulDiv(eTokenBal, TSLA_PRICE, PRECISION);
         uint256 grossCollateral = Math.mulDiv(grossUsd, PRECISION, ETH_PRICE);
 
@@ -343,7 +345,7 @@ contract OrderLifecycleTest is BaseTest {
 
         vm.startPrank(Actors.MINTER1);
         eTSLA.approve(address(market), eTokenBal);
-        uint256 orderId = market.placeOrder(TSLA, OrderType.Redeem, eTokenBal, 1, block.timestamp + 7 days);
+        uint256 orderId = market.placeOrder(TSLA, OrderType.Redeem, eTokenBal, TSLA_PRICE, block.timestamp + 7 days);
         vm.stopPrank();
 
         vm.warp(block.timestamp + CLAIM_THRESHOLD + 1);

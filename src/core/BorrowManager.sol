@@ -712,7 +712,13 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
     function _verifyPrice(bytes32 asset, bytes calldata priceData) internal returns (uint256 price) {
         uint8 oracleType = IAssetRegistry(registry.assetRegistry()).getOracleType(asset);
         address oracleAddr = oracleType == 0 ? registry.pythOracle() : registry.inhouseOracle();
-        (price,) = IOracleVerifier(oracleAddr).verifyPrice{value: msg.value}(asset, priceData);
+        uint256 timestamp;
+        (price, timestamp) = IOracleVerifier(oracleAddr).verifyPrice{value: msg.value}(asset, priceData);
+        // Risk decisions need a current price (verifyPrice itself does not bound age).
+        uint256 maxAge = registry.priceMaxAge();
+        if (timestamp > block.timestamp || block.timestamp - timestamp > maxAge) {
+            revert StalePrice(timestamp, maxAge);
+        }
     }
 
     // ──────────────────────────────────────────────────────────

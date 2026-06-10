@@ -219,7 +219,7 @@ contract BaseTest is Test {
         oracle = new MockOracleVerifier();
         dex = new MockDEX();
         vm.startPrank(Actors.ADMIN);
-        protocolRegistry = new ProtocolRegistry(Actors.ADMIN, 2 days);
+        protocolRegistry = new ProtocolRegistry(Actors.ADMIN, 2 days, 2 minutes);
         protocolRegistry.setAddress(keccak256("INHOUSE_ORACLE"), address(oracle));
         vm.stopPrank();
     }

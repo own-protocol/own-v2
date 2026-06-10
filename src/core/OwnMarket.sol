@@ -197,12 +197,12 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
 
         uint256 remaining = order.amount - order.filledAmount;
 
-        // Settle at a fresh oracle proof for the asset.
-        uint256 price = _verifyAssetPrice(order.asset, assetPriceData);
-        if (price < order.limitPrice) revert PriceBelowMinimum();
+        // Asset proof must fall in the order's window and reach the limit; payout settles at the limit.
+        (uint256 reachedPrice, uint256 assetTs) = _verifyAssetPrice(order.asset, assetPriceData);
+        if (assetTs < order.createdAt || assetTs > block.timestamp) revert AssetPriceProofOutsideWindow();
+        if (reachedPrice < order.limitPrice) revert PriceBelowMinimum();
 
-        // Value the redemption in collateral terms.
-        uint256 grossUsd = Math.mulDiv(remaining, price, PRECISION);
+        uint256 grossUsd = Math.mulDiv(remaining, order.limitPrice, PRECISION);
         uint256 grossCollateral = _convertToCollateral(vault, grossUsd, collateralPriceData);
 
         // Effects.
@@ -405,12 +405,15 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
     // ──────────────────────────────────────────────────────────
 
     /// @dev Verify a fresh signed price proof for an asset, forwarding the oracle's ETH fee.
-    function _verifyAssetPrice(bytes32 asset, bytes calldata priceData) private returns (uint256 price) {
+    function _verifyAssetPrice(
+        bytes32 asset,
+        bytes calldata priceData
+    ) private returns (uint256 price, uint256 timestamp) {
         address oracleAddr = _getOracleForAsset(asset);
         if (oracleAddr == address(0)) revert AssetOracleNotSet(asset);
         IOracleVerifier oracle = IOracleVerifier(oracleAddr);
         uint256 fee = oracle.verifyFee(priceData);
-        (price,) = oracle.verifyPrice{value: fee}(asset, priceData);
+        (price, timestamp) = oracle.verifyPrice{value: fee}(asset, priceData);
     }
 
     /// @dev Convert a USD value (18 decimals) to collateral units using the vault's collateral oracle.
@@ -424,7 +427,12 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         if (oracleAddr == address(0)) revert CollateralOracleNotSet();
         IOracleVerifier oracle = IOracleVerifier(oracleAddr);
         uint256 fee = oracle.verifyFee(collateralPriceData);
-        (uint256 price,) = oracle.verifyPrice{value: fee}(collatAsset, collateralPriceData);
+        (uint256 price, uint256 timestamp) = oracle.verifyPrice{value: fee}(collatAsset, collateralPriceData);
+
+        // Collateral is released now, so its price must be current.
+        if (timestamp > block.timestamp || block.timestamp - timestamp > registry.priceMaxAge()) {
+            revert StaleCollateralPrice();
+        }
 
         // usdValue and price are 18-decimal, so this yields an 18-decimal collateral amount.
         // Scale down to the collateral token's decimals (floor — protocol-favorable).

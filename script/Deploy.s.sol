@@ -62,6 +62,7 @@ contract Deploy is Script {
     // ──────────────────────────────────────────────────────────
 
     uint256 constant TIMELOCK_DELAY = 10 minutes; // Short delay for testing; increase for production
+    uint256 constant PRICE_MAX_AGE = 2 minutes; // Max age for inline "current price" proofs
     uint256 constant PYTH_MAX_PRICE_AGE = 120; // 2 minutes
 
     /// @dev Initial global utilisation cap (80%). Solvency bound across all pooled vaults.
@@ -117,7 +118,7 @@ contract Deploy is Script {
         d.weth = _resolveWeth();
 
         // ── 3. ProtocolRegistry ───────────────────────────────
-        d.registry = address(new ProtocolRegistry(deployer, TIMELOCK_DELAY));
+        d.registry = address(new ProtocolRegistry(deployer, TIMELOCK_DELAY, PRICE_MAX_AGE));
         console.log("ProtocolRegistry:", d.registry);
 
         // ── 4. AssetRegistry ──────────────────────────────────

@@ -123,6 +123,12 @@ interface IOwnMarket {
     /// @notice The oracle price is below the order's minimum (limit) price at force time.
     error PriceBelowMinimum();
 
+    /// @notice The asset price proof's timestamp is outside the order's live window [createdAt, now].
+    error AssetPriceProofOutsideWindow();
+
+    /// @notice The collateral price proof is stale; force execution requires a current collateral price.
+    error StaleCollateralPrice();
+
     /// @notice The asset is not active in the registry.
     error AssetNotActive(bytes32 asset);
 

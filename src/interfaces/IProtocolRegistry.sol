@@ -32,6 +32,11 @@ interface IProtocolRegistry {
     /// @param key Identifier for the contract slot.
     event TimelockCancelled(bytes32 indexed key);
 
+    /// @notice Emitted when the global price-proof max age is updated.
+    /// @param oldMaxAge The previous max age (seconds).
+    /// @param newMaxAge The new max age (seconds).
+    event PriceMaxAgeUpdated(uint256 oldMaxAge, uint256 newMaxAge);
+
     // ──────────────────────────────────────────────────────────────
     //  Errors
     // ──────────────────────────────────────────────────────────────
@@ -50,6 +55,9 @@ interface IProtocolRegistry {
 
     /// @notice Thrown when trying to use setAddress for a slot that is already initialized.
     error AlreadyInitialized();
+
+    /// @notice Thrown when a zero price-proof max age is provided (would reject all proofs).
+    error InvalidPriceMaxAge();
 
     // ──────────────────────────────────────────────────────────────
     //  Getters
@@ -78,6 +86,18 @@ interface IProtocolRegistry {
 
     /// @notice Returns the timelock delay duration in seconds.
     function timelockDelay() external view returns (uint256);
+
+    /// @notice Max age (seconds) accepted for an inline "current price" proof — the force-execute
+    ///         collateral leg and BorrowManager risk decisions. Governance-tunable. Does NOT bound
+    ///         the force-execute asset leg, which uses the order's own [createdAt, now] window.
+    function priceMaxAge() external view returns (uint256);
+
+    /// @notice Set the global price-proof max age (seconds). Governance only; takes effect
+    ///         immediately. Reverts on zero.
+    /// @param newMaxAge The new max age in seconds.
+    function setPriceMaxAge(
+        uint256 newMaxAge
+    ) external;
 
     // ──────────────────────────────────────────────────────────────
     //  Initialization (first-time set, no timelock)
