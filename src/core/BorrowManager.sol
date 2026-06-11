@@ -412,10 +412,8 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
         uint256 collateralReleased;
         uint256 lpLoss = residual - absorbAmount;
         if (lpLoss > 0) {
-            bytes32 collatAsset = IVaultManager(registry.vaultManager()).vaultCollateralAsset(vault);
-            uint256 collateralPrice = _verifyPrice(collatAsset, collateralPriceData);
             uint256 lpLossUSD = LendingMath.stableToUSD(lpLoss, _stableDecimals);
-            collateralReleased = lpLossUSD.mulDiv(PRECISION, collateralPrice);
+            collateralReleased = _convertToCollateral(lpLossUSD, collateralPriceData);
             if (collateralReleased > 0) {
                 // Collateral is released to the protocol treasury (fixed in the vault), not to the
                 // caller — the caller fronts the stablecoin; the treasury receives the LP-socialized
@@ -780,6 +778,16 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
         if (timestamp > block.timestamp || block.timestamp - timestamp > maxAge) {
             revert StalePrice(timestamp, maxAge);
         }
+    }
+
+    /// @dev Convert an 18-dec USD value to the bound vault's collateral, in native token units
+    ///      (fresh-price verified, floored to the asset's decimals — protocol-favorable).
+    function _convertToCollateral(uint256 usdValue, bytes calldata collateralPriceData) internal returns (uint256) {
+        bytes32 collatAsset = IVaultManager(registry.vaultManager()).vaultCollateralAsset(vault);
+        uint256 price = _verifyPrice(collatAsset, collateralPriceData);
+        uint256 collateral18 = usdValue.mulDiv(PRECISION, price);
+        uint256 collatDecimals = IERC20Metadata(IOwnVault(vault).asset()).decimals();
+        return collateral18 / (10 ** (18 - collatDecimals));
     }
 
     // ──────────────────────────────────────────────────────────

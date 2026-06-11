@@ -852,3 +852,135 @@ contract BorrowManagerTest is BaseTest {
         borrowManager.setAssetBorrowable(ASSET, true);
     }
 }
+
+/// @title absorbBadDebt with 6-decimal collateral (aUSDC) — regression for the native-decimal
+///        scaling fix. All existing absorbBadDebt tests use 18-dec awstETH, which masks the bug.
+contract BorrowManagerBadDebt6DecTest is BaseTest {
+    AssetRegistry internal assetRegistry;
+    EToken internal eTSLA;
+    MockAaveV3Pool internal aavePool;
+    MockAToken internal collToken; // 6-decimal collateral aToken
+    MockAaveDebtToken internal usdcDebt;
+    OwnVault internal vault;
+    BorrowManager internal borrowManager;
+
+    bytes32 constant ASSET = bytes32("TSLA");
+    bytes32 constant COLLAT = bytes32("AUSDC");
+    uint256 constant TSLA_PX = 250e18;
+    uint256 constant TARGET_LTV_BPS = 3500;
+
+    function _params() internal pure returns (InterestRateModel.Params memory) {
+        return InterestRateModel.Params({basePremiumBps: 100, optimalUtilBps: 8000, slope1Bps: 400, slope2Bps: 7500});
+    }
+
+    function setUp() public override {
+        super.setUp();
+
+        usdc = new MockERC20("USD Coin", "USDC", 6);
+        aavePool = new MockAaveV3Pool();
+        collToken = MockAToken(aavePool.registerReserve(address(usdc), "Aave USDC", "aUSDC", 6)); // 6-dec collateral
+        usdcDebt = MockAaveDebtToken(aavePool.deployVariableDebtToken(address(usdc)));
+
+        vm.startPrank(Actors.ADMIN);
+        protocolRegistry.setAddress(protocolRegistry.MARKET(), address(this)); // act as MARKET
+        assetRegistry = new AssetRegistry(Actors.ADMIN);
+        protocolRegistry.setAddress(protocolRegistry.ASSET_REGISTRY(), address(assetRegistry));
+        vm.stopPrank();
+
+        eTSLA = new EToken("Own TSLA", "eTSLA", ASSET, address(protocolRegistry), address(usdc));
+        AssetConfig memory cfg = AssetConfig({
+            activeToken: address(eTSLA),
+            legacyTokens: new address[](0),
+            active: true,
+            volatilityLevel: 2,
+            oracleType: 1
+        });
+        vm.prank(Actors.ADMIN);
+        assetRegistry.addAsset(ASSET, address(eTSLA), cfg);
+
+        vm.prank(Actors.ADMIN);
+        vault = new OwnVault(address(collToken), "Own aUSDC", "oaUSDC", address(protocolRegistry), address(this));
+
+        _deployVaultManager();
+        _setPaymentToken(address(usdc));
+        vm.prank(Actors.ADMIN);
+        vaultManager.registerVault(address(vault), COLLAT);
+
+        // $1M aUSDC collateral at $1; register the collateral asset + oracle, then pull the mark.
+        _setOraclePrice(COLLAT, 1e18);
+        vm.prank(address(aavePool));
+        collToken.mint(address(vault), 1_000_000e6);
+        AssetConfig memory ccfg = AssetConfig({
+            activeToken: address(collToken),
+            legacyTokens: new address[](0),
+            active: true,
+            volatilityLevel: 1,
+            oracleType: 1
+        });
+        vm.prank(Actors.ADMIN);
+        assetRegistry.addAsset(COLLAT, address(collToken), ccfg);
+        vaultManager.pullCollateralPrice(address(vault));
+
+        borrowManager = new BorrowManager(
+            address(vault),
+            address(usdc),
+            address(usdcDebt),
+            address(aavePool),
+            address(protocolRegistry),
+            TARGET_LTV_BPS,
+            _params()
+        );
+        _enableAaveLending(address(vault), address(borrowManager), address(usdcDebt));
+
+        usdc.mint(address(aavePool), 1_000_000e6); // Aave borrow liquidity
+        _setOraclePrice(ASSET, TSLA_PX);
+        _setTreasury(Actors.FEE_RECIPIENT);
+    }
+
+    function _priceData(
+        uint256 px
+    ) internal view returns (bytes memory) {
+        return abi.encode(px, block.timestamp);
+    }
+
+    /// @dev Strip MINTER1 to a $2k zero-collateral residual (identical to the 18-dec harness).
+    function _stripToBadDebt() internal returns (uint256 residual) {
+        uint256 eAmt = 100e18;
+        uint256 stable = 10_000e6;
+        eTSLA.mint(Actors.MINTER1, eAmt);
+        vm.startPrank(Actors.MINTER1);
+        eTSLA.approve(address(borrowManager), eAmt);
+        borrowManager.borrow(ASSET, eAmt, stable, _priceData(TSLA_PX));
+        vm.stopPrank();
+
+        _setOraclePrice(ASSET, 84e18); // seize for $8k repay = 8000*1.05/84 = 100 eTSLA (all collateral)
+        usdc.mint(Actors.LIQUIDATOR, 8000e6);
+        vm.startPrank(Actors.LIQUIDATOR);
+        usdc.approve(address(borrowManager), 8000e6);
+        borrowManager.liquidate(Actors.MINTER1, ASSET, 8000e6, _priceData(84e18));
+        vm.stopPrank();
+
+        residual = borrowManager.debtOf(Actors.MINTER1, ASSET);
+        assertEq(borrowManager.positionOf(Actors.MINTER1, ASSET).eTokenCollateral, 0, "collateral stripped");
+        assertEq(residual, 2000e6, "residual book debt");
+    }
+
+    /// @dev With 6-dec collateral, the LP-socialized slice is released in NATIVE units (2000e6).
+    ///      Before the fix this computed 2000e18 and reverted on the vault's balance.
+    function test_absorbBadDebt_sixDecimalCollateral_releasesNativeAmount() public {
+        uint256 residual = _stripToBadDebt();
+        uint256 vaultBefore = collToken.balanceOf(address(vault));
+
+        usdc.mint(Actors.ADMIN, residual);
+        vm.startPrank(Actors.ADMIN);
+        usdc.approve(address(borrowManager), residual);
+        borrowManager.absorbBadDebt(Actors.MINTER1, ASSET, 0, _priceData(1e18)); // LPs eat $2k, $1/aUSDC
+        vm.stopPrank();
+
+        // $2k at $1 = 2000 aUSDC = 2000e6 native (NOT 2000e18).
+        assertEq(collToken.balanceOf(Actors.FEE_RECIPIENT), 2000e6, "treasury received native 6-dec amount");
+        assertEq(collToken.balanceOf(address(vault)), vaultBefore - 2000e6, "vault released native amount");
+        assertEq(borrowManager.positionOf(Actors.MINTER1, ASSET).principal, 0, "position cleared");
+        assertEq(aavePool.debtOf(address(vault), address(usdc)), 0, "aave debt cleared");
+    }
+}

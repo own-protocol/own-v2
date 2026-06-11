@@ -16,6 +16,7 @@ updated as findings are remediated.
 | H-01 | High | `forceExecuteOrder` accepts a halted (wind-down) vault as collateral source | **Fixed** |
 | H-02 | High | Resting redeem escrow stranded after `migrateToken` (stock split) | **Fixed** |
 | H-03 | High | Withdrawal util gate combines a stale cached mark with live `totalAssets` | **Fixed** |
+| H-04 | High | `absorbBadDebt` releases collateral in 18-dec units, not the vault's native decimals | **Fixed** |
 
 ---
 
@@ -230,3 +231,43 @@ protocol-caused step reduction is now synchronous.)
   mark syncs down on force-execution release.
 
 Full suite: **637 passing**.
+
+---
+
+## H-04 — `absorbBadDebt` releases collateral in 18-dec units, not native decimals (High) — **Fixed**
+
+*(Found in a focused re-audit of `BorrowManager` + `AaveRouter`, not in the 2026-06-09 report.)*
+
+### Root cause
+
+`absorbBadDebt` computed the LP-socialized collateral slice as
+`collateralReleased = lpLossUSD.mulDiv(PRECISION, collateralPrice)` — an **18-decimal-normalized**
+amount — then passed it straight to `OwnVault.releaseCollateralForBadDebt`, which does a raw
+`safeTransfer` in the asset's **native** decimals. The native-decimal scale-down (present in the
+analogous `OwnMarket._convertToCollateral`) was missing.
+
+- 18-dec collateral (awstETH): `10**(18-18)=1`, accidentally correct — which is why all existing
+  `absorbBadDebt` tests (awstETH-only) passed.
+- 6-dec collateral (**aUSDC / USDC**, a primary collateral type with lending wired in): the amount is
+  **10¹² too large**, so the transfer reverts on insufficient balance — bad-debt absorption is bricked
+  for those vaults (and would catastrophically over-release if a vault ever held enough).
+
+### Fix
+
+Extracted a `BorrowManager._convertToCollateral(usdValue, collateralPriceData)` helper (mirrors
+`OwnMarket`'s) that verifies the fresh collateral price and **floors to the asset's native decimals**,
+and routed `absorbBadDebt` through it. The decimal-sensitive conversion now lives behind one named
+helper instead of being open-coded.
+
+### Files
+
+- `src/core/BorrowManager.sol` — new `_convertToCollateral`; `absorbBadDebt` uses it.
+
+### Tests
+
+- `test/unit/BorrowManager.t.sol`: new `BorrowManagerBadDebt6DecTest` with a 6-decimal aUSDC
+  collateral vault — `test_absorbBadDebt_sixDecimalCollateral_releasesNativeAmount` asserts the
+  treasury receives `2000e6` (native), not `2000e18`. Verified to revert without the fix.
+- `AaveRouter` was audited in the same pass — no Critical/High found.
+
+Full suite: **633 passing**.
