@@ -17,6 +17,7 @@ updated as findings are remediated.
 | H-02 | High | Resting redeem escrow stranded after `migrateToken` (stock split) | **Fixed** |
 | H-03 | High | Withdrawal util gate combines a stale cached mark with live `totalAssets` | **Fixed** |
 | H-04 | High | `absorbBadDebt` releases collateral in 18-dec units, not the vault's native decimals | **Fixed** |
+| M-05 | Medium | Interest-model divergence: book debt can lag the real (compounding) Aave debt → LP shortfall | **Fixed** |
 
 ---
 
@@ -271,3 +272,58 @@ helper instead of being open-coded.
 - `AaveRouter` was audited in the same pass — no Critical/High found.
 
 Full suite: **633 passing**.
+
+---
+
+## M-05 — Interest-model divergence vs. real Aave debt (Medium) — **Fixed**
+
+*(Found in the focused `BorrowManager` re-audit.)*
+
+### Root cause
+
+`BorrowManager` modelled the Aave-side interest itself: `_accrue` sampled Aave's *current* variable
+borrow rate (`getReserveData().currentVariableBorrowRate`) at sparse touch points and applied it as
+**simple** interest over the elapsed time. Aave's actual debt **compounds continuously** and the rate
+moves between touches, so during a rate spike the book debt could fall **below** the vault's real
+Aave debt. The borrowers' repayments would then under-cover the Aave loan, and the shortfall would
+land on LPs. The variable debt token (`debtToken`) was stored but never read — Aave's ground-truth
+debt was ignored.
+
+### Fix
+
+Anchor to Aave's ground truth instead of modelling it. `_accrue` / `_projectedIndex` now **floor** the
+interest index so total book debt (`_totalScaledDebt × index`) can never sit below the vault's real
+Aave debt, read live from `IERC20(debtToken).balanceOf(vault)` (a real Aave variable debt token's
+`balanceOf` is the current compounded debt). The index is monotonic, so the floor only ever raises it.
+
+Effect: the protocol's *premium* (the markup above Aave) is whatever the book debt exceeds the real
+Aave debt by. If our simple-interest model lags Aave, the floor lifts the book debt to exactly the
+Aave debt and the premium shrinks toward zero for that window — but borrowers always cover the Aave
+loan, so **LPs never absorb the shortfall**. The risk converts from LP principal loss to (at worst)
+foregone protocol premium during rare spikes.
+
+A full per-position decomposition (Aave-scaled debt + a separate premium index) would also preserve
+premium precisely during spikes, but is a large, higher-risk rewrite of the core accounting for a
+revenue-only refinement; the index floor delivers the safety guarantee in ~12 lines.
+
+A permissionless `accrue()` entry point was also added so a keeper can advance + floor the stored
+index between organic borrow/repay/liquidate touches — bounding the window where the model can lag
+and keeping the stored-index reads (`totalDebtUSD` / `utilizationBps`) current.
+
+### Files
+
+- `src/core/BorrowManager.sol` (+`IBorrowManager`) — `_flooredIndex` helper; `_accrue` +
+  `_projectedIndex` apply it; permissionless `accrue()` keeper entry point.
+- `test/helpers/MockAaveV3Pool.sol` — `MockAaveDebtToken.balanceOf` now mirrors `pool.debtOf`
+  (matches real Aave's debt-token semantics) so the read is exercised in tests.
+
+### Tests
+
+- `test/unit/BorrowManager.t.sol`:
+  - `test_accrue_floorsBookDebtToRealAaveDebt` — an Aave spike (`accrueDebt`) lifts the real debt
+    above the model; the floor raises the book debt to match, and a full repay clears the Aave loan
+    with no LP shortfall. Verified to fail (the exact $500 shortfall) without the floor.
+  - `test_accrue_keeperCanSyncIndependently` — any address can call `accrue()` to floor the stored
+    index to the real Aave debt with no borrower interaction.
+
+Full suite: **635 passing**.

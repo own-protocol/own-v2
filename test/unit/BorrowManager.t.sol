@@ -851,6 +851,50 @@ contract BorrowManagerTest is BaseTest {
         vm.expectRevert(IBorrowManager.OnlyAdmin.selector);
         borrowManager.setAssetBorrowable(ASSET, true);
     }
+
+    // ──────────────────────────────────────────────────────────
+    //  Interest-model divergence: index floored to real Aave debt
+    // ──────────────────────────────────────────────────────────
+
+    /// @dev If Aave's debt outruns our sampled simple-interest model, the book debt is floored to the
+    ///      real Aave debt so a full repay still clears the Aave loan — no shortfall lands on LPs.
+    function test_accrue_floorsBookDebtToRealAaveDebt() public {
+        (, uint256 stable) = _openTypical(Actors.MINTER1); // borrow $10k, book ~= $10k same block
+        assertEq(borrowManager.debtOf(Actors.MINTER1, ASSET), stable, "book == principal at open");
+
+        // Aave rate spike our model missed: the vault's real Aave debt jumps to $10.5k.
+        uint256 spiked = 10_500e6;
+        aavePool.accrueDebt(address(vault), address(usdc), spiked - stable);
+
+        // The floor lifts book debt to at least the real Aave debt.
+        assertGe(borrowManager.debtOf(Actors.MINTER1, ASSET), spiked, "book debt floored to real aave debt");
+
+        // Full repay clears the Aave loan entirely — nothing left for LPs to absorb.
+        uint256 owed = borrowManager.debtOf(Actors.MINTER1, ASSET);
+        usdc.mint(Actors.MINTER1, owed);
+        vm.startPrank(Actors.MINTER1);
+        usdc.approve(address(borrowManager), owed);
+        borrowManager.repay(ASSET, type(uint256).max);
+        vm.stopPrank();
+        assertEq(aavePool.debtOf(address(vault), address(usdc)), 0, "aave debt fully cleared, no LP shortfall");
+    }
+
+    /// @dev A keeper can advance/floor the stored index with no borrower interaction, so the
+    ///      stored-index reads (totalDebtUSD / utilization) catch up to the real Aave debt.
+    function test_accrue_keeperCanSyncIndependently() public {
+        (, uint256 stable) = _openTypical(Actors.MINTER1); // borrow $10k
+        // Aave debt jumps; no borrow/repay/liquidate touches the manager.
+        aavePool.accrueDebt(address(vault), address(usdc), 500e6);
+        uint256 storedBefore = borrowManager.totalDebtUSD(); // reads the (stale) stored index
+
+        vm.prank(Actors.ATTACKER); // permissionless — any address
+        borrowManager.accrue();
+
+        // Stored book debt is now floored to the real Aave debt ($10.5k → 18-dec USD).
+        assertGt(borrowManager.totalDebtUSD(), storedBefore, "keeper sync advanced stored debt");
+        assertGe(borrowManager.totalDebtUSD(), uint256(10_500e6) * 1e12, "stored book debt >= real aave debt");
+        assertEq(borrowManager.totalDebtUSD(), uint256(stable + 500e6) * 1e12, "exactly floored to aave debt");
+    }
 }
 
 /// @title absorbBadDebt with 6-decimal collateral (aUSDC) — regression for the native-decimal

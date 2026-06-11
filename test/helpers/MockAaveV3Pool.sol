@@ -94,6 +94,22 @@ contract MockAToken is IERC20 {
 contract MockAaveDebtToken {
     mapping(address => mapping(address => uint256)) private _allowances;
 
+    address public immutable pool;
+    address public immutable asset;
+
+    constructor(address pool_, address asset_) {
+        pool = pool_;
+        asset = asset_;
+    }
+
+    /// @notice Variable debt balance — mirrors the pool's tracked debt, like a real Aave debt token
+    ///         (`balanceOf(user)` == the user's current variable debt).
+    function balanceOf(
+        address user
+    ) external view returns (uint256) {
+        return MockAaveV3Pool(pool).debtOf(user, asset);
+    }
+
     function approveDelegation(address delegatee, uint256 amount) external {
         _allowances[msg.sender][delegatee] = amount;
     }
@@ -175,7 +191,7 @@ contract MockAaveV3Pool is IAaveV3Pool {
     function deployVariableDebtToken(
         address asset
     ) external returns (address) {
-        MockAaveDebtToken dt = new MockAaveDebtToken();
+        MockAaveDebtToken dt = new MockAaveDebtToken(address(this), asset);
         variableDebtToken[asset] = address(dt);
         return address(dt);
     }

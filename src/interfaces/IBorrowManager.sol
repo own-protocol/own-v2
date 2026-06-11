@@ -175,6 +175,11 @@ interface IBorrowManager {
         bytes calldata priceData
     ) external payable;
 
+    /// @notice Permissionless: advance the global interest index to the current block (and floor it
+    ///         to the vault's real Aave debt). Lets a keeper keep book debt synced with Aave between
+    ///         borrow / repay / liquidate touches, bounding the window where the model can lag.
+    function accrue() external;
+
     /// @notice Close out the residual (zero-collateral) bad debt left after a
     ///         position's collateral has been fully liquidated. Admin-only.
     /// @dev    The caller fronts the *full* residual debt in stablecoin, which

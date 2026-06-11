@@ -315,6 +315,11 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
         _liquidate(borrower, asset, repayAmount, oraclePrice);
     }
 
+    /// @inheritdoc IBorrowManager
+    function accrue() external {
+        _accrue();
+    }
+
     /// @dev Partial-or-full liquidation. The liquidator names `repayAmount`; it is
     ///      clamped to the close-factor cap (50% of debt while `hf` is above
     ///      {CLOSE_FACTOR_HF_THRESHOLD}, 100% at or below it). Collateral seized is
@@ -683,15 +688,18 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
     ///      constructor, so there is no first-touch branch.
     function _accrue() internal {
         uint256 dt = block.timestamp - _lastAccrual;
-        if (dt == 0) return;
 
         if (_totalScaledDebt == 0) {
-            _lastAccrual = block.timestamp;
+            if (dt != 0) _lastAccrual = block.timestamp;
             return;
         }
 
-        _index = LendingMath.accrueIndex(_index, _currentRateBps(), dt);
-        _lastAccrual = block.timestamp;
+        if (dt != 0) {
+            _index = LendingMath.accrueIndex(_index, _currentRateBps(), dt);
+            _lastAccrual = block.timestamp;
+        }
+        // Never let book debt fall below the vault's real Aave debt (see {_flooredIndex}).
+        _index = _flooredIndex(_index);
     }
 
     /// @dev Read-only twin of {_accrue}: returns what the index *would* be at
@@ -703,8 +711,22 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
         uint256 idx = _index == 0 ? PRECISION : _index;
         if (_totalScaledDebt == 0) return idx;
         uint256 dt = block.timestamp - _lastAccrual;
-        if (dt == 0) return idx;
-        return LendingMath.accrueIndex(idx, _currentRateBps(), dt);
+        if (dt != 0) idx = LendingMath.accrueIndex(idx, _currentRateBps(), dt);
+        return _flooredIndex(idx);
+    }
+
+    /// @dev Floor `idx` so total book debt (`_totalScaledDebt × idx`) never sits below the vault's
+    ///      real Aave debt, read from the variable debt token. Aave compounds continuously and can
+    ///      outrun our sampled simple-interest model; flooring to the ground truth keeps any
+    ///      shortfall on the protocol's premium, never on LPs. The index is monotonic, so this only
+    ///      ever raises it.
+    function _flooredIndex(
+        uint256 idx
+    ) internal view returns (uint256) {
+        uint256 realAaveDebt = IERC20(debtToken).balanceOf(vault);
+        if (realAaveDebt == 0) return idx;
+        uint256 minIndex = realAaveDebt.mulDiv(PRECISION, _totalScaledDebt);
+        return idx < minIndex ? minIndex : idx;
     }
 
     /// @dev Current annualized borrow rate (BPS) charged to borrowers:
