@@ -204,6 +204,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         uint256 remaining = order.amount - order.filledAmount;
 
         // Asset proof must fall in the order's window and reach the limit; payout settles at the limit.
+        // Window-scoped (not fresh) by design — VM-failure recourse.
         (uint256 reachedPrice, uint256 assetTs) = _verifyAssetPrice(order.asset, assetPriceData);
         if (assetTs < order.createdAt || assetTs > block.timestamp) revert AssetPriceProofOutsideWindow();
         if (reachedPrice < order.limitPrice) revert PriceBelowMinimum();

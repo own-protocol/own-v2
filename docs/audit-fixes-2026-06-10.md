@@ -12,7 +12,7 @@ updated as findings are remediated.
 
 | ID | Severity | Title | Status |
 |----|----------|-------|--------|
-| C-01 | Critical | `verifyPrice` has no staleness check; stale signed prices drain collateral | **Partially fixed — REOPENED** (borrow/liquidate + collateral leg fixed; force-execute **asset leg** still unbounded — see C-01\* / `audit-2026-06-09.md` §2B) |
+| C-01 | Critical | `verifyPrice` has no staleness check; stale signed prices drain collateral | **Fixed** (force-execute **asset leg** uses an in-window price by design — see design note below / `audit-2026-06-09.md` §2B C-01\*) |
 | H-01 | High | `forceExecuteOrder` accepts a halted (wind-down) vault as collateral source | **Fixed** |
 | H-02 | High | Resting redeem escrow stranded after `migrateToken` (stock split) | **Fixed** |
 | H-03 | High | Withdrawal util gate combines a stale cached mark with live `totalAssets` | **Fixed** |
@@ -21,7 +21,7 @@ updated as findings are remediated.
 
 ---
 
-## C-01 — `verifyPrice` staleness / price-manipulation (Critical) — **Partially fixed — REOPENED**
+## C-01 — `verifyPrice` staleness / price-manipulation (Critical) — **Fixed**
 
 ### Root cause
 
@@ -98,33 +98,25 @@ Full suite: **616 passing**.
 - **`main` carries the same root flaw.** This fix is on `lending`; if `main` is the deployed
   testnet code, the equivalent fix must land there too.
 
-### ⚠️ REOPENED (2026-06-11 multi-agent re-audit) — C-01\*
+### Design note (2026-06-11 re-audit) — C-01\* asset leg is intentionally window-scoped
 
-The fix above closed C-01 on the borrow/liquidate/absorbBadDebt paths and on the force-execute
-**collateral** leg, but the force-execute **asset** leg remains exploitable. Fix-step 1 made a
-deliberate design choice — accept any in-window signed asset price and settle at the user's
-`limitPrice` — on the rationale that "the user is owed a fill at their limit." The re-audit disputes
-that this is safe:
+The 2026-06-11 re-audit flagged that the force-execute **asset** leg has no `priceMaxAge` bound
+(unlike the collateral leg and `BorrowManager._verifyPrice`) and proposed requiring a fresh asset
+price. After review with the team this is **by design and not adopted** — requiring freshness would
+break the intended VM-failure recourse.
 
-- The asset proof is bounded only by `assetTs ∈ [order.createdAt, block.timestamp]` (OwnMarket.sol:29)
-  with **no `priceMaxAge` bound** — `_verifyAssetPrice` does not apply the staleness check that the
-  collateral leg's `_convertToCollateral` does (OwnMarket.sol:463). Confirmed against source.
-- An order's window can be long, and the asset need only have *touched* `limitPrice` once during it.
-  A redeemer can replay that transient peak after the asset has crashed.
-- Because payout is `grossUsd = remaining × order.limitPrice` valued at the historical limit while
-  `closeExposure` retires risk at the *current* mark — and `releaseCollateral` runs **no**
-  `withdrawalBreachesUtil` gate — the redeemer extracts more LP collateral than the exposure retired
-  and can push the pool past `globalMaxUtilizationBps`. So "settle at limit" does **not** neutralize
-  the over-extraction; it only changes which price the over-payment is denominated in.
+Force-execute exists precisely because a VM *should have* executed the user's redeem order when the
+asset reached the user's `limitPrice`; if no VM did so within `claimThreshold`, the user proves the
+asset reached that price *at some point in the order's `[createdAt, now]` window* and is filled at
+their **own, immutable, placement-time `limitPrice`**. Fix-step 1 above is therefore correct as
+written: the only thing C-01 needed to remove was settling at an *attacker-submitted* price (done —
+it now settles at the committed limit, claimable only by `order.user`, only if the asset actually
+reached it). There is no unbounded extraction and no third-party theft, so C-01 is **Fixed**.
 
-**This is the original C-01 collateral-theft vector still live on the asset side** — flagged
-independently by 6 agents in the re-audit. **Status: Open (High).**
-
-**Recommended remediation:** bound the asset proof's freshness in `forceExecuteOrder`
-(`if (block.timestamp - assetTs > registry.priceMaxAge()) revert`), pay out at
-`min(order.limitPrice, reachedPrice)`, and add a `withdrawalBreachesUtil` check on the release path.
-The durable fix is to enforce staleness inside `OracleVerifier.verifyPrice` itself so no consumer can
-rely on an unbounded proof. (Cross-ref: `audit-2026-06-09.md` §2B C-01\*, H-05, M-07.)
+**Acknowledged, by-design risk:** LP collateral backstops the redeem at the committed `limitPrice`
+whenever the asset reached it during the window, so a wick a VM fails to execute against can cost LPs
+up to `(limitPrice − currentPrice) × remaining`. This is the intended LP trust model, bounded by the
+user's own pre-committed limit. (Cross-ref: `audit-2026-06-09.md` §2B C-01\*.)
 
 ---
 

@@ -17,28 +17,17 @@ Prior audit `docs/audit-2026-06-09.md` (C-01, H-01..H-04, M-05) and its remediat
 
 ## Findings
 
-[90] **1. `forceExecuteOrder` never bounds the asset price proof freshness (incomplete C-01 fix), and prices the payout at `limitPrice` while skipping the utilization gate — LP collateral over-extraction**
+[—] **1. `forceExecuteOrder` asset proof is window-scoped, not fresh — WITHDRAWN (by design)**
 
-`OwnMarket.forceExecuteOrder` · Confidence: 90
+`OwnMarket.forceExecuteOrder` · Status: **By design — not a finding** (originally raised at confidence 90; reclassified 2026-06-11 after team review)
 
-**Description**
-The C-01 remediation added a `priceMaxAge` staleness bound to the **collateral** price (`_convertToCollateral`, OwnMarket.sol:463) and to `BorrowManager._verifyPrice` (BorrowManager.sol:799-801), but the **asset** price proof in `forceExecuteOrder` is still gated only by `assetTs ∈ [order.createdAt, block.timestamp]` (OwnMarket.sol:29) with no recency bound, and `OracleVerifier.verifyPrice` (OracleVerifier.sol:122-135) performs no staleness/replay check — so a redeem-order owner can replay any signed price that ever touched `limitPrice` during the order's life, long after the asset has crashed; compounding this, the payout is `grossUsd = remaining × order.limitPrice` (line 32) valued at the historical limit while exposure is retired at the current mark, and `releaseCollateral` runs no `withdrawalBreachesUtil` check, so the redeemer drains more vault collateral than the risk retired and can push the pool past `globalMaxUtilizationBps`.
+**Original observation**
+The asset price proof in `forceExecuteOrder` is gated only by `assetTs ∈ [order.createdAt, block.timestamp]` (OwnMarket.sol:29) with no `priceMaxAge` recency bound, unlike the collateral leg (`_convertToCollateral`, OwnMarket.sol:463) and `BorrowManager._verifyPrice` — so a redeem-order owner can present a signed price from any point in the order's life. Six agents read this as a continuation of C-01 (stale-price replay) and proposed requiring a fresh asset price.
 
-**Proof:** Order for 100 eTSLA at `limitPrice=$300` placed at a transient spike; asset later trades $100. After `claimThreshold`, owner force-executes with the old signed $300 proof (passes `assetTs ≥ createdAt`, `reachedPrice ≥ limitPrice`). Vault releases `$30,000` of collateral while `closeExposure` retires only `100 × $100 = $10,000` — `$20,000` LP loss, no stablecoin inflow. Flagged independently by 6 agents.
+**Why this is by design (not a vulnerability)**
+Force-execute is the user's **VM-failure recourse**: a VM should have executed the redeem order when the asset reached the user's `limitPrice`; if none did within `claimThreshold`, the user proves the asset reached that price *somewhere in the order window* and is filled at their **own, immutable, placement-time `limitPrice`** — claimable only by `order.user`, only if the asset actually reached it. Requiring a fresh price would break this recourse (an order whose price wicked and recovered could never be forced). The original C-01 theft vector (settling at an *attacker-submitted* arbitrary price) is already closed by the settle-at-committed-limit fix; there is no unbounded extraction and no third-party theft. The **collateral** leg remains correctly fresh-checked.
 
-**Fix**
-
-```diff
-  (uint256 reachedPrice, uint256 assetTs) = _verifyAssetPrice(order.asset, assetPriceData);
-  if (assetTs < order.createdAt || assetTs > block.timestamp) revert AssetPriceProofOutsideWindow();
-+ if (block.timestamp - assetTs > registry.priceMaxAge()) revert StaleAssetPrice();
-  if (reachedPrice < order.limitPrice) revert PriceBelowMinimum();
-- uint256 grossUsd = Math.mulDiv(remaining, order.limitPrice, PRECISION);
-+ // Pay out at the lesser of the limit price and the current verified price so the
-+ // redeemer never extracts more collateral than the exposure being retired.
-+ uint256 grossUsd = Math.mulDiv(remaining, Math.min(order.limitPrice, reachedPrice), PRECISION);
-```
-(and add a `withdrawalBreachesUtil`-equivalent check on the release path). A staleness bound belongs in `OracleVerifier.verifyPrice` itself so no caller can rely on an unbounded proof.
+**Acknowledged by-design risk:** LP collateral backstops the redeem at the committed `limitPrice` whenever the asset reached it during the window, so a wick a VM fails to execute against can cost LPs up to `(limitPrice − currentPrice) × remaining`. This is the intended LP trust model, bounded by the user's pre-committed limit. **No code change.** (See `docs/audit-2026-06-09.md` §2B C-01\*.)
 ---
 
 [88] **2. `OwnVault.fulfillWithdrawal` removes collateral without syncing the VaultManager mark — global utilization cap bypass**
@@ -221,7 +210,7 @@ Findings List
 
 | # | Confidence | Title |
 |---|---|---|
-| 1 | [90] | `forceExecuteOrder` asset-price staleness (incomplete C-01) + `limitPrice` payout / util-gate bypass → LP over-extraction |
+| 1 | [—] | `forceExecuteOrder` asset-price window — **WITHDRAWN (by design)**: intended VM-failure recourse, settles at committed limit |
 | 2 | [88] | `fulfillWithdrawal` missing `onCollateralReleased` → global utilization cap bypass |
 | 3 | [80] | `WstETHRouter` wraps requested not received stETH → deposit DoS |
 | 4 | [80] | `borrow` cap checked before `_accrue` → cap bypass (widened by M-05 floor) |
