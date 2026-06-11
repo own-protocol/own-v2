@@ -18,6 +18,7 @@ updated as findings are remediated.
 | H-03 | High | Withdrawal util gate combines a stale cached mark with live `totalAssets` | **Fixed** |
 | H-04 | High | `absorbBadDebt` releases collateral in 18-dec units, not the vault's native decimals | **Fixed** |
 | M-05 | Medium | Interest-model divergence: book debt can lag the real (compounding) Aave debt → LP shortfall | **Fixed** |
+| H-05 | High | `fulfillWithdrawal` omits `onCollateralReleased` → stale-high mark lets mint/borrow/serial-withdraw bypass the global utilisation cap | **Fixed** |
 
 ---
 
@@ -347,3 +348,46 @@ and keeping the stored-index reads (`totalDebtUSD` / `utilizationBps`) current.
     index to the real Aave debt with no borrower interaction.
 
 Full suite: **635 passing**.
+
+---
+
+## H-05 — `fulfillWithdrawal` removes collateral without syncing the cached mark (High) — **Fixed**
+
+*(Found in the 2026-06-11 multi-agent re-audit; see `audit-2026-06-09.md` §2B.)*
+
+### Root cause
+
+`OwnVault.fulfillWithdrawal` transferred LP collateral out but never called
+`VaultManager.onCollateralReleased`, unlike its two sibling collateral-exit paths `releaseCollateral`
+and `releaseCollateralForBadDebt` (both synced the mark, the latter as part of the H-03 fix). So
+`_collateralMark[vault]` / `_globalCollateralUSD` stayed overstated until the next keeper
+`pullCollateralPrice`. Because `withdrawalBreachesUtil`, `openExposure`, and `maxDebtUSD` all read that
+cached denominator with no live-`totalAssets` correction, the stale-high mark let **serial
+withdrawals** each clear the gate, and **mints/borrows right after a withdrawal** issue exposure/debt
+against collateral that had already left — bypassing the global utilisation solvency cap within a
+block (before any keeper pull). This was the normal-withdrawal third path that the H-03 remediation
+("the same root cause is closed in both places") did not cover.
+
+### Fix
+
+`fulfillWithdrawal` now calls `IVaultManager(registry.vaultManager()).onCollateralReleased(assets)`
+inside the non-halted branch, **after** the `withdrawalBreachesUtil` check (so the gate still reads the
+pre-reduction mark) and **before** the transfer (so the hook reads `totalAssets` while it still
+includes `assets`). Halted vaults skip it — their collateral is already excluded from the pool
+(`onCollateralReleased` also early-returns on a zeroed mark). The proportional reduction
+`mark × assets / totalAssets` keeps the cached mark consistent with the reduced `totalAssets`; the next
+keeper pull recomputes the mark from scratch, so there is no drift or double-count.
+
+### Files
+
+- `src/core/OwnVault.sol` — `onCollateralReleased(assets)` call added to `fulfillWithdrawal`
+  (non-halted branch). One line; no interface or `VaultManager` change (`onCollateralReleased` already
+  exists, `onlyRegisteredVault`).
+
+### Tests
+
+- `test/unit/OwnVault.t.sol`: `test_fulfillWithdrawal_syncsCollateralMark` — seeds a $30,000 mark
+  (10 WETH @ $3,000), withdraws half, asserts the mark / global collateral drop ~50%. Fails without
+  the fix (mark stays $30,000).
+
+Full suite: **636 passing**.

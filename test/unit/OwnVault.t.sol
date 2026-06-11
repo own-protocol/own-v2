@@ -520,6 +520,26 @@ contract OwnVaultTest is BaseTest {
         assertEq(weth.balanceOf(Actors.LP1), 10 ether);
     }
 
+    /// @dev H-05: fulfillWithdrawal must sync the VaultManager collateral mark when collateral leaves
+    ///      (mirrors releaseCollateral). Without the onCollateralReleased call the mark stays stale-high
+    ///      and the global utilisation gate (mint/borrow/serial-withdraw) reads collateral already gone.
+    function test_fulfillWithdrawal_syncsCollateralMark() public {
+        // Deposit 10 WETH and mark the collateral at the $3,000 ETH price → $30,000 mark.
+        uint256 shares = _depositAs(Actors.LP1, 10 ether);
+        _pullCollateralPrice(address(vault));
+        assertEq(vaultManager.collateralMark(address(vault)), 30_000e18, "mark seeded");
+        assertEq(vaultManager.globalCollateralUSD(), 30_000e18, "global seeded");
+
+        // Withdraw half the position; the mark/global collateral must drop ~50% as the assets leave.
+        vm.prank(Actors.LP1);
+        uint256 requestId = vault.requestWithdrawal(shares / 2);
+        vault.fulfillWithdrawal(requestId);
+
+        assertApproxEqRel(vaultManager.collateralMark(address(vault)), 15_000e18, 1e15, "mark ~ -50%");
+        assertApproxEqRel(vaultManager.globalCollateralUSD(), 15_000e18, 1e15, "global ~ -50%");
+        assertLt(vaultManager.collateralMark(address(vault)), 30_000e18, "mark reduced (H-05 regression)");
+    }
+
     // ──────────────────────────────────────────────────────────
     //  Fuzz
     // ──────────────────────────────────────────────────────────

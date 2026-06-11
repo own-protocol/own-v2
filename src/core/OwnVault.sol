@@ -359,6 +359,8 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
             if (IVaultManager(registry.vaultManager()).withdrawalBreachesUtil(address(this), assets)) {
                 revert MaxUtilizationExceeded();
             }
+            // Sync the cached mark before assets leave (mirrors releaseCollateral).
+            IVaultManager(registry.vaultManager()).onCollateralReleased(assets);
         }
 
         req.status = WithdrawalStatus.Fulfilled;
