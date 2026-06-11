@@ -21,7 +21,7 @@ Fill in the required values:
 | `DEPLOYER_PRIVATE_KEY` | Deployer wallet private key (becomes protocol admin) |
 | `VM_PRIVATE_KEY` | Vault manager wallet private key |
 | `VM_ADDRESS` | Vault manager address (must match `VM_PRIVATE_KEY`) |
-| `TREASURY_ADDRESS` | Address that receives protocol fee share |
+| `TREASURY_ADDRESS` | Address that receives bad-debt collateral released during lending wind-down |
 | `BASESCAN_API_KEY` | (Optional) For contract verification on BaseScan |
 
 ## Step 1: Deploy Core Contracts
@@ -54,7 +54,6 @@ WETH_ROUTER=0x...
 | MockERC20 | Testnet USDC (6 decimals, open mint) |
 | ProtocolRegistry | Central address registry with 2-day timelock |
 | AssetRegistry | Asset configs + oracle mappings |
-| FeeCalculator | Mint/redeem fees by volatility level |
 | PythOracleVerifier | Pyth oracle wrapper (120s max price age) |
 | OwnMarket | RFQ order execution marketplace |
 | VaultManager | Global pooled risk accounting + control hub (exposure, marks, utilization, per-asset caps, signer registry, payment token, pause, halt, claim threshold) |
@@ -187,9 +186,17 @@ cast send $WETH_ROUTER "depositETH(address,address,uint256)" \
 | XAU/USD | `0x765d2ba906dbc32ca17cc11f5310a89e9ee1f6420508c63861f2f8ba4ee34bb2` |
 | ETH/USD | `0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace` |
 
-## Fee Schedule (Testnet Defaults)
+## Fees
 
-| Volatility Level | Mint Fee | Redeem Fee | Assets |
+The current build charges **no on-chain mint or redeem fee** — orders settle at the maker's signed
+quote price and the maker captures its spread off-chain. Lending revenue (the premium above Aave's
+borrow rate) and dividends earned on borrowed collateral are swept to the vault manager. See `docs/protocol.md`
+§7 for the full revenue model.
+
+The per-`volatilityLevel` fee schedule below is **planned** (`FeeCalculator`/`FeeAccrual`) and is
+**not deployed**:
+
+| Volatility Level | Mint Fee (planned) | Redeem Fee (planned) | Assets |
 |-------------------|----------|------------|--------|
 | 1 (Low) | 0.50% | 0.25% | GOLD |
 | 2 (Medium) | 1.00% | 0.50% | TSLA |

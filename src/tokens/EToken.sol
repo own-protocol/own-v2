@@ -213,9 +213,9 @@ contract EToken is ERC20, ERC20Permit, IEToken {
     ///      on every transfer, mint, and burn. This is the OZ v5 hook.
     ///
     ///      Dividends are never redirected between holders here. A custodian pool (the lending
-    ///      manager) accrues normally; the dividends it earns while holding borrowers' collateral are
-    ///      protocol revenue, swept to the vault manager out-of-band — borrowers forfeit the coupon
-    ///      for the borrow term.
+    ///      manager) accrues normally; the dividends it earns while holding collateral during a borrow
+    ///      accrue to the vault manager as lending revenue, swept out-of-band. They resume accruing to
+    ///      the borrower once the collateral is returned.
     function _update(address from, address to, uint256 amount) internal override {
         if (from != address(0)) {
             _settleRewards(from);

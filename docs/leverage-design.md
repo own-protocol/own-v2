@@ -17,10 +17,12 @@ Replace plain WETH as vault collateral with wstETH deposited into Aave V3 via a 
 |--------|--------------|-----------|
 | ETH staking yield (Lido) | ~3% | Embedded in wstETH exchange rate |
 | Aave supply yield | ~0.1-0.5% | Earned on awstETH held by vault |
-| Own protocol fees | Variable | Mint/redeem fee share (existing) |
-| Lending spread | Variable | Aave borrow rate + premium charged to eToken borrowers |
+| Lending spread | Variable | Premium above Aave's borrow rate, charged to eToken borrowers and routed to the VM |
+| Borrower collateral dividends | Variable | Dividends earned on eToken collateral during a borrow, swept to the VM |
 
-LPs earn all four yield sources on the same capital.
+LPs earn the staking, Aave-supply, and lending-derived sources on the same capital. (A mint/redeem
+fee share is planned via `FeeCalculator`/`FeeAccrual` but is **not yet in code** — see
+`docs/protocol.md` §7.)
 
 ---
 
@@ -255,9 +257,8 @@ The steep slope2 above optimal utilization strongly incentivizes repayment, acti
 
 | Recipient | Source |
 |-----------|--------|
-| Aave | Borrow interest (paid on repay) |
-| LPs | Premium portion → accrues to vault share price |
-| Protocol | Protocol spread → treasury |
+| Aave | Its own base borrow interest (repaid on repay) |
+| Vault manager | The **entire** premium above Aave's rate, swept on repay (`LendingFeeAccrued`). The VM redistributes off-chain and/or to LPs via `OwnVault.shareYield` (lifts share price). There is no automatic protocol/treasury split in code today. |
 
 ---
 

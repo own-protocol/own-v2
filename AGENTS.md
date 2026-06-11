@@ -75,7 +75,7 @@ The protocol is organised around an order-based escrow + claim marketplace, per-
 
 - All vaults are public. Any LP can deposit collateral into any vault.
 - LP deposits use an async request/accept queue. LP requests deposit, VM accepts, shares are minted.
-- ERC-4626 is used for LP share accounting. LPs receive vault shares proportional to their deposit. Share price increases as yield accrues (for aUSDC, stETH vaults) and as fee revenue is distributed.
+- ERC-4626 is used for LP share accounting. LPs receive vault shares proportional to their deposit. Share price increases as yield accrues (for aUSDC, stETH vaults) and as the vault manager distributes lending revenue via `shareYield`.
 - LPs can also be their own vault manager (LP creates a vault with themselves as VM and can deposit directly).
 - LP withdrawals use an async FIFO queue (ERC-7540 pattern), fulfilled when utilization allows.
 
@@ -98,10 +98,13 @@ The protocol is organised around an order-based escrow + claim marketplace, per-
 - On-chain `totalCommittedUSD` counter as sanity check against signed utilisation.
 - OracleVerifier is upgradable via ProtocolRegistry — supports future transition to Pyth, Chainlink, or ZK oracles.
 
-**Fee System:**
+**Revenue Model:**
 
-- `FeeCalculator`: per-asset mint/redeem fee lookup based on volatility level. Fixed for MVP, swappable for dynamic fees.
-- `FeeAccrual`: collects all fees, distributes to protocol treasury, LPs, and VMs.
+- **No on-chain mint/redeem fee.** Orders settle at the maker's signed `quote.price`; `OwnMarket` routes the full payment-token amount to the maker (the signer's linked address), who captures the bid/ask spread off-chain.
+- **Lending premium** (charged above Aave's borrow rate) is swept to the vault manager on repay (`LendingFeeAccrued`).
+- **Collateral dividends** earned on borrowed eTokens during the borrow term are swept to the vault manager (`sweepDividends` → `DividendsSwept`).
+- `treasury` (ProtocolRegistry) receives bad-debt collateral, not fees.
+- **Planned, not in code:** `FeeCalculator` (per-`volatilityLevel` mint/redeem fee tiers) + `FeeAccrual` (protocol/LP/VM split). `volatilityLevel` is stored in AssetRegistry but unused today.
 
 **Protocol Registry:**
 
@@ -288,7 +291,7 @@ Do NOT add dependencies without discussion. Every dependency is attack surface. 
 Contracts should implement or be compatible with these standards where applicable:
 
 - **ERC-20 + ERC-2612 (Permit)**: eToken. Use OpenZeppelin's `ERC20Permit`. Enables single-tx mint flows.
-- **ERC-4626 (Tokenized Vaults)**: Used for LP share accounting in all vaults. Each vault is an ERC-4626 vault where the underlying asset is the collateral type (USDC, aUSDC, WETH, wstETH). Share price naturally appreciates for yield-bearing collateral (aUSDC, stETH) and as fee revenue is distributed.
+- **ERC-4626 (Tokenized Vaults)**: Used for LP share accounting in all vaults. Each vault is an ERC-4626 vault where the underlying asset is the collateral type (USDC, aUSDC, WETH, wstETH). Share price naturally appreciates for yield-bearing collateral (aUSDC, stETH) and as the vault manager distributes lending revenue via `shareYield`.
 - **ERC-7540 (Async Vaults)**: Design pattern for non-market-hours redemption queue (future consideration). Keep the interface compatible.
 - **ERC-7575 (Multi-Asset Vaults)**: Relevant for multi-collateral vaults (future consideration). The eToken being external to the vault is already ERC-7575 aligned.
 - **ERC-7535 (Native Asset Vaults)**: For ETH collateral vaults (future consideration). Use via a router periphery contract.
@@ -296,37 +299,34 @@ Contracts should implement or be compatible with these standards where applicabl
 
 When implementing, reference the EIP directly. Do not rely on memory — check the spec.
 
-## Fee Model & Slippage
+## Revenue Model & Price Protection
 
-The protocol charges per-asset mint and redemption fees. Fees are the sole protocol revenue. Fees and slippage are cleanly separated concepts.
+The protocol charges **no on-chain mint or redeem fee**. Revenue accrues through the RFQ spread and the lending system; a tiered fee split is planned but not implemented. Full treatment in `docs/protocol.md` §7.
 
-### Mint & Redemption Fees (Protocol revenue)
+### Mint & Redeem — RFQ spread (off-chain)
 
-- Per-asset fees based on the asset's `volatilityLevel` (1=low, 2=medium, 3=high).
-- Each asset's fee is set independently depending on volatility.
-- **MVP**: Fixed fee per volatility level (admin-set in `FeeCalculator`).
-- **Future**: Swappable `DynamicFeeCalculator` that factors in utilisation, volatility, market conditions.
-- Applied at confirmation:
-  - Mint: fee deducted from stablecoin amount before eToken calculation.
-  - Redeem: fee deducted from stablecoin payout.
-- All fees are collected by the `FeeAccrual` contract.
+- Orders settle at the maker's signed `quote.price`. `OwnMarket._settleMint` / `_settleRedeem` route the **full** payment-token amount to the maker (the signer's linked settlement address) and mint/burn the user's eTokens — **no fee is deducted on-chain**.
+- The maker's margin is the bid/ask spread baked into the quoted price, captured off-chain.
+- Force-executed redeems settle at the bare oracle `limitPrice` (no maker spread).
 
-### Fee Distribution
+### Lending revenue (routed to the VM)
 
-Fees are split three ways:
+- **Interest premium**: borrowers pay `max(liveAaveRate, floor) + premium(utilisation)`. On repay, the premium above Aave's rate is swept to the vault manager (`LendingFeeAccrued`); the VM redistributes off-chain and/or via `OwnVault.shareYield` (lifts LP share price).
+- **Collateral dividends**: dividends earned on eToken collateral held during a borrow accrue to the VM as lending revenue (not to the borrower) and are swept via `sweepDividends` (`DividendsSwept`). They resume accruing to the borrower once the collateral is returned.
 
-- **Protocol share**: set by governance (e.g., 20%). Goes to protocol treasury.
-- **LP share**: share of the remainder after protocol cut. Accrues to vault, increasing share price.
-- **VM share**: VM sets their cut of the remainder after protocol share.
-- Parties claim their accrued balance from `FeeAccrual`.
+### Treasury
 
-### Slippage (User-side, market orders only)
+- `ProtocolRegistry.treasury()` receives **bad-debt collateral** (`releaseCollateralForBadDebt`, `absorbBadDebt`), not mint/redeem fees.
 
-- Max oracle price movement tolerance between order placement and execution.
-- Protects the user against price moving during async execution.
-- Verification at confirmation: `|executionOraclePrice - placementOraclePrice| / placementOraclePrice <= slippage`
-- Slippage is separate from fees — fees are cost of service, slippage is price risk.
-- Limit orders use exact price instead of slippage.
+### Price protection (not a fee)
+
+- There is no separate on-chain slippage check. A resting order's `limitPrice` bounds execution (mint: max price; redeem: min price); market orders execute at the `quote.price` the taker submits. Force-executed redeems are floored at `limitPrice`.
+
+### Planned (not in code)
+
+- `FeeCalculator`: per-`volatilityLevel` mint/redeem fee tiers (1=low, 2=medium, 3=high), capped at 500 BPS.
+- `FeeAccrual`: three-way split — protocol (treasury), LPs (share price), VM — with `protocolShareBps` set in governance.
+- `volatilityLevel` is already stored per-asset in AssetRegistry to support this, but no contract reads it yet.
 
 ### Protocol Controls
 
@@ -345,7 +345,7 @@ Fees are split three ways:
 All protocol contracts are registered in a single `ProtocolRegistry` contract. Other contracts look up addresses from this registry instead of storing immutable/admin-set references. This enables:
 
 - Swapping OracleVerifier (e.g., to Pyth/Chainlink adapter) by updating one address.
-- Swapping FeeCalculator (e.g., to dynamic fees) by updating one address.
+- Swapping `FeeCalculator` once implemented (planned — not yet in `src/`) by updating one address.
 - Governance-controlled upgrades with timelock protection.
 
 ## VM Strategy

@@ -500,7 +500,7 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
     }
 
     // ──────────────────────────────────────────────────────────
-    //  Collateral dividends (forfeited to the VM)
+    //  Collateral dividends (lending revenue, swept to the VM)
     // ──────────────────────────────────────────────────────────
 
     /// @inheritdoc IBorrowManager

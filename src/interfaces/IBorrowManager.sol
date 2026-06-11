@@ -101,8 +101,8 @@ interface IBorrowManager {
         uint256 collateralReturned
     );
 
-    /// @notice Emitted when dividends accrued on pooled collateral (forfeited by borrowers for the
-    ///         borrow term) are swept to the vault manager as protocol revenue.
+    /// @notice Emitted when dividends earned on pooled collateral during the borrow term are swept to
+    ///         the vault manager as lending revenue.
     /// @param eToken      The eToken whose dividends were swept.
     /// @param beneficiary The vault manager receiving the dividends.
     /// @param amount      Reward tokens forwarded.
@@ -208,9 +208,9 @@ interface IBorrowManager {
 
     /// @notice Sweep dividends accrued on the manager's pooled collateral to the vault manager.
     /// @dev    Permissionless (keeper-friendly): the beneficiary is always the bound vault's manager,
-    ///         so the destination is fixed. Borrowers forfeit dividends for the borrow term; this
-    ///         routes that revenue to the VM, mirroring the lending-premium sweep. Reverts when the
-    ///         manager has no claimable dividends on `eToken`.
+    ///         so the destination is fixed. Dividends earned on collateral held during a borrow accrue
+    ///         to the VM as lending revenue; this routes them there, mirroring the lending-premium
+    ///         sweep. Reverts when the manager has no claimable dividends on `eToken`.
     /// @param  eToken The eToken (active or legacy) whose pooled dividends to sweep.
     /// @return amount Reward tokens forwarded to the vault manager.
     function sweepDividends(

@@ -86,7 +86,7 @@ The protocol is organized into three layers (vaults are deployed directly and re
 
 | Contract             | File                            | Purpose                                                                                                                                                          |
 | -------------------- | ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **ProtocolRegistry** | `src/core/ProtocolRegistry.sol` | Central registry of all protocol contract addresses. 2-day timelock for address changes. Stores protocol-wide parameters (e.g. `protocolShareBps`).              |
+| **ProtocolRegistry** | `src/core/ProtocolRegistry.sol` | Central registry of all protocol contract addresses. 2-day timelock for address changes. Stores protocol-wide parameters (`timelockDelay`, `priceMaxAge`).              |
 | **OwnMarket**        | `src/core/OwnMarket.sol`        | RFQ order execution marketplace. Settles market orders atomically against signer-issued quotes, escrows and (partially) fills resting limit orders, provides redeem force execution against the oracle price, and the halted-asset redeem path. |
 | **OwnVault**         | `src/core/OwnVault.sol`         | ERC-4626 collateral vault. Holds LP collateral (custody), manages async deposit/withdrawal queues, distributes yield, supports lending opt-in, and vault-level pause/halt. Risk accounting and order controls live in the VaultManager, not the vault. Operator address: `manager`. |
 | **VaultManager**     | `src/core/VaultManager.sol`     | Central, pooled risk accounting **and** global control hub for **all** vaults. Owns global exposure, collateral marks, utilization, the per-asset issuance ceiling, **the vault registry/allowlist** (admin `registerVault`/`deregisterVault` + `getAllVaults`), the signer registry, the global payment token, trading pause, permanent asset halt + halt redeem address, and the claim threshold. Valued at keeper-cached marks. See §9. |
@@ -118,8 +118,8 @@ See `docs/own-architecture.png` for the visual architecture diagram.
                           |
           +---------------+
           |               |
-    AssetRegistry    FeeCalculator
-    (assets, oracles, fees)
+    AssetRegistry    FeeCalculator (planned)
+    (assets, oracle mappings)
                                       OwnVault ───────┐ admin registers vault / keeper pulls collateral price
                                  (ERC-4626 custody)   |
                                           |           v
@@ -287,19 +287,56 @@ LPs can deposit native ETH using the **WETHRouter**, which wraps ETH to WETH bef
 
 ---
 
-## 7. Fee Model
+## 7. Revenue Model
 
-> **Implementation status:** the current `OwnMarket` settlement routes the **full** payment-token
-> amount to/from the signer's linked address and applies **no on-chain fee** — the maker captures its
-> spread (and any protocol economics) off-chain. The tiered on-chain fee split described below is the
-> planned `FeeCalculator`/`FeeAccrual` model and is not yet wired into settlement.
+The protocol charges **no on-chain mint or redeem fee**. Today, value accrues to makers and to the
+vault manager (VM) through three live mechanisms. A tiered protocol fee split is planned but not yet
+wired — see §7.6.
 
-Under the planned model, fees are charged on settlement and split three ways. The maker's quoted
-`price` is the pure execution price; the protocol fee is applied on top.
+### 7.1 RFQ spread (mint & redeem) — captured off-chain
 
-### Fee Tiers
+Orders settle at the signer-issued `quote.price`. `OwnMarket` routes the **full** payment-token
+amount to the maker (the signer's linked settlement address) and mints/burns the user's eTokens —
+no fee is deducted on-chain (`_settleMint` / `_settleRedeem`). The maker's margin is the bid/ask
+spread baked into the quoted price, captured off-chain. Force-executed redeems settle at the bare
+oracle `limitPrice`, so they carry **no** maker spread — which is the whole reason for the
+claim-threshold delay before force execution becomes available (see §6).
 
-Fees are based on the asset's **volatility level** (configured in AssetRegistry):
+### 7.2 Lending premium — routed to the vault manager
+
+Borrowers (eToken-collateralised lending) pay `max(liveAaveRate, floor) + premium(utilization)`, a
+two-slope utilization curve (`InterestRateModel`; full detail in `docs/leverage-design.md`). On
+repay, `BorrowManager` repays Aave its actual cost and sweeps the **surplus** — the premium charged
+above Aave's rate — to the vault manager, emitting `LendingFeeAccrued`. The VM distributes it
+downstream (off-chain split and/or `OwnVault.shareYield`, which lifts LP share price).
+
+### 7.3 Collateral dividends — routed to the vault manager
+
+For dividend-paying assets (e.g. eTLT), dividends accrue on the eToken collateral while it sits in
+`BorrowManager` custody during a borrow. These accrue to the vault manager as lending revenue rather
+than to the borrower: anyone can call `sweepDividends(eToken)` to forward them to the VM
+(`DividendsSwept`). Once the collateral is returned to the borrower, future dividends accrue to them
+normally again.
+
+### 7.4 Treasury
+
+`ProtocolRegistry.treasury()` is **not** a mint/redeem fee sink. It is the fixed destination for
+**bad-debt collateral** released during lending wind-down
+(`OwnVault.releaseCollateralForBadDebt`, `BorrowManager.absorbBadDebt`).
+
+### 7.5 User price protection (not a fee)
+
+There is no separate on-chain slippage check. A resting order's `limitPrice` bounds execution — max
+price for a mint, min price for a redeem — and a market order executes at the `quote.price` the
+taker submits. Force-executed redeems are floored at `limitPrice`.
+
+### 7.6 Planned: tiered mint/redeem fee (FeeCalculator / FeeAccrual)
+
+> Not yet in `src/`. `volatilityLevel` is already stored per-asset in `AssetRegistry` to support
+> this, but no contract reads it for fees today.
+
+A future `FeeCalculator` would charge a per-volatility-level fee on settlement, on top of the maker's
+execution price:
 
 | Volatility Level | Mint Fee        | Redeem Fee      | Example Assets |
 | ---------------- | --------------- | --------------- | -------------- |
@@ -307,24 +344,9 @@ Fees are based on the asset's **volatility level** (configured in AssetRegistry)
 | 2 (Medium)       | 1.00% (100 BPS) | 0.50% (50 BPS)  | TSLA           |
 | 3 (High)         | 2.00% (200 BPS) | 1.00% (100 BPS) | --             |
 
-Maximum fee cap: **500 BPS (5%)** enforced by FeeCalculator.
-
-### Fee Distribution
-
-On settlement, the fee is split:
-
-1. **Protocol share**: `fee * protocolShareBps / BPS` — sent to treasury via `claimProtocolFees()`
-2. **VM share**: `fee * (BPS - protocolShareBps) / BPS` — claimable by VM via `claimVMFees()`
-3. **LP share**: remaining portion accrues to vault share value (benefits all LPs)
-
-The `protocolShareBps` is a global parameter set in ProtocolRegistry.
-
-### Fees on Force Execution
-
-In the current code, force execution releases the full oracle-valued collateral to the redeemer with
-no fee deducted. Under the planned fee model, the standard redeem fee would be charged on the
-collateral payout so the protocol and LPs earn regardless of whether a maker fills the order or the
-user force-executes.
+Capped at **500 BPS (5%)**. A companion `FeeAccrual` would split each fee three ways — protocol (to
+treasury), VM, and LPs (via share price) — with `protocolShareBps` set in governance. Under that
+model, force execution would also charge the standard redeem fee on the collateral payout.
 
 ---
 

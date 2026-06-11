@@ -793,7 +793,7 @@ contract BorrowManagerTest is BaseTest {
     }
 
     // ──────────────────────────────────────────────────────────
-    //  Dividend sweep (Option A: borrowers forfeit, VM collects)
+    //  Dividend sweep (collateral dividends are lending revenue, VM collects)
     // ──────────────────────────────────────────────────────────
 
     /// @dev Deposit a dividend while the manager holds collateral, then sweep it to the VM

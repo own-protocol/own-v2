@@ -19,7 +19,7 @@ import {MockWETH} from "../test/helpers/MockWETH.sol";
 
 /// @title Deploy — Deploy all core Own Protocol contracts to Base Sepolia
 /// @notice Deploys contracts, registers them in ProtocolRegistry, configures oracle feeds,
-///         adds assets, and sets fee levels. Run by deployer (= protocol admin).
+///         and adds assets. Run by deployer (= protocol admin).
 ///
 /// Usage:
 ///   forge script script/Deploy.s.sol --rpc-url base_sepolia --broadcast --verify
