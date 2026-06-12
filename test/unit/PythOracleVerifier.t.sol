@@ -16,6 +16,7 @@ contract PythOracleVerifierTest is BaseTest {
     bytes32 constant TSLA_FEED_ID = bytes32(uint256(1));
     bytes32 constant GOLD_FEED_ID = bytes32(uint256(2));
     uint256 constant MAX_PRICE_AGE = 120; // 2 minutes
+    uint256 constant MAX_CONF_BPS = 100; // 1%
 
     function setUp() public override {
         super.setUp();
@@ -25,7 +26,7 @@ contract PythOracleVerifierTest is BaseTest {
         vm.label(address(mockPyth), "MockPyth");
 
         vm.startPrank(Actors.ADMIN);
-        verifier = new PythOracleVerifier(Actors.ADMIN, address(mockPyth), MAX_PRICE_AGE);
+        verifier = new PythOracleVerifier(Actors.ADMIN, address(mockPyth), MAX_PRICE_AGE, MAX_CONF_BPS);
         verifier.setFeedId(TSLA, 0, TSLA_FEED_ID);
         verifier.setFeedId(GOLD, 0, GOLD_FEED_ID);
         vm.stopPrank();
@@ -59,7 +60,13 @@ contract PythOracleVerifierTest is BaseTest {
     function test_constructor_setsImmutables() public view {
         assertEq(address(verifier.pyth()), address(mockPyth));
         assertEq(verifier.maxPriceAge(), MAX_PRICE_AGE);
+        assertEq(verifier.maxConfBps(), MAX_CONF_BPS);
         assertEq(verifier.owner(), Actors.ADMIN);
+    }
+
+    function test_constructor_zeroMaxConfBps_reverts() public {
+        vm.expectRevert(PythOracleVerifier.InvalidMaxConfBps.selector);
+        new PythOracleVerifier(Actors.ADMIN, address(mockPyth), MAX_PRICE_AGE, 0);
     }
 
     // ──────────────────────────────────────────────────────────
@@ -99,6 +106,31 @@ contract PythOracleVerifierTest is BaseTest {
         vm.prank(Actors.ATTACKER);
         vm.expectRevert();
         verifier.setMaxPriceAge(300);
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Admin: setMaxConfBps
+    // ──────────────────────────────────────────────────────────
+
+    function test_setMaxConfBps_succeeds() public {
+        vm.prank(Actors.ADMIN);
+        vm.expectEmit(false, false, false, true);
+        emit PythOracleVerifier.MaxConfBpsUpdated(MAX_CONF_BPS, 200);
+        verifier.setMaxConfBps(200);
+
+        assertEq(verifier.maxConfBps(), 200);
+    }
+
+    function test_setMaxConfBps_zero_reverts() public {
+        vm.prank(Actors.ADMIN);
+        vm.expectRevert(PythOracleVerifier.InvalidMaxConfBps.selector);
+        verifier.setMaxConfBps(0);
+    }
+
+    function test_setMaxConfBps_notOwner_reverts() public {
+        vm.prank(Actors.ATTACKER);
+        vm.expectRevert();
+        verifier.setMaxConfBps(200);
     }
 
     // ──────────────────────────────────────────────────────────
@@ -212,6 +244,44 @@ contract PythOracleVerifierTest is BaseTest {
 
         vm.expectRevert(); // MockPyth enforces age check
         verifier.getPrice(TSLA);
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Confidence interval (M-01)
+    // ──────────────────────────────────────────────────────────
+
+    function test_getPrice_wideConfidence_reverts() public {
+        // TSLA $250, conf ±$5 (2%) — wider than the 1% bound.
+        mockPyth.setPriceWithConf(TSLA_FEED_ID, 25_000_000_000, 500_000_000, -8, block.timestamp);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                PythOracleVerifier.ConfidenceTooWide.selector, TSLA, 500_000_000, 25_000_000_000, MAX_CONF_BPS
+            )
+        );
+        verifier.getPrice(TSLA);
+    }
+
+    function test_getPrice_confidenceAtBound_succeeds() public {
+        // conf exactly 1% of price passes (strict-greater check).
+        mockPyth.setPriceWithConf(TSLA_FEED_ID, 25_000_000_000, 250_000_000, -8, block.timestamp);
+
+        (uint256 price,) = verifier.getPrice(TSLA);
+        assertEq(price, 250e18);
+    }
+
+    function test_verifyPrice_wideConfidence_reverts() public {
+        mockPyth.setParseConf(500_000_000); // ±2% on a $250 price
+        bytes[] memory updates = new bytes[](1);
+        updates[0] = _encodeFeedUpdate(TSLA_FEED_ID, 25_000_000_000, -8, block.timestamp);
+        bytes memory priceData = abi.encode(updates, uint64(block.timestamp - 60), uint64(block.timestamp + 60));
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                PythOracleVerifier.ConfidenceTooWide.selector, TSLA, 500_000_000, 25_000_000_000, MAX_CONF_BPS
+            )
+        );
+        verifier.verifyPrice{value: 1}(TSLA, priceData);
     }
 
     // ──────────────────────────────────────────────────────────

@@ -266,13 +266,45 @@ contract OracleVerifierTest is BaseTest {
 
     function test_setAssetOracleConfig_admin_succeeds() public {
         vm.prank(Actors.ADMIN);
+        vm.expectEmit(true, false, false, true);
+        emit IOracleVerifier.AssetOracleConfigSet(bytes32("GOLD"), 600, 500);
         verifier.setAssetOracleConfig(bytes32("GOLD"), 600, 500);
+
+        (uint256 maxStaleness, uint256 maxDeviation) = verifier.getAssetOracleConfig(bytes32("GOLD"));
+        assertEq(maxStaleness, 600);
+        assertEq(maxDeviation, 500);
     }
 
     function test_setAssetOracleConfig_nonAdmin_reverts() public {
         vm.prank(Actors.ATTACKER);
         vm.expectRevert();
         verifier.setAssetOracleConfig(ASSET, 600, 500);
+    }
+
+    function test_setAssetOracleConfig_zeroValues_revert() public {
+        vm.startPrank(Actors.ADMIN);
+        vm.expectRevert(IOracleVerifier.InvalidOracleConfig.selector);
+        verifier.setAssetOracleConfig(ASSET, 0, 500);
+        vm.expectRevert(IOracleVerifier.InvalidOracleConfig.selector);
+        verifier.setAssetOracleConfig(ASSET, 600, 0);
+        vm.stopPrank();
+    }
+
+    /// @dev M-02: a validly-signed push for an asset with no oracle config must be
+    ///      rejected — unset config previously meant no staleness/deviation bounds at all.
+    function test_updatePrice_unsetConfig_reverts() public {
+        bytes32 unconfigured = bytes32("NEWASSET");
+        bytes memory priceData = _signPrice(unconfigured, 250e18, block.timestamp);
+
+        vm.expectRevert(abi.encodeWithSelector(IOracleVerifier.OracleConfigNotSet.selector, unconfigured));
+        verifier.updatePrice(unconfigured, priceData);
+
+        // Configuring the asset unlocks the push.
+        vm.prank(Actors.ADMIN);
+        verifier.setAssetOracleConfig(unconfigured, MAX_STALENESS, MAX_DEVIATION);
+        verifier.updatePrice(unconfigured, _signPrice(unconfigured, 250e18, block.timestamp));
+        (uint256 price,) = verifier.getPrice(unconfigured);
+        assertEq(price, 250e18);
     }
 
     // ──────────────────────────────────────────────────────────

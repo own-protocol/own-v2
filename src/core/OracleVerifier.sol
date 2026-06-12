@@ -65,9 +65,12 @@ contract OracleVerifier is IOracleVerifier, Ownable, Multicall {
         address recoveredSigner = messageHash.toEthSignedMessageHash().recover(v, r, s);
         if (!_signers[recoveredSigner]) revert UnauthorizedSigner(recoveredSigner);
 
-        // Staleness check
+        // No config, no prices: an unconfigured asset must not accept unbounded pushes.
         AssetOracleConfig storage config = _assetConfigs[asset];
-        if (config.maxStaleness > 0 && block.timestamp - timestamp > config.maxStaleness) {
+        if (config.maxStaleness == 0 || config.maxDeviation == 0) revert OracleConfigNotSet(asset);
+
+        // Staleness check
+        if (block.timestamp - timestamp > config.maxStaleness) {
             revert StalePrice(asset, timestamp, config.maxStaleness);
         }
 
@@ -76,7 +79,7 @@ contract OracleVerifier is IOracleVerifier, Ownable, Multicall {
         if (existing.timestamp > 0 && timestamp <= existing.timestamp) return;
 
         // Deviation check (skip for first price)
-        if (existing.price > 0 && config.maxDeviation > 0) {
+        if (existing.price > 0) {
             uint256 deviation;
             if (price > existing.price) {
                 deviation = ((price - existing.price) * BPS) / existing.price;
@@ -187,7 +190,9 @@ contract OracleVerifier is IOracleVerifier, Ownable, Multicall {
 
     /// @inheritdoc IOracleVerifier
     function setAssetOracleConfig(bytes32 asset, uint256 maxStaleness, uint256 maxDeviation) external onlyOwner {
+        if (maxStaleness == 0 || maxDeviation == 0) revert InvalidOracleConfig();
         _assetConfigs[asset] = AssetOracleConfig(maxStaleness, maxDeviation);
+        emit AssetOracleConfigSet(asset, maxStaleness, maxDeviation);
     }
 
     /// @inheritdoc IOracleVerifier

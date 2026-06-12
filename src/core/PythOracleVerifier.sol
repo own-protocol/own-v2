@@ -2,7 +2,7 @@
 pragma solidity 0.8.28;
 
 import {IOracleVerifier} from "../interfaces/IOracleVerifier.sol";
-import {PRECISION} from "../interfaces/types/Types.sol";
+import {BPS, PRECISION} from "../interfaces/types/Types.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {IPyth} from "@pythnetwork/IPyth.sol";
 import {PythStructs} from "@pythnetwork/PythStructs.sol";
@@ -19,6 +19,9 @@ contract PythOracleVerifier is IOracleVerifier, Ownable {
     IPyth public immutable pyth;
     uint256 public maxPriceAge;
 
+    /// @notice Max accepted Pyth confidence interval relative to price, in BPS.
+    uint256 public maxConfBps;
+
     /// @dev Asset ticker → session feed IDs.
     ///      Index 0 = regular, 1 = pre-market, 2 = post-market, 3 = overnight.
     ///      verifyPrice() always uses index 0 (regular). verifyPriceForSession() uses the specified index.
@@ -31,6 +34,8 @@ contract PythOracleVerifier is IOracleVerifier, Ownable {
     error FeedNotConfigured(bytes32 asset);
     error InvalidSessionId(uint8 sessionId);
     error NegativePrice(bytes32 asset, int64 rawPrice);
+    error ConfidenceTooWide(bytes32 asset, uint256 conf, uint256 price, uint256 maxConfBps);
+    error InvalidMaxConfBps();
 
     // ──────────────────────────────────────────────────────────
     //  Events
@@ -38,14 +43,17 @@ contract PythOracleVerifier is IOracleVerifier, Ownable {
 
     event FeedIdSet(bytes32 indexed asset, uint8 sessionId, bytes32 feedId);
     event MaxPriceAgeUpdated(uint256 oldAge, uint256 newAge);
+    event MaxConfBpsUpdated(uint256 oldBps, uint256 newBps);
 
     // ──────────────────────────────────────────────────────────
     //  Constructor
     // ──────────────────────────────────────────────────────────
 
-    constructor(address admin_, address pyth_, uint256 maxPriceAge_) Ownable(admin_) {
+    constructor(address admin_, address pyth_, uint256 maxPriceAge_, uint256 maxConfBps_) Ownable(admin_) {
+        if (maxConfBps_ == 0) revert InvalidMaxConfBps();
         pyth = IPyth(pyth_);
         maxPriceAge = maxPriceAge_;
+        maxConfBps = maxConfBps_;
     }
 
     // ──────────────────────────────────────────────────────────
@@ -166,6 +174,15 @@ contract PythOracleVerifier is IOracleVerifier, Ownable {
         emit MaxPriceAgeUpdated(old, newMaxAge);
     }
 
+    /// @notice Set the max accepted confidence interval relative to price (BPS).
+    function setMaxConfBps(
+        uint256 newMaxConfBps
+    ) external onlyOwner {
+        if (newMaxConfBps == 0) revert InvalidMaxConfBps();
+        emit MaxConfBpsUpdated(maxConfBps, newMaxConfBps);
+        maxConfBps = newMaxConfBps;
+    }
+
     /// @notice Get the Pyth feed ID for an asset and trading session.
     function getFeedId(bytes32 asset, uint8 sessionId) external view returns (bytes32) {
         return _feedIds[asset][sessionId];
@@ -198,10 +215,16 @@ contract PythOracleVerifier is IOracleVerifier, Ownable {
         timestamp = uint256(uint64(pythPrice.publishTime));
     }
 
-    function _normalizePythPrice(bytes32 asset, PythStructs.Price memory pythPrice) private pure returns (uint256) {
+    function _normalizePythPrice(bytes32 asset, PythStructs.Price memory pythPrice) private view returns (uint256) {
         if (pythPrice.price <= 0) revert NegativePrice(asset, pythPrice.price);
 
         uint256 rawPrice = uint256(uint64(pythPrice.price));
+
+        // conf shares price's exponent, so the relative test needs no rescaling.
+        if (uint256(pythPrice.conf) * BPS > rawPrice * maxConfBps) {
+            revert ConfidenceTooWide(asset, pythPrice.conf, rawPrice, maxConfBps);
+        }
+
         int32 expo = pythPrice.expo;
 
         if (expo >= 0) {

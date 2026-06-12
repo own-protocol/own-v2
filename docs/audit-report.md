@@ -1,6 +1,6 @@
 # Own Protocol v2 — Audit Report & Remediation Status
 
-**Branch:** `lending` · **Last updated:** 2026-06-12 · **Test suite:** 642 passing
+**Branch:** `lending` · **Last updated:** 2026-06-12 · **Test suite:** 653 passing
 
 Consolidated from the 2026-06-09 full manual audit, the 2026-06-10/11 focused re-audits
 (BorrowManager, AaveRouter, H-02 migration changes), and the 2026-06-11 multi-agent re-audit
@@ -13,10 +13,10 @@ Consolidated from the 2026-06-09 full manual audit, the 2026-06-10/11 focused re
 | -------- | ----- | ----- | ---- | --------- |
 | Critical | 1     | 1     | 0    | —         |
 | High     | 5     | 5     | 0    | —         |
-| Medium   | 10    | 5     | 4    | 1         |
+| Medium   | 10    | 7     | 2    | 1         |
 | Low      | 13    | 0     | 13   | —         |
 
-**All Critical/High findings are fixed and regression-tested. Remaining work: 4 Mediums (M-01, M-02, M-08, M-09), 13 Lows, and the unconfirmed leads in §5.**
+**All Critical/High findings are fixed and regression-tested. Remaining work: 2 Mediums (M-08, M-09), 13 Lows, and the unconfirmed leads in §5.**
 
 | ID        | Severity | Finding                                                                                                              | Status                                                         |
 | --------- | -------- | -------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
@@ -26,8 +26,8 @@ Consolidated from the 2026-06-09 full manual audit, the 2026-06-10/11 focused re
 | H-03      | High     | Withdrawal gate read a stale collateral mark after bad-debt release                                                  | **Fixed**                                                      |
 | H-04      | High     | `absorbBadDebt` released collateral in 18-dec units, not native decimals                                             | **Fixed**                                                      |
 | H-05      | High     | `fulfillWithdrawal` didn't sync the VaultManager mark → utilization cap bypass                                       | **Fixed**                                                      |
-| M-01      | Medium   | Pyth confidence interval ignored                                                                                     | **Open**                                                       |
-| M-02      | Medium   | In-house push path unbounded when an asset's oracle config is unset                                                  | **Open**                                                       |
+| M-01      | Medium   | Pyth confidence interval ignored                                                                                     | **Fixed**                                                      |
+| M-02      | Medium   | In-house push path unbounded when an asset's oracle config is unset                                                  | **Fixed**                                                      |
 | M-03      | Medium   | `setRateParams` unvalidated → accrual DoS bricks repay/liquidate                                                     | **Fixed**                                                      |
 | M-04      | Medium   | Withdrawal queue is not FIFO                                                                                         | **By design** — spec updated 2026-06-12 to drop the FIFO claim |
 | M-05      | Medium   | Book debt could lag real compounding Aave debt → LP shortfall                                                        | **Fixed**                                                      |
@@ -203,6 +203,38 @@ wei-level shortfall.
 **Test.** `WstETHRouter.t.sol::test_depositStETH_lidoRounding_succeeds` — a rounding stETH mock
 that delivers 2 wei short; reproduces the exact `ERC20InsufficientBalance` revert without the fix.
 
+### M-01 (Medium) — Pyth confidence interval ignored
+
+**Problem.** `PythOracleVerifier._normalizePythPrice` read only `price`/`expo`, never `conf` —
+Pyth's own ±uncertainty band. Wide-uncertainty prices (thin market, degraded publishers) were
+consumed as exact by both the cached reads (marks) and inline proofs (force-exec, borrow, liquidate).
+
+**Fix (2026-06-12).** A `maxConfBps` bound (constructor param + admin `setMaxConfBps`, non-zero
+enforced) checked in `_normalizePythPrice` — the chokepoint both read paths flow through:
+reject when `conf · BPS > price · maxConfBps` (`ConfidenceTooWide`; conf and price share the
+exponent, so no rescaling). Deploy default: 100 bps (1%). Liveness trade-off is intentional:
+while Pyth reports wider uncertainty than the bound, pricing for that asset pauses.
+**Tests.** `PythOracleVerifier.t.sol::test_getPrice_wideConfidence_reverts`,
+`test_verifyPrice_wideConfidence_reverts`, `test_getPrice_confidenceAtBound_succeeds`, plus
+constructor/setter validation. All verified to fail without the check.
+
+### M-02 (Medium) — Unset oracle config accepted unbounded prices
+
+**Problem.** `OracleVerifier.updatePrice` applied staleness/deviation bounds only when the
+per-asset config values were `> 0` — an asset never configured via `setAssetOracleConfig` accepted
+any validly-signed push with no bounds. Exploitable without signer compromise: signed price blobs
+handed out for inline proofs share `updatePrice`'s digest format, so anyone could backfill a stale
+cache with the most favorable price ever signed. Configuration relied on an off-chain ops step
+(`launch-assets.ts`) with silent-off as the default.
+
+**Fix (2026-06-12).** Fail closed: `updatePrice` reverts `OracleConfigNotSet(asset)` unless both
+bounds are configured, then applies them unconditionally; `setAssetOracleConfig` rejects zero
+values (`InvalidOracleConfig`) and now emits `AssetOracleConfigSet`. First-push semantics
+unchanged (deviation skipped, staleness applies). Ops flow unaffected — the contract now enforces
+what `launch-assets.ts` already did by convention.
+**Tests.** `OracleVerifier.t.sol::test_updatePrice_unsetConfig_reverts` (verified to fail without
+the fix), `test_setAssetOracleConfig_zeroValues_revert`.
+
 ### Fixed Info item — EToken pass-through dividends
 
 The EToken dividend accumulator was rewritten (pass-through holder redirect) and re-verified correct
@@ -214,12 +246,6 @@ in the 2026-06-11 re-audit.
 
 ### Medium
 
-- **M-01 — Pyth confidence interval ignored.** `PythOracleVerifier._normalizePythPrice` uses only
-  `price`/`expo`, never `conf`; wide-uncertainty prices are consumed as exact.
-  _Fix:_ reject if `conf · BPS / price > maxConfBps`.
-- **M-02 — Unset oracle config accepts unbounded prices.** `OracleVerifier` gates staleness and
-  deviation on `> 0` config values; an asset never configured via `setAssetOracleConfig` accepts any
-  single push. _Fix:_ require non-zero `maxStaleness`/`maxDeviation` before accepting prices.
 - **M-08 — `_flooredIndex` dust inflation / multi-manager corruption.** The M-05 floor divides
   vault-wide Aave debt by this manager's scaled-debt base. If `_totalScaledDebt` shrinks to dust
   while real Aave debt doesn't, the index explodes (ballooning every position); a documented future
@@ -233,8 +259,9 @@ in the 2026-06-11 re-audit.
 
 ### Recommended order
 
-1. M-01 / M-02 (oracle hardening), M-09 (dust guards).
-2. M-08 (needs a design decision on the floor's debt base).
+1. M-09 (dust guards).
+2. M-08 (needs a design decision on the floor's debt base: floor against this manager's own
+   originated debt, or enforce a one-manager invariant + dust threshold).
 
 ---
 
@@ -303,4 +330,4 @@ High-signal trails from the 2026-06-11 re-audit, not yet verified:
 
 ---
 
-_Original findings cite code at review time (2026-06-09 review at commit `fa9cf33`; re-audits on `lending` through 2026-06-11). Every Critical/High was verified directly against source, and every fix has a regression test that fails without it. Suite: 642 passing._
+_Original findings cite code at review time (2026-06-09 review at commit `fa9cf33`; re-audits on `lending` through 2026-06-11). Every Critical/High was verified directly against source, and every fix has a regression test that fails without it. Suite: 653 passing._

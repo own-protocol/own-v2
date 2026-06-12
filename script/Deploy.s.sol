@@ -64,6 +64,7 @@ contract Deploy is Script {
     uint256 constant TIMELOCK_DELAY = 10 minutes; // Short delay for testing; increase for production
     uint256 constant PRICE_MAX_AGE = 2 minutes; // Max age for inline "current price" proofs
     uint256 constant PYTH_MAX_PRICE_AGE = 120; // 2 minutes
+    uint256 constant PYTH_MAX_CONF_BPS = 100; // Reject Pyth prices with confidence wider than 1%
 
     /// @dev Initial global utilisation cap (80%). Solvency bound across all pooled vaults.
     uint256 constant GLOBAL_MAX_UTIL_BPS = 8000;
@@ -126,7 +127,7 @@ contract Deploy is Script {
         console.log("AssetRegistry:", d.assetRegistry);
 
         // ── 5. PythOracleVerifier ─────────────────────────────
-        d.pythOracle = address(new PythOracleVerifier(deployer, PYTH, PYTH_MAX_PRICE_AGE));
+        d.pythOracle = address(new PythOracleVerifier(deployer, PYTH, PYTH_MAX_PRICE_AGE, PYTH_MAX_CONF_BPS));
         console.log("PythOracleVerifier:", d.pythOracle);
 
         PythOracleVerifier pythOracle = PythOracleVerifier(d.pythOracle);
