@@ -3,8 +3,9 @@ pragma solidity 0.8.28;
 
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {OwnMarket} from "../../src/core/OwnMarket.sol";
-import {EToken} from "../../src/tokens/EToken.sol";
+
 import {IOwnMarket} from "../../src/interfaces/IOwnMarket.sol";
+import {EToken} from "../../src/tokens/EToken.sol";
 
 import {IOwnVault} from "../../src/interfaces/IOwnVault.sol";
 import {IVaultManager} from "../../src/interfaces/IVaultManager.sol";
@@ -187,7 +188,9 @@ contract OwnMarketTest is BaseTest {
     /// @dev Computes the EIP-712 digest locally (mirrors OwnMarket.quoteDigest) rather than calling
     ///      the contract, so inline use after vm.prank / vm.expectRevert does not consume the
     ///      cheatcode — and independently locks the domain/typehash encoding.
-    function _quoteDigest(Quote memory q) internal view returns (bytes32) {
+    function _quoteDigest(
+        Quote memory q
+    ) internal view returns (bytes32) {
         bytes32 domainSeparator = keccak256(
             abi.encode(
                 EIP712_DOMAIN_TYPEHASH,
@@ -198,9 +201,7 @@ contract OwnMarketTest is BaseTest {
             )
         );
         bytes32 structHash = keccak256(
-            abi.encode(
-                QUOTE_TYPEHASH, q.orderId, q.user, q.asset, q.orderType, q.amount, q.price, q.quoteId, q.expiry
-            )
+            abi.encode(QUOTE_TYPEHASH, q.orderId, q.user, q.asset, q.orderType, q.amount, q.price, q.quoteId, q.expiry)
         );
         return keccak256(abi.encodePacked("\x19\x01", domainSeparator, structHash));
     }

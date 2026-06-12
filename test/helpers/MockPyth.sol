@@ -29,7 +29,9 @@ contract MockPyth is IPyth {
     }
 
     /// @dev Set the confidence applied to subsequently parsed price updates.
-    function setParseConf(uint64 conf) external {
+    function setParseConf(
+        uint64 conf
+    ) external {
         parseConf = conf;
     }
 

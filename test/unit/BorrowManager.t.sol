@@ -978,7 +978,7 @@ contract BorrowManagerTest is BaseTest {
         vm.startPrank(Actors.MINTER2);
         eTSLA.approve(address(borrowManager), 100e18);
         vm.expectRevert(abi.encodeWithSelector(IBorrowManager.BorrowExceedsCap.selector, 354_000e18, 350_000e18));
-        borrowManager.borrow(ASSET, 100e18, 5_000e6, _priceData(TSLA_PX));
+        borrowManager.borrow(ASSET, 100e18, 5000e6, _priceData(TSLA_PX));
         vm.stopPrank();
     }
 
@@ -993,7 +993,7 @@ contract BorrowManagerTest is BaseTest {
         vm.startPrank(Actors.MINTER2);
         eTSLA.approve(address(borrowManager), 100e18);
         vm.expectRevert(IBorrowManager.VaultNotActive.selector);
-        borrowManager.borrow(ASSET, 100e18, 5_000e6, _priceData(TSLA_PX));
+        borrowManager.borrow(ASSET, 100e18, 5000e6, _priceData(TSLA_PX));
         vm.stopPrank();
 
         // Exits stay open: the existing position repays in full while paused.
@@ -1024,7 +1024,7 @@ contract BorrowManagerTest is BaseTest {
         _inflateIndex();
 
         uint256 crashPx = 100e18; // hf < 1 at $100
-        usdc.mint(Actors.LIQUIDATOR, 1_000e6);
+        usdc.mint(Actors.LIQUIDATOR, 1000e6);
         vm.startPrank(Actors.LIQUIDATOR);
         usdc.approve(address(borrowManager), type(uint256).max);
         vm.expectRevert(IBorrowManager.AmountTooSmall.selector);
@@ -1102,7 +1102,7 @@ contract BorrowManagerTest is BaseTest {
         vm.startPrank(Actors.MINTER1);
         eTSLA.approve(address(borrowManager), 100e18);
         vm.expectRevert(IBorrowManager.VaultNotActive.selector);
-        borrowManager.borrow(ASSET, 100e18, 5_000e6, _priceData(TSLA_PX));
+        borrowManager.borrow(ASSET, 100e18, 5000e6, _priceData(TSLA_PX));
         vm.stopPrank();
     }
 }

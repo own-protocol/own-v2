@@ -157,9 +157,8 @@ contract WstETHRouterTest is BaseTest {
         MockWstETH roundingWstETH = new MockWstETH(address(roundingStETH));
         WstETHRouter r = new WstETHRouter(address(roundingWstETH), address(roundingStETH));
         vm.prank(Actors.ADMIN);
-        OwnVault v = new OwnVault(
-            address(roundingWstETH), "Own wstETH", "owstETH", address(protocolRegistry), address(r)
-        );
+        OwnVault v =
+            new OwnVault(address(roundingWstETH), "Own wstETH", "owstETH", address(protocolRegistry), address(r));
 
         uint256 amount = 10 ether;
         roundingStETH.mint(Actors.LP1, amount);

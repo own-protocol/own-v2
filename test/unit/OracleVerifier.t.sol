@@ -7,7 +7,6 @@ import {BPS, PRECISION} from "../../src/interfaces/types/Types.sol";
 import {Actors} from "../helpers/Actors.sol";
 import {BaseTest} from "../helpers/BaseTest.sol";
 
-
 contract OracleVerifierTest is BaseTest {
     OracleVerifier public verifier;
 
