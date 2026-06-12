@@ -51,6 +51,9 @@ interface IAssetRegistry {
     /// @notice A zero conversion ratio was provided.
     error InvalidRatio();
 
+    /// @notice The migration target is the current active token or an existing legacy token.
+    error InvalidNewToken(address token);
+
     // ──────────────────────────────────────────────────────────
     //  Admin functions
     // ──────────────────────────────────────────────────────────

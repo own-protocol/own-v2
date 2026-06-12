@@ -1,6 +1,6 @@
 # Own Protocol v2 — Audit Report & Remediation Status
 
-**Branch:** `lending` · **Last updated:** 2026-06-12 · **Test suite:** 657 passing
+**Branch:** `lending` · **Last updated:** 2026-06-12 · **Test suite:** 663 passing
 
 Consolidated from the 2026-06-09 full manual audit, the 2026-06-10/11 focused re-audits
 (BorrowManager, AaveRouter, H-02 migration changes), and the 2026-06-11 multi-agent re-audit
@@ -14,9 +14,9 @@ Consolidated from the 2026-06-09 full manual audit, the 2026-06-10/11 focused re
 | Critical | 1     | 1     | 0    | —         |
 | High     | 5     | 5     | 0    | —         |
 | Medium   | 10    | 9     | 0    | 1         |
-| Low      | 13    | 0     | 13   | —         |
+| Low      | 13    | 6     | 7    | —         |
 
-**Every Critical, High, and Medium is now fixed (or by-design) and regression-tested. Remaining work: 13 Lows and the unconfirmed leads in §5.**
+**Every Critical, High, and Medium is now fixed (or by-design) and regression-tested. Remaining work: 7 Lows (see §4) and the unconfirmed leads in §5.**
 
 | ID        | Severity | Finding                                                                                                              | Status                                                         |
 | --------- | -------- | -------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
@@ -36,7 +36,7 @@ Consolidated from the 2026-06-09 full manual audit, the 2026-06-10/11 focused re
 | M-08      | Medium   | `_flooredIndex` inflates on a dust scaled-debt base; breaks under multi-manager                                      | **Fixed**                                                      |
 | M-09      | Medium   | Sub-unit amounts record zero scaled debt while moving real value                                                     | **Fixed**                                                      |
 | M-10      | Medium   | `WstETHRouter` wraps requested (not received) stETH → deposit path DoS                                               | **Fixed**                                                      |
-| L-01–L-13 | Low      | See §4                                                                                                               | **Open**                                                       |
+| L-01–L-13 | Low      | See §4                                                                                                               | 6 **Fixed** (L-03, L-05, L-06, L-08, L-10, L-12) · 7 Open      |
 | C-01\*    | Info     | Force-execute asset proof is window-scoped, not fresh                                                                | **By design** (team-confirmed 2026-06-11)                      |
 
 ---
@@ -287,7 +287,7 @@ in the 2026-06-11 re-audit.
 
 ## 2. Open Findings
 
-No open Critical/High/Medium findings. Remaining: the 13 Lows in §4 and the unconfirmed leads in §5.
+No open Critical/High/Medium findings. Remaining: the 7 open Lows in §4 and the unconfirmed leads in §5.
 
 ---
 
@@ -312,19 +312,24 @@ No open Critical/High/Medium findings. Remaining: the 13 Lows in §4 and the unc
 
 ## 4. Low Findings (all open)
 
+### Fixed (2026-06-12)
+
+- **L-03 — Fixed.** `closeExposure` now reverts `PriceUnavailable` on a zero mark, mirroring `openExposure` (reachable via an extreme `applySplit` ratio flooring the mark). Test: `test_closeExposure_zeroMark_reverts`.
+- **L-05 — Fixed.** `migrateToken` rejects migrating to the current active token or an existing legacy token (`InvalidNewToken`). The `updateAssetConfig` half was already fixed in code (it explicitly preserves `activeToken`/`legacyTokens`/`active`). Test: `test_migrateToken_toActiveOrLegacyToken_reverts`.
+- **L-06 — Fixed.** `sweepDividends` validates the token via `AssetRegistry.isValidToken(ticker, token)` (`InvalidEToken`); legacy tokens stay sweepable. Test: `test_sweepDividends_invalidToken_reverts`.
+- **L-08 — Fixed.** `_verifyPrice` forwards exactly `verifyFee(priceData)` instead of all of `msg.value`, and `borrow`/`liquidate`/`absorbBadDebt` refund the surplus to the caller as their last step (`_refundExcessEth`, `EthRefundFailed`). Also fixes the latent double-forward in `absorbBadDebt` (two price proofs, each previously sent `{value: msg.value}`). Test: `test_borrow_refundsExcessEth`.
+- **L-10 — Fixed.** `settleHaltedPosition` requires `vaultManager.paymentToken() == stablecoin` (`PaymentTokenMismatch`) — proceeds are accounted in stablecoin units, so a diverged payment token now fails loud and recoverable instead of mis-accounting. Test: `test_settleHaltedPosition_paymentTokenMismatch_reverts`.
+- **L-12 — Fixed.** `placeOrder` measures the escrow balance-diff and reverts `FeeOnTransferNotSupported` when received ≠ sent. Direct party-to-party legs (`executeOrder`, fill payouts) are intentionally not gated — a FoT token there shorts the counterparty, not the escrow pool. This also closes L-02's fee-on-transfer half. Test: `test_placeOrder_feeOnTransferToken_reverts`.
+
+### Open
+
 - **L-01** Quote digest is EIP-191 personal-sign, not EIP-712 as documented — doc/UX mismatch, no fund risk.
-- **L-02** Settlement has no fee-on-transfer guard; >18-dec payment tokens mostly mitigated by `setPaymentToken`'s `decimals() <= 18` check.
-- **L-03** `closeExposure` lacks the `mark != 0` guard `openExposure` has — latent asymmetry, not currently reachable.
-- **L-04** `_borrowManager` is one-shot with no rotation; a compromised manager is only handled via `haltVault`.
-- **L-05** `migrateToken` allows `newToken == activeToken` / re-adding a legacy token; `updateAssetConfig` silently drops `active`/`activeToken` — operator footguns.
-- **L-06** `sweepDividends(eToken)` doesn't validate the token address against `AssetRegistry.isValidToken`.
-- **L-07** `migrateToken` + `applySplit` are not atomic — skipping `applySplit` leaves converted tokens temporarily unredeemable (liveness only; keep both in one multisig batch).
-- **L-08** `BorrowManager` payable functions forward all `msg.value` to the verifier; the surplus above the oracle fee is permanently stranded (no refund, no sweep — same class: `verifyPriceForSession` and `PythOracleVerifier`).
-- **L-09** `settleHaltedPosition` ceil-rounds `eTokenToCover`, so surplus borrower collateral sweeps to the VM instead of refunding the borrower (dust, but systematic).
-- **L-10** Halt settlement assumes `paymentToken == stablecoin` (decimals included) with no on-chain check; `setPaymentToken` accepts any ≤18-dec token.
-- **L-11** Permissionless `sweepDividends` pays the admin-mutable `vault.manager()` — weaker trust boundary than the bad-debt path's `registry.treasury()`.
-- **L-12** `placeOrder` stores `amount` without measuring received balance — a fee-on-transfer payment token desyncs escrow (last cancels/settles revert or draw down another user's escrow).
-- **L-13** A USDC/USDT blocklist freeze of a recipient permanently bricks `cancelOrder`/`expireOrder` for that order, and a frozen `haltRedeemAddress` bricks all halt redemptions for the asset. _Fix:_ pull-payment fallback; monitored, non-freezable halt address.
+- **L-02** Remaining half: >18-dec payment tokens — mostly mitigated by `setPaymentToken`'s `decimals() <= 18` check (the fee-on-transfer half is closed by the L-12 fix).
+- **L-04** `_borrowManager` is one-shot with no rotation; a compromised manager is only handled via `haltVault`. *Reclassification candidate: one-shot binding is now the documented protocol invariant (see M-08).*
+- **L-07** `migrateToken` + `applySplit` are not atomic — liveness only; ops requirement: keep both in one multisig batch.
+- **L-09** `settleHaltedPosition` ceil-rounds `eTokenToCover`, so surplus borrower collateral sweeps to the VM instead of refunding the borrower (dust, but systematic). Pending a direction call: floor the capped cover, or refund `proceeds − currentDebt`.
+- **L-11** Permissionless `sweepDividends` pays the admin-mutable `vault.manager()`. *Reclassification candidate: the revenue model routes dividends to the VM by design.*
+- **L-13** A USDC/USDT blocklist freeze of a recipient permanently bricks `cancelOrder`/`expireOrder` for that order, and a frozen `haltRedeemAddress` bricks all halt redemptions for the asset. _Fix:_ pull-payment fallback; monitored, non-freezable halt address. Deferred — flow-level design change.
 
 ---
 
@@ -356,4 +361,4 @@ High-signal trails from the 2026-06-11 re-audit, not yet verified:
 
 ---
 
-_Original findings cite code at review time (2026-06-09 review at commit `fa9cf33`; re-audits on `lending` through 2026-06-11). Every Critical/High was verified directly against source, and every fix has a regression test that fails without it. Suite: 657 passing._
+_Original findings cite code at review time (2026-06-09 review at commit `fa9cf33`; re-audits on `lending` through 2026-06-11). Every Critical/High was verified directly against source, and every fix has a regression test that fails without it. Suite: 663 passing._

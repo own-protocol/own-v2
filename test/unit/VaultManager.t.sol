@@ -438,6 +438,20 @@ contract VaultManagerTest is Test {
         assertEq(manager.globalExposureUSD(), 0);
     }
 
+    /// @dev A zero mark must fail loud (mirrors openExposure) instead of silently zeroing
+    ///      the asset's USD exposure. Reachable via an extreme applySplit ratio flooring the mark.
+    function test_closeExposure_zeroMark_reverts() public {
+        _bootstrap();
+        _open(1000e18);
+
+        vm.prank(admin);
+        manager.applySplit(TSLA, 1e57); // mark = 100e18 × 1e18 / 1e57 → floors to 0
+
+        vm.expectRevert(abi.encodeWithSelector(IVaultManager.PriceUnavailable.selector, TSLA));
+        vm.prank(market);
+        manager.closeExposure(TSLA, 1);
+    }
+
     /// @dev Regression: with a sub-$1 mark, dust opens floor their USD contribution to 0, so a
     ///      naive running-sum total would underflow when a differently-grouped close (or a price
     ///      pull) subtracts the bulk term. The stored per-asset USD makes every subtraction exact.

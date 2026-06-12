@@ -192,6 +192,26 @@ contract AssetRegistryTest is BaseTest {
         assertEq(legacy[0], eTSLA);
     }
 
+    /// @dev Migrating to the current active token or to an existing legacy token would
+    ///      corrupt the ratio bookkeeping (self-legacy / duplicate legacy entry).
+    function test_migrateToken_toActiveOrLegacyToken_reverts() public {
+        AssetConfig memory config = _defaultConfig(eTSLA);
+        address v2 = makeAddr("eTSLAv2");
+
+        vm.startPrank(Actors.ADMIN);
+        registry.addAsset(TSLA, eTSLA, config);
+        registry.migrateToken(TSLA, v2, 3e18);
+
+        // Active token (v2) as the migration target.
+        vm.expectRevert(abi.encodeWithSelector(IAssetRegistry.InvalidNewToken.selector, v2));
+        registry.migrateToken(TSLA, v2, 3e18);
+
+        // Existing legacy token (the original eTSLA) as the migration target.
+        vm.expectRevert(abi.encodeWithSelector(IAssetRegistry.InvalidNewToken.selector, eTSLA));
+        registry.migrateToken(TSLA, eTSLA, 3e18);
+        vm.stopPrank();
+    }
+
     function test_migrateToken_multipleMigrations() public {
         AssetConfig memory config = _defaultConfig(eTSLA);
         address v2 = makeAddr("eTSLAv2");

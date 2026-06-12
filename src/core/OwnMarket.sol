@@ -123,7 +123,12 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         });
         _userOrders[msg.sender].push(orderId);
 
+        // Escrow accounting assumes sent == received; reject fee-on-transfer tokens.
+        uint256 balBefore = IERC20(escrowToken).balanceOf(address(this));
         IERC20(escrowToken).safeTransferFrom(msg.sender, address(this), amount);
+        if (IERC20(escrowToken).balanceOf(address(this)) - balBefore != amount) {
+            revert FeeOnTransferNotSupported(escrowToken);
+        }
 
         emit OrderPlaced(orderId, msg.sender, uint8(orderType), asset, amount, limitPrice);
     }

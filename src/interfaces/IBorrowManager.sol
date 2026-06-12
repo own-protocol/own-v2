@@ -115,6 +115,9 @@ interface IBorrowManager {
 
     error ZeroAmount();
     error AmountTooSmall();
+    error InvalidEToken(address token);
+    error PaymentTokenMismatch();
+    error EthRefundFailed();
     error ZeroAddress();
     error OnlyAdmin();
     error AssetNotActive(bytes32 asset);

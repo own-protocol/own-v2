@@ -1059,6 +1059,41 @@ contract BorrowManagerTest is BaseTest {
         vm.stopPrank();
     }
 
+    /// @dev sweepDividends must not execute callbacks on unregistered token addresses.
+    function test_sweepDividends_invalidToken_reverts() public {
+        EToken fake = new EToken("Fake", "eFAKE", bytes32("FAKE"), address(protocolRegistry), address(usdc));
+        vm.expectRevert(abi.encodeWithSelector(IBorrowManager.InvalidEToken.selector, address(fake)));
+        borrowManager.sweepDividends(address(fake));
+    }
+
+    /// @dev ETH sent above the oracle fee must be refunded, not stranded in the verifier.
+    function test_borrow_refundsExcessEth() public {
+        uint256 eAmt = 100e18;
+        uint256 stable = 10_000e6;
+        _giveTSLA(Actors.MINTER1, eAmt);
+        vm.deal(Actors.MINTER1, 1 ether);
+        vm.startPrank(Actors.MINTER1);
+        eTSLA.approve(address(borrowManager), eAmt);
+        borrowManager.borrow{value: 1 ether}(ASSET, eAmt, stable, _priceData(TSLA_PX));
+        vm.stopPrank();
+
+        assertEq(Actors.MINTER1.balance, 1 ether, "surplus ETH refunded to caller");
+        assertEq(address(borrowManager).balance, 0, "manager holds no ETH");
+    }
+
+    /// @dev Halt settlement accounts redeem proceeds in stablecoin units; a diverged
+    ///      global payment token must fail loud instead of mis-accounting.
+    function test_settleHaltedPosition_paymentTokenMismatch_reverts() public {
+        _openTypical(Actors.MINTER1);
+        _haltAsset(ASSET, TSLA_PX);
+
+        MockERC20 usds = new MockERC20("USDS", "USDS", 18);
+        _setPaymentToken(address(usds));
+
+        vm.expectRevert(IBorrowManager.PaymentTokenMismatch.selector);
+        borrowManager.settleHaltedPosition(Actors.MINTER1, ASSET);
+    }
+
     function test_borrow_haltedVault_reverts() public {
         vm.prank(Actors.ADMIN);
         vault.haltVault();

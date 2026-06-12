@@ -14,6 +14,16 @@ import {BaseTest} from "../helpers/BaseTest.sol";
 import {MockERC20} from "../helpers/MockERC20.sol";
 
 import {MessageHashUtils} from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
+
+/// @dev Payment token whose transfers deliver 1 wei less than requested (L-12 regression).
+contract FeeOnTransferToken is MockERC20 {
+    constructor() MockERC20("FoT USD", "fUSD", 6) {}
+
+    function transferFrom(address from, address to, uint256 value) public override returns (bool ok) {
+        ok = super.transferFrom(from, to, value);
+        _burn(to, 1);
+    }
+}
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 contract OwnMarketTest is BaseTest {
@@ -398,6 +408,23 @@ contract OwnMarketTest is BaseTest {
         uint256 amount = 4e18;
         _placeRedeem(Actors.MINTER1, amount, TSLA_PRICE);
         assertEq(eTSLAToken.balanceOf(address(market)), amount, "eTokens escrowed");
+    }
+
+    /// @dev Escrow accounting trusts sent == received; a fee-on-transfer payment token
+    ///      would desync the escrow pool and break the last cancels/settles.
+    function test_placeOrder_feeOnTransferToken_reverts() public {
+        FeeOnTransferToken fot = new FeeOnTransferToken();
+        vm.mockCall(
+            mockVaultManager, abi.encodeWithSelector(IVaultManager.paymentToken.selector), abi.encode(address(fot))
+        );
+
+        uint256 amount = 1000e6;
+        fot.mint(Actors.MINTER1, amount);
+        vm.startPrank(Actors.MINTER1);
+        fot.approve(address(market), amount);
+        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.FeeOnTransferNotSupported.selector, address(fot)));
+        market.placeOrder(TSLA, OrderType.Mint, amount, TSLA_PRICE, _defaultExpiry());
+        vm.stopPrank();
     }
 
     function test_placeOrder_zeroAmount_reverts() public {

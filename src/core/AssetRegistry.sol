@@ -79,6 +79,9 @@ contract AssetRegistry is IAssetRegistry, Ownable {
         if (!_registered[ticker]) revert AssetNotFound(ticker);
         if (newToken == address(0)) revert ZeroAddress();
         if (ratio == 0) revert InvalidRatio();
+        if (newToken == _assets[ticker].activeToken || _legacyRatio[newToken] != 0) {
+            revert InvalidNewToken(newToken);
+        }
 
         // Re-base existing legacy tokens so each still converts directly to the new active token.
         address[] storage legacy = _assets[ticker].legacyTokens;

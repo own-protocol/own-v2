@@ -246,6 +246,8 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
         _totalScaledDebt += scaledDebt;
 
         emit Borrowed(msg.sender, asset, eTokenAmount, stablecoinAmount, oraclePrice);
+
+        _refundExcessEth();
     }
 
     // ──────────────────────────────────────────────────────────
@@ -318,6 +320,7 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
         _accrue();
         uint256 oraclePrice = _verifyPrice(asset, priceData);
         _liquidate(borrower, asset, repayAmount, oraclePrice);
+        _refundExcessEth();
     }
 
     /// @inheritdoc IBorrowManager
@@ -435,6 +438,8 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
         }
 
         emit BadDebtAbsorbed(borrower, asset, msg.sender, residual, absorbAmount, collateralReleased);
+
+        _refundExcessEth();
     }
 
     // ──────────────────────────────────────────────────────────
@@ -456,6 +461,8 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
 
         IVaultManager vmgr = IVaultManager(registry.vaultManager());
         if (!vmgr.isAssetHalted(asset)) revert AssetNotHalted(asset);
+        // Proceeds below are accounted in stablecoin units; the assumption must hold on-chain.
+        if (vmgr.paymentToken() != stablecoin) revert PaymentTokenMismatch();
         uint256 haltPrice = vmgr.assetHaltPrice(asset);
 
         _accrue();
@@ -517,6 +524,9 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
     function sweepDividends(
         address eToken
     ) external nonReentrant returns (uint256 amount) {
+        if (!IAssetRegistry(registry.assetRegistry()).isValidToken(IEToken(eToken).ticker(), eToken)) {
+            revert InvalidEToken(eToken);
+        }
         amount = IEToken(eToken).claimableRewards(address(this));
         if (amount == 0) revert NoDividendsToSweep();
 
@@ -744,6 +754,16 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
         return idx < minIndex ? minIndex : idx;
     }
 
+    /// @dev Refund any ETH left from `msg.value` after oracle fees. The contract has no
+    ///      `receive`, so its balance can only be the current call's surplus. Called last
+    ///      (after all state writes) inside `nonReentrant` entry points.
+    function _refundExcessEth() internal {
+        uint256 bal = address(this).balance;
+        if (bal == 0) return;
+        (bool ok,) = msg.sender.call{value: bal}("");
+        if (!ok) revert EthRefundFailed();
+    }
+
     /// @dev Current annualized borrow rate (BPS) charged to borrowers:
     ///      `aaveRateWithFloor + premium(utilization)`. Global — driven by the
     ///      manager's vault-wide utilization, not by any individual asset.
@@ -810,7 +830,9 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
         uint8 oracleType = IAssetRegistry(registry.assetRegistry()).getOracleType(asset);
         address oracleAddr = oracleType == 0 ? registry.pythOracle() : registry.inhouseOracle();
         uint256 timestamp;
-        (price, timestamp) = IOracleVerifier(oracleAddr).verifyPrice{value: msg.value}(asset, priceData);
+        // Forward only the verifier's fee; payable entry points refund the surplus.
+        uint256 fee = IOracleVerifier(oracleAddr).verifyFee(priceData);
+        (price, timestamp) = IOracleVerifier(oracleAddr).verifyPrice{value: fee}(asset, priceData);
         // Risk decisions need a current price (verifyPrice itself does not bound age).
         uint256 maxAge = registry.priceMaxAge();
         if (timestamp > block.timestamp || block.timestamp - timestamp > maxAge) {

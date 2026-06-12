@@ -95,6 +95,9 @@ interface IOwnMarket {
     /// @notice A zero amount was provided.
     error ZeroAmount();
 
+    /// @notice The escrow received less than the requested amount (fee-on-transfer token).
+    error FeeOnTransferNotSupported(address token);
+
     /// @notice The price (or limit price) is invalid (zero).
     error InvalidPrice();
 

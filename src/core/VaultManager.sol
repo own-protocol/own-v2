@@ -147,6 +147,7 @@ contract VaultManager is IVaultManager {
         if (have < units) revert InsufficientExposure(asset, have, units);
 
         uint256 mark = _assetMark[asset];
+        if (mark == 0) revert PriceUnavailable(asset);
         uint256 newUnits = have - units;
         uint256 newAssetUSD = newUnits.mulDiv(mark, PRECISION);
         _globalExposureUSD = _globalExposureUSD - _assetExposureUSD[asset] + newAssetUSD;
