@@ -984,6 +984,59 @@ contract BorrowManagerTest is BaseTest {
         assertEq(aavePool.debtOf(address(vault), address(usdc)), 0, "repay clears aave debt while paused");
     }
 
+    // ──────────────────────────────────────────────────────────
+    //  Dust guards: non-zero amounts must not scale to zero debt
+    // ──────────────────────────────────────────────────────────
+
+    /// @dev Lift the global index above 1.0 (via the Aave-debt floor) so sub-index
+    ///      amounts floor to zero scaled units.
+    function _inflateIndex() internal {
+        aavePool.accrueDebt(address(vault), address(usdc), 500e6); // $10k → $10.5k, index 1.05
+        borrowManager.accrue();
+    }
+
+    /// @dev A dust liquidation must revert — without the guard it seizes non-zero
+    ///      collateral (plus bonus) while reducing the borrower's debt by zero.
+    function test_liquidate_dustRepay_reverts() public {
+        _openTypical(Actors.MINTER1);
+        _inflateIndex();
+
+        uint256 crashPx = 100e18; // hf < 1 at $100
+        usdc.mint(Actors.LIQUIDATOR, 1_000e6);
+        vm.startPrank(Actors.LIQUIDATOR);
+        usdc.approve(address(borrowManager), type(uint256).max);
+        vm.expectRevert(IBorrowManager.AmountTooSmall.selector);
+        borrowManager.liquidate(Actors.MINTER1, ASSET, 1, _priceData(crashPx));
+        vm.stopPrank();
+    }
+
+    /// @dev A dust borrow must revert — without the guard it records principal = 0
+    ///      (the "no position" sentinel): unrepayable, unliquidatable, overwritable.
+    function test_borrow_dustAmount_reverts() public {
+        _openTypical(Actors.MINTER1);
+        _inflateIndex();
+
+        _giveTSLA(Actors.MINTER2, 100e18);
+        vm.startPrank(Actors.MINTER2);
+        eTSLA.approve(address(borrowManager), 100e18);
+        vm.expectRevert(IBorrowManager.AmountTooSmall.selector);
+        borrowManager.borrow(ASSET, 100e18, 1, _priceData(TSLA_PX));
+        vm.stopPrank();
+    }
+
+    /// @dev A dust partial repay must revert — without the guard the borrower pays
+    ///      real stablecoin while the ledger reduces nothing.
+    function test_repay_dustAmount_reverts() public {
+        _openTypical(Actors.MINTER1);
+        _inflateIndex();
+
+        vm.startPrank(Actors.MINTER1);
+        usdc.approve(address(borrowManager), type(uint256).max);
+        vm.expectRevert(IBorrowManager.AmountTooSmall.selector);
+        borrowManager.repay(ASSET, 1);
+        vm.stopPrank();
+    }
+
     function test_borrow_haltedVault_reverts() public {
         vm.prank(Actors.ADMIN);
         vault.haltVault();

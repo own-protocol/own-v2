@@ -1,6 +1,6 @@
 # Own Protocol v2 — Audit Report & Remediation Status
 
-**Branch:** `lending` · **Last updated:** 2026-06-12 · **Test suite:** 653 passing
+**Branch:** `lending` · **Last updated:** 2026-06-12 · **Test suite:** 656 passing
 
 Consolidated from the 2026-06-09 full manual audit, the 2026-06-10/11 focused re-audits
 (BorrowManager, AaveRouter, H-02 migration changes), and the 2026-06-11 multi-agent re-audit
@@ -13,10 +13,10 @@ Consolidated from the 2026-06-09 full manual audit, the 2026-06-10/11 focused re
 | -------- | ----- | ----- | ---- | --------- |
 | Critical | 1     | 1     | 0    | —         |
 | High     | 5     | 5     | 0    | —         |
-| Medium   | 10    | 7     | 2    | 1         |
+| Medium   | 10    | 8     | 1    | 1         |
 | Low      | 13    | 0     | 13   | —         |
 
-**All Critical/High findings are fixed and regression-tested. Remaining work: 2 Mediums (M-08, M-09), 13 Lows, and the unconfirmed leads in §5.**
+**All Critical/High findings are fixed and regression-tested. Remaining work: 1 Medium (M-08, pending a design decision), 13 Lows, and the unconfirmed leads in §5.**
 
 | ID        | Severity | Finding                                                                                                              | Status                                                         |
 | --------- | -------- | -------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
@@ -34,7 +34,7 @@ Consolidated from the 2026-06-09 full manual audit, the 2026-06-10/11 focused re
 | M-06      | Medium   | `borrow` checks the debt cap before `_accrue()` → cap bypass                                                         | **Fixed**                                                      |
 | M-07      | Medium   | `borrow` ignores the bound vault's Paused/Halted status                                                              | **Fixed**                                                      |
 | M-08      | Medium   | `_flooredIndex` inflates on a dust scaled-debt base; breaks under multi-manager                                      | **Open**                                                       |
-| M-09      | Medium   | Sub-unit amounts record zero scaled debt while moving real value                                                     | **Open**                                                       |
+| M-09      | Medium   | Sub-unit amounts record zero scaled debt while moving real value                                                     | **Fixed**                                                      |
 | M-10      | Medium   | `WstETHRouter` wraps requested (not received) stETH → deposit path DoS                                               | **Fixed**                                                      |
 | L-01–L-13 | Low      | See §4                                                                                                               | **Open**                                                       |
 | C-01\*    | Info     | Force-execute asset proof is window-scoped, not fresh                                                                | **By design** (team-confirmed 2026-06-11)                      |
@@ -235,6 +235,26 @@ what `launch-assets.ts` already did by convention.
 **Tests.** `OracleVerifier.t.sol::test_updatePrice_unsetConfig_reverts` (verified to fail without
 the fix), `test_setAssetOracleConfig_zeroValues_revert`.
 
+### M-09 (Medium) — Sub-unit amounts recorded zero scaled debt while moving real value
+
+**Problem.** Debt is stored as scaled units (`actual × PRECISION / index`, floor division). Once the
+index exceeds 1.0, amounts below `index / 1e18` base units floor to **zero scaled units** with no
+guard, so real value moved while the ledger recorded nothing: a dust liquidation seized non-zero
+collateral (plus the 5% bonus) while reducing the borrower's debt by zero (repeatable griefing — the
+position gets strictly less healthy each call); a dust borrow recorded `principal = 0`, which is also
+the "no position" sentinel — unrepayable, unliquidatable, collateral stranded, and a second borrow
+silently overwrites the struct, orphaning the first collateral; a dust repay took the borrower's
+stablecoin and reduced nothing.
+
+**Fix (2026-06-12).** Revert `AmountTooSmall()` whenever a non-zero input converts to zero scaled
+units: `borrow` (`scaledDebt == 0`), `repay` and `_liquidate`'s partial branch (`scaledRepay == 0`) —
+the same guards Aave V3 carries. `settleHaltedPosition` is deliberately left ungated: it's a
+wind-down path that must stay live, and a zero there only under-reduces book debt
+(protocol-favorable).
+**Tests.** `BorrowManager.t.sol::test_liquidate_dustRepay_reverts`,
+`test_borrow_dustAmount_reverts`, `test_repay_dustAmount_reverts` — all verified to fail without
+the guards (index lifted to 1.05 via the Aave-debt floor).
+
 ### Fixed Info item — EToken pass-through dividends
 
 The EToken dividend accumulator was rewritten (pass-through holder redirect) and re-verified correct
@@ -252,16 +272,10 @@ in the 2026-06-11 re-audit.
   second borrow manager on the same vault would read the combined debt and multiply its borrowers'
   debt. _Fix:_ floor against this manager's own originated debt, or enforce a one-manager invariant
   plus a dust threshold.
-- **M-09 — Sub-unit amounts record zero scaled debt.** `actualToScaled` floors to 0 for small
-  amounts once `idx > PRECISION`, with no guard: a liquidator can pay dust, seize collateral, and
-  reduce principal by 0; `borrow` can hand out value recording `principal = 0` (unrepayable).
-  _Fix:_ revert when `scaledRepay == 0` / `scaledDebt == 0` (and `seize == 0`).
-
 ### Recommended order
 
-1. M-09 (dust guards).
-2. M-08 (needs a design decision on the floor's debt base: floor against this manager's own
-   originated debt, or enforce a one-manager invariant + dust threshold).
+1. M-08 — needs a design decision on the floor's debt base: floor against this manager's own
+   originated debt, or enforce a one-manager invariant + dust threshold.
 
 ---
 
@@ -330,4 +344,4 @@ High-signal trails from the 2026-06-11 re-audit, not yet verified:
 
 ---
 
-_Original findings cite code at review time (2026-06-09 review at commit `fa9cf33`; re-audits on `lending` through 2026-06-11). Every Critical/High was verified directly against source, and every fix has a regression test that fails without it. Suite: 653 passing._
+_Original findings cite code at review time (2026-06-09 review at commit `fa9cf33`; re-audits on `lending` through 2026-06-11). Every Critical/High was verified directly against source, and every fix has a regression test that fails without it. Suite: 656 passing._

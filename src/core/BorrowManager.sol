@@ -232,7 +232,9 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
         IERC20(stablecoin).safeTransfer(msg.sender, stablecoinAmount);
 
         // Record position. principal is scaled debt: actual debt grows via index.
+        // A zero scaled debt would collide with the "no position" sentinel.
         uint256 scaledDebt = LendingMath.actualToScaled(stablecoinAmount, idx);
+        if (scaledDebt == 0) revert AmountTooSmall();
         _positions[msg.sender][asset] = Position({
             eTokenCollateral: eTokenAmount,
             principal: scaledDebt,
@@ -280,6 +282,7 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
             // protocol keeps a sliver more debt vs releasing more collateral
             // (protocol-favorable).
             uint256 scaledRepay = LendingMath.actualToScaled(repayAmount, idx);
+            if (scaledRepay == 0) revert AmountTooSmall();
             // Defensive: never let scaledRepay exceed stored principal.
             if (scaledRepay > p.principal) scaledRepay = p.principal;
             p.principal -= scaledRepay;
@@ -363,7 +366,9 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
             if (returnedToBorrower > 0) IERC20(eToken).safeTransfer(borrower, returnedToBorrower);
         } else {
             // Partial — shrink principal + collateral, leave the position open.
+            // Zero scaled repay would seize collateral without reducing debt.
             uint256 scaledRepay = LendingMath.actualToScaled(repayAmount, _index);
+            if (scaledRepay == 0) revert AmountTooSmall();
             if (scaledRepay > p.principal) scaledRepay = p.principal;
             p.principal -= scaledRepay;
             p.eTokenCollateral -= seize;

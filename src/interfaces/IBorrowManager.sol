@@ -113,6 +113,7 @@ interface IBorrowManager {
     // ──────────────────────────────────────────────────────────
 
     error ZeroAmount();
+    error AmountTooSmall();
     error ZeroAddress();
     error OnlyAdmin();
     error AssetNotActive(bytes32 asset);
