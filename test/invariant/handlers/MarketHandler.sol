@@ -13,7 +13,6 @@ import {Actors} from "../../helpers/Actors.sol";
 import {MockERC20} from "../../helpers/MockERC20.sol";
 import {MockOracleVerifier} from "../../helpers/MockOracleVerifier.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
-import {MessageHashUtils} from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {CommonBase} from "forge-std/Base.sol";
 import {StdCheats} from "forge-std/StdCheats.sol";
@@ -368,8 +367,7 @@ contract MarketHandler is CommonBase, StdCheats, StdUtils {
     function _sign(
         Quote memory q
     ) private view returns (bytes memory) {
-        bytes32 digest = market.quoteDigest(q);
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(vmPk, MessageHashUtils.toEthSignedMessageHash(digest));
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(vmPk, market.quoteDigest(q));
         return abi.encodePacked(r, s, v);
     }
 

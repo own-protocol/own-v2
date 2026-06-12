@@ -7,7 +7,6 @@ import {BPS, PRECISION} from "../../src/interfaces/types/Types.sol";
 import {Actors} from "../helpers/Actors.sol";
 import {BaseTest} from "../helpers/BaseTest.sol";
 
-import {MessageHashUtils} from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 
 contract OracleVerifierTest is BaseTest {
     OracleVerifier public verifier;
@@ -36,10 +35,37 @@ contract OracleVerifierTest is BaseTest {
     //  Helpers
     // ──────────────────────────────────────────────────────────
 
+    bytes32 internal constant EIP712_DOMAIN_TYPEHASH =
+        keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
+    bytes32 internal constant PRICE_ATTESTATION_TYPEHASH =
+        keccak256("PriceAttestation(bytes32 asset,uint256 price,uint256 timestamp)");
+
+    /// @dev EIP-712 digest computed locally (mirrors OracleVerifier.priceDigest) so the
+    ///      domain/typehash encoding is independently locked. `chainId`/`verifyingContract`
+    ///      are parameters so replay tests can build foreign-domain digests.
+    function _priceDigest(
+        bytes32 asset,
+        uint256 price,
+        uint256 timestamp,
+        uint256 chainId,
+        address verifyingContract
+    ) internal pure returns (bytes32) {
+        bytes32 domainSeparator = keccak256(
+            abi.encode(
+                EIP712_DOMAIN_TYPEHASH,
+                keccak256(bytes("Own Protocol")),
+                keccak256(bytes("1")),
+                chainId,
+                verifyingContract
+            )
+        );
+        bytes32 structHash = keccak256(abi.encode(PRICE_ATTESTATION_TYPEHASH, asset, price, timestamp));
+        return keccak256(abi.encodePacked("\x19\x01", domainSeparator, structHash));
+    }
+
     function _signPrice(bytes32 asset, uint256 price, uint256 timestamp) internal view returns (bytes memory) {
-        bytes32 messageHash = keccak256(abi.encode(asset, price, timestamp, block.chainid, address(verifier)));
-        bytes32 ethSignedHash = MessageHashUtils.toEthSignedMessageHash(messageHash);
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(SIGNER_PK, ethSignedHash);
+        bytes32 digest = _priceDigest(asset, price, timestamp, block.chainid, address(verifier));
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(SIGNER_PK, digest);
         return abi.encode(price, timestamp, v, r, s);
     }
 
@@ -90,9 +116,8 @@ contract OracleVerifierTest is BaseTest {
 
     function test_verifyPrice_invalidSigner_reverts() public {
         uint256 wrongPk = 0xDEAD;
-        bytes32 messageHash = keccak256(abi.encode(ASSET, 250e18, block.timestamp, block.chainid, address(verifier)));
-        bytes32 ethSignedHash = MessageHashUtils.toEthSignedMessageHash(messageHash);
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(wrongPk, ethSignedHash);
+        bytes32 digest = _priceDigest(ASSET, 250e18, block.timestamp, block.chainid, address(verifier));
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(wrongPk, digest);
         bytes memory priceData = abi.encode(250e18, block.timestamp, v, r, s);
 
         vm.expectRevert(abi.encodeWithSelector(IOracleVerifier.UnauthorizedSigner.selector, vm.addr(wrongPk)));
@@ -100,9 +125,8 @@ contract OracleVerifierTest is BaseTest {
     }
 
     function test_verifyPrice_tamperedPrice_reverts() public {
-        bytes32 messageHash = keccak256(abi.encode(ASSET, 250e18, block.timestamp, block.chainid, address(verifier)));
-        bytes32 ethSignedHash = MessageHashUtils.toEthSignedMessageHash(messageHash);
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(SIGNER_PK, ethSignedHash);
+        bytes32 digest = _priceDigest(ASSET, 250e18, block.timestamp, block.chainid, address(verifier));
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(SIGNER_PK, digest);
         bytes memory priceData = abi.encode(999e18, block.timestamp, v, r, s);
 
         vm.expectRevert();
@@ -200,13 +224,31 @@ contract OracleVerifierTest is BaseTest {
     // ──────────────────────────────────────────────────────────
 
     function test_verifyPrice_wrongChainId_reverts() public {
-        bytes32 messageHash = keccak256(abi.encode(ASSET, 250e18, block.timestamp, uint256(999), address(verifier)));
-        bytes32 ethSignedHash = MessageHashUtils.toEthSignedMessageHash(messageHash);
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(SIGNER_PK, ethSignedHash);
+        // Signed under a foreign chain's EIP-712 domain — must not verify here.
+        bytes32 digest = _priceDigest(ASSET, 250e18, block.timestamp, 999, address(verifier));
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(SIGNER_PK, digest);
         bytes memory priceData = abi.encode(250e18, block.timestamp, v, r, s);
 
         vm.expectRevert();
         verifier.verifyPrice(ASSET, priceData);
+    }
+
+    function test_verifyPrice_wrongVerifyingContract_reverts() public {
+        // Signed for a different verifier instance — must not verify here.
+        bytes32 digest = _priceDigest(ASSET, 250e18, block.timestamp, block.chainid, makeAddr("otherVerifier"));
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(SIGNER_PK, digest);
+        bytes memory priceData = abi.encode(250e18, block.timestamp, v, r, s);
+
+        vm.expectRevert();
+        verifier.verifyPrice(ASSET, priceData);
+    }
+
+    function test_priceDigest_matchesLocalEip712Encoding() public view {
+        assertEq(
+            verifier.priceDigest(ASSET, 250e18, block.timestamp),
+            _priceDigest(ASSET, 250e18, block.timestamp, block.chainid, address(verifier)),
+            "contract digest must match the reference EIP-712 encoding"
+        );
     }
 
     // ──────────────────────────────────────────────────────────

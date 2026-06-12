@@ -15,7 +15,7 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
-import {MessageHashUtils} from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
+import {EIP712} from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 /// @title OwnMarket — RFQ order execution marketplace
@@ -28,10 +28,18 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 ///         global claim threshold, releasing the order's bound vault collateral as recourse against
 ///         an unresponsive maker. Trading pause blocks execution and force-execute; a permanently
 ///         halted asset blocks both and is redeemed via {redeemHalted} from the halt redeem address.
-contract OwnMarket is IOwnMarket, ReentrancyGuard {
+contract OwnMarket is IOwnMarket, ReentrancyGuard, EIP712 {
     using SafeERC20 for IERC20;
     using ECDSA for bytes32;
-    using MessageHashUtils for bytes32;
+
+    // ──────────────────────────────────────────────────────────
+    //  Constants
+    // ──────────────────────────────────────────────────────────
+
+    /// @dev EIP-712 typehash for signer-issued quotes.
+    bytes32 private constant QUOTE_TYPEHASH = keccak256(
+        "Quote(uint256 orderId,address user,bytes32 asset,uint8 orderType,uint256 amount,uint256 price,uint256 quoteId,uint256 expiry)"
+    );
 
     // ──────────────────────────────────────────────────────────
     //  Immutables
@@ -58,7 +66,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
     /// @param registry_ ProtocolRegistry contract address.
     constructor(
         address registry_
-    ) {
+    ) EIP712("Own Protocol", "1") {
         registry = IProtocolRegistry(registry_);
     }
 
@@ -341,18 +349,20 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
     function quoteDigest(
         Quote calldata quote
     ) public view returns (bytes32) {
-        return keccak256(
-            abi.encode(
-                quote.orderId,
-                quote.user,
-                quote.asset,
-                quote.orderType,
-                quote.amount,
-                quote.price,
-                quote.quoteId,
-                quote.expiry,
-                block.chainid,
-                address(this)
+        // EIP-712: chainId + verifyingContract live in the domain separator.
+        return _hashTypedDataV4(
+            keccak256(
+                abi.encode(
+                    QUOTE_TYPEHASH,
+                    quote.orderId,
+                    quote.user,
+                    quote.asset,
+                    quote.orderType,
+                    quote.amount,
+                    quote.price,
+                    quote.quoteId,
+                    quote.expiry
+                )
             )
         );
     }
@@ -367,7 +377,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard {
         if (block.timestamp > quote.expiry) revert QuoteExpired();
         bytes32 digest = quoteDigest(quote);
         if (_usedQuotes[digest]) revert QuoteAlreadyUsed();
-        address signer = digest.toEthSignedMessageHash().recover(signature);
+        address signer = digest.recover(signature);
         IVaultManager vmgr = IVaultManager(registry.vaultManager());
         if (!vmgr.isSigner(signer)) revert InvalidQuoteSigner();
         maker = vmgr.signerLinkedAddress(signer);

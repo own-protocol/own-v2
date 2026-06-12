@@ -12,7 +12,6 @@ import {MockDEX} from "./MockDEX.sol";
 import {MockERC20} from "./MockERC20.sol";
 import {MockOracleVerifier} from "./MockOracleVerifier.sol";
 import {MockWstETH} from "./MockWstETH.sol";
-import {MessageHashUtils} from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 import {Test} from "forge-std/Test.sol";
 
 /// @title BaseTest — Common setup for all Own Protocol tests
@@ -112,10 +111,9 @@ contract BaseTest is Test {
     //  Utility: RFQ quotes
     // ──────────────────────────────────────────────────────────
 
-    /// @notice Sign a quote with a VM private key, matching OwnMarket's digest scheme.
+    /// @notice Sign a quote with a VM private key. `quoteDigest` is the final EIP-712 digest.
     function _signQuote(IOwnMarket mkt, Quote memory q, uint256 pk) internal view returns (bytes memory) {
-        bytes32 digest = mkt.quoteDigest(q);
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(pk, MessageHashUtils.toEthSignedMessageHash(digest));
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(pk, mkt.quoteDigest(q));
         return abi.encodePacked(r, s, v);
     }
 

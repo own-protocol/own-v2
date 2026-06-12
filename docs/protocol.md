@@ -620,7 +620,7 @@ contracts; retained for reference / future use):
 | **ERC-2612** | EToken supports gasless approvals via `permit()`                          |
 | **ERC-4626** | OwnVault implements the tokenized vault standard for LP shares            |
 | **ERC-7540** | OwnVault follows the async deposit/withdrawal pattern (request → fulfill) |
-| **EIP-712**  | Used for typed structured data hashing in permit signatures               |
+| **EIP-712**  | All protocol signatures: RFQ quotes (`Quote` typehash, OwnMarket domain), oracle price attestations (`PriceAttestation` typehash, OracleVerifier domain), and ERC-2612 permits. Domain name "Own Protocol", version "1" |
 
 ---
 

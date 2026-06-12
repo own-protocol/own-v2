@@ -295,7 +295,7 @@ Contracts should implement or be compatible with these standards where applicabl
 - **ERC-7540 (Async Vaults)**: Design pattern for non-market-hours redemption queue (future consideration). Keep the interface compatible.
 - **ERC-7575 (Multi-Asset Vaults)**: Relevant for multi-collateral vaults (future consideration). The eToken being external to the vault is already ERC-7575 aligned.
 - **ERC-7535 (Native Asset Vaults)**: For ETH collateral vaults (future consideration). Use via a router periphery contract.
-- **EIP-712 (Typed Structured Data)**: Used in oracle signed price messages. Follow the standard for domain separator and type hashing.
+- **EIP-712 (Typed Structured Data)**: Used for all protocol signatures — RFQ quotes (`OwnMarket`, `Quote` typehash), oracle price attestations (`OracleVerifier`, `PriceAttestation` typehash), and ERC-2612 permits. Domain: `name "Own Protocol", version "1"`, chainId + verifyingContract per contract. Follow the standard for domain separator and type hashing.
 
 When implementing, reference the EIP directly. Do not rely on memory — check the spec.
 

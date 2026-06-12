@@ -1,6 +1,6 @@
 # Own Protocol v2 — Audit Report & Remediation Status
 
-**Branch:** `lending` · **Last updated:** 2026-06-12 · **Test suite:** 663 passing
+**Branch:** `lending` · **Last updated:** 2026-06-12 · **Test suite:** 665 passing
 
 Consolidated from the 2026-06-09 full manual audit, the 2026-06-10/11 focused re-audits
 (BorrowManager, AaveRouter, H-02 migration changes), and the 2026-06-11 multi-agent re-audit
@@ -14,9 +14,9 @@ Consolidated from the 2026-06-09 full manual audit, the 2026-06-10/11 focused re
 | Critical | 1     | 1     | 0    | —         |
 | High     | 5     | 5     | 0    | —         |
 | Medium   | 10    | 9     | 0    | 1         |
-| Low      | 13    | 6     | 7    | —         |
+| Low      | 13    | 7     | 6    | —         |
 
-**Every Critical, High, and Medium is now fixed (or by-design) and regression-tested. Remaining work: 7 Lows (see §4) and the unconfirmed leads in §5.**
+**Every Critical, High, and Medium is now fixed (or by-design) and regression-tested. Remaining work: 6 Lows (see §4) and the unconfirmed leads in §5.**
 
 | ID        | Severity | Finding                                                                                                              | Status                                                         |
 | --------- | -------- | -------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
@@ -36,7 +36,7 @@ Consolidated from the 2026-06-09 full manual audit, the 2026-06-10/11 focused re
 | M-08      | Medium   | `_flooredIndex` inflates on a dust scaled-debt base; breaks under multi-manager                                      | **Fixed**                                                      |
 | M-09      | Medium   | Sub-unit amounts record zero scaled debt while moving real value                                                     | **Fixed**                                                      |
 | M-10      | Medium   | `WstETHRouter` wraps requested (not received) stETH → deposit path DoS                                               | **Fixed**                                                      |
-| L-01–L-13 | Low      | See §4                                                                                                               | 6 **Fixed** (L-03, L-05, L-06, L-08, L-10, L-12) · 7 Open      |
+| L-01–L-13 | Low      | See §4                                                                                                               | 7 **Fixed** (L-01, L-03, L-05, L-06, L-08, L-10, L-12) · 6 Open |
 | C-01\*    | Info     | Force-execute asset proof is window-scoped, not fresh                                                                | **By design** (team-confirmed 2026-06-11)                      |
 
 ---
@@ -287,7 +287,7 @@ in the 2026-06-11 re-audit.
 
 ## 2. Open Findings
 
-No open Critical/High/Medium findings. Remaining: the 7 open Lows in §4 and the unconfirmed leads in §5.
+No open Critical/High/Medium findings. Remaining: the 6 open Lows in §4 and the unconfirmed leads in §5.
 
 ---
 
@@ -314,6 +314,17 @@ No open Critical/High/Medium findings. Remaining: the 7 open Lows in §4 and the
 
 ### Fixed (2026-06-12)
 
+- **L-01 — Fixed (the other way).** All protocol signatures migrated from EIP-191 personal-sign to
+  **EIP-712** typed data, matching what the docs always claimed: quotes sign a
+  `Quote(uint256 orderId,address user,bytes32 asset,uint8 orderType,uint256 amount,uint256 price,uint256 quoteId,uint256 expiry)`
+  struct and price attestations a `PriceAttestation(bytes32 asset,uint256 price,uint256 timestamp)`
+  struct, both under domain `("Own Protocol", "1", chainId, verifyingContract)` (OZ `EIP712`;
+  chainId/contract binding moved from manual digest fields into the domain separator).
+  `OracleVerifier.priceDigest` is exposed for off-chain/KMS signers. **Off-repo signer services
+  (quote signer, oracle price signer) must switch to typed-data signing before deployment.** Tests
+  re-sign via reference EIP-712 encodings implemented independently in the test files;
+  `test_priceDigest_matchesLocalEip712Encoding` locks the encoding, and new foreign-domain replay
+  tests (wrong chainId, wrong verifying contract) replace the old manual-digest ones.
 - **L-03 — Fixed.** `closeExposure` now reverts `PriceUnavailable` on a zero mark, mirroring `openExposure` (reachable via an extreme `applySplit` ratio flooring the mark). Test: `test_closeExposure_zeroMark_reverts`.
 - **L-05 — Fixed.** `migrateToken` rejects migrating to the current active token or an existing legacy token (`InvalidNewToken`). The `updateAssetConfig` half was already fixed in code (it explicitly preserves `activeToken`/`legacyTokens`/`active`). Test: `test_migrateToken_toActiveOrLegacyToken_reverts`.
 - **L-06 — Fixed.** `sweepDividends` validates the token via `AssetRegistry.isValidToken(ticker, token)` (`InvalidEToken`); legacy tokens stay sweepable. Test: `test_sweepDividends_invalidToken_reverts`.
@@ -323,7 +334,6 @@ No open Critical/High/Medium findings. Remaining: the 7 open Lows in §4 and the
 
 ### Open
 
-- **L-01** Quote digest is EIP-191 personal-sign, not EIP-712 as documented — doc/UX mismatch, no fund risk.
 - **L-02** Remaining half: >18-dec payment tokens — mostly mitigated by `setPaymentToken`'s `decimals() <= 18` check (the fee-on-transfer half is closed by the L-12 fix).
 - **L-04** `_borrowManager` is one-shot with no rotation; a compromised manager is only handled via `haltVault`. *Reclassification candidate: one-shot binding is now the documented protocol invariant (see M-08).*
 - **L-07** `migrateToken` + `applySplit` are not atomic — liveness only; ops requirement: keep both in one multisig batch.
@@ -361,4 +371,4 @@ High-signal trails from the 2026-06-11 re-audit, not yet verified:
 
 ---
 
-_Original findings cite code at review time (2026-06-09 review at commit `fa9cf33`; re-audits on `lending` through 2026-06-11). Every Critical/High was verified directly against source, and every fix has a regression test that fails without it. Suite: 663 passing._
+_Original findings cite code at review time (2026-06-09 review at commit `fa9cf33`; re-audits on `lending` through 2026-06-11). Every Critical/High was verified directly against source, and every fix has a regression test that fails without it. Suite: 665 passing._

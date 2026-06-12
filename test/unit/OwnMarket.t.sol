@@ -12,8 +12,7 @@ import {AssetConfig, BPS, Order, OrderStatus, OrderType, PRECISION, Quote} from 
 import {Actors} from "../helpers/Actors.sol";
 import {BaseTest} from "../helpers/BaseTest.sol";
 import {MockERC20} from "../helpers/MockERC20.sol";
-
-import {MessageHashUtils} from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 /// @dev Payment token whose transfers deliver 1 wei less than requested (L-12 regression).
 contract FeeOnTransferToken is MockERC20 {
@@ -24,7 +23,6 @@ contract FeeOnTransferToken is MockERC20 {
         _burn(to, 1);
     }
 }
-import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 contract OwnMarketTest is BaseTest {
     OwnMarket public market;
@@ -163,24 +161,35 @@ contract OwnMarketTest is BaseTest {
         });
     }
 
-    /// @dev Computes the digest locally (mirrors OwnMarket.quoteDigest) rather than calling the
-    ///      contract, so inline use after vm.prank / vm.expectRevert does not consume the cheatcode.
-    function _sign(Quote memory q, uint256 pk) internal view returns (bytes memory) {
-        bytes32 digest = keccak256(
+    bytes32 internal constant EIP712_DOMAIN_TYPEHASH =
+        keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
+    bytes32 internal constant QUOTE_TYPEHASH = keccak256(
+        "Quote(uint256 orderId,address user,bytes32 asset,uint8 orderType,uint256 amount,uint256 price,uint256 quoteId,uint256 expiry)"
+    );
+
+    /// @dev Computes the EIP-712 digest locally (mirrors OwnMarket.quoteDigest) rather than calling
+    ///      the contract, so inline use after vm.prank / vm.expectRevert does not consume the
+    ///      cheatcode — and independently locks the domain/typehash encoding.
+    function _quoteDigest(Quote memory q) internal view returns (bytes32) {
+        bytes32 domainSeparator = keccak256(
             abi.encode(
-                q.orderId,
-                q.user,
-                q.asset,
-                q.orderType,
-                q.amount,
-                q.price,
-                q.quoteId,
-                q.expiry,
+                EIP712_DOMAIN_TYPEHASH,
+                keccak256(bytes("Own Protocol")),
+                keccak256(bytes("1")),
                 block.chainid,
                 address(market)
             )
         );
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(pk, MessageHashUtils.toEthSignedMessageHash(digest));
+        bytes32 structHash = keccak256(
+            abi.encode(
+                QUOTE_TYPEHASH, q.orderId, q.user, q.asset, q.orderType, q.amount, q.price, q.quoteId, q.expiry
+            )
+        );
+        return keccak256(abi.encodePacked("\x19\x01", domainSeparator, structHash));
+    }
+
+    function _sign(Quote memory q, uint256 pk) internal view returns (bytes memory) {
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(pk, _quoteDigest(q));
         return abi.encodePacked(r, s, v);
     }
 

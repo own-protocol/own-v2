@@ -6,15 +6,19 @@ import {BPS} from "../interfaces/types/Types.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Multicall} from "@openzeppelin/contracts/utils/Multicall.sol";
 import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
-import {MessageHashUtils} from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
+import {EIP712} from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 
 /// @title OracleVerifier — In-house signed oracle with push model
 /// @notice Authorised signers push single-asset price updates via updatePrice().
 ///         Batch updates use inherited Multicall. Consumers read cached prices
 ///         via getPrice(). verifyPrice() is available for inline proof verification.
-contract OracleVerifier is IOracleVerifier, Ownable, Multicall {
+///         Price attestations are EIP-712 typed signatures over `PriceAttestation`.
+contract OracleVerifier is IOracleVerifier, Ownable, Multicall, EIP712 {
     using ECDSA for bytes32;
-    using MessageHashUtils for bytes32;
+
+    /// @dev EIP-712 typehash for signed price attestations.
+    bytes32 private constant PRICE_ATTESTATION_TYPEHASH =
+        keccak256("PriceAttestation(bytes32 asset,uint256 price,uint256 timestamp)");
 
     // ──────────────────────────────────────────────────────────
     //  Types
@@ -44,7 +48,7 @@ contract OracleVerifier is IOracleVerifier, Ownable, Multicall {
 
     constructor(
         address admin
-    ) Ownable(admin) {}
+    ) Ownable(admin) EIP712("Own Protocol", "1") {}
 
     // ──────────────────────────────────────────────────────────
     //  Push — update a single asset price
@@ -61,8 +65,7 @@ contract OracleVerifier is IOracleVerifier, Ownable, Multicall {
         if (price == 0) revert ZeroPrice();
 
         // Verify signature
-        bytes32 messageHash = keccak256(abi.encode(asset, price, timestamp, block.chainid, address(this)));
-        address recoveredSigner = messageHash.toEthSignedMessageHash().recover(v, r, s);
+        address recoveredSigner = priceDigest(asset, price, timestamp).recover(v, r, s);
         if (!_signers[recoveredSigner]) revert UnauthorizedSigner(recoveredSigner);
 
         // No config, no prices: an unconfigured asset must not accept unbounded pushes.
@@ -133,9 +136,13 @@ contract OracleVerifier is IOracleVerifier, Ownable, Multicall {
 
         if (price == 0) revert ZeroPrice();
 
-        bytes32 messageHash = keccak256(abi.encode(asset, price, timestamp, block.chainid, address(this)));
-        address recoveredSigner = messageHash.toEthSignedMessageHash().recover(v, r, s);
+        address recoveredSigner = priceDigest(asset, price, timestamp).recover(v, r, s);
         if (!_signers[recoveredSigner]) revert UnauthorizedSigner(recoveredSigner);
+    }
+
+    /// @notice The EIP-712 digest a signer must sign to attest a price.
+    function priceDigest(bytes32 asset, uint256 price, uint256 timestamp) public view returns (bytes32) {
+        return _hashTypedDataV4(keccak256(abi.encode(PRICE_ATTESTATION_TYPEHASH, asset, price, timestamp)));
     }
 
     /// @inheritdoc IOracleVerifier
