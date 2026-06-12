@@ -77,7 +77,7 @@ The protocol is organised around an order-based escrow + claim marketplace, per-
 - LP deposits use an async request/accept queue. LP requests deposit, VM accepts, shares are minted.
 - ERC-4626 is used for LP share accounting. LPs receive vault shares proportional to their deposit. Share price increases as yield accrues (for aUSDC, stETH vaults) and as the vault manager distributes lending revenue via `shareYield`.
 - LPs can also be their own vault manager (LP creates a vault with themselves as VM and can deposit directly).
-- LP withdrawals use an async FIFO queue (ERC-7540 pattern), fulfilled when utilization allows.
+- LP withdrawals use an async queue (ERC-7540 pattern), fulfilled when utilization allows. No ordering guarantee — any eligible request can be fulfilled.
 
 **Vault managers (1:1 per vault):**
 
@@ -104,7 +104,7 @@ The protocol is organised around an order-based escrow + claim marketplace, per-
 - **Lending premium** (charged above Aave's borrow rate) is swept to the vault manager on repay (`LendingFeeAccrued`).
 - **Collateral dividends** earned on borrowed eTokens during the borrow term are swept to the vault manager (`sweepDividends` → `DividendsSwept`).
 - `treasury` (ProtocolRegistry) receives bad-debt collateral, not fees.
-- **Planned, not in code:** `FeeCalculator` (per-`volatilityLevel` mint/redeem fee tiers) + `FeeAccrual` (protocol/LP/VM split). `volatilityLevel` is stored in AssetRegistry but unused today.
+- `volatilityLevel` is stored in AssetRegistry but unused today.
 
 **Protocol Registry:**
 
@@ -322,12 +322,6 @@ The protocol charges **no on-chain mint or redeem fee**. Revenue accrues through
 
 - There is no separate on-chain slippage check. A resting order's `limitPrice` bounds execution (mint: max price; redeem: min price); market orders execute at the `quote.price` the taker submits. Force-executed redeems are floored at `limitPrice`.
 
-### Planned (not in code)
-
-- `FeeCalculator`: per-`volatilityLevel` mint/redeem fee tiers (1=low, 2=medium, 3=high), capped at 500 BPS.
-- `FeeAccrual`: three-way split — protocol (treasury), LPs (share price), VM — with `protocolShareBps` set in governance.
-- `volatilityLevel` is already stored per-asset in AssetRegistry to support this, but no contract reads it yet.
-
 ### Protocol Controls
 
 - **`maxUtilization`**: Hard cap per vault. When exceeded, VMs from that vault can't claim new orders.
@@ -345,7 +339,6 @@ The protocol charges **no on-chain mint or redeem fee**. Revenue accrues through
 All protocol contracts are registered in a single `ProtocolRegistry` contract. Other contracts look up addresses from this registry instead of storing immutable/admin-set references. This enables:
 
 - Swapping OracleVerifier (e.g., to Pyth/Chainlink adapter) by updating one address.
-- Swapping `FeeCalculator` once implemented (planned — not yet in `src/`) by updating one address.
 - Governance-controlled upgrades with timelock protection.
 
 ## VM Strategy

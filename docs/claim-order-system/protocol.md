@@ -34,7 +34,7 @@ Regular users who want exposure to real-world assets. They place **mint orders**
 Professional hedge funds, trading firms. They:
 
 - Provide collateral (e.g. WETH) to vaults.
-- Claim and mandatorily execute all valid user orders at the user-specified price (validated by the oracle) 
+- Claim and mandatorily execute all valid user orders at the user-specified price (validated by the oracle)
 - Hedge the resulting exposure off-chain.
 - Enable other ETH holders (LPs) to deposit into vault & share fees.
 - Manage the vault's asset exposure
@@ -220,7 +220,7 @@ Liquidity providers deposit collateral into vaults and receive ERC-4626 shares. 
 
 ### Withdrawal Flow
 
-1. LP calls `requestWithdrawal(shares)` — shares are queued (FIFO)
+1. LP calls `requestWithdrawal(shares)` — shares are queued (no specific ordering; any eligible request can be fulfilled)
 2. Anyone can call `fulfillWithdrawal(requestId)` when:
    - A minimum wait period has passed
    - Vault utilization remains within bounds after withdrawal

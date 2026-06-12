@@ -20,9 +20,7 @@ Replace plain WETH as vault collateral with wstETH deposited into Aave V3 via a 
 | Lending spread | Variable | Premium above Aave's borrow rate, charged to eToken borrowers and routed to the VM |
 | Borrower collateral dividends | Variable | Dividends earned on eToken collateral during a borrow, swept to the VM |
 
-LPs earn the staking, Aave-supply, and lending-derived sources on the same capital. (A mint/redeem
-fee share is planned via `FeeCalculator`/`FeeAccrual` but is **not yet in code** — see
-`docs/protocol.md` §7.)
+LPs earn the staking, Aave-supply, and lending-derived sources on the same capital.
 
 ---
 

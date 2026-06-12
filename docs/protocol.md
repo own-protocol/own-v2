@@ -84,14 +84,13 @@ The protocol is organized into three layers (vaults are deployed directly and re
 
 ### Core Contracts
 
-| Contract             | File                            | Purpose                                                                                                                                                          |
-| -------------------- | ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **ProtocolRegistry** | `src/core/ProtocolRegistry.sol` | Central registry of all protocol contract addresses. 2-day timelock for address changes. Stores protocol-wide parameters (`timelockDelay`, `priceMaxAge`).              |
-| **OwnMarket**        | `src/core/OwnMarket.sol`        | RFQ order execution marketplace. Settles market orders atomically against signer-issued quotes, escrows and (partially) fills resting limit orders, provides redeem force execution against the oracle price, and the halted-asset redeem path. |
-| **OwnVault**         | `src/core/OwnVault.sol`         | ERC-4626 collateral vault. Holds LP collateral (custody), manages async deposit/withdrawal queues, distributes yield, supports lending opt-in, and vault-level pause/halt. Risk accounting and order controls live in the VaultManager, not the vault. Operator address: `manager`. |
-| **VaultManager**     | `src/core/VaultManager.sol`     | Central, pooled risk accounting **and** global control hub for **all** vaults. Owns global exposure, collateral marks, utilization, the per-asset issuance ceiling, **the vault registry/allowlist** (admin `registerVault`/`deregisterVault` + `getAllVaults`), the signer registry, the global payment token, trading pause, permanent asset halt + halt redeem address, and the claim threshold. Valued at keeper-cached marks. See §9. |
-| **AssetRegistry**    | `src/core/AssetRegistry.sol`    | Whitelists assets, maps tickers to eToken addresses, stores oracle configurations. Supports token migration (post-stock-split). Governs which assets are valid for **all** vaults. |
-| **FeeCalculator** _(planned)_ | `src/core/FeeCalculator.sol` | Per-volatility-level fee lookup (planned; not yet in `src/`). Three tiers (low/medium/high) with separate mint and redeem fee rates. Max cap: 500 BPS (5%). |
+| Contract                      | File                            | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| ----------------------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **ProtocolRegistry**          | `src/core/ProtocolRegistry.sol` | Central registry of all protocol contract addresses. 2-day timelock for address changes. Stores protocol-wide parameters (`timelockDelay`, `priceMaxAge`).                                                                                                                                                                                                                                                                                 |
+| **OwnMarket**                 | `src/core/OwnMarket.sol`        | RFQ order execution marketplace. Settles market orders atomically against signer-issued quotes, escrows and (partially) fills resting limit orders, provides redeem force execution against the oracle price, and the halted-asset redeem path.                                                                                                                                                                                            |
+| **OwnVault**                  | `src/core/OwnVault.sol`         | ERC-4626 collateral vault. Holds LP collateral (custody), manages async deposit/withdrawal queues, distributes yield, supports lending opt-in, and vault-level pause/halt. Risk accounting and order controls live in the VaultManager, not the vault. Operator address: `manager`.                                                                                                                                                        |
+| **VaultManager**              | `src/core/VaultManager.sol`     | Central, pooled risk accounting **and** global control hub for **all** vaults. Owns global exposure, collateral marks, utilization, the per-asset issuance ceiling, **the vault registry/allowlist** (admin `registerVault`/`deregisterVault` + `getAllVaults`), the signer registry, the global payment token, trading pause, permanent asset halt + halt redeem address, and the claim threshold. Valued at keeper-cached marks. See §9. |
+| **AssetRegistry**             | `src/core/AssetRegistry.sol`    | Whitelists assets, maps tickers to eToken addresses, stores oracle configurations. Supports token migration (post-stock-split). Governs which assets are valid for **all** vaults.                                                                                                                                                                                                                                                         |
 
 ### Oracle Contracts
 
@@ -116,10 +115,8 @@ See `docs/own-architecture.png` for the visual architecture diagram.
                     ProtocolRegistry
                     (address registry + timelock)
                           |
-          +---------------+
-          |               |
-    AssetRegistry    FeeCalculator (planned)
-    (assets, oracle mappings)
+                    AssetRegistry
+                    (assets, oracle mappings)
                                       OwnVault ───────┐ admin registers vault / keeper pulls collateral price
                                  (ERC-4626 custody)   |
                                           |           v
@@ -154,13 +151,13 @@ and each quote can be used only once. The settlement counterparty is the signer'
 
 ### Order States (resting limit / redeem orders)
 
-| Status            | Description                                                                                       |
-| ----------------- | ------------------------------------------------------------------------------------------------- |
+| Status            | Description                                                                                                               |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------- |
 | **Open**          | Resting order placed, input escrowed. Fillable by a maker; redeem orders also force-executable after the claim threshold. |
-| **Filled**        | Fully filled — remaining amount reached zero.                                                      |
-| **ForceExecuted** | Redeem order settled at the oracle price via force execution against a caller-named vault.          |
-| **Cancelled**     | Owner cancelled; remaining escrow returned.                                                        |
-| **Expired**       | Past its good-til-date; remaining escrow returned (callable by anyone).                            |
+| **Filled**        | Fully filled — remaining amount reached zero.                                                                             |
+| **ForceExecuted** | Redeem order settled at the oracle price via force execution against a caller-named vault.                                |
+| **Cancelled**     | Owner cancelled; remaining escrow returned.                                                                               |
+| **Expired**       | Past its good-til-date; remaining escrow returned (callable by anyone).                                                   |
 
 Market orders execute atomically and are never persisted, so they have no status.
 
@@ -249,8 +246,8 @@ keeps a fair maker quote the user's preferred path.
 
 ### Timing
 
-| Parameter        | Description                                                              | Default |
-| ---------------- | ----------------------------------------------------------------------- | ------- |
+| Parameter        | Description                                                                 | Default |
+| ---------------- | --------------------------------------------------------------------------- | ------- |
 | `claimThreshold` | Global delay after a redeem order is placed before it can be force-executed | 6 hours |
 
 ---
@@ -270,13 +267,13 @@ Liquidity providers deposit collateral into vaults and receive ERC-4626 shares. 
 
 ### Withdrawal Flow
 
-1. LP calls `requestWithdrawal(shares)` — shares are queued (FIFO)
+1. LP calls `requestWithdrawal(shares)` — shares are queued (no specifc ordering)
 2. Anyone can call `fulfillWithdrawal(requestId)` when:
    - A minimum wait period has passed
    - Vault utilization remains within bounds after withdrawal
 3. LP can call `cancelWithdrawal(requestId)` to get shares back
 
-**Vault status interacts with withdrawals:** a **paused** vault freezes both deposits *and*
+**Vault status interacts with withdrawals:** a **paused** vault freezes both deposits _and_
 withdrawals; a **halted** vault (emergency wind-down) blocks deposits but makes withdrawals
 **instant** — the wait period and the utilization check are both bypassed, since a halted vault's
 collateral is already excluded from the global risk pool (§9).
@@ -289,9 +286,8 @@ LPs can deposit native ETH using the **WETHRouter**, which wraps ETH to WETH bef
 
 ## 7. Revenue Model
 
-The protocol charges **no on-chain mint or redeem fee**. Today, value accrues to makers and to the
-vault manager (VM) through three live mechanisms. A tiered protocol fee split is planned but not yet
-wired — see §7.6.
+The protocol charges **no on-chain mint or redeem fee**. Value accrues to makers and to the
+vault manager (VM) through three live mechanisms.
 
 ### 7.1 RFQ spread (mint & redeem) — captured off-chain
 
@@ -329,24 +325,6 @@ normally again.
 There is no separate on-chain slippage check. A resting order's `limitPrice` bounds execution — max
 price for a mint, min price for a redeem — and a market order executes at the `quote.price` the
 taker submits. Force-executed redeems are floored at `limitPrice`.
-
-### 7.6 Planned: tiered mint/redeem fee (FeeCalculator / FeeAccrual)
-
-> Not yet in `src/`. `volatilityLevel` is already stored per-asset in `AssetRegistry` to support
-> this, but no contract reads it for fees today.
-
-A future `FeeCalculator` would charge a per-volatility-level fee on settlement, on top of the maker's
-execution price:
-
-| Volatility Level | Mint Fee        | Redeem Fee      | Example Assets |
-| ---------------- | --------------- | --------------- | -------------- |
-| 1 (Low)          | 0.50% (50 BPS)  | 0.25% (25 BPS)  | GOLD           |
-| 2 (Medium)       | 1.00% (100 BPS) | 0.50% (50 BPS)  | TSLA           |
-| 3 (High)         | 2.00% (200 BPS) | 1.00% (100 BPS) | --             |
-
-Capped at **500 BPS (5%)**. A companion `FeeAccrual` would split each fee three ways — protocol (to
-treasury), VM, and LPs (via share price) — with `protocolShareBps` set in governance. Under that
-model, force execution would also charge the standard redeem fee on the collateral payout.
 
 ---
 
@@ -405,7 +383,7 @@ pause, asset halt, claim threshold). This replaces the earlier per-vault model.
 
 - **Pooled backing/solvency (global), isolated custody/yield (per vault).** Collateral lives in
   separate per-collateral ERC-4626 vaults (~5–6 total: USDC, aUSDC, ETH, stETH, …), but only the risk
-  *math* pools. A mint settled through any vault draws on the protocol's global collateral and global
+  _math_ pools. A mint settled through any vault draws on the protocol's global collateral and global
   exposure book.
 - **Cross-VM loss mutualisation (accepted tradeoff).** A VM default's shortfall is covered by the
   global pool (all vaults' LPs), Maker-style. This strengthens the eToken's backing; LP risk is
@@ -502,26 +480,26 @@ VaultManager states — orthogonal to a vault's own status.
 
 ### Access Control
 
-| Action                                 | Who Can Do It                              |
-| -------------------------------------- | ------------------------------------------ |
-| Register contracts in ProtocolRegistry | Protocol admin (with timelock)             |
-| Add/deactivate assets                  | Protocol admin                             |
-| Configure oracles and fees             | Protocol admin                             |
-| Deploy + register / deregister vaults  | Protocol admin (registerVault on VaultManager) |
-| Pause a vault (deposits + withdrawals) | Vault's `manager` or admin                 |
-| Halt a vault (wind-down)               | Protocol admin                             |
-| Trading pause / asset halt (global)    | Protocol admin (VaultManager)              |
-| Set payment token / claim threshold / halt redeem address | Protocol admin (VaultManager) |
-| Register/update/remove quote signers   | Protocol admin (VaultManager)              |
-| Sign order quotes (off-chain)          | Globally-registered signers                |
-| Fill resting limit orders              | Anyone with a valid signed quote           |
-| Accept/reject LP deposits              | Vault's `manager`                          |
-| Execute market orders / place orders   | Any user (market order needs a signed quote) |
-| Cancel orders                          | Order owner                                |
-| Force execute redeem orders            | Order owner (after claim threshold, names the vault) |
-| Redeem a halted asset                  | Any holder (`redeemHalted`)                |
-| Expire resting orders                  | Anyone (permissionless, after expiry)      |
-| Fulfill withdrawals                    | Anyone (permissionless, if conditions met) |
+| Action                                                    | Who Can Do It                                        |
+| --------------------------------------------------------- | ---------------------------------------------------- |
+| Register contracts in ProtocolRegistry                    | Protocol admin (with timelock)                       |
+| Add/deactivate assets                                     | Protocol admin                                       |
+| Configure oracles and fees                                | Protocol admin                                       |
+| Deploy + register / deregister vaults                     | Protocol admin (registerVault on VaultManager)       |
+| Pause a vault (deposits + withdrawals)                    | Vault's `manager` or admin                           |
+| Halt a vault (wind-down)                                  | Protocol admin                                       |
+| Trading pause / asset halt (global)                       | Protocol admin (VaultManager)                        |
+| Set payment token / claim threshold / halt redeem address | Protocol admin (VaultManager)                        |
+| Register/update/remove quote signers                      | Protocol admin (VaultManager)                        |
+| Sign order quotes (off-chain)                             | Globally-registered signers                          |
+| Fill resting limit orders                                 | Anyone with a valid signed quote                     |
+| Accept/reject LP deposits                                 | Vault's `manager`                                    |
+| Execute market orders / place orders                      | Any user (market order needs a signed quote)         |
+| Cancel orders                                             | Order owner                                          |
+| Force execute redeem orders                               | Order owner (after claim threshold, names the vault) |
+| Redeem a halted asset                                     | Any holder (`redeemHalted`)                          |
+| Expire resting orders                                     | Anyone (permissionless, after expiry)                |
+| Fulfill withdrawals                                       | Anyone (permissionless, if conditions met)           |
 
 ### Smart Contract Patterns
 
@@ -555,13 +533,13 @@ PRECISION = 1e18      // Fixed-point precision for prices and per-share accumula
 
 ### Enums
 
-| Enum               | Values                                                              | Description                                   |
-| ------------------ | ------------------------------------------------------------------- | --------------------------------------------- |
-| `OrderType`        | Mint, Redeem                                                        | Whether an order is buying or selling eTokens |
-| `OrderStatus`      | Open, Filled, ForceExecuted, Cancelled, Expired                    | Resting-order lifecycle state                 |
-| `WithdrawalStatus` | Pending, Fulfilled, Cancelled                                       | LP withdrawal request state                   |
-| `DepositStatus`    | Pending, Accepted, Rejected, Cancelled                              | LP deposit request state                      |
-| `VaultStatus`      | Active, Paused, Halted                                              | Vault operating state                         |
+| Enum               | Values                                          | Description                                   |
+| ------------------ | ----------------------------------------------- | --------------------------------------------- |
+| `OrderType`        | Mint, Redeem                                    | Whether an order is buying or selling eTokens |
+| `OrderStatus`      | Open, Filled, ForceExecuted, Cancelled, Expired | Resting-order lifecycle state                 |
+| `WithdrawalStatus` | Pending, Fulfilled, Cancelled                   | LP withdrawal request state                   |
+| `DepositStatus`    | Pending, Accepted, Rejected, Cancelled          | LP deposit request state                      |
+| `VaultStatus`      | Active, Paused, Halted                          | Vault operating state                         |
 
 ### Structs
 

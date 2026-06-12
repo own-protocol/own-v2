@@ -121,7 +121,7 @@ struct Quote {
     uint256 expiry;
 }
 
-/// @notice An async LP withdrawal request in the FIFO queue.
+/// @notice An async LP withdrawal request in the withdrawal queue.
 /// @param requestId Unique request identifier.
 /// @param owner     LP who requested the withdrawal.
 /// @param shares    Number of vault shares to redeem.

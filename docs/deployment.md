@@ -188,16 +188,7 @@ cast send $WETH_ROUTER "depositETH(address,address,uint256)" \
 
 ## Fees
 
-The current build charges **no on-chain mint or redeem fee** — orders settle at the maker's signed
+The protocol charges **no on-chain mint or redeem fee** — orders settle at the maker's signed
 quote price and the maker captures its spread off-chain. Lending revenue (the premium above Aave's
 borrow rate) and dividends earned on borrowed collateral are swept to the vault manager. See `docs/protocol.md`
 §7 for the full revenue model.
-
-The per-`volatilityLevel` fee schedule below is **planned** (`FeeCalculator`/`FeeAccrual`) and is
-**not deployed**:
-
-| Volatility Level | Mint Fee (planned) | Redeem Fee (planned) | Assets |
-|-------------------|----------|------------|--------|
-| 1 (Low) | 0.50% | 0.25% | GOLD |
-| 2 (Medium) | 1.00% | 0.50% | TSLA |
-| 3 (High) | 2.00% | 1.00% | -- |

@@ -211,10 +211,10 @@ contract LPLifecycleTest is BaseTest {
     }
 
     // ══════════════════════════════════════════════════════════
-    //  Test: FIFO queue
+    //  Test: withdrawal queue
     // ══════════════════════════════════════════════════════════
 
-    function test_asyncWithdrawal_FIFOQueue() public {
+    function test_asyncWithdrawal_queue() public {
         _lpDeposit(Actors.LP1, LP_DEPOSIT);
         _lpDeposit(Actors.LP2, LP_DEPOSIT);
 
