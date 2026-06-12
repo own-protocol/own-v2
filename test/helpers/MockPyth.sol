@@ -13,11 +13,26 @@ contract MockPyth is IPyth {
 
     mapping(bytes32 => PythStructs.Price) private _prices;
 
+    /// @dev Confidence applied to prices built by parsePriceFeedUpdates (default 0 = exact).
+    uint64 public parseConf;
+
     // ── Admin helpers (test-only) ────────────────────────────
 
     /// @dev Directly set a cached price for a feed ID (bypasses update flow).
     function setPrice(bytes32 feedId, int64 price, int32 expo, uint256 publishTime) external {
         _prices[feedId] = PythStructs.Price({price: price, conf: 0, expo: expo, publishTime: publishTime});
+    }
+
+    /// @dev Like setPrice but with an explicit confidence interval.
+    function setPriceWithConf(bytes32 feedId, int64 price, uint64 conf, int32 expo, uint256 publishTime) external {
+        _prices[feedId] = PythStructs.Price({price: price, conf: conf, expo: expo, publishTime: publishTime});
+    }
+
+    /// @dev Set the confidence applied to subsequently parsed price updates.
+    function setParseConf(
+        uint64 conf
+    ) external {
+        parseConf = conf;
     }
 
     // ── IPyth implementation ─────────────────────────────────
@@ -67,8 +82,8 @@ contract MockPyth is IPyth {
                 if (priceIds[j] == feedId) {
                     priceFeeds[j] = PythStructs.PriceFeed({
                         id: feedId,
-                        price: PythStructs.Price({price: price, conf: 0, expo: expo, publishTime: publishTime}),
-                        emaPrice: PythStructs.Price({price: price, conf: 0, expo: expo, publishTime: publishTime})
+                        price: PythStructs.Price({price: price, conf: parseConf, expo: expo, publishTime: publishTime}),
+                        emaPrice: PythStructs.Price({price: price, conf: parseConf, expo: expo, publishTime: publishTime})
                     });
                 }
             }

@@ -5,10 +5,8 @@ import {Actors} from "../helpers/Actors.sol";
 import {BaseTest} from "../helpers/BaseTest.sol";
 
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
-import {FeeCalculator} from "../../src/core/FeeCalculator.sol";
 import {OwnMarket} from "../../src/core/OwnMarket.sol";
 import {OwnVault} from "../../src/core/OwnVault.sol";
-import {VaultFactory} from "../../src/core/VaultFactory.sol";
 
 import {AssetConfig, PRECISION} from "../../src/interfaces/types/Types.sol";
 import {EToken} from "../../src/tokens/EToken.sol";
@@ -26,8 +24,6 @@ contract OwnProtocolInvariant is BaseTest {
     // ── Protocol contracts ──────────────────────────────────────
 
     AssetRegistry public assetRegistry;
-    FeeCalculator public feeCalc;
-    VaultFactory public factory;
     OwnMarket public market;
     OwnVault public vault;
     EToken public eTSLA;
@@ -41,11 +37,6 @@ contract OwnProtocolInvariant is BaseTest {
     // ── Constants ───────────────────────────────────────────────
 
     uint256 constant MAX_UTIL_BPS = 8000;
-    uint256 constant VM_SHARE_BPS = 2000;
-    uint256 constant PROTOCOL_SHARE_BPS = 2000;
-    uint256 constant MINT_FEE_BPS = 30;
-    uint256 constant REDEEM_FEE_BPS = 30;
-    uint256 constant GRACE_PERIOD = 1 days;
     uint256 constant CLAIM_THRESHOLD = 6 hours;
     uint256 constant WITHDRAWAL_WAIT = 1 hours;
     uint256 constant LP_SEED_AMOUNT = 50_000e18; // 50k WETH
@@ -70,39 +61,29 @@ contract OwnProtocolInvariant is BaseTest {
         assetRegistry = new AssetRegistry(Actors.ADMIN);
         protocolRegistry.setAddress(protocolRegistry.ASSET_REGISTRY(), address(assetRegistry));
 
-        // Treasury
-        protocolRegistry.setAddress(protocolRegistry.TREASURY(), Actors.FEE_RECIPIENT);
-        protocolRegistry.setProtocolShareBps(PROTOCOL_SHARE_BPS);
+        vm.stopPrank();
+        // VaultManager must be registered before registering the vault (admin-gated).
+        _deployVaultManager();
+        vm.startPrank(Actors.ADMIN);
 
-        // Fee calculator with non-zero fees
-        feeCalc = new FeeCalculator(address(protocolRegistry), Actors.ADMIN);
-        feeCalc.setMintFee(2, MINT_FEE_BPS);
-        feeCalc.setRedeemFee(2, REDEEM_FEE_BPS);
-        feeCalc.setMintFee(1, 0);
-        feeCalc.setMintFee(3, 0);
-        feeCalc.setRedeemFee(1, 0);
-        feeCalc.setRedeemFee(3, 0);
-        protocolRegistry.setAddress(keccak256("FEE_CALCULATOR"), address(feeCalc));
-
-        // Vault factory
-        factory = new VaultFactory(Actors.ADMIN, address(protocolRegistry));
-        protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), address(factory));
-
-        // Create vault: WETH collateral, VM1, 80% max util, 20% VM fee share
-        vault = OwnVault(
-            factory.createVault(address(weth), Actors.VM1, "Own ETH Vault", "oETH", MAX_UTIL_BPS, VM_SHARE_BPS)
-        );
+        // Create vault: WETH collateral, vm1Signer (keyed VM for quote signing). ETH = collateral ticker.
+        vault = new OwnVault(address(weth), "Own ETH Vault", "oETH", address(protocolRegistry), vm1Signer);
+        vaultManager.registerVault(address(vault), ETH);
 
         // Market
         market = new OwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
 
         // Vault parameters
-        vault.setGracePeriod(GRACE_PERIOD);
-        vault.setClaimThreshold(CLAIM_THRESHOLD);
         vault.setWithdrawalWaitPeriod(WITHDRAWAL_WAIT);
 
         vm.stopPrank();
+
+        // Global controls now live on the VaultManager.
+        // Register the keyed VM signer with Actors.VM1 as its linked settlement address
+        // (mint proceeds flow to it; redeem payouts come from it).
+        _setClaimThreshold(CLAIM_THRESHOLD);
+        _registerSigner(vm1Signer, Actors.VM1);
     }
 
     function _configureAssets() private {
@@ -128,38 +109,38 @@ contract OwnProtocolInvariant is BaseTest {
             oracleType: 1
         });
         assetRegistry.addAsset(ETH_ASSET, address(weth), ethConfig);
-        vault.setCollateralOracleAsset(ETH_ASSET);
 
         vm.stopPrank();
 
         // Set oracle prices
         _setOraclePrice(ETH_ASSET, ETH_PRICE);
         _setOraclePrice(TSLA, TSLA_PRICE);
+
+        // Per-asset issuance ceiling (global max util set by _deployVaultManager).
+        _setAssetCap(TSLA, DEFAULT_ASSET_CAP_USD);
     }
 
     function _configureVault() private {
-        vm.startPrank(Actors.VM1);
-        vault.setPaymentToken(address(usdc));
-        vault.enableAsset(TSLA);
-        vm.stopPrank();
-
-        // Initialize valuations
-        vault.updateAssetValuation(TSLA);
-        vault.updateCollateralValuation();
+        // Payment token is now a global VaultManager setting.
+        _setPaymentToken(address(usdc));
     }
 
     function _seedVault() private {
-        _fundWETH(Actors.VM1, LP_SEED_AMOUNT);
-        vm.startPrank(Actors.VM1);
+        _fundWETH(vm1Signer, LP_SEED_AMOUNT);
+        vm.startPrank(vm1Signer);
         weth.approve(address(vault), LP_SEED_AMOUNT);
         vault.deposit(LP_SEED_AMOUNT, Actors.LP1);
         vm.stopPrank();
+
+        // Seed the manager's marks so mints have non-zero collateral and an asset price.
+        _pullCollateralPrice(address(vault));
+        _pullAssetPrice(TSLA);
     }
 
     function _deployHandlers() private {
         vaultHandler = new VaultHandler(address(vault), address(weth), address(usdc));
         marketHandler = new MarketHandler(
-            address(market), address(vault), address(feeCalc), address(usdc), address(eTSLA), address(oracle)
+            address(market), address(vault), address(usdc), address(eTSLA), address(oracle), vm1SignerPk
         );
         eTokenHandler = new ETokenHandler(address(eTSLA), address(usdc));
 
@@ -169,30 +150,24 @@ contract OwnProtocolInvariant is BaseTest {
         targetContract(address(eTokenHandler));
 
         // Restrict to handler functions only (exclude ghost getters)
-        bytes4[] memory vaultSelectors = new bytes4[](7);
+        bytes4[] memory vaultSelectors = new bytes4[](5);
         vaultSelectors[0] = VaultHandler.deposit.selector;
         vaultSelectors[1] = VaultHandler.requestWithdrawal.selector;
         vaultSelectors[2] = VaultHandler.fulfillWithdrawal.selector;
         vaultSelectors[3] = VaultHandler.cancelWithdrawal.selector;
-        vaultSelectors[4] = VaultHandler.claimProtocolFees.selector;
-        vaultSelectors[5] = VaultHandler.claimVMFees.selector;
-        vaultSelectors[6] = VaultHandler.claimLPRewards.selector;
+        vaultSelectors[4] = VaultHandler.shareYield.selector;
         targetSelector(FuzzSelector({addr: address(vaultHandler), selectors: vaultSelectors}));
 
-        bytes4[] memory marketSelectors = new bytes4[](13);
+        bytes4[] memory marketSelectors = new bytes4[](9);
         marketSelectors[0] = MarketHandler.placeMintOrder.selector;
         marketSelectors[1] = MarketHandler.placeRedeemOrder.selector;
-        marketSelectors[2] = MarketHandler.claimMintOrder.selector;
-        marketSelectors[3] = MarketHandler.claimRedeemOrder.selector;
-        marketSelectors[4] = MarketHandler.confirmMintOrder.selector;
-        marketSelectors[5] = MarketHandler.confirmRedeemOrder.selector;
-        marketSelectors[6] = MarketHandler.cancelMintOrder.selector;
-        marketSelectors[7] = MarketHandler.cancelRedeemOrder.selector;
-        marketSelectors[8] = MarketHandler.expireMintOrder.selector;
-        marketSelectors[9] = MarketHandler.expireRedeemOrder.selector;
-        marketSelectors[10] = MarketHandler.closeMintOrder.selector;
-        marketSelectors[11] = MarketHandler.closeRedeemOrder.selector;
-        marketSelectors[12] = MarketHandler.warpForward.selector;
+        marketSelectors[2] = MarketHandler.fillMintOrder.selector;
+        marketSelectors[3] = MarketHandler.fillRedeemOrder.selector;
+        marketSelectors[4] = MarketHandler.cancelMintOrder.selector;
+        marketSelectors[5] = MarketHandler.cancelRedeemOrder.selector;
+        marketSelectors[6] = MarketHandler.expireMintOrder.selector;
+        marketSelectors[7] = MarketHandler.expireRedeemOrder.selector;
+        marketSelectors[8] = MarketHandler.warpForward.selector;
         targetSelector(FuzzSelector({addr: address(marketHandler), selectors: marketSelectors}));
 
         bytes4[] memory eTokenSelectors = new bytes4[](3);
@@ -229,34 +204,18 @@ contract OwnProtocolInvariant is BaseTest {
         assert(vaultBalance >= totalAssetsVal);
     }
 
-    /// @notice INV-03: Vault payment token balance covers all unclaimed fees.
-    ///         Since collateral=WETH and paymentToken=USDC, fees are in USDC.
-    function invariant_vaultFeeSolvency() external view {
-        uint256 usdcBalance = usdc.balanceOf(address(vault));
-        uint256 protocolFees = vault.accruedProtocolFees();
-        uint256 vmFees = vault.accruedVMFees();
-
-        // Sum claimable LP rewards for known LPs
-        uint256 lpRewards = vault.claimableLPRewards(Actors.LP1) + vault.claimableLPRewards(Actors.LP2)
-            + vault.claimableLPRewards(Actors.LP3);
-
-        assert(usdcBalance >= protocolFees + vmFees + lpRewards);
-    }
-
-    /// @notice INV-04: Market stablecoin balance covers escrowed mint order funds.
+    /// @notice INV-04: Market stablecoin balance covers escrowed open mint orders.
+    ///         Escrow = sum over open MINT orders of (amount - filledAmount).
     function invariant_marketStablecoinEscrow() external view {
         uint256 marketUsdcBalance = usdc.balanceOf(address(market));
-        uint256 escrowedTotal = marketHandler.ghost_escrowedStablecoins() + marketHandler.ghost_escrowedMintFees();
-
-        assert(marketUsdcBalance >= escrowedTotal);
+        assert(marketUsdcBalance >= marketHandler.ghost_escrowedStablecoins());
     }
 
-    /// @notice INV-05: Market eToken balance covers escrowed redeem orders.
+    /// @notice INV-05: Market eToken balance covers escrowed open redeem orders.
+    ///         Escrow = sum over open REDEEM orders of (amount - filledAmount).
     function invariant_marketETokenEscrow() external view {
         uint256 marketETokenBalance = eTSLA.balanceOf(address(market));
-        uint256 escrowedETokens = marketHandler.ghost_escrowedETokens();
-
-        assert(marketETokenBalance >= escrowedETokens);
+        assert(marketETokenBalance >= marketHandler.ghost_escrowedETokens());
     }
 
     // ═════════════════════════════════════════════════════════════
@@ -268,12 +227,25 @@ contract OwnProtocolInvariant is BaseTest {
         assert(vault.pendingWithdrawalShares() <= vault.totalSupply());
     }
 
-    /// @notice INV-07: Total exposure USD equals sum of per-asset exposure USD.
+    /// @notice INV-07: Global exposure USD equals Σ globalAssetUnits[a] × assetMark[a] / 1e18.
+    ///         Single asset here, so it reduces to the TSLA term.
     function invariant_exposureConsistency() external view {
-        uint256 totalExp = vault.totalExposureUSD();
-        uint256 sumExp = vault.assetExposureUSD(TSLA);
+        uint256 globalExp = vaultManager.globalExposureUSD();
+        uint256 units = vaultManager.globalAssetUnits(TSLA);
+        uint256 mark = vaultManager.assetMark(TSLA);
+        assert(globalExp == (units * mark) / PRECISION);
+    }
 
-        assert(totalExp == sumExp);
+    /// @notice INV-07b: Global outstanding units for an asset equal the eToken's total supply.
+    ///         openExposure mirrors mint, closeExposure mirrors burn, so they stay in lockstep.
+    function invariant_globalUnitsMatchSupply() external view {
+        assert(vaultManager.globalAssetUnits(TSLA) == eTSLA.totalSupply());
+    }
+
+    /// @notice INV-07c: Global utilisation never exceeds the cap (collateral mark is fixed across the
+    ///         campaign — no keeper price pulls — so every gated open keeps utilisation bounded).
+    function invariant_globalUtilizationWithinCap() external view {
+        assert(vaultManager.globalUtilizationBps() <= vaultManager.globalMaxUtilizationBps());
     }
 
     /// @notice INV-08: EToken rewards-per-share accumulator never decreases.
@@ -299,9 +271,9 @@ contract OwnProtocolInvariant is BaseTest {
         assert(vault.pendingWithdrawalShares() == vaultHandler.ghost_pendingWithdrawalShares());
     }
 
-    /// @notice INV-11: Asset exposure never wraps around (no underflow).
+    /// @notice INV-11: Global asset units never wrap around (no underflow).
     function invariant_noExposureUnderflow() external view {
-        assert(vault.assetExposure(TSLA) < type(uint256).max / 2);
+        assert(vaultManager.globalAssetUnits(TSLA) < type(uint256).max / 2);
     }
 
     // ═════════════════════════════════════════════════════════════

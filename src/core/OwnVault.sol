@@ -1,15 +1,13 @@
 // SPDX-License-Identifier: BUSL-1.1
 pragma solidity 0.8.28;
 
-import {IAssetRegistry} from "../interfaces/IAssetRegistry.sol";
-import {IOracleVerifier} from "../interfaces/IOracleVerifier.sol";
 import {IOwnVault} from "../interfaces/IOwnVault.sol";
 import {IProtocolRegistry} from "../interfaces/IProtocolRegistry.sol";
+import {IVaultManager} from "../interfaces/IVaultManager.sol";
+import {ICreditDelegation} from "../interfaces/external/ILendingVenue.sol";
 import {
-    BPS,
     DepositRequest,
     DepositStatus,
-    PRECISION,
     VaultStatus,
     WithdrawalRequest,
     WithdrawalStatus
@@ -22,93 +20,36 @@ import {ERC20, IERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {ERC4626} from "@openzeppelin/contracts/token/ERC20/extensions/ERC4626.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import {Multicall} from "@openzeppelin/contracts/utils/Multicall.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+
+import {EnumerableSet} from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 
 /// @title OwnVault — ERC-4626 collateral vault with async deposit/withdrawal
 /// @notice Single vault holding collateral to back eToken exposure.
-contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
+contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     using SafeERC20 for IERC20;
-    using Math for uint256;
+    using EnumerableSet for EnumerableSet.UintSet;
 
     // ──────────────────────────────────────────────────────────
     //  Immutables
     // ──────────────────────────────────────────────────────────
 
     IProtocolRegistry public immutable registry;
-    address public vm;
+
+    /// @notice Operational / fund-custody manager bound to this vault.
+    address public manager;
 
     // ──────────────────────────────────────────────────────────
     //  Vault status
     // ──────────────────────────────────────────────────────────
 
     VaultStatus private _vaultStatus;
-    mapping(bytes32 => bool) private _assetPaused;
-    mapping(bytes32 => bool) private _assetHalted;
-    mapping(bytes32 => uint256) private _assetHaltPrice;
 
     // ──────────────────────────────────────────────────────────
-    //  Utilization & health
+    //  Withdrawal queue config
     // ──────────────────────────────────────────────────────────
 
-    uint256 private _maxUtilization;
     uint256 private _withdrawalWaitPeriod;
-
-    /// @dev Per-asset raw exposure in units (18 decimals).
-    mapping(bytes32 => uint256) private _assetExposure;
-
-    /// @dev Per-asset exposure in USD (18 decimals), updated incrementally.
-    mapping(bytes32 => uint256) private _assetExposureUSD;
-
-    /// @dev Per-asset last valuation update timestamp.
-    mapping(bytes32 => uint256) private _assetLastUpdated;
-
-    /// @dev Running total of all per-asset USD exposures. Updated incrementally — never loops.
-    uint256 private _totalExposureUSD;
-
-    /// @dev Collateral value in USD (18 decimals). Updated by keeper or on exposure changes.
-    uint256 private _collateralValueUSD;
-
-    // ──────────────────────────────────────────────────────────
-    //  Order execution parameters (read by OwnMarket)
-    // ──────────────────────────────────────────────────────────
-
-    uint256 private _gracePeriod;
-    uint256 private _claimThreshold;
-    bytes32 private _collateralOracleAsset;
-
-    // ──────────────────────────────────────────────────────────
-    //  Supported assets (VM-controlled)
-    // ──────────────────────────────────────────────────────────
-
-    mapping(bytes32 => bool) private _supportedAssets;
-
-    // ──────────────────────────────────────────────────────────
-    //  Payment token (single, VM-controlled)
-    // ──────────────────────────────────────────────────────────
-
-    address private _paymentToken;
-
-    // ──────────────────────────────────────────────────────────
-    //  Order fee accrual (single-token, Uniswap-style)
-    //  All fees are denominated in _paymentToken. Token must be
-    //  flushed (protocol + VM claimed) before changing token.
-    // ──────────────────────────────────────────────────────────
-
-    uint256 private _vmShareBps;
-
-    uint256 private _protocolFees;
-    uint256 private _vmFees;
-
-    /// @dev Cumulative LP rewards-per-share (scaled by PRECISION).
-    uint256 private _lpRewardsPerShare;
-
-    /// @dev Per-account checkpoint — last-seen rewardsPerShare.
-    mapping(address => uint256) private _lpCheckpoint;
-
-    /// @dev Per-account accrued unclaimed LP fee rewards.
-    mapping(address => uint256) private _lpAccruedFees;
 
     // ──────────────────────────────────────────────────────────
     //  Async deposit queue
@@ -116,7 +57,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
 
     uint256 private _nextDepositRequestId = 1;
     mapping(uint256 => DepositRequest) private _depositRequests;
-    uint256[] private _pendingDepositIds;
+    EnumerableSet.UintSet private _pendingDepositIds;
 
     /// @dev Total assets held for pending deposit requests. Excluded from
     ///      totalAssets() so that ERC-4626 share math is not polluted by
@@ -133,11 +74,17 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
 
     uint256 private _nextRequestId = 1;
     mapping(uint256 => WithdrawalRequest) private _withdrawalRequests;
-    uint256[] private _pendingRequestIds;
+    EnumerableSet.UintSet private _pendingRequestIds;
 
     /// @dev Total shares escrowed for pending withdrawal requests.
-    ///      Used by projectedUtilization() to estimate effective collateral.
     uint256 private _pendingWithdrawalShares;
+
+    // ──────────────────────────────────────────────────────────
+    //  Lending opt-in (Phase 1 scaffold)
+    // ──────────────────────────────────────────────────────────
+
+    /// @dev Authorised user-borrowing manager. Zero until enableLending is called.
+    address private _borrowManager;
 
     // ──────────────────────────────────────────────────────────
     //  Modifiers
@@ -148,13 +95,23 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
         _;
     }
 
-    modifier onlyVM() {
-        if (msg.sender != vm) revert OnlyVM();
+    modifier onlyManager() {
+        if (msg.sender != manager) revert OnlyManager();
+        _;
+    }
+
+    modifier onlyManagerOrAdmin() {
+        if (msg.sender != manager && msg.sender != Ownable(address(registry)).owner()) revert OnlyManagerOrAdmin();
         _;
     }
 
     modifier onlyMarket() {
         if (msg.sender != registry.market()) revert OnlyMarket();
+        _;
+    }
+
+    modifier onlyBorrowManager() {
+        if (msg.sender != _borrowManager) revert OnlyBorrowManager();
         _;
     }
 
@@ -172,24 +129,19 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
     /// @param name_       Vault share name.
     /// @param symbol_     Vault share symbol.
     /// @param registry_   ProtocolRegistry contract address.
-    /// @param vm_         Vault manager address bound to this vault.
-    /// @param maxUtilBps  Initial max utilization in BPS.
-    /// @param vmShareBps_ Initial VM fee share (of LP+VM remainder) in BPS.
+    /// @param manager_    Vault manager (operator) address bound to this vault.
     constructor(
         address asset_,
         string memory name_,
         string memory symbol_,
         address registry_,
-        address vm_,
-        uint256 maxUtilBps,
-        uint256 vmShareBps_
+        address manager_
     ) ERC4626(IERC20(asset_)) ERC20(name_, symbol_) {
-        if (vmShareBps_ > BPS) revert ShareTooHigh(vmShareBps_, BPS);
+        uint8 collatDecimals = IERC20Metadata(asset_).decimals();
+        if (collatDecimals > 18) revert DecimalsTooHigh(collatDecimals);
         registry = IProtocolRegistry(registry_);
-        vm = vm_;
-        _maxUtilization = maxUtilBps;
+        manager = manager_;
         _vaultStatus = VaultStatus.Active;
-        _vmShareBps = vmShareBps_;
     }
 
     // ──────────────────────────────────────────────────────────
@@ -200,14 +152,30 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
         uint256 assets,
         address receiver
     ) public override(ERC4626, IERC4626) whenDepositsAllowed nonReentrant returns (uint256) {
-        if (_requireDepositApproval && msg.sender != vm) revert DepositApprovalRequired();
-        return super.deposit(assets, receiver);
+        return _depositWithMin(assets, receiver, 0);
+    }
+
+    /// @inheritdoc IOwnVault
+    function deposit(
+        uint256 assets,
+        address receiver,
+        uint256 minSharesOut
+    ) external whenDepositsAllowed nonReentrant returns (uint256) {
+        return _depositWithMin(assets, receiver, minSharesOut);
+    }
+
+    /// @dev Shared deposit path. Enforces the optional approval gate and a `minSharesOut`
+    ///      slippage floor against share-price movement before execution.
+    function _depositWithMin(uint256 assets, address receiver, uint256 minSharesOut) private returns (uint256 shares) {
+        if (_requireDepositApproval && msg.sender != manager) revert DepositApprovalRequired();
+        shares = super.deposit(assets, receiver);
+        if (shares < minSharesOut) revert InsufficientSharesOut(shares, minSharesOut);
     }
 
     function mint(
         uint256 shares,
         address receiver
-    ) public override(ERC4626, IERC4626) whenDepositsAllowed onlyVM nonReentrant returns (uint256) {
+    ) public override(ERC4626, IERC4626) whenDepositsAllowed onlyManager nonReentrant returns (uint256) {
         return super.mint(shares, receiver);
     }
 
@@ -234,7 +202,8 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
     /// @inheritdoc IOwnVault
     function requestDeposit(
         uint256 assets,
-        address receiver
+        address receiver,
+        uint256 minSharesOut
     ) external whenDepositsAllowed nonReentrant returns (uint256 requestId) {
         if (!_requireDepositApproval) revert DepositApprovalNotRequired();
         if (assets == 0) revert ZeroAmount();
@@ -248,10 +217,11 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
             depositor: msg.sender,
             receiver: receiver,
             assets: assets,
+            minSharesOut: minSharesOut,
             timestamp: block.timestamp,
             status: DepositStatus.Pending
         });
-        _pendingDepositIds.push(requestId);
+        _pendingDepositIds.add(requestId);
 
         emit DepositRequested(requestId, msg.sender, receiver, assets);
     }
@@ -259,15 +229,16 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
     /// @inheritdoc IOwnVault
     function acceptDeposit(
         uint256 requestId
-    ) external onlyVM nonReentrant {
+    ) external onlyManager nonReentrant {
         DepositRequest storage req = _depositRequests[requestId];
         if (req.depositor == address(0)) revert DepositRequestNotFound(requestId);
         if (req.status != DepositStatus.Pending) revert DepositRequestNotPending(requestId);
 
         uint256 shares = previewDeposit(req.assets);
+        if (shares < req.minSharesOut) revert InsufficientSharesOut(shares, req.minSharesOut);
         _pendingDepositAssets -= req.assets;
         req.status = DepositStatus.Accepted;
-        _removePendingDeposit(requestId);
+        _pendingDepositIds.remove(requestId);
         _mint(req.receiver, shares);
 
         emit DepositAccepted(requestId, req.depositor, shares);
@@ -276,14 +247,14 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
     /// @inheritdoc IOwnVault
     function rejectDeposit(
         uint256 requestId
-    ) external onlyVM nonReentrant {
+    ) external onlyManager nonReentrant {
         DepositRequest storage req = _depositRequests[requestId];
         if (req.depositor == address(0)) revert DepositRequestNotFound(requestId);
         if (req.status != DepositStatus.Pending) revert DepositRequestNotPending(requestId);
 
         _pendingDepositAssets -= req.assets;
         req.status = DepositStatus.Rejected;
-        _removePendingDeposit(requestId);
+        _pendingDepositIds.remove(requestId);
         IERC20(asset()).safeTransfer(req.depositor, req.assets);
 
         emit DepositRejected(requestId, req.depositor);
@@ -300,7 +271,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
 
         _pendingDepositAssets -= req.assets;
         req.status = DepositStatus.Cancelled;
-        _removePendingDeposit(requestId);
+        _pendingDepositIds.remove(requestId);
         IERC20(asset()).safeTransfer(req.depositor, req.assets);
 
         emit DepositCancelled(requestId, req.depositor);
@@ -316,7 +287,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
 
     /// @inheritdoc IOwnVault
     function getPendingDeposits() external view returns (uint256[] memory) {
-        return _pendingDepositIds;
+        return _pendingDepositIds.values();
     }
 
     // ──────────────────────────────────────────────────────────
@@ -328,6 +299,8 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
         uint256 shares
     ) external nonReentrant returns (uint256 requestId) {
         if (shares == 0) revert ZeroAmount();
+        // Pause freezes both deposits and withdrawals; halt still allows withdrawals.
+        if (_vaultStatus == VaultStatus.Paused) revert VaultIsPaused();
 
         _transfer(msg.sender, address(this), shares);
         _pendingWithdrawalShares += shares;
@@ -340,7 +313,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
             timestamp: block.timestamp,
             status: WithdrawalStatus.Pending
         });
-        _pendingRequestIds.push(requestId);
+        _pendingRequestIds.add(requestId);
 
         emit WithdrawalRequested(requestId, msg.sender, shares);
     }
@@ -357,7 +330,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
         req.status = WithdrawalStatus.Cancelled;
         _pendingWithdrawalShares -= req.shares;
         _transfer(address(this), msg.sender, req.shares);
-        _removePendingRequest(requestId);
+        _pendingRequestIds.remove(requestId);
 
         emit WithdrawalCancelled(requestId, msg.sender);
     }
@@ -369,37 +342,30 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
         WithdrawalRequest storage req = _withdrawalRequests[requestId];
         if (req.owner == address(0)) revert WithdrawalRequestNotFound(requestId);
         if (req.status != WithdrawalStatus.Pending) revert WithdrawalNotPending(requestId);
-
-        // Enforce wait period
-        uint256 readyAt = req.timestamp + _withdrawalWaitPeriod;
-        if (block.timestamp < readyAt) {
-            revert WithdrawalWaitPeriodNotElapsed(requestId, readyAt);
-        }
+        // Pause freezes withdrawals entirely.
+        if (_vaultStatus == VaultStatus.Paused) revert VaultIsPaused();
 
         uint256 shares = req.shares;
         assets = convertToAssets(shares);
 
-        // Check that withdrawal won't breach max utilization (in USD terms)
-        if (_totalExposureUSD > 0) {
-            // Block withdrawals if collateral value is unknown while exposure exists
-            if (_collateralValueUSD == 0) revert CollateralValueNotInitialized();
-
-            // Estimate collateral value after withdrawal
-            uint256 collateralAfter = _collateralValueUSD - _collateralValueUSD.mulDiv(assets, totalAssets());
-            if (collateralAfter > 0) {
-                uint256 utilizationAfter = _totalExposureUSD.mulDiv(BPS, collateralAfter);
-                if (utilizationAfter > _maxUtilization) {
-                    revert MaxUtilizationExceeded(utilizationAfter, _maxUtilization);
-                }
+        // A halted vault is an emergency wind-down: its collateral is already excluded from the
+        // global pool, so LP exits are immediate and unconditional (no wait period, no util check).
+        // Active vaults enforce the wait period and the global utilisation cap.
+        if (_vaultStatus != VaultStatus.Halted) {
+            uint256 readyAt = req.timestamp + _withdrawalWaitPeriod;
+            if (block.timestamp < readyAt) {
+                revert WithdrawalWaitPeriodNotElapsed(requestId, readyAt);
             }
+            if (IVaultManager(registry.vaultManager()).withdrawalBreachesUtil(address(this), assets)) {
+                revert MaxUtilizationExceeded();
+            }
+            // Sync the cached mark before assets leave (mirrors releaseCollateral).
+            IVaultManager(registry.vaultManager()).onCollateralReleased(assets);
         }
 
         req.status = WithdrawalStatus.Fulfilled;
         _pendingWithdrawalShares -= shares;
-        _removePendingRequest(requestId);
-
-        // Auto-claim LP rewards before exit
-        _claimLPRewardsFor(req.owner);
+        _pendingRequestIds.remove(requestId);
 
         _burn(address(this), shares);
         IERC20(asset()).safeTransfer(req.owner, assets);
@@ -417,7 +383,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
 
     /// @inheritdoc IOwnVault
     function getPendingWithdrawals() external view returns (uint256[] memory) {
-        return _pendingRequestIds;
+        return _pendingRequestIds.values();
     }
 
     // ──────────────────────────────────────────────────────────
@@ -429,51 +395,32 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
         return _vaultStatus;
     }
 
-    // ── Pause ────────────────────────────────────────────────
+    // ── Pause (temporary; blocks deposits AND withdrawals) ──
 
     /// @inheritdoc IOwnVault
     function pause(
         bytes32 reason
-    ) external onlyAdmin {
+    ) external onlyManagerOrAdmin {
         if (_vaultStatus != VaultStatus.Active) revert InvalidStatusTransition();
         _vaultStatus = VaultStatus.Paused;
         emit VaultPaused(reason);
     }
 
     /// @inheritdoc IOwnVault
-    function unpause() external onlyAdmin {
+    function unpause() external onlyManagerOrAdmin {
         if (_vaultStatus != VaultStatus.Paused) revert InvalidStatusTransition();
         _vaultStatus = VaultStatus.Active;
         emit VaultUnpaused();
     }
 
-    /// @inheritdoc IOwnVault
-    function pauseAsset(bytes32 asset_, bytes32 reason) external onlyAdmin {
-        _assetPaused[asset_] = true;
-        emit AssetPaused(asset_, reason);
-    }
-
-    /// @inheritdoc IOwnVault
-    function unpauseAsset(
-        bytes32 asset_
-    ) external onlyAdmin {
-        _assetPaused[asset_] = false;
-        emit AssetUnpaused(asset_);
-    }
-
-    /// @inheritdoc IOwnVault
-    function isAssetPaused(
-        bytes32 asset_
-    ) external view returns (bool) {
-        return _assetPaused[asset_];
-    }
-
-    // ── Halt ─────────────────────────────────────────────────
+    // ── Halt (emergency wind-down; deposits off, instant withdrawals) ──
 
     /// @inheritdoc IOwnVault
     function haltVault() external onlyAdmin {
         if (_vaultStatus != VaultStatus.Active) revert InvalidStatusTransition();
         _vaultStatus = VaultStatus.Halted;
+        // Drop this vault's collateral from the global risk pool.
+        IVaultManager(registry.vaultManager()).onVaultHalted();
         emit VaultHalted();
     }
 
@@ -481,183 +428,18 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
     function unhalt() external onlyAdmin {
         if (_vaultStatus != VaultStatus.Halted) revert InvalidStatusTransition();
         _vaultStatus = VaultStatus.Active;
+        // Re-include this vault's collateral in the global risk pool.
+        IVaultManager(registry.vaultManager()).onVaultUnhalted();
         emit VaultUnhalted();
     }
 
-    /// @inheritdoc IOwnVault
-    function haltAsset(bytes32 asset_, uint256 haltPrice) external onlyAdmin {
-        if (haltPrice == 0) revert InvalidHaltPrice();
-        _assetHalted[asset_] = true;
-        _assetHaltPrice[asset_] = haltPrice;
-        emit AssetHalted(asset_);
-        emit AssetHaltPriceSet(asset_, haltPrice);
-    }
-
-    /// @inheritdoc IOwnVault
-    function unhaltAsset(
-        bytes32 asset_
-    ) external onlyAdmin {
-        _assetHalted[asset_] = false;
-        _assetHaltPrice[asset_] = 0;
-        emit AssetUnhalted(asset_);
-    }
-
-    /// @inheritdoc IOwnVault
-    function isAssetHalted(
-        bytes32 asset_
-    ) external view returns (bool) {
-        return _assetHalted[asset_];
-    }
-
-    /// @inheritdoc IOwnVault
-    function getAssetHaltPrice(
-        bytes32 asset_
-    ) external view returns (uint256) {
-        return _assetHaltPrice[asset_];
-    }
-
-    // ── Combined query helpers ───────────────────────────────
-
-    /// @inheritdoc IOwnVault
-    function isEffectivelyPaused(
-        bytes32 asset_
-    ) external view returns (bool) {
-        return _vaultStatus == VaultStatus.Paused || _assetPaused[asset_];
-    }
-
-    /// @inheritdoc IOwnVault
-    function isEffectivelyHalted(
-        bytes32 asset_
-    ) external view returns (bool) {
-        return _vaultStatus == VaultStatus.Halted || _assetHalted[asset_];
-    }
-
     // ──────────────────────────────────────────────────────────
-    //  Health and utilization
+    //  Withdrawal queue accessors
     // ──────────────────────────────────────────────────────────
-
-    /// @inheritdoc IOwnVault
-    function healthFactor() external view returns (uint256) {
-        if (_totalExposureUSD == 0) return type(uint256).max;
-        return _collateralValueUSD.mulDiv(PRECISION, _totalExposureUSD);
-    }
-
-    /// @inheritdoc IOwnVault
-    function utilization() external view returns (uint256) {
-        if (_collateralValueUSD == 0) return 0;
-        return _totalExposureUSD.mulDiv(BPS, _collateralValueUSD);
-    }
-
-    /// @inheritdoc IOwnVault
-    function maxUtilization() external view returns (uint256) {
-        return _maxUtilization;
-    }
-
-    /// @inheritdoc IOwnVault
-    function setMaxUtilization(
-        uint256 maxUtilBps
-    ) external onlyAdmin {
-        _maxUtilization = maxUtilBps;
-    }
-
-    /// @inheritdoc IOwnVault
-    function projectedUtilization() external view returns (uint256) {
-        if (_collateralValueUSD == 0) return 0;
-        uint256 total = totalAssets();
-        if (total == 0) return type(uint256).max;
-        uint256 pendingAssets = convertToAssets(_pendingWithdrawalShares);
-        uint256 pendingValueUSD = _collateralValueUSD.mulDiv(pendingAssets, total);
-        uint256 effectiveCollateral = _collateralValueUSD - pendingValueUSD;
-        if (effectiveCollateral == 0) return type(uint256).max;
-        return _totalExposureUSD.mulDiv(BPS, effectiveCollateral);
-    }
-
-    /// @inheritdoc IOwnVault
-    function projectedExposureUtilization(
-        uint256 additionalExposureUSD
-    ) external view returns (uint256) {
-        if (_collateralValueUSD == 0) return 0;
-        return (_totalExposureUSD + additionalExposureUSD).mulDiv(BPS, _collateralValueUSD);
-    }
 
     /// @inheritdoc IOwnVault
     function pendingWithdrawalShares() external view returns (uint256) {
         return _pendingWithdrawalShares;
-    }
-
-    /// @inheritdoc IOwnVault
-    function totalExposureUSD() external view returns (uint256) {
-        return _totalExposureUSD;
-    }
-
-    /// @inheritdoc IOwnVault
-    function collateralValueUSD() external view returns (uint256) {
-        return _collateralValueUSD;
-    }
-
-    /// @inheritdoc IOwnVault
-    function assetExposure(
-        bytes32 asset_
-    ) external view returns (uint256) {
-        return _assetExposure[asset_];
-    }
-
-    /// @inheritdoc IOwnVault
-    function assetExposureUSD(
-        bytes32 asset_
-    ) external view returns (uint256) {
-        return _assetExposureUSD[asset_];
-    }
-
-    /// @inheritdoc IOwnVault
-    function assetLastUpdated(
-        bytes32 asset_
-    ) external view returns (uint256) {
-        return _assetLastUpdated[asset_];
-    }
-
-    /// @inheritdoc IOwnVault
-    function updateExposure(bytes32 asset_, int256 delta, uint256 price) external onlyMarket {
-        // Update raw units
-        if (delta > 0) {
-            _assetExposure[asset_] += uint256(delta);
-        } else if (delta < 0) {
-            _assetExposure[asset_] -= uint256(-delta);
-        }
-
-        // Update USD values using provided execution price
-        uint256 oldUSD = _assetExposureUSD[asset_];
-        uint256 newUSD = _assetExposure[asset_].mulDiv(price, PRECISION);
-        _assetExposureUSD[asset_] = newUSD;
-        _totalExposureUSD = _totalExposureUSD - oldUSD + newUSD;
-
-        // Also refresh collateral value
-        _refreshCollateralValue();
-    }
-
-    /// @inheritdoc IOwnVault
-    function updateAssetValuation(
-        bytes32 asset_
-    ) external {
-        address oracleAddr = _getOracleForAsset(asset_);
-        if (oracleAddr == address(0)) revert PriceNotAvailable(asset_);
-
-        (uint256 price,) = IOracleVerifier(oracleAddr).getPrice(asset_);
-        if (price == 0) revert PriceNotAvailable(asset_);
-
-        uint256 oldUSD = _assetExposureUSD[asset_];
-        uint256 newUSD = _assetExposure[asset_].mulDiv(price, PRECISION);
-
-        _assetExposureUSD[asset_] = newUSD;
-        _totalExposureUSD = _totalExposureUSD - oldUSD + newUSD;
-        _assetLastUpdated[asset_] = block.timestamp;
-
-        emit AssetValuationUpdated(asset_, _assetExposure[asset_], newUSD, price);
-    }
-
-    /// @inheritdoc IOwnVault
-    function updateCollateralValuation() external {
-        _refreshCollateralValue();
     }
 
     /// @inheritdoc IOwnVault
@@ -673,206 +455,32 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
     }
 
     // ──────────────────────────────────────────────────────────
-    //  Order execution parameters
+    //  Share yield (manager-distributed LP rewards)
     // ──────────────────────────────────────────────────────────
 
     /// @inheritdoc IOwnVault
-    function gracePeriod() external view returns (uint256) {
-        return _gracePeriod;
+    function shareYield(
+        uint256 amount
+    ) external onlyManager nonReentrant {
+        if (amount == 0) revert ZeroAmount();
+        // Cannot distribute yield with no shares outstanding; the assets would otherwise
+        // accrue to whoever deposits first.
+        if (totalSupply() == 0) revert NoSharesToReward();
+
+        // Manager transfers collateral in → totalAssets() rises → share price rises for all LPs.
+        IERC20(asset()).safeTransferFrom(msg.sender, address(this), amount);
+
+        emit ShareYieldAdded(msg.sender, amount);
     }
 
     /// @inheritdoc IOwnVault
-    function setGracePeriod(
-        uint256 period
+    function setManager(
+        address newManager
     ) external onlyAdmin {
-        _gracePeriod = period;
-    }
-
-    /// @inheritdoc IOwnVault
-    function claimThreshold() external view returns (uint256) {
-        return _claimThreshold;
-    }
-
-    /// @inheritdoc IOwnVault
-    function setClaimThreshold(
-        uint256 threshold
-    ) external onlyAdmin {
-        _claimThreshold = threshold;
-    }
-
-    /// @inheritdoc IOwnVault
-    function collateralOracleAsset() external view returns (bytes32) {
-        return _collateralOracleAsset;
-    }
-
-    /// @inheritdoc IOwnVault
-    function setCollateralOracleAsset(
-        bytes32 asset_
-    ) external onlyAdmin {
-        _collateralOracleAsset = asset_;
-    }
-
-    // ──────────────────────────────────────────────────────────
-    //  Order fee accrual & claims
-    // ──────────────────────────────────────────────────────────
-
-    /// @inheritdoc IOwnVault
-    function depositFees(address token, uint256 amount) external onlyMarket {
-        if (amount == 0) return;
-        if (token != _paymentToken) revert WrongFeeToken(_paymentToken, token);
-
-        IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
-
-        // Protocol takes its cut first (round up — protocol-favorable)
-        uint256 protocolAmount = amount.mulDiv(registry.protocolShareBps(), BPS, Math.Rounding.Ceil);
-        uint256 remainder = amount - protocolAmount;
-
-        // VM takes its share of the remainder (round down — LP-favorable)
-        uint256 vmAmount = remainder.mulDiv(_vmShareBps, BPS);
-        uint256 lpAmount = remainder - vmAmount;
-
-        _protocolFees += protocolAmount;
-        _vmFees += vmAmount;
-
-        // LP share → rewards-per-share accumulator
-        uint256 supply = totalSupply();
-        if (supply == 0) {
-            _protocolFees += lpAmount;
-        } else if (lpAmount > 0) {
-            _lpRewardsPerShare += lpAmount.mulDiv(PRECISION, supply);
-        }
-
-        emit FeeDeposited(token, amount, protocolAmount, vmAmount, lpAmount);
-    }
-
-    /// @inheritdoc IOwnVault
-    function setVM(
-        address newVM
-    ) external onlyAdmin {
-        if (newVM == address(0)) revert ZeroAddress();
-        address oldVM = vm;
-        vm = newVM;
-        emit VMUpdated(oldVM, newVM);
-    }
-
-    /// @inheritdoc IOwnVault
-    function setVMShareBps(
-        uint256 shareBps
-    ) external onlyVM {
-        if (shareBps > BPS) revert ShareTooHigh(shareBps, BPS);
-        uint256 oldShare = _vmShareBps;
-        _vmShareBps = shareBps;
-        emit VMShareUpdated(oldShare, shareBps);
-    }
-
-    /// @inheritdoc IOwnVault
-    function vmShareBps() external view returns (uint256) {
-        return _vmShareBps;
-    }
-
-    /// @inheritdoc IOwnVault
-    function claimProtocolFees() external nonReentrant {
-        uint256 amount = _protocolFees;
-        if (amount == 0) revert NoFeesToClaim();
-
-        _protocolFees = 0;
-        IERC20(_paymentToken).safeTransfer(registry.treasury(), amount);
-
-        emit ProtocolFeesClaimed(_paymentToken, amount);
-    }
-
-    /// @inheritdoc IOwnVault
-    function claimVMFees() external onlyVM nonReentrant {
-        uint256 amount = _vmFees;
-        if (amount == 0) revert NoFeesToClaim();
-
-        _vmFees = 0;
-        IERC20(_paymentToken).safeTransfer(vm, amount);
-
-        emit VMFeesClaimed(_paymentToken, amount);
-    }
-
-    /// @inheritdoc IOwnVault
-    function claimLPRewards() external nonReentrant returns (uint256 amount) {
-        _settleLPReward(msg.sender);
-
-        amount = _lpAccruedFees[msg.sender];
-        if (amount == 0) revert NoFeesToClaim();
-
-        _lpAccruedFees[msg.sender] = 0;
-        IERC20(_paymentToken).safeTransfer(msg.sender, amount);
-
-        emit LPRewardsClaimed(msg.sender, _paymentToken, amount);
-    }
-
-    /// @inheritdoc IOwnVault
-    function accruedProtocolFees() external view returns (uint256) {
-        return _protocolFees;
-    }
-
-    /// @inheritdoc IOwnVault
-    function accruedVMFees() external view returns (uint256) {
-        return _vmFees;
-    }
-
-    /// @inheritdoc IOwnVault
-    function claimableLPRewards(
-        address account
-    ) external view returns (uint256 amount) {
-        uint256 userPaid = _lpCheckpoint[account];
-        amount = _lpAccruedFees[account] + balanceOf(account).mulDiv(_lpRewardsPerShare - userPaid, PRECISION);
-    }
-
-    // ──────────────────────────────────────────────────────────
-    //  Supported assets
-    // ──────────────────────────────────────────────────────────
-
-    /// @inheritdoc IOwnVault
-    function enableAsset(
-        bytes32 asset_
-    ) external onlyVM {
-        _supportedAssets[asset_] = true;
-        emit AssetEnabled(asset_);
-    }
-
-    /// @inheritdoc IOwnVault
-    function disableAsset(
-        bytes32 asset_
-    ) external onlyVM {
-        _supportedAssets[asset_] = false;
-        emit AssetDisabled(asset_);
-    }
-
-    /// @inheritdoc IOwnVault
-    function isAssetSupported(
-        bytes32 asset_
-    ) external view returns (bool) {
-        return _supportedAssets[asset_];
-    }
-
-    // ──────────────────────────────────────────────────────────
-    //  Payment token management
-    // ──────────────────────────────────────────────────────────
-
-    /// @inheritdoc IOwnVault
-    function setPaymentToken(
-        address token
-    ) external onlyVM {
-        if (token == address(0)) revert ZeroAddress();
-        if (token == asset()) revert PaymentTokenCannotBeCollateral();
-        uint256 decimals = IERC20Metadata(token).decimals();
-        if (decimals > 18) revert DecimalsTooHigh(decimals);
-        if (_protocolFees != 0 || _vmFees != 0) revert OutstandingFeesExist();
-
-        address oldToken = _paymentToken;
-        _paymentToken = token;
-
-        emit PaymentTokenUpdated(oldToken, token);
-    }
-
-    /// @inheritdoc IOwnVault
-    function paymentToken() external view returns (address) {
-        return _paymentToken;
+        if (newManager == address(0)) revert ZeroAddress();
+        address oldManager = manager;
+        manager = newManager;
+        emit ManagerUpdated(oldManager, newManager);
     }
 
     // ──────────────────────────────────────────────────────────
@@ -893,114 +501,34 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
     }
 
     // ──────────────────────────────────────────────────────────
-    //  Internal — LP reward settlement
+    //  Lending opt-in (provider-neutral)
     // ──────────────────────────────────────────────────────────
 
-    /// @dev Override _update to settle LP rewards before any share balance change.
-    function _update(address from, address to, uint256 amount) internal override {
-        if (from != address(0) && from != address(this)) {
-            _settleLPReward(from);
-        }
-        if (to != address(0) && to != address(this)) {
-            _settleLPReward(to);
-        }
-        super._update(from, to, amount);
+    /// @inheritdoc IOwnVault
+    function setBorrowManager(
+        address manager_
+    ) external onlyAdmin {
+        if (manager_ == address(0)) revert ZeroAddress();
+        if (_borrowManager != address(0)) revert LendingAlreadyEnabled();
+        _borrowManager = manager_;
+        emit LendingEnabled(manager_);
     }
 
-    /// @dev Settle pending LP rewards for an account.
-    function _settleLPReward(
-        address account
-    ) private {
-        uint256 currentRPS = _lpRewardsPerShare;
-        uint256 userPaid = _lpCheckpoint[account];
-        if (currentRPS > userPaid) {
-            uint256 owed = balanceOf(account).mulDiv(currentRPS - userPaid, PRECISION);
-            if (owed > 0) {
-                _lpAccruedFees[account] += owed;
-            }
-            _lpCheckpoint[account] = currentRPS;
-        }
+    /// @inheritdoc IOwnVault
+    function grantCreditDelegation(
+        address creditToken
+    ) external onlyAdmin {
+        if (_borrowManager == address(0)) revert LendingNotEnabled();
+        if (creditToken == address(0)) revert ZeroAddress();
+        // Beneficiary is ALWAYS the bound borrow manager — never an admin-chosen address — and this
+        // grants borrow delegation only; it cannot move the vault's collateral.
+        ICreditDelegation(creditToken).approveDelegation(_borrowManager, type(uint256).max);
+        emit CreditDelegationGranted(creditToken, _borrowManager);
     }
 
-    /// @dev Settle and claim LP rewards for an account (used by fulfillWithdrawal).
-    function _claimLPRewardsFor(
-        address account
-    ) private {
-        _settleLPReward(account);
-
-        uint256 amount = _lpAccruedFees[account];
-        if (amount > 0) {
-            _lpAccruedFees[account] = 0;
-            IERC20(_paymentToken).safeTransfer(account, amount);
-            emit LPRewardsClaimed(account, _paymentToken, amount);
-        }
-    }
-
-    // ──────────────────────────────────────────────────────────
-    //  Internal — valuation
-    // ──────────────────────────────────────────────────────────
-
-    /// @dev Refresh the collateral value in USD using the collateral oracle.
-    function _refreshCollateralValue() private {
-        bytes32 collatAsset = _collateralOracleAsset;
-        if (collatAsset == bytes32(0)) return;
-
-        address oracleAddr = _getOracleForAsset(collatAsset);
-        if (oracleAddr == address(0)) return;
-
-        (uint256 price,) = IOracleVerifier(oracleAddr).getPrice(collatAsset);
-        if (price == 0) return;
-
-        _collateralValueUSD = totalAssets().mulDiv(price, PRECISION);
-
-        emit CollateralValuationUpdated(_collateralValueUSD, price);
-    }
-
-    // ──────────────────────────────────────────────────────────
-    //  Internal — helpers
-    // ──────────────────────────────────────────────────────────
-
-    /// @dev Resolve the oracle address for an asset via ProtocolRegistry.
-    function _getOracleForAsset(
-        bytes32 ticker
-    ) private view returns (address) {
-        uint8 oracleType = IAssetRegistry(registry.assetRegistry()).getOracleType(ticker);
-        if (oracleType == 0) return registry.pythOracle();
-        return registry.inhouseOracle();
-    }
-
-    /// @dev Remove a request ID from the pending withdrawal list (swap-and-pop).
-    function _removePendingRequest(
-        uint256 requestId
-    ) private {
-        uint256 len = _pendingRequestIds.length;
-        for (uint256 i; i < len;) {
-            if (_pendingRequestIds[i] == requestId) {
-                _pendingRequestIds[i] = _pendingRequestIds[len - 1];
-                _pendingRequestIds.pop();
-                return;
-            }
-            unchecked {
-                ++i;
-            }
-        }
-    }
-
-    /// @dev Remove a request ID from the pending deposit list (swap-and-pop).
-    function _removePendingDeposit(
-        uint256 requestId
-    ) private {
-        uint256 len = _pendingDepositIds.length;
-        for (uint256 i; i < len;) {
-            if (_pendingDepositIds[i] == requestId) {
-                _pendingDepositIds[i] = _pendingDepositIds[len - 1];
-                _pendingDepositIds.pop();
-                return;
-            }
-            unchecked {
-                ++i;
-            }
-        }
+    /// @inheritdoc IOwnVault
+    function borrowManager() external view returns (address) {
+        return _borrowManager;
     }
 
     // ──────────────────────────────────────────────────────────
@@ -1011,7 +539,28 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
     function releaseCollateral(address to, uint256 amount) external onlyMarket nonReentrant {
         if (to == address(0)) revert ZeroAddress();
         if (amount == 0) revert ZeroAmount();
+        // Sync the cached mark before assets leave, so the withdrawal gate never reads stale-high.
+        IVaultManager(registry.vaultManager()).onCollateralReleased(amount);
         IERC20(asset()).safeTransfer(to, amount);
+    }
+
+    /// @inheritdoc IOwnVault
+    function releaseCollateralForBadDebt(
+        uint256 amount
+    ) external onlyBorrowManager nonReentrant {
+        if (amount == 0) revert ZeroAmount();
+        // Destination is the protocol treasury (from the registry) — NOT a caller-supplied address.
+        // This bounds the blast radius if the borrow manager is ever malicious: collateral can only
+        // ever be moved into protocol-controlled hands, never to an external wallet.
+        address to = registry.treasury();
+        if (to == address(0)) revert TreasuryNotSet();
+        // Drop the cached collateral mark before moving assets, so the withdrawal gate never sees a
+        // stale-high collateral total between this release and the next keeper price pull.
+        IVaultManager(registry.vaultManager()).onCollateralReleased(amount);
+        // The borrow manager has already repaid the corresponding Aave debt, so this aToken slice is
+        // unlocked. Releasing it shrinks totalAssets, socializing the bad-debt loss to LPs.
+        IERC20(asset()).safeTransfer(to, amount);
+        emit CollateralReleasedForBadDebt(to, amount);
     }
 
     // ──────────────────────────────────────────────────────────
@@ -1034,16 +583,11 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
         return super.totalAssets() - _pendingDepositAssets;
     }
 
-    function convertToShares(
-        uint256 assets
-    ) public view override(ERC4626, IERC4626) returns (uint256) {
-        return super.convertToShares(assets);
-    }
-
-    function convertToAssets(
-        uint256 shares
-    ) public view override(ERC4626, IERC4626) returns (uint256) {
-        return super.convertToAssets(shares);
+    /// @dev Virtual-shares offset to neutralise ERC-4626 inflation / first-depositor attacks.
+    ///      An attacker must forfeit ~10^6× any value they could extract, making it irrational.
+    ///      Share token decimals are `collateralDecimals + 6` as a result.
+    function _decimalsOffset() internal pure override returns (uint8) {
+        return 6;
     }
 
     function maxDeposit(
@@ -1058,33 +602,5 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard, Multicall {
     ) public view override(ERC4626, IERC4626) returns (uint256) {
         if (_vaultStatus != VaultStatus.Active) return 0;
         return type(uint256).max;
-    }
-
-    function previewDeposit(
-        uint256 assets
-    ) public view override(ERC4626, IERC4626) returns (uint256) {
-        return super.previewDeposit(assets);
-    }
-
-    function previewMint(
-        uint256 shares
-    ) public view override(ERC4626, IERC4626) returns (uint256) {
-        return super.previewMint(shares);
-    }
-
-    function previewWithdraw(
-        uint256 assets
-    ) public view override(ERC4626, IERC4626) returns (uint256) {
-        return super.previewWithdraw(assets);
-    }
-
-    function previewRedeem(
-        uint256 shares
-    ) public view override(ERC4626, IERC4626) returns (uint256) {
-        return super.previewRedeem(shares);
-    }
-
-    function asset() public view override(ERC4626, IERC4626) returns (address) {
-        return super.asset();
     }
 }

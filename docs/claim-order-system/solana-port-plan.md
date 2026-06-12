@@ -64,7 +64,7 @@ Own v2 is a permissionless RWA tokenization protocol currently deployed on Base 
 
 ### Research Finding: No Reusable Vault Standard on Solana
 
-Unlike EVM's ERC-4626, **Solana has no standard vault program**. The SPL provides Token, Token-2022, Stake Pool, but no vault primitive. After researching Drift Vaults, Marinade, Kamino, Voltr, SPL Stake Pool, Token-2022, and Squads — none can be composed to meet Own's requirements (async VM-approved deposits, FIFO withdrawal queues, per-asset exposure tracking, rewards-per-share, pause/halt).
+Unlike EVM's ERC-4626, **Solana has no standard vault program**. The SPL provides Token, Token-2022, Stake Pool, but no vault primitive. After researching Drift Vaults, Marinade, Kamino, Voltr, SPL Stake Pool, Token-2022, and Squads — none can be composed to meet Own's requirements (async VM-approved deposits, withdrawal queues, per-asset exposure tracking, rewards-per-share, pause/halt).
 
 ### Recommendation: Custom Anchor Vault + Borrowed Patterns
 

@@ -95,11 +95,14 @@ contract WstETHRouter is IWstETHRouter, ReentrancyGuard {
         address receiver,
         uint256 minSharesOut
     ) internal returns (uint256 shares) {
-        // Pull stETH from caller
+        // Pull stETH from caller; stETH share-rounding can deliver 1-2 wei less
+        // than requested, so wrap the measured balance-diff.
+        uint256 balBefore = stETH.balanceOf(address(this));
         stETH.safeTransferFrom(msg.sender, address(this), stETHAmount);
+        uint256 received = stETH.balanceOf(address(this)) - balBefore;
 
         // Wrap stETH → wstETH (stETH already approved to wstETH in constructor)
-        uint256 wstETHAmount = wstETH.wrap(stETHAmount);
+        uint256 wstETHAmount = wstETH.wrap(received);
 
         // Approve vault to pull wstETH
         IERC20(address(wstETH)).forceApprove(address(vault), wstETHAmount);

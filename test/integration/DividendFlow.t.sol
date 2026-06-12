@@ -9,7 +9,6 @@ import {AssetConfig, PRECISION} from "../../src/interfaces/types/Types.sol";
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {OwnMarket} from "../../src/core/OwnMarket.sol";
 import {OwnVault} from "../../src/core/OwnVault.sol";
-import {VaultFactory} from "../../src/core/VaultFactory.sol";
 import {EToken} from "../../src/tokens/EToken.sol";
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -42,19 +41,17 @@ contract DividendFlowTest is BaseTest {
         assetRegistry = new AssetRegistry(Actors.ADMIN);
 
         protocolRegistry.setAddress(protocolRegistry.ASSET_REGISTRY(), address(assetRegistry));
-        protocolRegistry.setAddress(protocolRegistry.TREASURY(), Actors.FEE_RECIPIENT);
-        protocolRegistry.setProtocolShareBps(2000);
 
-        VaultFactory factory = new VaultFactory(Actors.ADMIN, address(protocolRegistry));
-        protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), address(factory));
+        vm.stopPrank();
+        // Deploy + register the VaultManager before registering the vault (admin-gated).
+        _deployVaultManager();
+        vm.startPrank(Actors.ADMIN);
 
-        vault = OwnVault(factory.createVault(address(weth), Actors.VM1, "Own WETH Vault", "oWETH", 8000, 2000));
+        vault = new OwnVault(address(weth), "Own WETH Vault", "oWETH", address(protocolRegistry), Actors.VM1);
+        vaultManager.registerVault(address(vault), ETH);
 
         market = new OwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
-
-        vault.setGracePeriod(1 days);
-        vault.setClaimThreshold(6 hours);
 
         eTSLA = new EToken("Own Tesla", "eTSLA", TSLA, address(protocolRegistry), address(usdc));
 
@@ -69,11 +66,9 @@ contract DividendFlowTest is BaseTest {
 
         vm.stopPrank();
 
-        // Set payment token and enable asset
-        vm.startPrank(Actors.VM1);
-        vault.setPaymentToken(address(usdc));
-        vault.enableAsset(TSLA);
-        vm.stopPrank();
+        // Global controls now live on the VaultManager.
+        _setClaimThreshold(6 hours);
+        _setPaymentToken(address(usdc));
     }
 
     function _mintETokens() private {

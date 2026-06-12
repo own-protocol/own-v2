@@ -50,8 +50,6 @@ contract RouterIntegrationTest is BaseTest {
 
         vm.startPrank(Actors.ADMIN);
 
-        protocolRegistry.setAddress(protocolRegistry.TREASURY(), Actors.FEE_RECIPIENT);
-        protocolRegistry.setProtocolShareBps(2000);
         protocolRegistry.setAddress(protocolRegistry.MARKET(), makeAddr("mockMarket"));
 
         // WETH vault with router as VM (router calls deposit directly)
@@ -60,9 +58,7 @@ contract RouterIntegrationTest is BaseTest {
             "Own WETH Vault",
             "oWETH",
             address(protocolRegistry),
-            address(wethRouter), // bound VM is router
-            8000,
-            2000
+            address(wethRouter) // bound VM is router
         );
 
         // wstETH vault with router as VM
@@ -71,9 +67,7 @@ contract RouterIntegrationTest is BaseTest {
             "Own wstETH Vault",
             "owstETH",
             address(protocolRegistry),
-            address(wstethRouter), // bound VM is router
-            8000,
-            2000
+            address(wstethRouter) // bound VM is router
         );
 
         vm.stopPrank();

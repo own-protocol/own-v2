@@ -10,7 +10,6 @@ import {AssetConfig, VaultStatus, WithdrawalRequest, WithdrawalStatus} from "../
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {OwnMarket} from "../../src/core/OwnMarket.sol";
 import {OwnVault} from "../../src/core/OwnVault.sol";
-import {VaultFactory} from "../../src/core/VaultFactory.sol";
 import {EToken} from "../../src/tokens/EToken.sol";
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -36,19 +35,17 @@ contract LPLifecycleTest is BaseTest {
         assetRegistry = new AssetRegistry(Actors.ADMIN);
 
         protocolRegistry.setAddress(protocolRegistry.ASSET_REGISTRY(), address(assetRegistry));
-        protocolRegistry.setAddress(protocolRegistry.TREASURY(), Actors.FEE_RECIPIENT);
-        protocolRegistry.setProtocolShareBps(0);
 
-        VaultFactory factory = new VaultFactory(Actors.ADMIN, address(protocolRegistry));
-        protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), address(factory));
+        vm.stopPrank();
+        // Deploy + register the VaultManager before registering the vault (admin-gated).
+        _deployVaultManager();
+        vm.startPrank(Actors.ADMIN);
 
-        vault = OwnVault(factory.createVault(address(weth), Actors.VM1, "Own WETH Vault", "oWETH", 8000, 2000));
+        vault = new OwnVault(address(weth), "Own WETH Vault", "oWETH", address(protocolRegistry), Actors.VM1);
+        vaultManager.registerVault(address(vault), ETH);
 
         market = new OwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
-
-        vault.setGracePeriod(1 days);
-        vault.setClaimThreshold(6 hours);
 
         eTSLA = new EToken("Own Tesla", "eTSLA", TSLA, address(protocolRegistry), address(usdc));
 
@@ -63,11 +60,9 @@ contract LPLifecycleTest is BaseTest {
 
         vm.stopPrank();
 
-        // Set payment token and enable asset
-        vm.startPrank(Actors.VM1);
-        vault.setPaymentToken(address(usdc));
-        vault.enableAsset(TSLA);
-        vm.stopPrank();
+        // Global controls now live on the VaultManager.
+        _setClaimThreshold(6 hours);
+        _setPaymentToken(address(usdc));
     }
 
     // ──────────────────────────────────────────────────────────
@@ -216,10 +211,10 @@ contract LPLifecycleTest is BaseTest {
     }
 
     // ══════════════════════════════════════════════════════════
-    //  Test: FIFO queue
+    //  Test: withdrawal queue
     // ══════════════════════════════════════════════════════════
 
-    function test_asyncWithdrawal_FIFOQueue() public {
+    function test_asyncWithdrawal_queue() public {
         _lpDeposit(Actors.LP1, LP_DEPOSIT);
         _lpDeposit(Actors.LP2, LP_DEPOSIT);
 
@@ -310,9 +305,10 @@ contract LPLifecycleTest is BaseTest {
         assertEq(vault.asset(), address(weth));
         assertEq(vault.totalAssets(), LP_DEPOSIT);
         assertEq(uint8(vault.vaultStatus()), uint8(VaultStatus.Active));
-        assertEq(vault.maxUtilization(), 8000);
-        assertEq(vault.totalExposureUSD(), 0);
-        assertEq(vault.healthFactor(), type(uint256).max);
-        assertEq(vault.utilization(), 0);
+        assertEq(vaultManager.globalMaxUtilizationBps(), 8000);
+        assertEq(vaultManager.globalExposureUSD(), 0);
+        // TODO(exposure-refactor): vault.healthFactor() removed; no manager equivalent to repoint to.
+        // assertEq(vault.healthFactor(), type(uint256).max);
+        assertEq(vaultManager.globalUtilizationBps(), 0);
     }
 }

@@ -65,6 +65,9 @@ interface IEToken is IERC20, IERC20Permit {
     /// @notice The caller has no rewards to claim.
     error NoRewardsToClaim();
 
+    /// @notice The reward amount is too small to move rewards-per-share (would be stuck).
+    error RewardTooSmall();
+
     // ──────────────────────────────────────────────────────────
     //  Restricted functions (order system only)
     // ──────────────────────────────────────────────────────────

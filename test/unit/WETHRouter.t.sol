@@ -35,16 +35,12 @@ contract WETHRouterTest is BaseTest {
         // Deploy a WETH vault with router as the bound VM (router calls deposit directly)
         vm.startPrank(Actors.ADMIN);
         protocolRegistry.setAddress(protocolRegistry.MARKET(), mockMarket);
-        protocolRegistry.setAddress(protocolRegistry.TREASURY(), Actors.FEE_RECIPIENT);
-        protocolRegistry.setProtocolShareBps(2000);
         vault = new OwnVault(
             address(mockWeth),
             "Own WETH Vault",
             "oWETH",
             address(protocolRegistry),
-            address(router), // bound VM is the router (it calls deposit directly)
-            8000, // 80% max util
-            2000
+            address(router) // bound VM is the router (it calls deposit directly)
         );
         vm.stopPrank();
         vm.label(address(vault), "OwnVault-WETH");

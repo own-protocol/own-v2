@@ -24,41 +24,27 @@ interface IOwnVault is IERC4626 {
     event VaultUnpaused();
     event VaultHalted();
     event VaultUnhalted();
-    event AssetPaused(bytes32 indexed asset, bytes32 indexed reason);
-    event AssetUnpaused(bytes32 indexed asset);
-    event AssetHalted(bytes32 indexed asset);
-    event AssetUnhalted(bytes32 indexed asset);
-    event AssetHaltPriceSet(bytes32 indexed asset, uint256 haltPrice);
-    event UtilizationUpdated(uint256 newUtilization);
 
-    event FeeDeposited(
-        address indexed token, uint256 totalAmount, uint256 protocolAmount, uint256 vmAmount, uint256 lpAmount
-    );
-    event ProtocolFeesClaimed(address indexed token, uint256 amount);
-    event VMFeesClaimed(address indexed token, uint256 amount);
-    event LPRewardsClaimed(address indexed account, address indexed token, uint256 amount);
+    /// @notice Emitted when the manager adds collateral yield to the vault, raising the share price for all LPs.
+    event ShareYieldAdded(address indexed manager, uint256 amount);
 
-    event VMUpdated(address indexed oldVM, address indexed newVM);
-    event VMShareUpdated(uint256 oldShareBps, uint256 newShareBps);
-    event PaymentTokenUpdated(address indexed oldToken, address indexed newToken);
-    event AssetEnabled(bytes32 indexed asset);
-    event AssetDisabled(bytes32 indexed asset);
+    event ManagerUpdated(address indexed oldManager, address indexed newManager);
     event DepositApprovalUpdated(bool required);
-    event AssetValuationUpdated(bytes32 indexed asset, uint256 exposureUnits, uint256 exposureUSD, uint256 price);
-    event CollateralValuationUpdated(uint256 collateralValueUSD, uint256 price);
+    event LendingEnabled(address indexed borrowManager);
+    event CreditDelegationGranted(address indexed creditToken, address indexed borrowManager);
+    event CollateralReleasedForBadDebt(address indexed to, uint256 amount);
 
     // ──────────────────────────────────────────────────────────
     //  Errors
     // ──────────────────────────────────────────────────────────
 
-    error OnlyVM();
+    error OnlyManager();
     error DirectWithdrawalDisabled();
     error VaultIsPaused();
     error VaultIsHalted();
-    error InvalidHaltPrice();
     error InvalidStatusTransition();
     error InsufficientCollateral();
-    error MaxUtilizationExceeded(uint256 currentUtilization, uint256 maxUtilization);
+    error MaxUtilizationExceeded();
     error WithdrawalRequestNotFound(uint256 requestId);
     error WithdrawalNotReady(uint256 requestId);
     error NotRequestOwner(uint256 requestId, address caller);
@@ -67,42 +53,56 @@ interface IOwnVault is IERC4626 {
     error OnlyDepositor(uint256 requestId);
     error ZeroAmount();
     error ZeroAddress();
-    error AssetIsHalted(bytes32 asset);
-    error NoFeesToClaim();
-    error ShareTooHigh(uint256 shareBps, uint256 maxBps);
+    error NoSharesToReward();
+    error InsufficientSharesOut(uint256 sharesOut, uint256 minSharesOut);
     error OnlyAdmin();
     error OnlyMarket();
+    error OnlyManagerOrAdmin();
     error WithdrawalNotPending(uint256 requestId);
-    error OutstandingFeesExist();
-    error WrongFeeToken(address expected, address provided);
-    error PaymentTokenCannotBeCollateral();
-    error CollateralValueNotInitialized();
     error DecimalsTooHigh(uint256 decimals);
     error WithdrawalWaitPeriodNotElapsed(uint256 requestId, uint256 readyAt);
-    error PriceNotAvailable(bytes32 asset);
     error DepositApprovalNotRequired();
     error DepositApprovalRequired();
+    error LendingAlreadyEnabled();
+    error LendingNotEnabled();
+    error OnlyBorrowManager();
+    error TreasuryNotSet();
 
     // ──────────────────────────────────────────────────────────
-    //  VM binding
+    //  Manager binding
     // ──────────────────────────────────────────────────────────
 
-    /// @notice Return the address of the vault's bound VM.
-    function vm() external view returns (address);
+    /// @notice Return the address of the vault's bound manager (operator).
+    function manager() external view returns (address);
 
-    /// @notice Update the vault manager address. Only callable by admin.
-    /// @param newVM New VM address.
-    function setVM(
-        address newVM
+    /// @notice Update the vault's manager (operator) address. Only callable by admin.
+    /// @dev    The manager runs the vault: accepts/rejects LP deposits, distributes share yield,
+    ///         and can pause the vault. Order settlement no longer flows through it — quotes are
+    ///         authorised by the global signer registry on VaultManager and funds flow to/from
+    ///         each signer's linked address.
+    /// @param newManager New manager address.
+    function setManager(
+        address newManager
     ) external;
 
     // ──────────────────────────────────────────────────────────
     //  Async deposit queue
     // ──────────────────────────────────────────────────────────
 
+    /// @notice Deposit with slippage protection. Reverts if minted shares < `minSharesOut`.
+    /// @dev    Guards against share-price movement (e.g. a `shareYield` top-up) between
+    ///         transaction submission and execution.
+    function deposit(uint256 assets, address receiver, uint256 minSharesOut) external returns (uint256 shares);
+
     /// @notice Request an async deposit. Assets are escrowed until the VM
     ///         accepts/rejects or the depositor cancels.
-    function requestDeposit(uint256 assets, address receiver) external returns (uint256 requestId);
+    /// @param minSharesOut Minimum shares the depositor will accept at acceptance time.
+    ///        `acceptDeposit` reverts if the previewed shares fall below this floor.
+    function requestDeposit(
+        uint256 assets,
+        address receiver,
+        uint256 minSharesOut
+    ) external returns (uint256 requestId);
 
     /// @notice Accept a pending deposit request. Only callable by the bound VM.
     function acceptDeposit(
@@ -154,78 +154,26 @@ interface IOwnVault is IERC4626 {
 
     function vaultStatus() external view returns (VaultStatus);
 
-    /// @notice Pause the vault. Blocks new orders, claims, and LP deposits.
+    /// @notice Pause the vault — temporary freeze of both LP deposits and withdrawals.
+    ///         Callable by the vault's manager or the admin.
     function pause(
         bytes32 reason
     ) external;
 
-    /// @notice Unpause the vault. Resumes normal operation.
+    /// @notice Unpause the vault. Callable by the vault's manager or the admin.
     function unpause() external;
 
-    /// @notice Pause a specific asset. Blocks new orders and claims for this asset.
-    function pauseAsset(bytes32 asset, bytes32 reason) external;
-
-    /// @notice Unpause a specific asset.
-    function unpauseAsset(
-        bytes32 asset
-    ) external;
-
-    /// @notice Check if a specific asset is paused.
-    function isAssetPaused(
-        bytes32 asset
-    ) external view returns (bool);
-
-    /// @notice Halt the vault. Set per-asset halt prices via haltAsset before or after.
-    ///         Assets without a halt price use the latest oracle price for redemptions.
+    /// @notice Halt the vault — emergency wind-down. Deposits stop; LP withdrawals become instant
+    ///         (no wait period, no utilisation check). The vault's collateral is excluded from the
+    ///         global risk pool while halted. Admin only.
     function haltVault() external;
 
-    /// @notice Unhalt the vault. Does NOT clear per-asset halt prices.
+    /// @notice Unhalt the vault, re-including its collateral in the global risk pool. Admin only.
     function unhalt() external;
 
-    /// @notice Halt a specific asset with a settlement price.
-    function haltAsset(bytes32 asset, uint256 haltPrice) external;
-
-    /// @notice Unhalt a specific asset. Clears the halt price.
-    function unhaltAsset(
-        bytes32 asset
-    ) external;
-
-    /// @notice Check if a specific asset is halted.
-    function isAssetHalted(
-        bytes32 asset
-    ) external view returns (bool);
-
-    /// @notice Return the halt settlement price for an asset (0 if not halted).
-    function getAssetHaltPrice(
-        bytes32 asset
-    ) external view returns (uint256);
-
-    /// @notice Check if an asset is effectively paused (vault paused OR asset paused).
-    function isEffectivelyPaused(
-        bytes32 asset
-    ) external view returns (bool);
-
-    /// @notice Check if an asset is effectively halted (vault halted OR asset halted).
-    function isEffectivelyHalted(
-        bytes32 asset
-    ) external view returns (bool);
-
     // ──────────────────────────────────────────────────────────
-    //  Health and utilization
+    //  Withdrawal queue config
     // ──────────────────────────────────────────────────────────
-
-    /// @notice Return the current vault health factor (1e18 = 1.0).
-    ///         healthFactor = collateralValueUSD / totalExposureUSD.
-    function healthFactor() external view returns (uint256);
-
-    /// @notice Return the current vault utilization in BPS.
-    ///         utilization = totalExposureUSD * BPS / collateralValueUSD.
-    function utilization() external view returns (uint256);
-
-    function maxUtilization() external view returns (uint256);
-    function setMaxUtilization(
-        uint256 maxUtilBps
-    ) external;
 
     /// @notice Return the withdrawal wait period in seconds.
     function withdrawalWaitPeriod() external view returns (uint256);
@@ -233,106 +181,18 @@ interface IOwnVault is IERC4626 {
         uint256 period
     ) external;
 
-    /// @notice Return the total exposure in USD across all assets (18 decimals).
-    function totalExposureUSD() external view returns (uint256);
-
-    /// @notice Return the collateral value in USD (18 decimals).
-    function collateralValueUSD() external view returns (uint256);
-
-    /// @notice Return per-asset exposure in raw units (18 decimals).
-    function assetExposure(
-        bytes32 asset
-    ) external view returns (uint256);
-
-    /// @notice Return per-asset exposure in USD (18 decimals).
-    function assetExposureUSD(
-        bytes32 asset
-    ) external view returns (uint256);
-
-    /// @notice Return the timestamp of the last valuation update for an asset.
-    function assetLastUpdated(
-        bytes32 asset
-    ) external view returns (uint256);
-
-    /// @notice Update raw exposure units for an asset. Only callable by OwnMarket.
-    ///         Adjusts per-asset units and per-asset USD value using the provided execution price.
-    /// @param asset Asset ticker.
-    /// @param delta Signed change in raw exposure units.
-    /// @param price Execution price (18 decimals) used to convert units to USD.
-    function updateExposure(bytes32 asset, int256 delta, uint256 price) external;
-
-    /// @notice Returns projected utilisation (BPS) if additionalExposureUSD were added.
-    /// @param additionalExposureUSD Additional USD exposure to project (18 decimals).
-    function projectedExposureUtilization(
-        uint256 additionalExposureUSD
-    ) external view returns (uint256);
-
-    /// @notice Refresh the USD valuation of an asset using its oracle price.
-    ///         Callable by anyone (keeper pattern). Reads price from the asset's primary oracle.
-    /// @param asset Asset ticker to revalue.
-    function updateAssetValuation(
-        bytes32 asset
-    ) external;
-
-    /// @notice Refresh the USD valuation of vault collateral using the collateral oracle.
-    ///         Callable by anyone (keeper pattern).
-    function updateCollateralValuation() external;
-
     // ──────────────────────────────────────────────────────────
-    //  Order execution parameters (used by OwnMarket)
+    //  Share yield (manager-distributed LP rewards)
     // ──────────────────────────────────────────────────────────
 
-    /// @notice Time after claim before force execution is allowed.
-    function gracePeriod() external view returns (uint256);
-
-    /// @notice Set the grace period. Only callable by admin.
-    function setGracePeriod(
-        uint256 period
+    /// @notice Add collateral yield to the vault, raising the share price for all LPs.
+    /// @dev    The manager transfers `amount` of the vault's collateral (`asset()`) in. This is the
+    ///         sole onchain channel for LP fee revenue — protocol/manager splits are handled offchain.
+    ///         Reverts when there are no shares to distribute to (`totalSupply() == 0`).
+    /// @param amount Collateral amount (in `asset()` units) to distribute to LPs.
+    function shareYield(
+        uint256 amount
     ) external;
-
-    /// @notice Time after placement before unclaimed redeem force execution is allowed.
-    function claimThreshold() external view returns (uint256);
-
-    /// @notice Set the claim threshold. Only callable by admin.
-    function setClaimThreshold(
-        uint256 threshold
-    ) external;
-
-    /// @notice Asset ticker used to look up the collateral price for force execution conversions.
-    function collateralOracleAsset() external view returns (bytes32);
-
-    /// @notice Set the collateral oracle asset. Only callable by admin.
-    function setCollateralOracleAsset(
-        bytes32 asset
-    ) external;
-
-    // ──────────────────────────────────────────────────────────
-    //  Fee management
-    // ──────────────────────────────────────────────────────────
-
-    /// @notice Deposit order fees into the vault. Called by OwnMarket on confirmation.
-    ///         Splits three ways: protocol / VM / LP. Token must match the current payment token.
-    function depositFees(address token, uint256 amount) external;
-
-    function setVMShareBps(
-        uint256 shareBps
-    ) external;
-    function vmShareBps() external view returns (uint256);
-
-    /// @notice Claim accrued protocol fees. Callable by anyone. Transfers to treasury.
-    function claimProtocolFees() external;
-
-    /// @notice Claim accrued VM fees. Only callable by the bound VM.
-    function claimVMFees() external;
-
-    /// @notice Claim accrued LP fee rewards for the caller.
-    function claimLPRewards() external returns (uint256 amount);
-
-    function accruedProtocolFees() external view returns (uint256);
-    function accruedVMFees() external view returns (uint256);
-    function claimableLPRewards(
-        address account
-    ) external view returns (uint256 amount);
 
     // ──────────────────────────────────────────────────────────
     //  Collateral release (force execution)
@@ -344,38 +204,18 @@ interface IOwnVault is IERC4626 {
     /// @param amount Amount of collateral to release.
     function releaseCollateral(address to, uint256 amount) external;
 
-    // ──────────────────────────────────────────────────────────
-    //  Supported assets (VM-controlled)
-    // ──────────────────────────────────────────────────────────
-
-    /// @notice Enable an asset for this vault. Only callable by the bound VM.
-    ///         The asset must exist in the global AssetRegistry.
-    function enableAsset(
-        bytes32 asset
+    /// @notice Release collateral (aToken) to cover bad debt the borrow manager could not recover
+    ///         from a liquidated position. Only callable by the bound borrow manager, which must
+    ///         have already repaid the matching Aave debt so the slice is unlocked. Shrinks
+    ///         totalAssets, so the loss is socialized to LPs via a lower share price.
+    /// @dev    The recipient is fixed to the protocol treasury (`ProtocolRegistry.treasury()`) — not
+    ///         a caller-supplied address — so a malicious borrow manager can never exfiltrate
+    ///         collateral to an external wallet; it can only move it into protocol-controlled hands.
+    ///         Reverts (`TreasuryNotSet`) if the treasury is unconfigured.
+    /// @param amount aToken amount to release to the treasury.
+    function releaseCollateralForBadDebt(
+        uint256 amount
     ) external;
-
-    /// @notice Disable an asset for this vault. Only callable by the bound VM.
-    function disableAsset(
-        bytes32 asset
-    ) external;
-
-    /// @notice Check if this vault supports a given asset.
-    function isAssetSupported(
-        bytes32 asset
-    ) external view returns (bool);
-
-    // ──────────────────────────────────────────────────────────
-    //  Payment token
-    // ──────────────────────────────────────────────────────────
-
-    /// @notice Set the accepted payment token. Only callable by the bound VM.
-    ///         All outstanding protocol and VM fees must be claimed first.
-    function setPaymentToken(
-        address token
-    ) external;
-
-    /// @notice Return the accepted payment token address.
-    function paymentToken() external view returns (address);
 
     // ──────────────────────────────────────────────────────────
     //  Deposit approval
@@ -392,13 +232,35 @@ interface IOwnVault is IERC4626 {
     function requireDepositApproval() external view returns (bool);
 
     // ──────────────────────────────────────────────────────────
-    //  Projected utilization
+    //  Withdrawal queue accessors
     // ──────────────────────────────────────────────────────────
-
-    /// @notice Return projected utilization in BPS, excluding collateral tied up
-    ///         in pending withdrawal requests. For off-chain monitoring.
-    function projectedUtilization() external view returns (uint256);
 
     /// @notice Return total shares currently escrowed for pending withdrawals.
     function pendingWithdrawalShares() external view returns (uint256);
+
+    // ──────────────────────────────────────────────────────────
+    //  Lending opt-in (provider-neutral)
+    // ──────────────────────────────────────────────────────────
+
+    /// @notice Authorise the vault's borrow manager — the address allowed to call
+    ///         `releaseCollateralForBadDebt`. One-shot per vault: reverts if lending is already
+    ///         enabled. Provider-neutral: venue-specific authorization (credit delegation / on-behalf
+    ///         authorization) is granted separately via the scoped helpers below.
+    /// @param manager_ Borrow manager (implements IBorrowManager) bound to this vault.
+    function setBorrowManager(
+        address manager_
+    ) external;
+
+    /// @notice Grant the bound borrow manager unlimited borrow credit delegation on `creditToken`
+    ///         (the Aave-style `approveDelegation` pattern). Admin-only; requires lending enabled.
+    /// @dev    Safe by construction: the delegated party is always the bound borrow manager (never an
+    ///         admin-chosen address), and a delegation grant moves no vault assets — even a malicious
+    ///         `creditToken` cannot use it to pull the vault's collateral.
+    /// @param creditToken The debt/credit token to delegate on (e.g. an Aave variable debt token).
+    function grantCreditDelegation(
+        address creditToken
+    ) external;
+
+    /// @notice Address of the borrow manager (zero if lending not enabled).
+    function borrowManager() external view returns (address);
 }

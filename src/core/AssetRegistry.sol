@@ -2,8 +2,9 @@
 pragma solidity 0.8.28;
 
 import {IAssetRegistry} from "../interfaces/IAssetRegistry.sol";
-import {AssetConfig} from "../interfaces/types/Types.sol";
+import {AssetConfig, PRECISION} from "../interfaces/types/Types.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 /// @title AssetRegistry — Asset whitelisting and token tracking
 /// @notice Manages the set of tradeable assets, their active eToken addresses,
@@ -18,6 +19,9 @@ contract AssetRegistry is IAssetRegistry, Ownable {
 
     /// @dev Ticker → whether it has been registered (to distinguish from default struct).
     mapping(bytes32 => bool) private _registered;
+
+    /// @dev Legacy token → conversion ratio (1e18) to the current active token.
+    mapping(address => uint256) private _legacyRatio;
 
     // ──────────────────────────────────────────────────────────
     //  Constructor
@@ -71,15 +75,36 @@ contract AssetRegistry is IAssetRegistry, Ownable {
     }
 
     /// @inheritdoc IAssetRegistry
-    function migrateToken(bytes32 ticker, address newToken) external onlyOwner {
+    function migrateToken(bytes32 ticker, address newToken, uint256 ratio) external onlyOwner {
         if (!_registered[ticker]) revert AssetNotFound(ticker);
         if (newToken == address(0)) revert ZeroAddress();
+        if (ratio == 0) revert InvalidRatio();
+        if (newToken == _assets[ticker].activeToken || _legacyRatio[newToken] != 0) {
+            revert InvalidNewToken(newToken);
+        }
+
+        // Re-base existing legacy tokens so each still converts directly to the new active token.
+        address[] storage legacy = _assets[ticker].legacyTokens;
+        for (uint256 i; i < legacy.length;) {
+            _legacyRatio[legacy[i]] = Math.mulDiv(_legacyRatio[legacy[i]], ratio, PRECISION);
+            unchecked {
+                ++i;
+            }
+        }
 
         address oldToken = _assets[ticker].activeToken;
-        _assets[ticker].legacyTokens.push(oldToken);
+        _legacyRatio[oldToken] = ratio;
+        legacy.push(oldToken);
         _assets[ticker].activeToken = newToken;
 
-        emit TokenMigrated(ticker, oldToken, newToken);
+        emit TokenMigrated(ticker, oldToken, newToken, ratio);
+    }
+
+    /// @inheritdoc IAssetRegistry
+    function legacyRatioToActive(
+        address token
+    ) external view returns (uint256) {
+        return _legacyRatio[token];
     }
 
     // ──────────────────────────────────────────────────────────

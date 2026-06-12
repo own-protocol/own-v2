@@ -169,10 +169,14 @@ contract EToken is ERC20, ERC20Permit, IEToken {
         uint256 supply = totalSupply();
         require(supply > 0, "EToken: no supply");
 
+        // An amount too small to move rewards-per-share would be pulled in but never
+        // distributed (stuck) — reject it.
+        uint256 delta = amount.mulDiv(PRECISION, supply);
+        if (delta == 0) revert RewardTooSmall();
+
         IERC20(rewardToken).safeTransferFrom(msg.sender, address(this), amount);
 
-        // Rounding: floor is fine here — any dust stays for the next deposit
-        _rewardsPerShare += amount.mulDiv(PRECISION, supply);
+        _rewardsPerShare += delta;
 
         emit RewardsDeposited(amount, _rewardsPerShare);
     }
@@ -211,6 +215,11 @@ contract EToken is ERC20, ERC20Permit, IEToken {
 
     /// @dev Override _update to settle rewards for both sender and receiver
     ///      on every transfer, mint, and burn. This is the OZ v5 hook.
+    ///
+    ///      Dividends are never redirected between holders here. A custodian pool (the lending
+    ///      manager) accrues normally; the dividends it earns while holding collateral during a borrow
+    ///      accrue to the vault manager as lending revenue, swept out-of-band. They resume accruing to
+    ///      the borrower once the collateral is returned.
     function _update(address from, address to, uint256 amount) internal override {
         if (from != address(0)) {
             _settleRewards(from);
@@ -218,6 +227,7 @@ contract EToken is ERC20, ERC20Permit, IEToken {
         if (to != address(0)) {
             _settleRewards(to);
         }
+
         super._update(from, to, amount);
     }
 

@@ -14,14 +14,13 @@ contract ProtocolRegistry is IProtocolRegistry, Ownable {
     //  Constants — contract slot keys
     // ──────────────────────────────────────────────────────────────
 
-    bytes32 public constant FEE_CALCULATOR = keccak256("FEE_CALCULATOR");
     bytes32 public constant MARKET = keccak256("MARKET");
     bytes32 public constant ASSET_REGISTRY = keccak256("ASSET_REGISTRY");
-    bytes32 public constant TREASURY = keccak256("TREASURY");
-    bytes32 public constant VAULT_FACTORY = keccak256("VAULT_FACTORY");
     bytes32 public constant PYTH_ORACLE = keccak256("PYTH_ORACLE");
     bytes32 public constant INHOUSE_ORACLE = keccak256("INHOUSE_ORACLE");
     bytes32 public constant ETOKEN_FACTORY = keccak256("ETOKEN_FACTORY");
+    bytes32 public constant VAULT_MANAGER = keccak256("VAULT_MANAGER");
+    bytes32 public constant TREASURY = keccak256("TREASURY");
 
     // ──────────────────────────────────────────────────────────────
     //  Types
@@ -46,8 +45,8 @@ contract ProtocolRegistry is IProtocolRegistry, Ownable {
     /// @notice Minimum delay (seconds) before a timelocked change can be executed.
     uint256 public override timelockDelay;
 
-    /// @dev Protocol's share of all order fees in BPS.
-    uint256 private _protocolShareBps;
+    /// @dev Governance-tunable max age for inline "current price" proofs. See {priceMaxAge}.
+    uint256 private _priceMaxAge;
 
     // ──────────────────────────────────────────────────────────────
     //  Constructor
@@ -55,18 +54,16 @@ contract ProtocolRegistry is IProtocolRegistry, Ownable {
 
     /// @param admin_         Initial owner (governance multisig).
     /// @param timelockDelay_ Delay in seconds for timelocked changes (e.g. 172800 = 48 hours).
-    constructor(address admin_, uint256 timelockDelay_) Ownable(admin_) {
+    /// @param priceMaxAge_   Max age (seconds) for inline "current price" proofs. Must be non-zero.
+    constructor(address admin_, uint256 timelockDelay_, uint256 priceMaxAge_) Ownable(admin_) {
+        if (priceMaxAge_ == 0) revert InvalidPriceMaxAge();
         timelockDelay = timelockDelay_;
+        _priceMaxAge = priceMaxAge_;
     }
 
     // ──────────────────────────────────────────────────────────────
     //  Getters
     // ──────────────────────────────────────────────────────────────
-
-    /// @inheritdoc IProtocolRegistry
-    function feeCalculator() external view override returns (address) {
-        return _addresses[FEE_CALCULATOR];
-    }
 
     /// @inheritdoc IProtocolRegistry
     function market() external view override returns (address) {
@@ -76,16 +73,6 @@ contract ProtocolRegistry is IProtocolRegistry, Ownable {
     /// @inheritdoc IProtocolRegistry
     function assetRegistry() external view override returns (address) {
         return _addresses[ASSET_REGISTRY];
-    }
-
-    /// @inheritdoc IProtocolRegistry
-    function treasury() external view override returns (address) {
-        return _addresses[TREASURY];
-    }
-
-    /// @inheritdoc IProtocolRegistry
-    function vaultFactory() external view override returns (address) {
-        return _addresses[VAULT_FACTORY];
     }
 
     /// @inheritdoc IProtocolRegistry
@@ -104,16 +91,32 @@ contract ProtocolRegistry is IProtocolRegistry, Ownable {
     }
 
     /// @inheritdoc IProtocolRegistry
-    function protocolShareBps() external view override returns (uint256) {
-        return _protocolShareBps;
+    function vaultManager() external view override returns (address) {
+        return _addresses[VAULT_MANAGER];
     }
 
     /// @inheritdoc IProtocolRegistry
-    function setProtocolShareBps(
-        uint256 shareBps
+    function treasury() external view override returns (address) {
+        return _addresses[TREASURY];
+    }
+
+    /// @inheritdoc IProtocolRegistry
+    function priceMaxAge() external view override returns (uint256) {
+        return _priceMaxAge;
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    //  Risk parameters (governance, immediate)
+    // ──────────────────────────────────────────────────────────────
+
+    /// @inheritdoc IProtocolRegistry
+    function setPriceMaxAge(
+        uint256 newMaxAge
     ) external override onlyOwner {
-        require(shareBps <= 10_000, "ProtocolRegistry: share > 100%");
-        _protocolShareBps = shareBps;
+        if (newMaxAge == 0) revert InvalidPriceMaxAge();
+        uint256 old = _priceMaxAge;
+        _priceMaxAge = newMaxAge;
+        emit PriceMaxAgeUpdated(old, newMaxAge);
     }
 
     // ──────────────────────────────────────────────────────────────

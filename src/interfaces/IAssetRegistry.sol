@@ -30,7 +30,7 @@ interface IAssetRegistry {
     /// @param ticker   Asset ticker.
     /// @param oldToken Previous active eToken (now legacy).
     /// @param newToken New active eToken.
-    event TokenMigrated(bytes32 indexed ticker, address indexed oldToken, address indexed newToken);
+    event TokenMigrated(bytes32 indexed ticker, address indexed oldToken, address indexed newToken, uint256 ratio);
 
     // ──────────────────────────────────────────────────────────
     //  Errors
@@ -47,6 +47,12 @@ interface IAssetRegistry {
 
     /// @notice A zero address was provided.
     error ZeroAddress();
+
+    /// @notice A zero conversion ratio was provided.
+    error InvalidRatio();
+
+    /// @notice The migration target is the current active token or an existing legacy token.
+    error InvalidNewToken(address token);
 
     // ──────────────────────────────────────────────────────────
     //  Admin functions
@@ -70,11 +76,21 @@ interface IAssetRegistry {
     ) external;
 
     /// @notice Migrate to a new eToken after a stock split.
-    /// @dev The current active token becomes a legacy token; the new token
-    ///      becomes active. Legacy tokens remain valid and redeemable.
+    /// @dev The current active token becomes a legacy token; the new token becomes active. Legacy
+    ///      tokens are not directly redeemable — they must be converted to the active token via
+    ///      OwnMarket.convertLegacy at `ratio`. Existing legacy tokens' ratios are re-based so every
+    ///      legacy token's stored ratio always converts directly to the current active token.
     /// @param ticker   Asset ticker.
     /// @param newToken Address of the new active eToken contract.
-    function migrateToken(bytes32 ticker, address newToken) external;
+    /// @param ratio    New tokens per old token, 1e18-scaled (e.g. 3:1 split => 3e18).
+    function migrateToken(bytes32 ticker, address newToken, uint256 ratio) external;
+
+    /// @notice Conversion ratio (1e18-scaled) from a legacy token to the current active token.
+    /// @param token Legacy token address.
+    /// @return ratio New active tokens per legacy token (0 if not a legacy token).
+    function legacyRatioToActive(
+        address token
+    ) external view returns (uint256 ratio);
 
     // ──────────────────────────────────────────────────────────
     //  View functions

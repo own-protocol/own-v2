@@ -1,1014 +1,434 @@
-# Own Protocol v2 — Security Audit Report
+# Own Protocol v2 — Audit Report & Remediation Status
 
-**Date**: March 31, 2026
-**Auditor**: Claude Opus 4.6 (Automated Security Audit)
-**Scope**: All 11 Solidity smart contracts in `src/`
-**Solidity Version**: 0.8.28 (pinned)
-**Framework**: Foundry (forge)
-**Commit**: `44a4f8a` (branch: main)
+**Branch:** `lending` · **Last updated:** 2026-06-12 · **Test suite:** 670 passing
 
----
+Consolidated from the 2026-06-09 full manual audit, the 2026-06-10/11 focused re-audits
+(BorrowManager, AaveRouter, H-02 migration changes), and the 2026-06-11 multi-agent re-audit
+(16-agent pipeline). This single document replaces `audit-2026-06-09.md`,
+`audit-fixes-2026-06-10.md`, and the raw re-audit report. IDs are stable across all passes.
 
-## Executive Summary
+## Status at a Glance
 
-This report presents findings from a comprehensive security audit of Own Protocol v2, a permissionless DeFi protocol for tokenized real-world assets (RWAs). The audit covered 11 smart contracts (~4,700 lines of Solidity) using multiple methodologies: manual line-by-line code review, automated static analysis, specification compliance verification, entry-point analysis, and Trail of Bits security tooling.
+| Severity | Total | Fixed | Open | By design |
+| -------- | ----- | ----- | ---- | --------- |
+| Critical | 1     | 1     | 0    | —         |
+| High     | 5     | 5     | 0    | —         |
+| Medium   | 10    | 9     | 0    | 1         |
+| Low      | 13    | 10    | 0    | 3         |
 
-**Critical findings require immediate attention before mainnet deployment.** The most severe issue is unrestricted ERC-4626 `withdraw()`/`redeem()` functions that bypass the entire withdrawal queue system, allowing LPs to withdraw without wait periods or utilization checks.
+**Every finding in the report is closed: fixed, mitigated, documented, or by-design — none open. The §5 leads are triaged: 4 fixed, 2 resolved by earlier fixes, 2 noted, 2 deferred for future review.**
 
-### Findings Summary
-
-| Severity | Count |
-|----------|-------|
-| Critical | 1 |
-| High | 5 |
-| Medium | 8 |
-| Low | 6 |
-| Informational | 8 |
-| **Total** | **28** |
-
----
-
-## Scope & Methodology
-
-### Contracts Audited
-
-| Contract | Path | Lines |
-|----------|------|-------|
-| OwnMarket | `src/core/OwnMarket.sol` | 703 |
-| OwnVault | `src/core/OwnVault.sol` | 1067 |
-| EToken | `src/tokens/EToken.sol` | 237 |
-| OracleVerifier | `src/core/OracleVerifier.sol` | 183 |
-| PythOracleVerifier | `src/core/PythOracleVerifier.sol` | 189 |
-| AssetRegistry | `src/core/AssetRegistry.sol` | 175 |
-| FeeCalculator | `src/core/FeeCalculator.sol` | 115 |
-| ProtocolRegistry | `src/core/ProtocolRegistry.sol` | 157 |
-| VaultFactory | `src/core/VaultFactory.sol` | 53 |
-| WETHRouter | `src/periphery/WETHRouter.sol` | 83 |
-| WstETHRouter | `src/periphery/WstETHRouter.sol` | 124 |
-
-### Methodology
-
-1. **Entry-Point Analysis** — Mapped all state-changing functions by access level
-2. **Deep Function Analysis** — Ultra-granular line-by-line review of critical functions
-3. **Specification Compliance** — Compared `docs/protocol.md` against implementation
-4. **Static Analysis** — Semgrep scans for known vulnerability patterns
-5. **Trail of Bits Tooling** — Code maturity assessment, token integration analysis, guidelines review
-6. **Manual Review** — Focus on order state machine, ERC-4626 accounting, oracle security, fee distribution
+| ID        | Severity | Finding                                                                                                              | Status                                                         |
+| --------- | -------- | -------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| C-01      | Critical | `verifyPrice` accepted any ever-signed price (no staleness) → collateral theft via force-redeem / borrow / liquidate | **Fixed**                                                      |
+| H-01      | High     | `forceExecuteOrder` could drain a halted (wind-down) vault                                                           | **Fixed**                                                      |
+| H-02      | High     | Resting redeem escrow stranded after `migrateToken` (stock split)                                                    | **Fixed**                                                      |
+| H-03      | High     | Withdrawal gate read a stale collateral mark after bad-debt release                                                  | **Fixed**                                                      |
+| H-04      | High     | `absorbBadDebt` released collateral in 18-dec units, not native decimals                                             | **Fixed**                                                      |
+| H-05      | High     | `fulfillWithdrawal` didn't sync the VaultManager mark → utilization cap bypass                                       | **Fixed**                                                      |
+| M-01      | Medium   | Pyth confidence interval ignored                                                                                     | **Fixed**                                                      |
+| M-02      | Medium   | In-house push path unbounded when an asset's oracle config is unset                                                  | **Fixed**                                                      |
+| M-03      | Medium   | `setRateParams` unvalidated → accrual DoS bricks repay/liquidate                                                     | **Fixed**                                                      |
+| M-04      | Medium   | Withdrawal queue is not FIFO                                                                                         | **By design** — spec updated 2026-06-12 to drop the FIFO claim |
+| M-05      | Medium   | Book debt could lag real compounding Aave debt → LP shortfall                                                        | **Fixed**                                                      |
+| M-06      | Medium   | `borrow` checks the debt cap before `_accrue()` → cap bypass                                                         | **Fixed**                                                      |
+| M-07      | Medium   | `borrow` ignores the bound vault's Paused/Halted status                                                              | **Fixed**                                                      |
+| M-08      | Medium   | `_flooredIndex` inflates on a dust scaled-debt base; breaks under multi-manager                                      | **Fixed**                                                      |
+| M-09      | Medium   | Sub-unit amounts record zero scaled debt while moving real value                                                     | **Fixed**                                                      |
+| M-10      | Medium   | `WstETHRouter` wraps requested (not received) stETH → deposit path DoS                                               | **Fixed**                                                      |
+| L-01–L-13 | Low      | See §4                                                                                                               | 10 closed (8 fixed + L-02 mitigated + L-07 documented) · 3 by design/accepted (L-04, L-09, L-11) |
+| C-01\*    | Info     | Force-execute asset proof is window-scoped, not fresh                                                                | **By design** (team-confirmed 2026-06-11)                      |
 
 ---
 
-## Findings
+## 1. Fixed Findings
+
+### C-01 (Critical) — `verifyPrice` had no staleness check; stale signed prices could drain collateral
+
+**Problem.** The inline proof path `OracleVerifier.verifyPrice` (and the Pyth equivalent) checked
+only the signature and `price != 0` — never the timestamp, and the digest carries no nonce. Every
+price the signer ever produced was a valid proof forever. All consumers pass caller-supplied
+`priceData`, so an attacker could replay the most favorable historical price: over-release
+collateral in force-redeem (high asset + low collateral price), over-borrow against a stale high
+collateral price, or force-liquidate a healthy position with a stale low price.
+
+**Fix.** Freshness is enforced in the consumers (`verifyPrice` stays a pure signature primitive):
+
+- `OwnMarket.forceExecuteOrder` settles at the user's own immutable `limitPrice` (never the
+  submitted price) and requires the asset proof's timestamp to fall inside the order's
+  `[createdAt, now]` window. The window scoping is intentional — see C-01\* in §3.
+- `OwnMarket._convertToCollateral` (collateral leg) and `BorrowManager._verifyPrice`
+  (borrow/liquidate/absorbBadDebt) reject proofs that are future-dated or older than
+  `registry.priceMaxAge()`.
+- `ProtocolRegistry.priceMaxAge` is governance-tunable (`setPriceMaxAge`, non-zero enforced).
+  Deployment value: 2 minutes.
+
+**Tests.** `OwnMarket.t.sol` (settle-at-limit, in-window accepted, pre-window rejected, stale
+collateral rejected), `BorrowManager.t.sol::test_borrow_stalePrice_reverts`,
+`ProtocolRegistry.t.sol` (priceMaxAge constructor/setter suite).
+
+**Residual (accepted).** Intra-window replay within `priceMaxAge` is bounded to 2-minute drift;
+a signed-digest nonce is tracked as hardening, not a blocker. `main` carries the same root flaw —
+the fix must be ported if `main` is ever deployed.
+
+### H-01 (High) — Force-execution could drain a halted vault
+
+**Problem.** `forceExecuteOrder` accepted any registered vault as the collateral source. A halted
+vault's collateral is excluded from the global pool and reserved for its exiting LPs, but
+`releaseCollateral` had no status check — a redeemer could cherry-pick the halted vault and drain it.
+
+**Fix.** `forceExecuteOrder` reverts `VaultExcludedFromPool(vault)` when
+`vmgr.isVaultExcluded(vault)`.
+**Test.** `OwnMarket.t.sol::test_forceExecuteOrder_excludedVault_reverts`.
+
+### H-02 (High) — Redeem escrow stranded after `migrateToken` (stock split)
+
+**Problem.** A resting redeem order escrowed the eToken resolved at placement, but every later path
+re-resolved the _current_ active token. After a split migration, the market held the old token while
+cancel/expire/fill/force targeted the new one — escrow recovery reverted, locking user funds. Borrow
+positions had the same staleness on their collateral token.
+
+**Fix.** Migration is now a first-class convert-first flow (`docs/protocol.md` §13):
+`Order.escrowToken` and `Position.collateralToken` snapshot the held token; cancel/expire return the
+snapshot; fill/force on a migrated order revert `OrderTokenMigrated`; `OwnMarket.convertLegacy`
+(pause/halt-exempt) converts legacy → active at the recorded ratio; `AssetRegistry.migrateToken`
+stores per-legacy-token ratios; `VaultManager.applySplit` re-denominates exposure USD-invariantly;
+legacy collateral is valued at `activePrice × legacyRatio` so splits never move a position's health.
+Post-fix hardening: `_settleMint` settles fills in `order.escrowToken`, not the current payment
+token.
+
+**Tests.** Unit + integration coverage across `AssetRegistry`, `VaultManager`, `OwnMarket`,
+`BorrowAndLiquidateFlow`, `RFQAusdcFlows` (ratio compounding, USD invariance, cancel-returns-original,
+fill-after-migration revert, HF preserved across split, settle-in-escrow-token).
+
+### H-03 (High) — Withdrawal gate read a stale mark after a bad-debt release
+
+**Problem.** `withdrawalBreachesUtil` nets against `_globalCollateralUSD` (keeper-cached marks).
+`releaseCollateralForBadDebt` shrank real `totalAssets` without refreshing the mark, so in the window
+before the next keeper pull the gate under-reported utilization — informed LPs could exit ahead of a
+socialized loss.
+
+**Fix.** Mark updates are atomic with the release: `VaultManager.onCollateralReleased(amount)`
+(`onlyRegisteredVault`) decrements the mark proportionally and is called before the transfer in
+**both** collateral-out paths (`releaseCollateralForBadDebt`, `releaseCollateral`).
+**Tests.** `VaultManager.t.sol` (proportional reduction, access control, gate tightens post-release),
+`OrderLifecycle.t.sol` (mark syncs on force-execute release).
+
+### H-04 (High) — `absorbBadDebt` released collateral in 18-dec units
+
+**Problem.** The LP-socialized collateral slice was computed 18-dec-normalized and passed straight
+to `releaseCollateralForBadDebt`, which transfers in native decimals. For 6-dec collateral
+(aUSDC/USDC) the amount was 10¹² too large — bad-debt absorption reverted (bricked), or would
+over-release given sufficient balance. 18-dec vaults were accidentally correct, which is why
+existing tests passed.
+
+**Fix.** `BorrowManager._convertToCollateral` helper (mirrors `OwnMarket`'s) verifies the fresh
+collateral price and floors to native decimals; `absorbBadDebt` routes through it.
+**Test.** `BorrowManager.t.sol::test_absorbBadDebt_sixDecimalCollateral_releasesNativeAmount`
+(asserts `2000e6`, not `2000e18`; fails without the fix).
+
+### H-05 (High) — `fulfillWithdrawal` didn't sync the collateral mark
+
+**Problem.** The third collateral-exit path missed the H-03 treatment: `fulfillWithdrawal`
+transferred collateral out without calling `onCollateralReleased`, leaving the cached mark
+stale-high. Serial withdrawals each cleared the gate against the un-decremented mark, and
+mints/borrows immediately after a withdrawal issued exposure/debt against collateral that had
+already left — bypassing the global utilization cap within a block.
+
+**Fix.** `fulfillWithdrawal` (non-halted branch) calls `onCollateralReleased(assets)` after the
+gate check and before the transfer. Halted vaults skip it (already excluded from the pool).
+**Test.** `OwnVault.t.sol::test_fulfillWithdrawal_syncsCollateralMark` (fails without the fix).
+
+### M-05 (Medium) — Book debt could lag real compounding Aave debt
+
+**Problem.** `_accrue` sampled Aave's variable rate at sparse touch points and applied simple
+interest; Aave compounds continuously. During rate spikes book debt fell below the vault's real Aave
+debt, so borrower repayments under-covered the loan and LPs ate the shortfall.
+
+**Fix.** The interest index is floored so book debt never sits below the vault's real Aave debt,
+read live from `debtToken.balanceOf(vault)` (`_flooredIndex`). Worst case the protocol premium
+shrinks toward zero during a spike, but borrowers always cover the Aave loan. A permissionless
+`accrue()` keeper entry point bounds the lag window. (The floor introduced the M-08 edge — open,
+see §2.)
+**Tests.** `BorrowManager.t.sol::test_accrue_floorsBookDebtToRealAaveDebt` (reproduces the exact
+$500 shortfall without the floor), `test_accrue_keeperCanSyncIndependently`.
+
+### M-03 (Medium) — Rate params unvalidated → accrual DoS
+
+**Problem.** `InterestRateModel.premium` reverts when `optimalUtilBps == 0 || >= BPS`. Neither
+`setRateParams` nor the constructor validated the params, so a bad value made `_accrue` revert —
+bricking repay and liquidate, which must always stay open.
+
+**Fix (2026-06-12).** Both write sites reject `optimalUtilBps == 0 || >= BPS` with
+`InvalidRateParams()`. Only `optimalUtilBps` is validated — it's the only value that can revert the
+curve; the slope/base values can only misprice, not brick, and stay admin-tunable.
+**Tests.** `BorrowManager.t.sol::test_constructor_invalidRateParams_revert`,
+`test_setRateParams_invalidOptimalUtil_reverts`.
+
+### M-06 (Medium) — Debt cap checked before `_accrue()`
+
+**Problem.** `borrow` ran the hard cap against `totalDebtUSD()` _before_ calling `_accrue()`, so the
+cap excluded interest accrued since the last touch and the M-05 Aave-debt floor — a borrow that
+should breach the cap could pass.
+
+**Fix (2026-06-12).** `_accrue()` moved above the cap block in `borrow` (pure reordering; it was
+already called in the function, just too late), so the cap sees the accrued + floored debt.
+**Test.** `BorrowManager.t.sol::test_borrow_capChecksAccruedDebt` — an Aave spike to just under the
+cap, then a small borrow that passes on the stale index, must revert `BorrowExceedsCap` (fails
+without the fix).
+
+### M-07 (Medium) — `borrow` ignored the bound vault's Paused/Halted status
+
+**Problem.** `_validateEligibility` checked the asset only, never `vaultStatus()` — a vault
+paused or halted during an incident kept being borrowed against via its Aave credit delegation
+(sibling of H-01, which fixed only the force-execute path).
+
+**Fix (2026-06-12).** `_validateEligibility` reverts `VaultNotActive()` unless
+`IOwnVault(vault).vaultStatus() == VaultStatus.Active`. Only `borrow` calls it, so repay /
+liquidate / halt settlement stay open on a non-Active vault (exits must always work). A distinct
+error (vs the asset-level `VaultEffectivelyHalted`) keeps vault- and asset-level blocks
+distinguishable for monitoring.
+**Tests.** `BorrowManager.t.sol::test_borrow_pausedVault_reverts` (also asserts repay still works
+while paused), `test_borrow_haltedVault_reverts`.
+
+### M-10 (Medium) — `WstETHRouter` wrapped requested, not received, stETH
+
+**Problem.** Lido's share math delivers 1–2 wei less than the `transferFrom` amount, so the router
+held less than `stETHAmount` and `wstETH.wrap(stETHAmount)` reverted on insufficient balance —
+breaking every stETH deposit.
+
+**Fix (2026-06-12).** `_depositStETHInternal` measures the received balance-diff and wraps that
+(the same pattern `AaveRouter.deposit` uses). The existing `minSharesOut` check covers the
+wei-level shortfall.
+**Test.** `WstETHRouter.t.sol::test_depositStETH_lidoRounding_succeeds` — a rounding stETH mock
+that delivers 2 wei short; reproduces the exact `ERC20InsufficientBalance` revert without the fix.
+
+### M-01 (Medium) — Pyth confidence interval ignored
+
+**Problem.** `PythOracleVerifier._normalizePythPrice` read only `price`/`expo`, never `conf` —
+Pyth's own ±uncertainty band. Wide-uncertainty prices (thin market, degraded publishers) were
+consumed as exact by both the cached reads (marks) and inline proofs (force-exec, borrow, liquidate).
+
+**Fix (2026-06-12).** A `maxConfBps` bound (constructor param + admin `setMaxConfBps`, non-zero
+enforced) checked in `_normalizePythPrice` — the chokepoint both read paths flow through:
+reject when `conf · BPS > price · maxConfBps` (`ConfidenceTooWide`; conf and price share the
+exponent, so no rescaling). Deploy default: 100 bps (1%). Liveness trade-off is intentional:
+while Pyth reports wider uncertainty than the bound, pricing for that asset pauses.
+**Tests.** `PythOracleVerifier.t.sol::test_getPrice_wideConfidence_reverts`,
+`test_verifyPrice_wideConfidence_reverts`, `test_getPrice_confidenceAtBound_succeeds`, plus
+constructor/setter validation. All verified to fail without the check.
+
+### M-02 (Medium) — Unset oracle config accepted unbounded prices
+
+**Problem.** `OracleVerifier.updatePrice` applied staleness/deviation bounds only when the
+per-asset config values were `> 0` — an asset never configured via `setAssetOracleConfig` accepted
+any validly-signed push with no bounds. Exploitable without signer compromise: signed price blobs
+handed out for inline proofs share `updatePrice`'s digest format, so anyone could backfill a stale
+cache with the most favorable price ever signed. Configuration relied on an off-chain ops step
+(`launch-assets.ts`) with silent-off as the default.
+
+**Fix (2026-06-12).** Fail closed: `updatePrice` reverts `OracleConfigNotSet(asset)` unless both
+bounds are configured, then applies them unconditionally; `setAssetOracleConfig` rejects zero
+values (`InvalidOracleConfig`) and now emits `AssetOracleConfigSet`. First-push semantics
+unchanged (deviation skipped, staleness applies). Ops flow unaffected — the contract now enforces
+what `launch-assets.ts` already did by convention.
+**Tests.** `OracleVerifier.t.sol::test_updatePrice_unsetConfig_reverts` (verified to fail without
+the fix), `test_setAssetOracleConfig_zeroValues_revert`.
+
+### M-09 (Medium) — Sub-unit amounts recorded zero scaled debt while moving real value
+
+**Problem.** Debt is stored as scaled units (`actual × PRECISION / index`, floor division). Once the
+index exceeds 1.0, amounts below `index / 1e18` base units floor to **zero scaled units** with no
+guard, so real value moved while the ledger recorded nothing: a dust liquidation seized non-zero
+collateral (plus the 5% bonus) while reducing the borrower's debt by zero (repeatable griefing — the
+position gets strictly less healthy each call); a dust borrow recorded `principal = 0`, which is also
+the "no position" sentinel — unrepayable, unliquidatable, collateral stranded, and a second borrow
+silently overwrites the struct, orphaning the first collateral; a dust repay took the borrower's
+stablecoin and reduced nothing.
+
+**Fix (2026-06-12).** Revert `AmountTooSmall()` whenever a non-zero input converts to zero scaled
+units: `borrow` (`scaledDebt == 0`), `repay` and `_liquidate`'s partial branch (`scaledRepay == 0`) —
+the same guards Aave V3 carries. `settleHaltedPosition` is deliberately left ungated: it's a
+wind-down path that must stay live, and a zero there only under-reduces book debt
+(protocol-favorable).
+**Tests.** `BorrowManager.t.sol::test_liquidate_dustRepay_reverts`,
+`test_borrow_dustAmount_reverts`, `test_repay_dustAmount_reverts` — all verified to fail without
+the guards (index lifted to 1.05 via the Aave-debt floor).
+
+### M-08 (Medium) — `_flooredIndex` exploded on a dust scaled-debt base; broke under multi-manager
+
+**Problem.** The M-05 floor computed `minIndex = debtToken.balanceOf(vault) × 1e18 / _totalScaledDebt`
+— the vault's **entire** real Aave debt spread over **this manager's** recorded units. The two sides
+can diverge: (1) when repays wind the book down to a dust base while residual Aave debt (rounding
+crumbs, model lag) remains, the division explodes — e.g. 50 USDC residual over 0.5 USDC of scaled
+units lifts the index ×101, multiplying every remaining position's debt, **permanently** (the index
+is monotonic, nothing can lower it); (2) a second borrow manager on the same vault would make
+`balanceOf(vault)` the combined debt, double-charging both books.
+
+**Fix (2026-06-12, team decision: one manager per vault).** Constrain the world to match the
+assumption rather than rebuild the accounting:
+- **One borrow manager per vault is now a documented protocol invariant** — it was already enforced
+  on-chain (`OwnVault.setBorrowManager` is one-shot, no rotation); the contracts' NatSpec
+  (`BorrowManager`, `IBorrowManager`) and docs (protocol.md, AGENTS.md) no longer suggest a second
+  manager can share a vault.
+- **The floor is skipped when `_totalScaledDebt < 10^stableDecimals`** (one whole stablecoin unit):
+  at dust scale there is no meaningful book left for the floor to protect, and residual Aave debt is
+  crumb-scale by construction. The M-05 guarantee is unchanged for real positions.
+**Tests.** `BorrowManager.t.sol::test_accrue_dustScaledDebt_skipsFloor` — reproduces the exact ×101
+explosion ($0.50 → $50.50) without the guard; `test_accrue_floorsBookDebtToRealAaveDebt` still
+passes, confirming the floor works above the threshold.
+
+### Fixed Info item — EToken pass-through dividends
+
+The EToken dividend accumulator was rewritten (pass-through holder redirect) and re-verified correct
+in the 2026-06-11 re-audit.
 
 ---
 
-### [C-01] Unrestricted `withdraw()` and `redeem()` Bypass Withdrawal Queue
+## 2. Open Findings
 
-**Severity**: Critical
-**Contract**: OwnVault.sol
-**Functions**: `withdraw()` (L994-1000), `redeem()` (L1002-1008)
-**Status**: Open
-
-#### Description
-
-The `withdraw()` and `redeem()` functions are public with no access control modifiers — no `onlyVM`, no `nonReentrant`, no vault status check, and no utilization check. They delegate directly to OpenZeppelin's `super.withdraw()` / `super.redeem()`, which burn shares and transfer collateral to the caller.
-
-This allows any LP to withdraw collateral **immediately** without:
-- Using the async withdrawal queue (`requestWithdrawal` → `fulfillWithdrawal`)
-- Waiting for the mandatory `_withdrawalWaitPeriod`
-- Passing the utilization check that protects vault solvency
-- Auto-claiming LP rewards before exit
-
-#### Impact
-
-- The entire withdrawal queue system is rendered meaningless — any LP can bypass it
-- The `_maxUtilization` guard is circumvented, potentially draining collateral below safe levels while orders are outstanding
-- LP rewards may be lost (no auto-claim on direct withdrawal)
-- Undermines the protocol's risk management model where the VM manages withdrawal timing
-
-#### Proof of Concept
-
-```solidity
-// LP directly calls withdraw, bypassing the entire queue
-vault.withdraw(assets, receiver, owner);
-// Or equivalently:
-vault.redeem(shares, receiver, owner);
-```
-
-#### Recommendation
-
-Add access control and safety checks to `withdraw()` and `redeem()`:
-
-```solidity
-function withdraw(uint256 assets, address receiver, address own)
-    public override(ERC4626, IERC4626) onlyVM nonReentrant returns (uint256) {
-    return super.withdraw(assets, receiver, own);
-}
-
-function redeem(uint256 shares, address receiver, address own)
-    public override(ERC4626, IERC4626) onlyVM nonReentrant returns (uint256) {
-    return super.redeem(shares, receiver, own);
-}
-```
-
-Or if direct withdrawal should be fully disabled:
-
-```solidity
-function withdraw(...) public override returns (uint256) {
-    revert("Use requestWithdrawal");
-}
-function redeem(...) public override returns (uint256) {
-    revert("Use requestWithdrawal");
-}
-```
+No open findings at any severity. Remaining future work: the unconfirmed leads in §5.
 
 ---
 
-### [H-01] Open Redeem Order Force-Execute Can Release Untracked Collateral
+## 3. By-Design / Withdrawn
 
-**Severity**: Informational (downgraded from High)
-**Contract**: OwnMarket.sol
-**Functions**: `forceExecute()` (L297-362), `_forceExecuteAtSetPrice()` (L504-537)
-**Status**: Accepted Risk
-
-#### Description
-
-When an unclaimed (Open) redeem order is force-executed and the price is reachable, `releaseCollateral()` sends vault collateral without exposure tracking. However, the impact is minimal: the collateral release immediately reduces `totalAssets()`, and the next keeper call to `updateCollateralValuation()` or any `updateExposure()` on the vault recalculates `_collateralValueUSD`. Lower collateral → higher utilization ratio → more restrictive. The system self-corrects on the next keeper update.
-
-#### Risk Assessment
-
-The only window of risk is between the collateral release and the next keeper update, where `_collateralValueUSD` is stale. Given regular keeper updates, this is negligible and does not warrant additional code complexity.
-
----
-
-### [H-02] Payment Token Can Equal Vault Collateral Asset Causing Double-Counting
-
-**Severity**: High
-**Contract**: OwnVault.sol
-**Functions**: `setPaymentToken()` (L841-853), `depositFees()` (L713-738)
-**Status**: Resolved
-
-#### Description
-
-When `_paymentToken == asset()` (common for USDC-collateral vaults), fee deposits via `depositFees()` increase the vault's token balance, which is included in `totalAssets()`. This inflates the ERC-4626 share price while the same fees are also tracked in the `_lpRewardsPerShare` accumulator — double-counting LP rewards.
-
-#### Resolution
-
-The `totalAssets()` override now excludes unclaimed protocol and VM fees when `_paymentToken == asset()`:
-
-```solidity
-if (_paymentToken == asset()) {
-    uint256 feeReserve = _protocolFees + _vmFees;
-    return raw > feeReserve ? raw - feeReserve : 0;
-}
-```
-
-This ensures fee balances don't inflate the share price while they await claiming.
+- **L-04 — Borrow manager is one-shot with no rotation (reclassified by design 2026-06-12).**
+  One borrow manager per vault, for the vault's lifetime, is the documented protocol invariant the
+  M-08 fix relies on — rotation would break the interest-index floor's debt attribution. The
+  incident path for a compromised manager is `haltVault` (instant LP withdrawals, collateral
+  excluded from the pool), as the original finding noted.
+- **L-09 — Halt-settlement ceil rounding sweeps the surplus to the VM (accepted 2026-06-12).**
+  `settleHaltedPosition` ceil-rounds `eTokenToCover`, so redeem proceeds can exceed the book debt
+  by a rounding sliver, which sweeps to the VM with the premium instead of refunding the borrower.
+  The surplus is bounded by one rounding step (sub-cent) per settlement. A refund was considered
+  and rejected: pushing a dust stablecoin transfer to the borrower costs more in gas and adds a
+  freeze-revert surface (L-13 class) for negligible value; flooring the cover instead would leave
+  zombie dust positions in the wind-down flow. The behavior is documented in code
+  ("surplus (over-cover from ceil rounding) sweeps to the manager"). No code change.
+- **L-11 — `sweepDividends` pays `vault.manager()` (reclassified by design 2026-06-12).**
+  The revenue model routes collateral dividends to the VM (`protocol.md` §7.3), the same
+  destination as the lending-premium sweep in `_repayAaveAndSweep`. The admin-mutable `setManager`
+  is the same trust boundary that governs all other VM-directed flows. The token argument is
+  validated since the L-06 fix.
+- **C-01\* — Force-execute asset proof is window-scoped, not fresh (team-confirmed 2026-06-11).**
+  Force-execute is the user's VM-failure recourse: if no VM filled the redeem within
+  `claimThreshold`, the user proves the asset reached their `limitPrice` _at some point in the
+  order's `[createdAt, now]` window_ and is filled at that pre-committed limit — claimable only by
+  `order.user`. Requiring a fresh price would break the recourse (a wick that recovered could never
+  be forced). The collateral leg stays fresh-checked. **Acknowledged risk:** LP collateral backstops
+  the redeem at the committed limit whenever the asset touched it in-window, so a wick a VM fails to
+  execute against can cost LPs up to `(limitPrice − currentPrice) × remaining` — the intended LP
+  trust model, bounded by the user's own limit. Possible future levers (not adopted): a force-window
+  shorter than the order lifetime, or settling at `min(limitPrice, fresh price)`.
+- **M-04 — Withdrawal queue is not FIFO (reclassified 2026-06-12).** `fulfillWithdrawal` enforces
+  only the wait period + utilization gate; near the cap, capacity is allocated by gas-race/caller
+  choice. The queue was never required to be FIFO — the FIFO claim was dropped from the spec
+  (protocol.md, AGENTS.md, Types.sol). No code change.
 
 ---
 
-### [H-03] ERC-4626 Inflation Attack — Weak Virtual Offset
+## 4. Low Findings (all open)
 
-**Severity**: High
-**Contract**: OwnVault.sol
-**Status**: Open
+### Fixed (2026-06-12)
 
-#### Description
+- **L-01 — Fixed (the other way).** All protocol signatures migrated from EIP-191 personal-sign to
+  **EIP-712** typed data, matching what the docs always claimed: quotes sign a
+  `Quote(uint256 orderId,address user,bytes32 asset,uint8 orderType,uint256 amount,uint256 price,uint256 quoteId,uint256 expiry)`
+  struct and price attestations a `PriceAttestation(bytes32 asset,uint256 price,uint256 timestamp)`
+  struct, both under domain `("Own Protocol", "1", chainId, verifyingContract)` (OZ `EIP712`;
+  chainId/contract binding moved from manual digest fields into the domain separator).
+  `OracleVerifier.priceDigest` is exposed for off-chain/KMS signers. **Off-repo signer services
+  (quote signer, oracle price signer) must switch to typed-data signing before deployment.** Tests
+  re-sign via reference EIP-712 encodings implemented independently in the test files;
+  `test_priceDigest_matchesLocalEip712Encoding` locks the encoding, and new foreign-domain replay
+  tests (wrong chainId, wrong verifying contract) replace the old manual-digest ones.
+- **L-03 — Fixed.** `closeExposure` now reverts `PriceUnavailable` on a zero mark, mirroring `openExposure` (reachable via an extreme `applySplit` ratio flooring the mark). Test: `test_closeExposure_zeroMark_reverts`.
+- **L-05 — Fixed.** `migrateToken` rejects migrating to the current active token or an existing legacy token (`InvalidNewToken`). The `updateAssetConfig` half was already fixed in code (it explicitly preserves `activeToken`/`legacyTokens`/`active`). Test: `test_migrateToken_toActiveOrLegacyToken_reverts`.
+- **L-06 — Fixed.** `sweepDividends` validates the token via `AssetRegistry.isValidToken(ticker, token)` (`InvalidEToken`); legacy tokens stay sweepable. Test: `test_sweepDividends_invalidToken_reverts`.
+- **L-08 — Fixed.** `_verifyPrice` forwards exactly `verifyFee(priceData)` instead of all of `msg.value`, and `borrow`/`liquidate`/`absorbBadDebt` refund the surplus to the caller as their last step (`_refundExcessEth`, `EthRefundFailed`). Also fixes the latent double-forward in `absorbBadDebt` (two price proofs, each previously sent `{value: msg.value}`). Test: `test_borrow_refundsExcessEth`.
+- **L-10 — Fixed.** `settleHaltedPosition` requires `vaultManager.paymentToken() == stablecoin` (`PaymentTokenMismatch`) — proceeds are accounted in stablecoin units, so a diverged payment token now fails loud and recoverable instead of mis-accounting. Test: `test_settleHaltedPosition_paymentTokenMismatch_reverts`.
+- **L-12 — Fixed.** `placeOrder` measures the escrow balance-diff and reverts `FeeOnTransferNotSupported` when received ≠ sent. Direct party-to-party legs (`executeOrder`, fill payouts) are intentionally not gated — a FoT token there shorts the counterparty, not the escrow pool. This also closes L-02's fee-on-transfer half. Test: `test_placeOrder_feeOnTransferToken_reverts`.
+- **L-13 — Fixed (escrow half) + documented (halt half).** A USDC/USDT blocklist freeze of a
+  recipient could permanently brick `cancelOrder`/`expireOrder` (escrow locked), and a frozen
+  `haltRedeemAddress` blocks halt redemptions. Fix (team decision): `_returnEscrow` routes through
+  `_pushOrSweep` — if the push to the user fails, the escrow sweeps to `registry.treasury()`
+  (governance multisig, the protocol's existing custodial sink) and emits
+  `EscrowSweptToTreasury(user, token, amount)`; resolution is off-chain (genuine cases refunded by
+  governance, illicit funds held/forwarded to authorities). The treasury was chosen over a VM
+  destination: orders aren't vault-bound so there is no canonical VM, and a profit-motivated
+  counterparty must not custody user escrow — governance custody is neutral and timelocked. The
+  halt half is operational by nature (the frozen party is the funding *source*):
+  `setHaltRedeemAddress` is rotatable, and protocol.md §10 now mandates monitoring + immediate
+  rotation on freeze. A frozen *caller* of `redeemHalted` blocks only themselves (untouched by
+  design). Test: `test_cancelOrder_frozenUser_sweepsEscrowToTreasury` (cancel bricked without the
+  fix).
 
-OwnVault does not override `_decimalsOffset()`, so it returns 0 (OZ ERC4626 default). The OpenZeppelin v5 conversion formulas use `totalSupply() + 10^offset` = `totalSupply() + 1` and `totalAssets() + 1`. This provides minimal protection against the classic first-depositor inflation attack.
+### Closed without code change (2026-06-12)
 
-With a virtual offset of just 1:
-- An attacker deposits 1 wei, gets 1 share
-- Attacker donates X tokens directly to the vault, making `totalAssets = X + 1`, `totalSupply = 1`
-- Next depositor of Y assets gets `Y * 2 / (X + 2)` shares
-- For large X, the victim loses approximately half their deposit
-
-While the async deposit mode (`_requireDepositApproval = true`) mitigates this by having the VM gate deposits, when `_requireDepositApproval = false`, the vault is vulnerable.
-
-#### Impact
-
-- First depositor can steal up to ~50% of the second depositor's funds
-- Particularly dangerous for vaults using 6-decimal tokens (USDC, aUSDC) where the attack cost is lower
-
-#### Recommendation
-
-Override `_decimalsOffset()` to return a meaningful value:
-
-```solidity
-function _decimalsOffset() internal pure override returns (uint8) {
-    return 6; // or higher for stronger protection
-}
-```
-
-Or ensure `_requireDepositApproval` is always true initially and the VM seeds the vault with a minimum deposit.
-
----
-
-### [H-04] Utilization Check Bypassed When Collateral Oracle Not Configured
-
-**Severity**: High
-**Contract**: OwnVault.sol
-**Function**: `fulfillWithdrawal()` (L365-404)
-**Status**: Open
-
-#### Description
-
-The utilization check in `fulfillWithdrawal()` at L382 has the condition:
-```solidity
-if (_totalExposureUSD > 0 && _collateralValueUSD > 0) {
-```
-
-If `_collateralValueUSD == 0` (which occurs when `_collateralOracleAsset` is not configured or `_refreshCollateralValue()` never finds a valid oracle), the entire utilization check is skipped for ALL withdrawals. This means:
-
-1. If the admin doesn't set `_collateralOracleAsset`, utilization is never enforced on withdrawals
-2. Even if exposure exists, withdrawals proceed unchecked
-
-Combined with [C-01], this means all withdrawal paths can bypass utilization.
-
-#### Impact
-
-- Vault collateral can be drained below safe levels while exposure is outstanding
-- Protocol solvency is at risk if large withdrawals occur during high utilization
-
-#### Recommendation
-
-Either:
-1. Require `_collateralOracleAsset` to be set before the vault can accept deposits/orders, or
-2. Block withdrawals when `_collateralValueUSD == 0` and exposure exists:
-```solidity
-if (_totalExposureUSD > 0 && _collateralValueUSD == 0) {
-    revert CollateralValueNotInitialized();
-}
-```
+- **L-02 — Mitigated.** Both halves are covered by existing code: `setPaymentToken` enforces
+  `decimals() <= 18`, and the fee-on-transfer half is closed by the L-12 escrow balance-diff check.
+- **L-07 — Documented.** `migrateToken` + `applySplit` atomicity is now an explicit ops requirement
+  in `protocol.md` §13 (single multisig batch; liveness-only, admin-recoverable if violated).
 
 ---
 
-### [H-05] Force Execution Charges Fees — Spec Previously Said Zero Fees
+## 5. Leads (from the 2026-06-11 re-audit — triaged 2026-06-12)
 
-**Severity**: Informational (downgraded from High — intentional design)
-**Contract**: OwnMarket.sol
-**Functions**: `_forceExecuteAtSetPrice()` (L504-537), `_forceExecuteRedeemAtHaltPrice()` (L558-573)
-**Status**: Resolved — spec updated to match code
+### Confirmed and fixed (2026-06-12)
 
-#### Description
+- **Escrowed eToken dividends stranded — Fixed.** `OwnMarket` had no claim path for dividends
+  accruing on eTokens escrowed in resting redeem orders (permanently burned). Added permissionless
+  `OwnMarket.sweepDividends(eToken)` → treasury (no canonical VM exists for market escrow;
+  per-order attribution is infeasible with the global accumulator), token validated against the
+  registry. Test: `test_sweepDividends_escrowedETokens_toTreasury`.
+- **`EToken.depositRewards` truncation — Fixed.** For large supply + low-dec reward tokens the
+  per-share delta floored to 0 while the full amount was still pulled in (stuck — the old
+  "dust stays for the next deposit" comment was wrong: deltas don't accumulate across deposits).
+  Now reverts `RewardTooSmall` when the delta is 0 (M-09 pattern).
+  Test: `test_depositRewards_tooSmall_reverts`.
+- **`absorbBadDebt` NatSpec mismatch — Fixed.** Interface + inline comments said the LP-loss
+  collateral "reimburses the caller"; corrected to match the code (released to the treasury).
+- **Zero `collateralAsset` accepted — Fixed.** `registerVault` now reverts
+  `InvalidCollateralAsset` on a zero ticker. Test: `test_registerVault_zeroCollateralAsset_reverts`.
 
-The spec previously stated force execution should charge no fees. After review, this was determined to be an intentional design decision: fees are charged on force execution because the user still receives their assets at the set price, and the protocol/LPs should continue to earn fees regardless of the execution path. The spec (`docs/protocol.md`) has been updated to reflect this.
+### Resolved by earlier fixes
 
----
+- **`PythOracleVerifier` strands surplus ETH** — both consumers now forward the exact fee and
+  refund the remainder (`OwnMarket._refundETH`, pre-existing; `BorrowManager._refundExcessEth`,
+  L-08 fix). Only a third party calling `verifyPrice` directly with excess ETH can strand it —
+  their own overpayment.
+- **`absorbBadDebt` surplus sweep to `vault.manager()`** — reachability was tied to M-08's index
+  inflation, which is closed (dust-base floor skip + one-manager invariant).
 
-### [M-07] `confirmOrder()` Enforces Expiry on Claimed Orders — Not in Spec
+### Noted, no action
 
-**Severity**: Medium
-**Contract**: OwnMarket.sol
-**Function**: `confirmOrder()` (L194-225)
-**Status**: Open
+- **`shareYield` dilution in the async deposit window** — `requestDeposit` already takes
+  `minSharesOut`; the lead only bites when the user passes 0. Frontend should default it sensibly.
+- **`_convertToCollateral` floor-div on sub-`1e12`-USD bad-debt slices** — admin-gated path,
+  dust-bounded under-socialization per call.
 
-#### Description
+### Open for future review
 
-`confirmOrder()` at L201 checks `if (block.timestamp > order.expiry) revert OrderExpiredError(orderId)`. The spec's state machine shows `CLAIMED → CONFIRMED` without any expiry condition — expiry is intended for unclaimed orders only.
-
-This means if a VM claims an order near its expiry and needs time to hedge off-chain, the order may expire before confirmation. The user's funds are then stuck in a claimed-but-expired state, resolvable only via `closeOrder` or `forceExecute`.
-
-#### Impact
-
-- VM may lose the ability to confirm orders even after properly hedging
-- Creates a race condition between hedging completion and order expiry
-- May strand user funds requiring force execution
-
-#### Recommendation
-
-Either remove the expiry check for claimed orders or extend it by the grace period:
-```solidity
-if (order.status != OrderStatus.Claimed) revert InvalidOrderStatus(orderId, order.status);
-// Remove: if (block.timestamp > order.expiry) revert OrderExpiredError(orderId);
-```
-
----
-
-### [M-08] No Paused → Halted Transition — Emergency Escalation Requires Two Steps
-
-**Severity**: Medium
-**Contract**: OwnVault.sol
-**Functions**: `pause()` (L431-437), `haltVault()` (L470-474)
-**Status**: Open
-
-#### Description
-
-Both `pause()` and `haltVault()` require the vault to be in `Active` status. There is no direct `Paused → Halted` transition. To escalate from Paused to Halted during an emergency, the admin must first call `unpause()` (Paused → Active) then `haltVault()` (Active → Halted).
-
-During the brief window between unpause and halt, the vault is in Active status and all operations (including new orders) are permitted.
-
-#### Impact
-
-- In emergency scenarios, the two-step process creates a window where paused operations temporarily resume
-- An attacker monitoring the mempool could front-run the `haltVault()` call with new orders during this window
-
-#### Recommendation
-
-Allow direct escalation from Paused to Halted:
-```solidity
-function haltVault() external onlyAdmin {
-    if (_vaultStatus != VaultStatus.Active && _vaultStatus != VaultStatus.Paused) {
-        revert InvalidStatusTransition();
-    }
-    _vaultStatus = VaultStatus.Halted;
-    emit VaultHalted();
-}
-```
+- **No `minAssetsOut` on withdrawals** — `convertToAssets` is evaluated at (permissionless)
+  fulfillment, so value socialized between request and fulfill dilutes a queued LP with no
+  automatic opt-out (mitigation today: `cancelWithdrawal`). Candidate fix: `minAssetsOut` stored
+  on the request — changes the `requestWithdrawal` external API; decide alongside a frontend
+  update.
+- **Split-ratio rounding drift** across `migrateToken`/`convertLegacy`/`applySplit` — observed
+  drift was protocol-favorable; confirming needs a dedicated multi-split fuzz/trace pass.
 
 ---
 
-### [M-01] `depositFees()` Lacks `nonReentrant` Guard
+## 6. Info / Hygiene Notes
 
-**Severity**: Medium
-**Contract**: OwnVault.sol
-**Function**: `depositFees()` (L713-738)
-**Status**: Open
-
-#### Description
-
-`depositFees()` performs an external `safeTransferFrom` call at L717 before updating state variables at L727-L735. While the function has an `onlyMarket` modifier, the payment token itself could have callbacks (e.g., ERC-777 tokens) that could re-enter the vault.
-
-The function reads `totalSupply()` at L731 and `registry.protocolShareBps()` at L720 — both could return different values if state changes occur during the callback.
-
-#### Impact
-
-Limited in practice because:
-- `onlyMarket` restricts the caller to the trusted Market contract
-- Standard stablecoins (USDC, USDT) don't have transfer callbacks
-
-However, the protocol supports arbitrary payment tokens set by the VM.
-
-#### Recommendation
-
-Add `nonReentrant` to `depositFees()` or move the `safeTransferFrom` to after state updates (CEI pattern).
+- Lending premium sweeps 100% to the VM — matches the current spec (the planned 3-way fee split was dropped from the roadmap 2026-06-12).
+- `borrow`/`repay` rely on `nonReentrant` rather than strict CEI ordering — tighten to true CEI.
+- `deposit()`/`mint()` access asymmetry: `mint` is always `onlyManager` while `deposit` can be open — standard ERC-4626 `mint` integrators revert. Align or document.
+- `verifyPriceForSession` uses an external self-call, dropping `msg.value` and wasting gas — refactor to internal.
+- Apply or suppress the `asm-keccak256` lint notes.
+- Gas (minor): cache `registry.vaultManager()` and payment-token decimals per settlement.
 
 ---
 
-### [M-02] `verifyPrice()` Has No Staleness or Deviation Checks
-
-**Severity**: Medium
-**Contract**: OracleVerifier.sol
-**Function**: `verifyPrice()` (L122-136)
-**Status**: Open
-
-#### Description
-
-Unlike `updatePrice()` which enforces staleness and deviation bounds, `verifyPrice()` only checks the ECDSA signature and non-zero price. An authorized signer could produce a valid signature for any historical price at any timestamp, and `verifyPrice()` would accept it.
-
-The OwnMarket's `_verifyPriceRange()` function does check that proof timestamps fall within the [windowStart, block.timestamp] window, but does not enforce the oracle's per-asset `maxStaleness` or `maxDeviation` bounds.
-
-#### Impact
-
-During force execution, a user could submit oracle proofs with extreme prices (within the time window) that benefit them, as long as those prices were legitimately signed. A compromised signer could sign arbitrary historical prices.
-
-#### Recommendation
-
-Consider adding minimal staleness checks to `verifyPrice()`, or document clearly that callers must independently enforce time bounds. The time window check in `_verifyPriceRange()` partially mitigates this but should be reviewed for completeness.
-
----
-
-### [M-03] Escrowed Withdrawal Shares Dilute LP Rewards
-
-**Severity**: Medium
-**Contract**: OwnVault.sol
-**Functions**: `depositFees()` (L731), `_update()` (L882-890)
-**Status**: Open
-
-#### Description
-
-When LPs request withdrawals, their shares are transferred to `address(this)`. The `_update()` override explicitly excludes `address(this)` from LP reward settlement (L883, L886), meaning these escrowed shares never accrue rewards.
-
-However, `totalSupply()` still includes these escrowed shares. When `depositFees()` computes `_lpRewardsPerShare` at L735:
-```solidity
-_lpRewardsPerShare += lpAmount.mulDiv(PRECISION, supply);
-```
-
-The `supply` includes escrowed shares. The LP reward increment is diluted by shares that can never claim those rewards. These "phantom rewards" are permanently locked in the contract.
-
-#### Impact
-
-- LP rewards are systematically underpaid relative to the intended distribution
-- The longer shares are escrowed (long wait periods), the more rewards are lost
-- Lost rewards accumulate in the contract as unclaimable dust
-
-#### Recommendation
-
-Use effective supply (excluding escrowed shares) for reward distribution:
-```solidity
-uint256 effectiveSupply = totalSupply() - _pendingWithdrawalShares;
-if (effectiveSupply == 0) {
-    _protocolFees += lpAmount;
-} else if (lpAmount > 0) {
-    _lpRewardsPerShare += lpAmount.mulDiv(PRECISION, effectiveSupply);
-}
-```
-
----
-
-### [M-04] No Deadline or Price Protection on Async Deposit Requests
-
-**Severity**: Medium
-**Contract**: OwnVault.sol
-**Functions**: `requestDeposit()` (L234-256), `acceptDeposit()` (L259-273)
-**Status**: Open
-
-#### Description
-
-When an LP requests a deposit via `requestDeposit()`, there is no deadline parameter and no minimum shares guarantee. The VM controls when (or if) to call `acceptDeposit()`. Between request and acceptance, the share price can change due to:
-- Other deposits being accepted
-- `releaseCollateral()` decreasing totalAssets (from force executions)
-- Fee deposits changing totalAssets (if `_paymentToken == asset()`)
-- Token donations
-
-The depositor has no recourse if the share price moves significantly before acceptance.
-
-#### Impact
-
-- Depositors may receive fewer shares than expected
-- A malicious or negligent VM could delay acceptance until after unfavorable price movements
-- No timeout mechanism — deposits can remain pending indefinitely
-
-#### Recommendation
-
-Add deadline and minimum shares parameters to `requestDeposit()`:
-```solidity
-function requestDeposit(
-    uint256 assets,
-    address receiver,
-    uint256 minShares,
-    uint256 deadline
-) external ...
-```
-
-And validate in `acceptDeposit()`:
-```solidity
-if (block.timestamp > req.deadline) revert DepositRequestExpired(requestId);
-if (shares < req.minShares) revert InsufficientShares(shares, req.minShares);
-```
-
----
-
-### [M-05] `forceExecute()` Sweeps All Pre-Existing ETH to Caller
-
-**Severity**: Medium
-**Contract**: OwnMarket.sol
-**Function**: `forceExecute()` (L356-361)
-**Status**: Open
-
-#### Description
-
-At the end of `forceExecute()`, the contract sweeps its entire ETH balance to the caller:
-```solidity
-uint256 remaining = address(this).balance;
-if (remaining > 0) {
-    (bool ok,) = payable(msg.sender).call{value: remaining}("");
-}
-```
-
-Any ETH that was previously in the contract (from selfdestructs, coinbase rewards, accidental transfers, or prior failed refunds) is swept to the next `forceExecute` caller.
-
-#### Impact
-
-- ETH sent to OwnMarket by any means (including accidental transfers) can be claimed by any user who calls `forceExecute`
-- While amounts are likely small, this is unintended behavior
-
-#### Recommendation
-
-Track ETH received per call and only refund the excess:
-```solidity
-uint256 ethBefore = address(this).balance - msg.value; // snapshot before
-// ... execution logic ...
-uint256 remaining = address(this).balance - ethBefore;
-if (remaining > 0) { ... refund ... }
-```
-
----
-
-### [M-06] `closeOrder()` Requires VM to Re-Approve Stablecoins After Spending
-
-**Severity**: Medium
-**Contract**: OwnMarket.sol
-**Function**: `closeOrder()` (L228-263)
-**Status**: Open
-
-#### Description
-
-When a VM closes a claimed mint order (returning funds to user), `closeOrder()` uses `safeTransferFrom(msg.sender, order.user, order.amount - feeAmount)` at L247. This requires:
-1. The VM still holds the stablecoins (received during claim)
-2. The VM has approved OwnMarket to spend them
-
-In the normal flow, the VM receives stablecoins at claim time and immediately uses them for off-chain hedging. If the VM spent the stablecoins, `closeOrder` will revert. The user's only recourse is `forceExecute()`, which takes collateral from the vault instead.
-
-While this is by design, it creates a confusing UX where `closeOrder` appears available but is not functional when the VM has already hedged.
-
-#### Impact
-
-- `closeOrder` for mint orders is effectively a cooperative path that only works when the VM hasn't spent the stablecoins
-- Users may attempt `closeOrder` and waste gas before falling back to `forceExecute`
-- The function signature doesn't communicate this limitation
-
-#### Recommendation
-
-Document this behavior clearly in the interface. Consider adding a view function `canCloseOrder(uint256 orderId)` that checks if the VM has sufficient balance and approval.
-
----
-
-### [L-01] OracleVerifier `verifyPrice()` Traps ETH
-
-**Severity**: Low
-**Contract**: OracleVerifier.sol
-**Function**: `verifyPrice()` (L122-136)
-**Status**: Open
-
-#### Description
-
-`verifyPrice()` is `payable` (to satisfy the `IOracleVerifier` interface shared with PythOracleVerifier), but the in-house oracle never uses ETH. Any ETH sent to this function is permanently locked in the contract, as there is no withdrawal mechanism.
-
-#### Impact
-
-Minor ETH loss if callers send ETH to the wrong oracle implementation.
-
-#### Recommendation
-
-Add a check:
-```solidity
-if (msg.value > 0) revert NoETHRequired();
-```
-
----
-
-### [L-02] `updatePrice()` Silent Return Masks Failed Batch Updates
-
-**Severity**: Low
-**Contract**: OracleVerifier.sol
-**Function**: `updatePrice()` (L57-93)
-**Status**: Open
-
-#### Description
-
-When the submitted price timestamp is not newer than the existing one (L76), the function returns silently — no revert, no event. In batch updates via Multicall, some prices may be silently dropped without the caller knowing.
-
-#### Impact
-
-Keeper implementations may not detect that their submitted prices were ignored, leading to stale cached prices.
-
-#### Recommendation
-
-Emit an event on the silent return path:
-```solidity
-if (existing.timestamp > 0 && timestamp <= existing.timestamp) {
-    emit PriceUpdateSkipped(asset, timestamp, existing.timestamp);
-    return;
-}
-```
-
----
-
-### [L-03] PythOracleVerifier Extreme Exponent Handling
-
-**Severity**: Low
-**Contract**: PythOracleVerifier.sol
-**Function**: `_normalizePythPrice()` (L172-188)
-**Status**: Open
-
-#### Description
-
-1. **Positive exponents**: If `expo >= 0`, the function computes `rawPrice * 10^(18 + expo)`. For `expo > 59`, this overflows uint256 and reverts. While not realistic for current Pyth feeds, it's an unhandled edge case.
-2. **Large negative exponents**: If `absExpo > 18`, the function divides `rawPrice / 10^(absExpo - 18)`. For very large `absExpo`, this truncates to zero. Neither `getPrice()` nor `verifyPrice()` check for zero returns from `_normalizePythPrice`.
-3. **`expo == type(int32).min`**: The `-expo` operation at L181 would cause int32 overflow, reverting.
-
-#### Impact
-
-Unlikely in practice with legitimate Pyth feeds, but edge cases could cause unexpected reverts or zero-price returns.
-
-#### Recommendation
-
-Add range validation:
-```solidity
-if (expo > 18 || expo < -36) revert ExponentOutOfRange(expo);
-```
-
----
-
-### [L-04] `releaseCollateral()` Emits No Event
-
-**Severity**: Low
-**Contract**: OwnVault.sol
-**Function**: `releaseCollateral()` (L984-988)
-**Status**: Open
-
-#### Description
-
-The `releaseCollateral()` function transfers collateral tokens out of the vault but emits no event. While the calling OwnMarket contract emits its own events, the vault-side collateral release is silent, making it harder to audit asset flows from vault events alone.
-
-#### Impact
-
-Reduced observability for monitoring systems that track vault collateral movements.
-
-#### Recommendation
-
-Add an event:
-```solidity
-event CollateralReleased(address indexed to, uint256 amount);
-```
-
----
-
-### [L-05] `ProtocolRegistry.setProtocolShareBps()` Uses String Revert
-
-**Severity**: Low
-**Contract**: ProtocolRegistry.sol
-**Function**: `setProtocolShareBps()` (L94-99)
-**Status**: Open
-
-#### Description
-
-This function uses `require(shareBps <= 10_000, "ProtocolRegistry: share > 100%")` — a string-based require — while the rest of the protocol consistently uses custom errors. This is inconsistent and slightly more expensive in gas.
-
-#### Impact
-
-Minor gas inefficiency and style inconsistency.
-
-#### Recommendation
-
-Replace with a custom error:
-```solidity
-if (shareBps > BPS) revert ShareTooHigh(shareBps, BPS);
-```
-
----
-
-### [I-01] EToken Double Settlement in `mint()` and `burn()` Wastes Gas
-
-**Severity**: Informational
-**Contract**: EToken.sol
-**Functions**: `mint()` (L118-126), `burn()` (L129-136)
-**Status**: Open
-
-#### Description
-
-Both `mint()` and `burn()` explicitly call `_settleRewards()` before calling `_mint()`/`_burn()`. However, `_mint()`/`_burn()` trigger `_update()` which also calls `_settleRewards()`. The second call is always a no-op (owed = 0 since checkpoint was just updated), wasting ~2,600 gas per operation.
-
-#### Recommendation
-
-Remove the explicit `_settleRewards()` calls from `mint()` and `burn()`, relying on the `_update()` override.
-
----
-
-### [I-02] EToken `_settleRewards()` Contains Dead Code Branch
-
-**Severity**: Informational
-**Contract**: EToken.sol
-**Function**: `_settleRewards()` (L225-236)
-**Status**: Open
-
-#### Description
-
-The `else if` at L233 (`_userRewardsPerSharePaid[account] != _rewardsPerShare`) is unreachable. When `owed == 0` (the `if` at L229 is false), by definition `_rewardsPerShare == _userRewardsPerSharePaid[account]`, making the `else if` condition always false.
-
-#### Recommendation
-
-Remove the dead branch for clarity:
-```solidity
-function _settleRewards(address account) private {
-    uint256 owed = _rewardsPerShare - _userRewardsPerSharePaid[account];
-    if (owed > 0) {
-        _accruedRewards[account] += balanceOf(account).mulDiv(owed, PRECISION);
-        _userRewardsPerSharePaid[account] = _rewardsPerShare;
-    }
-}
-```
-
----
-
-### [I-03] EToken `depositRewards()` Uses String Require Instead of Custom Error
-
-**Severity**: Informational
-**Contract**: EToken.sol
-**Function**: `depositRewards()` (L170)
-**Status**: Open
-
-#### Description
-
-`require(supply > 0, "EToken: no supply")` uses a string-based require while the rest of the contract uses custom errors. Inconsistent style and slightly higher gas cost.
-
-#### Recommendation
-
-Replace with: `if (supply == 0) revert NoSupply();`
-
----
-
-### [I-04] Small Reward Deposits Can Silently Produce Zero Accumulator Increment
-
-**Severity**: Informational
-**Contract**: EToken.sol
-**Function**: `depositRewards()` (L175)
-**Status**: Open
-
-#### Description
-
-The accumulator increment `amount.mulDiv(PRECISION, supply)` truncates to zero when `amount * PRECISION < supply`. For a token with `totalSupply = 1e27` (1 billion at 18 decimals), any USDC reward deposit below ~1,000 USDC would produce a zero increment. The tokens are transferred but become permanently unclaimable dust.
-
-#### Recommendation
-
-Add a minimum effective deposit check:
-```solidity
-uint256 increment = amount.mulDiv(PRECISION, supply);
-if (increment == 0) revert DepositTooSmall();
-```
-
----
-
-### [I-05] `executeTimelock()` in ProtocolRegistry Is Permissionless
-
-**Severity**: Informational
-**Contract**: ProtocolRegistry.sol
-**Function**: `executeTimelock()` (L127-139)
-**Status**: Open
-
-#### Description
-
-`executeTimelock()` has no `onlyOwner` modifier — anyone can execute a pending timelock after the delay expires. This is a common pattern (the security comes from the propose step, not the execute step), but it means a malicious proposed change that was not cancelled in time can be executed by anyone.
-
-#### Recommendation
-
-This is an accepted design pattern. Ensure monitoring is in place to detect and cancel unwanted proposals before the timelock expires.
-
----
-
-## Entry Point Summary
-
-### Public (Unrestricted) — 14 functions
-
-| Function | Contract | Notes |
-|----------|----------|-------|
-| `placeMintOrder()` | OwnMarket | Escrows stablecoins |
-| `placeRedeemOrder()` | OwnMarket | Escrows eTokens |
-| `cancelOrder()` | OwnMarket | Only order owner |
-| `forceExecute()` | OwnMarket | Only order owner, after grace period |
-| `expireOrder()` | OwnMarket | Anyone, after expiry |
-| `requestDeposit()` | OwnVault | LP deposits collateral |
-| `cancelDeposit()` | OwnVault | Only depositor |
-| `requestWithdrawal()` | OwnVault | LP escrows shares |
-| `cancelWithdrawal()` | OwnVault | Only request owner |
-| `fulfillWithdrawal()` | OwnVault | Anyone, after wait period |
-| `deposit()` | OwnVault | ERC-4626 (when approval not required) |
-| `withdraw()` / `redeem()` | OwnVault | **UNRESTRICTED** [C-01] |
-| `claimProtocolFees()` | OwnVault | Anyone can trigger (sends to treasury) |
-| `claimLPRewards()` | OwnVault | Claims caller's own rewards |
-| `depositRewards()` | EToken | Anyone can deposit dividends |
-| `claimRewards()` | EToken | Claims caller's own rewards |
-| `updatePrice()` | OracleVerifier | Requires valid signature |
-| `updateAssetValuation()` | OwnVault | Permissionless oracle refresh |
-| `updateCollateralValuation()` | OwnVault | Permissionless oracle refresh |
-
-### VM-Restricted — 8 functions
-
-| Function | Contract | Restriction |
-|----------|----------|-------------|
-| `claimOrder()` | OwnMarket | `vault.vm() == msg.sender` |
-| `confirmOrder()` | OwnMarket | `order.vm == msg.sender` |
-| `closeOrder()` | OwnMarket | `order.vm == msg.sender` |
-| `acceptDeposit()` | OwnVault | `onlyVM` |
-| `rejectDeposit()` | OwnVault | `onlyVM` |
-| `claimVMFees()` | OwnVault | `onlyVM` |
-| `setVMShareBps()` | OwnVault | `onlyVM` |
-| `enableAsset()` / `disableAsset()` | OwnVault | `onlyVM` |
-| `setPaymentToken()` | OwnVault | `onlyVM` |
-
-### Admin-Restricted — 18 functions
-
-| Function | Contract | Restriction |
-|----------|----------|-------------|
-| `pause()` / `unpause()` | OwnVault | `onlyAdmin` |
-| `haltVault()` / `unhalt()` | OwnVault | `onlyAdmin` |
-| `pauseAsset()` / `unpauseAsset()` | OwnVault | `onlyAdmin` |
-| `haltAsset()` / `unhaltAsset()` | OwnVault | `onlyAdmin` |
-| `setMaxUtilization()` | OwnVault | `onlyAdmin` |
-| `setWithdrawalWaitPeriod()` | OwnVault | `onlyAdmin` |
-| `setGracePeriod()` / `setClaimThreshold()` | OwnVault | `onlyAdmin` |
-| `setCollateralOracleAsset()` | OwnVault | `onlyAdmin` |
-| `setRequireDepositApproval()` | OwnVault | `onlyAdmin` |
-| `addAsset()` / `deactivateAsset()` / `migrateToken()` | AssetRegistry | `onlyOwner` |
-| `setMintFee()` / `setRedeemFee()` | FeeCalculator | `onlyOwner` |
-| `addSigner()` / `removeSigner()` | OracleVerifier | `onlyOwner` |
-| `setAddress()` / `proposeAddress()` | ProtocolRegistry | `onlyOwner` |
-| `createVault()` | VaultFactory | `onlyOwner` |
-
-### Market-Only — 3 functions
-
-| Function | Contract | Restriction |
-|----------|----------|-------------|
-| `updateExposure()` | OwnVault | `onlyMarket` |
-| `depositFees()` | OwnVault | `onlyMarket` |
-| `releaseCollateral()` | OwnVault | `onlyMarket` |
-
----
-
-## Positive Observations
-
-The following security practices are well-implemented:
-
-1. **CEI Pattern**: Generally followed across the codebase with `nonReentrant` guards on most state-changing functions
-2. **SafeERC20**: All token transfers use OpenZeppelin's SafeERC20 wrapper
-3. **Custom Errors**: Gas-efficient error handling throughout (with minor exceptions noted)
-4. **Pinned Solidity Version**: 0.8.28 with native overflow protection
-5. **Oracle Domain Separation**: ECDSA signatures include chainId and contract address, preventing cross-chain/cross-contract replay
-6. **Timelock Governance**: Critical protocol parameter changes require a 2-day delay
-7. **Monotonic Timestamps**: Oracle price updates enforce strictly increasing timestamps
-8. **Fee Cap Enforcement**: FeeCalculator enforces a maximum 500 BPS (5%) cap
-9. **Per-Share Accumulators**: Both EToken rewards and LP fee rewards use mathematically sound rewards-per-share patterns
-10. **Comprehensive Test Suite**: 26 test files across unit, integration, and invariant categories
-
----
-
-## Recommendations Summary
-
-### Immediate (Pre-Deployment)
-
-1. **[C-01]** Restrict or disable `withdraw()` and `redeem()` on OwnVault
-2. **[H-01]** Fix untracked collateral release for open redeem force-execution
-3. **[H-02]** Prevent `_paymentToken == asset()`
-4. **[H-03]** Increase `_decimalsOffset()` for inflation attack protection
-5. **[H-04]** Enforce collateral oracle configuration or block withdrawals when unset
-6. **[H-05]** Resolve force execution fee charging vs spec's zero-fee mandate
-
-### Short-Term
-
-7. **[M-01]** Add `nonReentrant` to `depositFees()`
-8. **[M-03]** Use effective supply for LP reward distribution
-9. **[M-04]** Add deadline and minimum shares to deposit requests
-10. **[M-05]** Track ETH per-call in `forceExecute()`
-11. **[M-07]** Review expiry enforcement on claimed orders
-12. **[M-08]** Allow direct Paused → Halted transition
-
-### Maintenance
-
-10. Clean up dead code in `_settleRewards()` [I-02]
-11. Remove redundant `_settleRewards()` calls in `mint()`/`burn()` [I-01]
-12. Standardize error handling (replace string reverts) [I-03], [L-05]
-13. Add events to `releaseCollateral()` [L-04]
-14. Add minimum deposit check to `depositRewards()` [I-04]
-
----
-
----
-
-### [L-06] OwnMarket Lacks `receive()` — Pyth ETH Refunds May Fail
-
-**Severity**: Low
-**Contract**: OwnMarket.sol
-**Status**: Open
-
-#### Description
-
-OwnMarket has no `receive()` or `fallback()` function. While `forceExecute()` is `payable` (accepting ETH from the caller), if the Pyth oracle or any intermediary attempts to refund excess ETH to the OwnMarket contract, the transfer would revert.
-
-The current code pre-calculates exact fees via `verifyFee()` before each `verifyPrice{value: fee}()` call, so in practice the exact amount is forwarded. However, if Pyth's behavior changes or if rounding causes a mismatch, ETH refunds to OwnMarket would fail.
-
-#### Recommendation
-
-Add a minimal `receive()`:
-```solidity
-receive() external payable {}
-```
-
-The existing ETH sweep at the end of `forceExecute()` would then handle any refunded ETH.
-
----
-
-### [I-06] Missing Events on Admin Parameter Changes
-
-**Severity**: Informational (but important for monitoring)
-**Contracts**: OwnVault.sol, AssetRegistry.sol, OracleVerifier.sol
-**Status**: Open
-
-#### Description
-
-Several admin setter functions do not emit events, creating monitoring blind spots:
-
-| Function | File | Line |
-|----------|------|------|
-| `setMaxUtilization()` | OwnVault.sol | 553 |
-| `setWithdrawalWaitPeriod()` | OwnVault.sol | 662 |
-| `setGracePeriod()` | OwnVault.sol | 678 |
-| `setClaimThreshold()` | OwnVault.sol | 690 |
-| `setCollateralOracleAsset()` | OwnVault.sol | 702 |
-| `setOracleConfig()` | AssetRegistry.sol | 144 |
-| `setAssetOracleConfig()` | OracleVerifier.sol | 179 |
-
-A compromised or malicious admin could silently change critical protocol parameters without any on-chain trace.
-
-#### Recommendation
-
-Add events to all admin setters that modify protocol parameters.
-
----
-
-### [I-07] Unbounded `_userOrders` Array Is Append-Only
-
-**Severity**: Informational
-**Contract**: OwnMarket.sol
-**Line**: 98
-**Status**: Open
-
-#### Description
-
-Unlike `_openOrders` which uses swap-and-pop removal, `_userOrders[user]` only grows (pushed at L98, never cleaned up). Over time, `getUserOrders()` becomes unusable for active users as the array grows without bound.
-
-#### Recommendation
-
-Either implement removal on order finalization, or remove the on-chain array and rely on event indexing for historical queries.
-
----
-
-### [I-08] PythOracleVerifier Has 0% Test Coverage
-
-**Severity**: Informational (but critical for production readiness)
-**Contract**: PythOracleVerifier.sol
-**Status**: Open
-
-#### Description
-
-The Trail of Bits guidelines assessment found that PythOracleVerifier has **zero** test coverage — no unit or integration tests. This contract handles real-money oracle price verification, and any bug in `_normalizePythPrice()` or `verifyPrice()` could lead to incorrect minting/redemption amounts.
-
-#### Recommendation
-
-Write a full unit test suite covering: negative exponents, extreme prices, zero-price rejection, feed-not-configured scenarios, and normalization edge cases. Add fork tests against real Pyth on Base.
-
----
-
-## Appendix A: Code Maturity Assessment (Trail of Bits Framework)
-
-**Overall Score: 2.6 / 4.0 (Moderate-to-Satisfactory)**
-
-| Category | Score | Notes |
-|----------|-------|-------|
-| **Arithmetic** | 3/4 | Consistent `Math.mulDiv`, documented rounding, Solidity 0.8 overflow protection |
-| **Access Controls** | 3/4 | Clear role modifiers (`onlyAdmin`, `onlyVM`, `onlyMarket`), timelock governance |
-| **Documentation** | 3/4 | Comprehensive protocol docs (482 lines), developer guide (608 lines), NatSpec coverage |
-| **Testing** | 3/4 | 440 passing tests, 11 invariants with ghost variables, integration coverage |
-| **Low-Level Code** | 4/4 | No assembly, no delegatecall, only one justified `.call` for ETH refund |
-| **Complexity** | 2/4 | OwnVault.sol at 1,067 LOC handles too many responsibilities |
-| **Decentralization** | 2/4 | Single oracle signer (MVP), no on-chain multisig enforcement, admin halt power |
-| **MEV** | 2/4 | Escrow model helps, but no commit-reveal for orders, no VM-MEV protection |
-| **Auditing** | 1/4 | No prior external audit, no Slither CI integration, no monitoring infrastructure |
-
-### Top 5 Pre-Mainnet Actions
-
-1. Professional security audit from an established firm
-2. Integrate Slither into CI pipeline
-3. Build monitoring and incident response infrastructure
-4. Fork tests against real Base mainnet tokens (USDC, WETH, wstETH)
-5. Migrate to multi-signer oracle architecture
-
----
-
-## Appendix B: Static Analysis Results (Semgrep)
-
-**Tool**: Semgrep v1.156.0
-**Mode**: Important only (high-confidence security vulnerabilities)
-**Rulesets**: `p/security-audit`, `p/smart-contracts`, `p/owasp-top-ten`, `p/trailofbits`, `r/solidity`, `r/solidity.security`
-
-### Security Vulnerabilities Found: 0
-
-No high-confidence security vulnerabilities (ERROR/WARNING severity) were detected by any ruleset.
-
-### Informational Findings: 51
-
-| Rule | Count | Description |
-|------|-------|-------------|
-| `use-ownable2step` | 6 | Recommend `Ownable2Step` over `Ownable` for safer ownership transfers |
-| `non-payable-constructor` | 11 | Payable constructors save deployment gas |
-| `use-nested-if` | 10 | Nested `if` cheaper than `&&` in conditionals |
-| `state-variable-read-in-a-loop` | 8 | Cache state variables outside loops in OwnVault |
-| `inefficient-state-variable-increment` | 7 | `x = x + y` cheaper than `x += y` for state vars |
-| `use-custom-error-not-require` | 6 | Custom errors more gas-efficient than `require` strings |
-| `use-short-revert-string` | 2 | Revert strings should fit in 32 bytes |
-| `array-length-outside-loop` | 1 | Cache array length before loop in AssetRegistry |
-
-**Recommendation**: Consider migrating all 6 `Ownable` contracts to `Ownable2Step` to prevent accidental ownership transfer to an incorrect address.
-
----
-
-## Appendix C: Test Coverage
-
-| Contract | Line % | Branch % | Function % |
-|----------|--------|----------|------------|
-| OwnMarket.sol | 91.69% | 75.61% | 96.15% |
-| OwnVault.sol | 93.12% | 61.02% | 89.01% |
-| EToken.sol | 98.53% | 86.67% | 100.00% |
-| OracleVerifier.sol | 89.80% | 63.64% | 77.78% |
-| AssetRegistry.sol | 93.10% | 53.33% | 92.31% |
-| FeeCalculator.sol | 100.00% | 100.00% | 100.00% |
-| ProtocolRegistry.sol | 100.00% | 88.89% | 100.00% |
-| **PythOracleVerifier.sol** | **0.00%** | **0.00%** | **0.00%** |
-| VaultFactory.sol | 84.62% | 0.00% | 75.00% |
-| WETHRouter.sol | 100.00% | 100.00% | 100.00% |
-| WstETHRouter.sol | 84.38% | 80.00% | 80.00% |
-
-**Key gaps**: PythOracleVerifier at 0%, OwnVault branch coverage at 61%, AssetRegistry branch coverage at 53%.
-
----
-
-*This report was generated using automated security analysis tools and manual code review. It should be used as supplementary input for a professional security audit. The findings represent the auditor's assessment at the time of review and may not cover all potential vulnerabilities.*
+_Original findings cite code at review time (2026-06-09 review at commit `fa9cf33`; re-audits on `lending` through 2026-06-11). Every Critical/High was verified directly against source, and every fix has a regression test that fails without it. Suite: 670 passing._

@@ -19,12 +19,12 @@ contract SetVM is Script {
         console.log("New VM:", newVM);
 
         OwnVault vault = OwnVault(vaultAddr);
-        console.log("Current VM:", vault.vm());
+        console.log("Current manager:", vault.manager());
 
         vm.startBroadcast(vm.envUint("DEPLOYER_PRIVATE_KEY"));
-        vault.setVM(newVM);
+        vault.setManager(newVM);
         vm.stopBroadcast();
 
-        console.log("VM updated to:", vault.vm());
+        console.log("Manager updated to:", vault.manager());
     }
 }

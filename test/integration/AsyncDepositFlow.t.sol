@@ -10,7 +10,6 @@ import {AssetConfig, DepositRequest, DepositStatus} from "../../src/interfaces/t
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {OwnMarket} from "../../src/core/OwnMarket.sol";
 import {OwnVault} from "../../src/core/OwnVault.sol";
-import {VaultFactory} from "../../src/core/VaultFactory.sol";
 import {EToken} from "../../src/tokens/EToken.sol";
 
 /// @title AsyncDepositFlow Integration Test
@@ -34,19 +33,17 @@ contract AsyncDepositFlowTest is BaseTest {
         assetRegistry = new AssetRegistry(Actors.ADMIN);
 
         protocolRegistry.setAddress(protocolRegistry.ASSET_REGISTRY(), address(assetRegistry));
-        protocolRegistry.setAddress(protocolRegistry.TREASURY(), Actors.FEE_RECIPIENT);
-        protocolRegistry.setProtocolShareBps(2000);
 
-        VaultFactory factory = new VaultFactory(Actors.ADMIN, address(protocolRegistry));
-        protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), address(factory));
+        vm.stopPrank();
+        // Deploy + register the VaultManager before registering the vault (admin-gated).
+        _deployVaultManager();
+        vm.startPrank(Actors.ADMIN);
 
-        vault = OwnVault(factory.createVault(address(weth), Actors.VM1, "Own WETH Vault", "oWETH", 8000, 2000));
+        vault = new OwnVault(address(weth), "Own WETH Vault", "oWETH", address(protocolRegistry), Actors.VM1);
+        vaultManager.registerVault(address(vault), ETH);
 
         market = new OwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
-
-        vault.setGracePeriod(1 days);
-        vault.setClaimThreshold(6 hours);
 
         eTSLA = new EToken("Own Tesla", "eTSLA", TSLA, address(protocolRegistry), address(usdc));
 
@@ -61,10 +58,9 @@ contract AsyncDepositFlowTest is BaseTest {
 
         vm.stopPrank();
 
-        vm.startPrank(Actors.VM1);
-        vault.setPaymentToken(address(usdc));
-        vault.enableAsset(TSLA);
-        vm.stopPrank();
+        // Global controls now live on the VaultManager.
+        _setClaimThreshold(6 hours);
+        _setPaymentToken(address(usdc));
 
         vm.prank(Actors.ADMIN);
         vault.setRequireDepositApproval(true);
@@ -79,7 +75,7 @@ contract AsyncDepositFlowTest is BaseTest {
 
         vm.startPrank(Actors.LP1);
         weth.approve(address(vault), LP_DEPOSIT);
-        uint256 requestId = vault.requestDeposit(LP_DEPOSIT, Actors.LP1);
+        uint256 requestId = vault.requestDeposit(LP_DEPOSIT, Actors.LP1, 0);
         vm.stopPrank();
 
         // Collateral transferred to vault
@@ -125,7 +121,7 @@ contract AsyncDepositFlowTest is BaseTest {
 
         vm.startPrank(Actors.LP1);
         weth.approve(address(vault), LP_DEPOSIT);
-        uint256 requestId = vault.requestDeposit(LP_DEPOSIT, Actors.LP1);
+        uint256 requestId = vault.requestDeposit(LP_DEPOSIT, Actors.LP1, 0);
         vm.stopPrank();
 
         assertEq(weth.balanceOf(Actors.LP1), 0, "LP collateral escrowed");
@@ -155,7 +151,7 @@ contract AsyncDepositFlowTest is BaseTest {
 
         vm.startPrank(Actors.LP1);
         weth.approve(address(vault), LP_DEPOSIT);
-        uint256 requestId = vault.requestDeposit(LP_DEPOSIT, Actors.LP1);
+        uint256 requestId = vault.requestDeposit(LP_DEPOSIT, Actors.LP1, 0);
 
         assertEq(weth.balanceOf(Actors.LP1), 0, "collateral escrowed");
 
@@ -179,7 +175,7 @@ contract AsyncDepositFlowTest is BaseTest {
 
         vm.startPrank(Actors.LP1);
         weth.approve(address(vault), LP_DEPOSIT);
-        uint256 requestId = vault.requestDeposit(LP_DEPOSIT, Actors.LP1);
+        uint256 requestId = vault.requestDeposit(LP_DEPOSIT, Actors.LP1, 0);
         vm.stopPrank();
 
         vm.prank(Actors.LP2);
@@ -197,12 +193,12 @@ contract AsyncDepositFlowTest is BaseTest {
 
         vm.startPrank(Actors.LP1);
         weth.approve(address(vault), LP_DEPOSIT);
-        uint256 reqId1 = vault.requestDeposit(LP_DEPOSIT, Actors.LP1);
+        uint256 reqId1 = vault.requestDeposit(LP_DEPOSIT, Actors.LP1, 0);
         vm.stopPrank();
 
         vm.startPrank(Actors.LP2);
         weth.approve(address(vault), LP_DEPOSIT * 2);
-        uint256 reqId2 = vault.requestDeposit(LP_DEPOSIT * 2, Actors.LP2);
+        uint256 reqId2 = vault.requestDeposit(LP_DEPOSIT * 2, Actors.LP2, 0);
         vm.stopPrank();
 
         uint256[] memory pending = vault.getPendingDeposits();
@@ -242,7 +238,7 @@ contract AsyncDepositFlowTest is BaseTest {
         vm.startPrank(Actors.LP1);
         weth.approve(address(vault), LP_DEPOSIT);
         vm.expectRevert(IOwnVault.VaultIsPaused.selector);
-        vault.requestDeposit(LP_DEPOSIT, Actors.LP1);
+        vault.requestDeposit(LP_DEPOSIT, Actors.LP1, 0);
         vm.stopPrank();
     }
 
@@ -252,7 +248,6 @@ contract AsyncDepositFlowTest is BaseTest {
 
     function test_asyncDeposit_whileHalted_reverts() public {
         vm.startPrank(Actors.ADMIN);
-        vault.haltAsset(TSLA, TSLA_PRICE);
         vault.haltVault();
         vm.stopPrank();
 
@@ -260,7 +255,7 @@ contract AsyncDepositFlowTest is BaseTest {
         vm.startPrank(Actors.LP1);
         weth.approve(address(vault), LP_DEPOSIT);
         vm.expectRevert(IOwnVault.VaultIsHalted.selector);
-        vault.requestDeposit(LP_DEPOSIT, Actors.LP1);
+        vault.requestDeposit(LP_DEPOSIT, Actors.LP1, 0);
         vm.stopPrank();
     }
 
@@ -273,11 +268,11 @@ contract AsyncDepositFlowTest is BaseTest {
 
         vm.startPrank(Actors.LP1);
         weth.approve(address(vault), LP_DEPOSIT);
-        uint256 requestId = vault.requestDeposit(LP_DEPOSIT, Actors.LP1);
+        uint256 requestId = vault.requestDeposit(LP_DEPOSIT, Actors.LP1, 0);
         vm.stopPrank();
 
         vm.prank(Actors.LP2);
-        vm.expectRevert(IOwnVault.OnlyVM.selector);
+        vm.expectRevert(IOwnVault.OnlyManager.selector);
         vault.acceptDeposit(requestId);
     }
 
@@ -290,11 +285,11 @@ contract AsyncDepositFlowTest is BaseTest {
 
         vm.startPrank(Actors.LP1);
         weth.approve(address(vault), LP_DEPOSIT);
-        uint256 requestId = vault.requestDeposit(LP_DEPOSIT, Actors.LP1);
+        uint256 requestId = vault.requestDeposit(LP_DEPOSIT, Actors.LP1, 0);
         vm.stopPrank();
 
         vm.prank(Actors.LP2);
-        vm.expectRevert(IOwnVault.OnlyVM.selector);
+        vm.expectRevert(IOwnVault.OnlyManager.selector);
         vault.rejectDeposit(requestId);
     }
 
@@ -307,7 +302,7 @@ contract AsyncDepositFlowTest is BaseTest {
 
         vm.startPrank(Actors.LP1);
         weth.approve(address(vault), LP_DEPOSIT);
-        uint256 requestId = vault.requestDeposit(LP_DEPOSIT, Actors.LP1);
+        uint256 requestId = vault.requestDeposit(LP_DEPOSIT, Actors.LP1, 0);
         vm.stopPrank();
 
         vm.prank(Actors.VM1);
@@ -325,7 +320,7 @@ contract AsyncDepositFlowTest is BaseTest {
     function test_asyncDeposit_zeroAmount_reverts() public {
         vm.prank(Actors.LP1);
         vm.expectRevert(abi.encodeWithSignature("ZeroAmount()"));
-        vault.requestDeposit(0, Actors.LP1);
+        vault.requestDeposit(0, Actors.LP1, 0);
     }
 
     // ══════════════════════════════════════════════════════════
@@ -337,7 +332,7 @@ contract AsyncDepositFlowTest is BaseTest {
 
         vm.startPrank(Actors.LP1);
         weth.approve(address(vault), LP_DEPOSIT);
-        uint256 requestId = vault.requestDeposit(LP_DEPOSIT, Actors.LP2);
+        uint256 requestId = vault.requestDeposit(LP_DEPOSIT, Actors.LP2, 0);
         vm.stopPrank();
 
         vm.prank(Actors.VM1);
@@ -360,7 +355,7 @@ contract AsyncDepositFlowTest is BaseTest {
         vm.startPrank(Actors.LP1);
         weth.approve(address(vault), LP_DEPOSIT);
         vm.expectRevert(IOwnVault.DepositApprovalNotRequired.selector);
-        vault.requestDeposit(LP_DEPOSIT, Actors.LP1);
+        vault.requestDeposit(LP_DEPOSIT, Actors.LP1, 0);
         vm.stopPrank();
     }
 

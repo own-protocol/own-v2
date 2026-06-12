@@ -1,8 +1,8 @@
-# Own Protocol
+# Own Protocol v2
 
 Own is a permissionless protocol for bringing tokenized real-world assets (RWAs) onchain. Users mint ERC-20 tokens called **eTokens** (e.g. eTSLA, eGOLD) by using stablecoins. Each eToken tracks the price of its underlying asset through onchain oracles. The tokens are backed by on-chain collateral deposited by LPs in Own Vaults.
 
-**Core contracts**: ProtocolRegistry, OwnMarket, OwnVault, VaultFactory, AssetRegistry, FeeCalculator, OracleVerifier, PythOracleVerifier, EToken
+**Core contracts**: ProtocolRegistry, OwnMarket, OwnVault, VaultManager, AssetRegistry, BorrowManager, OracleVerifier, PythOracleVerifier, EToken
 
 **Peripheral contracts**: WETHRouter, WstETHRouter
 

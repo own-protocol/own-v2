@@ -57,8 +57,10 @@ invariant = { runs = 5_000, depth = 200 }
 
 # RPC endpoints
 [rpc_endpoints]
+base = "${BASE_RPC}"
 base_sepolia = "${BASE_SEPOLIA_RPC}"
 
 # Etherscan verification
 [etherscan]
+base = { key = "${BASESCAN_API_KEY}", url = "https://api.basescan.org/api" }
 base_sepolia = { key = "${BASESCAN_API_KEY}", url = "https://api-sepolia.basescan.org/api" }

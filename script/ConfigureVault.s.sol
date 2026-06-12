@@ -3,44 +3,33 @@ pragma solidity 0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
 
-import {OwnVault} from "../src/core/OwnVault.sol";
+import {IProtocolRegistry} from "../src/interfaces/IProtocolRegistry.sol";
+import {IVaultManager} from "../src/interfaces/IVaultManager.sol";
 
-/// @title ConfigureVault — VM-specific vault setup
-/// @notice Run by the vault manager after CreateVault.s.sol.
-///         Sets payment token and enables assets for trading.
+/// @title ConfigureVault — Global protocol order-settlement config
+/// @notice Run by the admin after deployment. Sets the single global payment token on the
+///         VaultManager. Payment token, signers, pause/halt, and the claim threshold are all
+///         global now — there is no per-vault order config.
 ///
 /// Usage:
 ///   forge script script/ConfigureVault.s.sol --rpc-url base_sepolia --broadcast
 contract ConfigureVault is Script {
-    bytes32 constant TSLA = bytes32("TSLA");
-    bytes32 constant GOLD = bytes32("GOLD");
-
     function run() external {
-        address vaultAddr = vm.envAddress("VAULT_ADDRESS");
+        address registryAddr = vm.envAddress("PROTOCOL_REGISTRY");
         address mockUSDC = vm.envAddress("MOCK_USDC");
 
-        console.log("Vault:", vaultAddr);
+        console.log("ProtocolRegistry:", registryAddr);
         console.log("Payment Token (USDC):", mockUSDC);
 
-        vm.startBroadcast(vm.envUint("VM_PRIVATE_KEY"));
+        vm.startBroadcast(vm.envUint("DEPLOYER_PRIVATE_KEY"));
 
-        OwnVault vault = OwnVault(vaultAddr);
-
-        // Set payment token (stablecoin for mint/redeem orders)
-        vault.setPaymentToken(mockUSDC);
-        console.log("Payment token set");
-
-        // Enable assets for trading
-        vault.enableAsset(TSLA);
-        console.log("TSLA enabled");
-
-        vault.enableAsset(GOLD);
-        console.log("GOLD enabled");
+        IVaultManager vaultManager = IVaultManager(IProtocolRegistry(registryAddr).vaultManager());
+        vaultManager.setPaymentToken(mockUSDC);
+        console.log("Global payment token set");
 
         vm.stopBroadcast();
 
         console.log("");
-        console.log("=== Vault Configured ===");
-        console.log("The vault is ready for trading on Base Sepolia.");
+        console.log("=== Protocol Configured ===");
     }
 }

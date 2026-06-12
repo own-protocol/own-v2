@@ -240,6 +240,17 @@ contract ETokenTest is BaseTest {
         eToken.depositRewards(0);
     }
 
+    function test_depositRewards_tooSmall_reverts() public {
+        // Large supply + tiny reward: the per-share delta floors to 0 — the tokens
+        // would be pulled in but never distributed.
+        eToken.mint(Actors.MINTER1, 2_000_000e18);
+        rewardToken.mint(address(this), 1);
+        rewardToken.approve(address(eToken), 1);
+
+        vm.expectRevert(IEToken.RewardTooSmall.selector);
+        eToken.depositRewards(1);
+    }
+
     function test_depositRewards_zeroSupply_reverts() public {
         // No eTokens minted, so totalSupply == 0
         uint256 rewardAmount = 1000e6;

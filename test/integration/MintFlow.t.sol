@@ -5,13 +5,11 @@ import {Actors} from "../helpers/Actors.sol";
 import {BaseTest} from "../helpers/BaseTest.sol";
 
 import {IOwnMarket} from "../../src/interfaces/IOwnMarket.sol";
-import {AssetConfig, BPS, Order, OrderStatus, OrderType, PRECISION} from "../../src/interfaces/types/Types.sol";
+import {AssetConfig, BPS, Order, OrderStatus, OrderType, PRECISION, Quote} from "../../src/interfaces/types/Types.sol";
 
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
-import {FeeCalculator} from "../../src/core/FeeCalculator.sol";
 import {OwnMarket} from "../../src/core/OwnMarket.sol";
 import {OwnVault} from "../../src/core/OwnVault.sol";
-import {VaultFactory} from "../../src/core/VaultFactory.sol";
 import {EToken} from "../../src/tokens/EToken.sol";
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -27,7 +25,6 @@ contract MintFlowTest is BaseTest {
     OwnVault public vault;
     EToken public eTSLA;
     EToken public eGOLD;
-    FeeCalculator public feeCalc;
 
     uint256 constant MAX_EXPOSURE = 10_000_000e18;
     uint256 constant MAX_UTIL_BPS = 8000;
@@ -48,30 +45,27 @@ contract MintFlowTest is BaseTest {
         assetRegistry = new AssetRegistry(Actors.ADMIN);
 
         protocolRegistry.setAddress(protocolRegistry.ASSET_REGISTRY(), address(assetRegistry));
-        protocolRegistry.setAddress(protocolRegistry.TREASURY(), Actors.FEE_RECIPIENT);
-        protocolRegistry.setProtocolShareBps(2000);
 
-        feeCalc = new FeeCalculator(address(protocolRegistry), Actors.ADMIN);
-        feeCalc.setMintFee(1, 0);
-        feeCalc.setMintFee(2, 0);
-        feeCalc.setMintFee(3, 0);
-        feeCalc.setRedeemFee(1, 0);
-        feeCalc.setRedeemFee(2, 0);
-        feeCalc.setRedeemFee(3, 0);
-        protocolRegistry.setAddress(keccak256("FEE_CALCULATOR"), address(feeCalc));
+        vm.stopPrank();
+        // Deploy + register the VaultManager before registering the vault (admin-gated).
+        _deployVaultManager();
+        vm.startPrank(Actors.ADMIN);
 
-        VaultFactory factory = new VaultFactory(Actors.ADMIN, address(protocolRegistry));
-        protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), address(factory));
-
-        vault = OwnVault(factory.createVault(address(weth), Actors.VM1, "Own WETH Vault", "oWETH", MAX_UTIL_BPS, 2000));
+        vault = new OwnVault(address(weth), "Own WETH Vault", "oWETH", address(protocolRegistry), vm1Signer);
+        vaultManager.registerVault(address(vault), ETH);
 
         market = new OwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
 
-        vault.setGracePeriod(1 days);
-        vault.setClaimThreshold(6 hours);
-
         vm.stopPrank();
+
+        // Global controls now live on the VaultManager.
+        _setClaimThreshold(6 hours);
+        _registerSigner(vm1Signer, Actors.VM1);
+
+        // Per-asset issuance ceilings (global util default is set by _deployVaultManager).
+        _setAssetCap(TSLA, DEFAULT_ASSET_CAP_USD);
+        _setAssetCap(GOLD, DEFAULT_ASSET_CAP_USD);
 
         vm.label(address(assetRegistry), "AssetRegistry");
         vm.label(address(market), "OwnMarket");
@@ -105,23 +99,46 @@ contract MintFlowTest is BaseTest {
         });
         assetRegistry.addAsset(GOLD, address(eGOLD), goldConfig);
 
+        // Register the WETH collateral ticker so the VaultManager can resolve its oracle.
+        AssetConfig memory ethConfig = AssetConfig({
+            activeToken: address(weth),
+            legacyTokens: new address[](0),
+            active: true,
+            volatilityLevel: 1,
+            oracleType: 1
+        });
+        assetRegistry.addAsset(ETH, address(weth), ethConfig);
+
         vm.stopPrank();
     }
 
     function _configureVault() private {
-        vm.startPrank(Actors.VM1);
-        vault.setPaymentToken(address(usdc));
-        vault.enableAsset(TSLA);
-        vault.enableAsset(GOLD);
-        vm.stopPrank();
+        // Payment token is now a global VaultManager setting.
+        _setPaymentToken(address(usdc));
     }
 
     function _depositLPCollateral() private {
-        _fundWETH(Actors.VM1, LP_DEPOSIT);
-        vm.startPrank(Actors.VM1);
+        _fundWETH(vm1Signer, LP_DEPOSIT);
+        vm.startPrank(vm1Signer);
         weth.approve(address(vault), LP_DEPOSIT);
         vault.deposit(LP_DEPOSIT, Actors.LP1);
         vm.stopPrank();
+
+        // Seed the manager's marks: collateral (so globalCollateralUSD != 0) and asset prices.
+        _pullCollateralPrice(address(vault));
+        _pullAssetPrice(TSLA);
+        _pullAssetPrice(GOLD);
+    }
+
+    /// @dev Execute a market mint for `minter` against a VM-signed quote (1 tx).
+    function _marketMint(address minter, bytes32 asset, uint256 amount, uint256 price) internal {
+        _fundUSDC(minter, amount);
+        vm.prank(minter);
+        usdc.approve(address(market), amount);
+        Quote memory q = _buildQuote(0, minter, asset, OrderType.Mint, amount, price);
+        bytes memory sig = _signQuote(market, q, vm1SignerPk);
+        vm.prank(minter);
+        market.executeOrder(q, sig);
     }
 
     // ══════════════════════════════════════════════════════════
@@ -129,14 +146,34 @@ contract MintFlowTest is BaseTest {
     // ══════════════════════════════════════════════════════════
 
     function test_fullMintFlow_basic() public {
-        // TODO: Rewrite once OwnMarket integration is finalised
-        // The new API: placeMintOrder(asset, amount, price, expiry)
-        // claimOrder(orderId), confirmOrder(orderId)
+        // Happy-path mint now settles atomically against a VM-signed market quote.
         _fundUSDC(Actors.MINTER1, MINT_AMOUNT);
+        vm.prank(Actors.MINTER1);
+        usdc.approve(address(market), MINT_AMOUNT);
 
+        Quote memory q = _buildQuote(0, Actors.MINTER1, TSLA, OrderType.Mint, MINT_AMOUNT, TSLA_PRICE);
+        bytes memory sig = _signQuote(market, q, vm1SignerPk);
+
+        vm.prank(Actors.MINTER1);
+        market.executeOrder(q, sig);
+
+        // Verify eTokens minted to user, net stablecoins to the signer's linked address
+        uint256 expectedETokens = Math.mulDiv(MINT_AMOUNT * 1e12, PRECISION, TSLA_PRICE);
+        assertEq(eTSLA.balanceOf(Actors.MINTER1), expectedETokens, "minter received eTokens");
+        assertGt(expectedETokens, 0, "non-zero eTokens minted");
+        assertEq(usdc.balanceOf(Actors.VM1), MINT_AMOUNT, "linked address received stablecoins");
+        assertEq(usdc.balanceOf(address(market)), 0, "no escrow for market order");
+    }
+
+    // ══════════════════════════════════════════════════════════
+    //  Test: Limit mint flow — place (escrow), then VM fills
+    // ══════════════════════════════════════════════════════════
+
+    function test_limitMintFlow_placeThenFill() public {
+        _fundUSDC(Actors.MINTER1, MINT_AMOUNT);
         vm.startPrank(Actors.MINTER1);
         usdc.approve(address(market), MINT_AMOUNT);
-        uint256 orderId = market.placeMintOrder(address(vault), TSLA, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
+        uint256 orderId = market.placeOrder(TSLA, OrderType.Mint, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
         vm.stopPrank();
 
         assertEq(usdc.balanceOf(address(market)), MINT_AMOUNT, "stablecoins escrowed");
@@ -147,24 +184,16 @@ contract MintFlowTest is BaseTest {
         assertEq(order.amount, MINT_AMOUNT);
         assertEq(uint8(order.status), uint8(OrderStatus.Open));
 
-        vm.prank(Actors.VM1);
-        market.claimOrder(orderId);
+        Quote memory q = _buildQuote(orderId, Actors.MINTER1, TSLA, OrderType.Mint, MINT_AMOUNT, TSLA_PRICE);
+        vm.prank(vm1Signer);
+        market.fillOrder(q, _signQuote(market, q, vm1SignerPk));
 
         order = market.getOrder(orderId);
-        assertEq(uint8(order.status), uint8(OrderStatus.Claimed));
+        assertEq(uint8(order.status), uint8(OrderStatus.Filled));
 
-        vm.prank(Actors.VM1);
-        market.confirmOrder(orderId, _buildPriceProof(TSLA_PRICE));
-
-        order = market.getOrder(orderId);
-        assertEq(uint8(order.status), uint8(OrderStatus.Confirmed));
-
-        // Verify eTokens minted to user
         uint256 expectedETokens = Math.mulDiv(MINT_AMOUNT * 1e12, PRECISION, TSLA_PRICE);
         assertEq(eTSLA.balanceOf(Actors.MINTER1), expectedETokens, "minter received eTokens");
-        assertGt(expectedETokens, 0, "non-zero eTokens minted");
-
-        // Verify market escrow is cleared
+        assertEq(usdc.balanceOf(Actors.VM1), MINT_AMOUNT, "linked address received escrowed stablecoins");
         assertEq(usdc.balanceOf(address(market)), 0, "market escrow cleared");
     }
 
@@ -172,12 +201,12 @@ contract MintFlowTest is BaseTest {
     //  Test: Cancel before claim
     // ══════════════════════════════════════════════════════════
 
-    function test_fullMintFlow_cancelBeforeClaim() public {
+    function test_fullMintFlow_cancelBeforeFill() public {
         _fundUSDC(Actors.MINTER1, MINT_AMOUNT);
 
         vm.startPrank(Actors.MINTER1);
         usdc.approve(address(market), MINT_AMOUNT);
-        uint256 orderId = market.placeMintOrder(address(vault), TSLA, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
+        uint256 orderId = market.placeOrder(TSLA, OrderType.Mint, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
 
         assertEq(usdc.balanceOf(Actors.MINTER1), 0);
         assertEq(usdc.balanceOf(address(market)), MINT_AMOUNT);
@@ -202,7 +231,7 @@ contract MintFlowTest is BaseTest {
 
         vm.startPrank(Actors.MINTER1);
         usdc.approve(address(market), MINT_AMOUNT);
-        uint256 orderId = market.placeMintOrder(address(vault), TSLA, MINT_AMOUNT, TSLA_PRICE, expiry);
+        uint256 orderId = market.placeOrder(TSLA, OrderType.Mint, MINT_AMOUNT, TSLA_PRICE, expiry);
         vm.stopPrank();
 
         vm.warp(expiry + 1);
@@ -224,7 +253,7 @@ contract MintFlowTest is BaseTest {
 
         vm.startPrank(Actors.MINTER1);
         usdc.approve(address(market), MINT_AMOUNT);
-        uint256 orderId = market.placeMintOrder(address(vault), TSLA, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
+        uint256 orderId = market.placeOrder(TSLA, OrderType.Mint, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
         vm.stopPrank();
 
         vm.prank(Actors.MINTER2);
@@ -240,7 +269,7 @@ contract MintFlowTest is BaseTest {
         vm.startPrank(Actors.MINTER1);
         usdc.approve(address(market), MINT_AMOUNT);
         vm.expectRevert(abi.encodeWithSignature("ZeroAmount()"));
-        market.placeMintOrder(address(vault), TSLA, 0, TSLA_PRICE, block.timestamp + 1 days);
+        market.placeOrder(TSLA, OrderType.Mint, 0, TSLA_PRICE, block.timestamp + 1 days);
         vm.stopPrank();
     }
 
@@ -254,31 +283,31 @@ contract MintFlowTest is BaseTest {
         vm.startPrank(Actors.MINTER1);
         usdc.approve(address(market), MINT_AMOUNT);
         vm.expectRevert(abi.encodeWithSignature("InvalidExpiry()"));
-        market.placeMintOrder(address(vault), TSLA, MINT_AMOUNT, TSLA_PRICE, block.timestamp);
+        market.placeOrder(TSLA, OrderType.Mint, MINT_AMOUNT, TSLA_PRICE, block.timestamp);
         vm.stopPrank();
     }
 
     // ══════════════════════════════════════════════════════════
-    //  Test: Open orders tracking
+    //  Test: User orders tracking
     // ══════════════════════════════════════════════════════════
 
-    function test_fullMintFlow_openOrdersTracking() public {
+    function test_fullMintFlow_userOrdersTracking() public {
         _fundUSDC(Actors.MINTER1, MINT_AMOUNT);
 
         vm.startPrank(Actors.MINTER1);
         usdc.approve(address(market), MINT_AMOUNT);
-        uint256 orderId = market.placeMintOrder(address(vault), TSLA, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
+        uint256 orderId = market.placeOrder(TSLA, OrderType.Mint, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
         vm.stopPrank();
 
-        uint256[] memory openOrders = market.getOpenOrders(TSLA);
+        uint256[] memory userOrders = market.getUserOrders(Actors.MINTER1);
         bool found;
-        for (uint256 i; i < openOrders.length; i++) {
-            if (openOrders[i] == orderId) {
+        for (uint256 i; i < userOrders.length; i++) {
+            if (userOrders[i] == orderId) {
                 found = true;
                 break;
             }
         }
-        assertTrue(found, "order in open orders list");
+        assertTrue(found, "order in user orders list");
     }
 
     // ══════════════════════════════════════════════════════════
@@ -288,29 +317,9 @@ contract MintFlowTest is BaseTest {
     function test_mintFlow_multipleAssets_sameVault() public {
         uint256 goldAmount = 5000e6;
 
-        // Place TSLA order
-        _fundUSDC(Actors.MINTER1, MINT_AMOUNT);
-        vm.startPrank(Actors.MINTER1);
-        usdc.approve(address(market), MINT_AMOUNT);
-        uint256 tslaOrderId =
-            market.placeMintOrder(address(vault), TSLA, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
-        vm.stopPrank();
-
-        // Place GOLD order
-        _fundUSDC(Actors.MINTER2, goldAmount);
-        vm.startPrank(Actors.MINTER2);
-        usdc.approve(address(market), goldAmount);
-        uint256 goldOrderId =
-            market.placeMintOrder(address(vault), GOLD, goldAmount, GOLD_PRICE, block.timestamp + 1 days);
-        vm.stopPrank();
-
-        // VM claims and confirms both
-        vm.startPrank(Actors.VM1);
-        market.claimOrder(tslaOrderId);
-        market.claimOrder(goldOrderId);
-        market.confirmOrder(tslaOrderId, _buildPriceProof(TSLA_PRICE));
-        market.confirmOrder(goldOrderId, _buildPriceProof(GOLD_PRICE));
-        vm.stopPrank();
+        // Market mint TSLA for MINTER1 and GOLD for MINTER2
+        _marketMint(Actors.MINTER1, TSLA, MINT_AMOUNT, TSLA_PRICE);
+        _marketMint(Actors.MINTER2, GOLD, goldAmount, GOLD_PRICE);
 
         // Verify independent eToken balances
         uint256 expectedTSLA = Math.mulDiv(MINT_AMOUNT * 1e12, PRECISION, TSLA_PRICE);
@@ -327,25 +336,9 @@ contract MintFlowTest is BaseTest {
     // ══════════════════════════════════════════════════════════
 
     function test_mintFlow_multipleOrders_sameUser() public {
-        _fundUSDC(Actors.MINTER1, MINT_AMOUNT * 2);
-
-        vm.startPrank(Actors.MINTER1);
-        usdc.approve(address(market), MINT_AMOUNT * 2);
-        uint256 orderId1 =
-            market.placeMintOrder(address(vault), TSLA, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
-        uint256 orderId2 =
-            market.placeMintOrder(address(vault), TSLA, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
-        vm.stopPrank();
-
-        assertTrue(orderId1 != orderId2, "distinct order IDs");
-
-        // Claim and confirm both
-        vm.startPrank(Actors.VM1);
-        market.claimOrder(orderId1);
-        market.claimOrder(orderId2);
-        market.confirmOrder(orderId1, _buildPriceProof(TSLA_PRICE));
-        market.confirmOrder(orderId2, _buildPriceProof(TSLA_PRICE));
-        vm.stopPrank();
+        // Two separate market mints accumulate eTokens for the same user.
+        _marketMint(Actors.MINTER1, TSLA, MINT_AMOUNT, TSLA_PRICE);
+        _marketMint(Actors.MINTER1, TSLA, MINT_AMOUNT, TSLA_PRICE);
 
         uint256 expectedPerOrder = Math.mulDiv(MINT_AMOUNT * 1e12, PRECISION, TSLA_PRICE);
         assertEq(eTSLA.balanceOf(Actors.MINTER1), expectedPerOrder * 2, "minter got eTokens from both orders");

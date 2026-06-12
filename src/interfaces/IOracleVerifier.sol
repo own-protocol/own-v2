@@ -20,6 +20,9 @@ interface IOracleVerifier {
     /// @notice Emitted when an authorised signer is removed.
     event SignerRemoved(address indexed signer);
 
+    /// @notice Emitted when an asset's oracle bounds are configured (in-house oracle only).
+    event AssetOracleConfigSet(bytes32 indexed asset, uint256 maxStaleness, uint256 maxDeviation);
+
     // ──────────────────────────────────────────────────────────
     //  Errors
     // ──────────────────────────────────────────────────────────
@@ -31,6 +34,8 @@ interface IOracleVerifier {
     error ZeroPrice();
     error ZeroAddress();
     error PriceNotAvailable(bytes32 asset);
+    error OracleConfigNotSet(bytes32 asset);
+    error InvalidOracleConfig();
 
     // ──────────────────────────────────────────────────────────
     //  Push — update price feeds (keeper / signer)

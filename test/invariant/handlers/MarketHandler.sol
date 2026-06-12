@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {FeeCalculator} from "../../../src/core/FeeCalculator.sol";
 import {OwnMarket} from "../../../src/core/OwnMarket.sol";
 import {OwnVault} from "../../../src/core/OwnVault.sol";
 
-import {BPS, Order, OrderStatus, OrderType, PRECISION} from "../../../src/interfaces/types/Types.sol";
+import {IOwnMarket} from "../../../src/interfaces/IOwnMarket.sol";
+import {IVaultManager} from "../../../src/interfaces/IVaultManager.sol";
+import {BPS, Order, OrderStatus, OrderType, PRECISION, Quote} from "../../../src/interfaces/types/Types.sol";
 import {EToken} from "../../../src/tokens/EToken.sol";
 
 import {Actors} from "../../helpers/Actors.sol";
@@ -17,12 +18,12 @@ import {CommonBase} from "forge-std/Base.sol";
 import {StdCheats} from "forge-std/StdCheats.sol";
 import {StdUtils} from "forge-std/StdUtils.sol";
 
-/// @title MarketHandler — Invariant test handler for OwnMarket
-/// @notice Exercises the full order lifecycle with fuzzed inputs.
+/// @title MarketHandler — Invariant test handler for the RFQ OwnMarket
+/// @notice Exercises the resting-order lifecycle (place → fill / cancel / expire / force) with
+///         fuzzed inputs. Fills are settled against quotes signed by the vault's VM key.
 contract MarketHandler is CommonBase, StdCheats, StdUtils {
     OwnMarket public market;
     OwnVault public vault;
-    FeeCalculator public feeCalc;
     MockERC20 public usdc;
     EToken public eTSLA;
     MockOracleVerifier public oracle;
@@ -30,39 +31,42 @@ contract MarketHandler is CommonBase, StdCheats, StdUtils {
     bytes32 public constant TSLA = bytes32("TSLA");
     bytes32 public constant ETH_ASSET = bytes32("ETH");
     uint256 public constant TSLA_PRICE = 250e18;
+    uint256 public constant ETH_PRICE = 3000e18;
 
     address[] public minters;
-    address public vmAddr;
+    /// @dev The global signer's linked settlement address: mint proceeds flow to it,
+    ///      redeem payouts are funded from it.
+    address public linkedAddr;
+    uint256 public vmPk;
 
     // ── Ghost variables ─────────────────────────────────────────
 
+    /// @dev Sum over OPEN mint orders of (amount - filledAmount). Should match market USDC escrow.
     uint256 public ghost_escrowedStablecoins;
-    uint256 public ghost_escrowedMintFees;
+    /// @dev Sum over OPEN redeem orders of (amount - filledAmount). Should match market eToken escrow.
     uint256 public ghost_escrowedETokens;
 
     uint256[] public ghost_openMintIds;
     uint256[] public ghost_openRedeemIds;
-    uint256[] public ghost_claimedMintIds;
-    uint256[] public ghost_claimedRedeemIds;
-
-    mapping(uint256 => uint256) public ghost_orderAmount;
-    mapping(uint256 => uint256) public ghost_orderFee;
 
     uint256 public ghost_callCount_placeMint;
     uint256 public ghost_callCount_placeRedeem;
-    uint256 public ghost_callCount_claim;
-    uint256 public ghost_callCount_confirm;
+    uint256 public ghost_callCount_fill;
+
+    uint256 private _quoteNonce = 1;
 
     // ── Constructor ─────────────────────────────────────────────
 
-    constructor(address _market, address _vault, address _feeCalc, address _usdc, address _eTSLA, address _oracle) {
+    constructor(address _market, address _vault, address _usdc, address _eTSLA, address _oracle, uint256 _vmPk) {
         market = OwnMarket(_market);
         vault = OwnVault(_vault);
-        feeCalc = FeeCalculator(_feeCalc);
         usdc = MockERC20(_usdc);
         eTSLA = EToken(_eTSLA);
         oracle = MockOracleVerifier(_oracle);
-        vmAddr = Actors.VM1;
+        vmPk = _vmPk;
+        // The keyed signer (vmPk -> vm1Signer) is registered globally with Actors.VM1 as its
+        // linked settlement address, so mint proceeds and redeem payouts settle through VM1.
+        linkedAddr = Actors.VM1;
 
         minters.push(Actors.MINTER1);
         minters.push(Actors.MINTER2);
@@ -75,19 +79,17 @@ contract MarketHandler is CommonBase, StdCheats, StdUtils {
         amount = bound(amount, 1e6, 100_000e6); // 1 to 100k USDC
         uint256 expiry = block.timestamp + bound(expirySeed, 1 hours, 7 days);
 
-        // Refresh oracle so prices are fresh
         oracle.setPrice(TSLA, TSLA_PRICE, block.timestamp);
 
         usdc.mint(minter, amount);
 
         vm.startPrank(minter);
         usdc.approve(address(market), amount);
-        uint256 orderId = market.placeMintOrder(address(vault), TSLA, amount, TSLA_PRICE, expiry);
+        uint256 orderId = market.placeOrder(TSLA, OrderType.Mint, amount, TSLA_PRICE, expiry);
         vm.stopPrank();
 
         ghost_escrowedStablecoins += amount;
         ghost_openMintIds.push(orderId);
-        ghost_orderAmount[orderId] = amount;
         ghost_callCount_placeMint++;
     }
 
@@ -103,20 +105,17 @@ contract MarketHandler is CommonBase, StdCheats, StdUtils {
 
         vm.startPrank(minter);
         eTSLA.approve(address(market), amount);
-        uint256 orderId = market.placeRedeemOrder(address(vault), TSLA, amount, TSLA_PRICE, expiry);
+        uint256 orderId = market.placeOrder(TSLA, OrderType.Redeem, amount, TSLA_PRICE, expiry);
         vm.stopPrank();
 
         ghost_escrowedETokens += amount;
         ghost_openRedeemIds.push(orderId);
-        ghost_orderAmount[orderId] = amount;
         ghost_callCount_placeRedeem++;
     }
 
-    // ── VM claim ────────────────────────────────────────────────
+    // ── VM fill (full or partial) ───────────────────────────────
 
-    function claimMintOrder(
-        uint256 idSeed
-    ) external {
+    function fillMintOrder(uint256 idSeed, uint256 fillSeed) external {
         uint256 len = ghost_openMintIds.length;
         if (len == 0) return;
 
@@ -130,30 +129,23 @@ contract MarketHandler is CommonBase, StdCheats, StdUtils {
         }
         if (block.timestamp > order.expiry) return;
 
-        // Refresh oracle
         oracle.setPrice(TSLA, TSLA_PRICE, block.timestamp);
-        oracle.setPrice(ETH_ASSET, 3000e18, block.timestamp);
+        oracle.setPrice(ETH_ASSET, ETH_PRICE, block.timestamp);
 
-        vm.prank(vmAddr);
-        market.claimOrder(orderId);
+        uint256 remaining = order.amount - order.filledAmount;
+        uint256 fill = bound(fillSeed, 1, remaining);
 
-        // Compute fee
-        uint256 feeBps = feeCalc.getMintFee(TSLA, order.amount);
-        uint256 feeAmount = Math.mulDiv(order.amount, feeBps, BPS, Math.Rounding.Ceil);
-
-        // Stablecoins: full amount was escrowed at placement. Now (amount - fee) released to VM, fee stays.
-        ghost_escrowedStablecoins -= order.amount;
-        ghost_escrowedMintFees += feeAmount;
-        ghost_orderFee[orderId] = feeAmount;
-
-        _removeFromArray(ghost_openMintIds, idx);
-        ghost_claimedMintIds.push(orderId);
-        ghost_callCount_claim++;
+        Quote memory q = _quote(orderId, order.user, OrderType.Mint, fill, TSLA_PRICE);
+        try market.fillOrder(q, _sign(q)) {
+            ghost_escrowedStablecoins -= fill;
+            ghost_callCount_fill++;
+            if (fill == remaining) _removeFromArray(ghost_openMintIds, idx);
+        } catch {
+            // Utilization breach or transient failure — leave state unchanged.
+        }
     }
 
-    function claimRedeemOrder(
-        uint256 idSeed
-    ) external {
+    function fillRedeemOrder(uint256 idSeed, uint256 fillSeed) external {
         uint256 len = ghost_openRedeemIds.length;
         if (len == 0) return;
 
@@ -168,94 +160,29 @@ contract MarketHandler is CommonBase, StdCheats, StdUtils {
         if (block.timestamp > order.expiry) return;
 
         oracle.setPrice(TSLA, TSLA_PRICE, block.timestamp);
-        oracle.setPrice(ETH_ASSET, 3000e18, block.timestamp);
+        oracle.setPrice(ETH_ASSET, ETH_PRICE, block.timestamp);
 
-        vm.prank(vmAddr);
-        market.claimOrder(orderId);
+        uint256 remaining = order.amount - order.filledAmount;
+        uint256 fill = bound(fillSeed, 1, remaining);
 
-        // eTokens stay in escrow — no ghost change
-        _removeFromArray(ghost_openRedeemIds, idx);
-        ghost_claimedRedeemIds.push(orderId);
-        ghost_callCount_claim++;
-    }
-
-    // ── VM confirm ──────────────────────────────────────────────
-
-    function confirmMintOrder(
-        uint256 idSeed
-    ) external {
-        uint256 len = ghost_claimedMintIds.length;
-        if (len == 0) return;
-
-        uint256 idx = bound(idSeed, 0, len - 1);
-        uint256 orderId = ghost_claimedMintIds[idx];
-
-        Order memory order = market.getOrder(orderId);
-        if (order.status != OrderStatus.Claimed) {
-            _removeFromArray(ghost_claimedMintIds, idx);
-            return;
-        }
-        if (block.timestamp > order.expiry) return;
-
-        oracle.setPrice(TSLA, TSLA_PRICE, block.timestamp);
-        oracle.setPrice(ETH_ASSET, 3000e18, block.timestamp);
-
-        bytes memory proof = abi.encode(TSLA_PRICE, block.timestamp);
-        bytes memory priceProofData = abi.encode(proof, proof, uint8(0));
-
-        vm.prank(vmAddr);
-        market.confirmOrder(orderId, priceProofData);
-
-        // Fee moved from escrow to vault
-        ghost_escrowedMintFees -= ghost_orderFee[orderId];
-
-        _removeFromArray(ghost_claimedMintIds, idx);
-        ghost_callCount_confirm++;
-    }
-
-    function confirmRedeemOrder(
-        uint256 idSeed
-    ) external {
-        uint256 len = ghost_claimedRedeemIds.length;
-        if (len == 0) return;
-
-        uint256 idx = bound(idSeed, 0, len - 1);
-        uint256 orderId = ghost_claimedRedeemIds[idx];
-
-        Order memory order = market.getOrder(orderId);
-        if (order.status != OrderStatus.Claimed) {
-            _removeFromArray(ghost_claimedRedeemIds, idx);
-            return;
-        }
-        if (block.timestamp > order.expiry) return;
-
-        oracle.setPrice(TSLA, TSLA_PRICE, block.timestamp);
-        oracle.setPrice(ETH_ASSET, 3000e18, block.timestamp);
-
-        // VM needs to pay gross payout to user + fee to vault
+        // The signer's linked address funds the gross payout (net to user + fee to vault).
         uint256 decimals = IERC20Metadata(address(usdc)).decimals();
-        uint256 precisionWithDecimals = PRECISION * 10 ** (18 - decimals);
-        uint256 grossPayout = Math.mulDiv(order.amount, order.price, precisionWithDecimals);
-        uint256 feeBps = feeCalc.getRedeemFee(TSLA, order.amount);
-        uint256 feeAmount = Math.mulDiv(grossPayout, feeBps, BPS, Math.Rounding.Ceil);
-
-        // Fund VM with stablecoins for payout
-        usdc.mint(vmAddr, grossPayout);
-        vm.startPrank(vmAddr);
+        uint256 grossPayout = Math.mulDiv(fill, TSLA_PRICE, PRECISION * 10 ** (18 - decimals));
+        usdc.mint(linkedAddr, grossPayout);
+        vm.prank(linkedAddr);
         usdc.approve(address(market), grossPayout);
-        bytes memory proof = abi.encode(TSLA_PRICE, block.timestamp);
-        bytes memory redeemProofData = abi.encode(proof, proof, uint8(0));
-        market.confirmOrder(orderId, redeemProofData);
-        vm.stopPrank();
 
-        // eTokens burned from market escrow
-        ghost_escrowedETokens -= order.amount;
-
-        _removeFromArray(ghost_claimedRedeemIds, idx);
-        ghost_callCount_confirm++;
+        Quote memory q = _quote(orderId, order.user, OrderType.Redeem, fill, TSLA_PRICE);
+        try market.fillOrder(q, _sign(q)) {
+            ghost_escrowedETokens -= fill;
+            ghost_callCount_fill++;
+            if (fill == remaining) _removeFromArray(ghost_openRedeemIds, idx);
+        } catch {
+            // Leave state unchanged on failure.
+        }
     }
 
-    // ── Cancel / Expire / Close ─────────────────────────────────
+    // ── Cancel / Expire ─────────────────────────────────────────
 
     function cancelMintOrder(
         uint256 idSeed
@@ -275,7 +202,7 @@ contract MarketHandler is CommonBase, StdCheats, StdUtils {
         vm.prank(order.user);
         market.cancelOrder(orderId);
 
-        ghost_escrowedStablecoins -= order.amount;
+        ghost_escrowedStablecoins -= (order.amount - order.filledAmount);
         _removeFromArray(ghost_openMintIds, idx);
     }
 
@@ -297,7 +224,7 @@ contract MarketHandler is CommonBase, StdCheats, StdUtils {
         vm.prank(order.user);
         market.cancelOrder(orderId);
 
-        ghost_escrowedETokens -= order.amount;
+        ghost_escrowedETokens -= (order.amount - order.filledAmount);
         _removeFromArray(ghost_openRedeemIds, idx);
     }
 
@@ -316,17 +243,15 @@ contract MarketHandler is CommonBase, StdCheats, StdUtils {
             return;
         }
 
-        // Warp past expiry
         if (block.timestamp <= order.expiry) {
             vm.warp(order.expiry + 1);
-            // Refresh oracle timestamps
             oracle.setPrice(TSLA, TSLA_PRICE, block.timestamp);
-            oracle.setPrice(ETH_ASSET, 3000e18, block.timestamp);
+            oracle.setPrice(ETH_ASSET, ETH_PRICE, block.timestamp);
         }
 
         market.expireOrder(orderId);
 
-        ghost_escrowedStablecoins -= order.amount;
+        ghost_escrowedStablecoins -= (order.amount - order.filledAmount);
         _removeFromArray(ghost_openMintIds, idx);
     }
 
@@ -348,80 +273,52 @@ contract MarketHandler is CommonBase, StdCheats, StdUtils {
         if (block.timestamp <= order.expiry) {
             vm.warp(order.expiry + 1);
             oracle.setPrice(TSLA, TSLA_PRICE, block.timestamp);
-            oracle.setPrice(ETH_ASSET, 3000e18, block.timestamp);
+            oracle.setPrice(ETH_ASSET, ETH_PRICE, block.timestamp);
         }
 
         market.expireOrder(orderId);
 
-        ghost_escrowedETokens -= order.amount;
+        ghost_escrowedETokens -= (order.amount - order.filledAmount);
         _removeFromArray(ghost_openRedeemIds, idx);
     }
 
-    function closeMintOrder(
+    // ── Redeem force execution (user recourse) ──────────────────
+
+    function forceExecuteRedeemOrder(
         uint256 idSeed
     ) external {
-        uint256 len = ghost_claimedMintIds.length;
+        uint256 len = ghost_openRedeemIds.length;
         if (len == 0) return;
 
         uint256 idx = bound(idSeed, 0, len - 1);
-        uint256 orderId = ghost_claimedMintIds[idx];
+        uint256 orderId = ghost_openRedeemIds[idx];
 
         Order memory order = market.getOrder(orderId);
-        if (order.status != OrderStatus.Claimed) {
-            _removeFromArray(ghost_claimedMintIds, idx);
+        if (order.status != OrderStatus.Open) {
+            _removeFromArray(ghost_openRedeemIds, idx);
             return;
         }
 
-        // Warp past expiry
-        if (block.timestamp <= order.expiry) {
-            vm.warp(order.expiry + 1);
-            oracle.setPrice(TSLA, TSLA_PRICE, block.timestamp);
-            oracle.setPrice(ETH_ASSET, 3000e18, block.timestamp);
+        // Warp past the (now global) claim threshold so force execution is allowed.
+        uint256 claimThreshold = IVaultManager(market.registry().vaultManager()).claimThreshold();
+        uint256 forceTime = order.createdAt + claimThreshold + 1;
+        if (block.timestamp < forceTime) {
+            vm.warp(forceTime);
         }
+        oracle.setPrice(TSLA, TSLA_PRICE, block.timestamp);
+        oracle.setPrice(ETH_ASSET, ETH_PRICE, block.timestamp);
 
-        uint256 feeAmount = ghost_orderFee[orderId];
+        bytes memory assetPriceData = abi.encode(TSLA_PRICE, block.timestamp);
+        bytes memory collateralPriceData = abi.encode(ETH_PRICE, block.timestamp);
 
-        // VM must send back (amount - fee) to user via safeTransferFrom
-        usdc.mint(vmAddr, order.amount - feeAmount);
-        vm.startPrank(vmAddr);
-        usdc.approve(address(market), order.amount - feeAmount);
-        market.closeOrder(orderId);
-        vm.stopPrank();
-
-        // Fee returned to user from escrow
-        ghost_escrowedMintFees -= feeAmount;
-
-        _removeFromArray(ghost_claimedMintIds, idx);
-    }
-
-    function closeRedeemOrder(
-        uint256 idSeed
-    ) external {
-        uint256 len = ghost_claimedRedeemIds.length;
-        if (len == 0) return;
-
-        uint256 idx = bound(idSeed, 0, len - 1);
-        uint256 orderId = ghost_claimedRedeemIds[idx];
-
-        Order memory order = market.getOrder(orderId);
-        if (order.status != OrderStatus.Claimed) {
-            _removeFromArray(ghost_claimedRedeemIds, idx);
-            return;
+        uint256 remaining = order.amount - order.filledAmount;
+        vm.prank(order.user);
+        try market.forceExecuteOrder(orderId, address(vault), assetPriceData, collateralPriceData) {
+            ghost_escrowedETokens -= remaining;
+            _removeFromArray(ghost_openRedeemIds, idx);
+        } catch {
+            // Price-below-minimum or other failure — leave state unchanged.
         }
-
-        if (block.timestamp <= order.expiry) {
-            vm.warp(order.expiry + 1);
-            oracle.setPrice(TSLA, TSLA_PRICE, block.timestamp);
-            oracle.setPrice(ETH_ASSET, 3000e18, block.timestamp);
-        }
-
-        vm.prank(vmAddr);
-        market.closeOrder(orderId);
-
-        // eTokens returned to user
-        ghost_escrowedETokens -= order.amount;
-
-        _removeFromArray(ghost_claimedRedeemIds, idx);
     }
 
     // ── Time & oracle management ────────────────────────────────
@@ -432,9 +329,8 @@ contract MarketHandler is CommonBase, StdCheats, StdUtils {
         seconds_ = bound(seconds_, 1, 7 days);
         vm.warp(block.timestamp + seconds_);
 
-        // Keep oracle fresh
         oracle.setPrice(TSLA, TSLA_PRICE, block.timestamp);
-        oracle.setPrice(ETH_ASSET, 3000e18, block.timestamp);
+        oracle.setPrice(ETH_ASSET, ETH_PRICE, block.timestamp);
     }
 
     // ── View helpers ────────────────────────────────────────────
@@ -447,15 +343,33 @@ contract MarketHandler is CommonBase, StdCheats, StdUtils {
         return ghost_openRedeemIds.length;
     }
 
-    function claimedMintCount() external view returns (uint256) {
-        return ghost_claimedMintIds.length;
-    }
-
-    function claimedRedeemCount() external view returns (uint256) {
-        return ghost_claimedRedeemIds.length;
-    }
-
     // ── Internal helpers ────────────────────────────────────────
+
+    function _quote(
+        uint256 orderId,
+        address user,
+        OrderType orderType,
+        uint256 amount,
+        uint256 price
+    ) private returns (Quote memory q) {
+        q = Quote({
+            orderId: orderId,
+            user: user,
+            asset: TSLA,
+            orderType: orderType,
+            amount: amount,
+            price: price,
+            quoteId: _quoteNonce++,
+            expiry: block.timestamp + 1 days
+        });
+    }
+
+    function _sign(
+        Quote memory q
+    ) private view returns (bytes memory) {
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(vmPk, market.quoteDigest(q));
+        return abi.encodePacked(r, s, v);
+    }
 
     function _removeFromArray(uint256[] storage arr, uint256 idx) private {
         uint256 len = arr.length;

@@ -6,13 +6,11 @@ import {BaseTest} from "../helpers/BaseTest.sol";
 
 import {IOwnMarket} from "../../src/interfaces/IOwnMarket.sol";
 import {IOwnVault} from "../../src/interfaces/IOwnVault.sol";
-import {AssetConfig, BPS, Order, OrderStatus, OrderType, PRECISION} from "../../src/interfaces/types/Types.sol";
+import {AssetConfig, BPS, Order, OrderStatus, OrderType, PRECISION, Quote} from "../../src/interfaces/types/Types.sol";
 
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
-import {FeeCalculator} from "../../src/core/FeeCalculator.sol";
 import {OwnMarket} from "../../src/core/OwnMarket.sol";
 import {OwnVault} from "../../src/core/OwnVault.sol";
-import {VaultFactory} from "../../src/core/VaultFactory.sol";
 import {EToken} from "../../src/tokens/EToken.sol";
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -27,13 +25,11 @@ contract PauseFlowTest is BaseTest {
     OwnVault public vault;
     EToken public eTSLA;
     EToken public eGOLD;
-    FeeCalculator public feeCalc;
 
     uint256 constant MAX_UTIL_BPS = 8000;
     uint256 constant LP_DEPOSIT_WETH = 50_000e18;
     uint256 constant MINT_AMOUNT = 10_000e6;
     uint256 constant ETOKEN_AMOUNT = 40e18;
-    uint256 constant GRACE_PERIOD = 1 days;
     uint256 constant CLAIM_THRESHOLD = 6 hours;
 
     function setUp() public override {
@@ -49,30 +45,23 @@ contract PauseFlowTest is BaseTest {
 
         assetRegistry = new AssetRegistry(Actors.ADMIN);
         protocolRegistry.setAddress(protocolRegistry.ASSET_REGISTRY(), address(assetRegistry));
-        protocolRegistry.setAddress(protocolRegistry.TREASURY(), Actors.FEE_RECIPIENT);
-        protocolRegistry.setProtocolShareBps(2000);
 
-        feeCalc = new FeeCalculator(address(protocolRegistry), Actors.ADMIN);
-        feeCalc.setMintFee(1, 0);
-        feeCalc.setMintFee(2, 0);
-        feeCalc.setMintFee(3, 0);
-        feeCalc.setRedeemFee(1, 0);
-        feeCalc.setRedeemFee(2, 0);
-        feeCalc.setRedeemFee(3, 0);
-        protocolRegistry.setAddress(keccak256("FEE_CALCULATOR"), address(feeCalc));
+        vm.stopPrank();
+        // Deploy + register the VaultManager before registering the vault (admin-gated).
+        _deployVaultManager();
+        vm.startPrank(Actors.ADMIN);
 
-        VaultFactory factory = new VaultFactory(Actors.ADMIN, address(protocolRegistry));
-        protocolRegistry.setAddress(protocolRegistry.VAULT_FACTORY(), address(factory));
-
-        vault = OwnVault(factory.createVault(address(weth), Actors.VM1, "Own ETH Vault", "oETH", MAX_UTIL_BPS, 2000));
+        vault = new OwnVault(address(weth), "Own ETH Vault", "oETH", address(protocolRegistry), vm1Signer);
+        vaultManager.registerVault(address(vault), ETH);
 
         market = new OwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
 
-        vault.setGracePeriod(GRACE_PERIOD);
-        vault.setClaimThreshold(CLAIM_THRESHOLD);
-
         vm.stopPrank();
+
+        // Global controls now live on the VaultManager.
+        _setClaimThreshold(CLAIM_THRESHOLD);
+        _registerSigner(vm1Signer, Actors.VM1);
     }
 
     function _configureAssets() private {
@@ -107,39 +96,39 @@ contract PauseFlowTest is BaseTest {
             oracleType: 1
         });
         assetRegistry.addAsset(ethAsset, address(weth), ethConfig);
-        vault.setCollateralOracleAsset(ethAsset);
 
         vm.stopPrank();
 
         _setOraclePrice(ethAsset, ETH_PRICE);
+
+        // Per-asset issuance ceilings (global util default is set by _deployVaultManager).
+        _setAssetCap(TSLA, DEFAULT_ASSET_CAP_USD);
+        _setAssetCap(GOLD, DEFAULT_ASSET_CAP_USD);
     }
 
     function _configureVault() private {
-        vm.startPrank(Actors.VM1);
-        vault.setPaymentToken(address(usdc));
-        vault.enableAsset(TSLA);
-        vault.enableAsset(GOLD);
-        vm.stopPrank();
-
-        // Initialize asset and collateral valuations so exposure tracking works
-        vault.updateAssetValuation(TSLA);
-        vault.updateAssetValuation(GOLD);
-        vault.updateCollateralValuation();
+        // Payment token is now a global VaultManager setting.
+        _setPaymentToken(address(usdc));
     }
 
     function _depositLPCollateral() private {
-        _fundWETH(Actors.VM1, LP_DEPOSIT_WETH);
-        vm.startPrank(Actors.VM1);
+        _fundWETH(vm1Signer, LP_DEPOSIT_WETH);
+        vm.startPrank(vm1Signer);
         weth.approve(address(vault), LP_DEPOSIT_WETH);
         vault.deposit(LP_DEPOSIT_WETH, Actors.LP1);
         vm.stopPrank();
+
+        // Seed the manager's marks: collateral and asset prices.
+        _pullCollateralPrice(address(vault));
+        _pullAssetPrice(TSLA);
+        _pullAssetPrice(GOLD);
     }
 
     function _placeMint(address minter, uint256 amount, uint256 expiry) internal returns (uint256) {
         _fundUSDC(minter, amount);
         vm.startPrank(minter);
         usdc.approve(address(market), amount);
-        uint256 orderId = market.placeMintOrder(address(vault), TSLA, amount, TSLA_PRICE, expiry);
+        uint256 orderId = market.placeOrder(TSLA, OrderType.Mint, amount, TSLA_PRICE, expiry);
         vm.stopPrank();
         return orderId;
     }
@@ -147,7 +136,7 @@ contract PauseFlowTest is BaseTest {
     function _placeRedeem(address minter, uint256 eAmount, uint256 expiry) internal returns (uint256) {
         vm.startPrank(minter);
         eTSLA.approve(address(market), eAmount);
-        uint256 orderId = market.placeRedeemOrder(address(vault), TSLA, eAmount, TSLA_PRICE, expiry);
+        uint256 orderId = market.placeOrder(TSLA, OrderType.Redeem, eAmount, TSLA_PRICE, expiry);
         vm.stopPrank();
         return orderId;
     }
@@ -162,14 +151,14 @@ contract PauseFlowTest is BaseTest {
     // ══════════════════════════════════════════════════════════
 
     function test_pause_blocksMintOrderPlacement() public {
-        vm.prank(Actors.ADMIN);
-        vault.pause(bytes32("emergency"));
+        // Trading pause is now a global VaultManager control, distinct from vault-status pause.
+        _setAssetTradingPaused(TSLA, true);
 
         _fundUSDC(Actors.MINTER1, MINT_AMOUNT);
         vm.startPrank(Actors.MINTER1);
         usdc.approve(address(market), MINT_AMOUNT);
         vm.expectRevert(abi.encodeWithSelector(IOwnMarket.AssetPaused.selector, TSLA));
-        market.placeMintOrder(address(vault), TSLA, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
+        market.placeOrder(TSLA, OrderType.Mint, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
         vm.stopPrank();
     }
 
@@ -180,76 +169,53 @@ contract PauseFlowTest is BaseTest {
     function test_pause_blocksRedeemOrderPlacement() public {
         _mintETokens(Actors.MINTER1, ETOKEN_AMOUNT);
 
-        vm.prank(Actors.ADMIN);
-        vault.pause(bytes32("emergency"));
+        _setAssetTradingPaused(TSLA, true);
 
         vm.startPrank(Actors.MINTER1);
         eTSLA.approve(address(market), ETOKEN_AMOUNT);
         vm.expectRevert(abi.encodeWithSelector(IOwnMarket.AssetPaused.selector, TSLA));
-        market.placeRedeemOrder(address(vault), TSLA, ETOKEN_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
+        market.placeOrder(TSLA, OrderType.Redeem, ETOKEN_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
         vm.stopPrank();
     }
 
     // ══════════════════════════════════════════════════════════
-    //  3. Pause blocks claim order
+    //  3. Pause blocks market executeOrder
     // ══════════════════════════════════════════════════════════
 
-    function test_pause_blocksClaimOrder() public {
-        uint256 orderId = _placeMint(Actors.MINTER1, MINT_AMOUNT, block.timestamp + 1 days);
-
-        vm.prank(Actors.ADMIN);
-        vault.pause(bytes32("emergency"));
-
-        vm.prank(Actors.VM1);
-        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.AssetPaused.selector, TSLA));
-        market.claimOrder(orderId);
-    }
-
-    // ══════════════════════════════════════════════════════════
-    //  4. Pause allows confirm order
-    // ══════════════════════════════════════════════════════════
-
-    function test_pause_allowsConfirmOrder() public {
-        uint256 orderId = _placeMint(Actors.MINTER1, MINT_AMOUNT, block.timestamp + 1 days);
-
-        vm.prank(Actors.VM1);
-        market.claimOrder(orderId);
-
-        vm.prank(Actors.ADMIN);
-        vault.pause(bytes32("emergency"));
-
-        // Confirm should still succeed while paused
-        vm.prank(Actors.VM1);
-        market.confirmOrder(orderId, _buildPriceProof(TSLA_PRICE));
-
-        Order memory order = market.getOrder(orderId);
-        assertEq(uint8(order.status), uint8(OrderStatus.Confirmed));
-    }
-
-    // ══════════════════════════════════════════════════════════
-    //  5. Pause allows close order
-    // ══════════════════════════════════════════════════════════
-
-    function test_pause_allowsCloseOrder() public {
-        uint256 expiry = block.timestamp + 1 days;
-        uint256 orderId = _placeMint(Actors.MINTER1, MINT_AMOUNT, expiry);
-
-        vm.prank(Actors.VM1);
-        market.claimOrder(orderId);
-
-        vm.prank(Actors.ADMIN);
-        vault.pause(bytes32("emergency"));
-
-        vm.warp(expiry + 1);
-
-        vm.startPrank(Actors.VM1);
+    function test_pause_blocksExecuteOrder() public {
+        _fundUSDC(Actors.MINTER1, MINT_AMOUNT);
+        vm.prank(Actors.MINTER1);
         usdc.approve(address(market), MINT_AMOUNT);
-        market.closeOrder(orderId);
-        vm.stopPrank();
 
-        Order memory order = market.getOrder(orderId);
-        assertEq(uint8(order.status), uint8(OrderStatus.Closed));
+        _setAssetTradingPaused(TSLA, true);
+
+        Quote memory q = _buildQuote(0, Actors.MINTER1, TSLA, OrderType.Mint, MINT_AMOUNT, TSLA_PRICE);
+        bytes memory sig = _signQuote(market, q, vm1SignerPk);
+
+        vm.prank(Actors.MINTER1);
+        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.AssetPaused.selector, TSLA));
+        market.executeOrder(q, sig);
     }
+
+    // ══════════════════════════════════════════════════════════
+    //  4. Pause blocks filling a resting order
+    // ══════════════════════════════════════════════════════════
+
+    function test_pause_blocksFillOrder() public {
+        uint256 orderId = _placeMint(Actors.MINTER1, MINT_AMOUNT, block.timestamp + 1 days);
+
+        _setAssetTradingPaused(TSLA, true);
+
+        Quote memory q = _buildQuote(orderId, Actors.MINTER1, TSLA, OrderType.Mint, MINT_AMOUNT, TSLA_PRICE);
+        bytes memory sig = _signQuote(market, q, vm1SignerPk);
+
+        vm.prank(vm1Signer);
+        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.AssetPaused.selector, TSLA));
+        market.fillOrder(q, sig);
+    }
+
+    // removed: closeOrder no longer exists in RFQ model — escrow recovery during pause
+    // is covered by cancel (test 6) and expire (test 7).
 
     // ══════════════════════════════════════════════════════════
     //  6. Pause allows cancel order
@@ -258,8 +224,7 @@ contract PauseFlowTest is BaseTest {
     function test_pause_allowsCancelOrder() public {
         uint256 orderId = _placeMint(Actors.MINTER1, MINT_AMOUNT, block.timestamp + 1 days);
 
-        vm.prank(Actors.ADMIN);
-        vault.pause(bytes32("emergency"));
+        _setAssetTradingPaused(TSLA, true);
 
         vm.prank(Actors.MINTER1);
         market.cancelOrder(orderId);
@@ -277,8 +242,7 @@ contract PauseFlowTest is BaseTest {
         uint256 expiry = block.timestamp + 1 hours;
         uint256 orderId = _placeMint(Actors.MINTER1, MINT_AMOUNT, expiry);
 
-        vm.prank(Actors.ADMIN);
-        vault.pause(bytes32("emergency"));
+        _setAssetTradingPaused(TSLA, true);
 
         vm.warp(expiry + 1);
 
@@ -317,30 +281,39 @@ contract PauseFlowTest is BaseTest {
         vm.startPrank(Actors.LP2);
         weth.approve(address(vault), 1000e18);
         vm.expectRevert(IOwnVault.VaultIsPaused.selector);
-        vault.requestDeposit(1000e18, Actors.LP2);
+        vault.requestDeposit(1000e18, Actors.LP2, 0);
         vm.stopPrank();
     }
 
     // ══════════════════════════════════════════════════════════
-    //  10. Pause allows LP withdrawal
+    //  10. Pause now BLOCKS LP withdrawal (semantics changed)
     // ══════════════════════════════════════════════════════════
 
-    function test_pause_allowsLPWithdrawal() public {
+    /// @dev Under the refactor, vault pause freezes BOTH deposits and withdrawals:
+    ///      requestWithdrawal and fulfillWithdrawal both revert VaultIsPaused.
+    function test_pause_blocksLPWithdrawal() public {
         uint256 shares = vault.balanceOf(Actors.LP1);
         assertGt(shares, 0, "LP has shares");
 
-        vm.prank(Actors.ADMIN);
-        vault.pause(bytes32("emergency"));
-
+        // Request a withdrawal while active, then pause and confirm fulfill is frozen.
         vm.prank(Actors.LP1);
         uint256 requestId = vault.requestWithdrawal(shares);
         assertGt(requestId, 0, "withdrawal request created");
 
-        uint256 wethBefore = weth.balanceOf(Actors.LP1);
-        vault.fulfillWithdrawal(requestId);
-        uint256 wethAfter = weth.balanceOf(Actors.LP1);
+        vm.prank(Actors.ADMIN);
+        vault.pause(bytes32("emergency"));
 
-        assertGt(wethAfter - wethBefore, 0, "LP received WETH");
+        vm.expectRevert(IOwnVault.VaultIsPaused.selector);
+        vault.fulfillWithdrawal(requestId);
+
+        // A fresh withdrawal request is also blocked while paused.
+        _fundWETH(Actors.VM1, 1 ether);
+        vm.startPrank(Actors.VM1);
+        weth.approve(address(vault), 1 ether);
+        vm.stopPrank();
+        vm.prank(Actors.LP1);
+        vm.expectRevert(IOwnVault.VaultIsPaused.selector);
+        vault.requestWithdrawal(1);
     }
 
     // ══════════════════════════════════════════════════════════
@@ -348,25 +321,25 @@ contract PauseFlowTest is BaseTest {
     // ══════════════════════════════════════════════════════════
 
     function test_pauseAsset_onlyAffectsTargetAsset() public {
-        vm.prank(Actors.ADMIN);
-        vault.pauseAsset(TSLA, bytes32("oracle issue"));
+        // Per-asset trading pause is now a global VaultManager control.
+        _setAssetTradingPaused(TSLA, true);
 
-        assertTrue(vault.isEffectivelyPaused(TSLA), "TSLA paused");
-        assertFalse(vault.isEffectivelyPaused(GOLD), "GOLD not paused");
+        assertTrue(vaultManager.isTradingPaused(TSLA), "TSLA paused");
+        assertFalse(vaultManager.isTradingPaused(GOLD), "GOLD not paused");
 
         // Placing a mint order for TSLA should revert
         _fundUSDC(Actors.MINTER1, MINT_AMOUNT);
         vm.startPrank(Actors.MINTER1);
         usdc.approve(address(market), MINT_AMOUNT);
         vm.expectRevert(abi.encodeWithSelector(IOwnMarket.AssetPaused.selector, TSLA));
-        market.placeMintOrder(address(vault), TSLA, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
+        market.placeOrder(TSLA, OrderType.Mint, MINT_AMOUNT, TSLA_PRICE, block.timestamp + 1 days);
         vm.stopPrank();
 
         // Placing a mint order for GOLD should succeed
         _fundUSDC(Actors.MINTER2, MINT_AMOUNT);
         vm.startPrank(Actors.MINTER2);
         usdc.approve(address(market), MINT_AMOUNT);
-        uint256 orderId = market.placeMintOrder(address(vault), GOLD, MINT_AMOUNT, GOLD_PRICE, block.timestamp + 1 days);
+        uint256 orderId = market.placeOrder(GOLD, OrderType.Mint, MINT_AMOUNT, GOLD_PRICE, block.timestamp + 1 days);
         vm.stopPrank();
 
         Order memory order = market.getOrder(orderId);
@@ -378,22 +351,21 @@ contract PauseFlowTest is BaseTest {
     // ══════════════════════════════════════════════════════════
 
     function test_unpause_resumesNormalOperation() public {
-        vm.startPrank(Actors.ADMIN);
-        vault.pause(bytes32("emergency"));
-        vault.unpause();
-        vm.stopPrank();
+        // Pause then resume trading for the asset via the VaultManager.
+        _setAssetTradingPaused(TSLA, true);
+        _setAssetTradingPaused(TSLA, false);
 
-        // Full mint flow: place, claim, confirm
-        uint256 orderId = _placeMint(Actors.MINTER1, MINT_AMOUNT, block.timestamp + 1 days);
+        // Market mint settles atomically once trading resumes.
+        _fundUSDC(Actors.MINTER1, MINT_AMOUNT);
+        vm.prank(Actors.MINTER1);
+        usdc.approve(address(market), MINT_AMOUNT);
 
-        vm.prank(Actors.VM1);
-        market.claimOrder(orderId);
+        Quote memory q = _buildQuote(0, Actors.MINTER1, TSLA, OrderType.Mint, MINT_AMOUNT, TSLA_PRICE);
+        bytes memory sig = _signQuote(market, q, vm1SignerPk);
 
-        vm.prank(Actors.VM1);
-        market.confirmOrder(orderId, _buildPriceProof(TSLA_PRICE));
+        vm.prank(Actors.MINTER1);
+        market.executeOrder(q, sig);
 
-        Order memory order = market.getOrder(orderId);
-        assertEq(uint8(order.status), uint8(OrderStatus.Confirmed));
         assertGt(eTSLA.balanceOf(Actors.MINTER1), 0, "minter received eTokens");
     }
 
@@ -401,9 +373,9 @@ contract PauseFlowTest is BaseTest {
     //  13. Pause only callable by admin
     // ══════════════════════════════════════════════════════════
 
-    function test_pause_onlyAdmin() public {
+    function test_pause_onlyManagerOrAdmin() public {
         vm.prank(Actors.ATTACKER);
-        vm.expectRevert(IOwnVault.OnlyAdmin.selector);
+        vm.expectRevert(IOwnVault.OnlyManagerOrAdmin.selector);
         vault.pause(bytes32("attack"));
     }
 }

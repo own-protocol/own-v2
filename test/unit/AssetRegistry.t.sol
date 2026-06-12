@@ -179,10 +179,10 @@ contract AssetRegistryTest is BaseTest {
         vm.startPrank(Actors.ADMIN);
         registry.addAsset(TSLA, eTSLA, config);
 
-        vm.expectEmit(true, true, true, false);
-        emit IAssetRegistry.TokenMigrated(TSLA, eTSLA, newTSLA);
+        vm.expectEmit(true, true, true, true);
+        emit IAssetRegistry.TokenMigrated(TSLA, eTSLA, newTSLA, 3e18);
 
-        registry.migrateToken(TSLA, newTSLA);
+        registry.migrateToken(TSLA, newTSLA, 3e18);
         vm.stopPrank();
 
         assertEq(registry.getActiveToken(TSLA), newTSLA);
@@ -192,6 +192,26 @@ contract AssetRegistryTest is BaseTest {
         assertEq(legacy[0], eTSLA);
     }
 
+    /// @dev Migrating to the current active token or to an existing legacy token would
+    ///      corrupt the ratio bookkeeping (self-legacy / duplicate legacy entry).
+    function test_migrateToken_toActiveOrLegacyToken_reverts() public {
+        AssetConfig memory config = _defaultConfig(eTSLA);
+        address v2 = makeAddr("eTSLAv2");
+
+        vm.startPrank(Actors.ADMIN);
+        registry.addAsset(TSLA, eTSLA, config);
+        registry.migrateToken(TSLA, v2, 3e18);
+
+        // Active token (v2) as the migration target.
+        vm.expectRevert(abi.encodeWithSelector(IAssetRegistry.InvalidNewToken.selector, v2));
+        registry.migrateToken(TSLA, v2, 3e18);
+
+        // Existing legacy token (the original eTSLA) as the migration target.
+        vm.expectRevert(abi.encodeWithSelector(IAssetRegistry.InvalidNewToken.selector, eTSLA));
+        registry.migrateToken(TSLA, eTSLA, 3e18);
+        vm.stopPrank();
+    }
+
     function test_migrateToken_multipleMigrations() public {
         AssetConfig memory config = _defaultConfig(eTSLA);
         address v2 = makeAddr("eTSLAv2");
@@ -199,8 +219,8 @@ contract AssetRegistryTest is BaseTest {
 
         vm.startPrank(Actors.ADMIN);
         registry.addAsset(TSLA, eTSLA, config);
-        registry.migrateToken(TSLA, v2);
-        registry.migrateToken(TSLA, v3);
+        registry.migrateToken(TSLA, v2, 3e18);
+        registry.migrateToken(TSLA, v3, 3e18);
         vm.stopPrank();
 
         assertEq(registry.getActiveToken(TSLA), v3);
@@ -211,6 +231,40 @@ contract AssetRegistryTest is BaseTest {
         assertEq(legacy[1], v2);
     }
 
+    function test_migrateToken_setsLegacyRatio() public {
+        AssetConfig memory config = _defaultConfig(eTSLA);
+        address v2 = makeAddr("eTSLAv2");
+        vm.startPrank(Actors.ADMIN);
+        registry.addAsset(TSLA, eTSLA, config);
+        registry.migrateToken(TSLA, v2, 3e18);
+        vm.stopPrank();
+        assertEq(registry.legacyRatioToActive(eTSLA), 3e18, "old -> active = ratio");
+        assertEq(registry.legacyRatioToActive(v2), 0, "active token has no legacy ratio");
+    }
+
+    function test_migrateToken_legacyRatioCompoundsAcrossSplits() public {
+        AssetConfig memory config = _defaultConfig(eTSLA);
+        address v2 = makeAddr("eTSLAv2");
+        address v3 = makeAddr("eTSLAv3");
+        vm.startPrank(Actors.ADMIN);
+        registry.addAsset(TSLA, eTSLA, config);
+        registry.migrateToken(TSLA, v2, 3e18); // eTSLA -> v2 (3x)
+        registry.migrateToken(TSLA, v3, 2e18); // v2 -> v3 (2x)
+        vm.stopPrank();
+        // Original token now converts directly to the active token at 3 * 2 = 6x.
+        assertEq(registry.legacyRatioToActive(eTSLA), 6e18, "compounded ratio");
+        assertEq(registry.legacyRatioToActive(v2), 2e18, "newer legacy ratio");
+    }
+
+    function test_migrateToken_zeroRatio_reverts() public {
+        AssetConfig memory config = _defaultConfig(eTSLA);
+        vm.startPrank(Actors.ADMIN);
+        registry.addAsset(TSLA, eTSLA, config);
+        vm.expectRevert(IAssetRegistry.InvalidRatio.selector);
+        registry.migrateToken(TSLA, makeAddr("eTSLAv2"), 0);
+        vm.stopPrank();
+    }
+
     function test_migrateToken_zeroAddress_reverts() public {
         AssetConfig memory config = _defaultConfig(eTSLA);
 
@@ -218,7 +272,7 @@ contract AssetRegistryTest is BaseTest {
         registry.addAsset(TSLA, eTSLA, config);
 
         vm.expectRevert(IAssetRegistry.ZeroAddress.selector);
-        registry.migrateToken(TSLA, address(0));
+        registry.migrateToken(TSLA, address(0), 3e18);
         vm.stopPrank();
     }
 
@@ -229,7 +283,7 @@ contract AssetRegistryTest is BaseTest {
 
         vm.prank(Actors.ATTACKER);
         vm.expectRevert();
-        registry.migrateToken(TSLA, makeAddr("eTSLAv2"));
+        registry.migrateToken(TSLA, makeAddr("eTSLAv2"), 3e18);
     }
 
     // ──────────────────────────────────────────────────────────
@@ -250,7 +304,7 @@ contract AssetRegistryTest is BaseTest {
 
         vm.startPrank(Actors.ADMIN);
         registry.addAsset(TSLA, eTSLA, config);
-        registry.migrateToken(TSLA, v2);
+        registry.migrateToken(TSLA, v2, 3e18);
         vm.stopPrank();
 
         assertTrue(registry.isValidToken(TSLA, eTSLA)); // legacy
