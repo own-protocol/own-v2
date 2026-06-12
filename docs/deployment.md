@@ -26,7 +26,12 @@ Fill in the required values:
 
 ## Step 1: Deploy Core Contracts
 
-Deploys all protocol contracts, registers them in ProtocolRegistry, configures Pyth oracle feeds, adds TSLA + GOLD assets, and configures global parameters on the VaultManager: max utilization, per-asset USD issuance ceilings, and the single global payment token (MockUSDC).
+Deploys all core protocol contracts, registers them in ProtocolRegistry, registers the ETH collateral asset (in-house oracle), and configures global parameters on the VaultManager: max utilization, per-asset USD issuance ceilings, and the single global payment token. There is no Pyth — all assets price via the in-house OracleVerifier (Step 2).
+
+> **Token reuse.** `Deploy.s.sol` does **not** deploy fresh tokens — it reuses the existing testnet
+> USDC (`TESTNET_USDC`) as payment token and testnet MockWETH (`TESTNET_WETH`) as the ETH vault
+> collateral. Both are wired in as constants at the top of the script (and aligned with the
+> collateral address in `CreateVault.s.sol`). Update those constants if the testnet tokens change.
 
 ```bash
 forge script script/Deploy.s.sol --rpc-url base_sepolia --broadcast --verify
@@ -37,13 +42,10 @@ The script logs all deployed addresses. Copy them into your `.env`:
 ```
 PROTOCOL_REGISTRY=0x...
 ASSET_REGISTRY=0x...
-PYTH_ORACLE=0x...
 OWN_MARKET=0x...
 VAULT_MANAGER=0x...
 ETOKEN_FACTORY=0x...
 MOCK_USDC=0x...
-ETOKEN_TSLA=0x...
-ETOKEN_GOLD=0x...
 WETH_ROUTER=0x...
 ```
 
@@ -51,27 +53,59 @@ WETH_ROUTER=0x...
 
 | Contract | Purpose |
 |----------|---------|
-| MockERC20 | Testnet USDC (6 decimals, open mint) |
 | ProtocolRegistry | Central address registry with 2-day timelock |
 | AssetRegistry | Asset configs + oracle mappings |
-| PythOracleVerifier | Pyth oracle wrapper (120s max price age) |
 | OwnMarket | RFQ order execution marketplace |
 | VaultManager | Global pooled risk accounting + control hub (exposure, marks, utilization, per-asset caps, signer registry, payment token, pause, halt, claim threshold) |
-| EToken (TSLA) | eTSLA synthetic token |
-| EToken (GOLD) | eGOLD synthetic token |
+| ETokenFactory | Deploys eTokens (assets are registered separately via AddAssets.s.sol) |
 | WETHRouter | Native ETH deposit/redeem wrapper |
 
 The script also sets the **global max utilization** (80% / 8000 BPS), a **per-asset USD ceiling**
-(`assetCapUSD`) for each launched asset, and the **global payment token** (MockUSDC). A per-asset cap
-of `0` blocks minting that asset, so this step is required before any mint can succeed.
+(`assetCapUSD`) for each launched asset, and the **global payment token** (testnet USDC). A per-asset
+cap of `0` blocks minting that asset, so this step is required before any mint can succeed.
 
-## Step 2: Create Vault
+## Step 2: Deploy In-House Oracle (required — all assets use it)
 
-Deploys a WETH-collateral `OwnVault` directly and registers it on the VaultManager (admin-only).
-Run with the deployer key. There is no vault factory.
+Every asset (the ETH collateral from Step 1 and the stocks/ETFs from Step 3) prices via the in-house
+`OracleVerifier` (oracleType 1). Deploy it, register it as `INHOUSE_ORACLE` in the ProtocolRegistry,
+and add the price-attestation signer:
 
 ```bash
-forge script script/CreateVault.s.sol --rpc-url base_sepolia --broadcast
+forge script script/DeployOracleSigner.s.sol --rpc-url base_sepolia --broadcast --verify
+```
+
+Copy the address into `.env`:
+
+```
+INHOUSE_ORACLE=0x...
+```
+
+## Step 3: Register the Asset Set (US stocks + ETFs)
+
+Batch-registers 14 US stocks + 5 US ETFs: for each it creates the EToken, registers it in the
+AssetRegistry with oracleType 1, and sets the per-asset USD cap on the VaultManager. Dependencies are
+resolved from the ProtocolRegistry, so only `PROTOCOL_REGISTRY` needs to be set in `.env`.
+
+```bash
+forge script script/AddAssets.s.sol --rpc-url base_sepolia --broadcast --verify
+```
+
+> Single-asset additions still use `AddAsset.s.sol` (edit its constants per asset). Note that
+> `AddAsset.s.sol` does **not** set the per-asset cap — call `VaultManager.setAssetCapUSD` afterwards,
+> or minting that asset reverts with `AssetCapBreached`.
+
+Before any in-house asset can be minted, a keeper must pull its mark
+(`VaultManager.pullAssetPrice`) and the vault's collateral mark (`VaultManager.pullCollateralPrice`)
+so marks are non-zero.
+
+## Step 4: Create Vault
+
+Deploys a MockWETH-collateral `OwnVault` directly and registers it on the VaultManager (admin-only).
+Run with the deployer key. There is no vault factory. The collateral address (MockWETH) is hardcoded
+in the script and must match `TESTNET_WETH` in `Deploy.s.sol`.
+
+```bash
+forge script script/CreateVault.s.sol --rpc-url base_sepolia --broadcast --verify
 ```
 
 Copy the vault address into `.env`:
@@ -91,7 +125,7 @@ VAULT_ADDRESS=0x...
 > VaultManager, not per vault. Max utilization is likewise set once in Step 1. The script deploys the
 > vault and calls `registerVault` on the VaultManager, which holds the vault allowlist + risk pool.
 
-## Step 3: Configure Global Order Settlement (as admin)
+## Step 5: Configure Global Order Settlement (as admin)
 
 The global payment token is already set in Step 1. The remaining global setup — registering a quote
 signer and setting the claim threshold — is admin-run on the VaultManager. (The
@@ -147,10 +181,10 @@ vault-less — no vault argument:
 cast send $MOCK_USDC "approve(address,uint256)" $OWN_MARKET 10000000000 \
   --rpc-url base_sepolia --private-key <USER_KEY>
 
-# 2. Place a limit mint order (10,000 USDC for TSLA, max $250)
+# 2. Place a limit mint order (10,000 USDC for AAPL, max $250)
 #    orderType: 0 = Mint, 1 = Redeem
 cast send $OWN_MARKET "placeOrder(bytes32,uint8,uint256,uint256,uint256)" \
-  $(cast --format-bytes32-string "TSLA") \
+  $(cast --format-bytes32-string "AAPL") \
   0 \
   10000000000 \
   250000000000000000000 \
@@ -175,16 +209,12 @@ cast send $WETH_ROUTER "depositETH(address,address,uint256)" \
 
 | Contract | Address |
 |----------|---------|
-| WETH | `0x4200000000000000000000000000000000000006` |
-| Pyth | `0xA2aa501b19aff244D90cc15a4Cf739D2725B5729` |
+| Canonical WETH | `0x4200000000000000000000000000000000000006` (unused — vault collateral is MockWETH) |
+| MockWETH (testnet ETH) | `0xfbd78Da8aDbc322084eE7F80C10F914B92CEb6FE` |
+| MockUSDC (testnet USDC) | `0x6f5BB5824C8D572966a1DED0470AF3E72C527613` |
 
-## Pyth Feed IDs
-
-| Asset | Feed ID |
-|-------|---------|
-| TSLA/USD | `0x16dad506d7db8da01c87581c87ca897a012a153557d4d578c3b9c9e1bc0632f1` |
-| XAU/USD | `0x765d2ba906dbc32ca17cc11f5310a89e9ee1f6420508c63861f2f8ba4ee34bb2` |
-| ETH/USD | `0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace` |
+Oracle prices are supplied by the in-house signer service (https://twelvedata.com/ &
+https://eodhd.com/) and attested on-chain via the `OracleVerifier`. There are no Pyth feeds.
 
 ## Fees
 
