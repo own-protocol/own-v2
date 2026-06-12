@@ -25,13 +25,16 @@ contract AaveRouterTest is BaseTest {
     MockERC20 public wstETHU;
     MockERC20 public wethU;
     MockERC20 public wbtcU;
+    MockERC20 public usdcU;
     MockAToken public awstETH;
     MockAToken public aweth;
     MockAToken public awbtc;
+    MockAToken public ausdc;
 
     OwnVault public wstETHVault;
     OwnVault public wethVault;
     OwnVault public wbtcVault;
+    OwnVault public ausdcVault;
 
     function setUp() public override {
         super.setUp();
@@ -41,10 +44,12 @@ contract AaveRouterTest is BaseTest {
         wstETHU = new MockERC20("Wrapped stETH", "wstETH", 18);
         wethU = new MockERC20("Wrapped Ether", "WETH", 18);
         wbtcU = new MockERC20("Wrapped BTC", "wBTC", 8);
+        usdcU = new MockERC20("USD Coin", "USDC", 6);
 
         awstETH = MockAToken(aavePool.registerReserve(address(wstETHU), "Aave wstETH", "awstETH", 18));
         aweth = MockAToken(aavePool.registerReserve(address(wethU), "Aave WETH", "aWETH", 18));
         awbtc = MockAToken(aavePool.registerReserve(address(wbtcU), "Aave wBTC", "awBTC", 8));
+        ausdc = MockAToken(aavePool.registerReserve(address(usdcU), "Aave USDC", "aUSDC", 6));
 
         vm.startPrank(Actors.ADMIN);
         protocolRegistry.setAddress(protocolRegistry.MARKET(), mockMarket);
@@ -54,11 +59,13 @@ contract AaveRouterTest is BaseTest {
         router.registerReserve(address(wstETHU), address(awstETH));
         router.registerReserve(address(wethU), address(aweth));
         router.registerReserve(address(wbtcU), address(awbtc));
+        router.registerReserve(address(usdcU), address(ausdc));
 
         wstETHVault =
             new OwnVault(address(awstETH), "Own awstETH", "owawstETH", address(protocolRegistry), address(router));
         wethVault = new OwnVault(address(aweth), "Own aWETH", "owaWETH", address(protocolRegistry), address(router));
         wbtcVault = new OwnVault(address(awbtc), "Own awBTC", "owawBTC", address(protocolRegistry), address(router));
+        ausdcVault = new OwnVault(address(ausdc), "Own aUSDC", "owaUSDC", address(protocolRegistry), address(router));
         vm.stopPrank();
 
         vm.label(address(router), "AaveRouter");
@@ -217,6 +224,36 @@ contract AaveRouterTest is BaseTest {
 
         assertGt(shares, 0);
         assertEq(awbtc.balanceOf(address(wbtcVault)), amount);
+    }
+
+    /// @dev The production aUSDC-vault flow: user deposits USDC, the router supplies
+    ///      it to Aave and deposits the resulting aUSDC into the vault.
+    function test_deposit_usdc_succeeds() public {
+        uint256 amount = 10_000e6; // $10k USDC, 6 decimals
+        _fundAndApprove(usdcU, Actors.LP1, amount);
+
+        vm.prank(Actors.LP1);
+        uint256 shares = router.deposit(address(usdcU), IERC4626(address(ausdcVault)), amount, Actors.LP1, 0);
+
+        assertGt(shares, 0);
+        assertEq(ausdcVault.balanceOf(Actors.LP1), shares);
+        assertEq(ausdc.balanceOf(address(ausdcVault)), amount, "vault holds the aUSDC 1:1");
+        assertEq(ausdc.balanceOf(address(router)), 0, "router holds no aUSDC");
+        assertEq(IERC20(address(usdcU)).balanceOf(address(router)), 0, "router holds no USDC");
+        assertEq(IERC20(address(usdcU)).balanceOf(Actors.LP1), 0, "all USDC routed");
+    }
+
+    /// @dev Reverse leg: aUSDC unwinds back to USDC via the router.
+    function test_withdraw_usdc_succeeds() public {
+        uint256 amount = 10_000e6;
+        _fundAndApproveAToken(usdcU, ausdc, Actors.LP1, amount);
+
+        vm.prank(Actors.LP1);
+        uint256 out = router.withdraw(address(usdcU), amount, Actors.LP1);
+
+        assertEq(out, amount);
+        assertEq(IERC20(address(usdcU)).balanceOf(Actors.LP1), amount);
+        assertEq(ausdc.balanceOf(Actors.LP1), 0);
     }
 
     function test_deposit_emitsEvent() public {
