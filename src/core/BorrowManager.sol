@@ -422,7 +422,7 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
         _totalScaledDebt -= p.principal;
         delete _positions[borrower][asset];
 
-        // LP-socialized slice: reimburse the caller in vault collateral priced
+        // LP-socialized slice: release vault collateral to the protocol treasury, priced
         // off the vault's collateral oracle (aToken ≈ underlying 1:1).
         uint256 collateralReleased;
         uint256 lpLoss = residual - absorbAmount;

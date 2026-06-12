@@ -134,6 +134,12 @@ contract VaultManagerTest is Test {
         assertTrue(manager.isRegisteredVault(address(vault)));
     }
 
+    function test_registerVault_zeroCollateralAsset_reverts() public {
+        vm.prank(admin);
+        vm.expectRevert(IVaultManager.InvalidCollateralAsset.selector);
+        manager.registerVault(address(vault), bytes32(0));
+    }
+
     function test_registerVault_onlyAdmin_reverts() public {
         vm.expectRevert(IVaultManager.OnlyAdmin.selector);
         vm.prank(nonAdmin);

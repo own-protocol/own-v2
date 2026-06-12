@@ -71,6 +71,7 @@ interface IVaultManager {
     error ZeroAmount();
     error VaultNotRegistered(address vault);
     error VaultAlreadyRegistered(address vault);
+    error InvalidCollateralAsset();
     error AssetCapBreached(bytes32 asset, uint256 attemptedUSD, uint256 capUSD);
     error GlobalUtilizationBreached(uint256 projectedBps, uint256 maxBps);
     error InsufficientExposure(bytes32 asset, uint256 have, uint256 want);

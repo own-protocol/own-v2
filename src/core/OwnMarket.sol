@@ -320,6 +320,29 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard, EIP712 {
     }
 
     // ──────────────────────────────────────────────────────────
+    //  Maintenance
+    // ──────────────────────────────────────────────────────────
+
+    /// @inheritdoc IOwnMarket
+    /// @dev eTokens escrowed in resting redeem orders accrue dividends to the market; per-order
+    ///      attribution is infeasible (global accumulator), so they sweep to the treasury.
+    function sweepDividends(
+        address eToken
+    ) external nonReentrant returns (uint256 amount) {
+        if (!IAssetRegistry(registry.assetRegistry()).isValidToken(IEToken(eToken).ticker(), eToken)) {
+            revert InvalidEToken(eToken);
+        }
+        amount = IEToken(eToken).claimableRewards(address(this));
+        if (amount == 0) revert NoDividendsToSweep();
+
+        IEToken(eToken).claimRewards();
+        address treasury = registry.treasury();
+        IERC20(IEToken(eToken).rewardToken()).safeTransfer(treasury, amount);
+
+        emit EscrowDividendsSwept(eToken, treasury, amount);
+    }
+
+    // ──────────────────────────────────────────────────────────
     //  View functions
     // ──────────────────────────────────────────────────────────
 

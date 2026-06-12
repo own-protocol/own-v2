@@ -3,6 +3,7 @@ pragma solidity 0.8.28;
 
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {OwnMarket} from "../../src/core/OwnMarket.sol";
+import {EToken} from "../../src/tokens/EToken.sol";
 import {IOwnMarket} from "../../src/interfaces/IOwnMarket.sol";
 
 import {IOwnVault} from "../../src/interfaces/IOwnVault.sol";
@@ -450,6 +451,52 @@ contract OwnMarketTest is BaseTest {
         vm.expectRevert(abi.encodeWithSelector(IOwnMarket.FeeOnTransferNotSupported.selector, address(fot)));
         market.placeOrder(TSLA, OrderType.Mint, amount, TSLA_PRICE, _defaultExpiry());
         vm.stopPrank();
+    }
+
+    /// @dev Dividends accruing on eTokens escrowed in resting redeem orders must be
+    ///      sweepable to the treasury — previously they were permanently stranded.
+    function test_sweepDividends_escrowedETokens_toTreasury() public {
+        address treasury = makeAddr("treasury");
+        _setTreasury(treasury);
+
+        // A dividend-paying eToken registered as its own asset; usdc is the reward token.
+        EToken divToken = new EToken("Own TLT", "eTLT", bytes32("TLT"), address(protocolRegistry), address(usdc));
+        AssetConfig memory cfg = AssetConfig({
+            activeToken: address(divToken),
+            legacyTokens: new address[](0),
+            active: true,
+            volatilityLevel: 1,
+            oracleType: 1
+        });
+        vm.prank(Actors.ADMIN);
+        assetReg.addAsset(bytes32("TLT"), address(divToken), cfg);
+
+        // User escrows eTokens in a resting redeem order.
+        vm.prank(address(market));
+        divToken.mint(Actors.MINTER1, 100e18);
+        vm.startPrank(Actors.MINTER1);
+        divToken.approve(address(market), 100e18);
+        market.placeOrder(bytes32("TLT"), OrderType.Redeem, 100e18, TSLA_PRICE, _defaultExpiry());
+        vm.stopPrank();
+
+        // Dividends land while the order rests; the market is the sole holder.
+        uint256 dividends = 1000e6;
+        usdc.mint(address(this), dividends);
+        usdc.approve(address(divToken), dividends);
+        divToken.depositRewards(dividends);
+
+        vm.expectEmit(true, true, false, true);
+        emit IOwnMarket.EscrowDividendsSwept(address(divToken), treasury, dividends);
+        uint256 swept = market.sweepDividends(address(divToken));
+
+        assertEq(swept, dividends);
+        assertEq(usdc.balanceOf(treasury), dividends, "dividends swept to treasury");
+    }
+
+    function test_sweepDividends_invalidToken_reverts() public {
+        EToken unregistered = new EToken("Fake", "eFAKE", bytes32("FAKE"), address(protocolRegistry), address(usdc));
+        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.InvalidEToken.selector, address(unregistered)));
+        market.sweepDividends(address(unregistered));
     }
 
     /// @dev L-13: a blocklist-frozen user must not brick cancel/expire — the escrow

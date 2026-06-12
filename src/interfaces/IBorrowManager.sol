@@ -192,11 +192,12 @@ interface IBorrowManager {
     /// @dev    The caller fronts the *full* residual debt in stablecoin, which
     ///         repays the vault's matching Aave loan and clears the book debt.
     ///         `absorbAmount` is the slice of that loss the caller eats itself
-    ///         (donated, no reimbursement); the remainder is socialized to LPs
-    ///         and reimbursed to the caller in vault collateral (aToken) priced
-    ///         via the vault's collateral oracle. `absorbAmount == residual`
-    ///         means the caller absorbs everything (no collateral released);
-    ///         `absorbAmount == 0` means LPs absorb everything.
+    ///         (donated, no reimbursement); the remainder is socialized to LPs —
+    ///         the matching vault collateral (aToken), priced via the vault's
+    ///         collateral oracle, is released to the protocol treasury (not the
+    ///         caller). `absorbAmount == residual` means the caller absorbs
+    ///         everything (no collateral released); `absorbAmount == 0` means
+    ///         LPs absorb everything.
     /// @param  borrower            Borrower whose residual debt is being closed.
     /// @param  asset               Asset ticker of the position.
     /// @param  absorbAmount        Stablecoin loss the caller eats (clamped to residual).

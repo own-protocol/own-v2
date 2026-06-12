@@ -1,6 +1,6 @@
 # Own Protocol v2 — Audit Report & Remediation Status
 
-**Branch:** `lending` · **Last updated:** 2026-06-12 · **Test suite:** 666 passing
+**Branch:** `lending` · **Last updated:** 2026-06-12 · **Test suite:** 670 passing
 
 Consolidated from the 2026-06-09 full manual audit, the 2026-06-10/11 focused re-audits
 (BorrowManager, AaveRouter, H-02 migration changes), and the 2026-06-11 multi-agent re-audit
@@ -16,7 +16,7 @@ Consolidated from the 2026-06-09 full manual audit, the 2026-06-10/11 focused re
 | Medium   | 10    | 9     | 0    | 1         |
 | Low      | 13    | 10    | 0    | 3         |
 
-**Every finding in the report is closed: fixed, mitigated, documented, or by-design — none open. Remaining future work: the unconfirmed leads in §5.**
+**Every finding in the report is closed: fixed, mitigated, documented, or by-design — none open. The §5 leads are triaged: 4 fixed, 2 resolved by earlier fixes, 2 noted, 2 deferred for future review.**
 
 | ID        | Severity | Finding                                                                                                              | Status                                                         |
 | --------- | -------- | -------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
@@ -373,20 +373,50 @@ No open findings at any severity. Remaining future work: the unconfirmed leads i
 
 ---
 
-## 5. Leads (unconfirmed, for future review)
+## 5. Leads (from the 2026-06-11 re-audit — triaged 2026-06-12)
 
-High-signal trails from the 2026-06-11 re-audit, not yet verified:
+### Confirmed and fixed (2026-06-12)
 
-- No `minAssetsOut` on `fulfillWithdrawal` — bad-debt socialization between request and fulfill dilutes a queued LP with no opt-out.
-- `shareYield` between `requestDeposit`/`acceptDeposit` dilutes a pending LP when `minSharesOut == 0`.
-- `_convertToCollateral` floor-div releases 0 collateral for sub-`1e12`-USD bad-debt slices on 6-dec vaults.
-- eTokens escrowed in `OwnMarket` for resting redeem orders accrue dividends with no claim/sweep path — stranded.
-- `EToken.depositRewards` per-share truncation floors to 0 for large supply + low-dec reward tokens.
-- `absorbBadDebt` NatSpec says collateral "reimburses the caller"; code releases to `registry.treasury()`.
-- `absorbBadDebt` surplus (when `actualRepaid < residual`) sweeps to `vault.manager()`; reachability tied to M-08.
-- Split-ratio rounding drift across `migrateToken`/`convertLegacy`/`applySplit` — needs a multi-split trace.
-- `registerVault`/`forceExecuteOrder` accept a zero `collateralAsset` → missing-feed revert (liveness, admin-induced).
-- `PythOracleVerifier` strands surplus ETH (same class as L-08).
+- **Escrowed eToken dividends stranded — Fixed.** `OwnMarket` had no claim path for dividends
+  accruing on eTokens escrowed in resting redeem orders (permanently burned). Added permissionless
+  `OwnMarket.sweepDividends(eToken)` → treasury (no canonical VM exists for market escrow;
+  per-order attribution is infeasible with the global accumulator), token validated against the
+  registry. Test: `test_sweepDividends_escrowedETokens_toTreasury`.
+- **`EToken.depositRewards` truncation — Fixed.** For large supply + low-dec reward tokens the
+  per-share delta floored to 0 while the full amount was still pulled in (stuck — the old
+  "dust stays for the next deposit" comment was wrong: deltas don't accumulate across deposits).
+  Now reverts `RewardTooSmall` when the delta is 0 (M-09 pattern).
+  Test: `test_depositRewards_tooSmall_reverts`.
+- **`absorbBadDebt` NatSpec mismatch — Fixed.** Interface + inline comments said the LP-loss
+  collateral "reimburses the caller"; corrected to match the code (released to the treasury).
+- **Zero `collateralAsset` accepted — Fixed.** `registerVault` now reverts
+  `InvalidCollateralAsset` on a zero ticker. Test: `test_registerVault_zeroCollateralAsset_reverts`.
+
+### Resolved by earlier fixes
+
+- **`PythOracleVerifier` strands surplus ETH** — both consumers now forward the exact fee and
+  refund the remainder (`OwnMarket._refundETH`, pre-existing; `BorrowManager._refundExcessEth`,
+  L-08 fix). Only a third party calling `verifyPrice` directly with excess ETH can strand it —
+  their own overpayment.
+- **`absorbBadDebt` surplus sweep to `vault.manager()`** — reachability was tied to M-08's index
+  inflation, which is closed (dust-base floor skip + one-manager invariant).
+
+### Noted, no action
+
+- **`shareYield` dilution in the async deposit window** — `requestDeposit` already takes
+  `minSharesOut`; the lead only bites when the user passes 0. Frontend should default it sensibly.
+- **`_convertToCollateral` floor-div on sub-`1e12`-USD bad-debt slices** — admin-gated path,
+  dust-bounded under-socialization per call.
+
+### Open for future review
+
+- **No `minAssetsOut` on withdrawals** — `convertToAssets` is evaluated at (permissionless)
+  fulfillment, so value socialized between request and fulfill dilutes a queued LP with no
+  automatic opt-out (mitigation today: `cancelWithdrawal`). Candidate fix: `minAssetsOut` stored
+  on the request — changes the `requestWithdrawal` external API; decide alongside a frontend
+  update.
+- **Split-ratio rounding drift** across `migrateToken`/`convertLegacy`/`applySplit` — observed
+  drift was protocol-favorable; confirming needs a dedicated multi-split fuzz/trace pass.
 
 ---
 
@@ -401,4 +431,4 @@ High-signal trails from the 2026-06-11 re-audit, not yet verified:
 
 ---
 
-_Original findings cite code at review time (2026-06-09 review at commit `fa9cf33`; re-audits on `lending` through 2026-06-11). Every Critical/High was verified directly against source, and every fix has a regression test that fails without it. Suite: 665 passing._
+_Original findings cite code at review time (2026-06-09 review at commit `fa9cf33`; re-audits on `lending` through 2026-06-11). Every Critical/High was verified directly against source, and every fix has a regression test that fails without it. Suite: 670 passing._

@@ -71,6 +71,9 @@ interface IOwnMarket {
     ///         funds were swept to the protocol treasury for off-chain resolution.
     event EscrowSweptToTreasury(address indexed user, address token, uint256 amount);
 
+    /// @notice Emitted when dividends accrued on escrowed eTokens are swept to the treasury.
+    event EscrowDividendsSwept(address indexed eToken, address indexed treasury, uint256 amount);
+
     // ──────────────────────────────────────────────────────────
     //  Errors
     // ──────────────────────────────────────────────────────────
@@ -101,6 +104,12 @@ interface IOwnMarket {
 
     /// @notice The escrow received less than the requested amount (fee-on-transfer token).
     error FeeOnTransferNotSupported(address token);
+
+    /// @notice The token is not a registered active or legacy eToken.
+    error InvalidEToken(address token);
+
+    /// @notice There are no accrued dividends to sweep.
+    error NoDividendsToSweep();
 
     /// @notice The price (or limit price) is invalid (zero).
     error InvalidPrice();
@@ -281,6 +290,15 @@ interface IOwnMarket {
     function expireOrder(
         uint256 orderId
     ) external;
+
+    /// @notice Sweep dividends accrued on escrowed eTokens to the protocol treasury.
+    ///         Permissionless. Reverts if the token is not a registered eToken or
+    ///         nothing has accrued.
+    /// @param eToken Active or legacy eToken whose accrued rewards to sweep.
+    /// @return amount Reward tokens swept.
+    function sweepDividends(
+        address eToken
+    ) external returns (uint256 amount);
 
     // ──────────────────────────────────────────────────────────
     //  View functions

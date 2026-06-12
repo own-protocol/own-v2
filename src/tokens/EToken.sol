@@ -169,10 +169,14 @@ contract EToken is ERC20, ERC20Permit, IEToken {
         uint256 supply = totalSupply();
         require(supply > 0, "EToken: no supply");
 
+        // An amount too small to move rewards-per-share would be pulled in but never
+        // distributed (stuck) — reject it.
+        uint256 delta = amount.mulDiv(PRECISION, supply);
+        if (delta == 0) revert RewardTooSmall();
+
         IERC20(rewardToken).safeTransferFrom(msg.sender, address(this), amount);
 
-        // Rounding: floor is fine here — any dust stays for the next deposit
-        _rewardsPerShare += amount.mulDiv(PRECISION, supply);
+        _rewardsPerShare += delta;
 
         emit RewardsDeposited(amount, _rewardsPerShare);
     }

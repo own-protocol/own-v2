@@ -216,6 +216,7 @@ contract VaultManager is IVaultManager {
     /// @inheritdoc IVaultManager
     function registerVault(address vault, bytes32 collateralAsset) external override onlyAdmin {
         if (vault == address(0)) revert ZeroAddress();
+        if (collateralAsset == bytes32(0)) revert InvalidCollateralAsset();
         if (_registered[vault]) revert VaultAlreadyRegistered(vault);
 
         _registered[vault] = true;
