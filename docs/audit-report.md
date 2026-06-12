@@ -14,9 +14,9 @@ Consolidated from the 2026-06-09 full manual audit, the 2026-06-10/11 focused re
 | Critical | 1     | 1     | 0    | —         |
 | High     | 5     | 5     | 0    | —         |
 | Medium   | 10    | 9     | 0    | 1         |
-| Low      | 13    | 7     | 6    | —         |
+| Low      | 13    | 9     | 2    | 2         |
 
-**Every Critical, High, and Medium is now fixed (or by-design) and regression-tested. Remaining work: 6 Lows (see §4) and the unconfirmed leads in §5.**
+**Every Critical, High, and Medium is now fixed (or by-design) and regression-tested. Remaining work: 2 Lows — L-09 (pending a direction call) and L-13 (deferred to pre-mainnet) — and the unconfirmed leads in §5.**
 
 | ID        | Severity | Finding                                                                                                              | Status                                                         |
 | --------- | -------- | -------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
@@ -36,7 +36,7 @@ Consolidated from the 2026-06-09 full manual audit, the 2026-06-10/11 focused re
 | M-08      | Medium   | `_flooredIndex` inflates on a dust scaled-debt base; breaks under multi-manager                                      | **Fixed**                                                      |
 | M-09      | Medium   | Sub-unit amounts record zero scaled debt while moving real value                                                     | **Fixed**                                                      |
 | M-10      | Medium   | `WstETHRouter` wraps requested (not received) stETH → deposit path DoS                                               | **Fixed**                                                      |
-| L-01–L-13 | Low      | See §4                                                                                                               | 7 **Fixed** (L-01, L-03, L-05, L-06, L-08, L-10, L-12) · 6 Open |
+| L-01–L-13 | Low      | See §4                                                                                                               | 9 closed (7 fixed + L-02 mitigated + L-07 documented) · 2 by design (L-04, L-11) · 2 open (L-09, L-13) |
 | C-01\*    | Info     | Force-execute asset proof is window-scoped, not fresh                                                                | **By design** (team-confirmed 2026-06-11)                      |
 
 ---
@@ -287,12 +287,22 @@ in the 2026-06-11 re-audit.
 
 ## 2. Open Findings
 
-No open Critical/High/Medium findings. Remaining: the 6 open Lows in §4 and the unconfirmed leads in §5.
+No open Critical/High/Medium findings. Remaining: 2 open Lows in §4 (L-09, L-13) and the unconfirmed leads in §5.
 
 ---
 
 ## 3. By-Design / Withdrawn
 
+- **L-04 — Borrow manager is one-shot with no rotation (reclassified by design 2026-06-12).**
+  One borrow manager per vault, for the vault's lifetime, is the documented protocol invariant the
+  M-08 fix relies on — rotation would break the interest-index floor's debt attribution. The
+  incident path for a compromised manager is `haltVault` (instant LP withdrawals, collateral
+  excluded from the pool), as the original finding noted.
+- **L-11 — `sweepDividends` pays `vault.manager()` (reclassified by design 2026-06-12).**
+  The revenue model routes collateral dividends to the VM (`protocol.md` §7.3), the same
+  destination as the lending-premium sweep in `_repayAaveAndSweep`. The admin-mutable `setManager`
+  is the same trust boundary that governs all other VM-directed flows. The token argument is
+  validated since the L-06 fix.
 - **C-01\* — Force-execute asset proof is window-scoped, not fresh (team-confirmed 2026-06-11).**
   Force-execute is the user's VM-failure recourse: if no VM filled the redeem within
   `claimThreshold`, the user proves the asset reached their `limitPrice` _at some point in the
@@ -332,14 +342,17 @@ No open Critical/High/Medium findings. Remaining: the 6 open Lows in §4 and the
 - **L-10 — Fixed.** `settleHaltedPosition` requires `vaultManager.paymentToken() == stablecoin` (`PaymentTokenMismatch`) — proceeds are accounted in stablecoin units, so a diverged payment token now fails loud and recoverable instead of mis-accounting. Test: `test_settleHaltedPosition_paymentTokenMismatch_reverts`.
 - **L-12 — Fixed.** `placeOrder` measures the escrow balance-diff and reverts `FeeOnTransferNotSupported` when received ≠ sent. Direct party-to-party legs (`executeOrder`, fill payouts) are intentionally not gated — a FoT token there shorts the counterparty, not the escrow pool. This also closes L-02's fee-on-transfer half. Test: `test_placeOrder_feeOnTransferToken_reverts`.
 
+### Closed without code change (2026-06-12)
+
+- **L-02 — Mitigated.** Both halves are covered by existing code: `setPaymentToken` enforces
+  `decimals() <= 18`, and the fee-on-transfer half is closed by the L-12 escrow balance-diff check.
+- **L-07 — Documented.** `migrateToken` + `applySplit` atomicity is now an explicit ops requirement
+  in `protocol.md` §13 (single multisig batch; liveness-only, admin-recoverable if violated).
+
 ### Open
 
-- **L-02** Remaining half: >18-dec payment tokens — mostly mitigated by `setPaymentToken`'s `decimals() <= 18` check (the fee-on-transfer half is closed by the L-12 fix).
-- **L-04** `_borrowManager` is one-shot with no rotation; a compromised manager is only handled via `haltVault`. *Reclassification candidate: one-shot binding is now the documented protocol invariant (see M-08).*
-- **L-07** `migrateToken` + `applySplit` are not atomic — liveness only; ops requirement: keep both in one multisig batch.
-- **L-09** `settleHaltedPosition` ceil-rounds `eTokenToCover`, so surplus borrower collateral sweeps to the VM instead of refunding the borrower (dust, but systematic). Pending a direction call: floor the capped cover, or refund `proceeds − currentDebt`.
-- **L-11** Permissionless `sweepDividends` pays the admin-mutable `vault.manager()`. *Reclassification candidate: the revenue model routes dividends to the VM by design.*
-- **L-13** A USDC/USDT blocklist freeze of a recipient permanently bricks `cancelOrder`/`expireOrder` for that order, and a frozen `haltRedeemAddress` bricks all halt redemptions for the asset. _Fix:_ pull-payment fallback; monitored, non-freezable halt address. Deferred — flow-level design change.
+- **L-09** `settleHaltedPosition` ceil-rounds `eTokenToCover`, so surplus borrower collateral sweeps to the VM instead of refunding the borrower (dust, but systematic). Pending a direction call: floor the capped cover, or refund `proceeds − currentDebt` to the borrower.
+- **L-13** A USDC/USDT blocklist freeze of a recipient permanently bricks `cancelOrder`/`expireOrder` for that order, and a frozen `haltRedeemAddress` bricks all halt redemptions for the asset. _Fix:_ pull-payment fallback; monitored, non-freezable halt address. Deferred — flow-level design change; revisit before mainnet (testnet payment token is a mock, so no freeze risk today).
 
 ---
 

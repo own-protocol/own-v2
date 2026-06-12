@@ -688,3 +688,8 @@ ratio**: `effectivePrice = activePrice × legacyRatio`. As a result:
 4. Unpause (`setAssetTradingPaused(asset, false)`).
 5. Holders call `convertLegacy`; borrowers' positions continue and resolve through normal
    repay/liquidate/settle.
+
+**Atomicity requirement:** steps 2 and 3 (`migrateToken` + `applySplit`) MUST execute in a single
+multisig batch transaction. They are not atomic on-chain; running `migrateToken` without
+`applySplit` leaves converted tokens temporarily unredeemable (exposure book still in old units)
+until `applySplit` lands. Liveness-only and admin-recoverable, but never split the two calls.
