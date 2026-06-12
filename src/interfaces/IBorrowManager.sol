@@ -16,7 +16,8 @@ import {InterestRateModel} from "../libraries/InterestRateModel.sol";
 ///         This interface is venue-neutral — it says nothing about where the loaned stablecoin
 ///         comes from. The current implementation (`BorrowManager`) sources it from Aave V3 via the
 ///         vault's credit delegation; a future Morpho or in-house manager can implement the same
-///         interface with a different funding source.
+///         interface with a different funding source for its own vault. Each vault binds exactly
+///         one borrow manager for its lifetime (`OwnVault.setBorrowManager` is one-shot).
 interface IBorrowManager {
     // ──────────────────────────────────────────────────────────
     //  Types

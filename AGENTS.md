@@ -301,7 +301,7 @@ When implementing, reference the EIP directly. Do not rely on memory — check t
 
 ## Revenue Model & Price Protection
 
-The protocol charges **no on-chain mint or redeem fee**. Revenue accrues through the RFQ spread and the lending system; a tiered fee split is planned but not implemented. Full treatment in `docs/protocol.md` §7.
+The protocol charges **no on-chain mint or redeem fee**. Revenue accrues through the RFQ spread and the lending system. Full treatment in `docs/protocol.md` §7.
 
 ### Mint & Redeem — RFQ spread (off-chain)
 
@@ -311,6 +311,7 @@ The protocol charges **no on-chain mint or redeem fee**. Revenue accrues through
 
 ### Lending revenue (routed to the VM)
 
+- **One borrow manager per vault (protocol invariant)**: each vault binds exactly one `BorrowManager` for its lifetime (`OwnVault.setBorrowManager` is one-shot, no rotation). The manager's interest-index floor attributes the vault's entire Aave debt to its own book and relies on this.
 - **Interest premium**: borrowers pay `max(liveAaveRate, floor) + premium(utilisation)`. On repay, the premium above Aave's rate is swept to the vault manager (`LendingFeeAccrued`); the VM redistributes off-chain and/or via `OwnVault.shareYield` (lifts LP share price).
 - **Collateral dividends**: dividends earned on eToken collateral held during a borrow accrue to the VM as lending revenue (not to the borrower) and are swept via `sweepDividends` (`DividendsSwept`). They resume accruing to the borrower once the collateral is returned.
 

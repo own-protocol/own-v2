@@ -937,6 +937,28 @@ contract BorrowManagerTest is BaseTest {
         assertEq(borrowManager.totalDebtUSD(), uint256(stable + 500e6) * 1e12, "exactly floored to aave debt");
     }
 
+    /// @dev The Aave-debt floor must be skipped when the scaled-debt base is dust —
+    ///      spreading residual vault debt over near-zero units would irreversibly
+    ///      explode the (monotonic) index for every position.
+    function test_accrue_dustScaledDebt_skipsFloor() public {
+        // Sub-1-USDC position: scaled base (5e5) below the dust threshold (1e6).
+        uint256 eAmt = 1e18;
+        uint256 stable = 5e5; // 0.5 USDC
+        _giveTSLA(Actors.MINTER1, eAmt);
+        vm.startPrank(Actors.MINTER1);
+        eTSLA.approve(address(borrowManager), eAmt);
+        borrowManager.borrow(ASSET, eAmt, stable, _priceData(TSLA_PX));
+        vm.stopPrank();
+
+        // Residual Aave debt on the vault that doesn't belong to the remaining book.
+        aavePool.accrueDebt(address(vault), address(usdc), 50e6);
+        borrowManager.accrue();
+
+        // Without the dust guard the floor computes 50.5e6 × 1e18 / 5e5 → index ×101,
+        // ballooning the borrower's $0.50 debt to $50.50 — permanently (index is monotonic).
+        assertEq(borrowManager.debtOf(Actors.MINTER1, ASSET), stable, "dust base must not explode the index");
+    }
+
     // ──────────────────────────────────────────────────────────
     //  borrow guards: cap sees accrued debt, vault must be Active
     // ──────────────────────────────────────────────────────────

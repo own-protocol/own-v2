@@ -36,7 +36,9 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 ///         Aave V3 via the vault's credit delegation — `pool.borrow(onBehalf=vault)` /
 ///         `pool.repay(onBehalf=vault)` — and reads the live Aave variable borrow rate as its base
 ///         rate. A future Morpho or in-house manager can implement {IBorrowManager} with a different
-///         funding source while reusing the same vault, market, and risk wiring.
+///         funding source for its own vault. **Each vault binds exactly one borrow manager for its
+///         lifetime** (`OwnVault.setBorrowManager` is one-shot) — the interest-index floor
+///         attributes the vault's entire Aave debt to this manager's book and relies on it.
 ///
 ///         The manager is self-contained: it tracks its own outstanding debt, enforces a vault-wide
 ///         hard cap (`targetLtvBps` × vault collateral), and derives utilization for the rate curve.
@@ -726,9 +728,16 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
     ///      outrun our sampled simple-interest model; flooring to the ground truth keeps any
     ///      shortfall on the protocol's premium, never on LPs. The index is monotonic, so this only
     ///      ever raises it.
+    ///
+    ///      Attributing the vault's entire Aave debt to this book assumes one borrow manager per
+    ///      vault — a protocol invariant (`OwnVault.setBorrowManager` is one-shot). The floor is
+    ///      skipped on a dust base: spreading residual Aave debt (rounding crumbs of the book/Aave
+    ///      divergence) over near-zero scaled units would irreversibly explode the index for every
+    ///      position. At dust scale there is no meaningful book left for the floor to protect.
     function _flooredIndex(
         uint256 idx
     ) internal view returns (uint256) {
+        if (_totalScaledDebt < 10 ** _stableDecimals) return idx;
         uint256 realAaveDebt = IERC20(debtToken).balanceOf(vault);
         if (realAaveDebt == 0) return idx;
         uint256 minIndex = realAaveDebt.mulDiv(PRECISION, _totalScaledDebt);

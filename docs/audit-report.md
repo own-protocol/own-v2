@@ -1,6 +1,6 @@
 # Own Protocol v2 — Audit Report & Remediation Status
 
-**Branch:** `lending` · **Last updated:** 2026-06-12 · **Test suite:** 656 passing
+**Branch:** `lending` · **Last updated:** 2026-06-12 · **Test suite:** 657 passing
 
 Consolidated from the 2026-06-09 full manual audit, the 2026-06-10/11 focused re-audits
 (BorrowManager, AaveRouter, H-02 migration changes), and the 2026-06-11 multi-agent re-audit
@@ -13,10 +13,10 @@ Consolidated from the 2026-06-09 full manual audit, the 2026-06-10/11 focused re
 | -------- | ----- | ----- | ---- | --------- |
 | Critical | 1     | 1     | 0    | —         |
 | High     | 5     | 5     | 0    | —         |
-| Medium   | 10    | 8     | 1    | 1         |
+| Medium   | 10    | 9     | 0    | 1         |
 | Low      | 13    | 0     | 13   | —         |
 
-**All Critical/High findings are fixed and regression-tested. Remaining work: 1 Medium (M-08, pending a design decision), 13 Lows, and the unconfirmed leads in §5.**
+**Every Critical, High, and Medium is now fixed (or by-design) and regression-tested. Remaining work: 13 Lows and the unconfirmed leads in §5.**
 
 | ID        | Severity | Finding                                                                                                              | Status                                                         |
 | --------- | -------- | -------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
@@ -33,7 +33,7 @@ Consolidated from the 2026-06-09 full manual audit, the 2026-06-10/11 focused re
 | M-05      | Medium   | Book debt could lag real compounding Aave debt → LP shortfall                                                        | **Fixed**                                                      |
 | M-06      | Medium   | `borrow` checks the debt cap before `_accrue()` → cap bypass                                                         | **Fixed**                                                      |
 | M-07      | Medium   | `borrow` ignores the bound vault's Paused/Halted status                                                              | **Fixed**                                                      |
-| M-08      | Medium   | `_flooredIndex` inflates on a dust scaled-debt base; breaks under multi-manager                                      | **Open**                                                       |
+| M-08      | Medium   | `_flooredIndex` inflates on a dust scaled-debt base; breaks under multi-manager                                      | **Fixed**                                                      |
 | M-09      | Medium   | Sub-unit amounts record zero scaled debt while moving real value                                                     | **Fixed**                                                      |
 | M-10      | Medium   | `WstETHRouter` wraps requested (not received) stETH → deposit path DoS                                               | **Fixed**                                                      |
 | L-01–L-13 | Low      | See §4                                                                                                               | **Open**                                                       |
@@ -255,6 +255,29 @@ wind-down path that must stay live, and a zero there only under-reduces book deb
 `test_borrow_dustAmount_reverts`, `test_repay_dustAmount_reverts` — all verified to fail without
 the guards (index lifted to 1.05 via the Aave-debt floor).
 
+### M-08 (Medium) — `_flooredIndex` exploded on a dust scaled-debt base; broke under multi-manager
+
+**Problem.** The M-05 floor computed `minIndex = debtToken.balanceOf(vault) × 1e18 / _totalScaledDebt`
+— the vault's **entire** real Aave debt spread over **this manager's** recorded units. The two sides
+can diverge: (1) when repays wind the book down to a dust base while residual Aave debt (rounding
+crumbs, model lag) remains, the division explodes — e.g. 50 USDC residual over 0.5 USDC of scaled
+units lifts the index ×101, multiplying every remaining position's debt, **permanently** (the index
+is monotonic, nothing can lower it); (2) a second borrow manager on the same vault would make
+`balanceOf(vault)` the combined debt, double-charging both books.
+
+**Fix (2026-06-12, team decision: one manager per vault).** Constrain the world to match the
+assumption rather than rebuild the accounting:
+- **One borrow manager per vault is now a documented protocol invariant** — it was already enforced
+  on-chain (`OwnVault.setBorrowManager` is one-shot, no rotation); the contracts' NatSpec
+  (`BorrowManager`, `IBorrowManager`) and docs (protocol.md, AGENTS.md) no longer suggest a second
+  manager can share a vault.
+- **The floor is skipped when `_totalScaledDebt < 10^stableDecimals`** (one whole stablecoin unit):
+  at dust scale there is no meaningful book left for the floor to protect, and residual Aave debt is
+  crumb-scale by construction. The M-05 guarantee is unchanged for real positions.
+**Tests.** `BorrowManager.t.sol::test_accrue_dustScaledDebt_skipsFloor` — reproduces the exact ×101
+explosion ($0.50 → $50.50) without the guard; `test_accrue_floorsBookDebtToRealAaveDebt` still
+passes, confirming the floor works above the threshold.
+
 ### Fixed Info item — EToken pass-through dividends
 
 The EToken dividend accumulator was rewritten (pass-through holder redirect) and re-verified correct
@@ -264,18 +287,7 @@ in the 2026-06-11 re-audit.
 
 ## 2. Open Findings
 
-### Medium
-
-- **M-08 — `_flooredIndex` dust inflation / multi-manager corruption.** The M-05 floor divides
-  vault-wide Aave debt by this manager's scaled-debt base. If `_totalScaledDebt` shrinks to dust
-  while real Aave debt doesn't, the index explodes (ballooning every position); a documented future
-  second borrow manager on the same vault would read the combined debt and multiply its borrowers'
-  debt. _Fix:_ floor against this manager's own originated debt, or enforce a one-manager invariant
-  plus a dust threshold.
-### Recommended order
-
-1. M-08 — needs a design decision on the floor's debt base: floor against this manager's own
-   originated debt, or enforce a one-manager invariant + dust threshold.
+No open Critical/High/Medium findings. Remaining: the 13 Lows in §4 and the unconfirmed leads in §5.
 
 ---
 
@@ -344,4 +356,4 @@ High-signal trails from the 2026-06-11 re-audit, not yet verified:
 
 ---
 
-_Original findings cite code at review time (2026-06-09 review at commit `fa9cf33`; re-audits on `lending` through 2026-06-11). Every Critical/High was verified directly against source, and every fix has a regression test that fails without it. Suite: 656 passing._
+_Original findings cite code at review time (2026-06-09 review at commit `fa9cf33`; re-audits on `lending` through 2026-06-11). Every Critical/High was verified directly against source, and every fix has a regression test that fails without it. Suite: 657 passing._
