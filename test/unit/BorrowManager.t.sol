@@ -229,6 +229,32 @@ contract BorrowManagerTest is BaseTest {
         );
     }
 
+    function test_constructor_invalidRateParams_revert() public {
+        InterestRateModel.Params memory p = _params();
+        p.optimalUtilBps = 0;
+        vm.expectRevert(IBorrowManager.InvalidRateParams.selector);
+        new BorrowManager(
+            address(vault),
+            address(usdc),
+            address(usdcDebt),
+            address(aavePool),
+            address(protocolRegistry),
+            TARGET_LTV_BPS,
+            p
+        );
+        p.optimalUtilBps = uint64(BPS);
+        vm.expectRevert(IBorrowManager.InvalidRateParams.selector);
+        new BorrowManager(
+            address(vault),
+            address(usdc),
+            address(usdcDebt),
+            address(aavePool),
+            address(protocolRegistry),
+            TARGET_LTV_BPS,
+            p
+        );
+    }
+
     // ──────────────────────────────────────────────────────────
     //  borrow — happy path
     // ──────────────────────────────────────────────────────────
@@ -671,6 +697,21 @@ contract BorrowManagerTest is BaseTest {
         assertEq(b, 200);
     }
 
+    /// @dev Params that would revert `InterestRateModel.premium` (and thus brick `_accrue`,
+    ///      including repay/liquidate) must be rejected at the setter.
+    function test_setRateParams_invalidOptimalUtil_reverts() public {
+        InterestRateModel.Params memory np = _params();
+        np.optimalUtilBps = 0;
+        vm.prank(Actors.ADMIN);
+        vm.expectRevert(IBorrowManager.InvalidRateParams.selector);
+        borrowManager.setRateParams(np);
+
+        np.optimalUtilBps = uint64(BPS);
+        vm.prank(Actors.ADMIN);
+        vm.expectRevert(IBorrowManager.InvalidRateParams.selector);
+        borrowManager.setRateParams(np);
+    }
+
     function test_setLiquidationConfig_validates() public {
         // threshold ≤ ltv → revert.
         uint256 ltv = borrowManager.borrowLtvBps();
@@ -894,6 +935,65 @@ contract BorrowManagerTest is BaseTest {
         assertGt(borrowManager.totalDebtUSD(), storedBefore, "keeper sync advanced stored debt");
         assertGe(borrowManager.totalDebtUSD(), uint256(10_500e6) * 1e12, "stored book debt >= real aave debt");
         assertEq(borrowManager.totalDebtUSD(), uint256(stable + 500e6) * 1e12, "exactly floored to aave debt");
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  borrow guards: cap sees accrued debt, vault must be Active
+    // ──────────────────────────────────────────────────────────
+
+    /// @dev The hard cap must be checked against the accrued + floored debt, not the
+    ///      stale stored index — otherwise a borrow can pass while real debt breaches the cap.
+    function test_borrow_capChecksAccruedDebt() public {
+        (, uint256 stable) = _openTypical(Actors.MINTER1); // $10k book debt, stored index = 1.0
+
+        // Aave rate spike the stored index hasn't seen: real vault debt jumps to $349k,
+        // just under the $350k cap (35% of the $1M collateral mark).
+        aavePool.accrueDebt(address(vault), address(usdc), 349_000e6 - stable);
+
+        // A $5k borrow passes the stale-index cap ($15k vs $350k) but must revert
+        // once the cap sees the floored debt ($349k + $5k > $350k).
+        _giveTSLA(Actors.MINTER2, 100e18);
+        vm.startPrank(Actors.MINTER2);
+        eTSLA.approve(address(borrowManager), 100e18);
+        vm.expectRevert(abi.encodeWithSelector(IBorrowManager.BorrowExceedsCap.selector, 354_000e18, 350_000e18));
+        borrowManager.borrow(ASSET, 100e18, 5_000e6, _priceData(TSLA_PX));
+        vm.stopPrank();
+    }
+
+    /// @dev A paused vault must not be borrowed against via its credit delegation,
+    ///      while exits (repay) stay open.
+    function test_borrow_pausedVault_reverts() public {
+        _openTypical(Actors.MINTER1);
+
+        vault.pause(bytes32("incident")); // this contract is the bound manager
+
+        _giveTSLA(Actors.MINTER2, 100e18);
+        vm.startPrank(Actors.MINTER2);
+        eTSLA.approve(address(borrowManager), 100e18);
+        vm.expectRevert(IBorrowManager.VaultNotActive.selector);
+        borrowManager.borrow(ASSET, 100e18, 5_000e6, _priceData(TSLA_PX));
+        vm.stopPrank();
+
+        // Exits stay open: the existing position repays in full while paused.
+        uint256 owed = borrowManager.debtOf(Actors.MINTER1, ASSET);
+        usdc.mint(Actors.MINTER1, owed);
+        vm.startPrank(Actors.MINTER1);
+        usdc.approve(address(borrowManager), owed);
+        borrowManager.repay(ASSET, type(uint256).max);
+        vm.stopPrank();
+        assertEq(aavePool.debtOf(address(vault), address(usdc)), 0, "repay clears aave debt while paused");
+    }
+
+    function test_borrow_haltedVault_reverts() public {
+        vm.prank(Actors.ADMIN);
+        vault.haltVault();
+
+        _giveTSLA(Actors.MINTER1, 100e18);
+        vm.startPrank(Actors.MINTER1);
+        eTSLA.approve(address(borrowManager), 100e18);
+        vm.expectRevert(IBorrowManager.VaultNotActive.selector);
+        borrowManager.borrow(ASSET, 100e18, 5_000e6, _priceData(TSLA_PX));
+        vm.stopPrank();
     }
 }
 

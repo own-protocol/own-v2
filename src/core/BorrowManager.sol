@@ -14,7 +14,7 @@ import {IAaveV3Pool} from "../interfaces/external/IAaveV3Pool.sol";
 import {InterestRateModel} from "../libraries/InterestRateModel.sol";
 import {LendingMath} from "../libraries/LendingMath.sol";
 
-import {BPS, PRECISION} from "../interfaces/types/Types.sol";
+import {BPS, PRECISION, VaultStatus} from "../interfaces/types/Types.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
@@ -159,6 +159,7 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
                 || registry_ == address(0)
         ) revert ZeroAddress();
         if (targetLtvBps_ == 0 || targetLtvBps_ >= BPS) revert InvalidLtv();
+        if (rateParams_.optimalUtilBps == 0 || rateParams_.optimalUtilBps >= BPS) revert InvalidRateParams();
 
         vault = vault_;
         stablecoin = stablecoin_;
@@ -209,6 +210,9 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
         uint256 borrowValueUSD = LendingMath.stableToUSD(stablecoinAmount, _stableDecimals);
         if (borrowValueUSD > maxBorrowUSD) revert InsufficientCollateral(borrowValueUSD, maxBorrowUSD);
 
+        _accrue();
+        uint256 idx = _index;
+
         // Protocol-level hard cap: total debt must stay within the vault's
         // collateral-backed target LTV. Scoped so the locals free before the
         // rest of the borrow flow (avoids stack-too-deep without via-ir).
@@ -217,10 +221,6 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
             uint256 projected = totalDebtUSD() + borrowValueUSD;
             if (projected > cap) revert BorrowExceedsCap(projected, cap);
         }
-
-        // Bring the global index forward before recording the position.
-        _accrue();
-        uint256 idx = _index;
 
         // Pull eToken collateral into the manager's pooled custody.
         IERC20(eToken).safeTransferFrom(msg.sender, address(this), eTokenAmount);
@@ -575,6 +575,7 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
     function setRateParams(
         InterestRateModel.Params calldata params
     ) external onlyAdmin {
+        if (params.optimalUtilBps == 0 || params.optimalUtilBps >= BPS) revert InvalidRateParams();
         _rateParams = params;
         emit RateParamsUpdated(params);
     }
@@ -755,6 +756,7 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
     function _validateEligibility(
         bytes32 asset
     ) internal view {
+        if (IOwnVault(vault).vaultStatus() != VaultStatus.Active) revert VaultNotActive();
         if (!IAssetRegistry(registry.assetRegistry()).isActiveAsset(asset)) revert AssetNotActive(asset);
         if (_assetBorrowDisabled[asset]) revert AssetNotBorrowable(asset);
         IVaultManager vmgr = IVaultManager(registry.vaultManager());

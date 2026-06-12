@@ -118,6 +118,8 @@ interface IBorrowManager {
     error AssetNotActive(bytes32 asset);
     error AssetNotBorrowable(bytes32 asset);
     error VaultEffectivelyHalted();
+    error VaultNotActive();
+    error InvalidRateParams();
     error ETokenMismatch(address expected, address actual);
     error InsufficientCollateral(uint256 requested, uint256 maxAllowed);
     error PositionAlreadyOpen(address borrower, bytes32 asset);

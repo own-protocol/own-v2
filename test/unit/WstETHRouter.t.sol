@@ -13,6 +13,17 @@ import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Test} from "forge-std/Test.sol";
 
+/// @dev stETH whose transfers credit the recipient 2 wei less than requested,
+///      mimicking Lido's share-rounding (M-10 regression).
+contract MockRoundingStETH is MockERC20 {
+    constructor() MockERC20("Staked Ether", "stETH", 18) {}
+
+    function transferFrom(address from, address to, uint256 value) public override returns (bool ok) {
+        ok = super.transferFrom(from, to, value);
+        _burn(to, 2);
+    }
+}
+
 /// @title WstETHRouter Unit Tests
 /// @notice Tests stETH deposit/redeem flows through the wstETH router.
 contract WstETHRouterTest is BaseTest {
@@ -137,6 +148,29 @@ contract WstETHRouterTest is BaseTest {
         );
         router.depositStETH(IERC4626(address(vault)), amount, Actors.LP1, type(uint256).max);
         vm.stopPrank();
+    }
+
+    /// @dev Lido's share math delivers 1-2 wei less than the requested transfer amount;
+    ///      the router must wrap what it received, not what it asked for.
+    function test_depositStETH_lidoRounding_succeeds() public {
+        MockRoundingStETH roundingStETH = new MockRoundingStETH();
+        MockWstETH roundingWstETH = new MockWstETH(address(roundingStETH));
+        WstETHRouter r = new WstETHRouter(address(roundingWstETH), address(roundingStETH));
+        vm.prank(Actors.ADMIN);
+        OwnVault v = new OwnVault(
+            address(roundingWstETH), "Own wstETH", "owstETH", address(protocolRegistry), address(r)
+        );
+
+        uint256 amount = 10 ether;
+        roundingStETH.mint(Actors.LP1, amount);
+        vm.startPrank(Actors.LP1);
+        roundingStETH.approve(address(r), amount);
+        uint256 shares = r.depositStETH(IERC4626(address(v)), amount, Actors.LP1, 0);
+        vm.stopPrank();
+
+        assertGt(shares, 0);
+        assertEq(v.balanceOf(Actors.LP1), shares);
+        assertEq(roundingStETH.balanceOf(address(r)), 0, "Router should hold no stETH");
     }
 
     function test_depositStETH_withExchangeRate() public {
