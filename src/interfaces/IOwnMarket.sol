@@ -67,6 +67,10 @@ interface IOwnMarket {
     /// @notice Emitted when an expired resting order is closed and its escrow returned.
     event OrderExpired(uint256 indexed orderId);
 
+    /// @notice Emitted when an escrow return to `user` failed (e.g. blocklist freeze) and the
+    ///         funds were swept to the protocol treasury for off-chain resolution.
+    event EscrowSweptToTreasury(address indexed user, address token, uint256 amount);
+
     // ──────────────────────────────────────────────────────────
     //  Errors
     // ──────────────────────────────────────────────────────────

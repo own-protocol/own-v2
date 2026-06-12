@@ -443,7 +443,17 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard, EIP712 {
     /// @dev Return the unfilled escrow to the order owner.
     function _returnEscrow(Order storage order, uint256 remaining) private {
         if (remaining == 0) return;
-        IERC20(order.escrowToken).safeTransfer(order.user, remaining);
+        _pushOrSweep(order.escrowToken, order.user, remaining);
+    }
+
+    /// @dev Push tokens to `to`; if the transfer fails (e.g. a USDC/USDT blocklist freeze of the
+    ///      recipient), sweep to the protocol treasury for off-chain resolution instead of
+    ///      bricking cancel/expire. The treasury (governance multisig) is assumed non-freezable.
+    function _pushOrSweep(address token, address to, uint256 amount) private {
+        (bool ok, bytes memory ret) = token.call(abi.encodeWithSelector(IERC20.transfer.selector, to, amount));
+        if (ok && (ret.length == 0 || abi.decode(ret, (bool)))) return;
+        IERC20(token).safeTransfer(registry.treasury(), amount);
+        emit EscrowSweptToTreasury(to, token, amount);
     }
 
     // ──────────────────────────────────────────────────────────

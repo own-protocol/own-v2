@@ -1,6 +1,6 @@
 # Own Protocol v2 — Audit Report & Remediation Status
 
-**Branch:** `lending` · **Last updated:** 2026-06-12 · **Test suite:** 665 passing
+**Branch:** `lending` · **Last updated:** 2026-06-12 · **Test suite:** 666 passing
 
 Consolidated from the 2026-06-09 full manual audit, the 2026-06-10/11 focused re-audits
 (BorrowManager, AaveRouter, H-02 migration changes), and the 2026-06-11 multi-agent re-audit
@@ -14,9 +14,9 @@ Consolidated from the 2026-06-09 full manual audit, the 2026-06-10/11 focused re
 | Critical | 1     | 1     | 0    | —         |
 | High     | 5     | 5     | 0    | —         |
 | Medium   | 10    | 9     | 0    | 1         |
-| Low      | 13    | 9     | 2    | 2         |
+| Low      | 13    | 10    | 0    | 3         |
 
-**Every Critical, High, and Medium is now fixed (or by-design) and regression-tested. Remaining work: 2 Lows — L-09 (pending a direction call) and L-13 (deferred to pre-mainnet) — and the unconfirmed leads in §5.**
+**Every finding in the report is closed: fixed, mitigated, documented, or by-design — none open. Remaining future work: the unconfirmed leads in §5.**
 
 | ID        | Severity | Finding                                                                                                              | Status                                                         |
 | --------- | -------- | -------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
@@ -36,7 +36,7 @@ Consolidated from the 2026-06-09 full manual audit, the 2026-06-10/11 focused re
 | M-08      | Medium   | `_flooredIndex` inflates on a dust scaled-debt base; breaks under multi-manager                                      | **Fixed**                                                      |
 | M-09      | Medium   | Sub-unit amounts record zero scaled debt while moving real value                                                     | **Fixed**                                                      |
 | M-10      | Medium   | `WstETHRouter` wraps requested (not received) stETH → deposit path DoS                                               | **Fixed**                                                      |
-| L-01–L-13 | Low      | See §4                                                                                                               | 9 closed (7 fixed + L-02 mitigated + L-07 documented) · 2 by design (L-04, L-11) · 2 open (L-09, L-13) |
+| L-01–L-13 | Low      | See §4                                                                                                               | 10 closed (8 fixed + L-02 mitigated + L-07 documented) · 3 by design/accepted (L-04, L-09, L-11) |
 | C-01\*    | Info     | Force-execute asset proof is window-scoped, not fresh                                                                | **By design** (team-confirmed 2026-06-11)                      |
 
 ---
@@ -287,7 +287,7 @@ in the 2026-06-11 re-audit.
 
 ## 2. Open Findings
 
-No open Critical/High/Medium findings. Remaining: 2 open Lows in §4 (L-09, L-13) and the unconfirmed leads in §5.
+No open findings at any severity. Remaining future work: the unconfirmed leads in §5.
 
 ---
 
@@ -298,6 +298,14 @@ No open Critical/High/Medium findings. Remaining: 2 open Lows in §4 (L-09, L-13
   M-08 fix relies on — rotation would break the interest-index floor's debt attribution. The
   incident path for a compromised manager is `haltVault` (instant LP withdrawals, collateral
   excluded from the pool), as the original finding noted.
+- **L-09 — Halt-settlement ceil rounding sweeps the surplus to the VM (accepted 2026-06-12).**
+  `settleHaltedPosition` ceil-rounds `eTokenToCover`, so redeem proceeds can exceed the book debt
+  by a rounding sliver, which sweeps to the VM with the premium instead of refunding the borrower.
+  The surplus is bounded by one rounding step (sub-cent) per settlement. A refund was considered
+  and rejected: pushing a dust stablecoin transfer to the borrower costs more in gas and adds a
+  freeze-revert surface (L-13 class) for negligible value; flooring the cover instead would leave
+  zombie dust positions in the wind-down flow. The behavior is documented in code
+  ("surplus (over-cover from ceil rounding) sweeps to the manager"). No code change.
 - **L-11 — `sweepDividends` pays `vault.manager()` (reclassified by design 2026-06-12).**
   The revenue model routes collateral dividends to the VM (`protocol.md` §7.3), the same
   destination as the lending-premium sweep in `_repayAaveAndSweep`. The admin-mutable `setManager`
@@ -341,6 +349,20 @@ No open Critical/High/Medium findings. Remaining: 2 open Lows in §4 (L-09, L-13
 - **L-08 — Fixed.** `_verifyPrice` forwards exactly `verifyFee(priceData)` instead of all of `msg.value`, and `borrow`/`liquidate`/`absorbBadDebt` refund the surplus to the caller as their last step (`_refundExcessEth`, `EthRefundFailed`). Also fixes the latent double-forward in `absorbBadDebt` (two price proofs, each previously sent `{value: msg.value}`). Test: `test_borrow_refundsExcessEth`.
 - **L-10 — Fixed.** `settleHaltedPosition` requires `vaultManager.paymentToken() == stablecoin` (`PaymentTokenMismatch`) — proceeds are accounted in stablecoin units, so a diverged payment token now fails loud and recoverable instead of mis-accounting. Test: `test_settleHaltedPosition_paymentTokenMismatch_reverts`.
 - **L-12 — Fixed.** `placeOrder` measures the escrow balance-diff and reverts `FeeOnTransferNotSupported` when received ≠ sent. Direct party-to-party legs (`executeOrder`, fill payouts) are intentionally not gated — a FoT token there shorts the counterparty, not the escrow pool. This also closes L-02's fee-on-transfer half. Test: `test_placeOrder_feeOnTransferToken_reverts`.
+- **L-13 — Fixed (escrow half) + documented (halt half).** A USDC/USDT blocklist freeze of a
+  recipient could permanently brick `cancelOrder`/`expireOrder` (escrow locked), and a frozen
+  `haltRedeemAddress` blocks halt redemptions. Fix (team decision): `_returnEscrow` routes through
+  `_pushOrSweep` — if the push to the user fails, the escrow sweeps to `registry.treasury()`
+  (governance multisig, the protocol's existing custodial sink) and emits
+  `EscrowSweptToTreasury(user, token, amount)`; resolution is off-chain (genuine cases refunded by
+  governance, illicit funds held/forwarded to authorities). The treasury was chosen over a VM
+  destination: orders aren't vault-bound so there is no canonical VM, and a profit-motivated
+  counterparty must not custody user escrow — governance custody is neutral and timelocked. The
+  halt half is operational by nature (the frozen party is the funding *source*):
+  `setHaltRedeemAddress` is rotatable, and protocol.md §10 now mandates monitoring + immediate
+  rotation on freeze. A frozen *caller* of `redeemHalted` blocks only themselves (untouched by
+  design). Test: `test_cancelOrder_frozenUser_sweepsEscrowToTreasury` (cancel bricked without the
+  fix).
 
 ### Closed without code change (2026-06-12)
 
@@ -348,11 +370,6 @@ No open Critical/High/Medium findings. Remaining: 2 open Lows in §4 (L-09, L-13
   `decimals() <= 18`, and the fee-on-transfer half is closed by the L-12 escrow balance-diff check.
 - **L-07 — Documented.** `migrateToken` + `applySplit` atomicity is now an explicit ops requirement
   in `protocol.md` §13 (single multisig batch; liveness-only, admin-recoverable if violated).
-
-### Open
-
-- **L-09** `settleHaltedPosition` ceil-rounds `eTokenToCover`, so surplus borrower collateral sweeps to the VM instead of refunding the borrower (dust, but systematic). Pending a direction call: floor the capped cover, or refund `proceeds − currentDebt` to the borrower.
-- **L-13** A USDC/USDT blocklist freeze of a recipient permanently bricks `cancelOrder`/`expireOrder` for that order, and a frozen `haltRedeemAddress` bricks all halt redemptions for the asset. _Fix:_ pull-payment fallback; monitored, non-freezable halt address. Deferred — flow-level design change; revisit before mainnet (testnet payment token is a mock, so no freeze risk today).
 
 ---
 

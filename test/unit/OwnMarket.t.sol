@@ -24,6 +24,22 @@ contract FeeOnTransferToken is MockERC20 {
     }
 }
 
+/// @dev USDC-style token with an admin blocklist: transfers to a blocked address revert (L-13 regression).
+contract BlocklistToken is MockERC20 {
+    mapping(address => bool) public blocked;
+
+    constructor() MockERC20("Blocklist USD", "bUSD", 6) {}
+
+    function setBlocked(address account, bool isBlocked) external {
+        blocked[account] = isBlocked;
+    }
+
+    function transfer(address to, uint256 value) public override returns (bool) {
+        require(!blocked[to], "blocklisted");
+        return super.transfer(to, value);
+    }
+}
+
 contract OwnMarketTest is BaseTest {
     OwnMarket public market;
     AssetRegistry public assetReg;
@@ -434,6 +450,38 @@ contract OwnMarketTest is BaseTest {
         vm.expectRevert(abi.encodeWithSelector(IOwnMarket.FeeOnTransferNotSupported.selector, address(fot)));
         market.placeOrder(TSLA, OrderType.Mint, amount, TSLA_PRICE, _defaultExpiry());
         vm.stopPrank();
+    }
+
+    /// @dev L-13: a blocklist-frozen user must not brick cancel/expire — the escrow
+    ///      sweeps to the protocol treasury for off-chain resolution instead.
+    function test_cancelOrder_frozenUser_sweepsEscrowToTreasury() public {
+        address treasury = makeAddr("treasury");
+        _setTreasury(treasury);
+
+        BlocklistToken blockToken = new BlocklistToken();
+        vm.mockCall(
+            mockVaultManager,
+            abi.encodeWithSelector(IVaultManager.paymentToken.selector),
+            abi.encode(address(blockToken))
+        );
+
+        uint256 amount = 1000e6;
+        blockToken.mint(Actors.MINTER1, amount);
+        vm.startPrank(Actors.MINTER1);
+        blockToken.approve(address(market), amount);
+        uint256 orderId = market.placeOrder(TSLA, OrderType.Mint, amount, TSLA_PRICE, _defaultExpiry());
+
+        // User gets frozen after placing; cancel must not brick.
+        blockToken.setBlocked(Actors.MINTER1, true);
+
+        vm.expectEmit(true, false, false, true);
+        emit IOwnMarket.EscrowSweptToTreasury(Actors.MINTER1, address(blockToken), amount);
+        market.cancelOrder(orderId);
+        vm.stopPrank();
+
+        assertEq(blockToken.balanceOf(treasury), amount, "escrow swept to treasury");
+        assertEq(blockToken.balanceOf(address(market)), 0, "market holds nothing");
+        assertEq(blockToken.balanceOf(Actors.MINTER1), 0, "frozen user received nothing");
     }
 
     function test_placeOrder_zeroAmount_reverts() public {

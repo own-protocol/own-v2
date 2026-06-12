@@ -510,6 +510,19 @@ VaultManager states — orthogonal to a vault's own status.
 - **Custom errors**: gas-efficient error handling (no require strings)
 - **Timelock governance**: ProtocolRegistry changes require a 2-day delay
 
+### Blocklist-freeze handling (USDC/USDT)
+
+- **Escrow returns never brick.** If returning escrow to a user fails (e.g. the user was
+  blocklisted by the token issuer after placing the order), `cancelOrder`/`expireOrder` sweep the
+  funds to `registry.treasury()` and emit `EscrowSweptToTreasury(user, token, amount)` instead of
+  reverting. Resolution is off-chain: genuine cases are refunded by governance from the treasury;
+  illicit funds are held or forwarded to authorities. The treasury multisig is assumed
+  non-freezable.
+- **Halt redeem address must be monitored.** `redeemHalted` pulls payout funds *from* the
+  admin-set halt redeem address; a freeze of that address blocks halt redemptions for the asset
+  until the admin rotates it (`setHaltRedeemAddress`). Ops requirement: monitor the halt address
+  and rotate immediately on freeze.
+
 ### Decimal Conventions
 
 | Value Type     | Decimals    | Example                        |
