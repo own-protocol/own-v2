@@ -1,7 +1,7 @@
 ## Testnet — Base Sepolia (v2, 2026-06-12)
 
 Deployer / admin: `0xa3374B34A855b0bF6b96401D8c367608d9c8a048`
-Vault manager (VM): `0xb914b344D8a2C88598A9C5905C9342a9678a67db`
+Manager: `0xb914b344D8a2C88598A9C5905C9342a9678a67db`
 
 ### Core contracts (all verified on BaseScan)
 
@@ -14,22 +14,25 @@ ETOKEN_FACTORY=0xb8ce24ffa09a226a26d3035354bcb18fc1e8ff02
 WETH_ROUTER=0x11f60aaf7b05e8c53181ecd963698ec93a01a3fc
 
 # Pyth is not used — all assets price via INHOUSE_ORACLE. A PythOracleVerifier
+
 # (0x719d6b282a27b926be9886693aeec5e2c927a7f4) remains in the registry's PYTH_ORACLE slot from the
+
 # initial deploy but is orphaned/unused (the slot cannot be cleared) and is referenced by no asset.
 
 ### ETH vault
 
-VAULT_ADDRESS=0x48793b9843bbd18dfec3f45bd5c41c0561da887a   # collateral = MockWETH, manager = VM above
+VAULT_ADDRESS=0x48793b9843bbd18dfec3f45bd5c41c0561da887a # collateral = MockWETH, manager = VM above
 
 ### Reused testnet tokens (not redeployed)
 
-MOCK_USDC=0x6f5BB5824C8D572966a1DED0470AF3E72C527613         # payment token, 6 decimals, open mint
-MockWETH=0xfbd78Da8aDbc322084eE7F80C10F914B92CEb6FE          # ETH vault collateral, 18 decimals, open mint
-WETH=0x4200000000000000000000000000000000000006             # canonical Base Sepolia WETH (unused — vault uses MockWETH)
+MOCK_USDC=0x6f5BB5824C8D572966a1DED0470AF3E72C527613 # payment token, 6 decimals, open mint
+MockWETH=0xfbd78Da8aDbc322084eE7F80C10F914B92CEb6FE # ETH vault collateral, 18 decimals, open mint
+WETH=0x4200000000000000000000000000000000000006 # canonical Base Sepolia WETH (unused — vault uses MockWETH)
 
-### In-house oracle signer
+### Signers
 
-ORACLE_SIGNER=0xbc686218d673AA5Db74243428d619dbbc7d1f9a4    # price attestation signer on INHOUSE_ORACLE
+ORACLE_SIGNER=0x6Ff4688f3de3354eed591B737bFf5DCdD9642A32 # price attestation signer on INHOUSE_ORACLE
+MM_QUOTE_SIGNER=0x7eAa2748CF934a310B86Ae16CF4cA604809527e2 # RFQ quote signer on VaultManager; linked settlement address = same
 
 ## Assets — all in-house oracle (oracleType 1)
 
@@ -68,5 +71,5 @@ ETOKEN_ITA=0x42df6cc9B88487ED1C32d6ADdB4F5dbC47D272f6
 - Global max utilization: 8000 BPS (80%).
 - Before any asset can be minted, a keeper must pull each asset's mark (`VaultManager.pullAssetPrice`)
   and the vault's collateral mark (`VaultManager.pullCollateralPrice`) so marks are non-zero.
-- No quote signer is registered on the VaultManager yet — `OwnMarket` will reject quotes until
-  `registerSigner(signer, linkedSettlementAddress)` is run by the admin.
+- MM quote signer `0x7eAa2748…` is registered on the VaultManager (linked settlement address = same),
+  so `OwnMarket` will accept its signed quotes.
