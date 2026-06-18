@@ -46,6 +46,9 @@ interface IVaultManager {
     /// @notice Emitted when the global settle-price band is updated.
     event SettleBandUpdated(uint256 oldBps, uint256 newBps);
 
+    /// @notice Emitted when the max mark age (keeper-mark freshness bound) is updated.
+    event MaxMarkAgeUpdated(uint256 oldAge, uint256 newAge);
+
     /// @notice Emitted when a registered vault notifies its halt/unhalt transition.
     event VaultCollateralExcluded(address indexed vault, uint256 removedMarkUSD);
     event CollateralMarkReduced(address indexed vault, uint256 assets, uint256 removedMarkUSD);
@@ -94,6 +97,13 @@ interface IVaultManager {
     /// @notice The claim threshold is zero. Zero disables force-execution and cannot be set; the
     ///         only zero state is the pre-deploy default.
     error InvalidClaimThreshold();
+
+    /// @notice The max mark age is zero (would render every mark instantly stale and block minting);
+    ///         the only zero state is the pre-deploy default.
+    error InvalidMaxMarkAge();
+
+    /// @notice The asset mark valuing new exposure is older than the max mark age.
+    error StaleAssetMark(bytes32 asset, uint256 markUpdatedAt, uint256 maxAge);
 
     // ──────────────────────────────────────────────────────────
     //  Mutation — market only
@@ -174,6 +184,13 @@ interface IVaultManager {
     ///         paths must fall within ±band of the asset mark. Must be 0 < bps <= BPS. Admin-only.
     function setSettleBandBps(
         uint256 bps
+    ) external;
+
+    /// @notice Set the max age (seconds) for keeper-cached asset marks consumed by risk-increasing
+    ///         exposure opens. Must be non-zero (zero is the pre-deploy default and blocks minting).
+    ///         Admin-only.
+    function setMaxMarkAge(
+        uint256 age
     ) external;
 
     // ──────────────────────────────────────────────────────────
@@ -283,6 +300,14 @@ interface IVaultManager {
 
     /// @notice Global settle-price band in bps; execute/fill settle prices must be within ±band of the mark.
     function settleBandBps() external view returns (uint256);
+
+    /// @notice Max age (seconds) for keeper-cached asset marks consumed by `openExposure`.
+    function maxMarkAge() external view returns (uint256);
+
+    /// @notice Timestamp of the last `pullAssetPrice` that set the asset's mark (0 if never set).
+    function assetMarkUpdatedAt(
+        bytes32 asset
+    ) external view returns (uint256);
     function isRegisteredVault(
         address vault
     ) external view returns (bool);

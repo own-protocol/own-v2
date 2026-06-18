@@ -79,6 +79,11 @@ contract BaseTest is Test {
     ///      `_setSettleBandBps`.
     uint256 public constant DEFAULT_SETTLE_BAND_BPS = BPS;
 
+    /// @dev Default max mark age used by test bootstraps. Set very wide so the flow suite is not
+    ///      coupled to per-test timing/warps; production uses 15 min (Deploy.s.sol) and staleness
+    ///      boundaries are covered by dedicated tests. Tests can tighten it via `_setMaxMarkAge`.
+    uint256 public constant DEFAULT_MAX_MARK_AGE = 365 days;
+
     // ──────────────────────────────────────────────────────────
     //  Common prices (18 decimals)
     // ──────────────────────────────────────────────────────────
@@ -277,6 +282,7 @@ contract BaseTest is Test {
         protocolRegistry.setAddress(protocolRegistry.VAULT_MANAGER(), address(vaultManager));
         vaultManager.setGlobalMaxUtilizationBps(DEFAULT_MAX_UTIL_BPS);
         vaultManager.setSettleBandBps(DEFAULT_SETTLE_BAND_BPS);
+        vaultManager.setMaxMarkAge(DEFAULT_MAX_MARK_AGE);
         vm.stopPrank();
         vm.label(address(vaultManager), "VaultManager");
     }
@@ -301,6 +307,14 @@ contract BaseTest is Test {
     ) internal {
         vm.prank(Actors.ADMIN);
         vaultManager.setSettleBandBps(bps);
+    }
+
+    /// @notice Set the global max mark age in seconds (admin-only).
+    function _setMaxMarkAge(
+        uint256 age
+    ) internal {
+        vm.prank(Actors.ADMIN);
+        vaultManager.setMaxMarkAge(age);
     }
 
     /// @notice Set the global order-settlement payment token (admin-only).

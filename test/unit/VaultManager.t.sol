@@ -58,6 +58,7 @@ contract VaultManagerTest is Test {
     uint256 internal constant USDC_MARK = 1e18; //   $1 per USDC
     uint256 internal constant MAX_UTIL_BPS = 8000; // 80%
     uint256 internal constant ASSET_CAP = 1_000_000e18; // $1M
+    uint256 internal constant MARK_MAX_AGE = 365 days; // wide default so non-staleness tests pass
 
     function setUp() public {
         registry = new ProtocolRegistry(admin, 0, 2 minutes);
@@ -78,8 +79,10 @@ contract VaultManagerTest is Test {
         oracle.setPrice(TSLA, TSLA_MARK);
         oracle.setPrice(USDC_TICKER, USDC_MARK);
 
-        vm.prank(admin);
+        vm.startPrank(admin);
         manager.setGlobalMaxUtilizationBps(MAX_UTIL_BPS);
+        manager.setMaxMarkAge(MARK_MAX_AGE);
+        vm.stopPrank();
     }
 
     // ──────────────────────────────────────────────────────────
@@ -398,6 +401,44 @@ contract VaultManagerTest is Test {
     }
 
     // ──────────────────────────────────────────────────────────
+    //  Open exposure — mark staleness guard
+    // ──────────────────────────────────────────────────────────
+
+    function test_openExposure_staleMark_reverts() public {
+        _bootstrap(); // pulls the TSLA mark at the current timestamp
+        vm.prank(admin);
+        manager.setMaxMarkAge(15 minutes);
+
+        uint256 pulledAt = manager.assetMarkUpdatedAt(TSLA);
+        vm.warp(block.timestamp + 15 minutes + 1); // 1s past the freshness bound
+
+        vm.expectRevert(abi.encodeWithSelector(IVaultManager.StaleAssetMark.selector, TSLA, pulledAt, 15 minutes));
+        vm.prank(market);
+        manager.openExposure(TSLA, 1000e18);
+    }
+
+    function test_openExposure_atMarkAgeBoundary_succeeds() public {
+        _bootstrap();
+        vm.prank(admin);
+        manager.setMaxMarkAge(15 minutes);
+
+        vm.warp(block.timestamp + 15 minutes); // exactly at the bound — inclusive
+        _open(1000e18);
+        assertEq(manager.globalAssetUnits(TSLA), 1000e18);
+    }
+
+    function test_openExposure_freshAfterRepull_succeeds() public {
+        _bootstrap();
+        vm.prank(admin);
+        manager.setMaxMarkAge(15 minutes);
+
+        vm.warp(block.timestamp + 1 hours); // mark now stale
+        manager.pullAssetPrice(TSLA); // keeper refreshes the mark
+        _open(1000e18); // fresh again
+        assertEq(manager.globalAssetUnits(TSLA), 1000e18);
+    }
+
+    // ──────────────────────────────────────────────────────────
     //  Close exposure
     // ──────────────────────────────────────────────────────────
 
@@ -443,6 +484,19 @@ contract VaultManagerTest is Test {
         _close(1000e18);
         assertEq(manager.globalAssetUnits(TSLA), 0);
         assertEq(manager.globalExposureUSD(), 0);
+    }
+
+    /// @dev closeExposure (risk-reducing) is exempt from the mark-staleness guard: a redeem must
+    ///      still go through even when the keeper mark has gone stale.
+    function test_closeExposure_staleMark_exempt() public {
+        _bootstrap();
+        _open(1000e18); // opened while fresh (wide default)
+        vm.prank(admin);
+        manager.setMaxMarkAge(15 minutes);
+
+        vm.warp(block.timestamp + 1 hours); // mark now stale
+        _close(1000e18); // still succeeds — no freshness gate on the redeem path
+        assertEq(manager.globalAssetUnits(TSLA), 0);
     }
 
     /// @dev A zero mark must fail loud (mirrors openExposure) instead of silently zeroing
@@ -678,6 +732,30 @@ contract VaultManagerTest is Test {
         vm.expectRevert(IVaultManager.OnlyAdmin.selector);
         vm.prank(market);
         manager.setSettleBandBps(500);
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Admin — max mark age
+    // ──────────────────────────────────────────────────────────
+
+    function test_setMaxMarkAge_emits() public {
+        vm.expectEmit(false, false, false, true);
+        emit IVaultManager.MaxMarkAgeUpdated(MARK_MAX_AGE, 15 minutes);
+        vm.prank(admin);
+        manager.setMaxMarkAge(15 minutes);
+        assertEq(manager.maxMarkAge(), 15 minutes);
+    }
+
+    function test_setMaxMarkAge_zero_reverts() public {
+        vm.expectRevert(IVaultManager.InvalidMaxMarkAge.selector);
+        vm.prank(admin);
+        manager.setMaxMarkAge(0);
+    }
+
+    function test_setMaxMarkAge_onlyAdmin_reverts() public {
+        vm.expectRevert(IVaultManager.OnlyAdmin.selector);
+        vm.prank(market);
+        manager.setMaxMarkAge(15 minutes);
     }
 
     // ──────────────────────────────────────────────────────────

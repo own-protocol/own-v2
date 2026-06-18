@@ -62,6 +62,11 @@ contract Deploy is Script {
     ///      force-execution, so setting it here is what enables the user's recourse path.
     uint256 constant CLAIM_THRESHOLD = 6 hours;
 
+    /// @dev Max keeper-mark age (15min): asset marks older than this block new exposure opens
+    ///      (openExposure). Must be non-zero — zero blocks all minting, so setting it here arms the
+    ///      staleness guard.
+    uint256 constant MAX_MARK_AGE = 15 minutes;
+
     /// @dev Initial per-asset USD issuance ceiling (18-decimal USD). 0 would block minting.
     uint256 constant ASSET_CAP_USD = 10_000_000e18;
 
@@ -153,6 +158,7 @@ contract Deploy is Script {
         vaultManager.setGlobalMaxUtilizationBps(GLOBAL_MAX_UTIL_BPS);
         vaultManager.setSettleBandBps(SETTLE_BAND_BPS);
         vaultManager.setClaimThreshold(CLAIM_THRESHOLD);
+        vaultManager.setMaxMarkAge(MAX_MARK_AGE);
         vaultManager.setAssetCapUSD(ETH, ASSET_CAP_USD);
         // Single global order-settlement currency for all vaults.
         vaultManager.setPaymentToken(d.usdc);

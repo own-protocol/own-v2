@@ -35,6 +35,9 @@ contract VaultManager is IVaultManager {
     /// @inheritdoc IVaultManager
     uint256 public override settleBandBps;
 
+    /// @inheritdoc IVaultManager
+    uint256 public override maxMarkAge;
+
     /// @dev Running Σ _assetExposureUSD[a] (18-decimal USD).
     uint256 private _globalExposureUSD;
 
@@ -42,6 +45,7 @@ contract VaultManager is IVaultManager {
     uint256 private _globalCollateralUSD;
 
     mapping(bytes32 => uint256) private _assetMark;
+    mapping(bytes32 => uint256) private _assetMarkUpdatedAt;
     mapping(bytes32 => uint256) private _globalAssetUnits;
     mapping(bytes32 => uint256) private _assetExposureUSD;
     mapping(bytes32 => uint256) private _assetCapUSD;
@@ -124,6 +128,11 @@ contract VaultManager is IVaultManager {
 
         uint256 mark = _assetMark[asset];
         if (mark == 0) revert PriceUnavailable(asset);
+        // Risk-increasing path: the mark valuing new exposure must be keeper-fresh. closeExposure
+        // (risk-reducing) is intentionally exempt.
+        if (block.timestamp - _assetMarkUpdatedAt[asset] > maxMarkAge) {
+            revert StaleAssetMark(asset, _assetMarkUpdatedAt[asset], maxMarkAge);
+        }
         if (_globalCollateralUSD == 0) revert CollateralNotInitialized();
 
         uint256 newUnits = _globalAssetUnits[asset] + units;
@@ -177,6 +186,7 @@ contract VaultManager is IVaultManager {
                 _globalExposureUSD = _globalExposureUSD - _assetExposureUSD[asset] + haltedUSD;
                 _assetExposureUSD[asset] = haltedUSD;
                 _assetMark[asset] = hp;
+                _assetMarkUpdatedAt[asset] = block.timestamp;
                 emit AssetPricePulled(asset, old0, hp);
             }
             return;
@@ -190,6 +200,7 @@ contract VaultManager is IVaultManager {
         _globalExposureUSD = _globalExposureUSD - _assetExposureUSD[asset] + newAssetUSD;
         _assetExposureUSD[asset] = newAssetUSD;
         _assetMark[asset] = price;
+        _assetMarkUpdatedAt[asset] = block.timestamp;
 
         emit AssetPricePulled(asset, old, price);
     }
@@ -354,6 +365,18 @@ contract VaultManager is IVaultManager {
         emit SettleBandUpdated(old, bps);
     }
 
+    /// @inheritdoc IVaultManager
+    function setMaxMarkAge(
+        uint256 age
+    ) external override onlyAdmin {
+        // Zero would render every mark instantly stale and block minting; reserved for the
+        // pre-deploy default. Once configured it stays non-zero.
+        if (age == 0) revert InvalidMaxMarkAge();
+        uint256 old = maxMarkAge;
+        maxMarkAge = age;
+        emit MaxMarkAgeUpdated(old, age);
+    }
+
     // ──────────────────────────────────────────────────────────
     //  Admin — signer registry
     // ──────────────────────────────────────────────────────────
@@ -460,6 +483,7 @@ contract VaultManager is IVaultManager {
         _globalExposureUSD = _globalExposureUSD - _assetExposureUSD[asset] + haltedUSD;
         _assetExposureUSD[asset] = haltedUSD;
         _assetMark[asset] = haltPrice;
+        _assetMarkUpdatedAt[asset] = block.timestamp;
 
         emit AssetHalted(asset, haltPrice);
     }
@@ -550,6 +574,13 @@ contract VaultManager is IVaultManager {
         bytes32 asset
     ) external view override returns (uint256) {
         return _assetMark[asset];
+    }
+
+    /// @inheritdoc IVaultManager
+    function assetMarkUpdatedAt(
+        bytes32 asset
+    ) external view override returns (uint256) {
+        return _assetMarkUpdatedAt[asset];
     }
 
     /// @inheritdoc IVaultManager
