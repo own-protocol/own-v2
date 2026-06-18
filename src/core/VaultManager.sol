@@ -32,6 +32,9 @@ contract VaultManager is IVaultManager {
     /// @inheritdoc IVaultManager
     uint256 public override globalMaxUtilizationBps;
 
+    /// @inheritdoc IVaultManager
+    uint256 public override settleBandBps;
+
     /// @dev Running Σ _assetExposureUSD[a] (18-decimal USD).
     uint256 private _globalExposureUSD;
 
@@ -339,6 +342,16 @@ contract VaultManager is IVaultManager {
         uint256 old = globalMaxUtilizationBps;
         globalMaxUtilizationBps = bps;
         emit GlobalMaxUtilizationUpdated(old, bps);
+    }
+
+    /// @inheritdoc IVaultManager
+    function setSettleBandBps(
+        uint256 bps
+    ) external override onlyAdmin {
+        if (bps == 0 || bps > BPS) revert InvalidSettleBand();
+        uint256 old = settleBandBps;
+        settleBandBps = bps;
+        emit SettleBandUpdated(old, bps);
     }
 
     // ──────────────────────────────────────────────────────────

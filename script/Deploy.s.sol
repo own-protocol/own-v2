@@ -53,6 +53,10 @@ contract Deploy is Script {
     /// @dev Initial global utilisation cap (80%). Solvency bound across all pooled vaults.
     uint256 constant GLOBAL_MAX_UTIL_BPS = 8000;
 
+    /// @dev Settle-price band (5%). Quote settle prices must fall within ±band of the asset mark,
+    ///      capping the damage a leaked signer key can inflict per unit of size.
+    uint256 constant SETTLE_BAND_BPS = 500;
+
     /// @dev Initial per-asset USD issuance ceiling (18-decimal USD). 0 would block minting.
     uint256 constant ASSET_CAP_USD = 10_000_000e18;
 
@@ -142,6 +146,7 @@ contract Deploy is Script {
         // per-asset cap is non-zero. Caps are set here; keepers pull marks post-deploy.
         VaultManager vaultManager = VaultManager(d.vaultManager);
         vaultManager.setGlobalMaxUtilizationBps(GLOBAL_MAX_UTIL_BPS);
+        vaultManager.setSettleBandBps(SETTLE_BAND_BPS);
         vaultManager.setAssetCapUSD(ETH, ASSET_CAP_USD);
         // Single global order-settlement currency for all vaults.
         vaultManager.setPaymentToken(d.usdc);

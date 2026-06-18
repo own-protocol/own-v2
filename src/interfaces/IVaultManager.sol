@@ -43,6 +43,9 @@ interface IVaultManager {
     event AssetCapUpdated(bytes32 indexed asset, uint256 capUSD);
     event GlobalMaxUtilizationUpdated(uint256 oldBps, uint256 newBps);
 
+    /// @notice Emitted when the global settle-price band is updated.
+    event SettleBandUpdated(uint256 oldBps, uint256 newBps);
+
     /// @notice Emitted when a registered vault notifies its halt/unhalt transition.
     event VaultCollateralExcluded(address indexed vault, uint256 removedMarkUSD);
     event CollateralMarkReduced(address indexed vault, uint256 assets, uint256 removedMarkUSD);
@@ -84,6 +87,9 @@ interface IVaultManager {
     error InvalidHaltPrice();
     error InvalidRatio();
     error VaultAlreadyExcluded(address vault);
+
+    /// @notice The settle band is zero or exceeds 100% (BPS).
+    error InvalidSettleBand();
 
     // ──────────────────────────────────────────────────────────
     //  Mutation — market only
@@ -157,6 +163,12 @@ interface IVaultManager {
     /// @param ratio New units per old unit, 1e18-scaled (e.g. 3:1 split => 3e18).
     function applySplit(bytes32 asset, uint256 ratio) external;
     function setGlobalMaxUtilizationBps(
+        uint256 bps
+    ) external;
+
+    /// @notice Set the global settle-price band (bps): quote settle prices on the execute/fill
+    ///         paths must fall within ±band of the asset mark. Must be 0 < bps <= BPS. Admin-only.
+    function setSettleBandBps(
         uint256 bps
     ) external;
 
@@ -262,6 +274,9 @@ interface IVaultManager {
         bytes32 asset
     ) external view returns (uint256);
     function globalMaxUtilizationBps() external view returns (uint256);
+
+    /// @notice Global settle-price band in bps; execute/fill settle prices must be within ±band of the mark.
+    function settleBandBps() external view returns (uint256);
     function isRegisteredVault(
         address vault
     ) external view returns (bool);

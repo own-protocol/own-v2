@@ -6,6 +6,7 @@ import {VaultManager} from "../../src/core/VaultManager.sol";
 import {IOracleVerifier} from "../../src/interfaces/IOracleVerifier.sol";
 import {IProtocolRegistry} from "../../src/interfaces/IProtocolRegistry.sol";
 import {IVaultManager} from "../../src/interfaces/IVaultManager.sol";
+import {BPS} from "../../src/interfaces/types/Types.sol";
 import {Actors} from "../helpers/Actors.sol";
 import {MockERC20} from "../helpers/MockERC20.sol";
 import {MockOracleVerifier} from "../helpers/MockOracleVerifier.sol";
@@ -636,6 +637,47 @@ contract VaultManagerTest is Test {
         vm.prank(admin);
         manager.setGlobalMaxUtilizationBps(5000);
         assertEq(manager.globalMaxUtilizationBps(), 5000);
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Admin — settle-price band
+    // ──────────────────────────────────────────────────────────
+
+    function test_settleBandBps_defaultsToZero() public view {
+        // Fail-safe: unconfigured band blocks settlement until an admin sets it. setUp does not.
+        assertEq(manager.settleBandBps(), 0);
+    }
+
+    function test_setSettleBandBps_emits() public {
+        vm.expectEmit(false, false, false, true);
+        emit IVaultManager.SettleBandUpdated(0, 500);
+        vm.prank(admin);
+        manager.setSettleBandBps(500);
+        assertEq(manager.settleBandBps(), 500);
+    }
+
+    function test_setSettleBandBps_atMaxBps_succeeds() public {
+        vm.prank(admin);
+        manager.setSettleBandBps(BPS);
+        assertEq(manager.settleBandBps(), BPS);
+    }
+
+    function test_setSettleBandBps_zero_reverts() public {
+        vm.expectRevert(IVaultManager.InvalidSettleBand.selector);
+        vm.prank(admin);
+        manager.setSettleBandBps(0);
+    }
+
+    function test_setSettleBandBps_aboveMaxBps_reverts() public {
+        vm.expectRevert(IVaultManager.InvalidSettleBand.selector);
+        vm.prank(admin);
+        manager.setSettleBandBps(BPS + 1);
+    }
+
+    function test_setSettleBandBps_onlyAdmin_reverts() public {
+        vm.expectRevert(IVaultManager.OnlyAdmin.selector);
+        vm.prank(market);
+        manager.setSettleBandBps(500);
     }
 
     // ──────────────────────────────────────────────────────────

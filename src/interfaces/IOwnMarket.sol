@@ -138,6 +138,9 @@ interface IOwnMarket {
     /// @notice The quote price does not satisfy the order's limit price.
     error LimitNotSatisfied();
 
+    /// @notice The settle price deviates from the VaultManager mark by more than the allowed band.
+    error PriceOutOfBand(bytes32 asset, uint256 price, uint256 mark, uint256 bandBps);
+
     /// @notice The fill amount exceeds the order's remaining amount.
     error FillExceedsRemaining(uint256 orderId);
 

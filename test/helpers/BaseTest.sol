@@ -73,6 +73,12 @@ contract BaseTest is Test {
     uint256 public constant DEFAULT_MAX_UTIL_BPS = 8000;
     uint256 public constant DEFAULT_ASSET_CAP_USD = 1_000_000_000e18;
 
+    /// @dev Default settle-price band used by test bootstraps. Set wide (100%) so the broad flow
+    ///      suite is not coupled to per-test price choices; production uses 500 bps (Deploy.s.sol)
+    ///      and band boundaries are covered by dedicated unit tests. Tests can tighten it via
+    ///      `_setSettleBandBps`.
+    uint256 public constant DEFAULT_SETTLE_BAND_BPS = BPS;
+
     // ──────────────────────────────────────────────────────────
     //  Common prices (18 decimals)
     // ──────────────────────────────────────────────────────────
@@ -270,6 +276,7 @@ contract BaseTest is Test {
         vaultManager = new VaultManager(protocolRegistry);
         protocolRegistry.setAddress(protocolRegistry.VAULT_MANAGER(), address(vaultManager));
         vaultManager.setGlobalMaxUtilizationBps(DEFAULT_MAX_UTIL_BPS);
+        vaultManager.setSettleBandBps(DEFAULT_SETTLE_BAND_BPS);
         vm.stopPrank();
         vm.label(address(vaultManager), "VaultManager");
     }
@@ -286,6 +293,14 @@ contract BaseTest is Test {
     ) internal {
         vm.prank(Actors.ADMIN);
         vaultManager.setGlobalMaxUtilizationBps(bps);
+    }
+
+    /// @notice Set the global settle-price band in BPS (admin-only).
+    function _setSettleBandBps(
+        uint256 bps
+    ) internal {
+        vm.prank(Actors.ADMIN);
+        vaultManager.setSettleBandBps(bps);
     }
 
     /// @notice Set the global order-settlement payment token (admin-only).
