@@ -40,6 +40,11 @@ interface IVaultManager {
 
     event AssetPricePulled(bytes32 indexed asset, uint256 oldMark, uint256 newMark);
     event CollateralPricePulled(address indexed vault, uint256 oldMarkUSD, uint256 newMarkUSD);
+
+    /// @notice Emitted when a vault's concentration cap binds — its raw collateral exceeds its
+    ///         allowed share, so only `countedMarkUSD` (< rawMarkUSD) counts toward global collateral.
+    event CollateralCapApplied(address indexed vault, uint256 rawMarkUSD, uint256 countedMarkUSD);
+
     event AssetCapUpdated(bytes32 indexed asset, uint256 capUSD);
     event GlobalMaxUtilizationUpdated(uint256 oldBps, uint256 newBps);
 
@@ -48,6 +53,9 @@ interface IVaultManager {
 
     /// @notice Emitted when the max mark age (keeper-mark freshness bound) is updated.
     event MaxMarkAgeUpdated(uint256 oldAge, uint256 newAge);
+
+    /// @notice Emitted when a vault's collateral concentration cap (bps of total) is updated.
+    event CollateralCapUpdated(address indexed vault, uint256 oldBps, uint256 newBps);
 
     /// @notice Emitted when a registered vault notifies its halt/unhalt transition.
     event VaultCollateralExcluded(address indexed vault, uint256 removedMarkUSD);
@@ -101,6 +109,9 @@ interface IVaultManager {
     /// @notice The max mark age is zero (would render every mark instantly stale and block minting);
     ///         the only zero state is the pre-deploy default.
     error InvalidMaxMarkAge();
+
+    /// @notice The collateral concentration cap is >= BPS (100%); use 0 to disable it.
+    error InvalidCollateralCap();
 
     /// @notice The asset mark valuing new exposure is older than the max mark age.
     error StaleAssetMark(bytes32 asset, uint256 markUpdatedAt, uint256 maxAge);
@@ -192,6 +203,14 @@ interface IVaultManager {
     function setMaxMarkAge(
         uint256 age
     ) external;
+
+    /// @notice Set a vault's collateral concentration cap: the max share (bps of total counted
+    ///         collateral) this vault may contribute. The excess does not count toward global
+    ///         collateral (so it cannot back minting or lending) — it is re-applied on the next
+    ///         `pullCollateralPrice`. `0` disables the cap (uncapped); must be `< BPS`. Admin-only.
+    /// @param vault Registered vault.
+    /// @param bps   Concentration cap in basis points (0 = uncapped).
+    function setCollateralCapBps(address vault, uint256 bps) external;
 
     // ──────────────────────────────────────────────────────────
     //  Admin — signer registry
@@ -303,6 +322,11 @@ interface IVaultManager {
 
     /// @notice Max age (seconds) for keeper-cached asset marks consumed by `openExposure`.
     function maxMarkAge() external view returns (uint256);
+
+    /// @notice A vault's collateral concentration cap in bps of total counted collateral (0 = uncapped).
+    function collateralCapBps(
+        address vault
+    ) external view returns (uint256);
 
     /// @notice Timestamp of the last `pullAssetPrice` that set the asset's mark (0 if never set).
     function assetMarkUpdatedAt(

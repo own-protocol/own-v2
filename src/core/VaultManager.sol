@@ -55,6 +55,9 @@ contract VaultManager is IVaultManager {
     mapping(address => uint256) private _collateralScale;
     mapping(address => uint256) private _collateralMark;
 
+    /// @dev Vault → concentration cap (bps of total counted collateral); 0 = uncapped.
+    mapping(address => uint256) private _collateralCapBps;
+
     /// @dev Enumerable set of registered vaults (ops/indexing convenience; no on-chain iteration).
     address[] private _vaultList;
     /// @dev Vault → 1-based index into `_vaultList` (0 = not present), for O(1) swap-remove.
@@ -215,12 +218,15 @@ contract VaultManager is IVaultManager {
         uint256 price = _resolvePrice(_vaultCollateralAsset[vault]);
         if (price == 0) revert PriceUnavailable(_vaultCollateralAsset[vault]);
 
-        uint256 newMark = (IERC4626(vault).totalAssets() * _collateralScale[vault]).mulDiv(price, PRECISION);
+        uint256 rawMark = (IERC4626(vault).totalAssets() * _collateralScale[vault]).mulDiv(price, PRECISION);
         uint256 old = _collateralMark[vault];
-        _globalCollateralUSD = _globalCollateralUSD - old + newMark;
+        uint256 others = _globalCollateralUSD - old;
+        uint256 newMark = _cappedContribution(vault, rawMark, others);
+        _globalCollateralUSD = others + newMark;
         _collateralMark[vault] = newMark;
 
         emit CollateralPricePulled(vault, old, newMark);
+        if (newMark < rawMark) emit CollateralCapApplied(vault, rawMark, newMark);
     }
 
     // ──────────────────────────────────────────────────────────
@@ -270,6 +276,7 @@ contract VaultManager is IVaultManager {
         delete _vaultIndex[vault];
 
         delete _collateralMark[vault];
+        delete _collateralCapBps[vault];
         delete _registered[vault];
         delete _vaultCollateralAsset[vault];
         delete _collateralScale[vault];
@@ -299,10 +306,13 @@ contract VaultManager is IVaultManager {
 
         uint256 price = _resolvePrice(_vaultCollateralAsset[msg.sender]);
         if (price == 0) revert PriceUnavailable(_vaultCollateralAsset[msg.sender]);
-        uint256 newMark = (IERC4626(msg.sender).totalAssets() * _collateralScale[msg.sender]).mulDiv(price, PRECISION);
+        uint256 rawMark = (IERC4626(msg.sender).totalAssets() * _collateralScale[msg.sender]).mulDiv(price, PRECISION);
+        // The unhalting vault currently contributes 0, so the rest of the pool is the full global.
+        uint256 newMark = _cappedContribution(msg.sender, rawMark, _globalCollateralUSD);
         _globalCollateralUSD += newMark;
         _collateralMark[msg.sender] = newMark;
         emit VaultCollateralReincluded(msg.sender, newMark);
+        if (newMark < rawMark) emit CollateralCapApplied(msg.sender, rawMark, newMark);
     }
 
     /// @inheritdoc IVaultManager
@@ -375,6 +385,17 @@ contract VaultManager is IVaultManager {
         uint256 old = maxMarkAge;
         maxMarkAge = age;
         emit MaxMarkAgeUpdated(old, age);
+    }
+
+    /// @inheritdoc IVaultManager
+    function setCollateralCapBps(address vault, uint256 bps) external override onlyAdmin {
+        if (!_registered[vault]) revert VaultNotRegistered(vault);
+        // 0 disables the cap; BPS (100%) and above are meaningless and divide-by-zero in the share
+        // formula. The new cap takes effect on the vault's next pullCollateralPrice.
+        if (bps >= BPS) revert InvalidCollateralCap();
+        uint256 old = _collateralCapBps[vault];
+        _collateralCapBps[vault] = bps;
+        emit CollateralCapUpdated(vault, old, bps);
     }
 
     // ──────────────────────────────────────────────────────────
@@ -591,6 +612,13 @@ contract VaultManager is IVaultManager {
     }
 
     /// @inheritdoc IVaultManager
+    function collateralCapBps(
+        address vault
+    ) external view override returns (uint256) {
+        return _collateralCapBps[vault];
+    }
+
+    /// @inheritdoc IVaultManager
     function vaultCollateralAsset(
         address vault
     ) external view override returns (bytes32) {
@@ -626,6 +654,17 @@ contract VaultManager is IVaultManager {
     // ──────────────────────────────────────────────────────────
     //  Internal — helpers
     // ──────────────────────────────────────────────────────────
+
+    /// @dev Cap a vault's counted collateral contribution to its concentration share. `others` is
+    ///      the global counted collateral excluding this vault. Solving `counted <= cap/BPS ·
+    ///      (others + counted)` gives `counted <= cap · others / (BPS − cap)`, so the vault counts at
+    ///      most `cap` bps of the total. A `0` (or `>= BPS`) cap is disabled and returns `rawMark`.
+    function _cappedContribution(address vault, uint256 rawMark, uint256 others) private view returns (uint256) {
+        uint256 cap = _collateralCapBps[vault];
+        if (cap == 0 || cap >= BPS) return rawMark;
+        uint256 maxCounted = others.mulDiv(cap, BPS - cap);
+        return rawMark < maxCounted ? rawMark : maxCounted;
+    }
 
     /// @dev Resolve the last-verified oracle price for an asset.
     function _resolvePrice(

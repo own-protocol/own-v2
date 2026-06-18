@@ -63,7 +63,7 @@ market accepts a quote only if it recovers to a registered signer (`isSigner`).
 Governance entity (multisig) that:
 
 - Registers contracts in the Protocol Registry (with timelock)
-- Adds/deactivates assets in the Asset Registry
+- Adds assets and toggles their active status in the Asset Registry (`setAssetActive`)
 - Configures oracle sources and fee levels
 - Manages global controls on the `VaultManager`: the signer registry, the single global **payment
   token**, the global **claim threshold**, **trading pause** (global + per-asset), permanent
@@ -89,7 +89,7 @@ The protocol is organized into three layers (vaults are deployed directly and re
 | **ProtocolRegistry**          | `src/core/ProtocolRegistry.sol` | Central registry of all protocol contract addresses. 2-day timelock for address changes. Stores protocol-wide parameters (`timelockDelay`, `priceMaxAge`).                                                                                                                                                                                                                                                                                 |
 | **OwnMarket**                 | `src/core/OwnMarket.sol`        | RFQ order execution marketplace. Settles market orders atomically against signer-issued quotes, escrows and (partially) fills resting limit orders, provides redeem force execution against the oracle price, and the halted-asset redeem path.                                                                                                                                                                                            |
 | **OwnVault**                  | `src/core/OwnVault.sol`         | ERC-4626 collateral vault. Holds LP collateral (custody), manages async deposit/withdrawal queues, distributes yield, supports lending opt-in (binds exactly one borrow manager for its lifetime — `setBorrowManager` is one-shot), and vault-level pause/halt. Risk accounting and order controls live in the VaultManager, not the vault. Operator address: `manager`.                                                                                                                                                        |
-| **VaultManager**              | `src/core/VaultManager.sol`     | Central, pooled risk accounting **and** global control hub for **all** vaults. Owns global exposure, collateral marks, utilization, the per-asset issuance ceiling, **the vault registry/allowlist** (admin `registerVault`/`deregisterVault` + `getAllVaults`), the signer registry, the global payment token, trading pause, permanent asset halt + halt redeem address, and the claim threshold. Valued at keeper-cached marks. See §9. |
+| **VaultManager**              | `src/core/VaultManager.sol`     | Central, pooled risk accounting **and** global control hub for **all** vaults. Owns global exposure, collateral marks, utilization, the per-asset issuance ceiling, per-vault collateral concentration caps, **the vault registry/allowlist** (admin `registerVault`/`deregisterVault` + `getAllVaults`), the signer registry, the global payment token, trading pause, permanent asset halt + halt redeem address, and the claim threshold. Valued at keeper-cached marks. See §9. |
 | **AssetRegistry**             | `src/core/AssetRegistry.sol`    | Whitelists assets, maps tickers to eToken addresses, stores oracle configurations. Supports token migration (post-stock-split). Governs which assets are valid for **all** vaults.                                                                                                                                                                                                                                                         |
 
 ### Oracle Contracts
@@ -400,16 +400,25 @@ pause, asset halt, claim threshold). This replaces the earlier per-vault model.
   that validates a mint commits it), a real per-asset issuance ceiling caps total eToken supply across
   vaults, and `OwnVault` bytecode shrinks.
 
-### Two Caps (both O(1))
+### Three Caps (all O(1))
 
 1. **Global utilization cap (solvency):** `globalExposureUSD / globalCollateralUSD ≤ globalMaxUtilizationBps`.
    `openExposure` (called on every mint settlement / limit fill) atomically checks and commits — if the
    projected utilization would breach the cap, settlement reverts before any tokens move. Redeems
    (`closeExposure`) reduce exposure and are never capped.
-2. **Per-asset USD issuance ceiling (concentration):** `globalAssetUnits[asset] × assetMark ≤ assetCapUSD[asset]`.
+2. **Per-asset USD issuance ceiling (asset concentration):** `globalAssetUnits[asset] × assetMark ≤ assetCapUSD[asset]`.
    **`assetCapUSD == 0` blocks minting that asset** (safe default — the admin must set a ceiling to
-   enable it). There are no per-vault caps; the global util + per-asset cap + halt/deregister suffice
-   for the small set of admin-vetted vaults.
+   enable it).
+3. **Per-vault collateral concentration cap (collateral diversification):** each vault may contribute at
+   most `collateralCapBps[vault]` of total counted collateral. On each `pullCollateralPrice` (and
+   `onVaultUnhalted`) the vault's counted contribution to `globalCollateralUSD` is
+   `min(rawMark, collateralCapBps × others / (BPS − collateralCapBps))` — i.e. ≤ cap% of the total —
+   and the excess is **not counted**, so it backs neither minting nor lending. `collateralCapBps == 0`
+   is uncapped (opt-in per vault: cap volatile collaterals like stETH, leave the stable base uncapped).
+   Re-applied on every pull, so it tracks price drift. See "Keeper-Cached Marks" below.
+
+The global util + per-asset cap + per-vault collateral cap + halt/deregister cover the small set of
+admin-vetted vaults. There are no per-vault *exposure* caps — exposure is purely global per asset.
 
 Both `globalExposureUSD` and `globalCollateralUSD` are running totals updated on every
 open/close/price-pull — no loops over vaults or assets on any path. Each asset's exact USD contribution
@@ -421,7 +430,7 @@ Exposure and collateral are valued **only** at keeper-cached marks (Maker `spot`
 prices. Marks are refreshed by **permissionless** calls:
 
 - `pullAssetPrice(asset)` — pulls the asset's oracle price and re-marks global exposure for that asset.
-- `pullCollateralPrice(vault)` — pulls the vault's collateral oracle price and re-marks its collateral USD.
+- `pullCollateralPrice(vault)` — pulls the vault's collateral oracle price and re-marks its collateral USD, applying the vault's concentration cap (it counts at most its capped share; `CollateralCapApplied` fires when the cap binds).
 
 `openExposure` (mint) additionally requires the asset's mark to be **fresh** — pulled within
 `maxMarkAge` (default 15 min), else `StaleAssetMark` — so new exposure can't open against a stale
@@ -492,7 +501,7 @@ VaultManager states — orthogonal to a vault's own status.
 | Action                                                    | Who Can Do It                                        |
 | --------------------------------------------------------- | ---------------------------------------------------- |
 | Register contracts in ProtocolRegistry                    | Protocol admin (with timelock)                       |
-| Add/deactivate assets                                     | Protocol admin                                       |
+| Add assets / set active status (`setAssetActive`)         | Protocol admin                                       |
 | Configure oracles and fees                                | Protocol admin                                       |
 | Deploy + register / deregister vaults                     | Protocol admin (registerVault on VaultManager)       |
 | Pause a vault (deposits + withdrawals)                    | Vault's `manager` or admin                           |

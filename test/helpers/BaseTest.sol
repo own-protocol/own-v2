@@ -317,6 +317,12 @@ contract BaseTest is Test {
         vaultManager.setMaxMarkAge(age);
     }
 
+    /// @notice Set a vault's collateral concentration cap in BPS (admin-only; 0 = uncapped).
+    function _setCollateralCapBps(address vault, uint256 bps) internal {
+        vm.prank(Actors.ADMIN);
+        vaultManager.setCollateralCapBps(vault, bps);
+    }
+
     /// @notice Set the global order-settlement payment token (admin-only).
     function _setPaymentToken(
         address token
