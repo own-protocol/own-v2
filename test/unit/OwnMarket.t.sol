@@ -852,32 +852,47 @@ contract OwnMarketTest is BaseTest {
         market.forceExecuteOrder(orderId, mockVault, _assetPriceData(TSLA_PRICE * 2), _assetPriceData(ETH_PRICE));
     }
 
-    /// @dev C-01 regression: an asset proof from within the order's live window [createdAt, now]
-    ///      is accepted even though it predates `now` — the user is owed the fill they were due.
-    function test_forceExecuteOrder_assetProofWithinWindow_succeeds() public {
+    /// @dev Force-execute requires a fresh asset price, superseding the C-01 historical-touch window:
+    ///      an asset proof timestamped at placement (which historically met the limit but is now
+    ///      older than priceMaxAge) is rejected, blocking the "exercise a stale favorable print after
+    ///      the market moved" collateral-drain vector.
+    function test_forceExecuteOrder_staleFavorablePrint_reverts() public {
         uint256 amount = 4e18;
         uint256 orderId = _placeRedeem(Actors.MINTER1, amount, TSLA_PRICE);
         uint256 createdAt = block.timestamp;
         vm.warp(block.timestamp + CLAIM_THRESHOLD);
 
-        // Asset proof timestamped at placement (old, but in window); collateral proof is current.
+        // Old print that historically met the limit; collateral proof is current.
         bytes memory assetData = abi.encode(uint256(TSLA_PRICE), createdAt);
+        vm.prank(Actors.MINTER1);
+        vm.expectRevert(IOwnMarket.StaleAssetPrice.selector);
+        market.forceExecuteOrder(orderId, mockVault, assetData, _assetPriceData(ETH_PRICE));
+    }
+
+    /// @dev An asset proof exactly at the priceMaxAge boundary is fresh enough (inclusive).
+    function test_forceExecuteOrder_assetPriceAtMaxAgeBoundary_succeeds() public {
+        uint256 amount = 4e18;
+        uint256 orderId = _placeRedeem(Actors.MINTER1, amount, TSLA_PRICE);
+        vm.warp(block.timestamp + CLAIM_THRESHOLD);
+
+        uint256 maxAge = protocolRegistry.priceMaxAge();
+        bytes memory assetData = abi.encode(uint256(TSLA_PRICE), block.timestamp - maxAge); // at the bound
         vm.prank(Actors.MINTER1);
         market.forceExecuteOrder(orderId, mockVault, assetData, _assetPriceData(ETH_PRICE));
 
         assertEq(uint256(market.getOrder(orderId).status), uint256(OrderStatus.ForceExecuted));
     }
 
-    /// @dev C-01 regression: an asset proof timestamped before the order existed is rejected.
-    function test_forceExecuteOrder_assetProofBeforeWindow_reverts() public {
+    /// @dev An asset proof one second past priceMaxAge is rejected.
+    function test_forceExecuteOrder_assetPriceJustPastMaxAge_reverts() public {
         uint256 amount = 4e18;
         uint256 orderId = _placeRedeem(Actors.MINTER1, amount, TSLA_PRICE);
-        uint256 createdAt = block.timestamp;
         vm.warp(block.timestamp + CLAIM_THRESHOLD);
 
-        bytes memory assetData = abi.encode(uint256(TSLA_PRICE), createdAt - 1); // predates the order
+        uint256 maxAge = protocolRegistry.priceMaxAge();
+        bytes memory assetData = abi.encode(uint256(TSLA_PRICE), block.timestamp - maxAge - 1); // 1s stale
         vm.prank(Actors.MINTER1);
-        vm.expectRevert(IOwnMarket.AssetPriceProofOutsideWindow.selector);
+        vm.expectRevert(IOwnMarket.StaleAssetPrice.selector);
         market.forceExecuteOrder(orderId, mockVault, assetData, _assetPriceData(ETH_PRICE));
     }
 

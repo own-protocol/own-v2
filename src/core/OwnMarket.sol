@@ -219,11 +219,14 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard, EIP712 {
 
         uint256 remaining = order.amount - order.filledAmount;
 
-        // Asset proof must fall in the order's window and reach the limit; payout settles at the limit.
-        // Window-scoped (not fresh) by design — VM-failure recourse.
-        (uint256 reachedPrice, uint256 assetTs) = _verifyAssetPrice(order.asset, assetPriceData);
-        if (assetTs < order.createdAt || assetTs > block.timestamp) revert AssetPriceProofOutsideWindow();
-        if (reachedPrice < order.limitPrice) revert PriceBelowMinimum();
+        // Fresh price required: the current oracle price must still satisfy the order's limit, so a
+        // stale favorable print can't be exercised after the market has moved. Payout settles at the
+        // limit (bare oracle price, no maker spread).
+        (uint256 currentPrice, uint256 assetTs) = _verifyAssetPrice(order.asset, assetPriceData);
+        if (assetTs > block.timestamp || block.timestamp - assetTs > registry.priceMaxAge()) {
+            revert StaleAssetPrice();
+        }
+        if (currentPrice < order.limitPrice) revert PriceBelowMinimum();
 
         uint256 grossUsd = Math.mulDiv(remaining, order.limitPrice, PRECISION);
         uint256 grossCollateral = _convertToCollateral(vault, grossUsd, collateralPriceData);

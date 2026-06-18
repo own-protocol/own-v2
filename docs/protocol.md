@@ -209,6 +209,7 @@ submit on the user's behalf, since the signed quote carries the authorization.
 - **Mint**: `limitPrice` is the **maximum** price per eToken the user will pay — a fill quote must satisfy `quote.price ≤ limitPrice`.
 - **Redeem**: `limitPrice` is the **minimum** price per eToken the user will accept — a fill quote must satisfy `quote.price ≥ limitPrice`. It also acts as the slippage floor for force execution.
 - **Market orders** carry no separate limit — the user accepts the quote's price by submitting it.
+- **Settle-price band** — independent of the user's limit, every `executeOrder` / `fillOrder` settlement must price within **±`settleBandBps`** of the asset's keeper mark (`VaultManager.assetMark`), else `PriceOutOfBand`. This caps the damage a leaked quote-signer key can inflict on a maker's balance to ~band % per unit of size (default **500 bps**). Force-execute and `redeemHalted` are exempt — they price off the oracle limit and the fixed halt price, not a signed quote.
 
 ---
 
@@ -223,7 +224,8 @@ disallowed (`ForceMintNotAllowed`).
 After the global **claim threshold** elapses (measured from the order's creation), the owner of a
 resting redeem order calls
 `forceExecuteOrder(orderId, vault, assetPriceData, collateralPriceData)` to settle the remaining
-amount at the oracle price. **The caller names the collateral-source `vault`** at this point — orders
+amount at their committed `limitPrice`, gated by a fresh oracle price. **The caller names the
+collateral-source `vault`** at this point — orders
 are vault-less, so the redeemer freely chooses which registered vault to draw collateral from (the
 choice was always theirs; it is simply deferred to force time). The named vault must be registered
 (`VaultNotRegistered` otherwise).
@@ -235,8 +237,9 @@ choice was always theirs; it is simply deferred to force time). The named vault 
 
 Settlement:
 
-- The oracle price must satisfy the order's `limitPrice` floor, else it reverts (`PriceBelowMinimum`).
-- The remaining eTokens are valued at the oracle price, converted to the named vault's collateral, and **that vault's collateral is released to the user**.
+- **Both proofs must be fresh** — no older than `priceMaxAge` and not future-dated, else `StaleAssetPrice` / `StaleCollateralPrice`. Force execution requires a price valid **now**, not a historical print: a favorable price that printed earlier in the order's life cannot be exercised after the market has moved away.
+- The fresh asset price must satisfy the order's `limitPrice` floor, else it reverts (`PriceBelowMinimum`).
+- The remaining eTokens are valued at the user's own `limitPrice` (bare oracle price, no maker spread — at or below the current price, never above it), converted to the named vault's collateral, and **that vault's collateral is released to the user**.
 - The escrowed eTokens are burned and global exposure is reduced.
 
 Force execution is **disabled while trading is paused** (`AssetPaused`) **or the asset is halted**
@@ -249,6 +252,9 @@ keeps a fair maker quote the user's preferred path.
 | Parameter        | Description                                                                 | Default |
 | ---------------- | --------------------------------------------------------------------------- | ------- |
 | `claimThreshold` | Global delay after a redeem order is placed before it can be force-executed | 6 hours |
+
+A zero `claimThreshold` **disables** force-execution (`ForceNotEnabled`) — the pre-deploy default — and
+the setter rejects zero, so once configured force-execution can never be silently re-disabled.
 
 ---
 
@@ -417,8 +423,11 @@ prices. Marks are refreshed by **permissionless** calls:
 - `pullAssetPrice(asset)` — pulls the asset's oracle price and re-marks global exposure for that asset.
 - `pullCollateralPrice(vault)` — pulls the vault's collateral oracle price and re-marks its collateral USD.
 
-Staleness between pulls is absorbed by the global utilization buffer. A new asset can only be minted
-once **both** its price has been pulled (`assetMark != 0`) **and** `assetCapUSD > 0`.
+`openExposure` (mint) additionally requires the asset's mark to be **fresh** — pulled within
+`maxMarkAge` (default 15 min), else `StaleAssetMark` — so new exposure can't open against a stale
+asset price. Collateral-side staleness (the utilization denominator) is still absorbed by the global
+utilization buffer, and `closeExposure` (redeem, risk-reducing) is exempt. A new asset can only be
+minted once **both** its price has been pulled (`assetMark != 0`) **and** `assetCapUSD > 0`.
 
 ### Withdrawal Gate
 

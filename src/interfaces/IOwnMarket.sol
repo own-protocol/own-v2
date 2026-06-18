@@ -150,8 +150,9 @@ interface IOwnMarket {
     /// @notice The oracle price is below the order's minimum (limit) price at force time.
     error PriceBelowMinimum();
 
-    /// @notice The asset price proof's timestamp is outside the order's live window [createdAt, now].
-    error AssetPriceProofOutsideWindow();
+    /// @notice The asset price proof is stale; force execution requires a current asset price that
+    ///         still satisfies the order's limit (not a historical in-window touch).
+    error StaleAssetPrice();
 
     /// @notice The collateral price proof is stale; force execution requires a current collateral price.
     error StaleCollateralPrice();

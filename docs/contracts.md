@@ -73,3 +73,8 @@ ETOKEN_ITA=0x42df6cc9B88487ED1C32d6ADdB4F5dbC47D272f6
   and the vault's collateral mark (`VaultManager.pullCollateralPrice`) so marks are non-zero.
 - MM quote signer `0x7eAa2748…` is registered on the VaultManager (linked settlement address = same),
   so `OwnMarket` will accept its signed quotes.
+- This deployment (2026-06-12) **predates the pre-audit hardening** (PA-01..PA-04, 2026-06-18): the
+  deployed bytecode lacks the settle-price band and the `ForceNotEnabled` / `StaleAssetMark` /
+  `StaleAssetPrice` guards, and `claimThreshold` is unset (`0`, so force-execute is instantly
+  exercisable here). A redeploy from the updated `Deploy.s.sol` (which sets `settleBandBps = 500`,
+  `claimThreshold = 6h`, `maxMarkAge = 15m`) is required to pick them up.
