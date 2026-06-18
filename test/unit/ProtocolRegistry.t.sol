@@ -7,6 +7,8 @@ import {IProtocolRegistry} from "../../src/interfaces/IProtocolRegistry.sol";
 import {Actors} from "../helpers/Actors.sol";
 import {BaseTest} from "../helpers/BaseTest.sol";
 import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
+import {IAccessControlDefaultAdminRules} from
+    "@openzeppelin/contracts/access/extensions/IAccessControlDefaultAdminRules.sol";
 
 /// @title ProtocolRegistry Unit Tests
 /// @notice Tests the registry as the protocol's AccessControl authority: `setAddress`/`setPriceMaxAge`
@@ -97,14 +99,34 @@ contract ProtocolRegistryTest is BaseTest {
         assertEq(reg.market(), addr2);
     }
 
-    function test_setAddress_allSlots() public {
+    /// @dev Every getter must resolve its OWN slot — guards against a mis-wired getter or a duplicated
+    ///      slot-key constant (7 distinct addresses written, 7 distinct getters read back).
+    function test_getters_allSevenSlotsWiredCorrectly() public {
+        address mkt = makeAddr("mkt");
+        address ar = makeAddr("ar");
+        address pyth = makeAddr("pyth");
+        address inhouse = makeAddr("inhouse");
+        address factory = makeAddr("factory");
+        address vmgr = makeAddr("vmgr");
+        address treasury_ = makeAddr("treasury");
+
         vm.startPrank(Actors.ADMIN);
-        reg.setAddress(MARKET_KEY, makeAddr("market"));
-        reg.setAddress(ASSET_REGISTRY_KEY, makeAddr("ar"));
+        reg.setAddress(reg.MARKET(), mkt);
+        reg.setAddress(reg.ASSET_REGISTRY(), ar);
+        reg.setAddress(reg.PYTH_ORACLE(), pyth);
+        reg.setAddress(reg.INHOUSE_ORACLE(), inhouse);
+        reg.setAddress(reg.ETOKEN_FACTORY(), factory);
+        reg.setAddress(reg.VAULT_MANAGER(), vmgr);
+        reg.setAddress(reg.TREASURY(), treasury_);
         vm.stopPrank();
 
-        assertEq(reg.market(), makeAddr("market"));
-        assertEq(reg.assetRegistry(), makeAddr("ar"));
+        assertEq(reg.market(), mkt);
+        assertEq(reg.assetRegistry(), ar);
+        assertEq(reg.pythOracle(), pyth);
+        assertEq(reg.inhouseOracle(), inhouse);
+        assertEq(reg.etokenFactory(), factory);
+        assertEq(reg.vaultManager(), vmgr);
+        assertEq(reg.treasury(), treasury_);
     }
 
     function test_setAddress_zeroAddress_reverts() public {
@@ -187,6 +209,15 @@ contract ProtocolRegistryTest is BaseTest {
         reg.grantRole(ADMIN_ROLE, addr1);
     }
 
+    /// @dev PROTOCOL_ADMIN (DEFAULT_ADMIN_ROLE) can never be handed out via grantRole — not even by the
+    ///      current admin. It only moves through the delayed 2-step transfer below. This is the guarantee
+    ///      that a timelocked PROTOCOL_ADMIN can't be instantly bypassed.
+    function test_grantRole_defaultAdmin_directGrant_reverts() public {
+        vm.prank(Actors.ADMIN);
+        vm.expectRevert(IAccessControlDefaultAdminRules.AccessControlEnforcedDefaultAdminRules.selector);
+        reg.grantRole(PROTOCOL_ADMIN, addr1);
+    }
+
     // ══════════════════════════════════════════════════════════
     //  PROTOCOL_ADMIN transfer — 2-step + delayed (AccessControlDefaultAdminRules)
     // ══════════════════════════════════════════════════════════
@@ -210,6 +241,19 @@ contract ProtocolRegistryTest is BaseTest {
         assertEq(reg.owner(), newAdmin);
         assertTrue(reg.hasRole(PROTOCOL_ADMIN, newAdmin));
         assertFalse(reg.hasRole(PROTOCOL_ADMIN, Actors.ADMIN));
+    }
+
+    function test_adminTransfer_canBeCancelled() public {
+        address newAdmin = makeAddr("newAdmin");
+
+        vm.startPrank(Actors.ADMIN);
+        reg.beginDefaultAdminTransfer(newAdmin);
+        reg.cancelDefaultAdminTransfer();
+        vm.stopPrank();
+
+        (address pending,) = reg.pendingDefaultAdmin();
+        assertEq(pending, address(0));
+        assertEq(reg.owner(), Actors.ADMIN); // admin unchanged after cancel
     }
 
     // ══════════════════════════════════════════════════════════
