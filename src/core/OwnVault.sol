@@ -12,7 +12,6 @@ import {
     WithdrawalRequest,
     WithdrawalStatus
 } from "../interfaces/types/Types.sol";
-import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
 
 import {ERC20, IERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
@@ -90,8 +89,16 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     //  Modifiers
     // ──────────────────────────────────────────────────────────
 
+    bytes32 private constant ADMIN = keccak256("ADMIN");
+    bytes32 private constant OPERATOR = keccak256("OPERATOR");
+
     modifier onlyAdmin() {
-        if (msg.sender != Ownable(address(registry)).owner()) revert OnlyAdmin();
+        if (!registry.hasRole(ADMIN, msg.sender)) revert OnlyAdmin();
+        _;
+    }
+
+    modifier onlyOperator() {
+        if (!registry.hasRole(OPERATOR, msg.sender)) revert OnlyOperator();
         _;
     }
 
@@ -100,8 +107,10 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
         _;
     }
 
-    modifier onlyManagerOrAdmin() {
-        if (msg.sender != manager && msg.sender != Ownable(address(registry)).owner()) revert OnlyManagerOrAdmin();
+    modifier onlyManagerOrOperator() {
+        if (msg.sender != manager && !registry.hasRole(OPERATOR, msg.sender)) {
+            revert OnlyManagerOrOperator();
+        }
         _;
     }
 
@@ -400,14 +409,14 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     /// @inheritdoc IOwnVault
     function pause(
         bytes32 reason
-    ) external onlyManagerOrAdmin {
+    ) external onlyManagerOrOperator {
         if (_vaultStatus != VaultStatus.Active) revert InvalidStatusTransition();
         _vaultStatus = VaultStatus.Paused;
         emit VaultPaused(reason);
     }
 
     /// @inheritdoc IOwnVault
-    function unpause() external onlyManagerOrAdmin {
+    function unpause() external onlyManagerOrOperator {
         if (_vaultStatus != VaultStatus.Paused) revert InvalidStatusTransition();
         _vaultStatus = VaultStatus.Active;
         emit VaultUnpaused();
@@ -490,7 +499,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     /// @inheritdoc IOwnVault
     function setRequireDepositApproval(
         bool required
-    ) external onlyAdmin {
+    ) external onlyOperator {
         _requireDepositApproval = required;
         emit DepositApprovalUpdated(required);
     }

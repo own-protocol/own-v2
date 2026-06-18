@@ -32,7 +32,7 @@ contract HaltFlowTest is BaseTest {
     function _deployProtocol() private {
         vm.startPrank(Actors.ADMIN);
 
-        assetRegistry = new AssetRegistry(Actors.ADMIN);
+        assetRegistry = new AssetRegistry(address(protocolRegistry));
 
         protocolRegistry.setAddress(protocolRegistry.ASSET_REGISTRY(), address(assetRegistry));
 
@@ -139,7 +139,7 @@ contract HaltFlowTest is BaseTest {
 
     function test_pause_onlyManagerOrAdmin() public {
         vm.prank(Actors.ATTACKER);
-        vm.expectRevert(IOwnVault.OnlyManagerOrAdmin.selector);
+        vm.expectRevert(IOwnVault.OnlyManagerOrOperator.selector);
         vault.pause(bytes32("attack"));
     }
 
@@ -148,7 +148,7 @@ contract HaltFlowTest is BaseTest {
         vault.pause(bytes32("emergency"));
 
         vm.prank(Actors.ATTACKER);
-        vm.expectRevert(IOwnVault.OnlyManagerOrAdmin.selector);
+        vm.expectRevert(IOwnVault.OnlyManagerOrOperator.selector);
         vault.unpause();
     }
 
@@ -259,7 +259,7 @@ contract HaltFlowTest is BaseTest {
 
     function test_haltAsset_onlyAdmin() public {
         vm.prank(Actors.ATTACKER);
-        vm.expectRevert(IVaultManager.OnlyAdmin.selector);
+        vm.expectRevert(IVaultManager.OnlyOperator.selector);
         vaultManager.haltAsset(TSLA, TSLA_PRICE);
     }
 

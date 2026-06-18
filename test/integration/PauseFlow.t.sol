@@ -43,7 +43,7 @@ contract PauseFlowTest is BaseTest {
     function _deployProtocol() private {
         vm.startPrank(Actors.ADMIN);
 
-        assetRegistry = new AssetRegistry(Actors.ADMIN);
+        assetRegistry = new AssetRegistry(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.ASSET_REGISTRY(), address(assetRegistry));
 
         vm.stopPrank();
@@ -375,7 +375,7 @@ contract PauseFlowTest is BaseTest {
 
     function test_pause_onlyManagerOrAdmin() public {
         vm.prank(Actors.ATTACKER);
-        vm.expectRevert(IOwnVault.OnlyManagerOrAdmin.selector);
+        vm.expectRevert(IOwnVault.OnlyManagerOrOperator.selector);
         vault.pause(bytes32("attack"));
     }
 }

@@ -2,8 +2,8 @@
 pragma solidity 0.8.28;
 
 import {IOracleVerifier} from "../interfaces/IOracleVerifier.sol";
+import {IProtocolRegistry} from "../interfaces/IProtocolRegistry.sol";
 import {BPS} from "../interfaces/types/Types.sol";
-import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Multicall} from "@openzeppelin/contracts/utils/Multicall.sol";
 import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import {EIP712} from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
@@ -13,7 +13,10 @@ import {EIP712} from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 ///         Batch updates use inherited Multicall. Consumers read cached prices
 ///         via getPrice(). verifyPrice() is available for inline proof verification.
 ///         Price attestations are EIP-712 typed signatures over `PriceAttestation`.
-contract OracleVerifier is IOracleVerifier, Ownable, Multicall, EIP712 {
+/// @dev Config is gated by ADMIN (add signer, per-asset config); the emergency
+///      `removeSigner` is gated by the instant OPERATOR role. Both resolved via the
+///      ProtocolRegistry.
+contract OracleVerifier is IOracleVerifier, Multicall, EIP712 {
     using ECDSA for bytes32;
 
     /// @dev EIP-712 typehash for signed price attestations.
@@ -38,17 +41,41 @@ contract OracleVerifier is IOracleVerifier, Ownable, Multicall, EIP712 {
     //  State
     // ──────────────────────────────────────────────────────────
 
+    /// @notice ProtocolRegistry used to resolve ADMIN / OPERATOR roles.
+    IProtocolRegistry public immutable registry;
+
     mapping(address => bool) private _signers;
     mapping(bytes32 => AssetOracleConfig) private _assetConfigs;
     mapping(bytes32 => PriceEntry) private _prices;
 
     // ──────────────────────────────────────────────────────────
+    //  Modifiers
+    // ──────────────────────────────────────────────────────────
+
+    bytes32 private constant ADMIN = keccak256("ADMIN");
+    bytes32 private constant OPERATOR = keccak256("OPERATOR");
+
+    modifier onlyAdmin() {
+        if (!registry.hasRole(ADMIN, msg.sender)) revert OnlyAdmin();
+        _;
+    }
+
+    modifier onlyOperator() {
+        if (!registry.hasRole(OPERATOR, msg.sender)) revert OnlyOperator();
+        _;
+    }
+
+    // ──────────────────────────────────────────────────────────
     //  Constructor
     // ──────────────────────────────────────────────────────────
 
+    /// @param registry_ ProtocolRegistry address (resolves ADMIN / OPERATOR roles).
     constructor(
-        address admin
-    ) Ownable(admin) EIP712("Own Protocol", "1") {}
+        address registry_
+    ) EIP712("Own Protocol", "1") {
+        if (registry_ == address(0)) revert ZeroAddress();
+        registry = IProtocolRegistry(registry_);
+    }
 
     // ──────────────────────────────────────────────────────────
     //  Push — update a single asset price
@@ -170,16 +197,18 @@ contract OracleVerifier is IOracleVerifier, Ownable, Multicall, EIP712 {
     /// @inheritdoc IOracleVerifier
     function addSigner(
         address signer
-    ) external onlyOwner {
+    ) external onlyAdmin {
         if (signer == address(0)) revert ZeroAddress();
         _signers[signer] = true;
         emit SignerAdded(signer);
     }
 
     /// @inheritdoc IOracleVerifier
+    /// @dev Emergency lever — gated by the instant OPERATOR role so a compromised
+    ///      signer can be revoked without a timelock delay.
     function removeSigner(
         address signer
-    ) external onlyOwner {
+    ) external onlyOperator {
         _signers[signer] = false;
         emit SignerRemoved(signer);
     }
@@ -196,7 +225,7 @@ contract OracleVerifier is IOracleVerifier, Ownable, Multicall, EIP712 {
     // ──────────────────────────────────────────────────────────
 
     /// @inheritdoc IOracleVerifier
-    function setAssetOracleConfig(bytes32 asset, uint256 maxStaleness, uint256 maxDeviation) external onlyOwner {
+    function setAssetOracleConfig(bytes32 asset, uint256 maxStaleness, uint256 maxDeviation) external onlyAdmin {
         if (maxStaleness == 0 || maxDeviation == 0) revert InvalidOracleConfig();
         _assetConfigs[asset] = AssetOracleConfig(maxStaleness, maxDeviation);
         emit AssetOracleConfigSet(asset, maxStaleness, maxDeviation);

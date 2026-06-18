@@ -8,7 +8,7 @@ import {IOwnMarket} from "../interfaces/IOwnMarket.sol";
 import {IOwnVault} from "../interfaces/IOwnVault.sol";
 import {IProtocolRegistry} from "../interfaces/IProtocolRegistry.sol";
 import {IVaultManager} from "../interfaces/IVaultManager.sol";
-import {Order, OrderStatus, OrderType, PRECISION, Quote} from "../interfaces/types/Types.sol";
+import {BPS, Order, OrderStatus, OrderType, PRECISION, Quote} from "../interfaces/types/Types.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
@@ -210,17 +210,23 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard, EIP712 {
         // Pause and halt both disable the force path.
         if (vmgr.isTradingPaused(order.asset)) revert AssetPaused(order.asset);
         if (vmgr.isAssetHalted(order.asset)) revert ForceDisabledDuringHalt(order.asset);
-        if (block.timestamp < order.createdAt + vmgr.claimThreshold()) {
+        // A zero claim threshold (pre-deploy default) disables force-execution entirely.
+        uint256 threshold = vmgr.claimThreshold();
+        if (threshold == 0) revert ForceNotEnabled();
+        if (block.timestamp < order.createdAt + threshold) {
             revert ForceWindowNotElapsed(orderId);
         }
 
         uint256 remaining = order.amount - order.filledAmount;
 
-        // Asset proof must fall in the order's window and reach the limit; payout settles at the limit.
-        // Window-scoped (not fresh) by design — VM-failure recourse.
-        (uint256 reachedPrice, uint256 assetTs) = _verifyAssetPrice(order.asset, assetPriceData);
-        if (assetTs < order.createdAt || assetTs > block.timestamp) revert AssetPriceProofOutsideWindow();
-        if (reachedPrice < order.limitPrice) revert PriceBelowMinimum();
+        // Fresh price required: the current oracle price must still satisfy the order's limit, so a
+        // stale favorable print can't be exercised after the market has moved. Payout settles at the
+        // limit (bare oracle price, no maker spread).
+        (uint256 currentPrice, uint256 assetTs) = _verifyAssetPrice(order.asset, assetPriceData);
+        if (assetTs > block.timestamp || block.timestamp - assetTs > registry.priceMaxAge()) {
+            revert StaleAssetPrice();
+        }
+        if (currentPrice < order.limitPrice) revert PriceBelowMinimum();
 
         uint256 grossUsd = Math.mulDiv(remaining, order.limitPrice, PRECISION);
         uint256 grossCollateral = _convertToCollateral(vault, grossUsd, collateralPriceData);
@@ -411,6 +417,20 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard, EIP712 {
     //  Internal — settlement
     // ──────────────────────────────────────────────────────────
 
+    /// @dev Bound the settle price to ±settleBandBps of the keeper-refreshed VaultManager mark,
+    ///      capping the damage a leaked signer key can inflict per unit of size. Applies to the
+    ///      execute/fill settle paths only; force-execute (oracle limit price) and redeemHalted
+    ///      (fixed halt price) are intentionally exempt. Reverts {PriceOutOfBand} when breached.
+    function _checkSettleBand(bytes32 asset, uint256 price) private view {
+        IVaultManager vmgr = IVaultManager(registry.vaultManager());
+        uint256 mark = vmgr.assetMark(asset);
+        // No mark → openExposure/closeExposure already reverts (PriceUnavailable); nothing to bound.
+        if (mark == 0) return;
+        uint256 band = vmgr.settleBandBps();
+        uint256 diff = price > mark ? price - mark : mark - price;
+        if (diff * BPS > mark * band) revert PriceOutOfBand(asset, price, mark, band);
+    }
+
     /// @dev Settle a mint of `amountIn` stablecoins at `price`. When `fromEscrow` the stablecoins
     ///      are already held by this contract; otherwise they are pulled from `user`. The full
     ///      amount goes to the maker (signer's linked address); eTokens are minted to `user`.
@@ -423,6 +443,8 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard, EIP712 {
         bool fromEscrow,
         address payToken
     ) private returns (uint256 eTokenAmount) {
+        _checkSettleBand(asset, price);
+
         // Escrow fills settle in the token escrowed at placement (payToken == order.escrowToken),
         // so a later payment-token change cannot mismatch the escrow.
         eTokenAmount = Math.mulDiv(amountIn * (10 ** (18 - IERC20Metadata(payToken).decimals())), PRECISION, price);
@@ -453,6 +475,8 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard, EIP712 {
         uint256 price,
         bool fromEscrow
     ) private returns (uint256 netPayout) {
+        _checkSettleBand(asset, price);
+
         address pay = _paymentToken();
         netPayout = Math.mulDiv(amountIn, price, PRECISION * 10 ** (18 - IERC20Metadata(pay).decimals()));
 

@@ -6,16 +6,22 @@ import {IProtocolRegistry} from "../../src/interfaces/IProtocolRegistry.sol";
 
 import {Actors} from "../helpers/Actors.sol";
 import {BaseTest} from "../helpers/BaseTest.sol";
-import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
+import {IAccessControlDefaultAdminRules} from
+    "@openzeppelin/contracts/access/extensions/IAccessControlDefaultAdminRules.sol";
 
 /// @title ProtocolRegistry Unit Tests
-/// @notice Tests first-time initialization, timelocked updates (propose/execute/cancel),
-///         getter correctness, access control, and edge cases.
+/// @notice Tests the registry as the protocol's AccessControl authority: `setAddress`/`setPriceMaxAge`
+///         gated by PROTOCOL_ADMIN (the OZ DEFAULT_ADMIN_ROLE), ADMIN/OPERATOR role administration,
+///         getters, and the 2-step delayed PROTOCOL_ADMIN transfer (AccessControlDefaultAdminRules).
 contract ProtocolRegistryTest is BaseTest {
     ProtocolRegistry public reg;
 
-    uint256 constant TIMELOCK_DELAY = 2 days;
+    /// @dev Delay (seconds) enforced on transferring PROTOCOL_ADMIN. Fits uint48.
+    uint48 constant ADMIN_TRANSFER_DELAY = 2 days;
     uint256 constant PRICE_MAX_AGE = 2 minutes;
+
+    bytes32 constant PROTOCOL_ADMIN = 0x00; // == DEFAULT_ADMIN_ROLE
 
     // Cache key constants to avoid external calls consuming vm.prank
     bytes32 MARKET_KEY;
@@ -28,10 +34,9 @@ contract ProtocolRegistryTest is BaseTest {
     function setUp() public override {
         super.setUp();
 
-        reg = new ProtocolRegistry(Actors.ADMIN, TIMELOCK_DELAY, PRICE_MAX_AGE);
+        reg = new ProtocolRegistry(Actors.ADMIN, ADMIN_TRANSFER_DELAY, PRICE_MAX_AGE);
         vm.label(address(reg), "ProtocolRegistry");
 
-        // Cache keys
         MARKET_KEY = reg.MARKET();
         ASSET_REGISTRY_KEY = reg.ASSET_REGISTRY();
     }
@@ -40,12 +45,9 @@ contract ProtocolRegistryTest is BaseTest {
     //  Constructor
     // ══════════════════════════════════════════════════════════
 
-    function test_constructor_setsOwner() public view {
+    function test_constructor_setsAdmin() public view {
         assertEq(reg.owner(), Actors.ADMIN);
-    }
-
-    function test_constructor_setsTimelockDelay() public view {
-        assertEq(reg.timelockDelay(), TIMELOCK_DELAY);
+        assertTrue(reg.hasRole(PROTOCOL_ADMIN, Actors.ADMIN));
     }
 
     function test_constructor_allGettersReturnZero() public view {
@@ -53,18 +55,99 @@ contract ProtocolRegistryTest is BaseTest {
         assertEq(reg.assetRegistry(), address(0));
     }
 
-    // ══════════════════════════════════════════════════════════
-    //  priceMaxAge (governance-tunable risk param)
-    // ══════════════════════════════════════════════════════════
-
     function test_constructor_setsPriceMaxAge() public view {
         assertEq(reg.priceMaxAge(), PRICE_MAX_AGE);
     }
 
     function test_constructor_zeroPriceMaxAge_reverts() public {
         vm.expectRevert(IProtocolRegistry.InvalidPriceMaxAge.selector);
-        new ProtocolRegistry(Actors.ADMIN, TIMELOCK_DELAY, 0);
+        new ProtocolRegistry(Actors.ADMIN, ADMIN_TRANSFER_DELAY, 0);
     }
+
+    function test_constants_correctHashes() public view {
+        assertEq(MARKET_KEY, keccak256("MARKET"));
+    }
+
+    // ══════════════════════════════════════════════════════════
+    //  setAddress (PROTOCOL_ADMIN-gated; set + overwrite)
+    // ══════════════════════════════════════════════════════════
+
+    function test_setAddress_setsValueImmediately() public {
+        vm.prank(Actors.ADMIN);
+        reg.setAddress(MARKET_KEY, addr1);
+        assertEq(reg.market(), addr1);
+    }
+
+    function test_setAddress_emitsAddressSet() public {
+        vm.expectEmit(true, false, false, true);
+        emit IProtocolRegistry.AddressSet(MARKET_KEY, address(0), addr1);
+        vm.prank(Actors.ADMIN);
+        reg.setAddress(MARKET_KEY, addr1);
+    }
+
+    /// @dev The bespoke slot-timelock was removed; setAddress now overwrites (the delay comes from
+    ///      PROTOCOL_ADMIN being held by a timelock in production, not from the registry).
+    function test_setAddress_overwritesExisting() public {
+        vm.startPrank(Actors.ADMIN);
+        reg.setAddress(MARKET_KEY, addr1);
+
+        vm.expectEmit(true, false, false, true);
+        emit IProtocolRegistry.AddressSet(MARKET_KEY, addr1, addr2);
+        reg.setAddress(MARKET_KEY, addr2);
+        vm.stopPrank();
+
+        assertEq(reg.market(), addr2);
+    }
+
+    /// @dev Every getter must resolve its OWN slot — guards against a mis-wired getter or a duplicated
+    ///      slot-key constant (7 distinct addresses written, 7 distinct getters read back).
+    function test_getters_allSevenSlotsWiredCorrectly() public {
+        address mkt = makeAddr("mkt");
+        address ar = makeAddr("ar");
+        address pyth = makeAddr("pyth");
+        address inhouse = makeAddr("inhouse");
+        address factory = makeAddr("factory");
+        address vmgr = makeAddr("vmgr");
+        address treasury_ = makeAddr("treasury");
+
+        vm.startPrank(Actors.ADMIN);
+        reg.setAddress(reg.MARKET(), mkt);
+        reg.setAddress(reg.ASSET_REGISTRY(), ar);
+        reg.setAddress(reg.PYTH_ORACLE(), pyth);
+        reg.setAddress(reg.INHOUSE_ORACLE(), inhouse);
+        reg.setAddress(reg.ETOKEN_FACTORY(), factory);
+        reg.setAddress(reg.VAULT_MANAGER(), vmgr);
+        reg.setAddress(reg.TREASURY(), treasury_);
+        vm.stopPrank();
+
+        assertEq(reg.market(), mkt);
+        assertEq(reg.assetRegistry(), ar);
+        assertEq(reg.pythOracle(), pyth);
+        assertEq(reg.inhouseOracle(), inhouse);
+        assertEq(reg.etokenFactory(), factory);
+        assertEq(reg.vaultManager(), vmgr);
+        assertEq(reg.treasury(), treasury_);
+    }
+
+    function test_setAddress_zeroAddress_reverts() public {
+        vm.prank(Actors.ADMIN);
+        vm.expectRevert(IProtocolRegistry.ZeroAddress.selector);
+        reg.setAddress(MARKET_KEY, address(0));
+    }
+
+    function test_setAddress_notProtocolAdmin_reverts() public {
+        vm.prank(Actors.ATTACKER);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IAccessControl.AccessControlUnauthorizedAccount.selector, Actors.ATTACKER, PROTOCOL_ADMIN
+            )
+        );
+        reg.setAddress(MARKET_KEY, addr1);
+    }
+
+    // ══════════════════════════════════════════════════════════
+    //  setPriceMaxAge
+    // ══════════════════════════════════════════════════════════
 
     function test_setPriceMaxAge_updatesAndEmits() public {
         vm.expectEmit(false, false, false, true);
@@ -74,9 +157,11 @@ contract ProtocolRegistryTest is BaseTest {
         assertEq(reg.priceMaxAge(), 5 minutes);
     }
 
-    function test_setPriceMaxAge_onlyOwner_reverts() public {
+    function test_setPriceMaxAge_notProtocolAdmin_reverts() public {
         vm.prank(addr1);
-        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, addr1));
+        vm.expectRevert(
+            abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, addr1, PROTOCOL_ADMIN)
+        );
         reg.setPriceMaxAge(5 minutes);
     }
 
@@ -87,354 +172,88 @@ contract ProtocolRegistryTest is BaseTest {
     }
 
     // ══════════════════════════════════════════════════════════
-    //  Constants — slot keys
+    //  Role administration (ADMIN / OPERATOR)
     // ══════════════════════════════════════════════════════════
 
-    function test_constants_correctHashes() public view {
-        assertEq(MARKET_KEY, keccak256("MARKET"));
+    function test_roles_administeredByProtocolAdmin() public view {
+        assertEq(reg.getRoleAdmin(ADMIN_ROLE), PROTOCOL_ADMIN);
+        assertEq(reg.getRoleAdmin(OPERATOR_ROLE), PROTOCOL_ADMIN);
     }
 
-    // ══════════════════════════════════════════════════════════
-    //  First-time initialization (setAddress)
-    // ══════════════════════════════════════════════════════════
-
-    function test_setAddress_setsValueImmediately() public {
-        vm.prank(Actors.ADMIN);
-        reg.setAddress(MARKET_KEY, addr1);
-
-        assertEq(reg.market(), addr1);
-    }
-
-    function test_setAddress_emitsContractInitialized() public {
-        vm.expectEmit(true, false, false, true);
-        emit IProtocolRegistry.ContractInitialized(MARKET_KEY, addr1);
-
-        vm.prank(Actors.ADMIN);
-        reg.setAddress(MARKET_KEY, addr1);
-    }
-
-    function test_setAddress_allSlots() public {
+    function test_grantRole_byProtocolAdmin() public {
         vm.startPrank(Actors.ADMIN);
-        reg.setAddress(MARKET_KEY, makeAddr("market"));
-        reg.setAddress(ASSET_REGISTRY_KEY, makeAddr("ar"));
+        reg.grantRole(ADMIN_ROLE, addr1);
+        reg.grantRole(OPERATOR_ROLE, addr2);
         vm.stopPrank();
 
-        assertEq(reg.market(), makeAddr("market"));
-        assertEq(reg.assetRegistry(), makeAddr("ar"));
+        assertTrue(reg.hasRole(ADMIN_ROLE, addr1));
+        assertTrue(reg.hasRole(OPERATOR_ROLE, addr2));
     }
 
-    function test_setAddress_zeroAddress_reverts() public {
-        vm.prank(Actors.ADMIN);
-        vm.expectRevert(IProtocolRegistry.ZeroAddress.selector);
-        reg.setAddress(MARKET_KEY, address(0));
-    }
-
-    function test_setAddress_alreadyInitialized_reverts() public {
+    function test_revokeRole_byProtocolAdmin() public {
         vm.startPrank(Actors.ADMIN);
-        reg.setAddress(MARKET_KEY, addr1);
-
-        vm.expectRevert(IProtocolRegistry.AlreadyInitialized.selector);
-        reg.setAddress(MARKET_KEY, addr2);
+        reg.grantRole(ADMIN_ROLE, addr1);
+        reg.revokeRole(ADMIN_ROLE, addr1);
         vm.stopPrank();
+
+        assertFalse(reg.hasRole(ADMIN_ROLE, addr1));
     }
 
-    function test_setAddress_notOwner_reverts() public {
+    function test_grantRole_notProtocolAdmin_reverts() public {
         vm.prank(Actors.ATTACKER);
-        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, Actors.ATTACKER));
-        reg.setAddress(MARKET_KEY, addr1);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IAccessControl.AccessControlUnauthorizedAccount.selector, Actors.ATTACKER, PROTOCOL_ADMIN
+            )
+        );
+        reg.grantRole(ADMIN_ROLE, addr1);
+    }
+
+    /// @dev PROTOCOL_ADMIN (DEFAULT_ADMIN_ROLE) can never be handed out via grantRole — not even by the
+    ///      current admin. It only moves through the delayed 2-step transfer below. This is the guarantee
+    ///      that a timelocked PROTOCOL_ADMIN can't be instantly bypassed.
+    function test_grantRole_defaultAdmin_directGrant_reverts() public {
+        vm.prank(Actors.ADMIN);
+        vm.expectRevert(IAccessControlDefaultAdminRules.AccessControlEnforcedDefaultAdminRules.selector);
+        reg.grantRole(PROTOCOL_ADMIN, addr1);
     }
 
     // ══════════════════════════════════════════════════════════
-    //  Timelocked updates — proposeAddress
+    //  PROTOCOL_ADMIN transfer — 2-step + delayed (AccessControlDefaultAdminRules)
     // ══════════════════════════════════════════════════════════
 
-    function test_proposeAddress_createsProposal() public {
-        vm.startPrank(Actors.ADMIN);
-        reg.setAddress(MARKET_KEY, addr1);
-        reg.proposeAddress(MARKET_KEY, addr2);
-        vm.stopPrank();
-
-        (address newAddr, uint256 effectiveAt) = reg.pendingTimelockOf(MARKET_KEY);
-        assertEq(newAddr, addr2);
-        assertEq(effectiveAt, block.timestamp + TIMELOCK_DELAY);
-    }
-
-    function test_proposeAddress_emitsTimelockProposed() public {
-        vm.startPrank(Actors.ADMIN);
-        reg.setAddress(MARKET_KEY, addr1);
-        vm.stopPrank();
-
-        uint256 expectedEffectiveAt = block.timestamp + TIMELOCK_DELAY;
-        vm.expectEmit(true, false, false, true);
-        emit IProtocolRegistry.TimelockProposed(MARKET_KEY, addr2, expectedEffectiveAt);
+    function test_adminTransfer_isTwoStepAndDelayed() public {
+        address newAdmin = makeAddr("newAdmin");
 
         vm.prank(Actors.ADMIN);
-        reg.proposeAddress(MARKET_KEY, addr2);
+        reg.beginDefaultAdminTransfer(newAdmin);
+
+        // Accepting before the delay elapses reverts.
+        vm.prank(newAdmin);
+        vm.expectRevert();
+        reg.acceptDefaultAdminTransfer();
+
+        // After the delay, the pending admin can accept.
+        vm.warp(block.timestamp + ADMIN_TRANSFER_DELAY + 1);
+        vm.prank(newAdmin);
+        reg.acceptDefaultAdminTransfer();
+
+        assertEq(reg.owner(), newAdmin);
+        assertTrue(reg.hasRole(PROTOCOL_ADMIN, newAdmin));
+        assertFalse(reg.hasRole(PROTOCOL_ADMIN, Actors.ADMIN));
     }
 
-    function test_proposeAddress_zeroAddress_reverts() public {
-        vm.startPrank(Actors.ADMIN);
-        reg.setAddress(MARKET_KEY, addr1);
-
-        vm.expectRevert(IProtocolRegistry.ZeroAddress.selector);
-        reg.proposeAddress(MARKET_KEY, address(0));
-        vm.stopPrank();
-    }
-
-    function test_proposeAddress_sameAddress_reverts() public {
-        vm.startPrank(Actors.ADMIN);
-        reg.setAddress(MARKET_KEY, addr1);
-
-        vm.expectRevert(IProtocolRegistry.SameAddress.selector);
-        reg.proposeAddress(MARKET_KEY, addr1);
-        vm.stopPrank();
-    }
-
-    function test_proposeAddress_notOwner_reverts() public {
-        vm.prank(Actors.ADMIN);
-        reg.setAddress(MARKET_KEY, addr1);
-
-        vm.prank(Actors.ATTACKER);
-        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, Actors.ATTACKER));
-        reg.proposeAddress(MARKET_KEY, addr2);
-    }
-
-    function test_proposeAddress_overwritesPendingProposal() public {
-        vm.startPrank(Actors.ADMIN);
-        reg.setAddress(MARKET_KEY, addr1);
-        reg.proposeAddress(MARKET_KEY, addr2);
-        reg.proposeAddress(MARKET_KEY, addr3);
-        vm.stopPrank();
-
-        (address newAddr,) = reg.pendingTimelockOf(MARKET_KEY);
-        assertEq(newAddr, addr3);
-    }
-
-    function test_proposeAddress_uninitializedSlot_succeeds() public {
-        vm.prank(Actors.ADMIN);
-        reg.proposeAddress(MARKET_KEY, addr1);
-
-        (address newAddr,) = reg.pendingTimelockOf(MARKET_KEY);
-        assertEq(newAddr, addr1);
-    }
-
-    // ══════════════════════════════════════════════════════════
-    //  Timelocked updates — executeTimelock
-    // ══════════════════════════════════════════════════════════
-
-    function test_executeTimelock_updatesAddress() public {
-        vm.startPrank(Actors.ADMIN);
-        reg.setAddress(MARKET_KEY, addr1);
-        reg.proposeAddress(MARKET_KEY, addr2);
-        vm.stopPrank();
-
-        vm.warp(block.timestamp + TIMELOCK_DELAY);
-        reg.executeTimelock(MARKET_KEY);
-
-        assertEq(reg.market(), addr2);
-    }
-
-    function test_executeTimelock_emitsTimelockExecuted() public {
-        vm.startPrank(Actors.ADMIN);
-        reg.setAddress(MARKET_KEY, addr1);
-        reg.proposeAddress(MARKET_KEY, addr2);
-        vm.stopPrank();
-
-        vm.warp(block.timestamp + TIMELOCK_DELAY);
-
-        vm.expectEmit(true, false, false, true);
-        emit IProtocolRegistry.TimelockExecuted(MARKET_KEY, addr1, addr2);
-
-        reg.executeTimelock(MARKET_KEY);
-    }
-
-    function test_executeTimelock_clearsProposal() public {
-        vm.startPrank(Actors.ADMIN);
-        reg.setAddress(MARKET_KEY, addr1);
-        reg.proposeAddress(MARKET_KEY, addr2);
-        vm.stopPrank();
-
-        vm.warp(block.timestamp + TIMELOCK_DELAY);
-        reg.executeTimelock(MARKET_KEY);
-
-        (address newAddr, uint256 effectiveAt) = reg.pendingTimelockOf(MARKET_KEY);
-        assertEq(newAddr, address(0));
-        assertEq(effectiveAt, 0);
-    }
-
-    function test_executeTimelock_callableByAnyone() public {
-        vm.startPrank(Actors.ADMIN);
-        reg.setAddress(MARKET_KEY, addr1);
-        reg.proposeAddress(MARKET_KEY, addr2);
-        vm.stopPrank();
-
-        vm.warp(block.timestamp + TIMELOCK_DELAY);
-
-        vm.prank(Actors.ATTACKER);
-        reg.executeTimelock(MARKET_KEY);
-
-        assertEq(reg.market(), addr2);
-    }
-
-    function test_executeTimelock_notProposed_reverts() public {
-        vm.expectRevert(IProtocolRegistry.TimelockNotProposed.selector);
-        reg.executeTimelock(MARKET_KEY);
-    }
-
-    function test_executeTimelock_beforeDelay_reverts() public {
-        vm.startPrank(Actors.ADMIN);
-        reg.setAddress(MARKET_KEY, addr1);
-        reg.proposeAddress(MARKET_KEY, addr2);
-        vm.stopPrank();
-
-        vm.warp(block.timestamp + TIMELOCK_DELAY - 1);
-
-        vm.expectRevert(IProtocolRegistry.TimelockNotReady.selector);
-        reg.executeTimelock(MARKET_KEY);
-    }
-
-    function test_executeTimelock_exactlyAtDelay_succeeds() public {
-        uint256 proposeTime = block.timestamp;
+    function test_adminTransfer_canBeCancelled() public {
+        address newAdmin = makeAddr("newAdmin");
 
         vm.startPrank(Actors.ADMIN);
-        reg.setAddress(MARKET_KEY, addr1);
-        reg.proposeAddress(MARKET_KEY, addr2);
+        reg.beginDefaultAdminTransfer(newAdmin);
+        reg.cancelDefaultAdminTransfer();
         vm.stopPrank();
 
-        vm.warp(proposeTime + TIMELOCK_DELAY);
-        reg.executeTimelock(MARKET_KEY);
-
-        assertEq(reg.market(), addr2);
-    }
-
-    function test_executeTimelock_doubleExecute_reverts() public {
-        vm.startPrank(Actors.ADMIN);
-        reg.setAddress(MARKET_KEY, addr1);
-        reg.proposeAddress(MARKET_KEY, addr2);
-        vm.stopPrank();
-
-        vm.warp(block.timestamp + TIMELOCK_DELAY);
-        reg.executeTimelock(MARKET_KEY);
-
-        vm.expectRevert(IProtocolRegistry.TimelockNotProposed.selector);
-        reg.executeTimelock(MARKET_KEY);
-    }
-
-    // ══════════════════════════════════════════════════════════
-    //  Timelocked updates — cancelTimelock
-    // ══════════════════════════════════════════════════════════
-
-    function test_cancelTimelock_clearsProposal() public {
-        vm.startPrank(Actors.ADMIN);
-        reg.setAddress(MARKET_KEY, addr1);
-        reg.proposeAddress(MARKET_KEY, addr2);
-        reg.cancelTimelock(MARKET_KEY);
-        vm.stopPrank();
-
-        (address newAddr, uint256 effectiveAt) = reg.pendingTimelockOf(MARKET_KEY);
-        assertEq(newAddr, address(0));
-        assertEq(effectiveAt, 0);
-    }
-
-    function test_cancelTimelock_emitsTimelockCancelled() public {
-        vm.startPrank(Actors.ADMIN);
-        reg.setAddress(MARKET_KEY, addr1);
-        reg.proposeAddress(MARKET_KEY, addr2);
-        vm.stopPrank();
-
-        vm.expectEmit(true, false, false, false);
-        emit IProtocolRegistry.TimelockCancelled(MARKET_KEY);
-
-        vm.prank(Actors.ADMIN);
-        reg.cancelTimelock(MARKET_KEY);
-    }
-
-    function test_cancelTimelock_addressUnchanged() public {
-        vm.startPrank(Actors.ADMIN);
-        reg.setAddress(MARKET_KEY, addr1);
-        reg.proposeAddress(MARKET_KEY, addr2);
-        reg.cancelTimelock(MARKET_KEY);
-        vm.stopPrank();
-
-        assertEq(reg.market(), addr1);
-    }
-
-    function test_cancelTimelock_notProposed_reverts() public {
-        vm.prank(Actors.ADMIN);
-        vm.expectRevert(IProtocolRegistry.TimelockNotProposed.selector);
-        reg.cancelTimelock(MARKET_KEY);
-    }
-
-    function test_cancelTimelock_notOwner_reverts() public {
-        vm.startPrank(Actors.ADMIN);
-        reg.setAddress(MARKET_KEY, addr1);
-        reg.proposeAddress(MARKET_KEY, addr2);
-        vm.stopPrank();
-
-        vm.prank(Actors.ATTACKER);
-        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, Actors.ATTACKER));
-        reg.cancelTimelock(MARKET_KEY);
-    }
-
-    function test_cancelTimelock_thenExecute_reverts() public {
-        vm.startPrank(Actors.ADMIN);
-        reg.setAddress(MARKET_KEY, addr1);
-        reg.proposeAddress(MARKET_KEY, addr2);
-        reg.cancelTimelock(MARKET_KEY);
-        vm.stopPrank();
-
-        vm.warp(block.timestamp + TIMELOCK_DELAY);
-
-        vm.expectRevert(IProtocolRegistry.TimelockNotProposed.selector);
-        reg.executeTimelock(MARKET_KEY);
-    }
-
-    // ══════════════════════════════════════════════════════════
-    //  Full lifecycle — propose → cancel → re-propose → execute
-    // ══════════════════════════════════════════════════════════
-
-    function test_fullLifecycle_proposeCancelRepropose() public {
-        vm.startPrank(Actors.ADMIN);
-        reg.setAddress(MARKET_KEY, addr1);
-        assertEq(reg.market(), addr1);
-
-        reg.proposeAddress(MARKET_KEY, addr2);
-        reg.cancelTimelock(MARKET_KEY);
-        reg.proposeAddress(MARKET_KEY, addr3);
-        vm.stopPrank();
-
-        vm.warp(block.timestamp + TIMELOCK_DELAY);
-        reg.executeTimelock(MARKET_KEY);
-
-        assertEq(reg.market(), addr3);
-    }
-
-    function test_fullLifecycle_multipleSlots() public {
-        vm.startPrank(Actors.ADMIN);
-        reg.setAddress(MARKET_KEY, addr1);
-        reg.setAddress(ASSET_REGISTRY_KEY, addr2);
-
-        reg.proposeAddress(MARKET_KEY, addr3);
-        reg.proposeAddress(ASSET_REGISTRY_KEY, addr1);
-        vm.stopPrank();
-
-        vm.warp(block.timestamp + TIMELOCK_DELAY);
-
-        reg.executeTimelock(MARKET_KEY);
-        reg.executeTimelock(ASSET_REGISTRY_KEY);
-
-        assertEq(reg.market(), addr3);
-        assertEq(reg.assetRegistry(), addr1);
-    }
-
-    // ══════════════════════════════════════════════════════════
-    //  pendingTimelockOf
-    // ══════════════════════════════════════════════════════════
-
-    function test_pendingTimelockOf_noProposal_returnsZeros() public view {
-        (address newAddr, uint256 effectiveAt) = reg.pendingTimelockOf(MARKET_KEY);
-        assertEq(newAddr, address(0));
-        assertEq(effectiveAt, 0);
+        (address pending,) = reg.pendingDefaultAdmin();
+        assertEq(pending, address(0));
+        assertEq(reg.owner(), Actors.ADMIN); // admin unchanged after cancel
     }
 
     // ══════════════════════════════════════════════════════════
@@ -446,29 +265,5 @@ contract ProtocolRegistryTest is BaseTest {
     ) public {
         vm.prank(Actors.ADMIN);
         reg.setAddress(key, addr1);
-    }
-
-    function testFuzz_timelockLifecycle(
-        uint256 delay
-    ) public {
-        delay = bound(delay, 1, 365 days);
-
-        ProtocolRegistry customReg = new ProtocolRegistry(Actors.ADMIN, delay, PRICE_MAX_AGE);
-        bytes32 key = customReg.MARKET();
-
-        vm.startPrank(Actors.ADMIN);
-        customReg.setAddress(key, addr1);
-        customReg.proposeAddress(key, addr2);
-        vm.stopPrank();
-
-        // Before delay — should revert
-        vm.warp(block.timestamp + delay - 1);
-        vm.expectRevert(IProtocolRegistry.TimelockNotReady.selector);
-        customReg.executeTimelock(key);
-
-        // At delay — should succeed
-        vm.warp(block.timestamp + 1);
-        customReg.executeTimelock(key);
-        assertEq(customReg.market(), addr2);
     }
 }

@@ -7,6 +7,9 @@ interface IETokenFactory {
     /// @notice Emitted when a new eToken is deployed.
     event ETokenCreated(address indexed token, bytes32 indexed ticker, string symbol);
 
+    /// @notice Caller does not hold the eToken-factory admin role.
+    error OnlyAdmin();
+
     /// @notice Deploy a new eToken contract.
     /// @param name        Human-readable token name (e.g. "Own Tesla").
     /// @param symbol      Token symbol (e.g. "eTSLA").

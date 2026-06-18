@@ -2,14 +2,17 @@
 pragma solidity 0.8.28;
 
 import {IProtocolRegistry} from "../interfaces/IProtocolRegistry.sol";
-import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {AccessControlDefaultAdminRules} from
+    "@openzeppelin/contracts/access/extensions/AccessControlDefaultAdminRules.sol";
 
-/// @title ProtocolRegistry — Central registry of all protocol contract addresses
-/// @notice Stores addresses of all protocol contracts. Other contracts look up dependencies here
-/// instead of storing individual references. All address changes require a timelock delay,
-/// except for first-time initialization (setting a slot from address(0)).
-/// @dev Owner is expected to be a governance multisig.
-contract ProtocolRegistry is IProtocolRegistry, Ownable {
+/// @title ProtocolRegistry — Central registry of all protocol contract addresses + role authority
+/// @notice Stores all protocol contract addresses and is the single AccessControl authority for the
+///         protocol. Every governed contract resolves permissions here via {hasRole}.
+/// @dev `setAddress` and `setPriceMaxAge` are gated by `PROTOCOL_ADMIN` — the OZ `DEFAULT_ADMIN_ROLE`,
+///      which also administers the protocol-wide `ADMIN` and `OPERATOR` roles. Expected to be held by a
+///      TimelockController, so registry changes and all role grants are time-delayed. `PROTOCOL_ADMIN`
+///      transfers use the 2-step + delayed flow from AccessControlDefaultAdminRules.
+contract ProtocolRegistry is IProtocolRegistry, AccessControlDefaultAdminRules {
     // ──────────────────────────────────────────────────────────────
     //  Constants — contract slot keys
     // ──────────────────────────────────────────────────────────────
@@ -23,27 +26,11 @@ contract ProtocolRegistry is IProtocolRegistry, Ownable {
     bytes32 public constant TREASURY = keccak256("TREASURY");
 
     // ──────────────────────────────────────────────────────────────
-    //  Types
-    // ──────────────────────────────────────────────────────────────
-
-    /// @dev A pending timelocked address change.
-    struct TimelockProposal {
-        address newAddr;
-        uint256 effectiveAt;
-    }
-
-    // ──────────────────────────────────────────────────────────────
     //  State
     // ──────────────────────────────────────────────────────────────
 
     /// @dev Contract address storage: key → address.
     mapping(bytes32 => address) private _addresses;
-
-    /// @dev Pending timelocked proposals: key → proposal.
-    mapping(bytes32 => TimelockProposal) private _timelocks;
-
-    /// @notice Minimum delay (seconds) before a timelocked change can be executed.
-    uint256 public override timelockDelay;
 
     /// @dev Governance-tunable max age for inline "current price" proofs. See {priceMaxAge}.
     uint256 private _priceMaxAge;
@@ -52,12 +39,16 @@ contract ProtocolRegistry is IProtocolRegistry, Ownable {
     //  Constructor
     // ──────────────────────────────────────────────────────────────
 
-    /// @param admin_         Initial owner (governance multisig).
-    /// @param timelockDelay_ Delay in seconds for timelocked changes (e.g. 172800 = 48 hours).
-    /// @param priceMaxAge_   Max age (seconds) for inline "current price" proofs. Must be non-zero.
-    constructor(address admin_, uint256 timelockDelay_, uint256 priceMaxAge_) Ownable(admin_) {
+    /// @param initialDefaultAdmin   Initial holder of `PROTOCOL_ADMIN` (the deployer during bootstrap;
+    ///                              handed to the timelock at the end of deployment).
+    /// @param ownAdminTransferDelay Delay (seconds) enforced on transferring `PROTOCOL_ADMIN`.
+    /// @param priceMaxAge_          Max age (seconds) for inline "current price" proofs. Must be non-zero.
+    constructor(
+        address initialDefaultAdmin,
+        uint48 ownAdminTransferDelay,
+        uint256 priceMaxAge_
+    ) AccessControlDefaultAdminRules(ownAdminTransferDelay, initialDefaultAdmin) {
         if (priceMaxAge_ == 0) revert InvalidPriceMaxAge();
-        timelockDelay = timelockDelay_;
         _priceMaxAge = priceMaxAge_;
     }
 
@@ -106,73 +97,24 @@ contract ProtocolRegistry is IProtocolRegistry, Ownable {
     }
 
     // ──────────────────────────────────────────────────────────────
-    //  Risk parameters (governance, immediate)
+    //  Setters (PROTOCOL_ADMIN — held by the timelock)
     // ──────────────────────────────────────────────────────────────
+
+    /// @inheritdoc IProtocolRegistry
+    function setAddress(bytes32 key, address newAddr) external override onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (newAddr == address(0)) revert ZeroAddress();
+        address old = _addresses[key];
+        _addresses[key] = newAddr;
+        emit AddressSet(key, old, newAddr);
+    }
 
     /// @inheritdoc IProtocolRegistry
     function setPriceMaxAge(
         uint256 newMaxAge
-    ) external override onlyOwner {
+    ) external override onlyRole(DEFAULT_ADMIN_ROLE) {
         if (newMaxAge == 0) revert InvalidPriceMaxAge();
         uint256 old = _priceMaxAge;
         _priceMaxAge = newMaxAge;
         emit PriceMaxAgeUpdated(old, newMaxAge);
-    }
-
-    // ──────────────────────────────────────────────────────────────
-    //  Initialization
-    // ──────────────────────────────────────────────────────────────
-
-    /// @inheritdoc IProtocolRegistry
-    function setAddress(bytes32 key, address newAddr) external override onlyOwner {
-        if (newAddr == address(0)) revert ZeroAddress();
-        if (_addresses[key] != address(0)) revert AlreadyInitialized();
-        _addresses[key] = newAddr;
-        emit ContractInitialized(key, newAddr);
-    }
-
-    // ──────────────────────────────────────────────────────────────
-    //  Timelocked Updates
-    // ──────────────────────────────────────────────────────────────
-
-    /// @inheritdoc IProtocolRegistry
-    function proposeAddress(bytes32 key, address newAddr) external override onlyOwner {
-        if (newAddr == address(0)) revert ZeroAddress();
-        if (newAddr == _addresses[key]) revert SameAddress();
-        uint256 effectiveAt = block.timestamp + timelockDelay;
-        _timelocks[key] = TimelockProposal({newAddr: newAddr, effectiveAt: effectiveAt});
-        emit TimelockProposed(key, newAddr, effectiveAt);
-    }
-
-    /// @inheritdoc IProtocolRegistry
-    function executeTimelock(
-        bytes32 key
-    ) external override {
-        TimelockProposal memory proposal = _timelocks[key];
-        if (proposal.newAddr == address(0)) revert TimelockNotProposed();
-        if (block.timestamp < proposal.effectiveAt) revert TimelockNotReady();
-
-        address oldAddr = _addresses[key];
-        _addresses[key] = proposal.newAddr;
-        delete _timelocks[key];
-
-        emit TimelockExecuted(key, oldAddr, proposal.newAddr);
-    }
-
-    /// @inheritdoc IProtocolRegistry
-    function cancelTimelock(
-        bytes32 key
-    ) external override onlyOwner {
-        if (_timelocks[key].newAddr == address(0)) revert TimelockNotProposed();
-        delete _timelocks[key];
-        emit TimelockCancelled(key);
-    }
-
-    /// @inheritdoc IProtocolRegistry
-    function pendingTimelockOf(
-        bytes32 key
-    ) external view override returns (address newAddr, uint256 effectiveAt) {
-        TimelockProposal memory proposal = _timelocks[key];
-        return (proposal.newAddr, proposal.effectiveAt);
     }
 }

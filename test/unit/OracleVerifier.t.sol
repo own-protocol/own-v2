@@ -24,7 +24,7 @@ contract OracleVerifierTest is BaseTest {
         signer = vm.addr(SIGNER_PK);
 
         vm.startPrank(Actors.ADMIN);
-        verifier = new OracleVerifier(Actors.ADMIN);
+        verifier = new OracleVerifier(address(protocolRegistry));
         verifier.addSigner(signer);
         verifier.setAssetOracleConfig(ASSET, MAX_STALENESS, MAX_DEVIATION);
         vm.stopPrank();

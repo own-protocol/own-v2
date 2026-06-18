@@ -59,7 +59,7 @@ contract BorrowManagerTest is BaseTest {
         protocolRegistry.setAddress(protocolRegistry.MARKET(), mockMarket);
 
         // AssetRegistry — register TSLA so eligibility passes.
-        assetRegistry = new AssetRegistry(Actors.ADMIN);
+        assetRegistry = new AssetRegistry(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.ASSET_REGISTRY(), address(assetRegistry));
         vm.stopPrank();
 
@@ -346,7 +346,7 @@ contract BorrowManagerTest is BaseTest {
         // addAsset always marks the asset active; deactivate it to exercise the active-gate.
         vm.startPrank(Actors.ADMIN);
         assetRegistry.addAsset(newAsset, address(eGold), cfg);
-        assetRegistry.deactivateAsset(newAsset);
+        assetRegistry.setAssetActive(newAsset, false);
         vm.stopPrank();
 
         eGold.mint(Actors.MINTER1, 1e18);
@@ -829,7 +829,7 @@ contract BorrowManagerTest is BaseTest {
     function test_absorbBadDebt_onlyAdmin() public {
         _stripToBadDebt();
         vm.prank(Actors.ATTACKER);
-        vm.expectRevert(IBorrowManager.OnlyAdmin.selector);
+        vm.expectRevert(IBorrowManager.OnlyOperator.selector);
         borrowManager.absorbBadDebt(Actors.MINTER1, ASSET, 0, _priceData(4000e18));
     }
 
@@ -889,7 +889,7 @@ contract BorrowManagerTest is BaseTest {
 
     function test_setAssetBorrowable_onlyAdmin() public {
         vm.prank(Actors.ATTACKER);
-        vm.expectRevert(IBorrowManager.OnlyAdmin.selector);
+        vm.expectRevert(IBorrowManager.OnlyOperator.selector);
         borrowManager.setAssetBorrowable(ASSET, true);
     }
 
@@ -1105,6 +1105,128 @@ contract BorrowManagerTest is BaseTest {
         borrowManager.borrow(ASSET, 100e18, 5000e6, _priceData(TSLA_PX));
         vm.stopPrank();
     }
+
+    // ──────────────────────────────────────────────────────────
+    //  claimEarnedInterest
+    // ──────────────────────────────────────────────────────────
+
+    /// @dev Open a borrow and let a year of interest accrue so there's a non-zero earned gap.
+    function _openAndAccrue() internal returns (uint256 earned) {
+        _openTypical(Actors.MINTER1);
+        vm.warp(block.timestamp + 365 days);
+        borrowManager.accrue();
+        earned = borrowManager.earnedInterest();
+    }
+
+    function test_claimEarnedInterest_defaults() public view {
+        assertEq(borrowManager.interestBufferBps(), 1000, "10% buffer default");
+        assertEq(borrowManager.minClaimHealthFactor(), 1.1e18, "1.1 HF default");
+    }
+
+    function test_claimEarnedInterest_succeeds() public {
+        uint256 earned = _openAndAccrue();
+        assertGt(earned, 0, "interest accrued");
+        uint256 claimable = borrowManager.claimableInterest();
+        assertEq(claimable, earned * 9000 / BPS, "90% claimable (10% buffer)");
+
+        uint256 vmBefore = usdc.balanceOf(address(this)); // this contract is the bound VM
+        uint256 aaveBefore = aavePool.debtOf(address(vault), address(usdc));
+
+        vm.expectEmit(true, false, false, true);
+        emit IBorrowManager.InterestClaimed(address(this), claimable);
+        borrowManager.claimEarnedInterest(claimable);
+
+        assertEq(usdc.balanceOf(address(this)) - vmBefore, claimable, "VM received the claim");
+        assertEq(aavePool.debtOf(address(vault), address(usdc)) - aaveBefore, claimable, "Aave debt grew by the claim");
+    }
+
+    function test_claimEarnedInterest_exceedsClaimable_reverts() public {
+        _openAndAccrue();
+        uint256 claimable = borrowManager.claimableInterest();
+        vm.expectRevert(abi.encodeWithSelector(IBorrowManager.ClaimExceedsClaimable.selector, claimable + 1, claimable));
+        borrowManager.claimEarnedInterest(claimable + 1);
+    }
+
+    function test_claimEarnedInterest_onlyManager_reverts() public {
+        _openAndAccrue();
+        uint256 claimable = borrowManager.claimableInterest();
+        vm.prank(Actors.ATTACKER);
+        vm.expectRevert(IBorrowManager.OnlyManager.selector);
+        borrowManager.claimEarnedInterest(claimable);
+    }
+
+    function test_claimEarnedInterest_zeroAmount_reverts() public {
+        _openAndAccrue();
+        vm.expectRevert(IBorrowManager.ZeroAmount.selector);
+        borrowManager.claimEarnedInterest(0);
+    }
+
+    function test_claimEarnedInterest_unsafeHealthFactor_reverts() public {
+        _openAndAccrue();
+        uint256 claimable = borrowManager.claimableInterest();
+        aavePool.setHealthFactor(1e18); // below the 1.1 default
+        vm.expectRevert(abi.encodeWithSelector(IBorrowManager.ClaimUnsafeHealthFactor.selector, uint256(1e18)));
+        borrowManager.claimEarnedInterest(claimable);
+    }
+
+    /// @dev The claim nets out on repay: VM total (claim + repay surplus) == earned interest, no
+    ///      double-pay. Carry is 0 here because the mock Aave debt doesn't auto-accrue.
+    function test_claimEarnedInterest_repayNetsOut() public {
+        uint256 earned = _openAndAccrue();
+        uint256 claimable = borrowManager.claimableInterest();
+
+        uint256 vmBefore = usdc.balanceOf(address(this));
+        borrowManager.claimEarnedInterest(claimable);
+
+        // Borrower fully repays principal + accrued interest (same block — no further accrual).
+        uint256 debt = borrowManager.debtOf(Actors.MINTER1, ASSET);
+        usdc.mint(Actors.MINTER1, debt);
+        vm.startPrank(Actors.MINTER1);
+        usdc.approve(address(borrowManager), debt);
+        borrowManager.repay(ASSET, type(uint256).max);
+        vm.stopPrank();
+
+        assertEq(usdc.balanceOf(address(this)) - vmBefore, earned, "VM total == earned (claim + surplus)");
+        assertEq(aavePool.debtOf(address(vault), address(usdc)), 0, "Aave debt fully cleared");
+        assertEq(borrowManager.positionOf(Actors.MINTER1, ASSET).principal, 0, "position closed");
+    }
+
+    function test_setInterestBufferBps_emitsAndApplies() public {
+        vm.expectEmit(false, false, false, true);
+        emit IBorrowManager.InterestBufferUpdated(1000, 2000);
+        vm.prank(Actors.ADMIN);
+        borrowManager.setInterestBufferBps(2000);
+        assertEq(borrowManager.interestBufferBps(), 2000);
+    }
+
+    function test_setInterestBufferBps_zeroOrAboveBps_reverts() public {
+        vm.startPrank(Actors.ADMIN);
+        vm.expectRevert(IBorrowManager.InvalidInterestBuffer.selector);
+        borrowManager.setInterestBufferBps(0);
+        vm.expectRevert(IBorrowManager.InvalidInterestBuffer.selector);
+        borrowManager.setInterestBufferBps(BPS + 1);
+        vm.stopPrank();
+    }
+
+    function test_setInterestBufferBps_onlyAdmin_reverts() public {
+        vm.prank(Actors.ATTACKER);
+        vm.expectRevert(IBorrowManager.OnlyAdmin.selector);
+        borrowManager.setInterestBufferBps(2000);
+    }
+
+    function test_setMinClaimHealthFactor_emitsAndApplies() public {
+        vm.expectEmit(false, false, false, true);
+        emit IBorrowManager.MinClaimHealthFactorUpdated(1.1e18, 1.5e18);
+        vm.prank(Actors.ADMIN);
+        borrowManager.setMinClaimHealthFactor(1.5e18);
+        assertEq(borrowManager.minClaimHealthFactor(), 1.5e18);
+    }
+
+    function test_setMinClaimHealthFactor_belowOne_reverts() public {
+        vm.prank(Actors.ADMIN);
+        vm.expectRevert(IBorrowManager.InvalidMinClaimHealthFactor.selector);
+        borrowManager.setMinClaimHealthFactor(1e18 - 1);
+    }
 }
 
 /// @title absorbBadDebt with 6-decimal collateral (aUSDC) — regression for the native-decimal
@@ -1137,7 +1259,7 @@ contract BorrowManagerBadDebt6DecTest is BaseTest {
 
         vm.startPrank(Actors.ADMIN);
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(this)); // act as MARKET
-        assetRegistry = new AssetRegistry(Actors.ADMIN);
+        assetRegistry = new AssetRegistry(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.ASSET_REGISTRY(), address(assetRegistry));
         vm.stopPrank();
 

@@ -96,6 +96,9 @@ interface IOwnMarket {
     /// @notice The redeem force window (claim threshold) has not elapsed.
     error ForceWindowNotElapsed(uint256 orderId);
 
+    /// @notice Force-execution is not enabled: the global claim threshold is unset (zero).
+    error ForceNotEnabled();
+
     /// @notice Force execution is not available for mint orders.
     error ForceMintNotAllowed(uint256 orderId);
 
@@ -138,14 +141,18 @@ interface IOwnMarket {
     /// @notice The quote price does not satisfy the order's limit price.
     error LimitNotSatisfied();
 
+    /// @notice The settle price deviates from the VaultManager mark by more than the allowed band.
+    error PriceOutOfBand(bytes32 asset, uint256 price, uint256 mark, uint256 bandBps);
+
     /// @notice The fill amount exceeds the order's remaining amount.
     error FillExceedsRemaining(uint256 orderId);
 
     /// @notice The oracle price is below the order's minimum (limit) price at force time.
     error PriceBelowMinimum();
 
-    /// @notice The asset price proof's timestamp is outside the order's live window [createdAt, now].
-    error AssetPriceProofOutsideWindow();
+    /// @notice The asset price proof is stale; force execution requires a current asset price that
+    ///         still satisfies the order's limit (not a historical in-window touch).
+    error StaleAssetPrice();
 
     /// @notice The collateral price proof is stale; force execution requires a current collateral price.
     error StaleCollateralPrice();

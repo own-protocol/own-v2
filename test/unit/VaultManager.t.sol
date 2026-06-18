@@ -6,6 +6,7 @@ import {VaultManager} from "../../src/core/VaultManager.sol";
 import {IOracleVerifier} from "../../src/interfaces/IOracleVerifier.sol";
 import {IProtocolRegistry} from "../../src/interfaces/IProtocolRegistry.sol";
 import {IVaultManager} from "../../src/interfaces/IVaultManager.sol";
+import {BPS} from "../../src/interfaces/types/Types.sol";
 import {Actors} from "../helpers/Actors.sol";
 import {MockERC20} from "../helpers/MockERC20.sol";
 import {MockOracleVerifier} from "../helpers/MockOracleVerifier.sol";
@@ -57,6 +58,7 @@ contract VaultManagerTest is Test {
     uint256 internal constant USDC_MARK = 1e18; //   $1 per USDC
     uint256 internal constant MAX_UTIL_BPS = 8000; // 80%
     uint256 internal constant ASSET_CAP = 1_000_000e18; // $1M
+    uint256 internal constant MARK_MAX_AGE = 365 days; // wide default so non-staleness tests pass
 
     function setUp() public {
         registry = new ProtocolRegistry(admin, 0, 2 minutes);
@@ -66,6 +68,8 @@ contract VaultManagerTest is Test {
         vault = new StubVault(address(usdc));
 
         vm.startPrank(admin);
+        registry.grantRole(keccak256("ADMIN"), admin);
+        registry.grantRole(keccak256("OPERATOR"), admin);
         registry.setAddress(registry.MARKET(), market);
         registry.setAddress(registry.ASSET_REGISTRY(), address(assetRegistry));
         registry.setAddress(registry.INHOUSE_ORACLE(), address(oracle));
@@ -77,8 +81,10 @@ contract VaultManagerTest is Test {
         oracle.setPrice(TSLA, TSLA_MARK);
         oracle.setPrice(USDC_TICKER, USDC_MARK);
 
-        vm.prank(admin);
+        vm.startPrank(admin);
         manager.setGlobalMaxUtilizationBps(MAX_UTIL_BPS);
+        manager.setMaxMarkAge(MARK_MAX_AGE);
+        vm.stopPrank();
     }
 
     // ──────────────────────────────────────────────────────────
@@ -201,6 +207,144 @@ contract VaultManagerTest is Test {
     function test_pullCollateralPrice_notRegistered_reverts() public {
         vm.expectRevert(abi.encodeWithSelector(IVaultManager.VaultNotRegistered.selector, address(vault)));
         manager.pullCollateralPrice(address(vault));
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Collateral concentration cap
+    // ──────────────────────────────────────────────────────────
+
+    /// @dev Register a USDC vault (uncapped) with `usdc6` collateral and pull its mark.
+    function _registerAndPull(StubVault v, uint256 usdc6) internal {
+        vm.prank(admin);
+        manager.registerVault(address(v), USDC_TICKER);
+        v.setTotalAssets(usdc6);
+        manager.pullCollateralPrice(address(v));
+    }
+
+    /// @dev Register a USDC vault with a concentration cap and `usdc6` collateral, then pull.
+    function _registerCappedAndPull(StubVault v, uint256 usdc6, uint256 capBps) internal {
+        vm.startPrank(admin);
+        manager.registerVault(address(v), USDC_TICKER);
+        manager.setCollateralCapBps(address(v), capBps);
+        vm.stopPrank();
+        v.setTotalAssets(usdc6);
+        manager.pullCollateralPrice(address(v));
+    }
+
+    function test_setCollateralCapBps_emits() public {
+        vm.prank(admin);
+        manager.registerVault(address(vault), USDC_TICKER);
+
+        vm.expectEmit(true, false, false, true);
+        emit IVaultManager.CollateralCapUpdated(address(vault), 0, 2500);
+        vm.prank(admin);
+        manager.setCollateralCapBps(address(vault), 2500);
+        assertEq(manager.collateralCapBps(address(vault)), 2500);
+    }
+
+    function test_setCollateralCapBps_atOrAboveBps_reverts() public {
+        vm.prank(admin);
+        manager.registerVault(address(vault), USDC_TICKER);
+        vm.expectRevert(IVaultManager.InvalidCollateralCap.selector);
+        vm.prank(admin);
+        manager.setCollateralCapBps(address(vault), BPS);
+    }
+
+    function test_setCollateralCapBps_notRegistered_reverts() public {
+        vm.expectRevert(abi.encodeWithSelector(IVaultManager.VaultNotRegistered.selector, address(vault)));
+        vm.prank(admin);
+        manager.setCollateralCapBps(address(vault), 2500);
+    }
+
+    function test_setCollateralCapBps_onlyAdmin_reverts() public {
+        vm.prank(admin);
+        manager.registerVault(address(vault), USDC_TICKER);
+        vm.expectRevert(IVaultManager.OnlyAdmin.selector);
+        vm.prank(market);
+        manager.setCollateralCapBps(address(vault), 2500);
+    }
+
+    function test_collateralCap_uncapped_countsFull() public {
+        _registerAndPull(vault, 3_000_000e6); // cap 0 → uncapped
+        assertEq(manager.collateralMark(address(vault)), 3_000_000e18);
+        assertEq(manager.globalCollateralUSD(), 3_000_000e18);
+    }
+
+    function test_collateralCap_underCap_countsFull() public {
+        _registerAndPull(vault, 3_000_000e6); // base, uncapped
+        StubVault vaultB = new StubVault(address(usdc));
+        _registerCappedAndPull(vaultB, 500_000e6, 2500); // $0.5M, 25% cap
+
+        // maxCounted = 3M × 2500/7500 = $1M; raw $0.5M < $1M → counts full.
+        assertEq(manager.collateralMark(address(vaultB)), 500_000e18);
+        assertEq(manager.globalCollateralUSD(), 3_500_000e18);
+    }
+
+    function test_collateralCap_overCap_capsContribution() public {
+        _registerAndPull(vault, 3_000_000e6); // base $3M, uncapped
+        StubVault vaultB = new StubVault(address(usdc));
+        _registerCappedAndPull(vaultB, 3_000_000e6, 2500); // $3M raw, 25% cap
+
+        // others = $3M; maxCounted = 3M × 2500/7500 = $1M; raw $3M → counted $1M (25% of $4M).
+        assertEq(manager.collateralMark(address(vaultB)), 1_000_000e18, "capped to 25% share");
+        assertEq(manager.globalCollateralUSD(), 4_000_000e18, "global = base 3M + capped 1M");
+    }
+
+    function test_collateralCap_emitsCapApplied() public {
+        _registerAndPull(vault, 3_000_000e6);
+        StubVault vaultB = new StubVault(address(usdc));
+        vm.startPrank(admin);
+        manager.registerVault(address(vaultB), USDC_TICKER);
+        manager.setCollateralCapBps(address(vaultB), 2500);
+        vm.stopPrank();
+        vaultB.setTotalAssets(3_000_000e6);
+
+        vm.expectEmit(true, false, false, true);
+        emit IVaultManager.CollateralCapApplied(address(vaultB), 3_000_000e18, 1_000_000e18);
+        manager.pullCollateralPrice(address(vaultB));
+    }
+
+    function test_collateralCap_reappliesAsOthersGrow() public {
+        _registerAndPull(vault, 3_000_000e6); // base $3M
+        StubVault vaultB = new StubVault(address(usdc));
+        _registerCappedAndPull(vaultB, 3_000_000e6, 2500);
+        assertEq(manager.collateralMark(address(vaultB)), 1_000_000e18, "initially capped at $1M");
+
+        // Base grows to $9M; re-pull base then the capped vault.
+        vault.setTotalAssets(9_000_000e6);
+        manager.pullCollateralPrice(address(vault));
+        manager.pullCollateralPrice(address(vaultB));
+
+        // others = $9M; maxCounted = 9M × 2500/7500 = $3M; raw $3M → now fully counted.
+        assertEq(manager.collateralMark(address(vaultB)), 3_000_000e18, "cap relaxes as base grows");
+        assertEq(manager.globalCollateralUSD(), 12_000_000e18);
+    }
+
+    function test_collateralCap_onVaultUnhalted_appliesCap() public {
+        _registerAndPull(vault, 3_000_000e6); // base $3M, uncapped
+        StubVault vaultB = new StubVault(address(usdc));
+        _registerCappedAndPull(vaultB, 3_000_000e6, 2500);
+        assertEq(manager.collateralMark(address(vaultB)), 1_000_000e18);
+
+        // Halt then unhalt vaultB — re-inclusion must re-apply the cap, not count raw $3M.
+        vm.prank(address(vaultB));
+        manager.onVaultHalted();
+        vm.prank(address(vaultB));
+        manager.onVaultUnhalted();
+
+        assertEq(manager.collateralMark(address(vaultB)), 1_000_000e18, "cap re-applied on unhalt");
+        assertEq(manager.globalCollateralUSD(), 4_000_000e18);
+    }
+
+    function test_collateralCap_clearedOnDeregister() public {
+        vm.startPrank(admin);
+        manager.registerVault(address(vault), USDC_TICKER);
+        manager.setCollateralCapBps(address(vault), 2500);
+        assertEq(manager.collateralCapBps(address(vault)), 2500);
+        manager.deregisterVault(address(vault));
+        manager.registerVault(address(vault), USDC_TICKER); // re-register
+        vm.stopPrank();
+        assertEq(manager.collateralCapBps(address(vault)), 0, "cap cleared on deregister");
     }
 
     // ──────────────────────────────────────────────────────────
@@ -397,6 +541,44 @@ contract VaultManagerTest is Test {
     }
 
     // ──────────────────────────────────────────────────────────
+    //  Open exposure — mark staleness guard
+    // ──────────────────────────────────────────────────────────
+
+    function test_openExposure_staleMark_reverts() public {
+        _bootstrap(); // pulls the TSLA mark at the current timestamp
+        vm.prank(admin);
+        manager.setMaxMarkAge(15 minutes);
+
+        uint256 pulledAt = manager.assetMarkUpdatedAt(TSLA);
+        vm.warp(block.timestamp + 15 minutes + 1); // 1s past the freshness bound
+
+        vm.expectRevert(abi.encodeWithSelector(IVaultManager.StaleAssetMark.selector, TSLA, pulledAt, 15 minutes));
+        vm.prank(market);
+        manager.openExposure(TSLA, 1000e18);
+    }
+
+    function test_openExposure_atMarkAgeBoundary_succeeds() public {
+        _bootstrap();
+        vm.prank(admin);
+        manager.setMaxMarkAge(15 minutes);
+
+        vm.warp(block.timestamp + 15 minutes); // exactly at the bound — inclusive
+        _open(1000e18);
+        assertEq(manager.globalAssetUnits(TSLA), 1000e18);
+    }
+
+    function test_openExposure_freshAfterRepull_succeeds() public {
+        _bootstrap();
+        vm.prank(admin);
+        manager.setMaxMarkAge(15 minutes);
+
+        vm.warp(block.timestamp + 1 hours); // mark now stale
+        manager.pullAssetPrice(TSLA); // keeper refreshes the mark
+        _open(1000e18); // fresh again
+        assertEq(manager.globalAssetUnits(TSLA), 1000e18);
+    }
+
+    // ──────────────────────────────────────────────────────────
     //  Close exposure
     // ──────────────────────────────────────────────────────────
 
@@ -442,6 +624,19 @@ contract VaultManagerTest is Test {
         _close(1000e18);
         assertEq(manager.globalAssetUnits(TSLA), 0);
         assertEq(manager.globalExposureUSD(), 0);
+    }
+
+    /// @dev closeExposure (risk-reducing) is exempt from the mark-staleness guard: a redeem must
+    ///      still go through even when the keeper mark has gone stale.
+    function test_closeExposure_staleMark_exempt() public {
+        _bootstrap();
+        _open(1000e18); // opened while fresh (wide default)
+        vm.prank(admin);
+        manager.setMaxMarkAge(15 minutes);
+
+        vm.warp(block.timestamp + 1 hours); // mark now stale
+        _close(1000e18); // still succeeds — no freshness gate on the redeem path
+        assertEq(manager.globalAssetUnits(TSLA), 0);
     }
 
     /// @dev A zero mark must fail loud (mirrors openExposure) instead of silently zeroing
@@ -639,6 +834,71 @@ contract VaultManagerTest is Test {
     }
 
     // ──────────────────────────────────────────────────────────
+    //  Admin — settle-price band
+    // ──────────────────────────────────────────────────────────
+
+    function test_settleBandBps_defaultsToZero() public view {
+        // Fail-safe: unconfigured band blocks settlement until an admin sets it. setUp does not.
+        assertEq(manager.settleBandBps(), 0);
+    }
+
+    function test_setSettleBandBps_emits() public {
+        vm.expectEmit(false, false, false, true);
+        emit IVaultManager.SettleBandUpdated(0, 500);
+        vm.prank(admin);
+        manager.setSettleBandBps(500);
+        assertEq(manager.settleBandBps(), 500);
+    }
+
+    function test_setSettleBandBps_atMaxBps_succeeds() public {
+        vm.prank(admin);
+        manager.setSettleBandBps(BPS);
+        assertEq(manager.settleBandBps(), BPS);
+    }
+
+    function test_setSettleBandBps_zero_reverts() public {
+        vm.expectRevert(IVaultManager.InvalidSettleBand.selector);
+        vm.prank(admin);
+        manager.setSettleBandBps(0);
+    }
+
+    function test_setSettleBandBps_aboveMaxBps_reverts() public {
+        vm.expectRevert(IVaultManager.InvalidSettleBand.selector);
+        vm.prank(admin);
+        manager.setSettleBandBps(BPS + 1);
+    }
+
+    function test_setSettleBandBps_onlyAdmin_reverts() public {
+        vm.expectRevert(IVaultManager.OnlyAdmin.selector);
+        vm.prank(market);
+        manager.setSettleBandBps(500);
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Admin — max mark age
+    // ──────────────────────────────────────────────────────────
+
+    function test_setMaxMarkAge_emits() public {
+        vm.expectEmit(false, false, false, true);
+        emit IVaultManager.MaxMarkAgeUpdated(MARK_MAX_AGE, 15 minutes);
+        vm.prank(admin);
+        manager.setMaxMarkAge(15 minutes);
+        assertEq(manager.maxMarkAge(), 15 minutes);
+    }
+
+    function test_setMaxMarkAge_zero_reverts() public {
+        vm.expectRevert(IVaultManager.InvalidMaxMarkAge.selector);
+        vm.prank(admin);
+        manager.setMaxMarkAge(0);
+    }
+
+    function test_setMaxMarkAge_onlyAdmin_reverts() public {
+        vm.expectRevert(IVaultManager.OnlyAdmin.selector);
+        vm.prank(market);
+        manager.setMaxMarkAge(15 minutes);
+    }
+
+    // ──────────────────────────────────────────────────────────
     //  Admin — signer registry
     // ──────────────────────────────────────────────────────────
 
@@ -762,7 +1022,7 @@ contract VaultManagerTest is Test {
     }
 
     function test_setTradingPaused_onlyAdmin_reverts() public {
-        vm.expectRevert(IVaultManager.OnlyAdmin.selector);
+        vm.expectRevert(IVaultManager.OnlyOperator.selector);
         vm.prank(market);
         manager.setTradingPaused(true);
     }
@@ -778,7 +1038,7 @@ contract VaultManagerTest is Test {
     }
 
     function test_setAssetTradingPaused_onlyAdmin_reverts() public {
-        vm.expectRevert(IVaultManager.OnlyAdmin.selector);
+        vm.expectRevert(IVaultManager.OnlyOperator.selector);
         vm.prank(market);
         manager.setAssetTradingPaused(TSLA, true);
     }
@@ -810,7 +1070,7 @@ contract VaultManagerTest is Test {
     }
 
     function test_haltAsset_onlyAdmin_reverts() public {
-        vm.expectRevert(IVaultManager.OnlyAdmin.selector);
+        vm.expectRevert(IVaultManager.OnlyOperator.selector);
         vm.prank(market);
         manager.haltAsset(TSLA, TSLA_MARK);
     }
@@ -866,6 +1126,27 @@ contract VaultManagerTest is Test {
         vm.expectRevert(IVaultManager.OnlyAdmin.selector);
         vm.prank(market);
         manager.setClaimThreshold(6 hours);
+    }
+
+    function test_claimThreshold_defaultsToZero() public view {
+        // Pre-deploy default; OwnMarket.forceExecuteOrder treats this as force-disabled.
+        assertEq(manager.claimThreshold(), 0);
+    }
+
+    function test_setClaimThreshold_zero_reverts() public {
+        vm.expectRevert(IVaultManager.InvalidClaimThreshold.selector);
+        vm.prank(admin);
+        manager.setClaimThreshold(0);
+    }
+
+    function test_setClaimThreshold_cannotResetToZeroAfterSet() public {
+        vm.prank(admin);
+        manager.setClaimThreshold(6 hours);
+        // Once configured, it can never be reset to zero (force can't be silently disabled).
+        vm.expectRevert(IVaultManager.InvalidClaimThreshold.selector);
+        vm.prank(admin);
+        manager.setClaimThreshold(0);
+        assertEq(manager.claimThreshold(), 6 hours, "threshold unchanged");
     }
 
     // ──────────────────────────────────────────────────────────

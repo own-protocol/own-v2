@@ -131,6 +131,9 @@ contract MarketHandler is CommonBase, StdCheats, StdUtils {
 
         oracle.setPrice(TSLA, TSLA_PRICE, block.timestamp);
         oracle.setPrice(ETH_ASSET, ETH_PRICE, block.timestamp);
+        // Keeper refreshes the VaultManager mark so the openExposure freshness gate stays satisfied
+        // after time warps; otherwise the fill would silently revert into the catch below.
+        IVaultManager(market.registry().vaultManager()).pullAssetPrice(TSLA);
 
         uint256 remaining = order.amount - order.filledAmount;
         uint256 fill = bound(fillSeed, 1, remaining);

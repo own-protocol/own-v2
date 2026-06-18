@@ -70,7 +70,7 @@ contract OwnMarketTest is BaseTest {
         vm.label(address(eTSLAToken), "eTSLA");
 
         vm.startPrank(Actors.ADMIN);
-        assetReg = new AssetRegistry(Actors.ADMIN);
+        assetReg = new AssetRegistry(address(protocolRegistry));
         AssetConfig memory config = AssetConfig({
             activeToken: address(eTSLAToken),
             legacyTokens: new address[](0),
@@ -147,6 +147,11 @@ contract OwnMarketTest is BaseTest {
         vm.mockCall(
             mockVaultManager, abi.encodeWithSelector(IVaultManager.vaultCollateralAsset.selector), abi.encode(ETH_ASSET)
         );
+        // Settle-price band guard (execute/fill): reads the asset mark and the band. Default mark =
+        // current price, band = 100% (permissive) so existing flow tests are unaffected; the band
+        // boundary tests below override these per-test.
+        vm.mockCall(mockVaultManager, abi.encodeWithSelector(IVaultManager.assetMark.selector), abi.encode(TSLA_PRICE));
+        vm.mockCall(mockVaultManager, abi.encodeWithSelector(IVaultManager.settleBandBps.selector), abi.encode(BPS));
 
         _setOraclePrice(TSLA, TSLA_PRICE);
         _setOraclePrice(ETH_ASSET, ETH_PRICE);
@@ -731,6 +736,19 @@ contract OwnMarketTest is BaseTest {
         market.forceExecuteOrder(orderId, mockVault, _assetPriceData(TSLA_PRICE), _assetPriceData(ETH_PRICE));
     }
 
+    /// @dev A zero claim threshold (pre-deploy default) disables force-execution entirely, even
+    ///      after the order has aged — recourse is unavailable until the threshold is configured.
+    function test_forceExecuteOrder_zeroClaimThreshold_reverts() public {
+        vm.mockCall(
+            mockVaultManager, abi.encodeWithSelector(IVaultManager.claimThreshold.selector), abi.encode(uint256(0))
+        );
+        uint256 orderId = _placeRedeem(Actors.MINTER1, 4e18, TSLA_PRICE);
+        vm.warp(block.timestamp + CLAIM_THRESHOLD);
+        vm.prank(Actors.MINTER1);
+        vm.expectRevert(IOwnMarket.ForceNotEnabled.selector);
+        market.forceExecuteOrder(orderId, mockVault, _assetPriceData(TSLA_PRICE), _assetPriceData(ETH_PRICE));
+    }
+
     function test_forceExecuteOrder_mintOrder_reverts() public {
         uint256 orderId = _placeMint(Actors.MINTER1, 1000e6, TSLA_PRICE);
         vm.warp(block.timestamp + CLAIM_THRESHOLD);
@@ -834,32 +852,47 @@ contract OwnMarketTest is BaseTest {
         market.forceExecuteOrder(orderId, mockVault, _assetPriceData(TSLA_PRICE * 2), _assetPriceData(ETH_PRICE));
     }
 
-    /// @dev C-01 regression: an asset proof from within the order's live window [createdAt, now]
-    ///      is accepted even though it predates `now` — the user is owed the fill they were due.
-    function test_forceExecuteOrder_assetProofWithinWindow_succeeds() public {
+    /// @dev Force-execute requires a fresh asset price, superseding the C-01 historical-touch window:
+    ///      an asset proof timestamped at placement (which historically met the limit but is now
+    ///      older than priceMaxAge) is rejected, blocking the "exercise a stale favorable print after
+    ///      the market moved" collateral-drain vector.
+    function test_forceExecuteOrder_staleFavorablePrint_reverts() public {
         uint256 amount = 4e18;
         uint256 orderId = _placeRedeem(Actors.MINTER1, amount, TSLA_PRICE);
         uint256 createdAt = block.timestamp;
         vm.warp(block.timestamp + CLAIM_THRESHOLD);
 
-        // Asset proof timestamped at placement (old, but in window); collateral proof is current.
+        // Old print that historically met the limit; collateral proof is current.
         bytes memory assetData = abi.encode(uint256(TSLA_PRICE), createdAt);
+        vm.prank(Actors.MINTER1);
+        vm.expectRevert(IOwnMarket.StaleAssetPrice.selector);
+        market.forceExecuteOrder(orderId, mockVault, assetData, _assetPriceData(ETH_PRICE));
+    }
+
+    /// @dev An asset proof exactly at the priceMaxAge boundary is fresh enough (inclusive).
+    function test_forceExecuteOrder_assetPriceAtMaxAgeBoundary_succeeds() public {
+        uint256 amount = 4e18;
+        uint256 orderId = _placeRedeem(Actors.MINTER1, amount, TSLA_PRICE);
+        vm.warp(block.timestamp + CLAIM_THRESHOLD);
+
+        uint256 maxAge = protocolRegistry.priceMaxAge();
+        bytes memory assetData = abi.encode(uint256(TSLA_PRICE), block.timestamp - maxAge); // at the bound
         vm.prank(Actors.MINTER1);
         market.forceExecuteOrder(orderId, mockVault, assetData, _assetPriceData(ETH_PRICE));
 
         assertEq(uint256(market.getOrder(orderId).status), uint256(OrderStatus.ForceExecuted));
     }
 
-    /// @dev C-01 regression: an asset proof timestamped before the order existed is rejected.
-    function test_forceExecuteOrder_assetProofBeforeWindow_reverts() public {
+    /// @dev An asset proof one second past priceMaxAge is rejected.
+    function test_forceExecuteOrder_assetPriceJustPastMaxAge_reverts() public {
         uint256 amount = 4e18;
         uint256 orderId = _placeRedeem(Actors.MINTER1, amount, TSLA_PRICE);
-        uint256 createdAt = block.timestamp;
         vm.warp(block.timestamp + CLAIM_THRESHOLD);
 
-        bytes memory assetData = abi.encode(uint256(TSLA_PRICE), createdAt - 1); // predates the order
+        uint256 maxAge = protocolRegistry.priceMaxAge();
+        bytes memory assetData = abi.encode(uint256(TSLA_PRICE), block.timestamp - maxAge - 1); // 1s stale
         vm.prank(Actors.MINTER1);
-        vm.expectRevert(IOwnMarket.AssetPriceProofOutsideWindow.selector);
+        vm.expectRevert(IOwnMarket.StaleAssetPrice.selector);
         market.forceExecuteOrder(orderId, mockVault, assetData, _assetPriceData(ETH_PRICE));
     }
 
@@ -1063,5 +1096,112 @@ contract OwnMarketTest is BaseTest {
         uint256 orderId = _placeMint(Actors.MINTER1, 1000e6, TSLA_PRICE);
         vm.expectRevert(abi.encodeWithSelector(IOwnMarket.ExpiryNotReached.selector, orderId));
         market.expireOrder(orderId);
+    }
+
+    // ══════════════════════════════════════════════════════════
+    //  Settle-price band guard (execute / fill paths)
+    // ══════════════════════════════════════════════════════════
+
+    uint256 constant BAND_MARK = 250e18; // mocked VaultManager mark for TSLA
+    uint256 constant BAND_BPS = 500; //     ±5% band → edges at 237.5e18 / 262.5e18
+
+    /// @dev Override the mocked mark + band for band-boundary tests.
+    function _setBandMocks(uint256 mark, uint256 band) internal {
+        vm.mockCall(mockVaultManager, abi.encodeWithSelector(IVaultManager.assetMark.selector), abi.encode(mark));
+        vm.mockCall(mockVaultManager, abi.encodeWithSelector(IVaultManager.settleBandBps.selector), abi.encode(band));
+    }
+
+    function test_executeOrder_mint_atUpperBandEdge_succeeds() public {
+        _setBandMocks(BAND_MARK, BAND_BPS);
+        uint256 amount = 1000e6;
+        _fundUserForMint(Actors.MINTER1, amount);
+        uint256 price = 262.5e18; // exactly +5% — boundary is inclusive
+        Quote memory q = _quote(0, Actors.MINTER1, OrderType.Mint, amount, price);
+        bytes memory sig = _sign(q, rfqVMPk);
+
+        vm.prank(Actors.MINTER1);
+        market.executeOrder(q, sig);
+
+        assertEq(eTSLAToken.balanceOf(Actors.MINTER1), _expectedMintOut(amount, price), "mint at band edge");
+    }
+
+    function test_executeOrder_mint_aboveBand_reverts() public {
+        _setBandMocks(BAND_MARK, BAND_BPS);
+        uint256 amount = 1000e6;
+        _fundUserForMint(Actors.MINTER1, amount);
+        uint256 price = 262.5e18 + 1; // 1 wei past +5%
+        Quote memory q = _quote(0, Actors.MINTER1, OrderType.Mint, amount, price);
+        bytes memory sig = _sign(q, rfqVMPk);
+
+        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.PriceOutOfBand.selector, TSLA, price, BAND_MARK, BAND_BPS));
+        vm.prank(Actors.MINTER1);
+        market.executeOrder(q, sig);
+    }
+
+    function test_executeOrder_mint_belowBand_reverts() public {
+        _setBandMocks(BAND_MARK, BAND_BPS);
+        uint256 amount = 1000e6;
+        _fundUserForMint(Actors.MINTER1, amount);
+        uint256 price = 237.5e18 - 1; // 1 wei past -5%
+        Quote memory q = _quote(0, Actors.MINTER1, OrderType.Mint, amount, price);
+        bytes memory sig = _sign(q, rfqVMPk);
+
+        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.PriceOutOfBand.selector, TSLA, price, BAND_MARK, BAND_BPS));
+        vm.prank(Actors.MINTER1);
+        market.executeOrder(q, sig);
+    }
+
+    /// @dev The maker-drain vector: a forged high redeem price is capped by the band.
+    function test_executeOrder_redeem_aboveBand_reverts() public {
+        _setBandMocks(BAND_MARK, BAND_BPS);
+        uint256 eTokenAmount = 4e18;
+        uint256 price = 262.5e18 + 1;
+        Quote memory q = _quote(0, Actors.MINTER1, OrderType.Redeem, eTokenAmount, price);
+        bytes memory sig = _sign(q, rfqVMPk);
+
+        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.PriceOutOfBand.selector, TSLA, price, BAND_MARK, BAND_BPS));
+        vm.prank(Actors.MINTER1);
+        market.executeOrder(q, sig);
+    }
+
+    function test_executeOrder_redeem_belowBand_reverts() public {
+        _setBandMocks(BAND_MARK, BAND_BPS);
+        uint256 eTokenAmount = 4e18;
+        uint256 price = 237.5e18 - 1;
+        Quote memory q = _quote(0, Actors.MINTER1, OrderType.Redeem, eTokenAmount, price);
+        bytes memory sig = _sign(q, rfqVMPk);
+
+        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.PriceOutOfBand.selector, TSLA, price, BAND_MARK, BAND_BPS));
+        vm.prank(Actors.MINTER1);
+        market.executeOrder(q, sig);
+    }
+
+    /// @dev The band also guards the resting-order fill path, not just market orders.
+    function test_fillOrder_redeem_aboveBand_reverts() public {
+        _setBandMocks(BAND_MARK, BAND_BPS);
+        uint256 amount = 4e18;
+        // limitPrice is the redeem minimum; set low so the band (not the limit) is what bites.
+        uint256 orderId = _placeRedeem(Actors.MINTER1, amount, 100e18);
+        uint256 price = 262.5e18 + 1;
+        Quote memory q = _quote(orderId, Actors.MINTER1, OrderType.Redeem, amount, price);
+        bytes memory sig = _sign(q, rfqVMPk);
+
+        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.PriceOutOfBand.selector, TSLA, price, BAND_MARK, BAND_BPS));
+        market.fillOrder(q, sig);
+    }
+
+    /// @dev With no mark, the band is skipped (open/closeExposure enforce mark presence in prod).
+    function test_executeOrder_mint_zeroMark_skipsBand() public {
+        _setBandMocks(0, BAND_BPS);
+        uint256 amount = 1000e6;
+        _fundUserForMint(Actors.MINTER1, amount);
+        uint256 price = 1000e18; // wildly off; would breach the band if a mark were set
+        Quote memory q = _quote(0, Actors.MINTER1, OrderType.Mint, amount, price);
+        bytes memory sig = _sign(q, rfqVMPk);
+
+        vm.prank(Actors.MINTER1);
+        market.executeOrder(q, sig);
+
+        assertEq(eTSLAToken.balanceOf(Actors.MINTER1), _expectedMintOut(amount, price), "minted (no mark to bound)");
     }
 }

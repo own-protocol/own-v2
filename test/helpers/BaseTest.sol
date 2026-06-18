@@ -69,9 +69,24 @@ contract BaseTest is Test {
     bytes32 public constant TLT = bytes32("TLT");
     bytes32 public constant ETH = bytes32("ETH");
 
+    /// @dev Functional access-control roles (mirrors the per-contract inline `keccak256` constants).
+    bytes32 internal constant ADMIN_ROLE = keccak256("ADMIN");
+    bytes32 internal constant OPERATOR_ROLE = keccak256("OPERATOR");
+
     /// @dev Default global utilisation cap and per-asset USD ceiling used by test bootstraps.
     uint256 public constant DEFAULT_MAX_UTIL_BPS = 8000;
     uint256 public constant DEFAULT_ASSET_CAP_USD = 1_000_000_000e18;
+
+    /// @dev Default settle-price band used by test bootstraps. Set wide (100%) so the broad flow
+    ///      suite is not coupled to per-test price choices; production uses 500 bps (Deploy.s.sol)
+    ///      and band boundaries are covered by dedicated unit tests. Tests can tighten it via
+    ///      `_setSettleBandBps`.
+    uint256 public constant DEFAULT_SETTLE_BAND_BPS = BPS;
+
+    /// @dev Default max mark age used by test bootstraps. Set very wide so the flow suite is not
+    ///      coupled to per-test timing/warps; production uses 15 min (Deploy.s.sol) and staleness
+    ///      boundaries are covered by dedicated tests. Tests can tighten it via `_setMaxMarkAge`.
+    uint256 public constant DEFAULT_MAX_MARK_AGE = 365 days;
 
     // ──────────────────────────────────────────────────────────
     //  Common prices (18 decimals)
@@ -218,6 +233,10 @@ contract BaseTest is Test {
         dex = new MockDEX();
         vm.startPrank(Actors.ADMIN);
         protocolRegistry = new ProtocolRegistry(Actors.ADMIN, 2 days, 2 minutes);
+        // Actors.ADMIN is the initial PROTOCOL_ADMIN (DEFAULT_ADMIN_ROLE); grant it the functional
+        // ADMIN/OPERATOR roles so the test bootstrap can drive every admin/operator entry point.
+        protocolRegistry.grantRole(ADMIN_ROLE, Actors.ADMIN);
+        protocolRegistry.grantRole(OPERATOR_ROLE, Actors.ADMIN);
         protocolRegistry.setAddress(keccak256("INHOUSE_ORACLE"), address(oracle));
         vm.stopPrank();
     }
@@ -270,6 +289,8 @@ contract BaseTest is Test {
         vaultManager = new VaultManager(protocolRegistry);
         protocolRegistry.setAddress(protocolRegistry.VAULT_MANAGER(), address(vaultManager));
         vaultManager.setGlobalMaxUtilizationBps(DEFAULT_MAX_UTIL_BPS);
+        vaultManager.setSettleBandBps(DEFAULT_SETTLE_BAND_BPS);
+        vaultManager.setMaxMarkAge(DEFAULT_MAX_MARK_AGE);
         vm.stopPrank();
         vm.label(address(vaultManager), "VaultManager");
     }
@@ -286,6 +307,28 @@ contract BaseTest is Test {
     ) internal {
         vm.prank(Actors.ADMIN);
         vaultManager.setGlobalMaxUtilizationBps(bps);
+    }
+
+    /// @notice Set the global settle-price band in BPS (admin-only).
+    function _setSettleBandBps(
+        uint256 bps
+    ) internal {
+        vm.prank(Actors.ADMIN);
+        vaultManager.setSettleBandBps(bps);
+    }
+
+    /// @notice Set the global max mark age in seconds (admin-only).
+    function _setMaxMarkAge(
+        uint256 age
+    ) internal {
+        vm.prank(Actors.ADMIN);
+        vaultManager.setMaxMarkAge(age);
+    }
+
+    /// @notice Set a vault's collateral concentration cap in BPS (admin-only; 0 = uncapped).
+    function _setCollateralCapBps(address vault, uint256 bps) internal {
+        vm.prank(Actors.ADMIN);
+        vaultManager.setCollateralCapBps(vault, bps);
     }
 
     /// @notice Set the global order-settlement payment token (admin-only).

@@ -20,7 +20,7 @@ contract AssetRegistryTest is BaseTest {
         super.setUp();
 
         vm.prank(Actors.ADMIN);
-        registry = new AssetRegistry(Actors.ADMIN);
+        registry = new AssetRegistry(address(protocolRegistry));
         vm.label(address(registry), "AssetRegistry");
     }
 
@@ -122,50 +122,68 @@ contract AssetRegistryTest is BaseTest {
     }
 
     // ──────────────────────────────────────────────────────────
-    //  deactivateAsset
+    //  setAssetActive
     // ──────────────────────────────────────────────────────────
 
-    function test_deactivateAsset_admin_succeeds() public {
+    function test_setAssetActive_deactivate_succeeds() public {
         AssetConfig memory config = _defaultConfig(eTSLA);
 
         vm.startPrank(Actors.ADMIN);
         registry.addAsset(TSLA, eTSLA, config);
 
-        vm.expectEmit(true, false, false, false);
-        emit IAssetRegistry.AssetDeactivated(TSLA);
+        vm.expectEmit(true, false, false, true);
+        emit IAssetRegistry.AssetActiveUpdated(TSLA, false);
 
-        registry.deactivateAsset(TSLA);
+        registry.setAssetActive(TSLA, false);
         vm.stopPrank();
 
         assertFalse(registry.isActiveAsset(TSLA));
     }
 
-    function test_deactivateAsset_nonAdmin_reverts() public {
+    function test_setAssetActive_reactivate_roundTrips() public {
+        AssetConfig memory config = _defaultConfig(eTSLA);
+
+        vm.startPrank(Actors.ADMIN);
+        registry.addAsset(TSLA, eTSLA, config);
+        assertTrue(registry.isActiveAsset(TSLA));
+
+        registry.setAssetActive(TSLA, false);
+        assertFalse(registry.isActiveAsset(TSLA), "deactivated");
+
+        vm.expectEmit(true, false, false, true);
+        emit IAssetRegistry.AssetActiveUpdated(TSLA, true);
+        registry.setAssetActive(TSLA, true);
+        vm.stopPrank();
+
+        assertTrue(registry.isActiveAsset(TSLA), "reactivated");
+    }
+
+    function test_setAssetActive_idempotent_allowed() public {
+        AssetConfig memory config = _defaultConfig(eTSLA);
+
+        vm.startPrank(Actors.ADMIN);
+        registry.addAsset(TSLA, eTSLA, config);
+        registry.setAssetActive(TSLA, false);
+        registry.setAssetActive(TSLA, false); // no-op set is allowed (no revert)
+        vm.stopPrank();
+
+        assertFalse(registry.isActiveAsset(TSLA));
+    }
+
+    function test_setAssetActive_nonAdmin_reverts() public {
         AssetConfig memory config = _defaultConfig(eTSLA);
         vm.prank(Actors.ADMIN);
         registry.addAsset(TSLA, eTSLA, config);
 
         vm.prank(Actors.ATTACKER);
         vm.expectRevert();
-        registry.deactivateAsset(TSLA);
+        registry.setAssetActive(TSLA, false);
     }
 
-    function test_deactivateAsset_nonExistent_reverts() public {
+    function test_setAssetActive_nonExistent_reverts() public {
         vm.prank(Actors.ADMIN);
         vm.expectRevert(abi.encodeWithSelector(IAssetRegistry.AssetNotFound.selector, TSLA));
-        registry.deactivateAsset(TSLA);
-    }
-
-    function test_deactivateAsset_alreadyInactive_reverts() public {
-        AssetConfig memory config = _defaultConfig(eTSLA);
-
-        vm.startPrank(Actors.ADMIN);
-        registry.addAsset(TSLA, eTSLA, config);
-        registry.deactivateAsset(TSLA);
-
-        vm.expectRevert(abi.encodeWithSelector(IAssetRegistry.AssetNotActive.selector, TSLA));
-        registry.deactivateAsset(TSLA);
-        vm.stopPrank();
+        registry.setAssetActive(TSLA, false);
     }
 
     // ──────────────────────────────────────────────────────────

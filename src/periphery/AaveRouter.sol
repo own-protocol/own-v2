@@ -4,7 +4,6 @@ pragma solidity 0.8.28;
 import {IAaveRouter} from "../interfaces/IAaveRouter.sol";
 import {IProtocolRegistry} from "../interfaces/IProtocolRegistry.sol";
 import {IAaveV3Pool} from "../interfaces/external/IAaveV3Pool.sol";
-import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
@@ -25,14 +24,22 @@ contract AaveRouter is IAaveRouter, ReentrancyGuard {
     /// @inheritdoc IAaveRouter
     address public immutable override pool;
 
-    /// @notice ProtocolRegistry used to resolve the admin (its owner).
+    /// @notice ProtocolRegistry used to resolve ADMIN / OPERATOR roles.
     IProtocolRegistry public immutable registry;
 
     /// @dev Per-underlying reserve metadata.
     mapping(address => ReserveInfo) private _reserves;
 
+    bytes32 private constant ADMIN = keccak256("ADMIN");
+    bytes32 private constant OPERATOR = keccak256("OPERATOR");
+
     modifier onlyAdmin() {
-        if (msg.sender != Ownable(address(registry)).owner()) revert OnlyAdmin();
+        if (!registry.hasRole(ADMIN, msg.sender)) revert OnlyAdmin();
+        _;
+    }
+
+    modifier onlyOperator() {
+        if (!registry.hasRole(OPERATOR, msg.sender)) revert OnlyOperator();
         _;
     }
 
@@ -61,7 +68,7 @@ contract AaveRouter is IAaveRouter, ReentrancyGuard {
     }
 
     /// @inheritdoc IAaveRouter
-    function setReserveEnabled(address underlying, bool enabled) external onlyAdmin {
+    function setReserveEnabled(address underlying, bool enabled) external onlyOperator {
         ReserveInfo storage info = _reserves[underlying];
         if (info.aToken == address(0)) revert ReserveNotRegistered(underlying);
         info.enabled = enabled;

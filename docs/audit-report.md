@@ -1,6 +1,6 @@
 # Own Protocol v2 — Audit Report & Remediation Status
 
-**Branch:** `lending` · **Last updated:** 2026-06-12 · **Test suite:** 670 passing
+**Branch:** `main` (pre-audit hardening on `pre-audit-fixes-1`) · **Last updated:** 2026-06-18 · **Test suite:** 695 passing
 
 Consolidated from the 2026-06-09 full manual audit, the 2026-06-10/11 focused re-audits
 (BorrowManager, AaveRouter, H-02 migration changes), and the 2026-06-11 multi-agent re-audit
@@ -18,26 +18,45 @@ Consolidated from the 2026-06-09 full manual audit, the 2026-06-10/11 focused re
 
 **Every finding in the report is closed: fixed, mitigated, documented, or by-design — none open. The §5 leads are triaged: 4 fixed, 2 resolved by earlier fixes, 2 noted, 2 deferred for future review.**
 
-| ID        | Severity | Finding                                                                                                              | Status                                                         |
-| --------- | -------- | -------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
-| C-01      | Critical | `verifyPrice` accepted any ever-signed price (no staleness) → collateral theft via force-redeem / borrow / liquidate | **Fixed**                                                      |
-| H-01      | High     | `forceExecuteOrder` could drain a halted (wind-down) vault                                                           | **Fixed**                                                      |
-| H-02      | High     | Resting redeem escrow stranded after `migrateToken` (stock split)                                                    | **Fixed**                                                      |
-| H-03      | High     | Withdrawal gate read a stale collateral mark after bad-debt release                                                  | **Fixed**                                                      |
-| H-04      | High     | `absorbBadDebt` released collateral in 18-dec units, not native decimals                                             | **Fixed**                                                      |
-| H-05      | High     | `fulfillWithdrawal` didn't sync the VaultManager mark → utilization cap bypass                                       | **Fixed**                                                      |
-| M-01      | Medium   | Pyth confidence interval ignored                                                                                     | **Fixed**                                                      |
-| M-02      | Medium   | In-house push path unbounded when an asset's oracle config is unset                                                  | **Fixed**                                                      |
-| M-03      | Medium   | `setRateParams` unvalidated → accrual DoS bricks repay/liquidate                                                     | **Fixed**                                                      |
-| M-04      | Medium   | Withdrawal queue is not FIFO                                                                                         | **By design** — spec updated 2026-06-12 to drop the FIFO claim |
-| M-05      | Medium   | Book debt could lag real compounding Aave debt → LP shortfall                                                        | **Fixed**                                                      |
-| M-06      | Medium   | `borrow` checks the debt cap before `_accrue()` → cap bypass                                                         | **Fixed**                                                      |
-| M-07      | Medium   | `borrow` ignores the bound vault's Paused/Halted status                                                              | **Fixed**                                                      |
-| M-08      | Medium   | `_flooredIndex` inflates on a dust scaled-debt base; breaks under multi-manager                                      | **Fixed**                                                      |
-| M-09      | Medium   | Sub-unit amounts record zero scaled debt while moving real value                                                     | **Fixed**                                                      |
-| M-10      | Medium   | `WstETHRouter` wraps requested (not received) stETH → deposit path DoS                                               | **Fixed**                                                      |
+| ID        | Severity | Finding                                                                                                              | Status                                                                                           |
+| --------- | -------- | -------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| C-01      | Critical | `verifyPrice` accepted any ever-signed price (no staleness) → collateral theft via force-redeem / borrow / liquidate | **Fixed**                                                                                        |
+| H-01      | High     | `forceExecuteOrder` could drain a halted (wind-down) vault                                                           | **Fixed**                                                                                        |
+| H-02      | High     | Resting redeem escrow stranded after `migrateToken` (stock split)                                                    | **Fixed**                                                                                        |
+| H-03      | High     | Withdrawal gate read a stale collateral mark after bad-debt release                                                  | **Fixed**                                                                                        |
+| H-04      | High     | `absorbBadDebt` released collateral in 18-dec units, not native decimals                                             | **Fixed**                                                                                        |
+| H-05      | High     | `fulfillWithdrawal` didn't sync the VaultManager mark → utilization cap bypass                                       | **Fixed**                                                                                        |
+| M-01      | Medium   | Pyth confidence interval ignored                                                                                     | **Fixed**                                                                                        |
+| M-02      | Medium   | In-house push path unbounded when an asset's oracle config is unset                                                  | **Fixed**                                                                                        |
+| M-03      | Medium   | `setRateParams` unvalidated → accrual DoS bricks repay/liquidate                                                     | **Fixed**                                                                                        |
+| M-04      | Medium   | Withdrawal queue is not FIFO                                                                                         | **By design** — spec updated 2026-06-12 to drop the FIFO claim                                   |
+| M-05      | Medium   | Book debt could lag real compounding Aave debt → LP shortfall                                                        | **Fixed**                                                                                        |
+| M-06      | Medium   | `borrow` checks the debt cap before `_accrue()` → cap bypass                                                         | **Fixed**                                                                                        |
+| M-07      | Medium   | `borrow` ignores the bound vault's Paused/Halted status                                                              | **Fixed**                                                                                        |
+| M-08      | Medium   | `_flooredIndex` inflates on a dust scaled-debt base; breaks under multi-manager                                      | **Fixed**                                                                                        |
+| M-09      | Medium   | Sub-unit amounts record zero scaled debt while moving real value                                                     | **Fixed**                                                                                        |
+| M-10      | Medium   | `WstETHRouter` wraps requested (not received) stETH → deposit path DoS                                               | **Fixed**                                                                                        |
 | L-01–L-13 | Low      | See §4                                                                                                               | 10 closed (8 fixed + L-02 mitigated + L-07 documented) · 3 by design/accepted (L-04, L-09, L-11) |
-| C-01\*    | Info     | Force-execute asset proof is window-scoped, not fresh                                                                | **By design** (team-confirmed 2026-06-11)                      |
+| C-01\*    | Info     | Force-execute asset proof was window-scoped, not fresh                                                               | **Fixed** (2026-06-18 — fresh price now required; see Pre-audit hardening)                       |
+
+---
+
+## Pre-audit hardening (2026-06-18)
+
+A focused hardening pass on `pre-audit-fixes-1`, ahead of external audit. Four issues, all **fixed**
+with tests. Every new risk parameter is **fail-safe on zero** — its setter rejects `0`, so the only
+zero state is the pre-deploy default, which blocks the guarded action — and is set by the deploy /
+config scripts.
+
+| ID    | Severity | Issue                                                                                                                                                                                | Fix                                                                                                                                                                                                                                   |
+| ----- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| PA-01 | Critical | A leaked quote-signer key could settle `executeOrder` / `fillOrder` at an arbitrary price, draining the maker's full payment-token allowance in one tx.                              | `OwnMarket._settleMint` / `_settleRedeem` bound the settle price to **±`settleBandBps`** of the `VaultManager` asset mark (`PriceOutOfBand`); default **500 bps**. Force-execute / `redeemHalted` exempt.                             |
+| PA-02 | Critical | `claimThreshold` defaulted to `0`, making `forceExecuteOrder` exercisable the instant an order was placed; no script set it.                                                         | `forceExecuteOrder` reverts `ForceNotEnabled` when the threshold is `0`; the setter rejects `0`; `Deploy` + `ConfigureVault` set **6 h**.                                                                                             |
+| PA-03 | High     | `openExposure` valued new exposure at `assetMark` with no freshness check — the solvency cap ran against arbitrarily stale marks.                                                    | `openExposure` reverts `StaleAssetMark` if the asset mark is older than **`maxMarkAge`** (default **15 min**); `closeExposure` (risk-reducing) exempt. Collateral-aggregate freshness intentionally not gated (O(1) + DoS avoidance). |
+| PA-04 | High     | `forceExecuteOrder` accepted any asset proof within the order's `[createdAt, now]` window, so a stale favorable print could be exercised after the market moved (supersedes C-01\*). | The asset leg now requires a **fresh** price (≤ `priceMaxAge`) that currently satisfies the limit (`StaleAssetPrice`), matching the collateral leg.                                                                                   |
+
+Deployment defaults (`Deploy.s.sol`): `settleBandBps = 500`, `claimThreshold = 6 hours`,
+`maxMarkAge = 15 minutes` (`priceMaxAge = 2 minutes`, unchanged).
 
 ---
 
@@ -55,16 +74,17 @@ collateral price, or force-liquidate a healthy position with a stale low price.
 **Fix.** Freshness is enforced in the consumers (`verifyPrice` stays a pure signature primitive):
 
 - `OwnMarket.forceExecuteOrder` settles at the user's own immutable `limitPrice` (never the
-  submitted price) and requires the asset proof's timestamp to fall inside the order's
-  `[createdAt, now]` window. The window scoping is intentional — see C-01\* in §3.
+  submitted price) and requires the asset proof to be **fresh** (≤ `registry.priceMaxAge()`, not
+  future-dated) and to currently satisfy the limit — the same freshness rule as the collateral leg
+  below. (The original window-scoped acceptance was reversed 2026-06-18; see C-01\* in §3.)
 - `OwnMarket._convertToCollateral` (collateral leg) and `BorrowManager._verifyPrice`
   (borrow/liquidate/absorbBadDebt) reject proofs that are future-dated or older than
   `registry.priceMaxAge()`.
 - `ProtocolRegistry.priceMaxAge` is governance-tunable (`setPriceMaxAge`, non-zero enforced).
   Deployment value: 2 minutes.
 
-**Tests.** `OwnMarket.t.sol` (settle-at-limit, in-window accepted, pre-window rejected, stale
-collateral rejected), `BorrowManager.t.sol::test_borrow_stalePrice_reverts`,
+**Tests.** `OwnMarket.t.sol` (settle-at-limit, fresh price accepted at the `priceMaxAge` boundary,
+stale favorable print rejected, stale collateral rejected), `BorrowManager.t.sol::test_borrow_stalePrice_reverts`,
 `ProtocolRegistry.t.sol` (priceMaxAge constructor/setter suite).
 
 **Residual (accepted).** Intra-window replay within `priceMaxAge` is bounded to 2-minute drift;
@@ -267,6 +287,7 @@ is monotonic, nothing can lower it); (2) a second borrow manager on the same vau
 
 **Fix (2026-06-12, team decision: one manager per vault).** Constrain the world to match the
 assumption rather than rebuild the accounting:
+
 - **One borrow manager per vault is now a documented protocol invariant** — it was already enforced
   on-chain (`OwnVault.setBorrowManager` is one-shot, no rotation); the contracts' NatSpec
   (`BorrowManager`, `IBorrowManager`) and docs (protocol.md, AGENTS.md) no longer suggest a second
@@ -274,9 +295,9 @@ assumption rather than rebuild the accounting:
 - **The floor is skipped when `_totalScaledDebt < 10^stableDecimals`** (one whole stablecoin unit):
   at dust scale there is no meaningful book left for the floor to protect, and residual Aave debt is
   crumb-scale by construction. The M-05 guarantee is unchanged for real positions.
-**Tests.** `BorrowManager.t.sol::test_accrue_dustScaledDebt_skipsFloor` — reproduces the exact ×101
-explosion ($0.50 → $50.50) without the guard; `test_accrue_floorsBookDebtToRealAaveDebt` still
-passes, confirming the floor works above the threshold.
+  **Tests.** `BorrowManager.t.sol::test_accrue_dustScaledDebt_skipsFloor` — reproduces the exact ×101
+  explosion ($0.50 → $50.50) without the guard; `test_accrue_floorsBookDebtToRealAaveDebt` still
+  passes, confirming the floor works above the threshold.
 
 ### Fixed Info item — EToken pass-through dividends
 
@@ -311,16 +332,14 @@ No open findings at any severity. Remaining future work: the unconfirmed leads i
   destination as the lending-premium sweep in `_repayAaveAndSweep`. The admin-mutable `setManager`
   is the same trust boundary that governs all other VM-directed flows. The token argument is
   validated since the L-06 fix.
-- **C-01\* — Force-execute asset proof is window-scoped, not fresh (team-confirmed 2026-06-11).**
-  Force-execute is the user's VM-failure recourse: if no VM filled the redeem within
-  `claimThreshold`, the user proves the asset reached their `limitPrice` _at some point in the
-  order's `[createdAt, now]` window_ and is filled at that pre-committed limit — claimable only by
-  `order.user`. Requiring a fresh price would break the recourse (a wick that recovered could never
-  be forced). The collateral leg stays fresh-checked. **Acknowledged risk:** LP collateral backstops
-  the redeem at the committed limit whenever the asset touched it in-window, so a wick a VM fails to
-  execute against can cost LPs up to `(limitPrice − currentPrice) × remaining` — the intended LP
-  trust model, bounded by the user's own limit. Possible future levers (not adopted): a force-window
-  shorter than the order lifetime, or settling at `min(limitPrice, fresh price)`.
+- **C-01\* — Force-execute asset proof window-scoping (originally by-design 2026-06-11, now FIXED
+  2026-06-18; see Pre-audit hardening / PA-04).** The original recourse accepted any asset proof
+  timestamped within the order's `[createdAt, now]` window and filled at the pre-committed
+  `limitPrice`. The acknowledged risk — that a favorable wick a VM failed to execute against could be
+  exercised long after the market moved, costing LPs up to `(limitPrice − currentPrice) × remaining`
+  — was judged unacceptable on review. The deferred lever was adopted: force-execute now requires a
+  **fresh** asset price (≤ `priceMaxAge`) that **currently** satisfies the limit, matching the
+  collateral leg.
 - **M-04 — Withdrawal queue is not FIFO (reclassified 2026-06-12).** `fulfillWithdrawal` enforces
   only the wait period + utilization gate; near the cap, capacity is allocated by gas-race/caller
   choice. The queue was never required to be FIFO — the FIFO claim was dropped from the spec
@@ -358,9 +377,9 @@ No open findings at any severity. Remaining future work: the unconfirmed leads i
   governance, illicit funds held/forwarded to authorities). The treasury was chosen over a VM
   destination: orders aren't vault-bound so there is no canonical VM, and a profit-motivated
   counterparty must not custody user escrow — governance custody is neutral and timelocked. The
-  halt half is operational by nature (the frozen party is the funding *source*):
+  halt half is operational by nature (the frozen party is the funding _source_):
   `setHaltRedeemAddress` is rotatable, and protocol.md §10 now mandates monitoring + immediate
-  rotation on freeze. A frozen *caller* of `redeemHalted` blocks only themselves (untouched by
+  rotation on freeze. A frozen _caller_ of `redeemHalted` blocks only themselves (untouched by
   design). Test: `test_cancelOrder_frozenUser_sweepsEscrowToTreasury` (cancel bricked without the
   fix).
 

@@ -6,7 +6,6 @@ import {IOracleVerifier} from "../interfaces/IOracleVerifier.sol";
 import {IProtocolRegistry} from "../interfaces/IProtocolRegistry.sol";
 import {IVaultManager} from "../interfaces/IVaultManager.sol";
 import {BPS, PRECISION} from "../interfaces/types/Types.sol";
-import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
@@ -32,6 +31,12 @@ contract VaultManager is IVaultManager {
     /// @inheritdoc IVaultManager
     uint256 public override globalMaxUtilizationBps;
 
+    /// @inheritdoc IVaultManager
+    uint256 public override settleBandBps;
+
+    /// @inheritdoc IVaultManager
+    uint256 public override maxMarkAge;
+
     /// @dev Running Σ _assetExposureUSD[a] (18-decimal USD).
     uint256 private _globalExposureUSD;
 
@@ -39,6 +44,7 @@ contract VaultManager is IVaultManager {
     uint256 private _globalCollateralUSD;
 
     mapping(bytes32 => uint256) private _assetMark;
+    mapping(bytes32 => uint256) private _assetMarkUpdatedAt;
     mapping(bytes32 => uint256) private _globalAssetUnits;
     mapping(bytes32 => uint256) private _assetExposureUSD;
     mapping(bytes32 => uint256) private _assetCapUSD;
@@ -47,6 +53,9 @@ contract VaultManager is IVaultManager {
     mapping(address => bytes32) private _vaultCollateralAsset;
     mapping(address => uint256) private _collateralScale;
     mapping(address => uint256) private _collateralMark;
+
+    /// @dev Vault → concentration cap (bps of total counted collateral); 0 = uncapped.
+    mapping(address => uint256) private _collateralCapBps;
 
     /// @dev Enumerable set of registered vaults (ops/indexing convenience; no on-chain iteration).
     address[] private _vaultList;
@@ -90,8 +99,16 @@ contract VaultManager is IVaultManager {
         _;
     }
 
+    bytes32 private constant ADMIN = keccak256("ADMIN");
+    bytes32 private constant OPERATOR = keccak256("OPERATOR");
+
     modifier onlyAdmin() {
-        if (msg.sender != Ownable(address(registry)).owner()) revert OnlyAdmin();
+        if (!registry.hasRole(ADMIN, msg.sender)) revert OnlyAdmin();
+        _;
+    }
+
+    modifier onlyOperator() {
+        if (!registry.hasRole(OPERATOR, msg.sender)) revert OnlyOperator();
         _;
     }
 
@@ -121,6 +138,11 @@ contract VaultManager is IVaultManager {
 
         uint256 mark = _assetMark[asset];
         if (mark == 0) revert PriceUnavailable(asset);
+        // Risk-increasing path: the mark valuing new exposure must be keeper-fresh. closeExposure
+        // (risk-reducing) is intentionally exempt.
+        if (block.timestamp - _assetMarkUpdatedAt[asset] > maxMarkAge) {
+            revert StaleAssetMark(asset, _assetMarkUpdatedAt[asset], maxMarkAge);
+        }
         if (_globalCollateralUSD == 0) revert CollateralNotInitialized();
 
         uint256 newUnits = _globalAssetUnits[asset] + units;
@@ -174,6 +196,7 @@ contract VaultManager is IVaultManager {
                 _globalExposureUSD = _globalExposureUSD - _assetExposureUSD[asset] + haltedUSD;
                 _assetExposureUSD[asset] = haltedUSD;
                 _assetMark[asset] = hp;
+                _assetMarkUpdatedAt[asset] = block.timestamp;
                 emit AssetPricePulled(asset, old0, hp);
             }
             return;
@@ -187,6 +210,7 @@ contract VaultManager is IVaultManager {
         _globalExposureUSD = _globalExposureUSD - _assetExposureUSD[asset] + newAssetUSD;
         _assetExposureUSD[asset] = newAssetUSD;
         _assetMark[asset] = price;
+        _assetMarkUpdatedAt[asset] = block.timestamp;
 
         emit AssetPricePulled(asset, old, price);
     }
@@ -201,12 +225,15 @@ contract VaultManager is IVaultManager {
         uint256 price = _resolvePrice(_vaultCollateralAsset[vault]);
         if (price == 0) revert PriceUnavailable(_vaultCollateralAsset[vault]);
 
-        uint256 newMark = (IERC4626(vault).totalAssets() * _collateralScale[vault]).mulDiv(price, PRECISION);
+        uint256 rawMark = (IERC4626(vault).totalAssets() * _collateralScale[vault]).mulDiv(price, PRECISION);
         uint256 old = _collateralMark[vault];
-        _globalCollateralUSD = _globalCollateralUSD - old + newMark;
+        uint256 others = _globalCollateralUSD - old;
+        uint256 newMark = _cappedContribution(vault, rawMark, others);
+        _globalCollateralUSD = others + newMark;
         _collateralMark[vault] = newMark;
 
         emit CollateralPricePulled(vault, old, newMark);
+        if (newMark < rawMark) emit CollateralCapApplied(vault, rawMark, newMark);
     }
 
     // ──────────────────────────────────────────────────────────
@@ -256,6 +283,7 @@ contract VaultManager is IVaultManager {
         delete _vaultIndex[vault];
 
         delete _collateralMark[vault];
+        delete _collateralCapBps[vault];
         delete _registered[vault];
         delete _vaultCollateralAsset[vault];
         delete _collateralScale[vault];
@@ -285,10 +313,13 @@ contract VaultManager is IVaultManager {
 
         uint256 price = _resolvePrice(_vaultCollateralAsset[msg.sender]);
         if (price == 0) revert PriceUnavailable(_vaultCollateralAsset[msg.sender]);
-        uint256 newMark = (IERC4626(msg.sender).totalAssets() * _collateralScale[msg.sender]).mulDiv(price, PRECISION);
+        uint256 rawMark = (IERC4626(msg.sender).totalAssets() * _collateralScale[msg.sender]).mulDiv(price, PRECISION);
+        // The unhalting vault currently contributes 0, so the rest of the pool is the full global.
+        uint256 newMark = _cappedContribution(msg.sender, rawMark, _globalCollateralUSD);
         _globalCollateralUSD += newMark;
         _collateralMark[msg.sender] = newMark;
         emit VaultCollateralReincluded(msg.sender, newMark);
+        if (newMark < rawMark) emit CollateralCapApplied(msg.sender, rawMark, newMark);
     }
 
     /// @inheritdoc IVaultManager
@@ -341,6 +372,39 @@ contract VaultManager is IVaultManager {
         emit GlobalMaxUtilizationUpdated(old, bps);
     }
 
+    /// @inheritdoc IVaultManager
+    function setSettleBandBps(
+        uint256 bps
+    ) external override onlyAdmin {
+        if (bps == 0 || bps > BPS) revert InvalidSettleBand();
+        uint256 old = settleBandBps;
+        settleBandBps = bps;
+        emit SettleBandUpdated(old, bps);
+    }
+
+    /// @inheritdoc IVaultManager
+    function setMaxMarkAge(
+        uint256 age
+    ) external override onlyAdmin {
+        // Zero would render every mark instantly stale and block minting; reserved for the
+        // pre-deploy default. Once configured it stays non-zero.
+        if (age == 0) revert InvalidMaxMarkAge();
+        uint256 old = maxMarkAge;
+        maxMarkAge = age;
+        emit MaxMarkAgeUpdated(old, age);
+    }
+
+    /// @inheritdoc IVaultManager
+    function setCollateralCapBps(address vault, uint256 bps) external override onlyAdmin {
+        if (!_registered[vault]) revert VaultNotRegistered(vault);
+        // 0 disables the cap; BPS (100%) and above are meaningless and divide-by-zero in the share
+        // formula. The new cap takes effect on the vault's next pullCollateralPrice.
+        if (bps >= BPS) revert InvalidCollateralCap();
+        uint256 old = _collateralCapBps[vault];
+        _collateralCapBps[vault] = bps;
+        emit CollateralCapUpdated(vault, old, bps);
+    }
+
     // ──────────────────────────────────────────────────────────
     //  Admin — signer registry
     // ──────────────────────────────────────────────────────────
@@ -365,7 +429,7 @@ contract VaultManager is IVaultManager {
     /// @inheritdoc IVaultManager
     function removeSigner(
         address signer
-    ) external override onlyAdmin {
+    ) external override onlyOperator {
         if (!_isSigner[signer]) revert NotSigner(signer);
         delete _isSigner[signer];
         delete _signerLinked[signer];
@@ -413,13 +477,13 @@ contract VaultManager is IVaultManager {
     /// @inheritdoc IVaultManager
     function setTradingPaused(
         bool paused
-    ) external override onlyAdmin {
+    ) external override onlyOperator {
         _tradingPaused = paused;
         emit TradingPausedUpdated(paused);
     }
 
     /// @inheritdoc IVaultManager
-    function setAssetTradingPaused(bytes32 asset, bool paused) external override onlyAdmin {
+    function setAssetTradingPaused(bytes32 asset, bool paused) external override onlyOperator {
         _assetTradingPaused[asset] = paused;
         emit AssetTradingPausedUpdated(asset, paused);
     }
@@ -436,7 +500,7 @@ contract VaultManager is IVaultManager {
     // ──────────────────────────────────────────────────────────
 
     /// @inheritdoc IVaultManager
-    function haltAsset(bytes32 asset, uint256 haltPrice) external override onlyAdmin {
+    function haltAsset(bytes32 asset, uint256 haltPrice) external override onlyOperator {
         if (haltPrice == 0) revert InvalidHaltPrice();
         if (_assetHalted[asset]) revert AssetAlreadyHalted(asset);
         _assetHalted[asset] = true;
@@ -447,6 +511,7 @@ contract VaultManager is IVaultManager {
         _globalExposureUSD = _globalExposureUSD - _assetExposureUSD[asset] + haltedUSD;
         _assetExposureUSD[asset] = haltedUSD;
         _assetMark[asset] = haltPrice;
+        _assetMarkUpdatedAt[asset] = block.timestamp;
 
         emit AssetHalted(asset, haltPrice);
     }
@@ -488,6 +553,9 @@ contract VaultManager is IVaultManager {
     function setClaimThreshold(
         uint256 threshold
     ) external override onlyAdmin {
+        // Zero disables force-execution and is reserved for the pre-deploy default; once configured
+        // it can never be reset to zero.
+        if (threshold == 0) revert InvalidClaimThreshold();
         uint256 old = _claimThreshold;
         _claimThreshold = threshold;
         emit ClaimThresholdUpdated(old, threshold);
@@ -537,10 +605,24 @@ contract VaultManager is IVaultManager {
     }
 
     /// @inheritdoc IVaultManager
+    function assetMarkUpdatedAt(
+        bytes32 asset
+    ) external view override returns (uint256) {
+        return _assetMarkUpdatedAt[asset];
+    }
+
+    /// @inheritdoc IVaultManager
     function collateralMark(
         address vault
     ) external view override returns (uint256) {
         return _collateralMark[vault];
+    }
+
+    /// @inheritdoc IVaultManager
+    function collateralCapBps(
+        address vault
+    ) external view override returns (uint256) {
+        return _collateralCapBps[vault];
     }
 
     /// @inheritdoc IVaultManager
@@ -579,6 +661,17 @@ contract VaultManager is IVaultManager {
     // ──────────────────────────────────────────────────────────
     //  Internal — helpers
     // ──────────────────────────────────────────────────────────
+
+    /// @dev Cap a vault's counted collateral contribution to its concentration share. `others` is
+    ///      the global counted collateral excluding this vault. Solving `counted <= cap/BPS ·
+    ///      (others + counted)` gives `counted <= cap · others / (BPS − cap)`, so the vault counts at
+    ///      most `cap` bps of the total. A `0` (or `>= BPS`) cap is disabled and returns `rawMark`.
+    function _cappedContribution(address vault, uint256 rawMark, uint256 others) private view returns (uint256) {
+        uint256 cap = _collateralCapBps[vault];
+        if (cap == 0 || cap >= BPS) return rawMark;
+        uint256 maxCounted = others.mulDiv(cap, BPS - cap);
+        return rawMark < maxCounted ? rawMark : maxCounted;
+    }
 
     /// @dev Resolve the last-verified oracle price for an asset.
     function _resolvePrice(

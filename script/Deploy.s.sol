@@ -47,11 +47,28 @@ contract Deploy is Script {
     //  Configuration
     // ──────────────────────────────────────────────────────────
 
-    uint256 constant TIMELOCK_DELAY = 10 minutes; // Short delay for testing; increase for production
+    /// @dev Delay (seconds) on transferring PROTOCOL_ADMIN (the registry root role). Short for testnet;
+    ///      production should use ~48h, hand PROTOCOL_ADMIN to a TimelockController, and grant
+    ///      ADMIN/OPERATOR to the governance/ops multisigs (see SetupGovernance.s.sol).
+    uint48 constant ADMIN_TRANSFER_DELAY = 10 minutes;
     uint256 constant PRICE_MAX_AGE = 2 minutes; // Max age for inline "current price" proofs
 
     /// @dev Initial global utilisation cap (80%). Solvency bound across all pooled vaults.
     uint256 constant GLOBAL_MAX_UTIL_BPS = 8000;
+
+    /// @dev Settle-price band (5%). Quote settle prices must fall within ±band of the asset mark,
+    ///      capping the damage a leaked signer key can inflict per unit of size.
+    uint256 constant SETTLE_BAND_BPS = 500;
+
+    /// @dev Force-execute claim threshold (6h): delay after a resting redeem order is placed before
+    ///      its owner can force-execute against vault collateral. Must be non-zero — zero disables
+    ///      force-execution, so setting it here is what enables the user's recourse path.
+    uint256 constant CLAIM_THRESHOLD = 6 hours;
+
+    /// @dev Max keeper-mark age (15min): asset marks older than this block new exposure opens
+    ///      (openExposure). Must be non-zero — zero blocks all minting, so setting it here arms the
+    ///      staleness guard.
+    uint256 constant MAX_MARK_AGE = 15 minutes;
 
     /// @dev Initial per-asset USD issuance ceiling (18-decimal USD). 0 would block minting.
     uint256 constant ASSET_CAP_USD = 10_000_000e18;
@@ -89,11 +106,11 @@ contract Deploy is Script {
         console.log("WETH (reused):", d.weth);
 
         // ── 3. ProtocolRegistry ───────────────────────────────
-        d.registry = address(new ProtocolRegistry(deployer, TIMELOCK_DELAY, PRICE_MAX_AGE));
+        d.registry = address(new ProtocolRegistry(deployer, ADMIN_TRANSFER_DELAY, PRICE_MAX_AGE));
         console.log("ProtocolRegistry:", d.registry);
 
         // ── 4. AssetRegistry ──────────────────────────────────
-        d.assetRegistry = address(new AssetRegistry(deployer));
+        d.assetRegistry = address(new AssetRegistry(d.registry));
         console.log("AssetRegistry:", d.assetRegistry);
 
         // ── 5. OwnMarket ──────────────────────────────────────
@@ -105,7 +122,7 @@ contract Deploy is Script {
         console.log("VaultManager:", d.vaultManager);
 
         // ── 7. ETokenFactory ──────────────────────────────────
-        d.etokenFactory = address(new ETokenFactory(deployer, d.registry));
+        d.etokenFactory = address(new ETokenFactory(d.registry));
         console.log("ETokenFactory:", d.etokenFactory);
 
         // ── 8. WETHRouter ─────────────────────────────────────
@@ -116,6 +133,11 @@ contract Deploy is Script {
         // The in-house OracleVerifier (INHOUSE_ORACLE) is deployed + registered separately by
         // DeployOracleSigner.s.sol. There is no Pyth oracle.
         ProtocolRegistry registry = ProtocolRegistry(d.registry);
+        // Deployer is the initial PROTOCOL_ADMIN (default admin); grant it the functional ADMIN/OPERATOR
+        // roles so this script can drive every admin/operator entry point (addAsset, VaultManager config).
+        // Production: grant these to the governance/ops multisigs and hand PROTOCOL_ADMIN to a timelock.
+        registry.grantRole(keccak256("ADMIN"), deployer);
+        registry.grantRole(keccak256("OPERATOR"), deployer);
         registry.setAddress(registry.ASSET_REGISTRY(), d.assetRegistry);
         registry.setAddress(registry.MARKET(), d.market);
         registry.setAddress(registry.VAULT_MANAGER(), d.vaultManager);
@@ -142,6 +164,9 @@ contract Deploy is Script {
         // per-asset cap is non-zero. Caps are set here; keepers pull marks post-deploy.
         VaultManager vaultManager = VaultManager(d.vaultManager);
         vaultManager.setGlobalMaxUtilizationBps(GLOBAL_MAX_UTIL_BPS);
+        vaultManager.setSettleBandBps(SETTLE_BAND_BPS);
+        vaultManager.setClaimThreshold(CLAIM_THRESHOLD);
+        vaultManager.setMaxMarkAge(MAX_MARK_AGE);
         vaultManager.setAssetCapUSD(ETH, ASSET_CAP_USD);
         // Single global order-settlement currency for all vaults.
         vaultManager.setPaymentToken(d.usdc);

@@ -52,7 +52,7 @@ contract RFQAusdcFlowsTest is BaseTest {
 
         // ── Protocol core ──
         vm.startPrank(Actors.ADMIN);
-        assetRegistry = new AssetRegistry(Actors.ADMIN);
+        assetRegistry = new AssetRegistry(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.ASSET_REGISTRY(), address(assetRegistry));
 
         eTSLA = new EToken("Own TSLA", "eTSLA", TSLA, address(protocolRegistry), address(usdc));

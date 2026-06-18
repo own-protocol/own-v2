@@ -15,7 +15,6 @@ import {InterestRateModel} from "../libraries/InterestRateModel.sol";
 import {LendingMath} from "../libraries/LendingMath.sol";
 
 import {BPS, PRECISION, VaultStatus} from "../interfaces/types/Types.sol";
-import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
@@ -89,6 +88,12 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
     uint256 public minAaveBorrowRateBps;
 
     /// @inheritdoc IBorrowManager
+    uint256 public override interestBufferBps;
+
+    /// @inheritdoc IBorrowManager
+    uint256 public override minClaimHealthFactor;
+
+    /// @inheritdoc IBorrowManager
     uint256 public override liquidationThresholdBps;
     /// @inheritdoc IBorrowManager
     uint256 public override liquidationBonusBps;
@@ -138,8 +143,16 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
     //  Modifiers
     // ──────────────────────────────────────────────────────────
 
+    bytes32 private constant ADMIN = keccak256("ADMIN");
+    bytes32 private constant OPERATOR = keccak256("OPERATOR");
+
     modifier onlyAdmin() {
-        if (msg.sender != Ownable(address(registry)).owner()) revert OnlyAdmin();
+        if (!registry.hasRole(ADMIN, msg.sender)) revert OnlyAdmin();
+        _;
+    }
+
+    modifier onlyOperator() {
+        if (!registry.hasRole(OPERATOR, msg.sender)) revert OnlyOperator();
         _;
     }
 
@@ -178,6 +191,8 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
         liquidationBonusBps = 500; // 5%
         borrowLtvBps = 7000; // 70%
         liquidationCloseFactorBps = 5000; // 50%
+        interestBufferBps = 1000; // retain 10% of earned interest as a safety buffer
+        minClaimHealthFactor = 1.1e18; // refuse claims that would leave the vault's Aave HF below 1.1
 
         // Seed the global interest index at 1.0 and stamp the clock.
         _index = PRECISION;
@@ -406,7 +421,7 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
         bytes32 asset,
         uint256 absorbAmount,
         bytes calldata collateralPriceData
-    ) external payable nonReentrant onlyAdmin {
+    ) external payable nonReentrant onlyOperator {
         Position storage p = _positions[borrower][asset];
         if (p.principal == 0) revert NoPosition(borrower, asset);
         if (p.eTokenCollateral != 0) revert PositionStillCollateralized(p.eTokenCollateral);
@@ -539,6 +554,31 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
         emit DividendsSwept(eToken, beneficiary, amount);
     }
 
+    /// @inheritdoc IBorrowManager
+    function claimEarnedInterest(
+        uint256 amount
+    ) external nonReentrant {
+        address mgr = IOwnVault(vault).manager();
+        if (msg.sender != mgr) revert OnlyManager();
+        if (amount == 0) revert ZeroAmount();
+
+        _accrue();
+        uint256 claimable = claimableInterest();
+        if (amount > claimable) revert ClaimExceedsClaimable(amount, claimable);
+
+        // The interest is earned but not yet collected from borrowers, so draw the cash from the
+        // vault's Aave credit line. Borrower repayments later retire this draw via the smaller surplus
+        // left to sweep in {_repayAaveAndSweep}; the carry (Aave interest on the draw) is borne by the VM.
+        IAaveV3Pool(aavePool).borrow(stablecoin, amount, AAVE_VARIABLE_RATE_MODE, 0, vault);
+
+        // Aave blocks HF < 1.0 on the borrow itself; this enforces a configurable margin above that.
+        (,,,,, uint256 hf) = IAaveV3Pool(aavePool).getUserAccountData(vault);
+        if (hf < minClaimHealthFactor) revert ClaimUnsafeHealthFactor(hf);
+
+        IERC20(stablecoin).safeTransfer(mgr, amount);
+        emit InterestClaimed(mgr, amount);
+    }
+
     // ──────────────────────────────────────────────────────────
     //  Views
     // ──────────────────────────────────────────────────────────
@@ -644,9 +684,32 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
     }
 
     /// @inheritdoc IBorrowManager
-    function setAssetBorrowable(bytes32 asset, bool borrowable) external onlyAdmin {
+    function setAssetBorrowable(bytes32 asset, bool borrowable) external onlyOperator {
         _assetBorrowDisabled[asset] = !borrowable;
         emit AssetBorrowableUpdated(asset, borrowable);
+    }
+
+    /// @inheritdoc IBorrowManager
+    function setInterestBufferBps(
+        uint256 bps
+    ) external onlyAdmin {
+        // Must retain a non-zero buffer (keeps claims strictly below earned interest, so the index
+        // floor never activates and borrowers are never over-charged) and cannot exceed 100%.
+        if (bps == 0 || bps > BPS) revert InvalidInterestBuffer();
+        uint256 old = interestBufferBps;
+        interestBufferBps = bps;
+        emit InterestBufferUpdated(old, bps);
+    }
+
+    /// @inheritdoc IBorrowManager
+    function setMinClaimHealthFactor(
+        uint256 hf
+    ) external onlyAdmin {
+        // At least Aave's own liquidation floor (1.0); the margin above it is the admin's risk choice.
+        if (hf < PRECISION) revert InvalidMinClaimHealthFactor();
+        uint256 old = minClaimHealthFactor;
+        minClaimHealthFactor = hf;
+        emit MinClaimHealthFactorUpdated(old, hf);
     }
 
     // ──────────────────────────────────────────────────────────
@@ -683,6 +746,19 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
     function baseRateBps() public view returns (uint256) {
         IAaveV3Pool.ReserveDataLegacy memory data = IAaveV3Pool(aavePool).getReserveData(stablecoin);
         return uint256(data.currentVariableBorrowRate).mulDiv(BPS, RAY);
+    }
+
+    /// @inheritdoc IBorrowManager
+    /// @dev Earned, uncollected premium = book debt − the vault's real Aave debt (≥ 0 by the floor).
+    function earnedInterest() public view returns (uint256) {
+        uint256 book = LendingMath.scaledToActual(_totalScaledDebt, _projectedIndex());
+        uint256 aaveDebt = IERC20(debtToken).balanceOf(vault);
+        return book > aaveDebt ? book - aaveDebt : 0;
+    }
+
+    /// @inheritdoc IBorrowManager
+    function claimableInterest() public view returns (uint256) {
+        return earnedInterest().mulDiv(BPS - interestBufferBps, BPS);
     }
 
     // ──────────────────────────────────────────────────────────
