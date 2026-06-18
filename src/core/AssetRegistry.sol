@@ -63,15 +63,12 @@ contract AssetRegistry is IAssetRegistry, Ownable {
     }
 
     /// @inheritdoc IAssetRegistry
-    function deactivateAsset(
-        bytes32 ticker
-    ) external onlyOwner {
+    function setAssetActive(bytes32 ticker, bool active) external onlyOwner {
         if (!_registered[ticker]) revert AssetNotFound(ticker);
-        if (!_assets[ticker].active) revert AssetNotActive(ticker);
 
-        _assets[ticker].active = false;
+        _assets[ticker].active = active;
 
-        emit AssetDeactivated(ticker);
+        emit AssetActiveUpdated(ticker, active);
     }
 
     /// @inheritdoc IAssetRegistry

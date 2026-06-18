@@ -346,7 +346,7 @@ contract BorrowManagerTest is BaseTest {
         // addAsset always marks the asset active; deactivate it to exercise the active-gate.
         vm.startPrank(Actors.ADMIN);
         assetRegistry.addAsset(newAsset, address(eGold), cfg);
-        assetRegistry.deactivateAsset(newAsset);
+        assetRegistry.setAssetActive(newAsset, false);
         vm.stopPrank();
 
         eGold.mint(Actors.MINTER1, 1e18);

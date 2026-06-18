@@ -22,9 +22,10 @@ interface IAssetRegistry {
     /// @param config The new configuration.
     event AssetUpdated(bytes32 indexed ticker, AssetConfig config);
 
-    /// @notice Emitted when an asset is deactivated (no new orders allowed).
+    /// @notice Emitted when an asset's active flag is set.
     /// @param ticker Asset ticker.
-    event AssetDeactivated(bytes32 indexed ticker);
+    /// @param active New active flag (false = no new orders / borrows; existing positions wind down).
+    event AssetActiveUpdated(bytes32 indexed ticker, bool active);
 
     /// @notice Emitted on a stock-split token migration.
     /// @param ticker   Asset ticker.
@@ -41,9 +42,6 @@ interface IAssetRegistry {
 
     /// @notice The asset ticker is not registered.
     error AssetNotFound(bytes32 ticker);
-
-    /// @notice The asset is not active for new orders.
-    error AssetNotActive(bytes32 ticker);
 
     /// @notice A zero address was provided.
     error ZeroAddress();
@@ -69,11 +67,13 @@ interface IAssetRegistry {
     /// @param config New configuration values.
     function updateAssetConfig(bytes32 ticker, AssetConfig calldata config) external;
 
-    /// @notice Deactivate an asset so no new orders can be placed.
+    /// @notice Activate or deactivate an asset. When `active` is false, new orders (OwnMarket
+    ///         execute/place) and new borrows are blocked; existing resting orders still wind down.
+    ///         Orthogonal to VaultManager's permanent halt and `assetCapUSD` — resuming minting after
+    ///         reactivation also requires a non-zero cap and a fresh mark. Admin-only.
     /// @param ticker Asset ticker.
-    function deactivateAsset(
-        bytes32 ticker
-    ) external;
+    /// @param active New active flag.
+    function setAssetActive(bytes32 ticker, bool active) external;
 
     /// @notice Migrate to a new eToken after a stock split.
     /// @dev The current active token becomes a legacy token; the new token becomes active. Legacy
