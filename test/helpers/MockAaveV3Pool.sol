@@ -256,9 +256,19 @@ contract MockAaveV3Pool is IAaveV3Pool {
         data.variableDebtTokenAddress = variableDebtToken[asset];
     }
 
+    /// @dev Settable health factor returned by {getUserAccountData}; defaults to "infinitely safe"
+    ///      so existing tests are unaffected. Set lower to exercise the claim HF guard.
+    uint256 public mockHealthFactor = type(uint256).max;
+
+    function setHealthFactor(
+        uint256 hf
+    ) external {
+        mockHealthFactor = hf;
+    }
+
     function getUserAccountData(
         address
-    ) external pure override returns (uint256, uint256, uint256, uint256, uint256, uint256) {
-        return (0, 0, 0, 0, 0, type(uint256).max);
+    ) external view override returns (uint256, uint256, uint256, uint256, uint256, uint256) {
+        return (0, 0, 0, 0, 0, mockHealthFactor);
     }
 }

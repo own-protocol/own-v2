@@ -79,6 +79,18 @@ interface IBorrowManager {
     /// @param manager The vault manager (operator) receiving the lending fee.
     /// @param amount  Stablecoin amount of accrued lending fee.
     event LendingFeeAccrued(address indexed manager, uint256 amount);
+
+    /// @notice Emitted when the vault manager claims earned (accrued, uncollected) lending interest
+    ///         mid-term. The cash is fronted from the vault's Aave line; borrower repayments retire it.
+    /// @param manager The vault manager receiving the claimed interest.
+    /// @param amount  Stablecoin amount claimed.
+    event InterestClaimed(address indexed manager, uint256 amount);
+
+    /// @notice Emitted when the earned-interest safety buffer (retained, unclaimable fraction) is updated.
+    event InterestBufferUpdated(uint256 oldBps, uint256 newBps);
+
+    /// @notice Emitted when the minimum post-claim vault Aave health factor is updated.
+    event MinClaimHealthFactorUpdated(uint256 oldHf, uint256 newHf);
     event BadDebtAbsorbed(
         address indexed borrower,
         bytes32 indexed asset,
@@ -138,6 +150,21 @@ interface IBorrowManager {
     error AssetNotHalted(bytes32 asset);
     error StalePrice(uint256 timestamp, uint256 maxAge);
     error NoDividendsToSweep();
+
+    /// @notice Caller is not the bound vault's manager.
+    error OnlyManager();
+
+    /// @notice The requested interest claim exceeds the currently claimable amount.
+    error ClaimExceedsClaimable(uint256 amount, uint256 claimable);
+
+    /// @notice The interest claim would leave the vault's Aave health factor below the minimum.
+    error ClaimUnsafeHealthFactor(uint256 healthFactor);
+
+    /// @notice The interest buffer is zero or exceeds 100% (BPS).
+    error InvalidInterestBuffer();
+
+    /// @notice The minimum claim health factor is below 1.0 (1e18).
+    error InvalidMinClaimHealthFactor();
 
     // ──────────────────────────────────────────────────────────
     //  Borrower flows
@@ -230,6 +257,18 @@ interface IBorrowManager {
         address eToken
     ) external returns (uint256 amount);
 
+    /// @notice Claim earned (accrued but uncollected) lending interest — the premium charged above
+    ///         Aave's rate — to the vault manager, mid-term, without waiting for borrowers to repay.
+    /// @dev    VM-only. Claimable amount is `earnedInterest × (BPS − interestBufferBps) / BPS`. The
+    ///         cash is sourced from the vault's Aave credit line (the interest is not yet collected
+    ///         from borrowers); borrower repayments later retire the draw via the smaller surplus
+    ///         swept on repay, and the carry is borne by the VM. Reverts if the draw would leave the
+    ///         vault's Aave health factor below `minClaimHealthFactor`.
+    /// @param  amount Stablecoin amount to claim (≤ {claimableInterest}).
+    function claimEarnedInterest(
+        uint256 amount
+    ) external;
+
     // ──────────────────────────────────────────────────────────
     //  Views
     // ──────────────────────────────────────────────────────────
@@ -283,6 +322,20 @@ interface IBorrowManager {
     ///         return `type(uint256).max`.
     function healthFactor(address borrower, bytes32 asset, uint256 oraclePrice) external view returns (uint256);
 
+    /// @notice Earned (accrued, uncollected) lending interest held in open positions — the premium
+    ///         above Aave's rate, i.e. book debt minus the vault's real Aave debt (stablecoin units).
+    function earnedInterest() external view returns (uint256);
+
+    /// @notice Portion of {earnedInterest} the manager may currently claim, after the safety buffer:
+    ///         `earnedInterest × (BPS − interestBufferBps) / BPS`.
+    function claimableInterest() external view returns (uint256);
+
+    /// @notice Fraction of earned interest (BPS) retained as a safety buffer, never claimable.
+    function interestBufferBps() external view returns (uint256);
+
+    /// @notice Minimum vault Aave health factor (1e18) required to remain after an interest claim.
+    function minClaimHealthFactor() external view returns (uint256);
+
     /// @notice Whether borrowing against `asset` is currently enabled on this manager. True by
     ///         default; false only for assets the admin has explicitly disabled.
     function isAssetBorrowable(
@@ -310,4 +363,16 @@ interface IBorrowManager {
     /// @param asset      Asset ticker.
     /// @param borrowable True to allow borrowing against `asset`, false to block it.
     function setAssetBorrowable(bytes32 asset, bool borrowable) external;
+
+    /// @notice Set the earned-interest safety buffer (BPS retained, never claimable). Must be in
+    ///         `(0, BPS]`. Admin-only.
+    function setInterestBufferBps(
+        uint256 bps
+    ) external;
+
+    /// @notice Set the minimum vault Aave health factor (1e18) required after an interest claim.
+    ///         Must be ≥ 1e18. Admin-only.
+    function setMinClaimHealthFactor(
+        uint256 hf
+    ) external;
 }

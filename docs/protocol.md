@@ -307,10 +307,28 @@ claim-threshold delay before force execution becomes available (see §6).
 ### 7.2 Lending premium — routed to the vault manager
 
 Borrowers (eToken-collateralised lending) pay `max(liveAaveRate, floor) + premium(utilization)`, a
-two-slope utilization curve (`InterestRateModel`; full detail in `docs/leverage-design.md`). On
-repay, `BorrowManager` repays Aave its actual cost and sweeps the **surplus** — the premium charged
-above Aave's rate — to the vault manager, emitting `LendingFeeAccrued`. The VM distributes it
-downstream (off-chain split and/or `OwnVault.shareYield`, which lifts LP share price).
+two-slope utilization curve (`InterestRateModel`; full detail in `docs/leverage-design.md`). The
+**premium** — the spread charged above Aave's own rate — is the VM's lending revenue. It accrues
+continuously into every borrower's debt through the global interest index, and equals the gap between
+what borrowers owe (book debt) and what the vault owes Aave: `earnedInterest = bookDebt − aaveDebt`
+(kept ≥ 0 by the index floor). It reaches the VM two ways:
+
+- **On repay / liquidation (automatic).** `BorrowManager` repays Aave its actual cost and sweeps the
+  **surplus** — the leftover premium — to the VM, emitting `LendingFeeAccrued`.
+- **Mid-term, on demand (`claimEarnedInterest`).** The VM need not wait for borrowers to repay: it can
+  pull earned-but-uncollected premium early. The cash is drawn from the vault's Aave credit line (the
+  premium is not collected yet); later borrower repayments retire that draw, so the claim nets out
+  automatically and the Aave **carry is borne by the VM** via a smaller repay-time surplus. It is
+  bounded by `claimableInterest = earnedInterest × (BPS − interestBufferBps) / BPS` (default buffer
+  10%, which keeps the claim strictly below the gap so the index floor never over-charges borrowers)
+  and refused if the draw would drop the vault's Aave health factor below `minClaimHealthFactor`
+  (admin param, default 1.1). Emits `InterestClaimed`. **Risk:** a claim converts unrealized premium
+  into real Aave debt backed by LP collateral, so in a bad-debt event the claimed-but-uncollected
+  slice is LP-borne (vs merely forgone if it were never claimed).
+
+The premium is **pooled, not earmarked per position** — a claim does not change any borrower's debt; it
+just enlarges the vault's Aave loan, which the pool's repayments settle. The VM distributes its lending
+revenue downstream (off-chain split and/or `OwnVault.shareYield`, which lifts LP share price).
 
 ### 7.3 Collateral dividends — routed to the vault manager
 
