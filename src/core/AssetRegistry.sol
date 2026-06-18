@@ -2,17 +2,21 @@
 pragma solidity 0.8.28;
 
 import {IAssetRegistry} from "../interfaces/IAssetRegistry.sol";
+
+import {IProtocolRegistry} from "../interfaces/IProtocolRegistry.sol";
 import {AssetConfig, PRECISION} from "../interfaces/types/Types.sol";
-import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 /// @title AssetRegistry — Asset whitelisting and token tracking
 /// @notice Manages the set of tradeable assets, their active eToken addresses,
 ///         legacy tokens (post-split), and collateral parameters.
-contract AssetRegistry is IAssetRegistry, Ownable {
+contract AssetRegistry is IAssetRegistry {
     // ──────────────────────────────────────────────────────────
     //  State
     // ──────────────────────────────────────────────────────────
+
+    /// @notice ProtocolRegistry used to resolve ADMIN / OPERATOR roles.
+    IProtocolRegistry public immutable registry;
 
     /// @dev Ticker → asset configuration.
     mapping(bytes32 => AssetConfig) private _assets;
@@ -24,20 +28,40 @@ contract AssetRegistry is IAssetRegistry, Ownable {
     mapping(address => uint256) private _legacyRatio;
 
     // ──────────────────────────────────────────────────────────
+    //  Modifiers
+    // ──────────────────────────────────────────────────────────
+
+    bytes32 private constant ADMIN = keccak256("ADMIN");
+    bytes32 private constant OPERATOR = keccak256("OPERATOR");
+
+    modifier onlyAdmin() {
+        if (!registry.hasRole(ADMIN, msg.sender)) revert OnlyAdmin();
+        _;
+    }
+
+    modifier onlyOperator() {
+        if (!registry.hasRole(OPERATOR, msg.sender)) revert OnlyOperator();
+        _;
+    }
+
+    // ──────────────────────────────────────────────────────────
     //  Constructor
     // ──────────────────────────────────────────────────────────
 
-    /// @param admin Initial owner / admin address.
+    /// @param registry_ ProtocolRegistry address (resolves ADMIN / OPERATOR roles).
     constructor(
-        address admin
-    ) Ownable(admin) {}
+        address registry_
+    ) {
+        if (registry_ == address(0)) revert ZeroAddress();
+        registry = IProtocolRegistry(registry_);
+    }
 
     // ──────────────────────────────────────────────────────────
     //  Admin functions
     // ──────────────────────────────────────────────────────────
 
     /// @inheritdoc IAssetRegistry
-    function addAsset(bytes32 ticker, address eToken, AssetConfig calldata config) external onlyOwner {
+    function addAsset(bytes32 ticker, address eToken, AssetConfig calldata config) external onlyOperator {
         if (_registered[ticker]) revert AssetAlreadyExists(ticker);
         if (eToken == address(0)) revert ZeroAddress();
 
@@ -52,7 +76,7 @@ contract AssetRegistry is IAssetRegistry, Ownable {
     }
 
     /// @inheritdoc IAssetRegistry
-    function updateAssetConfig(bytes32 ticker, AssetConfig calldata config) external onlyOwner {
+    function updateAssetConfig(bytes32 ticker, AssetConfig calldata config) external onlyAdmin {
         if (!_registered[ticker]) revert AssetNotFound(ticker);
 
         // Preserve activeToken, legacyTokens, and active — only update configurable params
@@ -63,7 +87,7 @@ contract AssetRegistry is IAssetRegistry, Ownable {
     }
 
     /// @inheritdoc IAssetRegistry
-    function setAssetActive(bytes32 ticker, bool active) external onlyOwner {
+    function setAssetActive(bytes32 ticker, bool active) external onlyOperator {
         if (!_registered[ticker]) revert AssetNotFound(ticker);
 
         _assets[ticker].active = active;
@@ -72,7 +96,7 @@ contract AssetRegistry is IAssetRegistry, Ownable {
     }
 
     /// @inheritdoc IAssetRegistry
-    function migrateToken(bytes32 ticker, address newToken, uint256 ratio) external onlyOwner {
+    function migrateToken(bytes32 ticker, address newToken, uint256 ratio) external onlyAdmin {
         if (!_registered[ticker]) revert AssetNotFound(ticker);
         if (newToken == address(0)) revert ZeroAddress();
         if (ratio == 0) revert InvalidRatio();

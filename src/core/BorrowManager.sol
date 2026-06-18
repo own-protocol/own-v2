@@ -15,7 +15,6 @@ import {InterestRateModel} from "../libraries/InterestRateModel.sol";
 import {LendingMath} from "../libraries/LendingMath.sol";
 
 import {BPS, PRECISION, VaultStatus} from "../interfaces/types/Types.sol";
-import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
@@ -144,8 +143,16 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
     //  Modifiers
     // ──────────────────────────────────────────────────────────
 
+    bytes32 private constant ADMIN = keccak256("ADMIN");
+    bytes32 private constant OPERATOR = keccak256("OPERATOR");
+
     modifier onlyAdmin() {
-        if (msg.sender != Ownable(address(registry)).owner()) revert OnlyAdmin();
+        if (!registry.hasRole(ADMIN, msg.sender)) revert OnlyAdmin();
+        _;
+    }
+
+    modifier onlyOperator() {
+        if (!registry.hasRole(OPERATOR, msg.sender)) revert OnlyOperator();
         _;
     }
 
@@ -414,7 +421,7 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
         bytes32 asset,
         uint256 absorbAmount,
         bytes calldata collateralPriceData
-    ) external payable nonReentrant onlyAdmin {
+    ) external payable nonReentrant onlyOperator {
         Position storage p = _positions[borrower][asset];
         if (p.principal == 0) revert NoPosition(borrower, asset);
         if (p.eTokenCollateral != 0) revert PositionStillCollateralized(p.eTokenCollateral);
@@ -677,7 +684,7 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
     }
 
     /// @inheritdoc IBorrowManager
-    function setAssetBorrowable(bytes32 asset, bool borrowable) external onlyAdmin {
+    function setAssetBorrowable(bytes32 asset, bool borrowable) external onlyOperator {
         _assetBorrowDisabled[asset] = !borrowable;
         emit AssetBorrowableUpdated(asset, borrowable);
     }

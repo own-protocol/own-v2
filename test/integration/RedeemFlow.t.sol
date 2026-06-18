@@ -41,7 +41,7 @@ contract RedeemFlowTest is BaseTest {
     function _deployProtocol() private {
         vm.startPrank(Actors.ADMIN);
 
-        assetRegistry = new AssetRegistry(Actors.ADMIN);
+        assetRegistry = new AssetRegistry(address(protocolRegistry));
 
         protocolRegistry.setAddress(protocolRegistry.ASSET_REGISTRY(), address(assetRegistry));
 

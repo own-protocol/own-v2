@@ -69,6 +69,10 @@ contract BaseTest is Test {
     bytes32 public constant TLT = bytes32("TLT");
     bytes32 public constant ETH = bytes32("ETH");
 
+    /// @dev Functional access-control roles (mirrors the per-contract inline `keccak256` constants).
+    bytes32 internal constant ADMIN_ROLE = keccak256("ADMIN");
+    bytes32 internal constant OPERATOR_ROLE = keccak256("OPERATOR");
+
     /// @dev Default global utilisation cap and per-asset USD ceiling used by test bootstraps.
     uint256 public constant DEFAULT_MAX_UTIL_BPS = 8000;
     uint256 public constant DEFAULT_ASSET_CAP_USD = 1_000_000_000e18;
@@ -229,6 +233,10 @@ contract BaseTest is Test {
         dex = new MockDEX();
         vm.startPrank(Actors.ADMIN);
         protocolRegistry = new ProtocolRegistry(Actors.ADMIN, 2 days, 2 minutes);
+        // Actors.ADMIN is the initial PROTOCOL_ADMIN (DEFAULT_ADMIN_ROLE); grant it the functional
+        // ADMIN/OPERATOR roles so the test bootstrap can drive every admin/operator entry point.
+        protocolRegistry.grantRole(ADMIN_ROLE, Actors.ADMIN);
+        protocolRegistry.grantRole(OPERATOR_ROLE, Actors.ADMIN);
         protocolRegistry.setAddress(keccak256("INHOUSE_ORACLE"), address(oracle));
         vm.stopPrank();
     }

@@ -51,7 +51,7 @@ contract BorrowAndLiquidateFlowTest is BaseTest {
         protocolRegistry.setAddress(protocolRegistry.MARKET(), market);
 
         // Asset registry + eTSLA.
-        assetRegistry = new AssetRegistry(Actors.ADMIN);
+        assetRegistry = new AssetRegistry(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.ASSET_REGISTRY(), address(assetRegistry));
         vm.stopPrank();
 

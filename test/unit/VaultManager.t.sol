@@ -68,6 +68,8 @@ contract VaultManagerTest is Test {
         vault = new StubVault(address(usdc));
 
         vm.startPrank(admin);
+        registry.grantRole(keccak256("ADMIN"), admin);
+        registry.grantRole(keccak256("OPERATOR"), admin);
         registry.setAddress(registry.MARKET(), market);
         registry.setAddress(registry.ASSET_REGISTRY(), address(assetRegistry));
         registry.setAddress(registry.INHOUSE_ORACLE(), address(oracle));
@@ -1020,7 +1022,7 @@ contract VaultManagerTest is Test {
     }
 
     function test_setTradingPaused_onlyAdmin_reverts() public {
-        vm.expectRevert(IVaultManager.OnlyAdmin.selector);
+        vm.expectRevert(IVaultManager.OnlyOperator.selector);
         vm.prank(market);
         manager.setTradingPaused(true);
     }
@@ -1036,7 +1038,7 @@ contract VaultManagerTest is Test {
     }
 
     function test_setAssetTradingPaused_onlyAdmin_reverts() public {
-        vm.expectRevert(IVaultManager.OnlyAdmin.selector);
+        vm.expectRevert(IVaultManager.OnlyOperator.selector);
         vm.prank(market);
         manager.setAssetTradingPaused(TSLA, true);
     }
@@ -1068,7 +1070,7 @@ contract VaultManagerTest is Test {
     }
 
     function test_haltAsset_onlyAdmin_reverts() public {
-        vm.expectRevert(IVaultManager.OnlyAdmin.selector);
+        vm.expectRevert(IVaultManager.OnlyOperator.selector);
         vm.prank(market);
         manager.haltAsset(TSLA, TSLA_MARK);
     }

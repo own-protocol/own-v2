@@ -132,6 +132,7 @@ interface IBorrowManager {
     error EthRefundFailed();
     error ZeroAddress();
     error OnlyAdmin();
+    error OnlyOperator();
     error AssetNotActive(bytes32 asset);
     error AssetNotBorrowable(bytes32 asset);
     error VaultEffectivelyHalted();

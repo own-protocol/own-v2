@@ -56,8 +56,9 @@ interface IOwnVault is IERC4626 {
     error NoSharesToReward();
     error InsufficientSharesOut(uint256 sharesOut, uint256 minSharesOut);
     error OnlyAdmin();
+    error OnlyOperator();
     error OnlyMarket();
-    error OnlyManagerOrAdmin();
+    error OnlyManagerOrOperator();
     error WithdrawalNotPending(uint256 requestId);
     error DecimalsTooHigh(uint256 decimals);
     error WithdrawalWaitPeriodNotElapsed(uint256 requestId, uint256 readyAt);

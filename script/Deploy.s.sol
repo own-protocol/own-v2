@@ -47,7 +47,10 @@ contract Deploy is Script {
     //  Configuration
     // ──────────────────────────────────────────────────────────
 
-    uint256 constant TIMELOCK_DELAY = 10 minutes; // Short delay for testing; increase for production
+    /// @dev Delay (seconds) on transferring PROTOCOL_ADMIN (the registry root role). Short for testnet;
+    ///      production should use ~48h, hand PROTOCOL_ADMIN to a TimelockController, and grant
+    ///      ADMIN/OPERATOR to the governance/ops multisigs (see SetupGovernance.s.sol).
+    uint48 constant ADMIN_TRANSFER_DELAY = 10 minutes;
     uint256 constant PRICE_MAX_AGE = 2 minutes; // Max age for inline "current price" proofs
 
     /// @dev Initial global utilisation cap (80%). Solvency bound across all pooled vaults.
@@ -103,11 +106,11 @@ contract Deploy is Script {
         console.log("WETH (reused):", d.weth);
 
         // ── 3. ProtocolRegistry ───────────────────────────────
-        d.registry = address(new ProtocolRegistry(deployer, TIMELOCK_DELAY, PRICE_MAX_AGE));
+        d.registry = address(new ProtocolRegistry(deployer, ADMIN_TRANSFER_DELAY, PRICE_MAX_AGE));
         console.log("ProtocolRegistry:", d.registry);
 
         // ── 4. AssetRegistry ──────────────────────────────────
-        d.assetRegistry = address(new AssetRegistry(deployer));
+        d.assetRegistry = address(new AssetRegistry(d.registry));
         console.log("AssetRegistry:", d.assetRegistry);
 
         // ── 5. OwnMarket ──────────────────────────────────────
@@ -119,7 +122,7 @@ contract Deploy is Script {
         console.log("VaultManager:", d.vaultManager);
 
         // ── 7. ETokenFactory ──────────────────────────────────
-        d.etokenFactory = address(new ETokenFactory(deployer, d.registry));
+        d.etokenFactory = address(new ETokenFactory(d.registry));
         console.log("ETokenFactory:", d.etokenFactory);
 
         // ── 8. WETHRouter ─────────────────────────────────────
@@ -130,6 +133,11 @@ contract Deploy is Script {
         // The in-house OracleVerifier (INHOUSE_ORACLE) is deployed + registered separately by
         // DeployOracleSigner.s.sol. There is no Pyth oracle.
         ProtocolRegistry registry = ProtocolRegistry(d.registry);
+        // Deployer is the initial PROTOCOL_ADMIN (default admin); grant it the functional ADMIN/OPERATOR
+        // roles so this script can drive every admin/operator entry point (addAsset, VaultManager config).
+        // Production: grant these to the governance/ops multisigs and hand PROTOCOL_ADMIN to a timelock.
+        registry.grantRole(keccak256("ADMIN"), deployer);
+        registry.grantRole(keccak256("OPERATOR"), deployer);
         registry.setAddress(registry.ASSET_REGISTRY(), d.assetRegistry);
         registry.setAddress(registry.MARKET(), d.market);
         registry.setAddress(registry.VAULT_MANAGER(), d.vaultManager);

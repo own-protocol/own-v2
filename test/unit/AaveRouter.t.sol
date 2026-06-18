@@ -182,7 +182,7 @@ contract AaveRouterTest is BaseTest {
 
     function test_setReserveEnabled_onlyAdmin() public {
         vm.prank(Actors.ATTACKER);
-        vm.expectRevert(IAaveRouter.OnlyAdmin.selector);
+        vm.expectRevert(IAaveRouter.OnlyOperator.selector);
         router.setReserveEnabled(address(wstETHU), false);
     }
 

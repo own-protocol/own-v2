@@ -20,7 +20,7 @@ contract AssetRegistryTest is BaseTest {
         super.setUp();
 
         vm.prank(Actors.ADMIN);
-        registry = new AssetRegistry(Actors.ADMIN);
+        registry = new AssetRegistry(address(protocolRegistry));
         vm.label(address(registry), "AssetRegistry");
     }
 

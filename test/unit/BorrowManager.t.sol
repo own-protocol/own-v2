@@ -59,7 +59,7 @@ contract BorrowManagerTest is BaseTest {
         protocolRegistry.setAddress(protocolRegistry.MARKET(), mockMarket);
 
         // AssetRegistry — register TSLA so eligibility passes.
-        assetRegistry = new AssetRegistry(Actors.ADMIN);
+        assetRegistry = new AssetRegistry(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.ASSET_REGISTRY(), address(assetRegistry));
         vm.stopPrank();
 
@@ -829,7 +829,7 @@ contract BorrowManagerTest is BaseTest {
     function test_absorbBadDebt_onlyAdmin() public {
         _stripToBadDebt();
         vm.prank(Actors.ATTACKER);
-        vm.expectRevert(IBorrowManager.OnlyAdmin.selector);
+        vm.expectRevert(IBorrowManager.OnlyOperator.selector);
         borrowManager.absorbBadDebt(Actors.MINTER1, ASSET, 0, _priceData(4000e18));
     }
 
@@ -889,7 +889,7 @@ contract BorrowManagerTest is BaseTest {
 
     function test_setAssetBorrowable_onlyAdmin() public {
         vm.prank(Actors.ATTACKER);
-        vm.expectRevert(IBorrowManager.OnlyAdmin.selector);
+        vm.expectRevert(IBorrowManager.OnlyOperator.selector);
         borrowManager.setAssetBorrowable(ASSET, true);
     }
 
@@ -1259,7 +1259,7 @@ contract BorrowManagerBadDebt6DecTest is BaseTest {
 
         vm.startPrank(Actors.ADMIN);
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(this)); // act as MARKET
-        assetRegistry = new AssetRegistry(Actors.ADMIN);
+        assetRegistry = new AssetRegistry(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.ASSET_REGISTRY(), address(assetRegistry));
         vm.stopPrank();
 

@@ -70,7 +70,7 @@ contract OwnMarketTest is BaseTest {
         vm.label(address(eTSLAToken), "eTSLA");
 
         vm.startPrank(Actors.ADMIN);
-        assetReg = new AssetRegistry(Actors.ADMIN);
+        assetReg = new AssetRegistry(address(protocolRegistry));
         AssetConfig memory config = AssetConfig({
             activeToken: address(eTSLAToken),
             legacyTokens: new address[](0),

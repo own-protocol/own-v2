@@ -26,7 +26,7 @@ contract PythOracleVerifierTest is BaseTest {
         vm.label(address(mockPyth), "MockPyth");
 
         vm.startPrank(Actors.ADMIN);
-        verifier = new PythOracleVerifier(Actors.ADMIN, address(mockPyth), MAX_PRICE_AGE, MAX_CONF_BPS);
+        verifier = new PythOracleVerifier(address(protocolRegistry), address(mockPyth), MAX_PRICE_AGE, MAX_CONF_BPS);
         verifier.setFeedId(TSLA, 0, TSLA_FEED_ID);
         verifier.setFeedId(GOLD, 0, GOLD_FEED_ID);
         vm.stopPrank();
@@ -61,12 +61,11 @@ contract PythOracleVerifierTest is BaseTest {
         assertEq(address(verifier.pyth()), address(mockPyth));
         assertEq(verifier.maxPriceAge(), MAX_PRICE_AGE);
         assertEq(verifier.maxConfBps(), MAX_CONF_BPS);
-        assertEq(verifier.owner(), Actors.ADMIN);
     }
 
     function test_constructor_zeroMaxConfBps_reverts() public {
         vm.expectRevert(PythOracleVerifier.InvalidMaxConfBps.selector);
-        new PythOracleVerifier(Actors.ADMIN, address(mockPyth), MAX_PRICE_AGE, 0);
+        new PythOracleVerifier(address(protocolRegistry), address(mockPyth), MAX_PRICE_AGE, 0);
     }
 
     // ──────────────────────────────────────────────────────────

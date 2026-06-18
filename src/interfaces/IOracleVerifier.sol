@@ -36,6 +36,8 @@ interface IOracleVerifier {
     error PriceNotAvailable(bytes32 asset);
     error OracleConfigNotSet(bytes32 asset);
     error InvalidOracleConfig();
+    error OnlyAdmin();
+    error OnlyOperator();
 
     // ──────────────────────────────────────────────────────────
     //  Push — update price feeds (keeper / signer)

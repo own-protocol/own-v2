@@ -66,6 +66,8 @@ contract AaveBaseForkTest is Test {
         // Minimal protocol scaffolding.
         vm.startPrank(admin);
         registry = new ProtocolRegistry(admin, 2 days, 2 minutes);
+        registry.grantRole(keccak256("ADMIN"), admin);
+        registry.grantRole(keccak256("OPERATOR"), admin);
         registry.setAddress(registry.MARKET(), makeAddr("market"));
 
         router = new AaveRouter(AAVE_V3_POOL_BASE, address(registry));

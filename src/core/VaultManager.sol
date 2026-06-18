@@ -6,7 +6,6 @@ import {IOracleVerifier} from "../interfaces/IOracleVerifier.sol";
 import {IProtocolRegistry} from "../interfaces/IProtocolRegistry.sol";
 import {IVaultManager} from "../interfaces/IVaultManager.sol";
 import {BPS, PRECISION} from "../interfaces/types/Types.sol";
-import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
@@ -100,8 +99,16 @@ contract VaultManager is IVaultManager {
         _;
     }
 
+    bytes32 private constant ADMIN = keccak256("ADMIN");
+    bytes32 private constant OPERATOR = keccak256("OPERATOR");
+
     modifier onlyAdmin() {
-        if (msg.sender != Ownable(address(registry)).owner()) revert OnlyAdmin();
+        if (!registry.hasRole(ADMIN, msg.sender)) revert OnlyAdmin();
+        _;
+    }
+
+    modifier onlyOperator() {
+        if (!registry.hasRole(OPERATOR, msg.sender)) revert OnlyOperator();
         _;
     }
 
@@ -422,7 +429,7 @@ contract VaultManager is IVaultManager {
     /// @inheritdoc IVaultManager
     function removeSigner(
         address signer
-    ) external override onlyAdmin {
+    ) external override onlyOperator {
         if (!_isSigner[signer]) revert NotSigner(signer);
         delete _isSigner[signer];
         delete _signerLinked[signer];
@@ -470,13 +477,13 @@ contract VaultManager is IVaultManager {
     /// @inheritdoc IVaultManager
     function setTradingPaused(
         bool paused
-    ) external override onlyAdmin {
+    ) external override onlyOperator {
         _tradingPaused = paused;
         emit TradingPausedUpdated(paused);
     }
 
     /// @inheritdoc IVaultManager
-    function setAssetTradingPaused(bytes32 asset, bool paused) external override onlyAdmin {
+    function setAssetTradingPaused(bytes32 asset, bool paused) external override onlyOperator {
         _assetTradingPaused[asset] = paused;
         emit AssetTradingPausedUpdated(asset, paused);
     }
@@ -493,7 +500,7 @@ contract VaultManager is IVaultManager {
     // ──────────────────────────────────────────────────────────
 
     /// @inheritdoc IVaultManager
-    function haltAsset(bytes32 asset, uint256 haltPrice) external override onlyAdmin {
+    function haltAsset(bytes32 asset, uint256 haltPrice) external override onlyOperator {
         if (haltPrice == 0) revert InvalidHaltPrice();
         if (_assetHalted[asset]) revert AssetAlreadyHalted(asset);
         _assetHalted[asset] = true;

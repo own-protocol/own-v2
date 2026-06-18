@@ -30,7 +30,7 @@ contract AsyncDepositFlowTest is BaseTest {
     function _deployProtocol() private {
         vm.startPrank(Actors.ADMIN);
 
-        assetRegistry = new AssetRegistry(Actors.ADMIN);
+        assetRegistry = new AssetRegistry(address(protocolRegistry));
 
         protocolRegistry.setAddress(protocolRegistry.ASSET_REGISTRY(), address(assetRegistry));
 
@@ -387,7 +387,7 @@ contract AsyncDepositFlowTest is BaseTest {
 
     function test_setRequireDepositApproval_onlyAdmin() public {
         vm.prank(Actors.ATTACKER);
-        vm.expectRevert(IOwnVault.OnlyAdmin.selector);
+        vm.expectRevert(IOwnVault.OnlyOperator.selector);
         vault.setRequireDepositApproval(true);
     }
 

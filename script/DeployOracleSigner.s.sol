@@ -26,11 +26,11 @@ contract DeployOracleSigner is Script {
 
         vm.startBroadcast(vm.envUint("DEPLOYER_PRIVATE_KEY"));
 
-        // 1. Deploy OracleVerifier
-        OracleVerifier oracleVerifier = new OracleVerifier(deployer);
+        // 1. Deploy OracleVerifier (resolves ADMIN/OPERATOR roles from the registry)
+        OracleVerifier oracleVerifier = new OracleVerifier(registryAddr);
         console.log("OracleVerifier:", address(oracleVerifier));
 
-        // 2. Add signer
+        // 2. Add signer (requires the deployer to hold the ADMIN role in the registry — granted in Deploy.s.sol)
         oracleVerifier.addSigner(SIGNER);
         console.log("Signer added:", SIGNER);
 

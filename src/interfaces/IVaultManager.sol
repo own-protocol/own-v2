@@ -80,6 +80,7 @@ interface IVaultManager {
 
     error OnlyMarket();
     error OnlyAdmin();
+    error OnlyOperator();
     error OnlyRegisteredVault();
     error ZeroAddress();
     error ZeroAmount();

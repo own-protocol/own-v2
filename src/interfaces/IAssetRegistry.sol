@@ -52,6 +52,12 @@ interface IAssetRegistry {
     /// @notice The migration target is the current active token or an existing legacy token.
     error InvalidNewToken(address token);
 
+    /// @notice Caller does not hold the asset-registry admin role.
+    error OnlyAdmin();
+
+    /// @notice Caller does not hold the asset-registry operator role.
+    error OnlyOperator();
+
     // ──────────────────────────────────────────────────────────
     //  Admin functions
     // ──────────────────────────────────────────────────────────

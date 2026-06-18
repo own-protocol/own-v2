@@ -68,6 +68,9 @@ interface IAaveRouter {
     /// @notice Caller is not the protocol admin.
     error OnlyAdmin();
 
+    /// @notice Caller does not hold the operator role.
+    error OnlyOperator();
+
     /// @notice The reserve is not registered.
     error ReserveNotRegistered(address underlying);
 

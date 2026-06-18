@@ -4,7 +4,6 @@ pragma solidity 0.8.28;
 import {IEToken} from "../interfaces/IEToken.sol";
 import {IProtocolRegistry} from "../interfaces/IProtocolRegistry.sol";
 import {PRECISION} from "../interfaces/types/Types.sol";
-import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {ERC20, IERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {ERC20Permit} from "@openzeppelin/contracts/token/ERC20/extensions/ERC20Permit.sol";
 import {IERC20Permit} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Permit.sol";
@@ -61,8 +60,10 @@ contract EToken is ERC20, ERC20Permit, IEToken {
         _;
     }
 
+    bytes32 private constant ADMIN = keccak256("ADMIN");
+
     modifier onlyAdmin() {
-        if (msg.sender != Ownable(address(registry)).owner()) revert Unauthorized();
+        if (!registry.hasRole(ADMIN, msg.sender)) revert Unauthorized();
         _;
     }
 

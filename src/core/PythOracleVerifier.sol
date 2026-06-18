@@ -2,8 +2,8 @@
 pragma solidity 0.8.28;
 
 import {IOracleVerifier} from "../interfaces/IOracleVerifier.sol";
+import {IProtocolRegistry} from "../interfaces/IProtocolRegistry.sol";
 import {BPS, PRECISION} from "../interfaces/types/Types.sol";
-import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {IPyth} from "@pythnetwork/IPyth.sol";
 import {PythStructs} from "@pythnetwork/PythStructs.sol";
 
@@ -11,10 +11,16 @@ import {PythStructs} from "@pythnetwork/PythStructs.sol";
 /// @notice Wraps the Pyth oracle on Base to implement IOracleVerifier.
 ///         Prices are pushed via updatePriceFeeds() and read via getPrice().
 ///         verifyPrice() parses a Pyth update inline for force execution proofs.
-contract PythOracleVerifier is IOracleVerifier, Ownable {
+/// @dev Feed/age/confidence config is gated by ADMIN; the emergency `disableFeed`
+///      kill-switch is gated by the instant PYTH_ORACLE_OPERATOR role. Both resolved via the
+///      ProtocolRegistry.
+contract PythOracleVerifier is IOracleVerifier {
     // ──────────────────────────────────────────────────────────
     //  State
     // ──────────────────────────────────────────────────────────
+
+    /// @notice ProtocolRegistry used to resolve ADMIN / OPERATOR roles.
+    IProtocolRegistry public immutable registry;
 
     IPyth public immutable pyth;
     uint256 public maxPriceAge;
@@ -42,15 +48,39 @@ contract PythOracleVerifier is IOracleVerifier, Ownable {
     // ──────────────────────────────────────────────────────────
 
     event FeedIdSet(bytes32 indexed asset, uint8 sessionId, bytes32 feedId);
+    event FeedDisabled(bytes32 indexed asset);
     event MaxPriceAgeUpdated(uint256 oldAge, uint256 newAge);
     event MaxConfBpsUpdated(uint256 oldBps, uint256 newBps);
+
+    // ──────────────────────────────────────────────────────────
+    //  Modifiers
+    // ──────────────────────────────────────────────────────────
+
+    bytes32 private constant ADMIN = keccak256("ADMIN");
+    bytes32 private constant OPERATOR = keccak256("OPERATOR");
+
+    modifier onlyAdmin() {
+        if (!registry.hasRole(ADMIN, msg.sender)) revert OnlyAdmin();
+        _;
+    }
+
+    modifier onlyOperator() {
+        if (!registry.hasRole(OPERATOR, msg.sender)) revert OnlyOperator();
+        _;
+    }
 
     // ──────────────────────────────────────────────────────────
     //  Constructor
     // ──────────────────────────────────────────────────────────
 
-    constructor(address admin_, address pyth_, uint256 maxPriceAge_, uint256 maxConfBps_) Ownable(admin_) {
+    /// @param registry_     ProtocolRegistry address (resolves ADMIN / OPERATOR roles).
+    /// @param pyth_         Pyth contract address.
+    /// @param maxPriceAge_  Max accepted price age (seconds).
+    /// @param maxConfBps_   Max accepted confidence interval relative to price (BPS). Non-zero.
+    constructor(address registry_, address pyth_, uint256 maxPriceAge_, uint256 maxConfBps_) {
+        if (registry_ == address(0)) revert ZeroAddress();
         if (maxConfBps_ == 0) revert InvalidMaxConfBps();
+        registry = IProtocolRegistry(registry_);
         pyth = IPyth(pyth_);
         maxPriceAge = maxPriceAge_;
         maxConfBps = maxConfBps_;
@@ -160,15 +190,25 @@ contract PythOracleVerifier is IOracleVerifier, Ownable {
     /// @param asset     Asset ticker.
     /// @param sessionId Session index (0=regular, 1=pre-market, 2=post-market, 3=overnight).
     /// @param feedId    Pyth price feed ID.
-    function setFeedId(bytes32 asset, uint8 sessionId, bytes32 feedId) external onlyOwner {
+    function setFeedId(bytes32 asset, uint8 sessionId, bytes32 feedId) external onlyAdmin {
         if (sessionId >= 4) revert InvalidSessionId(sessionId);
         _feedIds[asset][sessionId] = feedId;
         emit FeedIdSet(asset, sessionId, feedId);
     }
 
+    /// @notice Emergency kill-switch: clear all session feeds for an asset so reads/verifies revert
+    ///         `FeedNotConfigured`. Gated by the instant PYTH_ORACLE_OPERATOR role.
+    /// @param asset Asset ticker to disable.
+    function disableFeed(
+        bytes32 asset
+    ) external onlyOperator {
+        delete _feedIds[asset];
+        emit FeedDisabled(asset);
+    }
+
     function setMaxPriceAge(
         uint256 newMaxAge
-    ) external onlyOwner {
+    ) external onlyAdmin {
         uint256 old = maxPriceAge;
         maxPriceAge = newMaxAge;
         emit MaxPriceAgeUpdated(old, newMaxAge);
@@ -177,7 +217,7 @@ contract PythOracleVerifier is IOracleVerifier, Ownable {
     /// @notice Set the max accepted confidence interval relative to price (BPS).
     function setMaxConfBps(
         uint256 newMaxConfBps
-    ) external onlyOwner {
+    ) external onlyAdmin {
         if (newMaxConfBps == 0) revert InvalidMaxConfBps();
         emit MaxConfBpsUpdated(maxConfBps, newMaxConfBps);
         maxConfBps = newMaxConfBps;
