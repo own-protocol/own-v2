@@ -736,6 +736,19 @@ contract OwnMarketTest is BaseTest {
         market.forceExecuteOrder(orderId, mockVault, _assetPriceData(TSLA_PRICE), _assetPriceData(ETH_PRICE));
     }
 
+    /// @dev A zero claim threshold (pre-deploy default) disables force-execution entirely, even
+    ///      after the order has aged — recourse is unavailable until the threshold is configured.
+    function test_forceExecuteOrder_zeroClaimThreshold_reverts() public {
+        vm.mockCall(
+            mockVaultManager, abi.encodeWithSelector(IVaultManager.claimThreshold.selector), abi.encode(uint256(0))
+        );
+        uint256 orderId = _placeRedeem(Actors.MINTER1, 4e18, TSLA_PRICE);
+        vm.warp(block.timestamp + CLAIM_THRESHOLD);
+        vm.prank(Actors.MINTER1);
+        vm.expectRevert(IOwnMarket.ForceNotEnabled.selector);
+        market.forceExecuteOrder(orderId, mockVault, _assetPriceData(TSLA_PRICE), _assetPriceData(ETH_PRICE));
+    }
+
     function test_forceExecuteOrder_mintOrder_reverts() public {
         uint256 orderId = _placeMint(Actors.MINTER1, 1000e6, TSLA_PRICE);
         vm.warp(block.timestamp + CLAIM_THRESHOLD);

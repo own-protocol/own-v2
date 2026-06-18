@@ -57,6 +57,11 @@ contract Deploy is Script {
     ///      capping the damage a leaked signer key can inflict per unit of size.
     uint256 constant SETTLE_BAND_BPS = 500;
 
+    /// @dev Force-execute claim threshold (6h): delay after a resting redeem order is placed before
+    ///      its owner can force-execute against vault collateral. Must be non-zero — zero disables
+    ///      force-execution, so setting it here is what enables the user's recourse path.
+    uint256 constant CLAIM_THRESHOLD = 6 hours;
+
     /// @dev Initial per-asset USD issuance ceiling (18-decimal USD). 0 would block minting.
     uint256 constant ASSET_CAP_USD = 10_000_000e18;
 
@@ -147,6 +152,7 @@ contract Deploy is Script {
         VaultManager vaultManager = VaultManager(d.vaultManager);
         vaultManager.setGlobalMaxUtilizationBps(GLOBAL_MAX_UTIL_BPS);
         vaultManager.setSettleBandBps(SETTLE_BAND_BPS);
+        vaultManager.setClaimThreshold(CLAIM_THRESHOLD);
         vaultManager.setAssetCapUSD(ETH, ASSET_CAP_USD);
         // Single global order-settlement currency for all vaults.
         vaultManager.setPaymentToken(d.usdc);

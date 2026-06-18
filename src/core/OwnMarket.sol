@@ -210,7 +210,10 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard, EIP712 {
         // Pause and halt both disable the force path.
         if (vmgr.isTradingPaused(order.asset)) revert AssetPaused(order.asset);
         if (vmgr.isAssetHalted(order.asset)) revert ForceDisabledDuringHalt(order.asset);
-        if (block.timestamp < order.createdAt + vmgr.claimThreshold()) {
+        // A zero claim threshold (pre-deploy default) disables force-execution entirely.
+        uint256 threshold = vmgr.claimThreshold();
+        if (threshold == 0) revert ForceNotEnabled();
+        if (block.timestamp < order.createdAt + threshold) {
             revert ForceWindowNotElapsed(orderId);
         }
 

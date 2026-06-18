@@ -7,9 +7,9 @@ import {IProtocolRegistry} from "../src/interfaces/IProtocolRegistry.sol";
 import {IVaultManager} from "../src/interfaces/IVaultManager.sol";
 
 /// @title ConfigureVault — Global protocol order-settlement config
-/// @notice Run by the admin after deployment. Sets the single global payment token on the
-///         VaultManager. Payment token, signers, pause/halt, and the claim threshold are all
-///         global now — there is no per-vault order config.
+/// @notice Run by the admin after deployment. Sets the global payment token and force-execute
+///         claim threshold on the VaultManager. Payment token, signers, pause/halt, and the claim
+///         threshold are all global now — there is no per-vault order config.
 ///
 /// Usage:
 ///   forge script script/ConfigureVault.s.sol --rpc-url base_sepolia --broadcast
@@ -26,6 +26,12 @@ contract ConfigureVault is Script {
         IVaultManager vaultManager = IVaultManager(IProtocolRegistry(registryAddr).vaultManager());
         vaultManager.setPaymentToken(mockUSDC);
         console.log("Global payment token set");
+
+        // Force-execute claim threshold (default 6h). Must be non-zero — zero disables the user's
+        // force-execution recourse path. Override via the CLAIM_THRESHOLD env var (seconds).
+        uint256 threshold = vm.envOr("CLAIM_THRESHOLD", uint256(6 hours));
+        vaultManager.setClaimThreshold(threshold);
+        console.log("Global claim threshold set (seconds):", threshold);
 
         vm.stopBroadcast();
 

@@ -96,6 +96,9 @@ interface IOwnMarket {
     /// @notice The redeem force window (claim threshold) has not elapsed.
     error ForceWindowNotElapsed(uint256 orderId);
 
+    /// @notice Force-execution is not enabled: the global claim threshold is unset (zero).
+    error ForceNotEnabled();
+
     /// @notice Force execution is not available for mint orders.
     error ForceMintNotAllowed(uint256 orderId);
 

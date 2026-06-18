@@ -91,6 +91,10 @@ interface IVaultManager {
     /// @notice The settle band is zero or exceeds 100% (BPS).
     error InvalidSettleBand();
 
+    /// @notice The claim threshold is zero. Zero disables force-execution and cannot be set; the
+    ///         only zero state is the pre-deploy default.
+    error InvalidClaimThreshold();
+
     // ──────────────────────────────────────────────────────────
     //  Mutation — market only
     // ──────────────────────────────────────────────────────────
@@ -245,6 +249,8 @@ interface IVaultManager {
     //  Admin — claim threshold
     // ──────────────────────────────────────────────────────────
 
+    /// @notice Set the delay before a resting redeem order can be force-executed. Must be non-zero
+    ///         (zero is reserved for the pre-deploy default and disables force-execution). Admin-only.
     function setClaimThreshold(
         uint256 threshold
     ) external;

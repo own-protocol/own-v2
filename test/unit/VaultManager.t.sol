@@ -910,6 +910,27 @@ contract VaultManagerTest is Test {
         manager.setClaimThreshold(6 hours);
     }
 
+    function test_claimThreshold_defaultsToZero() public view {
+        // Pre-deploy default; OwnMarket.forceExecuteOrder treats this as force-disabled.
+        assertEq(manager.claimThreshold(), 0);
+    }
+
+    function test_setClaimThreshold_zero_reverts() public {
+        vm.expectRevert(IVaultManager.InvalidClaimThreshold.selector);
+        vm.prank(admin);
+        manager.setClaimThreshold(0);
+    }
+
+    function test_setClaimThreshold_cannotResetToZeroAfterSet() public {
+        vm.prank(admin);
+        manager.setClaimThreshold(6 hours);
+        // Once configured, it can never be reset to zero (force can't be silently disabled).
+        vm.expectRevert(IVaultManager.InvalidClaimThreshold.selector);
+        vm.prank(admin);
+        manager.setClaimThreshold(0);
+        assertEq(manager.claimThreshold(), 6 hours, "threshold unchanged");
+    }
+
     // ──────────────────────────────────────────────────────────
     //  Views — utilisation edge cases
     // ──────────────────────────────────────────────────────────

@@ -501,6 +501,9 @@ contract VaultManager is IVaultManager {
     function setClaimThreshold(
         uint256 threshold
     ) external override onlyAdmin {
+        // Zero disables force-execution and is reserved for the pre-deploy default; once configured
+        // it can never be reset to zero.
+        if (threshold == 0) revert InvalidClaimThreshold();
         uint256 old = _claimThreshold;
         _claimThreshold = threshold;
         emit ClaimThresholdUpdated(old, threshold);
