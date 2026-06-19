@@ -431,6 +431,13 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard, EIP712 {
         uint256 mark = vmgr.assetMark(asset);
         // No mark → openExposure/closeExposure already reverts (PriceUnavailable); nothing to bound.
         if (mark == 0) return;
+        // Both legs must bound against a keeper-fresh mark. The mint leg's openExposure enforces
+        // maxMarkAge; closeExposure (redeem/exit) is intentionally stale-tolerant, so the band — the
+        // leaked-key damage cap — must enforce freshness itself, else a redeem can settle within
+        // ±band of a stale mark.
+        if (block.timestamp - vmgr.assetMarkUpdatedAt(asset) > vmgr.maxMarkAge()) {
+            revert StaleSettleMark(asset);
+        }
         uint256 band = vmgr.settleBandBps();
         uint256 diff = price > mark ? price - mark : mark - price;
         if (diff * BPS > mark * band) revert PriceOutOfBand(asset, price, mark, band);

@@ -66,6 +66,42 @@ contract OwnVaultTest is BaseTest {
     }
 
     // ──────────────────────────────────────────────────────────
+    //  ERC-4626: maxDeposit / maxMint capacity reporting (A2-L-01)
+    // ──────────────────────────────────────────────────────────
+
+    /// @dev maxMint must report 0 to non-manager callers — mint() is manager-only in every mode.
+    function test_maxMint_zeroForNonManager() public {
+        vm.prank(Actors.LP1);
+        assertEq(vault.maxMint(Actors.LP1), 0, "non-manager cannot mint");
+    }
+
+    /// @dev The bound manager can mint to any receiver, so it reports unlimited.
+    function test_maxMint_maxForManager() public {
+        vm.prank(Actors.VM1);
+        assertEq(vault.maxMint(Actors.LP1), type(uint256).max, "manager can mint");
+    }
+
+    /// @dev With the approval gate off (default), deposit() is open, so capacity is unlimited.
+    function test_maxDeposit_openMode_maxForAnyone() public {
+        vm.prank(Actors.LP1);
+        assertEq(vault.maxDeposit(Actors.LP1), type(uint256).max, "open deposits");
+    }
+
+    /// @dev With the approval gate on, only the manager's deposit() succeeds — others get 0.
+    function test_maxDeposit_approvalMode_zeroForNonManager() public {
+        _enableDepositApproval();
+        vm.prank(Actors.LP1);
+        assertEq(vault.maxDeposit(Actors.LP1), 0, "gated: non-manager");
+    }
+
+    /// @dev The manager can still deposit (for any receiver) under the approval gate.
+    function test_maxDeposit_approvalMode_maxForManager() public {
+        _enableDepositApproval();
+        vm.prank(Actors.VM1);
+        assertEq(vault.maxDeposit(Actors.LP1), type(uint256).max, "gated: manager ok");
+    }
+
+    // ──────────────────────────────────────────────────────────
     //  ERC-4626: deposit (VM only)
     // ──────────────────────────────────────────────────────────
 

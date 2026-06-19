@@ -156,6 +156,13 @@ contract OwnMarketTest is BaseTest {
         // boundary tests below override these per-test.
         vm.mockCall(mockVaultManager, abi.encodeWithSelector(IVaultManager.assetMark.selector), abi.encode(TSLA_PRICE));
         vm.mockCall(mockVaultManager, abi.encodeWithSelector(IVaultManager.settleBandBps.selector), abi.encode(BPS));
+        // Settle-band freshness: mark is fresh by default, maxMarkAge large so band tests never trip it.
+        vm.mockCall(
+            mockVaultManager, abi.encodeWithSelector(IVaultManager.maxMarkAge.selector), abi.encode(uint256(365 days))
+        );
+        vm.mockCall(
+            mockVaultManager, abi.encodeWithSelector(IVaultManager.assetMarkUpdatedAt.selector), abi.encode(block.timestamp)
+        );
 
         _setOraclePrice(TSLA, TSLA_PRICE);
         _setOraclePrice(ETH_ASSET, ETH_PRICE);
@@ -1198,6 +1205,29 @@ contract OwnMarketTest is BaseTest {
         bytes memory sig = _sign(q, rfqVMPk);
 
         vm.expectRevert(abi.encodeWithSelector(IOwnMarket.PriceOutOfBand.selector, TSLA, price, BAND_MARK, BAND_BPS));
+        vm.prank(Actors.MINTER1);
+        market.executeOrder(q, sig);
+    }
+
+    /// @dev #3 (A2-M-01): the redeem settle band must reject a STALE mark (the mint leg already does
+    ///      via openExposure), else a leaked signer key could settle a redeem against an outdated mark.
+    function test_executeOrder_redeem_staleMark_reverts() public {
+        vm.warp(block.timestamp + 10 days);
+        _setBandMocks(BAND_MARK, BAND_BPS);
+        vm.mockCall(
+            mockVaultManager, abi.encodeWithSelector(IVaultManager.maxMarkAge.selector), abi.encode(uint256(1 hours))
+        );
+        vm.mockCall(
+            mockVaultManager,
+            abi.encodeWithSelector(IVaultManager.assetMarkUpdatedAt.selector),
+            abi.encode(block.timestamp - 2 hours)
+        );
+        uint256 eTokenAmount = 4e18;
+        uint256 price = BAND_MARK; // inside the band, but the mark is stale
+        Quote memory q = _quote(0, Actors.MINTER1, OrderType.Redeem, eTokenAmount, price);
+        bytes memory sig = _sign(q, rfqVMPk);
+
+        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.StaleSettleMark.selector, TSLA));
         vm.prank(Actors.MINTER1);
         market.executeOrder(q, sig);
     }

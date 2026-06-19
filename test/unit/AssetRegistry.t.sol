@@ -230,6 +230,16 @@ contract AssetRegistryTest is BaseTest {
         assertEq(stubVM.lastRatio(), 3e18, "same ratio");
     }
 
+    /// @dev #4 (A2-M-02): migrating a halted asset would desync its frozen halt price; block it.
+    function test_migrateToken_haltedAsset_reverts() public {
+        vm.startPrank(Actors.ADMIN);
+        registry.addAsset(TSLA, eTSLA, _defaultConfig(eTSLA));
+        stubVM.setAssetHalted(true);
+        vm.expectRevert(abi.encodeWithSelector(IAssetRegistry.AssetHalted.selector, TSLA));
+        registry.migrateToken(TSLA, makeAddr("eTSLAv2"), 3e18);
+        vm.stopPrank();
+    }
+
     /// @dev Migrating to the current active token or to an existing legacy token would
     ///      corrupt the ratio bookkeeping (self-legacy / duplicate legacy entry).
     function test_migrateToken_toActiveOrLegacyToken_reverts() public {
@@ -424,10 +434,23 @@ contract RecordingVaultManagerForRegistry {
     bytes32 public lastAsset;
     uint256 public lastRatio;
     uint256 public calls;
+    bool public assetHalted;
 
     function applySplit(bytes32 asset, uint256 ratio) external {
         lastAsset = asset;
         lastRatio = ratio;
         ++calls;
+    }
+
+    function isAssetHalted(
+        bytes32
+    ) external view returns (bool) {
+        return assetHalted;
+    }
+
+    function setAssetHalted(
+        bool halted
+    ) external {
+        assetHalted = halted;
     }
 }

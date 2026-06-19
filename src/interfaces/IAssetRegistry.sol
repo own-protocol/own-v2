@@ -52,6 +52,9 @@ interface IAssetRegistry {
     /// @notice The migration target is the current active token or an existing legacy token.
     error InvalidNewToken(address token);
 
+    /// @notice The asset is halted; its frozen halt price cannot be re-denominated by a migration.
+    error AssetHalted(bytes32 ticker);
+
     /// @notice Caller does not hold the asset-registry admin role.
     error OnlyAdmin();
 

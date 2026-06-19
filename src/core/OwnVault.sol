@@ -617,6 +617,9 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
         address
     ) public view override(ERC4626, IERC4626) returns (uint256) {
         if (_vaultStatus != VaultStatus.Active) return 0;
+        // In approval mode only the manager's deposit() succeeds; report 0 to anyone else (the gate
+        // keys on the caller, not the receiver, so the manager can still deposit for an LP).
+        if (_requireDepositApproval && msg.sender != manager) return 0;
         return type(uint256).max;
     }
 
@@ -624,6 +627,9 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
         address
     ) public view override(ERC4626, IERC4626) returns (uint256) {
         if (_vaultStatus != VaultStatus.Active) return 0;
+        // mint() is manager-only in every mode; report 0 to non-manager callers (keyed on the caller,
+        // so the manager can still mint to any receiver).
+        if (msg.sender != manager) return 0;
         return type(uint256).max;
     }
 }

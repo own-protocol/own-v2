@@ -150,6 +150,9 @@ interface IOwnMarket {
     /// @notice The settle price deviates from the VaultManager mark by more than the allowed band.
     error PriceOutOfBand(bytes32 asset, uint256 price, uint256 mark, uint256 bandBps);
 
+    /// @notice The settle-band reference mark is stale (older than maxMarkAge); refresh it first.
+    error StaleSettleMark(bytes32 asset);
+
     /// @notice The fill amount exceeds the order's remaining amount.
     error FillExceedsRemaining(uint256 orderId);
 

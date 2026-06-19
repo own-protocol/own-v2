@@ -99,6 +99,9 @@ contract AssetRegistry is IAssetRegistry {
     /// @inheritdoc IAssetRegistry
     function migrateToken(bytes32 ticker, address newToken, uint256 ratio) external onlyAdmin {
         if (!_registered[ticker]) revert AssetNotFound(ticker);
+        // A halted asset's mark is frozen at its fixed halt price; applySplit re-denominates units/mark
+        // but not the halt price, which would desync redeemHalted payouts — block migration while halted.
+        if (IVaultManager(registry.vaultManager()).isAssetHalted(ticker)) revert AssetHalted(ticker);
         if (newToken == address(0)) revert ZeroAddress();
         if (ratio == 0) revert InvalidRatio();
         if (newToken == _assets[ticker].activeToken || _legacyRatio[newToken] != 0) {
