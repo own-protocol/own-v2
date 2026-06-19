@@ -854,6 +854,73 @@ contract OwnVaultTest is BaseTest {
         uint256 attackerRedeemable = vault.convertToAssets(attackerShares);
         assertLt(attackerRedeemable, donation, "attacker cannot recover the donation");
     }
+
+    // ──────────────────────────────────────────────────────────
+    //  Collateral release — free-collateral bound (H-06)
+    // ──────────────────────────────────────────────────────────
+
+    /// @dev 1 token backing the share pool + 100 tokens of pending-deposit escrow held in the vault.
+    ///      Raw balance is 101 while totalAssets() (backing only) is 1.
+    function _backingPlusPendingEscrow() internal returns (uint256 backing, uint256 escrow) {
+        backing = 1 ether;
+        escrow = 100 ether;
+        _depositAs(Actors.LP1, backing); // accepted backing (approval still off)
+        _enableDepositApproval();
+        weth.mint(Actors.LP2, escrow);
+        vm.startPrank(Actors.LP2);
+        weth.approve(address(vault), escrow);
+        vault.requestDeposit(escrow, Actors.LP2, 0);
+        vm.stopPrank();
+    }
+
+    /// @notice H-06: releaseCollateral must not exceed share-backing collateral (totalAssets()).
+    ///         Without the bound, a force-execute can release more than the backing pool — the extra
+    ///         comes out of pending-deposit escrow, and the next totalAssets() read underflows
+    ///         (super.totalAssets() - _pendingDepositAssets), permanently bricking the vault.
+    function test_releaseCollateral_exceedingBackedCollateral_reverts() public {
+        (uint256 backing, uint256 escrow) = _backingPlusPendingEscrow();
+
+        uint256 attempt = 50 ether; // > backing, but the raw balance (101) would cover it — the trap.
+        assertEq(vault.totalAssets(), backing, "only backing is spendable");
+        assertGt(attempt, vault.totalAssets(), "attempt exceeds backing");
+        assertLe(attempt, weth.balanceOf(address(vault)), "raw balance would cover it");
+
+        vm.prank(mockMarket);
+        vm.expectRevert(IOwnVault.AmountExceedsBackedCollateral.selector);
+        vault.releaseCollateral(Actors.LP1, attempt);
+
+        // Vault stays healthy: no underflow brick, escrow untouched and still refundable.
+        assertEq(vault.totalAssets(), backing, "totalAssets intact");
+        assertEq(weth.balanceOf(address(vault)), backing + escrow, "escrow untouched");
+    }
+
+    /// @notice The bound is not over-strict: releasing exactly the backing pool is allowed.
+    function test_releaseCollateral_atBackedCollateral_succeeds() public {
+        _depositAs(Actors.LP1, 10 ether); // backing only, no escrow
+        assertEq(vault.totalAssets(), 10 ether);
+
+        vm.prank(mockMarket);
+        vault.releaseCollateral(Actors.LP1, 10 ether);
+
+        assertEq(vault.totalAssets(), 0, "full backing released");
+        assertEq(weth.balanceOf(Actors.LP1), 10 ether, "recipient received the collateral");
+    }
+
+    /// @notice H-06: the same bound guards the bad-debt release path.
+    function test_releaseCollateralForBadDebt_exceedingBackedCollateral_reverts() public {
+        (uint256 backing,) = _backingPlusPendingEscrow();
+
+        address bm = makeAddr("badDebtBM");
+        vm.prank(Actors.ADMIN);
+        vault.setBorrowManager(bm);
+        _setTreasury(makeAddr("treasury"));
+
+        vm.prank(bm);
+        vm.expectRevert(IOwnVault.AmountExceedsBackedCollateral.selector);
+        vault.releaseCollateralForBadDebt(50 ether);
+
+        assertEq(vault.totalAssets(), backing, "totalAssets intact");
+    }
 }
 
 /// @dev Minimal asset registry stub: every asset uses the in-house oracle. Lets the VaultManager

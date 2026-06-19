@@ -1,22 +1,26 @@
 # Own Protocol v2 — Audit Report & Remediation Status
 
-**Branch:** `main` (pre-audit hardening on `pre-audit-fixes-1`) · **Last updated:** 2026-06-18 · **Test suite:** 695 passing
+**Branch:** `main` (pre-audit hardening on `pre-audit-fixes-1`) · **Last updated:** 2026-06-19 · **Test suite:** 703 passing
 
 Consolidated from the 2026-06-09 full manual audit, the 2026-06-10/11 focused re-audits
 (BorrowManager, AaveRouter, H-02 migration changes), and the 2026-06-11 multi-agent re-audit
 (16-agent pipeline). This single document replaces `audit-2026-06-09.md`,
 `audit-fixes-2026-06-10.md`, and the raw re-audit report. IDs are stable across all passes.
 
+The 2026-06-19 multi-agent re-audit (solidity-auditor, 12-agent pipeline) surfaced one new High
+(**H-06**) and one new Low (**L-14**), and reopened **L-07** for an on-chain fix. L-14 and L-07 are the
+only open items — see §2; H-06 was fixed the same day with regression tests (see §1).
+
 ## Status at a Glance
 
 | Severity | Total | Fixed | Open | By design |
 | -------- | ----- | ----- | ---- | --------- |
 | Critical | 1     | 1     | 0    | —         |
-| High     | 5     | 5     | 0    | —         |
+| High     | 6     | 6     | 0    | —         |
 | Medium   | 10    | 9     | 0    | 1         |
-| Low      | 13    | 10    | 0    | 3         |
+| Low      | 14    | 9     | 2    | 3         |
 
-**Every finding in the report is closed: fixed, mitigated, documented, or by-design — none open. The §5 leads are triaged: 4 fixed, 2 resolved by earlier fixes, 2 noted, 2 deferred for future review.**
+**Two findings are open after the 2026-06-19 re-audit — L-14 (Low, new) and L-07 (reopened for an on-chain fix); H-06 (High, new) was fixed the same day with regression tests; all other findings remain closed (fixed, mitigated, documented, or by-design). The §5 leads are triaged: 4 fixed, 2 resolved by earlier fixes, 2 noted, 2 deferred for future review.**
 
 | ID        | Severity | Finding                                                                                                              | Status                                                                                           |
 | --------- | -------- | -------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
@@ -26,6 +30,7 @@ Consolidated from the 2026-06-09 full manual audit, the 2026-06-10/11 focused re
 | H-03      | High     | Withdrawal gate read a stale collateral mark after bad-debt release                                                  | **Fixed**                                                                                        |
 | H-04      | High     | `absorbBadDebt` released collateral in 18-dec units, not native decimals                                             | **Fixed**                                                                                        |
 | H-05      | High     | `fulfillWithdrawal` didn't sync the VaultManager mark → utilization cap bypass                                       | **Fixed**                                                                                        |
+| H-06      | High     | Unbounded `releaseCollateral` drains pending-deposit escrow & bricks the vault (`totalAssets` underflow) | **Fixed** (2026-06-19) |
 | M-01      | Medium   | Pyth confidence interval ignored                                                                                     | **Fixed**                                                                                        |
 | M-02      | Medium   | In-house push path unbounded when an asset's oracle config is unset                                                  | **Fixed**                                                                                        |
 | M-03      | Medium   | `setRateParams` unvalidated → accrual DoS bricks repay/liquidate                                                     | **Fixed**                                                                                        |
@@ -36,7 +41,8 @@ Consolidated from the 2026-06-09 full manual audit, the 2026-06-10/11 focused re
 | M-08      | Medium   | `_flooredIndex` inflates on a dust scaled-debt base; breaks under multi-manager                                      | **Fixed**                                                                                        |
 | M-09      | Medium   | Sub-unit amounts record zero scaled debt while moving real value                                                     | **Fixed**                                                                                        |
 | M-10      | Medium   | `WstETHRouter` wraps requested (not received) stETH → deposit path DoS                                               | **Fixed**                                                                                        |
-| L-01–L-13 | Low      | See §4                                                                                                               | 10 closed (8 fixed + L-02 mitigated + L-07 documented) · 3 by design/accepted (L-04, L-09, L-11) |
+| L-01–L-13 | Low      | See §4                                                                                                               | 9 closed (8 fixed + L-02 mitigated) · 3 by design/accepted (L-04, L-09, L-11) · L-07 reopened → Open (see §2) |
+| L-14      | Low      | In-house `getPrice` has no read-time staleness bound; `pullAssetPrice` re-stamps `block.timestamp` | **Open** (new 2026-06-19) |
 | C-01\*    | Info     | Force-execute asset proof was window-scoped, not fresh                                                               | **Fixed** (2026-06-18 — fresh price now required; see Pre-audit hardening)                       |
 
 ---
@@ -158,6 +164,31 @@ already left — bypassing the global utilization cap within a block.
 **Fix.** `fulfillWithdrawal` (non-halted branch) calls `onCollateralReleased(assets)` after the
 gate check and before the transfer. Halted vaults skip it (already excluded from the pool).
 **Test.** `OwnVault.t.sol::test_fulfillWithdrawal_syncsCollateralMark` (fails without the fix).
+
+### H-06 (High) — Unbounded `releaseCollateral` drained pending-deposit escrow and bricked the vault
+
+**Problem.** `releaseCollateral` (and `releaseCollateralForBadDebt`) transferred `amount` of `asset()`
+from the vault's *raw* balance with no `amount <= totalAssets()` bound. Since
+`totalAssets() = super.totalAssets() - _pendingDepositAssets` excludes the async approval-queue
+escrow, the raw balance exceeds `totalAssets()` whenever a deposit is pending. `forceExecuteOrder`
+lets a redeemer pick any non-excluded vault and size `grossCollateral` with no per-vault
+free-collateral check, so a redeemer could force-execute against an approval-mode vault holding a
+pending deposit, pay out escrowed funds, then brick the vault — the next `totalAssets()` read
+underflow-reverts (Solidity 0.8), freezing deposits, withdrawals, accept/reject/cancel, and keeper
+price pulls. Distinct from H-01 (halted-vault exclusion) and H-03/H-05 (mark sync): neither bounded
+the physical transfer.
+
+**Fix (2026-06-19).** Both release paths revert `AmountExceedsBackedCollateral` when
+`amount > totalAssets()`, so a release can only spend share-backing collateral, never pending-deposit
+escrow — which also makes the `totalAssets()` underflow unreachable. Optional defense-in-depth (not
+yet done): bind the redeem `Order` to a `vault` so `forceExecuteOrder` can't target an arbitrary
+vault (removes the amplifier).
+
+**Tests.** `OwnVault.t.sol::test_releaseCollateral_exceedingBackedCollateral_reverts` (verified to
+fail — vault bricks via `Panic(0x11)` in `totalAssets()` — without the guard),
+`test_releaseCollateralForBadDebt_exceedingBackedCollateral_reverts`,
+`test_releaseCollateral_atBackedCollateral_succeeds` (boundary: full-backing release still allowed).
+Full suite green (703 passing).
 
 ### M-05 (Medium) — Book debt could lag real compounding Aave debt
 
@@ -308,7 +339,52 @@ in the 2026-06-11 re-audit.
 
 ## 2. Open Findings
 
-No open findings at any severity. Remaining future work: the unconfirmed leads in §5.
+Two findings are open following the 2026-06-19 multi-agent re-audit (solidity-auditor, 12-agent
+pipeline): L-14 is new; L-07 was reopened (see §3/§4). H-06 (also surfaced 2026-06-19) was fixed the
+same day — see §1. Both remaining items were verified against source on 2026-06-19; neither has a fix
+yet.
+
+### L-07 (Low) — `migrateToken` / `applySplit` atomicity (reopened 2026-06-19)
+
+Closed 2026-06-12 as *Documented* (ops requirement, `protocol.md §13`); reopened to track a
+code-level fix instead of relying on ops discipline alone.
+
+**Problem (unchanged).** A split is two independent admin calls whose `ratio` is never coupled
+on-chain — `AssetRegistry.migrateToken` (sets the legacy→active ratio used by permissionless
+`convertLegacy`) and `VaultManager.applySplit` (rescales `_globalAssetUnits`/`_assetMark`). Between
+them, `convertLegacy` (pause/halt-exempt) mints post-split active tokens against un-rescaled
+accounting, driving active supply above `_globalAssetUnits` so a later `closeExposure` reverts
+`InsufficientExposure` (redemptions bricked for that asset) or inflates phantom exposure.
+
+**Candidate fix.** Couple the two on-chain so the ratios cannot diverge — a single combined admin
+entry point that performs both, and/or have `applySplit` read the ratio from `AssetRegistry` (single
+source of truth), and/or guard `convertLegacy` while a split is mid-application. Liveness-only and
+admin-recoverable, hence Low.
+
+### L-14 (Low) — In-house `OracleVerifier.getPrice` has no read-time staleness bound
+
+**Problem.** `OracleVerifier.getPrice` returns the cached `(price, timestamp)` and reverts only on
+`price == 0` — no staleness check — asymmetric with `PythOracleVerifier.getPrice`, which enforces
+`getPriceNoOlderThan(maxPriceAge)`. `VaultManager._resolvePrice` discards the returned timestamp, and
+`pullAssetPrice`/`pullCollateralPrice` stamp `_assetMarkUpdatedAt = block.timestamp`, so the PA-03
+`maxMarkAge` gate bounds *time-since-pull*, not the age of the underlying observation: if the in-house
+signer stalls (or a deviation-cap freeze blocks updates during a sharp move), anyone can re-pull and
+re-stamp the stale cached price as "fresh." Extends C-01 (inline-proof path) and M-02 (push path) to
+the cached *read* path.
+
+**Why Low.** The clean drain is blocked twice over — mints are bounded by the PA-01 settle-band (a
+maker won't sign within-band at a stale-divergent price) and borrows by fresh per-position LTV +
+Aave's own HF — so the residual is the vault-level borrow cap (`maxDebtUSD`) and the asset-mark
+consumption running on a re-stamped stale price. The collateral aggregate is intentionally ungated
+per PA-03; this finding only adds the observation-age gap on the read side. Defense-in-depth.
+
+**Candidate fix.** Mirror Pyth: have in-house `getPrice` revert when
+`block.timestamp - pe.timestamp > maxStaleness` (the per-asset bound already configured for
+`updatePrice` since M-02), and/or carry the oracle observation timestamp into `_assetMarkUpdatedAt`
+instead of `block.timestamp`.
+
+**Source.** `OracleVerifier.getPrice` (~L141); `VaultManager.pullAssetPrice`/`pullCollateralPrice`/
+`_resolvePrice`; cf. `PythOracleVerifier.getPrice`.
 
 ---
 
@@ -387,8 +463,10 @@ No open findings at any severity. Remaining future work: the unconfirmed leads i
 
 - **L-02 — Mitigated.** Both halves are covered by existing code: `setPaymentToken` enforces
   `decimals() <= 18`, and the fee-on-transfer half is closed by the L-12 escrow balance-diff check.
-- **L-07 — Documented.** `migrateToken` + `applySplit` atomicity is now an explicit ops requirement
-  in `protocol.md` §13 (single multisig batch; liveness-only, admin-recoverable if violated).
+- **L-07 — Documented (2026-06-12), reopened 2026-06-19.** `migrateToken` + `applySplit` atomicity
+  was made an explicit ops requirement in `protocol.md` §13 (single multisig batch; liveness-only,
+  admin-recoverable if violated). Reopened after the 2026-06-19 re-audit to track an on-chain
+  coupling fix rather than ops discipline alone — see §2.
 
 ---
 

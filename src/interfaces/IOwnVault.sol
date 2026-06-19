@@ -68,6 +68,7 @@ interface IOwnVault is IERC4626 {
     error LendingNotEnabled();
     error OnlyBorrowManager();
     error TreasuryNotSet();
+    error AmountExceedsBackedCollateral();
 
     // ──────────────────────────────────────────────────────────
     //  Manager binding

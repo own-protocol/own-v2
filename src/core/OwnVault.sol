@@ -548,6 +548,8 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     function releaseCollateral(address to, uint256 amount) external onlyMarket nonReentrant {
         if (to == address(0)) revert ZeroAddress();
         if (amount == 0) revert ZeroAmount();
+        // Spend only backing collateral, never pending-deposit escrow (else totalAssets underflows).
+        if (amount > totalAssets()) revert AmountExceedsBackedCollateral();
         // Sync the cached mark before assets leave, so the withdrawal gate never reads stale-high.
         IVaultManager(registry.vaultManager()).onCollateralReleased(amount);
         IERC20(asset()).safeTransfer(to, amount);
@@ -558,6 +560,8 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
         uint256 amount
     ) external onlyBorrowManager nonReentrant {
         if (amount == 0) revert ZeroAmount();
+        // Bound to backing collateral; never spend pending-deposit escrow.
+        if (amount > totalAssets()) revert AmountExceedsBackedCollateral();
         // Destination is the protocol treasury (from the registry) — NOT a caller-supplied address.
         // This bounds the blast radius if the borrow manager is ever malicious: collateral can only
         // ever be moved into protocol-controlled hands, never to an external wallet.
