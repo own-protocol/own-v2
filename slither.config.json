@@ -1,0 +1,15 @@
+{
+  "filter_paths": "lib/|test/|script/",
+  "solc_remaps": [
+    "@openzeppelin/=lib/openzeppelin-contracts/",
+    "@pythnetwork/=lib/pyth-sdk-solidity/",
+    "forge-std/=lib/forge-std/src/"
+  ],
+  "exclude_dependencies": true,
+  "exclude_optimization": true,
+  "exclude_informational": false,
+  "exclude_low": false,
+  "exclude_medium": false,
+  "exclude_high": false,
+  "detectors_to_exclude": "timestamp,low-level-calls,pragma,solc-version,naming-convention,cyclomatic-complexity,reentrancy-benign,reentrancy-events"
+}

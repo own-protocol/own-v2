@@ -21,7 +21,7 @@ withdrawals/releases), two new Mediums (**M-11** — the redeem settle band trus
 per-finding coverage (H-07 via a live-Aave fork test). Suite: 721 passing.
 
 A **2026-06-19 follow-up** reviewed the withdrawal loss-ordering surface left by H-07 and identified
-**M-13** (Medium) — the *user-bad-debt* sibling of H-07's *Aave-HF* gate: `fulfillWithdrawal` can
+**M-13** (Medium) — the _user-bad-debt_ sibling of H-07's _Aave-HF_ gate: `fulfillWithdrawal` can
 settle before a borrower's unrecognized bad debt is absorbed, letting an early LP socialize the loss
 onto the remainder, and H-07's `requireVaultHealthy` gate does not catch it. There is no O(1) signal
 for unrecognized bad debt (the loss window opens at "position underwater," before liquidation), so it
@@ -39,35 +39,35 @@ is **accepted by design** with a proactive pause-on-volatility mitigation rather
 
 **No findings are open. The 2026-06-19 re-audits' findings are all fixed — round 1: H-06 (High), L-14 (Low), L-07 (Low, reopened then fixed); round 2: H-07 (High), M-11 + M-12 (Medium), L-15 (Low), plus the H-06 amplifier removed. All carry regression tests (H-07 via a live-Aave fork test). All earlier findings remain closed (fixed, mitigated, documented, or by-design). A 2026-06-19 withdrawal loss-ordering follow-up added **M-13** (Medium) — the user-bad-debt sibling of H-07 — accepted by design with an operational pause-on-volatility mitigation (no code change; see §3). A 2026-06-19 lead deep-dive (3-agent verification of all post-audit leads) added **L-17** (Low, Fixed — `fillOrder` missing the active-asset gate) and **L-16** (Low, accepted — `absorbBadDebt` premium over-charge, controllable via `absorbAmount`); the other 18 leads resolved to already-addressed or not-exploitable. The §5 leads are triaged.**
 
-| ID        | Severity | Finding                                                                                                              | Status                                                                                           |
-| --------- | -------- | -------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| C-01      | Critical | `verifyPrice` accepted any ever-signed price (no staleness) → collateral theft via force-redeem / borrow / liquidate | **Fixed**                                                                                        |
-| H-01      | High     | `forceExecuteOrder` could drain a halted (wind-down) vault                                                           | **Fixed**                                                                                        |
-| H-02      | High     | Resting redeem escrow stranded after `migrateToken` (stock split)                                                    | **Fixed**                                                                                        |
-| H-03      | High     | Withdrawal gate read a stale collateral mark after bad-debt release                                                  | **Fixed**                                                                                        |
-| H-04      | High     | `absorbBadDebt` released collateral in 18-dec units, not native decimals                                             | **Fixed**                                                                                        |
-| H-05      | High     | `fulfillWithdrawal` didn't sync the VaultManager mark → utilization cap bypass                                       | **Fixed**                                                                                        |
-| H-06      | High     | Unbounded `releaseCollateral` drains pending-deposit escrow & bricks the vault (`totalAssets` underflow) | **Fixed** (2026-06-19) |
-| H-07      | High     | No Aave health-factor gate on LP withdrawals/releases → collateral backing the vault's Aave debt can be drained into liquidation | **Fixed** (2026-06-19, round 2) |
-| M-01      | Medium   | Pyth confidence interval ignored                                                                                     | **Fixed**                                                                                        |
-| M-02      | Medium   | In-house push path unbounded when an asset's oracle config is unset                                                  | **Fixed**                                                                                        |
-| M-03      | Medium   | `setRateParams` unvalidated → accrual DoS bricks repay/liquidate                                                     | **Fixed**                                                                                        |
-| M-04      | Medium   | Withdrawal queue is not FIFO                                                                                         | **By design** — spec updated 2026-06-12 to drop the FIFO claim                                   |
-| M-05      | Medium   | Book debt could lag real compounding Aave debt → LP shortfall                                                        | **Fixed**                                                                                        |
-| M-06      | Medium   | `borrow` checks the debt cap before `_accrue()` → cap bypass                                                         | **Fixed**                                                                                        |
-| M-07      | Medium   | `borrow` ignores the bound vault's Paused/Halted status                                                              | **Fixed**                                                                                        |
-| M-08      | Medium   | `_flooredIndex` inflates on a dust scaled-debt base; breaks under multi-manager                                      | **Fixed**                                                                                        |
-| M-09      | Medium   | Sub-unit amounts record zero scaled debt while moving real value                                                     | **Fixed**                                                                                        |
-| M-10      | Medium   | `WstETHRouter` wraps requested (not received) stETH → deposit path DoS                                               | **Fixed**                                                                                        |
-| M-11      | Medium   | Redeem settle band bounded against a stale mark (mint leg gated by `maxMarkAge`, redeem leg not)                     | **Fixed** (2026-06-19, round 2)                                                                  |
-| M-12      | Medium   | `migrateToken` on a halted asset desyncs its frozen halt price → `redeemHalted` over-pays                           | **Fixed** (2026-06-19, round 2)                                                                  |
-| M-13      | Medium   | `fulfillWithdrawal` can settle before a borrower's bad debt is absorbed → loss socialized to remaining LPs (user-bad-debt sibling of H-07; the Aave-HF gate doesn't catch it) | **By design** — accepted with pause-on-volatility mitigation (see §3) |
-| L-01–L-13 | Low      | See §4                                                                                                               | 10 closed (9 fixed + L-02 mitigated) · 3 by design/accepted (L-04, L-09, L-11) |
-| L-14      | Low      | In-house `getPrice` has no read-time staleness bound; `pullAssetPrice` re-stamps `block.timestamp` | **Fixed** (2026-06-19) |
-| L-15      | Low      | `maxDeposit`/`maxMint` report unlimited while `deposit`/`mint` revert (approval gate / `onlyManager`) → ERC-4626 integrators revert | **Fixed** (2026-06-19, round 2) |
-| L-16      | Low      | `absorbBadDebt` over-charges LPs by a defaulted position's uncollected premium (also swept to the VM) | **By design** — accepted; controllable via `absorbAmount` (see §3) |
-| L-17      | Low      | `fillOrder` skipped the `isActiveAsset` gate → resting Mint order fillable after `setAssetActive(false)` | **Fixed** (2026-06-19) |
-| C-01\*    | Info     | Force-execute asset proof was window-scoped, not fresh                                                               | **Fixed** (2026-06-18 — fresh price now required; see Pre-audit hardening)                       |
+| ID        | Severity | Finding                                                                                                                                                                       | Status                                                                         |
+| --------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| C-01      | Critical | `verifyPrice` accepted any ever-signed price (no staleness) → collateral theft via force-redeem / borrow / liquidate                                                          | **Fixed**                                                                      |
+| H-01      | High     | `forceExecuteOrder` could drain a halted (wind-down) vault                                                                                                                    | **Fixed**                                                                      |
+| H-02      | High     | Resting redeem escrow stranded after `migrateToken` (stock split)                                                                                                             | **Fixed**                                                                      |
+| H-03      | High     | Withdrawal gate read a stale collateral mark after bad-debt release                                                                                                           | **Fixed**                                                                      |
+| H-04      | High     | `absorbBadDebt` released collateral in 18-dec units, not native decimals                                                                                                      | **Fixed**                                                                      |
+| H-05      | High     | `fulfillWithdrawal` didn't sync the VaultManager mark → utilization cap bypass                                                                                                | **Fixed**                                                                      |
+| H-06      | High     | Unbounded `releaseCollateral` drains pending-deposit escrow & bricks the vault (`totalAssets` underflow)                                                                      | **Fixed** (2026-06-19)                                                         |
+| H-07      | High     | No Aave health-factor gate on LP withdrawals/releases → collateral backing the vault's Aave debt can be drained into liquidation                                              | **Fixed** (2026-06-19, round 2)                                                |
+| M-01      | Medium   | Pyth confidence interval ignored                                                                                                                                              | **Fixed**                                                                      |
+| M-02      | Medium   | In-house push path unbounded when an asset's oracle config is unset                                                                                                           | **Fixed**                                                                      |
+| M-03      | Medium   | `setRateParams` unvalidated → accrual DoS bricks repay/liquidate                                                                                                              | **Fixed**                                                                      |
+| M-04      | Medium   | Withdrawal queue is not FIFO                                                                                                                                                  | **By design** — spec updated 2026-06-12 to drop the FIFO claim                 |
+| M-05      | Medium   | Book debt could lag real compounding Aave debt → LP shortfall                                                                                                                 | **Fixed**                                                                      |
+| M-06      | Medium   | `borrow` checks the debt cap before `_accrue()` → cap bypass                                                                                                                  | **Fixed**                                                                      |
+| M-07      | Medium   | `borrow` ignores the bound vault's Paused/Halted status                                                                                                                       | **Fixed**                                                                      |
+| M-08      | Medium   | `_flooredIndex` inflates on a dust scaled-debt base; breaks under multi-manager                                                                                               | **Fixed**                                                                      |
+| M-09      | Medium   | Sub-unit amounts record zero scaled debt while moving real value                                                                                                              | **Fixed**                                                                      |
+| M-10      | Medium   | `WstETHRouter` wraps requested (not received) stETH → deposit path DoS                                                                                                        | **Fixed**                                                                      |
+| M-11      | Medium   | Redeem settle band bounded against a stale mark (mint leg gated by `maxMarkAge`, redeem leg not)                                                                              | **Fixed** (2026-06-19, round 2)                                                |
+| M-12      | Medium   | `migrateToken` on a halted asset desyncs its frozen halt price → `redeemHalted` over-pays                                                                                     | **Fixed** (2026-06-19, round 2)                                                |
+| M-13      | Medium   | `fulfillWithdrawal` can settle before a borrower's bad debt is absorbed → loss socialized to remaining LPs (user-bad-debt sibling of H-07; the Aave-HF gate doesn't catch it) | **By design** — accepted with pause-on-volatility mitigation (see §3)          |
+| L-01–L-13 | Low      | See §4                                                                                                                                                                        | 10 closed (9 fixed + L-02 mitigated) · 3 by design/accepted (L-04, L-09, L-11) |
+| L-14      | Low      | In-house `getPrice` has no read-time staleness bound; `pullAssetPrice` re-stamps `block.timestamp`                                                                            | **Fixed** (2026-06-19)                                                         |
+| L-15      | Low      | `maxDeposit`/`maxMint` report unlimited while `deposit`/`mint` revert (approval gate / `onlyManager`) → ERC-4626 integrators revert                                           | **Fixed** (2026-06-19, round 2)                                                |
+| L-16      | Low      | `absorbBadDebt` over-charges LPs by a defaulted position's uncollected premium (also swept to the VM)                                                                         | **By design** — accepted; controllable via `absorbAmount` (see §3)             |
+| L-17      | Low      | `fillOrder` skipped the `isActiveAsset` gate → resting Mint order fillable after `setAssetActive(false)`                                                                      | **Fixed** (2026-06-19)                                                         |
+| C-01\*    | Info     | Force-execute asset proof was window-scoped, not fresh                                                                                                                        | **Fixed** (2026-06-18 — fresh price now required; see Pre-audit hardening)     |
 
 ---
 
@@ -192,7 +192,7 @@ gate check and before the transfer. Halted vaults skip it (already excluded from
 ### H-06 (High) — Unbounded `releaseCollateral` drained pending-deposit escrow and bricked the vault
 
 **Problem.** `releaseCollateral` (and `releaseCollateralForBadDebt`) transferred `amount` of `asset()`
-from the vault's *raw* balance with no `amount <= totalAssets()` bound. Since
+from the vault's _raw_ balance with no `amount <= totalAssets()` bound. Since
 `totalAssets() = super.totalAssets() - _pendingDepositAssets` excludes the async approval-queue
 escrow, the raw balance exceeds `totalAssets()` whenever a deposit is pending. `forceExecuteOrder`
 lets a redeemer pick any non-excluded vault and size `grossCollateral` with no per-vault
@@ -225,7 +225,7 @@ Full suite green (703 passing).
 the Aave debt (`debtToken.balanceOf(vault)`) and its aTokens double as the Aave collateral backing it.
 But `totalAssets()` never nets that debt, and **no withdrawal/release path checked the vault's Aave
 health factor** — the only HF check in the repo was `claimEarnedInterest`. The sole withdrawal gate,
-`withdrawalBreachesUtil`, sees only synthetic exposure ÷ *global* collateral; since draining one vault
+`withdrawalBreachesUtil`, sees only synthetic exposure ÷ _global_ collateral; since draining one vault
 barely moves the global total in a multi-vault pool, the gate passes while a single vault's aTokens are
 pulled out from under its Aave borrow — tipping its Aave position into liquidation and socializing the
 penalty onto remaining LPs (first-mover advantage to early exiters). The intended
@@ -234,7 +234,7 @@ enabled with outstanding Aave debt; compounds with the H-06 force-execute path.
 
 **Fix (2026-06-19, round 2).** `BorrowManager.requireVaultHealthy()` (the same
 `getUserAccountData(vault)` check `claimEarnedInterest` uses, against `minClaimHealthFactor` = 1.1e18)
-is called by `OwnVault.fulfillWithdrawal` (active vaults) and `releaseCollateral` *after* the aTokens
+is called by `OwnVault.fulfillWithdrawal` (active vaults) and `releaseCollateral` _after_ the aTokens
 leave, reverting `VaultUnsafeHealthFactor` if the release dropped the vault below the floor.
 Lending-disabled vaults (`_borrowManager == 0`) and halted-vault emergency exits are exempt. Composes
 with the H-06 designated-vault fix: a force-execute can neither pick a victim vault nor push it to
@@ -249,10 +249,10 @@ healthy still succeeds. Skips gracefully when `BASE_RPC` is unset. Full suite gr
 ### M-11 (Medium) — Redeem settle band bounded against a stale mark (PA-01 / PA-03 asymmetry)
 
 **Problem.** `_checkSettleBand` bounds the settle price to ±`settleBandBps` of the `VaultManager` mark
-(the PA-01 leaked-key damage cap) but never checked the mark's *age*. The mint leg's following
+(the PA-01 leaked-key damage cap) but never checked the mark's _age_. The mint leg's following
 `openExposure` enforces `maxMarkAge` (PA-03), so a stale mark blocks mints; the redeem leg's
 `closeExposure` is freshness-exempt (risk-reducing), so a leaked signer key — the exact threat the band
-exists for — could settle a redeem within ±band of a *stale* mark, draining the maker. The cap was
+exists for — could settle a redeem within ±band of a _stale_ mark, draining the maker. The cap was
 asymmetrically weaker on the redeem side.
 
 **Fix (2026-06-19, round 2).** `_checkSettleBand` now reverts `StaleSettleMark` when
@@ -623,7 +623,7 @@ future review"; `_pushOrSweep` weird-token → L-13).
   signer could attest a wide-deviation print the cached path would reject. Partial-signer-trust
   assumption; defense-in-depth candidate (mirror the deviation bound on the inline path).
 - **`utilizationBps` collapses to the floor when `maxDebtUSD() == 0`.** A halted/excluded vault (zero
-  collateral mark) makes `utilizationBps()` return 0, so existing borrowers accrue at the *minimum*
+  collateral mark) makes `utilizationBps()` return 0, so existing borrowers accrue at the _minimum_
   premium during the halt regardless of true utilization. Bounded revenue leak; principal stays
   floor-protected (`_flooredIndex`).
 - **`_cappedContribution` bricks single-vault minting.** With a concentration cap set and only one
@@ -649,6 +649,28 @@ future review"; `_pushOrSweep` weird-token → L-13).
 - Apply or suppress the `asm-keccak256` lint notes.
 - Gas (minor): cache `registry.vaultManager()` and payment-token decimals per settlement.
 
+## 7. Static Analysis — Slither
+
+**Tool:** Slither 0.11.5 · **Config:** `slither.config.json` (added 2026-06-19) · **Command:** `slither src/ --config-file slither.config.json`
+
+A full run (101 detectors, 78 contracts) produced **103 findings; all 103 were triaged and 0 are valid** — no contract change required. Triage read each flagged function (4-way parallel review plus manual verification of the two High/High `arbitrary-send-erc20` cases). The config silences 48 by-design/informational alerts; the remaining **55 Medium/High alerts are documented false-positives**, and those detectors are deliberately left ON so new issues in future code still surface.
+
+| Detector                                                                   | Count | Disposition                                                                                                                                                                           |
+| -------------------------------------------------------------------------- | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `timestamp`                                                                | 31    | By design — expiry / staleness / accrual-delta; no `== block.timestamp`, no exploitable miner-nudge. _(excluded in config)_                                                           |
+| `incorrect-equality`                                                       | 13    | FP — all `== 0` sentinels or same-snapshot index compares.                                                                                                                            |
+| `unused-return`                                                            | 13    | FP — EnumerableSet add/remove guaranteed by status guards; `claimRewards()` return provably equals the pre-claim snapshot; Aave tuple uses only `healthFactor`.                       |
+| `reentrancy-*` (eth/balance/no-eth/events/benign)                          | 23    | FP — `nonReentrant` + CEI throughout; eTokens have no transfer hook; cross-contract callees are guarded + trusted. _(benign/events excluded in config)_                               |
+| `arbitrary-send-eth`                                                       | 5     | FP — destinations are `msg.sender` (refund) or the registry-resolved oracle (exact fee).                                                                                              |
+| `arbitrary-send-erc20`                                                     | 2     | FP — `_settleMint` non-escrow path has `user == msg.sender` (`OwnMarket.sol:80` guard); `redeemHalted` pulls from the trusted admin-set `haltAddr`, bounded by the caller's own burn. |
+| `uninitialized-local`                                                      | 3     | FP — each left 0 only on paths where 0 is correct, consumed behind a `> 0` guard.                                                                                                     |
+| `shadowing-state`                                                          | 2     | By design — `EToken._name/_symbol` shadow OZ's _private_ vars (overridden `name()`/`symbol()`); related to the permit/rename note. _(filtered by `exclude_dependencies`)_             |
+| `missing-zero-check`                                                       | 2     | FP/intended — `rewardToken_ = 0` valid for non-dividend assets; `manager_` recoverable via `setManager`.                                                                              |
+| `pyth-unchecked-confidence`                                                | 1     | FP — confidence bound enforced in `_normalizePythPrice` (the **M-01** fix); Slither's detector is intraprocedural.                                                                    |
+| `low-level-calls` / `cyclomatic-complexity` / `pragma` / `shadowing-local` | 8     | Informational — vetted refund/sweep `.call`s, known complexity, `lib/` pragma spread, cosmetic param name. _(first three excluded in config)_                                         |
+
+`detectors_to_exclude`: `timestamp, low-level-calls, pragma, solc-version, naming-convention, cyclomatic-complexity, reentrancy-benign, reentrancy-events`.
+
 ---
 
-_Original findings cite code at review time (2026-06-09 review at commit `fa9cf33`; re-audits on `lending` through 2026-06-11, and the two 2026-06-19 multi-agent passes). Every Critical/High was verified directly against source, and every fix carries a regression test that fails without it (H-07 via a live-Aave fork test). Suite: 723 passing._
+_Original findings cite code at review time (2026-06-09 review at commit `fa9cf33`; re-audits on `lending` through 2026-06-11, and the two 2026-06-19 multi-agent passes). Every Critical/High was verified directly against source, and every fix carries a regression test that fails without it (H-07 via a live-Aave fork test). Suite: 733 passing._
