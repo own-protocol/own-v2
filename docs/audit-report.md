@@ -1,6 +1,6 @@
 # Own Protocol v2 — Audit Report & Remediation Status
 
-**Branch:** `main` (pre-audit hardening on `pre-audit-fixes-1`) · **Last updated:** 2026-06-19 · **Test suite:** 703 passing
+**Branch:** `main` (pre-audit hardening on `pre-audit-fixes-1`) · **Last updated:** 2026-06-19 · **Test suite:** 720 passing
 
 Consolidated from the 2026-06-09 full manual audit, the 2026-06-10/11 focused re-audits
 (BorrowManager, AaveRouter, H-02 migration changes), and the 2026-06-11 multi-agent re-audit
@@ -11,16 +11,25 @@ The 2026-06-19 multi-agent re-audit (solidity-auditor, 12-agent pipeline) surfac
 (**H-06**) and one new Low (**L-14**), and reopened **L-07** for an on-chain fix. All three were fixed
 with regression tests on 2026-06-19 — H-06 in §1, L-14 and L-07 in §4; no open items remain.
 
+A **second 2026-06-19 pass ("round 2", same 12-agent pipeline)** drilled into the lending ↔
+vault-collateral boundary. It implemented the H-06 "bind the redeem to a vault" defense-in-depth (a
+protocol-designated force-execute vault, removing the arbitrary-vault amplifier and the cross-vault
+value-transfer vector), and surfaced one new High (**H-07** — no Aave health-factor gate on LP
+withdrawals/releases), two new Mediums (**M-11** — the redeem settle band trusted a stale mark;
+**M-12** — `migrateToken` desynced a halted asset's frozen price), and one new Low (**L-15** —
+`maxDeposit`/`maxMint` misreported capacity). All are fixed; see §1/§4 for per-finding test coverage
+(H-07's lending-enabled revert path is a noted follow-up test). Suite: 720 passing.
+
 ## Status at a Glance
 
 | Severity | Total | Fixed | Open | By design |
 | -------- | ----- | ----- | ---- | --------- |
 | Critical | 1     | 1     | 0    | —         |
-| High     | 6     | 6     | 0    | —         |
-| Medium   | 10    | 9     | 0    | 1         |
-| Low      | 14    | 11    | 0    | 3         |
+| High     | 7     | 7     | 0    | —         |
+| Medium   | 12    | 11    | 0    | 1         |
+| Low      | 15    | 12    | 0    | 3         |
 
-**No findings are open. The 2026-06-19 re-audit's three findings are all fixed with regression tests — H-06 (High), L-14 (Low), and L-07 (Low, reopened then fixed in code); all earlier findings remain closed (fixed, mitigated, documented, or by-design). The §5 leads are triaged: 4 fixed, 2 resolved by earlier fixes, 2 noted, 2 deferred for future review.**
+**No findings are open. The 2026-06-19 re-audits' findings are all fixed — round 1: H-06 (High), L-14 (Low), L-07 (Low, reopened then fixed); round 2: H-07 (High), M-11 + M-12 (Medium), L-15 (Low), plus the H-06 amplifier removed. All carry regression tests except H-07, whose lending-enabled revert path is a noted follow-up (the gate is a no-op when lending is off or the HF is healthy, so the suite stays green). All earlier findings remain closed (fixed, mitigated, documented, or by-design). The §5 leads are triaged.**
 
 | ID        | Severity | Finding                                                                                                              | Status                                                                                           |
 | --------- | -------- | -------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
@@ -31,6 +40,7 @@ with regression tests on 2026-06-19 — H-06 in §1, L-14 and L-07 in §4; no op
 | H-04      | High     | `absorbBadDebt` released collateral in 18-dec units, not native decimals                                             | **Fixed**                                                                                        |
 | H-05      | High     | `fulfillWithdrawal` didn't sync the VaultManager mark → utilization cap bypass                                       | **Fixed**                                                                                        |
 | H-06      | High     | Unbounded `releaseCollateral` drains pending-deposit escrow & bricks the vault (`totalAssets` underflow) | **Fixed** (2026-06-19) |
+| H-07      | High     | No Aave health-factor gate on LP withdrawals/releases → collateral backing the vault's Aave debt can be drained into liquidation | **Fixed** (2026-06-19, round 2) |
 | M-01      | Medium   | Pyth confidence interval ignored                                                                                     | **Fixed**                                                                                        |
 | M-02      | Medium   | In-house push path unbounded when an asset's oracle config is unset                                                  | **Fixed**                                                                                        |
 | M-03      | Medium   | `setRateParams` unvalidated → accrual DoS bricks repay/liquidate                                                     | **Fixed**                                                                                        |
@@ -41,8 +51,11 @@ with regression tests on 2026-06-19 — H-06 in §1, L-14 and L-07 in §4; no op
 | M-08      | Medium   | `_flooredIndex` inflates on a dust scaled-debt base; breaks under multi-manager                                      | **Fixed**                                                                                        |
 | M-09      | Medium   | Sub-unit amounts record zero scaled debt while moving real value                                                     | **Fixed**                                                                                        |
 | M-10      | Medium   | `WstETHRouter` wraps requested (not received) stETH → deposit path DoS                                               | **Fixed**                                                                                        |
+| M-11      | Medium   | Redeem settle band bounded against a stale mark (mint leg gated by `maxMarkAge`, redeem leg not)                     | **Fixed** (2026-06-19, round 2)                                                                  |
+| M-12      | Medium   | `migrateToken` on a halted asset desyncs its frozen halt price → `redeemHalted` over-pays                           | **Fixed** (2026-06-19, round 2)                                                                  |
 | L-01–L-13 | Low      | See §4                                                                                                               | 10 closed (9 fixed + L-02 mitigated) · 3 by design/accepted (L-04, L-09, L-11) |
 | L-14      | Low      | In-house `getPrice` has no read-time staleness bound; `pullAssetPrice` re-stamps `block.timestamp` | **Fixed** (2026-06-19) |
+| L-15      | Low      | `maxDeposit`/`maxMint` report unlimited while `deposit`/`mint` revert (approval gate / `onlyManager`) → ERC-4626 integrators revert | **Fixed** (2026-06-19, round 2) |
 | C-01\*    | Info     | Force-execute asset proof was window-scoped, not fresh                                                               | **Fixed** (2026-06-18 — fresh price now required; see Pre-audit hardening)                       |
 
 ---
@@ -180,15 +193,77 @@ the physical transfer.
 
 **Fix (2026-06-19).** Both release paths revert `AmountExceedsBackedCollateral` when
 `amount > totalAssets()`, so a release can only spend share-backing collateral, never pending-deposit
-escrow — which also makes the `totalAssets()` underflow unreachable. Optional defense-in-depth (not
-yet done): bind the redeem `Order` to a `vault` so `forceExecuteOrder` can't target an arbitrary
-vault (removes the amplifier).
+escrow — which also makes the `totalAssets()` underflow unreachable. **Round 2 (2026-06-19): the
+amplifier is now removed** — `forceExecuteOrder` sources collateral only from a protocol-designated
+vault (`VaultManager.setForceExecuteVault`, operator-set and rotated to the healthiest vault; unset /
+`address(0)` reverts `ForceExecuteVaultNotSet`, fail-safe like `claimThreshold == 0`). This also closes
+a related cross-vault value-transfer vector (a redeemer could otherwise concentrate a redemption's
+collateral cost on any chosen vault's LPs while the exposure reduction socialized globally). Round-2
+tests: `OwnMarket.t.sol` (no-designation and wrong-vault reverts), `VaultManager.t.sol`
+(`setForceExecuteVault` success / onlyOperator / unregistered / clear-to-zero).
 
 **Tests.** `OwnVault.t.sol::test_releaseCollateral_exceedingBackedCollateral_reverts` (verified to
 fail — vault bricks via `Panic(0x11)` in `totalAssets()` — without the guard),
 `test_releaseCollateralForBadDebt_exceedingBackedCollateral_reverts`,
 `test_releaseCollateral_atBackedCollateral_succeeds` (boundary: full-backing release still allowed).
 Full suite green (703 passing).
+
+### H-07 (High) — No Aave health-factor gate on LP withdrawals or collateral release
+
+**Problem.** `BorrowManager.borrow` draws stablecoin from Aave `onBehalf=vault`, so the vault carries
+the Aave debt (`debtToken.balanceOf(vault)`) and its aTokens double as the Aave collateral backing it.
+But `totalAssets()` never nets that debt, and **no withdrawal/release path checked the vault's Aave
+health factor** — the only HF check in the repo was `claimEarnedInterest`. The sole withdrawal gate,
+`withdrawalBreachesUtil`, sees only synthetic exposure ÷ *global* collateral; since draining one vault
+barely moves the global total in a multi-vault pool, the gate passes while a single vault's aTokens are
+pulled out from under its Aave borrow — tipping its Aave position into liquidation and socializing the
+penalty onto remaining LPs (first-mover advantage to early exiters). The intended
+loan-recall-on-withdrawal flow (`leverage-design.md`) was never implemented. Reachable once lending is
+enabled with outstanding Aave debt; compounds with the H-06 force-execute path.
+
+**Fix (2026-06-19, round 2).** `BorrowManager.requireVaultHealthy()` (the same
+`getUserAccountData(vault)` check `claimEarnedInterest` uses, against `minClaimHealthFactor` = 1.1e18)
+is called by `OwnVault.fulfillWithdrawal` (active vaults) and `releaseCollateral` *after* the aTokens
+leave, reverting `VaultUnsafeHealthFactor` if the release dropped the vault below the floor.
+Lending-disabled vaults (`_borrowManager == 0`) and halted-vault emergency exits are exempt. Composes
+with the H-06 designated-vault fix: a force-execute can neither pick a victim vault nor push it to
+liquidation.
+
+**Tests.** Full suite green (720 passing); the gate is a no-op when lending is off or the HF is
+healthy, so no existing test regressed. **Follow-up (noted): a lending-enabled fork test asserting the
+`VaultUnsafeHealthFactor` revert** (mirroring `AaveBaseFork.t.sol`) — recommended to meet the
+"fails-without-the-fix" bar the other findings carry.
+
+### M-11 (Medium) — Redeem settle band bounded against a stale mark (PA-01 / PA-03 asymmetry)
+
+**Problem.** `_checkSettleBand` bounds the settle price to ±`settleBandBps` of the `VaultManager` mark
+(the PA-01 leaked-key damage cap) but never checked the mark's *age*. The mint leg's following
+`openExposure` enforces `maxMarkAge` (PA-03), so a stale mark blocks mints; the redeem leg's
+`closeExposure` is freshness-exempt (risk-reducing), so a leaked signer key — the exact threat the band
+exists for — could settle a redeem within ±band of a *stale* mark, draining the maker. The cap was
+asymmetrically weaker on the redeem side.
+
+**Fix (2026-06-19, round 2).** `_checkSettleBand` now reverts `StaleSettleMark` when
+`block.timestamp − assetMarkUpdatedAt > maxMarkAge`, so both settle legs bound against a keeper-fresh
+mark. `closeExposure` stays intentionally stale-tolerant — it also serves `forceExecuteOrder` and
+`redeemHalted`, which must work when the mark is frozen/stale — so the freshness lives on the band
+itself, not on `closeExposure`.
+**Test.** `OwnMarket.t.sol::test_executeOrder_redeem_staleMark_reverts`.
+
+### M-12 (Medium) — `migrateToken` on a halted asset desynced its frozen halt price
+
+**Problem.** Neither `AssetRegistry.migrateToken` nor `VaultManager.applySplit` guarded against a
+halted asset or rescaled `_assetHaltPrice`, while `applySplit` scales `_globalAssetUnits` by `ratio`.
+Splitting an already-halted asset doubles holders' token counts but leaves the halt price un-halved, so
+`redeemHalted` pays out at the un-rescaled price (2× at a 2:1 split), draining the finite halt-redeem
+fund, and the next `pullAssetPrice` double-counts the asset's global exposure. (Related to L-07's
+migration atomicity and the §5 split-ratio-drift lead, but a distinct halt-price seam.)
+
+**Fix (2026-06-19, round 2).** `migrateToken` reverts `AssetHalted(ticker)` when
+`VaultManager.isAssetHalted(ticker)` — a halted asset is in permanent wind-down and must never be
+re-denominated. The safe ordering (split first, then halt) is unaffected: `haltAsset` snapshots the
+post-split mark.
+**Test.** `AssetRegistry.t.sol::test_migrateToken_haltedAsset_reverts`.
 
 ### M-05 (Medium) — Book debt could lag real compounding Aave debt
 
@@ -395,6 +470,14 @@ future work: the unconfirmed leads in §5.
   can no longer re-stamp a stale in-house price as fresh via `pullAssetPrice`. Tests:
   `OracleVerifier.t.sol::test_getPrice_stalePrice_reverts` (verified to fail without the check),
   `test_getPrice_atStalenessLimit_succeeds`.
+- **L-15 — Fixed (round 2).** `maxDeposit` / `maxMint` returned `type(uint256).max` while the vault
+  was Active even though `deposit` reverts for non-managers under the approval gate and `mint` is
+  `onlyManager` in every mode — so ERC-4626 aggregators read unlimited capacity and revert. Both now
+  return 0 for callers who cannot actually deposit/mint, keyed on the **caller** (`msg.sender`), not
+  the `receiver` (a receiver-based check would break the manager depositing/minting on behalf of an
+  LP, since OZ's `deposit`/`mint` internally check `amount > max*(receiver)`). Supersedes the §6
+  hygiene note. Tests: `OwnVault.t.sol` (`maxMint` zero-for-non-manager / max-for-manager; `maxDeposit`
+  open-mode vs approval-mode × manager-vs-non-manager).
 
 ### Fixed (2026-06-12)
 
@@ -482,17 +565,45 @@ future work: the unconfirmed leads in §5.
 - **Split-ratio rounding drift** across `migrateToken`/`convertLegacy`/`applySplit` — observed
   drift was protocol-favorable; confirming needs a dedicated multi-split fuzz/trace pass.
 
+### Round-2 re-audit leads (2026-06-19)
+
+New high-signal trails from the round-2 pass. The rest of the round-2 lead set overlaps existing items
+(`_flooredIndex` dust base → M-08; collateral-aggregate mark freshness → PA-03; split-ratio drift →
+above; Pyth surplus ETH → "Resolved by earlier fixes"; no-`minAssetsOut` withdrawals → "Open for
+future review"; `_pushOrSweep` weird-token → L-13).
+
+- **Inline `verifyPrice` has no deviation bound.** The cached push path (`updatePrice`) enforces
+  per-asset max-deviation + only-newer-timestamp (M-01/M-02); the inline proof path used by
+  `borrow`/`liquidate`/`forceExecuteOrder` checks only signature + staleness, so within `priceMaxAge` a
+  signer could attest a wide-deviation print the cached path would reject. Partial-signer-trust
+  assumption; defense-in-depth candidate (mirror the deviation bound on the inline path).
+- **`utilizationBps` collapses to the floor when `maxDebtUSD() == 0`.** A halted/excluded vault (zero
+  collateral mark) makes `utilizationBps()` return 0, so existing borrowers accrue at the *minimum*
+  premium during the halt regardless of true utilization. Bounded revenue leak; principal stays
+  floor-protected (`_flooredIndex`).
+- **`_cappedContribution` bricks single-vault minting.** With a concentration cap set and only one
+  contributing vault (`others == 0`), the cap formula yields `maxCounted = 0`, so global collateral
+  stays 0 and every `openExposure` reverts `CollateralNotInitialized`. Bootstrapping footgun;
+  self-heals once a second vault contributes.
+- **aToken rebase on pending deposits.** While a deposit sits in the approval queue,
+  `_pendingDepositAssets` is fixed but the aToken rebases, so yield on the pending principal accrues to
+  existing LPs and isn't refunded on cancel/reject. Dust-bounded by the pending window.
+- **Redeem settles in the _current_ payment token.** `_settleRedeem` resolves `_paymentToken()` live,
+  while mint settles in the snapshotted `order.escrowToken` (the H-02 hardening); an admin
+  payment-token change mid-flight would settle a resting redeem in the new token.
+  Stablecoin-to-stablecoin, admin-action-gated.
+
 ---
 
 ## 6. Info / Hygiene Notes
 
 - Lending premium sweeps 100% to the VM — matches the current spec (the planned 3-way fee split was dropped from the roadmap 2026-06-12).
 - `borrow`/`repay` rely on `nonReentrant` rather than strict CEI ordering — tighten to true CEI.
-- `deposit()`/`mint()` access asymmetry: `mint` is always `onlyManager` while `deposit` can be open — standard ERC-4626 `mint` integrators revert. Align or document.
+- `deposit()`/`mint()` access asymmetry (ERC-4626 `max*` misreporting) — **promoted to L-15 and fixed in round 2.**
 - `verifyPriceForSession` uses an external self-call, dropping `msg.value` and wasting gas — refactor to internal.
 - Apply or suppress the `asm-keccak256` lint notes.
 - Gas (minor): cache `registry.vaultManager()` and payment-token decimals per settlement.
 
 ---
 
-_Original findings cite code at review time (2026-06-09 review at commit `fa9cf33`; re-audits on `lending` through 2026-06-11). Every Critical/High was verified directly against source, and every fix has a regression test that fails without it. Suite: 670 passing._
+_Original findings cite code at review time (2026-06-09 review at commit `fa9cf33`; re-audits on `lending` through 2026-06-11, and the two 2026-06-19 multi-agent passes). Every Critical/High was verified directly against source, and every fix carries a regression test that fails without it — the lone exception is H-07's lending-enabled revert path, a noted follow-up. Suite: 720 passing._

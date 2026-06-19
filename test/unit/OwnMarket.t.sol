@@ -161,7 +161,9 @@ contract OwnMarketTest is BaseTest {
             mockVaultManager, abi.encodeWithSelector(IVaultManager.maxMarkAge.selector), abi.encode(uint256(365 days))
         );
         vm.mockCall(
-            mockVaultManager, abi.encodeWithSelector(IVaultManager.assetMarkUpdatedAt.selector), abi.encode(block.timestamp)
+            mockVaultManager,
+            abi.encodeWithSelector(IVaultManager.assetMarkUpdatedAt.selector),
+            abi.encode(block.timestamp)
         );
 
         _setOraclePrice(TSLA, TSLA_PRICE);
