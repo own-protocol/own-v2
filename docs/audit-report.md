@@ -20,16 +20,24 @@ withdrawals/releases), two new Mediums (**M-11** — the redeem settle band trus
 `maxDeposit`/`maxMint` misreported capacity). All are fixed with regression tests; see §1/§4 for
 per-finding coverage (H-07 via a live-Aave fork test). Suite: 721 passing.
 
+A **2026-06-19 follow-up** reviewed the withdrawal loss-ordering surface left by H-07 and identified
+**M-13** (Medium) — the *user-bad-debt* sibling of H-07's *Aave-HF* gate: `fulfillWithdrawal` can
+settle before a borrower's unrecognized bad debt is absorbed, letting an early LP socialize the loss
+onto the remainder, and H-07's `requireVaultHealthy` gate does not catch it. There is no O(1) signal
+for unrecognized bad debt (the loss window opens at "position underwater," before liquidation), so it
+is **accepted by design** with a proactive pause-on-volatility mitigation rather than a code fix; see
+§3 for the decision and the operational controls the acceptance depends on.
+
 ## Status at a Glance
 
 | Severity | Total | Fixed | Open | By design |
 | -------- | ----- | ----- | ---- | --------- |
 | Critical | 1     | 1     | 0    | —         |
 | High     | 7     | 7     | 0    | —         |
-| Medium   | 12    | 11    | 0    | 1         |
+| Medium   | 13    | 11    | 0    | 2         |
 | Low      | 15    | 12    | 0    | 3         |
 
-**No findings are open. The 2026-06-19 re-audits' findings are all fixed — round 1: H-06 (High), L-14 (Low), L-07 (Low, reopened then fixed); round 2: H-07 (High), M-11 + M-12 (Medium), L-15 (Low), plus the H-06 amplifier removed. All carry regression tests (H-07 via a live-Aave fork test). All earlier findings remain closed (fixed, mitigated, documented, or by-design). The §5 leads are triaged.**
+**No findings are open. The 2026-06-19 re-audits' findings are all fixed — round 1: H-06 (High), L-14 (Low), L-07 (Low, reopened then fixed); round 2: H-07 (High), M-11 + M-12 (Medium), L-15 (Low), plus the H-06 amplifier removed. All carry regression tests (H-07 via a live-Aave fork test). All earlier findings remain closed (fixed, mitigated, documented, or by-design). A 2026-06-19 withdrawal loss-ordering follow-up added **M-13** (Medium) — the user-bad-debt sibling of H-07 — accepted by design with an operational pause-on-volatility mitigation (no code change; see §3). The §5 leads are triaged.**
 
 | ID        | Severity | Finding                                                                                                              | Status                                                                                           |
 | --------- | -------- | -------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
@@ -53,6 +61,7 @@ per-finding coverage (H-07 via a live-Aave fork test). Suite: 721 passing.
 | M-10      | Medium   | `WstETHRouter` wraps requested (not received) stETH → deposit path DoS                                               | **Fixed**                                                                                        |
 | M-11      | Medium   | Redeem settle band bounded against a stale mark (mint leg gated by `maxMarkAge`, redeem leg not)                     | **Fixed** (2026-06-19, round 2)                                                                  |
 | M-12      | Medium   | `migrateToken` on a halted asset desyncs its frozen halt price → `redeemHalted` over-pays                           | **Fixed** (2026-06-19, round 2)                                                                  |
+| M-13      | Medium   | `fulfillWithdrawal` can settle before a borrower's bad debt is absorbed → loss socialized to remaining LPs (user-bad-debt sibling of H-07; the Aave-HF gate doesn't catch it) | **By design** — accepted with pause-on-volatility mitigation (see §3) |
 | L-01–L-13 | Low      | See §4                                                                                                               | 10 closed (9 fixed + L-02 mitigated) · 3 by design/accepted (L-04, L-09, L-11) |
 | L-14      | Low      | In-house `getPrice` has no read-time staleness bound; `pullAssetPrice` re-stamps `block.timestamp` | **Fixed** (2026-06-19) |
 | L-15      | Low      | `maxDeposit`/`maxMint` report unlimited while `deposit`/`mint` revert (approval gate / `onlyManager`) → ERC-4626 integrators revert | **Fixed** (2026-06-19, round 2) |
@@ -453,6 +462,17 @@ future work: the unconfirmed leads in §5.
   only the wait period + utilization gate; near the cap, capacity is allocated by gas-race/caller
   choice. The queue was never required to be FIFO — the FIFO claim was dropped from the spec
   (protocol.md, AGENTS.md, Types.sol). No code change.
+- **M-13 — `fulfillWithdrawal` lets an LP exit before a borrower's bad debt is absorbed (accepted with
+  a pause-on-volatility mitigation, 2026-06-19).** While a position is underwater but its loss is not
+  yet booked into `totalAssets()` (via `absorbBadDebt`), an LP with a matured request exits at the
+  pre-loss share price, socializing the loss onto the remaining LPs. Sibling of H-07 (whose Aave-HF gate
+  is blind to it — a user default doesn't move the vault's own Aave HF) and distinct from M-04 (loss,
+  not capacity, ordering). No clean code fix: the window opens at "underwater" (before liquidation) and
+  there is no O(1) signal for unrecognized bad debt (netting Aave debt is wrong — it is offset by
+  borrowers' book-debt receivable). Mitigated by **proactive pause**: `OwnVault.pause()` freezes
+  deposits and withdrawals when a backing asset turns volatile, before the window opens — assuming an
+  automated, over-biased trigger that never unpauses into a stale/underwater state. Residual: a clean
+  flash gap can still beat the pause; revisit with a price-aware withdrawal gate if it becomes material.
 
 ---
 
