@@ -61,6 +61,7 @@ contract OrderLifecycleTest is BaseTest {
         vm.stopPrank();
 
         _setClaimThreshold(CLAIM_THRESHOLD);
+        _setForceExecuteVault(address(vault));
         _registerSigner(vm1Signer, Actors.VM1);
     }
 

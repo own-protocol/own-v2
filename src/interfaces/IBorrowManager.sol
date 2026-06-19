@@ -161,6 +161,10 @@ interface IBorrowManager {
     /// @notice The interest claim would leave the vault's Aave health factor below the minimum.
     error ClaimUnsafeHealthFactor(uint256 healthFactor);
 
+    /// @notice A collateral release (LP withdrawal or force-execution) would leave the vault's Aave
+    ///         health factor below `minClaimHealthFactor`.
+    error VaultUnsafeHealthFactor(uint256 healthFactor);
+
     /// @notice The interest buffer is zero or exceeds 100% (BPS).
     error InvalidInterestBuffer();
 
@@ -336,6 +340,11 @@ interface IBorrowManager {
 
     /// @notice Minimum vault Aave health factor (1e18) required to remain after an interest claim.
     function minClaimHealthFactor() external view returns (uint256);
+
+    /// @notice Revert if the vault's current Aave health factor is below `minClaimHealthFactor`. The
+    ///         bound vault calls this on collateral-exit paths (LP withdrawal, force-execution) so a
+    ///         release cannot drive the vault's Aave position toward liquidation.
+    function requireVaultHealthy() external view;
 
     /// @notice Whether borrowing against `asset` is currently enabled on this manager. True by
     ///         default; false only for assets the admin has explicitly disabled.

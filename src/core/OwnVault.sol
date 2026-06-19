@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 pragma solidity 0.8.28;
 
+import {IBorrowManager} from "../interfaces/IBorrowManager.sol";
 import {IOwnVault} from "../interfaces/IOwnVault.sol";
 import {IProtocolRegistry} from "../interfaces/IProtocolRegistry.sol";
 import {IVaultManager} from "../interfaces/IVaultManager.sol";
@@ -379,6 +380,13 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
         _burn(address(this), shares);
         IERC20(asset()).safeTransfer(req.owner, assets);
 
+        // Collateral backing the vault's Aave borrow just left; for an active vault, revert if that
+        // pushed the position below its Aave safety floor. A halted vault is an unconditional
+        // emergency exit and is intentionally exempt.
+        if (_vaultStatus != VaultStatus.Halted && _borrowManager != address(0)) {
+            IBorrowManager(_borrowManager).requireVaultHealthy();
+        }
+
         emit WithdrawalFulfilled(requestId, req.owner, assets, shares);
     }
 
@@ -553,6 +561,8 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
         // Sync the cached mark before assets leave, so the withdrawal gate never reads stale-high.
         IVaultManager(registry.vaultManager()).onCollateralReleased(amount);
         IERC20(asset()).safeTransfer(to, amount);
+        // Force-execution must not drain collateral below the vault's Aave safety floor.
+        if (_borrowManager != address(0)) IBorrowManager(_borrowManager).requireVaultHealthy();
     }
 
     /// @inheritdoc IOwnVault

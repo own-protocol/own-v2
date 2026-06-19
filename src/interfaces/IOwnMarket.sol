@@ -99,6 +99,12 @@ interface IOwnMarket {
     /// @notice Force-execution is not enabled: the global claim threshold is unset (zero).
     error ForceNotEnabled();
 
+    /// @notice No collateral vault is designated for force-execution (disabled until an operator sets one).
+    error ForceExecuteVaultNotSet();
+
+    /// @notice The supplied vault is not the protocol-designated force-execution vault.
+    error VaultNotDesignated(address provided, address designated);
+
     /// @notice Force execution is not available for mint orders.
     error ForceMintNotAllowed(uint256 orderId);
 

@@ -72,6 +72,7 @@ interface IVaultManager {
     event AssetHalted(bytes32 indexed asset, uint256 haltPrice);
     event HaltRedeemAddressUpdated(address indexed oldAddr, address indexed newAddr);
     event ClaimThresholdUpdated(uint256 oldThreshold, uint256 newThreshold);
+    event ForceExecuteVaultUpdated(address indexed oldVault, address indexed newVault);
     event SplitApplied(bytes32 indexed asset, uint256 ratio, uint256 newUnits, uint256 newMark);
 
     // ──────────────────────────────────────────────────────────
@@ -293,6 +294,16 @@ interface IVaultManager {
         uint256 threshold
     ) external;
     function claimThreshold() external view returns (uint256);
+
+    /// @notice Set the protocol-designated vault that sources collateral for force-execution.
+    ///         `address(0)` clears it and disables force-execution (fail-safe default); a real vault
+    ///         must be registered and not excluded. Operator-only; rotate to the healthiest vault.
+    function setForceExecuteVault(
+        address vault
+    ) external;
+    /// @notice The designated force-execution collateral vault, or `address(0)` if force-execution
+    ///         is currently disabled.
+    function forceExecuteVault() external view returns (address);
 
     // ──────────────────────────────────────────────────────────
     //  Views — risk accounting

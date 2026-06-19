@@ -1151,6 +1151,49 @@ contract VaultManagerTest is Test {
     }
 
     // ──────────────────────────────────────────────────────────
+    //  Force-execute designated vault
+    // ──────────────────────────────────────────────────────────
+
+    function test_forceExecuteVault_defaultsToZero() public view {
+        // Pre-deploy default; OwnMarket.forceExecuteOrder treats this as force-disabled.
+        assertEq(manager.forceExecuteVault(), address(0));
+    }
+
+    function test_setForceExecuteVault_succeeds() public {
+        vm.prank(admin);
+        manager.registerVault(address(vault), USDC_TICKER);
+
+        vm.expectEmit(true, true, false, false);
+        emit IVaultManager.ForceExecuteVaultUpdated(address(0), address(vault));
+        vm.prank(admin);
+        manager.setForceExecuteVault(address(vault));
+        assertEq(manager.forceExecuteVault(), address(vault));
+    }
+
+    function test_setForceExecuteVault_onlyOperator_reverts() public {
+        vm.expectRevert(IVaultManager.OnlyOperator.selector);
+        vm.prank(nonAdmin);
+        manager.setForceExecuteVault(address(vault));
+    }
+
+    function test_setForceExecuteVault_unregistered_reverts() public {
+        vm.expectRevert(abi.encodeWithSelector(IVaultManager.VaultNotRegistered.selector, address(vault)));
+        vm.prank(admin);
+        manager.setForceExecuteVault(address(vault));
+    }
+
+    function test_setForceExecuteVault_clearToZero_succeeds() public {
+        vm.prank(admin);
+        manager.registerVault(address(vault), USDC_TICKER);
+        vm.prank(admin);
+        manager.setForceExecuteVault(address(vault));
+        // address(0) clears the designation (disables force-execution); allowed.
+        vm.prank(admin);
+        manager.setForceExecuteVault(address(0));
+        assertEq(manager.forceExecuteVault(), address(0));
+    }
+
+    // ──────────────────────────────────────────────────────────
     //  Views — utilisation edge cases
     // ──────────────────────────────────────────────────────────
 

@@ -125,6 +125,10 @@ contract OwnMarketTest is BaseTest {
         vm.mockCall(
             mockVaultManager, abi.encodeWithSelector(IVaultManager.claimThreshold.selector), abi.encode(CLAIM_THRESHOLD)
         );
+        // Force-execution collateral source: mockVault is the designated vault by default.
+        vm.mockCall(
+            mockVaultManager, abi.encodeWithSelector(IVaultManager.forceExecuteVault.selector), abi.encode(mockVault)
+        );
         vm.mockCall(
             mockVaultManager, abi.encodeWithSelector(IVaultManager.haltRedeemAddress.selector), abi.encode(haltFund)
         );
@@ -747,6 +751,28 @@ contract OwnMarketTest is BaseTest {
         vm.prank(Actors.MINTER1);
         vm.expectRevert(IOwnMarket.ForceNotEnabled.selector);
         market.forceExecuteOrder(orderId, mockVault, _assetPriceData(TSLA_PRICE), _assetPriceData(ETH_PRICE));
+    }
+
+    /// @dev No designated force-execute vault (the default) disables force-execution entirely.
+    function test_forceExecuteOrder_noDesignatedVault_reverts() public {
+        vm.mockCall(
+            mockVaultManager, abi.encodeWithSelector(IVaultManager.forceExecuteVault.selector), abi.encode(address(0))
+        );
+        uint256 orderId = _placeRedeem(Actors.MINTER1, 4e18, TSLA_PRICE);
+        vm.warp(block.timestamp + CLAIM_THRESHOLD);
+        vm.prank(Actors.MINTER1);
+        vm.expectRevert(IOwnMarket.ForceExecuteVaultNotSet.selector);
+        market.forceExecuteOrder(orderId, mockVault, _assetPriceData(TSLA_PRICE), _assetPriceData(ETH_PRICE));
+    }
+
+    /// @dev The redeemer cannot source collateral from a vault other than the protocol-designated one.
+    function test_forceExecuteOrder_wrongVault_reverts() public {
+        address otherVault = makeAddr("otherVault");
+        uint256 orderId = _placeRedeem(Actors.MINTER1, 4e18, TSLA_PRICE);
+        vm.warp(block.timestamp + CLAIM_THRESHOLD);
+        vm.prank(Actors.MINTER1);
+        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.VaultNotDesignated.selector, otherVault, mockVault));
+        market.forceExecuteOrder(orderId, otherVault, _assetPriceData(TSLA_PRICE), _assetPriceData(ETH_PRICE));
     }
 
     function test_forceExecuteOrder_mintOrder_reverts() public {

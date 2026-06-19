@@ -594,6 +594,14 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
     }
 
     /// @inheritdoc IBorrowManager
+    function requireVaultHealthy() external view {
+        // Aave only blocks HF < 1.0 on its own actions; enforce the configured margin above it after
+        // collateral leaves on a release, so the vault's Aave position can't be driven to liquidation.
+        (,,,,, uint256 hf) = IAaveV3Pool(aavePool).getUserAccountData(vault);
+        if (hf < minClaimHealthFactor) revert VaultUnsafeHealthFactor(hf);
+    }
+
+    /// @inheritdoc IBorrowManager
     function isAssetBorrowable(
         bytes32 asset
     ) external view returns (bool) {

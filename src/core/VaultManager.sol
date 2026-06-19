@@ -90,6 +90,10 @@ contract VaultManager is IVaultManager {
     /// @dev Delay after a resting redeem order is placed before it can be force-executed.
     uint256 private _claimThreshold;
 
+    /// @dev Protocol-designated vault that sources collateral for force-execution. Zero (the default)
+    ///      disables force-execution entirely; the operator rotates it (e.g. to the healthiest vault).
+    address private _forceExecuteVault;
+
     // ──────────────────────────────────────────────────────────
     //  Modifiers
     // ──────────────────────────────────────────────────────────
@@ -566,6 +570,26 @@ contract VaultManager is IVaultManager {
     /// @inheritdoc IVaultManager
     function claimThreshold() external view override returns (uint256) {
         return _claimThreshold;
+    }
+
+    /// @inheritdoc IVaultManager
+    function setForceExecuteVault(
+        address vault
+    ) external override onlyOperator {
+        // address(0) clears the designation and disables force-execution (fail-safe). A real vault
+        // must be registered and currently in the pool; runtime exclusion/halt is re-checked at use.
+        if (vault != address(0)) {
+            if (!_registered[vault]) revert VaultNotRegistered(vault);
+            if (_excluded[vault]) revert VaultAlreadyExcluded(vault);
+        }
+        address old = _forceExecuteVault;
+        _forceExecuteVault = vault;
+        emit ForceExecuteVaultUpdated(old, vault);
+    }
+
+    /// @inheritdoc IVaultManager
+    function forceExecuteVault() external view override returns (address) {
+        return _forceExecuteVault;
     }
 
     // ──────────────────────────────────────────────────────────
