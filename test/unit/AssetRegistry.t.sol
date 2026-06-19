@@ -12,6 +12,7 @@ import {BaseTest} from "../helpers/BaseTest.sol";
 ///         and access control.
 contract AssetRegistryTest is BaseTest {
     AssetRegistry public registry;
+    RecordingVaultManagerForRegistry public stubVM;
 
     address public eTSLA = makeAddr("eTSLA");
     address public eGOLD = makeAddr("eGOLD");
@@ -19,8 +20,13 @@ contract AssetRegistryTest is BaseTest {
     function setUp() public override {
         super.setUp();
 
-        vm.prank(Actors.ADMIN);
+        vm.startPrank(Actors.ADMIN);
         registry = new AssetRegistry(address(protocolRegistry));
+        // migrateToken now drives VaultManager.applySplit atomically (L-07); a recording stub lets the
+        // unit tests exercise that call without standing up a full VaultManager.
+        stubVM = new RecordingVaultManagerForRegistry();
+        protocolRegistry.setAddress(protocolRegistry.VAULT_MANAGER(), address(stubVM));
+        vm.stopPrank();
         vm.label(address(registry), "AssetRegistry");
     }
 
@@ -210,6 +216,20 @@ contract AssetRegistryTest is BaseTest {
         assertEq(legacy[0], eTSLA);
     }
 
+    /// @dev L-07: migrateToken must drive VaultManager.applySplit in the SAME tx — closing the window
+    ///      where the new legacy ratio is live (convertLegacy mintable) but exposure is un-rescaled.
+    function test_migrateToken_appliesSplitAtomically() public {
+        AssetConfig memory config = _defaultConfig(eTSLA);
+        vm.startPrank(Actors.ADMIN);
+        registry.addAsset(TSLA, eTSLA, config);
+        registry.migrateToken(TSLA, makeAddr("eTSLAv2"), 3e18);
+        vm.stopPrank();
+
+        assertEq(stubVM.calls(), 1, "applySplit invoked once, atomically");
+        assertEq(stubVM.lastAsset(), TSLA, "same ticker");
+        assertEq(stubVM.lastRatio(), 3e18, "same ratio");
+    }
+
     /// @dev Migrating to the current active token or to an existing legacy token would
     ///      corrupt the ratio bookkeeping (self-legacy / duplicate legacy entry).
     function test_migrateToken_toActiveOrLegacyToken_reverts() public {
@@ -395,5 +415,19 @@ contract AssetRegistryTest is BaseTest {
     function test_getOracleType_nonExistent_reverts() public {
         vm.expectRevert(abi.encodeWithSelector(IAssetRegistry.AssetNotFound.selector, TSLA));
         registry.getOracleType(TSLA);
+    }
+}
+
+/// @dev Records the applySplit call migrateToken now makes (L-07 atomic coupling), without
+///      standing up a real VaultManager.
+contract RecordingVaultManagerForRegistry {
+    bytes32 public lastAsset;
+    uint256 public lastRatio;
+    uint256 public calls;
+
+    function applySplit(bytes32 asset, uint256 ratio) external {
+        lastAsset = asset;
+        lastRatio = ratio;
+        ++calls;
     }
 }

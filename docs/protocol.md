@@ -703,9 +703,10 @@ two splits back still converts to the live active token in one call.
 ### Exposure re-denomination (`VaultManager.applySplit`)
 
 A split is **USD-neutral** for protocol exposure — only the unit count and per-unit mark change.
-`applySplit(asset, ratio)` (admin) sets `globalAssetUnits *= ratio` and `assetMark /= ratio`, leaving
-the per-asset exposure USD and the per-asset USD cap invariant. This must run during the split so the
-keeper-cached mark and the unit book stay consistent.
+`applySplit(asset, ratio)` sets `globalAssetUnits *= ratio` and `assetMark /= ratio`, leaving the
+per-asset exposure USD and the per-asset USD cap invariant. It is **driven by
+`AssetRegistry.migrateToken`** (callable only by the AssetRegistry — `OnlyAssetRegistry`), so the unit
+re-denomination and the token migration commit in the same transaction (see the runbook below).
 
 ### Resting orders across a migration
 
@@ -732,13 +733,16 @@ ratio**: `effectivePrice = activePrice × legacyRatio`. As a result:
 ### Admin runbook for a split
 
 1. Pause the asset's trading (`setAssetTradingPaused(asset, true)`).
-2. Deploy the new eToken; `AssetRegistry.migrateToken(ticker, newToken, ratio)`.
-3. `VaultManager.applySplit(asset, ratio)`; push the split-adjusted oracle price and pull the mark.
+2. Deploy the new eToken; `AssetRegistry.migrateToken(ticker, newToken, ratio)` — this also applies
+   the exposure re-denomination (`VaultManager.applySplit`) atomically, in the same transaction.
+3. Push the split-adjusted oracle price and pull the mark.
 4. Unpause (`setAssetTradingPaused(asset, false)`).
 5. Holders call `convertLegacy`; borrowers' positions continue and resolve through normal
    repay/liquidate/settle.
 
-**Atomicity requirement:** steps 2 and 3 (`migrateToken` + `applySplit`) MUST execute in a single
-multisig batch transaction. They are not atomic on-chain; running `migrateToken` without
-`applySplit` leaves converted tokens temporarily unredeemable (exposure book still in old units)
-until `applySplit` lands. Liveness-only and admin-recoverable, but never split the two calls.
+**Atomicity (enforced on-chain).** The migration and the exposure re-denomination are coupled in
+code: `migrateToken` calls `applySplit` with the same `ratio` in one transaction, and `applySplit`
+reverts `OnlyAssetRegistry` if invoked any other way. There is no window where the new legacy ratio
+is live (`convertLegacy` mintable) while the exposure book is still in old units, so the two ratios
+cannot diverge and the calls cannot be separated. (Previously a manual single-batch ops requirement;
+hardened in code 2026-06-19 — audit finding L-07.)

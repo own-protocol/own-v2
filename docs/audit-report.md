@@ -8,8 +8,8 @@ Consolidated from the 2026-06-09 full manual audit, the 2026-06-10/11 focused re
 `audit-fixes-2026-06-10.md`, and the raw re-audit report. IDs are stable across all passes.
 
 The 2026-06-19 multi-agent re-audit (solidity-auditor, 12-agent pipeline) surfaced one new High
-(**H-06**) and one new Low (**L-14**), and reopened **L-07** for an on-chain fix. L-14 and L-07 are the
-only open items — see §2; H-06 was fixed the same day with regression tests (see §1).
+(**H-06**) and one new Low (**L-14**), and reopened **L-07** for an on-chain fix. All three were fixed
+with regression tests on 2026-06-19 — H-06 in §1, L-14 and L-07 in §4; no open items remain.
 
 ## Status at a Glance
 
@@ -18,9 +18,9 @@ only open items — see §2; H-06 was fixed the same day with regression tests (
 | Critical | 1     | 1     | 0    | —         |
 | High     | 6     | 6     | 0    | —         |
 | Medium   | 10    | 9     | 0    | 1         |
-| Low      | 14    | 9     | 2    | 3         |
+| Low      | 14    | 11    | 0    | 3         |
 
-**Two findings are open after the 2026-06-19 re-audit — L-14 (Low, new) and L-07 (reopened for an on-chain fix); H-06 (High, new) was fixed the same day with regression tests; all other findings remain closed (fixed, mitigated, documented, or by-design). The §5 leads are triaged: 4 fixed, 2 resolved by earlier fixes, 2 noted, 2 deferred for future review.**
+**No findings are open. The 2026-06-19 re-audit's three findings are all fixed with regression tests — H-06 (High), L-14 (Low), and L-07 (Low, reopened then fixed in code); all earlier findings remain closed (fixed, mitigated, documented, or by-design). The §5 leads are triaged: 4 fixed, 2 resolved by earlier fixes, 2 noted, 2 deferred for future review.**
 
 | ID        | Severity | Finding                                                                                                              | Status                                                                                           |
 | --------- | -------- | -------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
@@ -41,8 +41,8 @@ only open items — see §2; H-06 was fixed the same day with regression tests (
 | M-08      | Medium   | `_flooredIndex` inflates on a dust scaled-debt base; breaks under multi-manager                                      | **Fixed**                                                                                        |
 | M-09      | Medium   | Sub-unit amounts record zero scaled debt while moving real value                                                     | **Fixed**                                                                                        |
 | M-10      | Medium   | `WstETHRouter` wraps requested (not received) stETH → deposit path DoS                                               | **Fixed**                                                                                        |
-| L-01–L-13 | Low      | See §4                                                                                                               | 9 closed (8 fixed + L-02 mitigated) · 3 by design/accepted (L-04, L-09, L-11) · L-07 reopened → Open (see §2) |
-| L-14      | Low      | In-house `getPrice` has no read-time staleness bound; `pullAssetPrice` re-stamps `block.timestamp` | **Open** (new 2026-06-19) |
+| L-01–L-13 | Low      | See §4                                                                                                               | 10 closed (9 fixed + L-02 mitigated) · 3 by design/accepted (L-04, L-09, L-11) |
+| L-14      | Low      | In-house `getPrice` has no read-time staleness bound; `pullAssetPrice` re-stamps `block.timestamp` | **Fixed** (2026-06-19) |
 | C-01\*    | Info     | Force-execute asset proof was window-scoped, not fresh                                                               | **Fixed** (2026-06-18 — fresh price now required; see Pre-audit hardening)                       |
 
 ---
@@ -339,52 +339,9 @@ in the 2026-06-11 re-audit.
 
 ## 2. Open Findings
 
-Two findings are open following the 2026-06-19 multi-agent re-audit (solidity-auditor, 12-agent
-pipeline): L-14 is new; L-07 was reopened (see §3/§4). H-06 (also surfaced 2026-06-19) was fixed the
-same day — see §1. Both remaining items were verified against source on 2026-06-19; neither has a fix
-yet.
-
-### L-07 (Low) — `migrateToken` / `applySplit` atomicity (reopened 2026-06-19)
-
-Closed 2026-06-12 as *Documented* (ops requirement, `protocol.md §13`); reopened to track a
-code-level fix instead of relying on ops discipline alone.
-
-**Problem (unchanged).** A split is two independent admin calls whose `ratio` is never coupled
-on-chain — `AssetRegistry.migrateToken` (sets the legacy→active ratio used by permissionless
-`convertLegacy`) and `VaultManager.applySplit` (rescales `_globalAssetUnits`/`_assetMark`). Between
-them, `convertLegacy` (pause/halt-exempt) mints post-split active tokens against un-rescaled
-accounting, driving active supply above `_globalAssetUnits` so a later `closeExposure` reverts
-`InsufficientExposure` (redemptions bricked for that asset) or inflates phantom exposure.
-
-**Candidate fix.** Couple the two on-chain so the ratios cannot diverge — a single combined admin
-entry point that performs both, and/or have `applySplit` read the ratio from `AssetRegistry` (single
-source of truth), and/or guard `convertLegacy` while a split is mid-application. Liveness-only and
-admin-recoverable, hence Low.
-
-### L-14 (Low) — In-house `OracleVerifier.getPrice` has no read-time staleness bound
-
-**Problem.** `OracleVerifier.getPrice` returns the cached `(price, timestamp)` and reverts only on
-`price == 0` — no staleness check — asymmetric with `PythOracleVerifier.getPrice`, which enforces
-`getPriceNoOlderThan(maxPriceAge)`. `VaultManager._resolvePrice` discards the returned timestamp, and
-`pullAssetPrice`/`pullCollateralPrice` stamp `_assetMarkUpdatedAt = block.timestamp`, so the PA-03
-`maxMarkAge` gate bounds *time-since-pull*, not the age of the underlying observation: if the in-house
-signer stalls (or a deviation-cap freeze blocks updates during a sharp move), anyone can re-pull and
-re-stamp the stale cached price as "fresh." Extends C-01 (inline-proof path) and M-02 (push path) to
-the cached *read* path.
-
-**Why Low.** The clean drain is blocked twice over — mints are bounded by the PA-01 settle-band (a
-maker won't sign within-band at a stale-divergent price) and borrows by fresh per-position LTV +
-Aave's own HF — so the residual is the vault-level borrow cap (`maxDebtUSD`) and the asset-mark
-consumption running on a re-stamped stale price. The collateral aggregate is intentionally ungated
-per PA-03; this finding only adds the observation-age gap on the read side. Defense-in-depth.
-
-**Candidate fix.** Mirror Pyth: have in-house `getPrice` revert when
-`block.timestamp - pe.timestamp > maxStaleness` (the per-asset bound already configured for
-`updatePrice` since M-02), and/or carry the oracle observation timestamp into `_assetMarkUpdatedAt`
-instead of `block.timestamp`.
-
-**Source.** `OracleVerifier.getPrice` (~L141); `VaultManager.pullAssetPrice`/`pullCollateralPrice`/
-`_resolvePrice`; cf. `PythOracleVerifier.getPrice`.
+No open findings at any severity. The three findings surfaced by the 2026-06-19 re-audit are all
+fixed with regression tests — **H-06** (High, §1), and **L-07** + **L-14** (Low, §4). Remaining
+future work: the unconfirmed leads in §5.
 
 ---
 
@@ -423,7 +380,21 @@ instead of `block.timestamp`.
 
 ---
 
-## 4. Low Findings (all open)
+## 4. Low Findings
+
+### Fixed (2026-06-19)
+
+- **L-07 — Fixed.** `AssetRegistry.migrateToken` now calls `VaultManager.applySplit` atomically in
+  the same tx (one `ratio`, so there is no window where the new legacy ratio is live but exposure is
+  un-rescaled), and `applySplit` is locked to the AssetRegistry (`OnlyAssetRegistry`) so it can be
+  neither called nor skipped independently. Supersedes the 2026-06-12 ops-only mitigation. Tests:
+  `AssetRegistry.t.sol::test_migrateToken_appliesSplitAtomically` (verified to fail without the
+  atomic call), `VaultManager.t.sol::test_applySplit_onlyAssetRegistry_reverts`.
+- **L-14 — Fixed.** In-house `OracleVerifier.getPrice` now reverts `StalePrice` when the cached price
+  is older than the asset's configured `maxStaleness` (mirroring `PythOracleVerifier`), so a keeper
+  can no longer re-stamp a stale in-house price as fresh via `pullAssetPrice`. Tests:
+  `OracleVerifier.t.sol::test_getPrice_stalePrice_reverts` (verified to fail without the check),
+  `test_getPrice_atStalenessLimit_succeeds`.
 
 ### Fixed (2026-06-12)
 
@@ -463,10 +434,6 @@ instead of `block.timestamp`.
 
 - **L-02 — Mitigated.** Both halves are covered by existing code: `setPaymentToken` enforces
   `decimals() <= 18`, and the fee-on-transfer half is closed by the L-12 escrow balance-diff check.
-- **L-07 — Documented (2026-06-12), reopened 2026-06-19.** `migrateToken` + `applySplit` atomicity
-  was made an explicit ops requirement in `protocol.md` §13 (single multisig batch; liveness-only,
-  admin-recoverable if violated). Reopened after the 2026-06-19 re-audit to track an on-chain
-  coupling fix rather than ops discipline alone — see §2.
 
 ---
 

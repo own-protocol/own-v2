@@ -4,6 +4,7 @@ pragma solidity 0.8.28;
 import {IAssetRegistry} from "../interfaces/IAssetRegistry.sol";
 
 import {IProtocolRegistry} from "../interfaces/IProtocolRegistry.sol";
+import {IVaultManager} from "../interfaces/IVaultManager.sol";
 import {AssetConfig, PRECISION} from "../interfaces/types/Types.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
@@ -117,6 +118,10 @@ contract AssetRegistry is IAssetRegistry {
         _legacyRatio[oldToken] = ratio;
         legacy.push(oldToken);
         _assets[ticker].activeToken = newToken;
+
+        // Re-denominate exposure in the SAME tx, so there is never a window where the new legacy
+        // ratio is live (convertLegacy mintable) while VaultManager units/mark are un-rescaled.
+        IVaultManager(registry.vaultManager()).applySplit(ticker, ratio);
 
         emit TokenMigrated(ticker, oldToken, newToken, ratio);
     }

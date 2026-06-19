@@ -350,8 +350,7 @@ contract RFQAusdcFlowsTest is BaseTest {
     function _split3to1() internal returns (EToken v2, uint256 newPx) {
         v2 = new EToken("Own TSLA v2", "eTSLAv2", TSLA, address(protocolRegistry), address(usdc));
         vm.startPrank(Actors.ADMIN);
-        assetRegistry.migrateToken(TSLA, address(v2), 3e18);
-        vaultManager.applySplit(TSLA, 3e18);
+        assetRegistry.migrateToken(TSLA, address(v2), 3e18); // applies the split atomically (L-07)
         vm.stopPrank();
         newPx = TSLA_PRICE / 3;
         _setOraclePrice(TSLA, newPx);

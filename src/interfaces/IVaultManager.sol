@@ -82,6 +82,7 @@ interface IVaultManager {
     error OnlyAdmin();
     error OnlyOperator();
     error OnlyRegisteredVault();
+    error OnlyAssetRegistry();
     error ZeroAddress();
     error ZeroAmount();
     error VaultNotRegistered(address vault);

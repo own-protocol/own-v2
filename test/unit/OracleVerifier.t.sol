@@ -155,6 +155,36 @@ contract OracleVerifierTest is BaseTest {
     }
 
     // ──────────────────────────────────────────────────────────
+    //  getPrice — read-time staleness (L-14)
+    // ──────────────────────────────────────────────────────────
+
+    /// @dev L-14: getPrice must reject a cached price older than maxStaleness (matching the Pyth
+    ///      path), so a keeper cannot re-stamp a stale in-house price as fresh via pullAssetPrice.
+    function test_getPrice_stalePrice_reverts() public {
+        uint256 ts = block.timestamp;
+        verifier.updatePrice(ASSET, _signPrice(ASSET, 250e18, ts));
+
+        // Fresh right now...
+        (uint256 p,) = verifier.getPrice(ASSET);
+        assertEq(p, 250e18);
+
+        // ...but once it ages past maxStaleness, getPrice refuses it instead of handing back a stale value.
+        vm.warp(ts + MAX_STALENESS + 1);
+        vm.expectRevert(abi.encodeWithSelector(IOracleVerifier.StalePrice.selector, ASSET, ts, MAX_STALENESS));
+        verifier.getPrice(ASSET);
+    }
+
+    /// @dev Boundary: exactly at maxStaleness is still acceptable.
+    function test_getPrice_atStalenessLimit_succeeds() public {
+        uint256 ts = block.timestamp;
+        verifier.updatePrice(ASSET, _signPrice(ASSET, 250e18, ts));
+
+        vm.warp(ts + MAX_STALENESS);
+        (uint256 p,) = verifier.getPrice(ASSET);
+        assertEq(p, 250e18, "exactly at the limit is fresh");
+    }
+
+    // ──────────────────────────────────────────────────────────
     //  updatePrice — deviation
     // ──────────────────────────────────────────────────────────
 

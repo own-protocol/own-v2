@@ -399,18 +399,19 @@ contract VaultManagerTest is Test {
         _open(1000e18);
         uint256 usdBefore = manager.globalExposureUSD();
 
-        vm.prank(admin);
-        manager.applySplit(TSLA, 3e18); // 3:1 split
+        vm.prank(address(assetRegistry));
+        manager.applySplit(TSLA, 3e18); // 3:1 split — now driven by the AssetRegistry
 
         assertEq(manager.globalAssetUnits(TSLA), 3000e18, "units x3");
         assertEq(manager.assetMark(TSLA), TSLA_MARK / 3, "mark /3");
         assertEq(manager.globalExposureUSD(), usdBefore, "USD exposure invariant across split");
     }
 
-    function test_applySplit_onlyAdmin_reverts() public {
+    function test_applySplit_onlyAssetRegistry_reverts() public {
         _bootstrap();
         _open(1000e18);
-        vm.expectRevert(IVaultManager.OnlyAdmin.selector);
+        // applySplit is locked to the AssetRegistry (driven atomically by migrateToken).
+        vm.expectRevert(IVaultManager.OnlyAssetRegistry.selector);
         vm.prank(market);
         manager.applySplit(TSLA, 3e18);
     }
@@ -418,7 +419,7 @@ contract VaultManagerTest is Test {
     function test_applySplit_zeroRatio_reverts() public {
         _bootstrap();
         vm.expectRevert(IVaultManager.InvalidRatio.selector);
-        vm.prank(admin);
+        vm.prank(address(assetRegistry));
         manager.applySplit(TSLA, 0);
     }
 
@@ -645,7 +646,7 @@ contract VaultManagerTest is Test {
         _bootstrap();
         _open(1000e18);
 
-        vm.prank(admin);
+        vm.prank(address(assetRegistry));
         manager.applySplit(TSLA, 1e57); // mark = 100e18 × 1e18 / 1e57 → floors to 0
 
         vm.expectRevert(abi.encodeWithSelector(IVaultManager.PriceUnavailable.selector, TSLA));

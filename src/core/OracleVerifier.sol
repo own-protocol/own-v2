@@ -143,6 +143,11 @@ contract OracleVerifier is IOracleVerifier, Multicall, EIP712 {
     ) external view override returns (uint256 price, uint256 timestamp) {
         PriceEntry storage pe = _prices[asset];
         if (pe.price == 0) revert PriceNotAvailable(asset);
+        // Match the Pyth path: reject a cached price older than the asset's configured max age.
+        uint256 maxStaleness = _assetConfigs[asset].maxStaleness;
+        if (block.timestamp - pe.timestamp > maxStaleness) {
+            revert StalePrice(asset, pe.timestamp, maxStaleness);
+        }
         return (pe.price, pe.timestamp);
     }
 
