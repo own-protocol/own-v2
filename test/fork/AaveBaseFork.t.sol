@@ -4,7 +4,10 @@ pragma solidity 0.8.28;
 import {BorrowManager} from "../../src/core/BorrowManager.sol";
 import {OwnVault} from "../../src/core/OwnVault.sol";
 import {ProtocolRegistry} from "../../src/core/ProtocolRegistry.sol";
+import {VaultManager} from "../../src/core/VaultManager.sol";
 import {IAaveRouter} from "../../src/interfaces/IAaveRouter.sol";
+import {IBorrowManager} from "../../src/interfaces/IBorrowManager.sol";
+import {IProtocolRegistry} from "../../src/interfaces/IProtocolRegistry.sol";
 import {IAaveV3Pool} from "../../src/interfaces/external/IAaveV3Pool.sol";
 import {InterestRateModel} from "../../src/libraries/InterestRateModel.sol";
 import {AaveRouter} from "../../src/periphery/AaveRouter.sol";
@@ -151,5 +154,77 @@ contract AaveBaseForkTest is Test {
         assertGt(liveBps, 0, "non-zero live rate");
         assertLt(liveBps, 5000, "below 50% APR (decoding sanity)");
         emit log_named_uint("Live Aave USDC borrow rate (BPS)", liveBps);
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  H-07: collateral exits gated on the vault's Aave health factor
+    // ──────────────────────────────────────────────────────────
+
+    /// @dev With lending live and the vault carrying real Aave debt, a collateral release that would
+    ///      drop the vault's Aave health factor below `minClaimHealthFactor` (1.1e18) must revert
+    ///      `VaultUnsafeHealthFactor`; a small release that keeps the position healthy still succeeds.
+    ///      Fails without the H-07 guard (the over-release would simply transfer out and brick the
+    ///      vault's Aave position).
+    function test_fork_releaseCollateral_unsafeHealthFactor_reverts() public requiresFork {
+        // VaultManager so OwnVault.releaseCollateral's onCollateralReleased call resolves; with no
+        // collateral mark pulled it is a no-op, so the release reaches the H-07 Aave-HF gate.
+        vm.startPrank(admin);
+        VaultManager vaultManager = new VaultManager(IProtocolRegistry(address(registry)));
+        registry.setAddress(registry.VAULT_MANAGER(), address(vaultManager));
+        vaultManager.registerVault(address(vault), bytes32("WSTETH"));
+
+        // Enable lending so the vault gates collateral exits on its Aave health factor.
+        borrowManager = new BorrowManager(
+            address(vault),
+            USDC_BASE,
+            usdcVariableDebt,
+            AAVE_V3_POOL_BASE,
+            address(registry),
+            3500,
+            InterestRateModel.Params({basePremiumBps: 100, optimalUtilBps: 8000, slope1Bps: 400, slope2Bps: 7500})
+        );
+        vault.setBorrowManager(address(borrowManager));
+        vm.stopPrank();
+
+        // LP deposits wstETH → vault holds awstETH (its Aave collateral).
+        uint256 amount = 5 ether;
+        deal(WSTETH_BASE, lp, amount);
+        vm.startPrank(lp);
+        IERC20(WSTETH_BASE).approve(address(router), amount);
+        router.deposit(WSTETH_BASE, IERC4626(address(vault)), amount, lp, 0);
+        vm.stopPrank();
+
+        // Vault borrows ~1/3 of its capacity in USDC (onBehalf=itself) → carries real Aave debt, so its
+        // health factor is finite and starts comfortably above the 1.1 floor.
+        vm.startPrank(address(vault));
+        IAaveV3Pool(AAVE_V3_POOL_BASE).setUserUseReserveAsCollateral(WSTETH_BASE, true);
+        (,, uint256 availableBorrowsBase,,,) = IAaveV3Pool(AAVE_V3_POOL_BASE).getUserAccountData(address(vault));
+        assertGt(availableBorrowsBase, 0, "vault has Aave borrowing power");
+        uint256 borrowUsdc = availableBorrowsBase / 100 / 3; // 8-dec USD base → 6-dec USDC, ~1/3 of capacity
+        IAaveV3Pool(AAVE_V3_POOL_BASE).borrow(USDC_BASE, borrowUsdc, 2, 0, address(vault));
+        vm.stopPrank();
+
+        (,,,,, uint256 hf) = IAaveV3Pool(AAVE_V3_POOL_BASE).getUserAccountData(address(vault));
+        assertGt(hf, 1.1e18, "vault healthy after borrow");
+
+        address market = registry.market();
+        uint256 backing = vault.totalAssets();
+
+        // Size the release so the vault's Aave HF lands between Aave's own 1.0 aToken-transfer floor
+        // and the protocol's 1.1 floor: Aave permits the transfer, but H-07's requireVaultHealthy
+        // rejects it. HF scales linearly with the remaining collateral, so post-release HF ≈ targetHf.
+        // (Reverting at a *higher* HF than Aave would on its own is exactly the margin H-07 adds — a
+        // larger release would instead trip Aave's own health check, masking the guard.)
+        uint256 targetHf = 1.05e18;
+        uint256 releaseAmount = (backing * (hf - targetHf)) / hf;
+        vm.prank(market);
+        // Selector-only match: the HF carried in the error is set by live Aave rounding. Asserting the
+        // specific selector proves it is H-07's guard firing, not Aave's own 1.0 transfer check.
+        vm.expectPartialRevert(IBorrowManager.VaultUnsafeHealthFactor.selector);
+        vault.releaseCollateral(lp, releaseAmount);
+
+        // Control: a 1% release keeps the position healthy → succeeds (no revert).
+        vm.prank(market);
+        vault.releaseCollateral(lp, backing / 100);
     }
 }

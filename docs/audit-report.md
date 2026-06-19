@@ -1,6 +1,6 @@
 # Own Protocol v2 — Audit Report & Remediation Status
 
-**Branch:** `main` (pre-audit hardening on `pre-audit-fixes-1`) · **Last updated:** 2026-06-19 · **Test suite:** 720 passing
+**Branch:** `main` (pre-audit hardening on `pre-audit-fixes-1`) · **Last updated:** 2026-06-19 · **Test suite:** 721 passing
 
 Consolidated from the 2026-06-09 full manual audit, the 2026-06-10/11 focused re-audits
 (BorrowManager, AaveRouter, H-02 migration changes), and the 2026-06-11 multi-agent re-audit
@@ -17,8 +17,8 @@ protocol-designated force-execute vault, removing the arbitrary-vault amplifier 
 value-transfer vector), and surfaced one new High (**H-07** — no Aave health-factor gate on LP
 withdrawals/releases), two new Mediums (**M-11** — the redeem settle band trusted a stale mark;
 **M-12** — `migrateToken` desynced a halted asset's frozen price), and one new Low (**L-15** —
-`maxDeposit`/`maxMint` misreported capacity). All are fixed; see §1/§4 for per-finding test coverage
-(H-07's lending-enabled revert path is a noted follow-up test). Suite: 720 passing.
+`maxDeposit`/`maxMint` misreported capacity). All are fixed with regression tests; see §1/§4 for
+per-finding coverage (H-07 via a live-Aave fork test). Suite: 721 passing.
 
 ## Status at a Glance
 
@@ -29,7 +29,7 @@ withdrawals/releases), two new Mediums (**M-11** — the redeem settle band trus
 | Medium   | 12    | 11    | 0    | 1         |
 | Low      | 15    | 12    | 0    | 3         |
 
-**No findings are open. The 2026-06-19 re-audits' findings are all fixed — round 1: H-06 (High), L-14 (Low), L-07 (Low, reopened then fixed); round 2: H-07 (High), M-11 + M-12 (Medium), L-15 (Low), plus the H-06 amplifier removed. All carry regression tests except H-07, whose lending-enabled revert path is a noted follow-up (the gate is a no-op when lending is off or the HF is healthy, so the suite stays green). All earlier findings remain closed (fixed, mitigated, documented, or by-design). The §5 leads are triaged.**
+**No findings are open. The 2026-06-19 re-audits' findings are all fixed — round 1: H-06 (High), L-14 (Low), L-07 (Low, reopened then fixed); round 2: H-07 (High), M-11 + M-12 (Medium), L-15 (Low), plus the H-06 amplifier removed. All carry regression tests (H-07 via a live-Aave fork test). All earlier findings remain closed (fixed, mitigated, documented, or by-design). The §5 leads are triaged.**
 
 | ID        | Severity | Finding                                                                                                              | Status                                                                                           |
 | --------- | -------- | -------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
@@ -229,10 +229,11 @@ Lending-disabled vaults (`_borrowManager == 0`) and halted-vault emergency exits
 with the H-06 designated-vault fix: a force-execute can neither pick a victim vault nor push it to
 liquidation.
 
-**Tests.** Full suite green (720 passing); the gate is a no-op when lending is off or the HF is
-healthy, so no existing test regressed. **Follow-up (noted): a lending-enabled fork test asserting the
-`VaultUnsafeHealthFactor` revert** (mirroring `AaveBaseFork.t.sol`) — recommended to meet the
-"fails-without-the-fix" bar the other findings carry.
+**Tests.** `AaveBaseFork.t.sol::test_fork_releaseCollateral_unsafeHealthFactor_reverts` — against live
+Aave V3 on Base, the vault borrows real USDC against its awstETH, then a collateral release sized to
+land the Aave HF in the (1.0, 1.1) gap reverts `VaultUnsafeHealthFactor` (selector-matched). Verified
+to **fail without the guard** (the release succeeds, no revert); a smaller release that keeps the HF
+healthy still succeeds. Skips gracefully when `BASE_RPC` is unset. Full suite green (721 passing).
 
 ### M-11 (Medium) — Redeem settle band bounded against a stale mark (PA-01 / PA-03 asymmetry)
 
@@ -606,4 +607,4 @@ future review"; `_pushOrSweep` weird-token → L-13).
 
 ---
 
-_Original findings cite code at review time (2026-06-09 review at commit `fa9cf33`; re-audits on `lending` through 2026-06-11, and the two 2026-06-19 multi-agent passes). Every Critical/High was verified directly against source, and every fix carries a regression test that fails without it — the lone exception is H-07's lending-enabled revert path, a noted follow-up. Suite: 720 passing._
+_Original findings cite code at review time (2026-06-09 review at commit `fa9cf33`; re-audits on `lending` through 2026-06-11, and the two 2026-06-19 multi-agent passes). Every Critical/High was verified directly against source, and every fix carries a regression test that fails without it (H-07 via a live-Aave fork test). Suite: 721 passing._
