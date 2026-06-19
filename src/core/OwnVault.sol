@@ -603,7 +603,9 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     }
 
     function totalAssets() public view override(ERC4626, IERC4626) returns (uint256) {
-        return super.totalAssets() - _pendingDepositAssets;
+        // saturate: an external Aave liquidation can pull the aToken balance below pending deposits
+        uint256 raw = super.totalAssets();
+        return raw > _pendingDepositAssets ? raw - _pendingDepositAssets : 0;
     }
 
     /// @dev Virtual-shares offset to neutralise ERC-4626 inflation / first-depositor attacks.

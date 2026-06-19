@@ -318,6 +318,34 @@ contract OwnVaultTest is BaseTest {
         vault.cancelDeposit(requestId);
     }
 
+    /// @dev Regression: an external Aave liquidation can pull the vault's collateral (aToken)
+    ///      balance below `_pendingDepositAssets`. `totalAssets()` must saturate to 0 rather than
+    ///      underflow-revert — a revert here would brick every path that reads it (previews,
+    ///      withdrawals, keeper price marks).
+    function test_totalAssets_saturatesWhenBalanceBelowPending() public {
+        _enableDepositApproval();
+
+        // Accepted backing (5) + a larger pending deposit (10) => balance 15, pending 10.
+        _depositAs(Actors.LP2, 5 ether);
+
+        uint256 pending = 10 ether;
+        weth.mint(Actors.LP1, pending);
+        vm.startPrank(Actors.LP1);
+        weth.approve(address(vault), pending);
+        vault.requestDeposit(pending, Actors.LP1, 0);
+        vm.stopPrank();
+
+        assertEq(vault.totalAssets(), 5 ether, "accepted assets before seizure");
+
+        // Simulate an external Aave liquidation seizing collateral below the pending total.
+        vm.prank(address(vault));
+        weth.transfer(address(0xdead), 13 ether); // balance 15 -> 2, below 10 pending
+        assertLt(weth.balanceOf(address(vault)), pending, "balance now below pending");
+
+        // Pre-fix this underflowed (Panic 0x11) and bricked the vault; now it saturates.
+        assertEq(vault.totalAssets(), 0, "totalAssets saturates to zero");
+    }
+
     // ──────────────────────────────────────────────────────────
     //  Async withdrawal queue
     // ──────────────────────────────────────────────────────────
