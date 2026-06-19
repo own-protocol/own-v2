@@ -651,6 +651,39 @@ contract OwnMarketTest is BaseTest {
         market.fillOrder(q, _sign(q, rfqVMPk));
     }
 
+    // L-17: a Mint fill opens new exposure, so it must reject a deactivated asset (matching
+    // executeOrder/placeOrder); previously fillOrder only checked pause/halt, not isActiveAsset.
+    function test_fillOrder_mint_inactiveAsset_reverts() public {
+        uint256 amount = 1000e6;
+        uint256 orderId = _placeMint(Actors.MINTER1, amount, TSLA_PRICE);
+
+        vm.prank(Actors.ADMIN);
+        assetReg.setAssetActive(TSLA, false);
+
+        Quote memory q = _quote(orderId, Actors.MINTER1, OrderType.Mint, amount, TSLA_PRICE);
+        vm.prank(rfqVM);
+        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.AssetNotActive.selector, TSLA));
+        market.fillOrder(q, _sign(q, rfqVMPk));
+    }
+
+    // L-17 scoping: deactivation must NOT block Redeem (wind-down) fills of existing positions.
+    function test_fillOrder_redeem_inactiveAsset_succeeds() public {
+        uint256 amount = 4e18;
+        uint256 orderId = _placeRedeem(Actors.MINTER1, amount, TSLA_PRICE);
+        uint256 fill = 1e18;
+        uint256 payout = _expectedRedeemOut(fill, TSLA_PRICE);
+        _fundVMForRedeem(payout);
+
+        vm.prank(Actors.ADMIN);
+        assetReg.setAssetActive(TSLA, false);
+
+        Quote memory q = _quote(orderId, Actors.MINTER1, OrderType.Redeem, fill, TSLA_PRICE);
+        vm.prank(rfqVM);
+        market.fillOrder(q, _sign(q, rfqVMPk));
+
+        assertEq(usdc.balanceOf(Actors.MINTER1), payout, "redeem winds down while inactive");
+    }
+
     function test_fillOrder_redeemLimitViolated_reverts() public {
         uint256 amount = 4e18;
         uint256 orderId = _placeRedeem(Actors.MINTER1, amount, TSLA_PRICE);

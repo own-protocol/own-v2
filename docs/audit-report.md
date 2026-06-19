@@ -1,6 +1,6 @@
 # Own Protocol v2 — Audit Report & Remediation Status
 
-**Branch:** `main` (pre-audit hardening on `pre-audit-fixes-1`) · **Last updated:** 2026-06-19 · **Test suite:** 721 passing
+**Branch:** `main` (pre-audit hardening on `pre-audit-fixes-1`) · **Last updated:** 2026-06-19 · **Test suite:** 723 passing
 
 Consolidated from the 2026-06-09 full manual audit, the 2026-06-10/11 focused re-audits
 (BorrowManager, AaveRouter, H-02 migration changes), and the 2026-06-11 multi-agent re-audit
@@ -35,9 +35,9 @@ is **accepted by design** with a proactive pause-on-volatility mitigation rather
 | Critical | 1     | 1     | 0    | —         |
 | High     | 7     | 7     | 0    | —         |
 | Medium   | 13    | 11    | 0    | 2         |
-| Low      | 15    | 12    | 0    | 3         |
+| Low      | 17    | 13    | 0    | 4         |
 
-**No findings are open. The 2026-06-19 re-audits' findings are all fixed — round 1: H-06 (High), L-14 (Low), L-07 (Low, reopened then fixed); round 2: H-07 (High), M-11 + M-12 (Medium), L-15 (Low), plus the H-06 amplifier removed. All carry regression tests (H-07 via a live-Aave fork test). All earlier findings remain closed (fixed, mitigated, documented, or by-design). A 2026-06-19 withdrawal loss-ordering follow-up added **M-13** (Medium) — the user-bad-debt sibling of H-07 — accepted by design with an operational pause-on-volatility mitigation (no code change; see §3). The §5 leads are triaged.**
+**No findings are open. The 2026-06-19 re-audits' findings are all fixed — round 1: H-06 (High), L-14 (Low), L-07 (Low, reopened then fixed); round 2: H-07 (High), M-11 + M-12 (Medium), L-15 (Low), plus the H-06 amplifier removed. All carry regression tests (H-07 via a live-Aave fork test). All earlier findings remain closed (fixed, mitigated, documented, or by-design). A 2026-06-19 withdrawal loss-ordering follow-up added **M-13** (Medium) — the user-bad-debt sibling of H-07 — accepted by design with an operational pause-on-volatility mitigation (no code change; see §3). A 2026-06-19 lead deep-dive (3-agent verification of all post-audit leads) added **L-17** (Low, Fixed — `fillOrder` missing the active-asset gate) and **L-16** (Low, accepted — `absorbBadDebt` premium over-charge, controllable via `absorbAmount`); the other 18 leads resolved to already-addressed or not-exploitable. The §5 leads are triaged.**
 
 | ID        | Severity | Finding                                                                                                              | Status                                                                                           |
 | --------- | -------- | -------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
@@ -65,6 +65,8 @@ is **accepted by design** with a proactive pause-on-volatility mitigation rather
 | L-01–L-13 | Low      | See §4                                                                                                               | 10 closed (9 fixed + L-02 mitigated) · 3 by design/accepted (L-04, L-09, L-11) |
 | L-14      | Low      | In-house `getPrice` has no read-time staleness bound; `pullAssetPrice` re-stamps `block.timestamp` | **Fixed** (2026-06-19) |
 | L-15      | Low      | `maxDeposit`/`maxMint` report unlimited while `deposit`/`mint` revert (approval gate / `onlyManager`) → ERC-4626 integrators revert | **Fixed** (2026-06-19, round 2) |
+| L-16      | Low      | `absorbBadDebt` over-charges LPs by a defaulted position's uncollected premium (also swept to the VM) | **By design** — accepted; controllable via `absorbAmount` (see §3) |
+| L-17      | Low      | `fillOrder` skipped the `isActiveAsset` gate → resting Mint order fillable after `setAssetActive(false)` | **Fixed** (2026-06-19) |
 | C-01\*    | Info     | Force-execute asset proof was window-scoped, not fresh                                                               | **Fixed** (2026-06-18 — fresh price now required; see Pre-audit hardening)                       |
 
 ---
@@ -473,6 +475,18 @@ future work: the unconfirmed leads in §5.
   deposits and withdrawals when a backing asset turns volatile, before the window opens — assuming an
   automated, over-biased trigger that never unpauses into a stale/underwater state. Residual: a clean
   flash gap can still beat the pause; revisit with a price-aware withdrawal gate if it becomes material.
+- **L-16 — `absorbBadDebt` over-charges LPs by a defaulted position's uncollected premium (accepted;
+  controllable via `absorbAmount`, 2026-06-19).** On a bad-debt absorb the book residual is
+  `R = realAaveDebt A + premium P`; `_repayAaveAndSweep(R)` repays `A` to Aave and sweeps the `P`
+  surplus to the VM, while `lpLoss = R − absorbAmount` releases `R`-worth of collateral to the
+  treasury — so with the natural `absorbAmount = 0` LPs eat `A` (the real hole, correct) **plus** `P`
+  (the premium the VM also collects), over-socializing by the position's uncollected premium. Accepted,
+  not fixed: it is `onlyOperator`, bounded by per-position premium (dollars-scale), and the operator
+  neutralizes it by setting `absorbAmount = P` (the gap is the position's `earnedInterest()`). Distinct
+  from the §5 "surplus sweep" note (which concerned M-08 index-inflation reachability, not `lpLoss`
+  sizing). Code-level fix if ever desired: size `lpLoss` off the real Aave repaid
+  (`realAaveDebt − absorbAmount`) rather than the book residual. Surfaced by the 2026-06-19 lead
+  deep-dive.
 
 ---
 
@@ -499,6 +513,16 @@ future work: the unconfirmed leads in §5.
   LP, since OZ's `deposit`/`mint` internally check `amount > max*(receiver)`). Supersedes the §6
   hygiene note. Tests: `OwnVault.t.sol` (`maxMint` zero-for-non-manager / max-for-manager; `maxDeposit`
   open-mode vs approval-mode × manager-vs-non-manager).
+- **L-17 — Fixed.** `OwnMarket.fillOrder` skipped the `_validateAsset`/`isActiveAsset` gate that
+  `executeOrder` and `placeOrder` enforce (it checked only pause/halt via `_checkTradeable`), so a
+  resting **Mint** limit order could be filled — opening new exposure and minting eTokens — after an
+  operator deactivated the asset via `setAssetActive(false)`, contradicting the interface spec ("when
+  `active` is false, new orders are blocked"). `fillOrder` now calls `_validateAsset(order.asset)` on
+  the **Mint** branch only (Redeem fills stay exempt so existing positions wind down). Low: all risk
+  caps (asset cap / global util / fresh mark) still bound, so no solvency breach or fund loss — a
+  control-surface/spec gap. Surfaced by the 2026-06-19 lead deep-dive. Tests:
+  `OwnMarket.t.sol::test_fillOrder_mint_inactiveAsset_reverts` (verified to fail without the gate) and
+  `test_fillOrder_redeem_inactiveAsset_succeeds` (wind-down scoping preserved).
 
 ### Fixed (2026-06-12)
 
@@ -627,4 +651,4 @@ future review"; `_pushOrSweep` weird-token → L-13).
 
 ---
 
-_Original findings cite code at review time (2026-06-09 review at commit `fa9cf33`; re-audits on `lending` through 2026-06-11, and the two 2026-06-19 multi-agent passes). Every Critical/High was verified directly against source, and every fix carries a regression test that fails without it (H-07 via a live-Aave fork test). Suite: 721 passing._
+_Original findings cite code at review time (2026-06-09 review at commit `fa9cf33`; re-audits on `lending` through 2026-06-11, and the two 2026-06-19 multi-agent passes). Every Critical/High was verified directly against source, and every fix carries a regression test that fails without it (H-07 via a live-Aave fork test). Suite: 723 passing._

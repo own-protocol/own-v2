@@ -173,6 +173,9 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard, EIP712 {
             if (quote.price < order.limitPrice) revert LimitNotSatisfied();
         }
 
+        // Mint fills open new exposure; gate on active asset like execute/placeOrder. Redeem winds down.
+        if (order.orderType == OrderType.Mint) _validateAsset(order.asset);
+
         _checkTradeable(order.asset, order.orderType);
 
         // Effects.
