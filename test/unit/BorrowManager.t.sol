@@ -484,6 +484,27 @@ contract BorrowManagerTest is BaseTest {
         vm.stopPrank();
     }
 
+    function test_liquidate_haltedAsset_reverts() public {
+        // GPT5-H-01: a halted asset settles only via settleHaltedPosition() at the frozen halt
+        // price. Ordinary liquidation at a caller-supplied live price must be blocked, else a
+        // liquidator seizes collateral cheaply at the low live price then redeems it at the higher
+        // halt price via redeemHalted, draining borrower equity and the halt fund.
+        (, uint256 stable) = _openTypical(Actors.MINTER1);
+
+        // Halt at the $250 mark, then present a crashed $105 live price that would otherwise make
+        // the position liquidatable (mirrors test_liquidate_underwater_fullCloseWithBonus).
+        _haltAsset(ASSET, TSLA_PX);
+        uint256 crashPx = 105e18;
+        _setOraclePrice(ASSET, crashPx);
+
+        usdc.mint(Actors.LIQUIDATOR, stable);
+        vm.startPrank(Actors.LIQUIDATOR);
+        usdc.approve(address(borrowManager), stable);
+        vm.expectRevert(IBorrowManager.VaultEffectivelyHalted.selector);
+        borrowManager.liquidate(Actors.MINTER1, ASSET, stable, _priceData(crashPx));
+        vm.stopPrank();
+    }
+
     function test_liquidate_returnsResidualToBorrower() public {
         // Open with surplus collateral so even after bonus there's residual.
         // 200 eTSLA at $250 = $50k coll. Borrow $10k. LTV = 20% (well below 70%).

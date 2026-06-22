@@ -331,6 +331,8 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
     ) external payable nonReentrant {
         if (_positions[borrower][asset].principal == 0) revert NoPosition(borrower, asset);
         if (repayAmount == 0) revert ZeroAmount();
+        // Halted assets settle only via settleHaltedPosition() at the frozen halt price (GPT5-H-01).
+        if (IVaultManager(registry.vaultManager()).isAssetHalted(asset)) revert VaultEffectivelyHalted();
 
         _accrue();
         uint256 oraclePrice = _verifyPrice(asset, priceData);

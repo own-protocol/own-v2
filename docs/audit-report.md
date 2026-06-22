@@ -28,12 +28,21 @@ for unrecognized bad debt (the loss window opens at "position underwater," befor
 is **accepted by design** with a proactive pause-on-volatility mitigation rather than a code fix; see
 §3 for the decision and the operational controls the acceptance depends on.
 
+A **2026-06-22 validation pass** triaged an external GPT-5 multi-agent audit
+(`docs/audit-doc-gpt5.md` — 14 High + 4 Medium confirmed + 23 leads) against current code. One genuine
+new High surfaced — **H-08** (`liquidate` was missing the halt guard `borrow` already has) — fixed the
+same day with a regression test (§1). The other 13 "Highs", all 4 "Mediums", and all 23 leads validated
+to false positives, duplicates of findings already closed here (e.g. L-14, H-06/H-07, M-08, M-12), or
+accepted/by-design tradeoffs; the full per-finding disposition is appended to the GPT-5 doc (Appendix
+A). A few legitimate Lows were noted for future hardening (force-execute-vault and withdrawal-delay
+deploy wiring, accrue-before-rate-change, pull-based manager revenue, permit-domain-on-rename).
+
 ## Status at a Glance
 
 | Severity | Total | Fixed | Open | By design |
 | -------- | ----- | ----- | ---- | --------- |
 | Critical | 1     | 1     | 0    | —         |
-| High     | 7     | 7     | 0    | —         |
+| High     | 8     | 8     | 0    | —         |
 | Medium   | 13    | 11    | 0    | 2         |
 | Low      | 17    | 13    | 0    | 4         |
 
@@ -49,6 +58,7 @@ is **accepted by design** with a proactive pause-on-volatility mitigation rather
 | H-05      | High     | `fulfillWithdrawal` didn't sync the VaultManager mark → utilization cap bypass                                                                                                | **Fixed**                                                                      |
 | H-06      | High     | Unbounded `releaseCollateral` drains pending-deposit escrow & bricks the vault (`totalAssets` underflow)                                                                      | **Fixed** (2026-06-19)                                                         |
 | H-07      | High     | No Aave health-factor gate on LP withdrawals/releases → collateral backing the vault's Aave debt can be drained into liquidation                                              | **Fixed** (2026-06-19, round 2)                                                |
+| H-08      | High     | `liquidate` lacked the halt guard `borrow` has → halted asset liquidatable at a live price, seized collateral then redeemed at the higher frozen halt price (live-vs-halt arbitrage) | **Fixed** (2026-06-22 — GPT-5 validation pass; GPT5-H-01)                       |
 | M-01      | Medium   | Pyth confidence interval ignored                                                                                                                                              | **Fixed**                                                                      |
 | M-02      | Medium   | In-house push path unbounded when an asset's oracle config is unset                                                                                                           | **Fixed**                                                                      |
 | M-03      | Medium   | `setRateParams` unvalidated → accrual DoS bricks repay/liquidate                                                                                                              | **Fixed**                                                                      |
@@ -245,6 +255,31 @@ Aave V3 on Base, the vault borrows real USDC against its awstETH, then a collate
 land the Aave HF in the (1.0, 1.1) gap reverts `VaultUnsafeHealthFactor` (selector-matched). Verified
 to **fail without the guard** (the release succeeds, no revert); a smaller release that keeps the HF
 healthy still succeeds. Skips gracefully when `BASE_RPC` is unset. Full suite green (721 passing).
+
+### H-08 (High) — `liquidate` was callable on a halted asset at a divergent live price
+
+**Problem.** Surfaced by the 2026-06-22 GPT-5 validation pass (`docs/audit-doc-gpt5.md`, GPT5-H-01).
+The asset-level halt guard (`isAssetHalted`) was wired into `borrow` (via `_validateEligibility`, M-07)
+and `migrateToken` (M-12) but **not** into `liquidate`. A halted asset is meant to wind down only via
+the permissionless `settleHaltedPosition` at the single frozen halt price; leaving `liquidate` open
+created a second settlement path priced off a caller-supplied **live** signed proof. With the halt
+price above a still-fresh live price — the natural state at a halt, since the on-chain halt and the
+off-chain signer stop are separate steps and the operator sets the halt price freely (GPT5-H-10) — a
+liquidator could seize collateral cheaply at the live price, then redeem the seized eTokens at the
+higher halt price through the permissionless `redeemHalted`, draining borrower equity and the finite
+halt fund (and able to manufacture residual bad debt). Breaks the intended invariant "a halted asset
+has exactly one valuation across liquidation, settlement, and redemption."
+
+**Fix (2026-06-22).** `liquidate` reverts `VaultEffectivelyHalted` when
+`IVaultManager(registry.vaultManager()).isAssetHalted(asset)`, before any price verification, so a
+halted position can only wind down through `settleHaltedPosition` at the frozen price. Mirrors the
+`borrow` halt guard. Asset *pause* is intentionally not gated — a paused asset has no frozen halt price
+and no `redeemHalted` path, so there is no arbitrage and liquidation stays available as normal risk
+management.
+**Test.** `BorrowManager.t.sol::test_liquidate_haltedAsset_reverts` — halts the asset at $250, presents
+a crashed $105 live price, and asserts `liquidate` reverts `VaultEffectivelyHalted`. Verified to
+**fail without the guard** (the liquidation succeeds: "next call did not revert as expected"). Full
+non-fork suite green (731 passing).
 
 ### M-11 (Medium) — Redeem settle band bounded against a stale mark (PA-01 / PA-03 asymmetry)
 
