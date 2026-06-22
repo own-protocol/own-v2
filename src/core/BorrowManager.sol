@@ -28,8 +28,8 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 ///         Interest accrues on a single global cumulative index using a two-slope utilization curve
 ///         (the borrow rate is vault-wide, so one index prices every position). Liquidation is
 ///         signed-price gated and partial: the liquidator names a repay amount, capped by an
-///         HF-gated close factor, and the bonus-based seize must fit the position's remaining
-///         collateral.
+///         HF-gated close factor, and the bonus-based seize is capped at the position's remaining
+///         collateral (a deeply underwater position seizes all of it, leaving no dust crumb).
 ///
 ///         **Funding source (Aave V3):** this implementation sources the loaned stablecoin from
 ///         Aave V3 via the vault's credit delegation — `pool.borrow(onBehalf=vault)` /
@@ -372,9 +372,11 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
             hf > CLOSE_FACTOR_HF_THRESHOLD ? currentDebt.mulDiv(liquidationCloseFactorBps, BPS) : currentDebt;
         if (repayAmount > maxRepay) repayAmount = maxRepay;
 
-        // Bonus-based seize; must be coverable by remaining collateral.
+        // Cap the bonus-seize at the remaining collateral instead of reverting: a deeply underwater
+        // position seizes all of it, driving collateral to exactly 0 so the residual stays absorbable
+        // (no sub-seize-unit dust crumb stranded).
         uint256 seize = LendingMath.seizeAmount(repayAmount, price, liquidationBonusBps, _stableDecimals);
-        if (seize > p.eTokenCollateral) revert SeizeExceedsCollateral(seize, p.eTokenCollateral);
+        if (seize > p.eTokenCollateral) seize = p.eTokenCollateral;
 
         // Pull the repay from the liquidator, forward to Aave.
         IERC20(stablecoin).safeTransferFrom(msg.sender, address(this), repayAmount);
@@ -973,7 +975,7 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
     ) internal {
         // Aave's repay reverts on zero outstanding debt, and anyone can drive the vault's pooled debt
         // to zero by repaying on its behalf; skip the call when nothing is owed so closes never brick
-        // (the whole amount is surplus then). See docs/audit-report.md.
+        // (the whole amount is surplus then).
         uint256 outstanding = IERC20(debtToken).balanceOf(vault);
         uint256 actualRepaid =
             outstanding == 0 ? 0 : IAaveV3Pool(aavePool).repay(stablecoin, amount, AAVE_VARIABLE_RATE_MODE, vault);

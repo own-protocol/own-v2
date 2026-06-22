@@ -636,22 +636,26 @@ contract BorrowManagerTest is BaseTest {
         assertEq(eTSLA.balanceOf(Actors.MINTER1), 0, "borrower gets nothing on partial");
     }
 
-    /// @dev A repay whose bonus-based seize exceeds the remaining collateral
-    ///      reverts rather than letting the liquidator overpay for less.
-    function test_liquidate_overSeizeReverts() public {
-        (, uint256 stable) = _openTypical(Actors.MINTER1);
+    /// @dev A repay whose bonus-seize exceeds the remaining collateral now CAPS the seize at all of it
+    ///      (full close) instead of reverting, so a deeply underwater position winds down to zero
+    ///      collateral in one call rather than stranding a dust crumb.
+    function test_liquidate_overSeize_capsToCollateral() public {
+        (uint256 eAmt, uint256 stable) = _openTypical(Actors.MINTER1);
 
-        // Crash to $100: hf = 0.8 < 0.95 → full close allowed. Seize for the
-        // full $10k = $10k * 1.05 / $100 = 105 eTSLA > 100 available → revert.
+        // Crash to $100: hf = 0.8 < 0.95 → full close allowed. Bonus-seize for the full $10k =
+        // $10k * 1.05 / $100 = 105 eTSLA > 100 available → capped to all 100 remaining.
         uint256 crashPx = 100e18;
         _setOraclePrice(ASSET, crashPx);
 
         usdc.mint(Actors.LIQUIDATOR, stable);
         vm.startPrank(Actors.LIQUIDATOR);
         usdc.approve(address(borrowManager), stable);
-        vm.expectRevert(abi.encodeWithSelector(IBorrowManager.SeizeExceedsCollateral.selector, 105e18, 100e18));
-        borrowManager.liquidate(Actors.MINTER1, ASSET, stable, _priceData(crashPx));
+        borrowManager.liquidate(Actors.MINTER1, ASSET, stable, _priceData(crashPx)); // no longer reverts
         vm.stopPrank();
+
+        assertEq(eTSLA.balanceOf(Actors.LIQUIDATOR), eAmt, "liquidator seized all remaining collateral");
+        assertEq(borrowManager.positionOf(Actors.MINTER1, ASSET).principal, 0, "position fully closed");
+        assertEq(eTSLA.balanceOf(Actors.MINTER1), 0, "no collateral returned to borrower");
     }
 
     // ──────────────────────────────────────────────────────────

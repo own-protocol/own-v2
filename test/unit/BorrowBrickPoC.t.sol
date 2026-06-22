@@ -15,8 +15,8 @@ import {BaseTest} from "../helpers/BaseTest.sol";
 import {MockAToken, MockAaveDebtToken, MockAaveV3Pool} from "../helpers/MockAaveV3Pool.sol";
 import {MockERC20} from "../helpers/MockERC20.sol";
 
-/// @title BorrowBrickPoC — regression coverage for the zero-vault-Aave-debt close brick (H-09),
-///        plus a live PoC for the seize-granularity bad-debt strand (H-10, still open).
+/// @title BorrowBrickPoC — regression coverage for the zero-vault-Aave-debt close brick (H-09) and
+///        the seize-granularity bad-debt strand (H-10).
 /// @notice H-09 (FIXED): every close path (repay / liquidate / absorbBadDebt / settleHaltedPosition)
 ///         routes through `BorrowManager._repayAaveAndSweep`. It used to call `IAaveV3Pool.repay`
 ///         unconditionally, so once the vault's pooled Aave debt was driven to 0 — which ANYONE can do
@@ -335,29 +335,27 @@ contract BorrowBrickPoCTest is BaseTest {
     }
 
     // ──────────────────────────────────────────────────────────
-    //  H-10 (STILL OPEN) — liquidation seize-granularity strands sub-step dust collateral,
-    //  permanently blocking absorbBadDebt on the residual bad debt. Distinct from H-09: the pooled
-    //  Aave debt stays positive throughout. Kept as a live PoC for the open finding.
+    //  H-10 (FIXED) — liquidation caps the seize at remaining collateral, so a stranded sub-seize-unit
+    //  dust crumb can be swept to exactly 0 and the residual bad debt absorbed. Distinct from H-09: the
+    //  pooled Aave debt stays positive throughout.
     // ──────────────────────────────────────────────────────────
 
-    /// @dev `seizeAmount` floors and scales linearly, so the smallest seizable unit is
-    ///      `seize(1 USDC-unit) = 1.05e30 / price` wei of eToken. Liquidating a deeply underwater
-    ///      position can only move collateral in those whole steps, so it generically strands a
-    ///      remainder `0 < r < seize(1)`. Once stranded, `liquidate(repay >= 1)` reverts
-    ///      `SeizeExceedsCollateral` and `absorbBadDebt` reverts `PositionStillCollateralized`, so the
-    ///      residual book debt can never be cleared.
-    function test_findingB_seizeDustStrandsResidual_blocksAbsorbAndLiquidate() public {
+    /// @dev `seizeAmount` floors and scales linearly, so a profitable liquidation of a deeply underwater
+    ///      position strands a sub-step crumb `0 < r < seize(1 unit)`. Pre-fix that crumb was unseizable
+    ///      (`liquidate` reverted) and un-absorbable (`absorbBadDebt` requires zero collateral), stranding
+    ///      the residual bad debt forever. Post-fix a tiny follow-up liquidation caps the seize at the
+    ///      crumb -> collateral exactly 0, after which `absorbBadDebt` clears the residual.
+    function test_h10_strandedDust_clearedThenAbsorbed() public {
         uint256 collat = 100e18;
         _open(Actors.MINTER1, collat, 17_000e6);
 
         uint256 crashPx = 100e18; // collateral worth $10k vs $17k debt -> deeply underwater
         _setOraclePrice(ASSET, crashPx);
 
-        // Largest single liquidation whose bonus-seize still fits the collateral.
+        // A profitable liquidation maximizes collateral-per-dollar and strands a dust crumb (unchanged).
         uint256 collateralUSD18 = collat * crashPx / PRECISION; // $10,000 (18-dec)
         uint256 bonus = borrowManager.liquidationBonusBps(); // 500 (5%)
         uint256 maxRepay = collateralUSD18 * BPS / (BPS + bonus) / 1e12; // ~$9,523.80 (6-dec USDC)
-
         usdc.mint(Actors.LIQUIDATOR, maxRepay);
         vm.startPrank(Actors.LIQUIDATOR);
         usdc.approve(address(borrowManager), maxRepay);
@@ -365,29 +363,25 @@ contract BorrowBrickPoCTest is BaseTest {
         vm.stopPrank();
 
         uint256 dust = borrowManager.positionOf(Actors.MINTER1, ASSET).eTokenCollateral;
-        uint256 residual = borrowManager.debtOf(Actors.MINTER1, ASSET);
-        assertGt(dust, 0, "sub-step dust collateral stranded");
-        assertLt(dust, 0.0001e18, "stranded collateral is negligible (< $0.01-worth)");
-        assertGt(residual, 5000e6, "thousands of dollars of residual bad debt remain unclearable");
+        assertGt(dust, 0, "sub-step dust crumb stranded by the profitable liquidation");
+        assertLt(dust, 0.0001e18, "crumb is negligible (< $0.01-worth)");
 
-        // 1) No further liquidation: even a 1-unit repay's seize exceeds the dust.
-        usdc.mint(Actors.LIQUIDATOR, 1);
+        // FIX: a tiny follow-up liquidation caps the seize at the crumb -> collateral to exactly 0.
+        usdc.mint(Actors.LIQUIDATOR, 1e6);
         vm.startPrank(Actors.LIQUIDATOR);
-        usdc.approve(address(borrowManager), 1);
-        vm.expectPartialRevert(IBorrowManager.SeizeExceedsCollateral.selector);
-        borrowManager.liquidate(Actors.MINTER1, ASSET, 1, _priceData(crashPx));
+        usdc.approve(address(borrowManager), 1e6);
+        borrowManager.liquidate(Actors.MINTER1, ASSET, 1e6, _priceData(crashPx)); // caps, no revert
         vm.stopPrank();
+        assertEq(borrowManager.positionOf(Actors.MINTER1, ASSET).eTokenCollateral, 0, "crumb seized -> zero collateral");
 
-        // 2) absorbBadDebt blocked forever: the residual still carries (dust) collateral.
+        // absorbBadDebt now succeeds on the zero-collateral residual.
+        uint256 residual = borrowManager.debtOf(Actors.MINTER1, ASSET);
+        assertGt(residual, 5000e6, "meaningful residual bad debt remains to absorb");
         usdc.mint(Actors.ADMIN, residual);
         vm.startPrank(Actors.ADMIN);
         usdc.approve(address(borrowManager), residual);
-        vm.expectPartialRevert(IBorrowManager.PositionStillCollateralized.selector);
-        borrowManager.absorbBadDebt(Actors.MINTER1, ASSET, residual, _priceData(4000e18));
+        borrowManager.absorbBadDebt(Actors.MINTER1, ASSET, residual, _priceData(4000e18)); // no longer reverts
         vm.stopPrank();
-
-        assertEq(
-            borrowManager.debtOf(Actors.MINTER1, ASSET), residual, "residual debt still stuck after all cleanup paths"
-        );
+        assertEq(borrowManager.debtOf(Actors.MINTER1, ASSET), 0, "bad debt absorbed -- H-10 cleared");
     }
 }

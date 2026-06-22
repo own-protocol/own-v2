@@ -43,7 +43,7 @@ is resolved by-design with documentation (§3).
 | Severity | Total | Fixed | Open | By design |
 | -------- | ----- | ----- | ---- | --------- |
 | Critical | 1     | 1     | 0    | —         |
-| High     | 9     | 9     | 0    | —         |
+| High     | 10    | 10    | 0    | —         |
 | Medium   | 13    | 11    | 0    | 2         |
 | Low      | 17    | 13    | 0    | 4         |
 
@@ -61,6 +61,7 @@ is resolved by-design with documentation (§3).
 | H-07      | High     | No Aave health-factor gate on LP withdrawals/releases → collateral backing the vault's Aave debt can be drained into liquidation                                              | **Fixed** (2026-06-19, round 2)                                                |
 | H-08      | High     | `liquidate` lacked the halt guard `borrow` has → halted asset liquidatable at a live price, seized collateral then redeemed at the higher frozen halt price (live-vs-halt arbitrage) | **Fixed** (2026-06-22 — GPT-5 validation pass; GPT5-H-01)                       |
 | H-09      | High     | Unconditional `_repayAaveAndSweep` Aave repay bricked all close paths once the vault's pooled Aave debt was externally zeroed (Aave allows repay-on-behalf) → borrower collateral locked, permanent during halt | **Fixed** (2026-06-22)                                                          |
+| H-10      | High     | Liquidation seize-granularity stranded a sub-unit dust crumb → `absorbBadDebt` permanently blocked, residual bad debt unclearable (generic outcome of an underwater liquidation) | **Fixed** (2026-06-22)                                                          |
 | M-01      | Medium   | Pyth confidence interval ignored                                                                                                                                              | **Fixed**                                                                      |
 | M-02      | Medium   | In-house push path unbounded when an asset's oracle config is unset                                                                                                           | **Fixed**                                                                      |
 | M-03      | Medium   | `setRateParams` unvalidated → accrual DoS bricks repay/liquidate                                                                                                              | **Fixed**                                                                      |
@@ -310,6 +311,33 @@ cannot silently regress.
 `test_h09_haltedSettle_worksAtZeroVaultDebt` (the previously-permanent halt case) assert every close
 path succeeds at zero vault Aave debt; `test_h09_mockRepay_revertsOnZeroDebt` locks in the mock
 fidelity. Full suite green (746 passing).
+
+### H-10 (High) — Liquidation seize-granularity stranded a dust crumb that permanently blocked `absorbBadDebt`
+
+**Problem (2026-06-22).** `LendingMath.seizeAmount` floors and scales linearly, so a liquidation can
+only reduce a position's collateral in whole `seize(1 stable-unit) = (1+bonus)·1e30/price` wei steps. A
+liquidator winding down a deeply underwater position maximizes collateral-per-dollar and stops at the
+largest repay whose bonus-seize still fits, generically leaving a sub-step crumb `0 < r < seize(1)`.
+`_liquidate` then **reverted `SeizeExceedsCollateral`** for any further repay (even 1 unit over-seizes
+the crumb), and `absorbBadDebt` **reverts `PositionStillCollateralized`** because the crumb is non-zero —
+so the residual (meaningful) bad debt could never be cleared. The crumb itself is sub-cent, but it
+wedged the cleanup: the un-absorbable residual keeps a live LP-backed Aave slice and perturbs
+`_flooredIndex`/utilization for every other borrower, with no admin remedy (bonus tuning is
+insufficient; only the borrower self-repaying or the asset price recovering enough to shrink the step
+below the crumb would clear it). Permissionless and the generic outcome of an underwater liquidation;
+distinct from H-09 (the pooled Aave debt stays positive throughout).
+
+**Fix (2026-06-22).** `_liquidate` now caps the seize at the position's remaining collateral
+(`if (seize > p.eTokenCollateral) seize = p.eTokenCollateral;`) instead of reverting, so a deeply
+underwater position can always be driven to **exactly zero** collateral — the residual then becomes a
+zero-collateral position `absorbBadDebt` accepts. Capping only ever gives the liquidator *less* than the
+full bonus (never more), so it is not a profit/abuse vector, and it preserves rather than weakens the
+"absorb requires zero collateral" invariant. The now-unreachable `SeizeExceedsCollateral` error was
+removed from `IBorrowManager`.
+**Test.** `BorrowBrickPoC.t.sol::test_h10_strandedDust_clearedThenAbsorbed` — a profitable liquidation
+strands the crumb, a tiny follow-up liquidation caps the seize to it (collateral → 0), and
+`absorbBadDebt` then clears the residual. `BorrowManager.t.sol::test_liquidate_overSeize_capsToCollateral`
+(rewritten from the old revert test) locks the capped full-close. Full suite green (746 passing).
 
 ### M-11 (Medium) — Redeem settle band bounded against a stale mark (PA-01 / PA-03 asymmetry)
 
