@@ -45,7 +45,7 @@ is resolved by-design with documentation (§3).
 | Critical | 1     | 1     | 0    | —         |
 | High     | 10    | 10    | 0    | —         |
 | Medium   | 13    | 11    | 0    | 2         |
-| Low      | 17    | 13    | 0    | 4         |
+| Low      | 18    | 14    | 0    | 4         |
 
 **No findings are open. The 2026-06-19 re-audits' findings are all fixed — round 1: H-06 (High), L-14 (Low), L-07 (Low, reopened then fixed); round 2: H-07 (High), M-11 + M-12 (Medium), L-15 (Low), plus the H-06 amplifier removed. All carry regression tests (H-07 via a live-Aave fork test). All earlier findings remain closed (fixed, mitigated, documented, or by-design). A 2026-06-19 withdrawal loss-ordering follow-up added **M-13** (Medium) — the user-bad-debt sibling of H-07 — accepted by design with an operational pause-on-volatility mitigation (no code change; see §3). A 2026-06-19 lead deep-dive (3-agent verification of all post-audit leads) added **L-17** (Low, Fixed — `fillOrder` missing the active-asset gate) and **L-16** (Low, accepted — `absorbBadDebt` premium over-charge, controllable via `absorbAmount`); the other 18 leads resolved to already-addressed or not-exploitable. The §5 leads are triaged.**
 
@@ -80,6 +80,7 @@ is resolved by-design with documentation (§3).
 | L-15      | Low      | `maxDeposit`/`maxMint` report unlimited while `deposit`/`mint` revert (approval gate / `onlyManager`) → ERC-4626 integrators revert                                           | **Fixed** (2026-06-19, round 2)                                                |
 | L-16      | Low      | `absorbBadDebt` over-charges LPs by a defaulted position's uncollected premium (also swept to the VM)                                                                         | **By design** — accepted; controllable via `absorbAmount` (see §3)             |
 | L-17      | Low      | `fillOrder` skipped the `isActiveAsset` gate → resting Mint order fillable after `setAssetActive(false)`                                                                      | **Fixed** (2026-06-19)                                                         |
+| L-18      | Low      | `setMinAaveBorrowRateBps` unbounded → a pathological `uint256` floor overflows `rate * dt` in `accrueIndex`, reverting `_accrue` and bricking all borrow ops (admin-only, recoverable)            | **Fixed** (2026-06-22)                                                          |
 | C-01\*    | Info     | Force-execute asset proof was window-scoped, not fresh                                                                                                                        | **Fixed** (2026-06-18 — fresh price now required; see Pre-audit hardening)     |
 
 ---
@@ -607,6 +608,24 @@ future work: the unconfirmed leads in §5.
 ---
 
 ## 4. Low Findings
+
+### Fixed (2026-06-22)
+
+- **L-18 — Fixed.** `setMinAaveBorrowRateBps` was the only admin rate setter with no bounds check (its
+  siblings `setRateParams` / `setLiquidationConfig` / `setBorrowLtvBps` / `setTargetLtvBps` /
+  `setInterestBufferBps` / `setMinClaimHealthFactor` all validate). The floor feeds
+  `_currentRateBps = max(liveAaveRate, floor) + premium` into `LendingMath.accrueIndex`'s **raw**
+  `rate * dt` multiply, so a pathological `uint256` floor overflows and reverts `_accrue()` — bricking
+  every borrow op (borrow / repay / liquidate / absorbBadDebt / settleHaltedPosition /
+  claimEarnedInterest) until the value is reset. Admin-only and self-recoverable (the setter doesn't
+  call `_accrue`, so a reset un-bricks), hence Low — but it was the one place a core function could be
+  arithmetic-bricked, and since the `premium` leg is `uint64`-bounded the floor was the only truly
+  unbounded rate input. Now reverts `InvalidMinAaveBorrowRate` for `rateBps > BPS` (100% APR); `0` (no
+  floor) and `BPS` stay valid. Surfaced by the 2026-06-22 underflow/overflow sweep of
+  OwnVault/VaultManager/BorrowManager — the only finding; all other arithmetic is invariant- or
+  cap-guarded (running-sum invariants in VaultManager, subtrahend caps in BorrowManager, OZ `mulDiv`
+  throughout, `totalAssets()` saturation in OwnVault). Test:
+  `BorrowManager.t.sol::test_setMinAaveBorrowRateBps_aboveBps_reverts`.
 
 ### Fixed (2026-06-19)
 

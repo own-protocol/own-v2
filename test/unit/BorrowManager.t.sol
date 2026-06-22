@@ -710,6 +710,17 @@ contract BorrowManagerTest is BaseTest {
         assertApproxEqRel(debtAfter, stable * 109 / 100, 1e16);
     }
 
+    /// @dev The floor is bounded at 100% APR (BPS): an unbounded value would overflow `rate * dt` in
+    ///      accrueIndex and brick `_accrue` (and every borrow op). 0 (no floor) and BPS stay valid.
+    function test_setMinAaveBorrowRateBps_aboveBps_reverts() public {
+        vm.startPrank(Actors.ADMIN);
+        borrowManager.setMinAaveBorrowRateBps(0); // no floor — valid
+        borrowManager.setMinAaveBorrowRateBps(BPS); // exactly 100% — valid boundary
+        vm.expectRevert(IBorrowManager.InvalidMinAaveBorrowRate.selector);
+        borrowManager.setMinAaveBorrowRateBps(BPS + 1); // above 100% — rejected
+        vm.stopPrank();
+    }
+
     // ──────────────────────────────────────────────────────────
     //  Lending fee (premium surplus) routing
     // ──────────────────────────────────────────────────────────

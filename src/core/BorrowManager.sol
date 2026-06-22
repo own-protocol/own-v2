@@ -671,10 +671,13 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
     }
 
     /// @notice Set the minimum Aave-side rate floor (BPS, annualized). The
-    ///         actual rate used at accrual is `max(floor, liveAaveRate)`.
+    ///         actual rate used at accrual is `max(floor, liveAaveRate)`. 0 disables the floor.
     function setMinAaveBorrowRateBps(
         uint256 rateBps
     ) external onlyAdmin {
+        // Bounded at 100% APR — a floor is a minimum base rate, so no legitimate value nears this; the
+        // cap keeps `rate * dt` in accrueIndex from overflowing and bricking accrual.
+        if (rateBps > BPS) revert InvalidMinAaveBorrowRate();
         minAaveBorrowRateBps = rateBps;
     }
 

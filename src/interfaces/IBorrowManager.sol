@@ -171,6 +171,7 @@ interface IBorrowManager {
 
     /// @notice The minimum claim health factor is below 1.0 (1e18).
     error InvalidMinClaimHealthFactor();
+    error InvalidMinAaveBorrowRate();
 
     // ──────────────────────────────────────────────────────────
     //  Borrower flows
