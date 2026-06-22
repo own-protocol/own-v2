@@ -220,6 +220,7 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
         _validateEligibility(asset);
 
         uint256 oraclePrice = _verifyPrice(asset, priceData);
+        _checkPriceBand(asset, oraclePrice);
 
         // LTV check at borrow time.
         uint256 collateralValueUSD = LendingMath.collateralUSD(eTokenAmount, oraclePrice);
@@ -336,6 +337,7 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
 
         _accrue();
         uint256 oraclePrice = _verifyPrice(asset, priceData);
+        _checkPriceBand(asset, oraclePrice);
         _liquidate(borrower, asset, repayAmount, oraclePrice);
         _refundExcessEth();
     }
@@ -927,6 +929,21 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
         if (timestamp > block.timestamp || block.timestamp - timestamp > maxAge) {
             revert StalePrice(timestamp, maxAge);
         }
+    }
+
+    /// @dev Bound an inline proof price to ±settleBandBps of the keeper-fresh asset mark (mirrors
+    ///      OwnMarket._checkSettleBand) — caps leaked/faulty-signer damage on borrow/liquidate by
+    ///      rejecting an off-mark attestation (over-value → over-borrow, under-value → wrongful
+    ///      liquidation). Fail-closed: a missing or stale mark reverts.
+    function _checkPriceBand(bytes32 asset, uint256 price) internal view {
+        IVaultManager vmgr = IVaultManager(registry.vaultManager());
+        uint256 mark = vmgr.assetMark(asset);
+        if (mark == 0 || block.timestamp - vmgr.assetMarkUpdatedAt(asset) > vmgr.maxMarkAge()) {
+            revert PriceMarkStale(asset);
+        }
+        uint256 band = vmgr.settleBandBps();
+        uint256 diff = price > mark ? price - mark : mark - price;
+        if (diff * BPS > mark * band) revert PriceOutOfBand(asset, price, mark, band);
     }
 
     /// @dev Convert an 18-dec USD value to the bound vault's collateral, in native token units

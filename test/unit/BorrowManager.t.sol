@@ -115,8 +115,9 @@ contract BorrowManagerTest is BaseTest {
         // Seed Aave with USDC liquidity so borrows can pay out.
         usdc.mint(address(aavePool), 1_000_000e6);
 
-        // Default oracle price.
+        // Default oracle price + cache the VaultManager asset mark (borrow/liquidate band-check anchor).
         _setOraclePrice(ASSET, TSLA_PX);
+        _pullAssetPrice(ASSET);
 
         // Bad-debt collateral is released to the protocol treasury.
         _setTreasury(Actors.FEE_RECIPIENT);
@@ -502,6 +503,42 @@ contract BorrowManagerTest is BaseTest {
         usdc.approve(address(borrowManager), stable);
         vm.expectRevert(IBorrowManager.VaultEffectivelyHalted.selector);
         borrowManager.liquidate(Actors.MINTER1, ASSET, stable, _priceData(crashPx));
+        vm.stopPrank();
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Inline price band (M-1: leaked/faulty-signer damage cap)
+    // ──────────────────────────────────────────────────────────
+
+    function test_borrow_offMarkPrice_revertsPriceOutOfBand() public {
+        // A signer attesting a price off the keeper mark cannot over-value collateral to over-borrow.
+        // Mark is $250 (setUp); attest 10× ($2,500) → would value 100 eTSLA at $250k and clear the LTV
+        // check, but the band gate rejects it first. Without the gate this borrows $80k vs $25k real.
+        _setSettleBandBps(500); // production 5% band
+        _giveTSLA(Actors.MINTER1, 100e18);
+        vm.startPrank(Actors.MINTER1);
+        eTSLA.approve(address(borrowManager), 100e18);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IBorrowManager.PriceOutOfBand.selector, ASSET, uint256(2500e18), TSLA_PX, uint256(500)
+            )
+        );
+        borrowManager.borrow(ASSET, 100e18, 80_000e6, _priceData(2500e18));
+        vm.stopPrank();
+    }
+
+    function test_liquidate_offMarkPrice_revertsPriceOutOfBand() public {
+        // A borrower healthy at the keeper mark cannot be wrongfully liquidated via an under-valued
+        // attestation. Open a healthy position at $250, then attest $50 (out of band) to try to seize.
+        _setSettleBandBps(500);
+        (, uint256 stable) = _openTypical(Actors.MINTER1);
+        usdc.mint(Actors.LIQUIDATOR, stable);
+        vm.startPrank(Actors.LIQUIDATOR);
+        usdc.approve(address(borrowManager), stable);
+        vm.expectRevert(
+            abi.encodeWithSelector(IBorrowManager.PriceOutOfBand.selector, ASSET, uint256(50e18), TSLA_PX, uint256(500))
+        );
+        borrowManager.liquidate(Actors.MINTER1, ASSET, 2000e6, _priceData(50e18));
         vm.stopPrank();
     }
 
@@ -1331,6 +1368,7 @@ contract BorrowManagerBadDebt6DecTest is BaseTest {
 
         usdc.mint(address(aavePool), 1_000_000e6); // Aave borrow liquidity
         _setOraclePrice(ASSET, TSLA_PX);
+        _pullAssetPrice(ASSET); // cache the asset mark (borrow/liquidate band-check anchor)
         _setTreasury(Actors.FEE_RECIPIENT);
     }
 

@@ -150,6 +150,8 @@ interface IBorrowManager {
     error PositionStillCollateralized(uint256 collateral);
     error AssetNotHalted(bytes32 asset);
     error StalePrice(uint256 timestamp, uint256 maxAge);
+    error PriceOutOfBand(bytes32 asset, uint256 price, uint256 mark, uint256 band);
+    error PriceMarkStale(bytes32 asset);
     error NoDividendsToSweep();
 
     /// @notice Caller is not the bound vault's manager.

@@ -2,6 +2,8 @@
 pragma solidity 0.8.28;
 
 import {OwnVault} from "../../src/core/OwnVault.sol";
+
+import {IBorrowManager} from "../../src/interfaces/IBorrowManager.sol";
 import {IOwnVault} from "../../src/interfaces/IOwnVault.sol";
 import {
     BPS,
@@ -15,6 +17,23 @@ import {
 import {Actors} from "../helpers/Actors.sol";
 import {BaseTest} from "../helpers/BaseTest.sol";
 import {MockERC20} from "../helpers/MockERC20.sol";
+
+/// @dev Minimal borrow-manager stub: lets a test toggle the Aave health-factor gate result.
+contract MockHealthBorrowManager {
+    error VaultUnsafeHealthFactor(uint256 healthFactor);
+
+    bool public unsafe;
+
+    function setUnsafe(
+        bool v
+    ) external {
+        unsafe = v;
+    }
+
+    function requireVaultHealthy() external view {
+        if (unsafe) revert VaultUnsafeHealthFactor(0.5e18);
+    }
+}
 
 /// @title OwnVault Unit Tests
 /// @notice Tests ERC-4626 deposit/withdraw (with slippage + inflation-attack resistance), async
@@ -490,6 +509,41 @@ contract OwnVaultTest is BaseTest {
         vault.haltVault();
 
         assertEq(uint256(vault.vaultStatus()), uint256(VaultStatus.Halted));
+    }
+
+    function test_fulfillWithdrawal_haltedVault_unsafeAaveHF_reverts() public {
+        // M-2: a halted lending vault with outstanding Aave debt must still enforce the Aave HF gate,
+        // so LP exits cannot drain the loan's collateral into Aave liquidation.
+        uint256 shares = _depositAs(Actors.LP1, 10 ether);
+        vm.prank(Actors.LP1);
+        uint256 requestId = vault.requestWithdrawal(shares);
+
+        MockHealthBorrowManager bm = new MockHealthBorrowManager();
+        bm.setUnsafe(true); // pulling collateral would drop the vault below the Aave safety floor
+        vm.startPrank(Actors.ADMIN);
+        vault.setBorrowManager(address(bm));
+        vault.haltVault();
+        vm.stopPrank();
+
+        vm.expectRevert(abi.encodeWithSelector(IBorrowManager.VaultUnsafeHealthFactor.selector, uint256(0.5e18)));
+        vault.fulfillWithdrawal(requestId);
+    }
+
+    function test_fulfillWithdrawal_haltedVault_noAaveDebt_succeeds() public {
+        // M-2: a halted vault with no Aave debt (healthy/infinite HF) still exits unconditionally —
+        // requireVaultHealthy passes trivially, preserving emergency-exit liveness.
+        uint256 shares = _depositAs(Actors.LP1, 10 ether);
+        vm.prank(Actors.LP1);
+        uint256 requestId = vault.requestWithdrawal(shares);
+
+        MockHealthBorrowManager bm = new MockHealthBorrowManager(); // unsafe=false → gate passes
+        vm.startPrank(Actors.ADMIN);
+        vault.setBorrowManager(address(bm));
+        vault.haltVault();
+        vm.stopPrank();
+
+        uint256 assets = vault.fulfillWithdrawal(requestId);
+        assertEq(assets, 10 ether, "halted no-debt exit succeeds");
     }
 
     function test_halt_nonAdmin_reverts() public {

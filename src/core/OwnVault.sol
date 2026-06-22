@@ -380,10 +380,10 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
         _burn(address(this), shares);
         IERC20(asset()).safeTransfer(req.owner, assets);
 
-        // Collateral backing the vault's Aave borrow just left; for an active vault, revert if that
-        // pushed the position below its Aave safety floor. A halted vault is an unconditional
-        // emergency exit and is intentionally exempt.
-        if (_vaultStatus != VaultStatus.Halted && _borrowManager != address(0)) {
+        // Collateral backing the vault's Aave borrow just left; revert if it dropped the position below
+        // the Aave safety floor. Enforced even when halted (M-2) — with no debt the check passes trivially
+        // (infinite HF), so emergency exit stays unconditional; with live debt it blocks draining into liquidation.
+        if (_borrowManager != address(0)) {
             IBorrowManager(_borrowManager).requireVaultHealthy();
         }
 

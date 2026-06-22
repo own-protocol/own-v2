@@ -111,6 +111,7 @@ contract BorrowAndLiquidateFlowTest is BaseTest {
         // Borrowing is enabled for every asset by default.
 
         _setOraclePrice(ASSET, TSLA_PX);
+        _pullAssetPrice(ASSET); // cache the asset mark (borrow/liquidate band-check anchor)
     }
 
     function _priceData(
