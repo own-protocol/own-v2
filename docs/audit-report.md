@@ -35,7 +35,8 @@ same day with a regression test (§1). The other 13 "Highs", all 4 "Mediums", an
 to false positives, duplicates of findings already closed here (e.g. L-14, H-06/H-07, M-08, M-12), or
 accepted/by-design tradeoffs; the full per-finding disposition is appended to the GPT-5 doc (Appendix
 A). A few legitimate Lows were noted for future hardening (force-execute-vault and withdrawal-delay
-deploy wiring, accrue-before-rate-change, pull-based manager revenue, permit-domain-on-rename).
+deploy wiring, accrue-before-rate-change, pull-based manager revenue); the permit-domain-on-rename note
+is resolved by-design with documentation (§3).
 
 ## Status at a Glance
 
@@ -535,6 +536,16 @@ future work: the unconfirmed leads in §5.
   behavior: a claim does not return the full premium; iterative claiming toward ~99.9% is possible but
   not recommended. Code-level cap if ever desired: track cumulative claims `C` and bound at
   `(bookDebt − aaveDebt + C) × (BPS − interestBufferBps) / BPS`, reconciling `C` on the repay/sweep path.
+- **GPT5-LD-L-05 — EToken permit / EIP-712 domain is pinned at deploy, not tracked by `updateName`
+  (accepted by design, 2026-06-22).** `EToken` constructs `ERC20Permit(name_)`, so OZ fixes the EIP-712
+  domain name (and `DOMAIN_SEPARATOR`) at the deploy-time `name()`; `updateName` changes only the
+  display `name()`. Intentional — a domain that tracked `name()` would invalidate outstanding permits on
+  every rebrand, and OZ v5 pins it anyway (`_hashedName` immutable). **Accepted limitation:** a rename
+  breaks permit signing for integrators that rebuild the domain from the live `name()` (already-signed
+  permits are unaffected; the canonical domain is exposed via ERC-5267 `eip712Domain()`) — integrators
+  should be aware. Renames are rare and admin-gated. Documented in `EToken` / `IEToken` NatSpec and
+  `protocol.md` §EIP-712 (which previously mis-stated the eToken permit domain as "Own Protocol").
+  Supersedes the dangling "permit/rename note" in §7.
 
 ---
 
@@ -712,7 +723,7 @@ A full run (101 detectors, 78 contracts) produced **103 findings; all 103 were t
 | `arbitrary-send-eth`                                                       | 5     | FP — destinations are `msg.sender` (refund) or the registry-resolved oracle (exact fee).                                                                                              |
 | `arbitrary-send-erc20`                                                     | 2     | FP — `_settleMint` non-escrow path has `user == msg.sender` (`OwnMarket.sol:80` guard); `redeemHalted` pulls from the trusted admin-set `haltAddr`, bounded by the caller's own burn. |
 | `uninitialized-local`                                                      | 3     | FP — each left 0 only on paths where 0 is correct, consumed behind a `> 0` guard.                                                                                                     |
-| `shadowing-state`                                                          | 2     | By design — `EToken._name/_symbol` shadow OZ's _private_ vars (overridden `name()`/`symbol()`); related to the permit/rename note. _(filtered by `exclude_dependencies`)_             |
+| `shadowing-state`                                                          | 2     | By design — `EToken._name/_symbol` shadow OZ's _private_ vars (overridden `name()`/`symbol()`); related to the permit/rename decision (§3, GPT5-LD-L-05). _(filtered by `exclude_dependencies`)_             |
 | `missing-zero-check`                                                       | 2     | FP/intended — `rewardToken_ = 0` valid for non-dividend assets; `manager_` recoverable via `setManager`.                                                                              |
 | `pyth-unchecked-confidence`                                                | 1     | FP — confidence bound enforced in `_normalizePythPrice` (the **M-01** fix); Slither's detector is intraprocedural.                                                                    |
 | `low-level-calls` / `cyclomatic-complexity` / `pragma` / `shadowing-local` | 8     | Informational — vetted refund/sweep `.call`s, known complexity, `lib/` pragma spread, cosmetic param name. _(first three excluded in config)_                                         |

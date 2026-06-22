@@ -87,6 +87,8 @@ interface IEToken is IERC20, IERC20Permit {
     // ──────────────────────────────────────────────────────────
 
     /// @notice Update the token name. Used during stock-split renaming.
+    /// @dev The ERC-2612 permit / EIP-712 domain name is fixed at deployment and does NOT change here, so
+    ///      a rename breaks permits derived from the live `name()` — integrators should be aware.
     /// @param newName The new name string.
     function updateName(
         string calldata newName

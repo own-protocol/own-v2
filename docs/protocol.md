@@ -669,7 +669,7 @@ contracts; retained for reference / future use):
 | **ERC-2612** | EToken supports gasless approvals via `permit()`                          |
 | **ERC-4626** | OwnVault implements the tokenized vault standard for LP shares            |
 | **ERC-7540** | OwnVault follows the async deposit/withdrawal pattern (request → fulfill) |
-| **EIP-712**  | All protocol signatures: RFQ quotes (`Quote` typehash, OwnMarket domain), oracle price attestations (`PriceAttestation` typehash, OracleVerifier domain), and ERC-2612 permits. Domain name "Own Protocol", version "1" |
+| **EIP-712**  | Protocol signatures use domain name "Own Protocol", version "1": RFQ quotes (`Quote` typehash, OwnMarket domain) and oracle price attestations (`PriceAttestation` typehash, OracleVerifier domain). EToken ERC-2612 permits are the exception — their domain name is the token's **deploy-time `name()`** (version "1"), fixed for the contract's life and unchanged by `updateName`. A rename therefore breaks permits derived from the live `name()`; integrators should be aware. |
 
 ---
 
@@ -736,9 +736,24 @@ ratio**: `effectivePrice = activePrice × legacyRatio`. As a result:
 2. Deploy the new eToken; `AssetRegistry.migrateToken(ticker, newToken, ratio)` — this also applies
    the exposure re-denomination (`VaultManager.applySplit`) atomically, in the same transaction.
 3. Push the split-adjusted oracle price and pull the mark.
-4. Unpause (`setAssetTradingPaused(asset, false)`).
-5. Holders call `convertLegacy`; borrowers' positions continue and resolve through normal
+4. **Wait `≥ priceMaxAge`** (the inline-proof freshness bound; deploy value 2 min), measured from the
+   last pre-split price signature, so every old-denomination attestation has expired before borrowing
+   reopens. **Do not unpause early** (see the note below).
+5. Unpause (`setAssetTradingPaused(asset, false)`).
+6. Holders call `convertLegacy`; borrowers' positions continue and resolve through normal
    repay/liquidate/settle.
+
+**Stale pre-split price — why the wait (step 4) is mandatory.** Signed price attestations price the
+*ticker* and carry no split epoch, and `BorrowManager.borrow` values posted collateral at the
+caller-supplied inline price with **no settle-band check** (the rebased mark feeds only the vault-wide
+debt cap, not the per-position LTV). So a price signed at the *old* per-token denomination (e.g. $300
+before a 3:1 split) stays a valid, fresh proof for up to `priceMaxAge` after the split, and would value
+the new $100 tokens at $300 (3× over) — enabling an undercollateralized borrow against LP collateral.
+Pausing alone does **not** close this: the signature survives the pause and `borrow` reopens at unpause.
+The asset must stay paused until those proofs age out, which step 4 guarantees. (Surfaced by the
+2026-06-22 GPT-5 validation pass, GPT5-H-08; accepted with this operational mitigation — see
+`audit-report.md` §3. On-chain alternatives: a settle-band check on the borrow collateral price, or
+blocking unpause until `priceMaxAge` after a migration.)
 
 **Atomicity (enforced on-chain).** The migration and the exposure re-denomination are coupled in
 code: `migrateToken` calls `applySplit` with the same `ratio` in one transaction, and `applySplit`
