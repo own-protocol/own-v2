@@ -971,7 +971,12 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
     function _repayAaveAndSweep(
         uint256 amount
     ) internal {
-        uint256 actualRepaid = IAaveV3Pool(aavePool).repay(stablecoin, amount, AAVE_VARIABLE_RATE_MODE, vault);
+        // Aave's repay reverts on zero outstanding debt, and anyone can drive the vault's pooled debt
+        // to zero by repaying on its behalf; skip the call when nothing is owed so closes never brick
+        // (the whole amount is surplus then). See docs/audit-report.md.
+        uint256 outstanding = IERC20(debtToken).balanceOf(vault);
+        uint256 actualRepaid =
+            outstanding == 0 ? 0 : IAaveV3Pool(aavePool).repay(stablecoin, amount, AAVE_VARIABLE_RATE_MODE, vault);
         uint256 surplus = amount > actualRepaid ? amount - actualRepaid : 0;
         if (surplus > 0) {
             address vaultManager = IOwnVault(vault).manager();

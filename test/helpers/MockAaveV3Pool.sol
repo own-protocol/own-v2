@@ -133,6 +133,9 @@ contract MockAaveDebtToken {
 contract MockAaveV3Pool is IAaveV3Pool {
     using SafeERC20 for IERC20;
 
+    /// @dev Mirrors Aave V3 `Errors.NO_DEBT_OF_SELECTED_TYPE` ('39') — repaying with zero debt reverts.
+    error NoDebtOfSelectedType();
+
     /// @dev Per-reserve aToken (underlying => aToken).
     mapping(address => MockAToken) public aTokens;
 
@@ -223,10 +226,11 @@ contract MockAaveV3Pool is IAaveV3Pool {
         uint256 amount,
         uint256, /*interestRateMode*/
         address onBehalfOf
-    ) external override returns (uint256) {
+    ) external virtual override returns (uint256) {
+        // Faithful to Aave V3: repaying with no outstanding debt reverts rather than returning 0.
         uint256 outstanding = debtOf[onBehalfOf][asset];
+        if (outstanding == 0) revert NoDebtOfSelectedType();
         uint256 toRepay = amount > outstanding ? outstanding : amount;
-        if (toRepay == 0) return 0;
         IERC20(asset).safeTransferFrom(msg.sender, address(this), toRepay);
         debtOf[onBehalfOf][asset] = outstanding - toRepay;
         return toRepay;

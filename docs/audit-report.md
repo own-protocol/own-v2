@@ -43,7 +43,7 @@ is resolved by-design with documentation (§3).
 | Severity | Total | Fixed | Open | By design |
 | -------- | ----- | ----- | ---- | --------- |
 | Critical | 1     | 1     | 0    | —         |
-| High     | 8     | 8     | 0    | —         |
+| High     | 9     | 9     | 0    | —         |
 | Medium   | 13    | 11    | 0    | 2         |
 | Low      | 17    | 13    | 0    | 4         |
 
@@ -60,6 +60,7 @@ is resolved by-design with documentation (§3).
 | H-06      | High     | Unbounded `releaseCollateral` drains pending-deposit escrow & bricks the vault (`totalAssets` underflow)                                                                      | **Fixed** (2026-06-19)                                                         |
 | H-07      | High     | No Aave health-factor gate on LP withdrawals/releases → collateral backing the vault's Aave debt can be drained into liquidation                                              | **Fixed** (2026-06-19, round 2)                                                |
 | H-08      | High     | `liquidate` lacked the halt guard `borrow` has → halted asset liquidatable at a live price, seized collateral then redeemed at the higher frozen halt price (live-vs-halt arbitrage) | **Fixed** (2026-06-22 — GPT-5 validation pass; GPT5-H-01)                       |
+| H-09      | High     | Unconditional `_repayAaveAndSweep` Aave repay bricked all close paths once the vault's pooled Aave debt was externally zeroed (Aave allows repay-on-behalf) → borrower collateral locked, permanent during halt | **Fixed** (2026-06-22)                                                          |
 | M-01      | Medium   | Pyth confidence interval ignored                                                                                                                                              | **Fixed**                                                                      |
 | M-02      | Medium   | In-house push path unbounded when an asset's oracle config is unset                                                                                                           | **Fixed**                                                                      |
 | M-03      | Medium   | `setRateParams` unvalidated → accrual DoS bricks repay/liquidate                                                                                                              | **Fixed**                                                                      |
@@ -281,6 +282,34 @@ management.
 a crashed $105 live price, and asserts `liquidate` reverts `VaultEffectivelyHalted`. Verified to
 **fail without the guard** (the liquidation succeeds: "next call did not revert as expected"). Full
 non-fork suite green (731 passing).
+
+### H-09 (High) — Unconditional `_repayAaveAndSweep` bricked every close path once the vault's pooled Aave debt hit zero
+
+**Problem (2026-06-22).** All position-close paths — `repay`, `liquidate`, `absorbBadDebt`,
+`settleHaltedPosition` — route through `BorrowManager._repayAaveAndSweep`, which called
+`IAaveV3Pool.repay(stablecoin, amount, …, vault)` **unconditionally**. Aave V3 `repay` reverts
+`NO_DEBT_OF_SELECTED_TYPE` when the borrower has no variable debt, and Aave lets **anyone** repay a
+position on another's behalf. So an attacker — permissionlessly, for the cost of the debt — could drive
+the vault's single pooled Aave loan to 0 while individual book positions were still open; every
+subsequent close then reverted inside `_repayAaveAndSweep`, locking the borrowers' eToken collateral in
+the manager with no rescue function. Conditionally recoverable while the asset is Active (a fresh
+`borrow()` recreates Aave debt, though it is re-grievable), and **permanent once the asset is
+halted/paused** — `_validateEligibility` blocks `borrow()` exactly when `settleHaltedPosition` (itself
+bricked) is the only wind-down path. Missed by the suite because `MockAaveV3Pool.repay` returned 0 on
+zero debt instead of reverting like production Aave. The two pure-protocol reachability paths
+(absorb-overflow, premium-overflow) were checked and **do not** independently brick — `_repayAaveAndSweep`
+sweeps surplus gracefully, so the robust trigger is the external repay-on-behalf.
+
+**Fix (2026-06-22).** `_repayAaveAndSweep` reads `IERC20(debtToken).balanceOf(vault)` and skips the Aave
+call when it is 0, treating the whole `amount` as surplus (swept to the VM — the existing
+zero-Aave-debt semantics), so a close never depends on Aave accepting a repay it would reject. The test
+`MockAaveV3Pool.repay` was made faithful (reverts `NoDebtOfSelectedType` on zero debt) so this class
+cannot silently regress.
+**Test.** `BorrowBrickPoC.t.sol` — `test_h09_externalRepay_borrowerStillCloses`,
+`test_h09_externalRepay_liquidateStillWorks`, `test_h09_externalRepay_absorbBadDebtStillWorks`, and
+`test_h09_haltedSettle_worksAtZeroVaultDebt` (the previously-permanent halt case) assert every close
+path succeeds at zero vault Aave debt; `test_h09_mockRepay_revertsOnZeroDebt` locks in the mock
+fidelity. Full suite green (746 passing).
 
 ### M-11 (Medium) — Redeem settle band bounded against a stale mark (PA-01 / PA-03 asymmetry)
 
