@@ -767,6 +767,9 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
     }
 
     /// @inheritdoc IBorrowManager
+    /// @dev Buffer is per-claim, not a cumulative reserve: each claim draws from Aave (raising aaveDebt)
+    ///      and shrinks the gap, so iterative claims can extract ~all premium. By design — the premium is
+    ///      the VM's own revenue; over-claiming only risks its own floor/HF.
     function claimableInterest() public view returns (uint256) {
         return earnedInterest().mulDiv(BPS - interestBufferBps, BPS);
     }

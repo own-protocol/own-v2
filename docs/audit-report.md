@@ -522,6 +522,19 @@ future work: the unconfirmed leads in §5.
   sizing). Code-level fix if ever desired: size `lpLoss` off the real Aave repaid
   (`realAaveDebt − absorbAmount`) rather than the book residual. Surfaced by the 2026-06-19 lead
   deep-dive.
+- **GPT5-M-02 — `claimEarnedInterest` buffer is per-claim, not a cumulative reserve (accepted by
+  design, 2026-06-22).** `claimableInterest` reserves `interestBufferBps` (10%) of the _current_
+  `earnedInterest = bookDebt − aaveDebt` gap, but each early claim draws from Aave (raising `aaveDebt`)
+  and shrinks that gap, so a manager who calls repeatedly takes 90%, then 90% of the remainder, and so
+  on — converging on ~99.9% of the premium and leaving the buffer at dust. Accepted, not fixed: the
+  premium is the VM's own revenue (`OnlyManager`-gated, the intended recipient), so no third party
+  benefits, and the buffer is a per-claim soft cushion (keeps `bookDebt > aaveDebt` so the index floor
+  stays inactive for that claim — M-05/M-08), **not** a hard cumulative reserve. A manager who drains it
+  only risks tripping its **own** index floor (retroactively over-charging its own borrowers) and
+  lowering its vault's Aave HF (bounded by `minClaimHealthFactor`) — both self-inflicted. Documented
+  behavior: a claim does not return the full premium; iterative claiming toward ~99.9% is possible but
+  not recommended. Code-level cap if ever desired: track cumulative claims `C` and bound at
+  `(bookDebt − aaveDebt + C) × (BPS − interestBufferBps) / BPS`, reconciling `C` on the repay/sweep path.
 
 ---
 
