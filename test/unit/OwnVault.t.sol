@@ -1039,6 +1039,193 @@ contract OwnVaultTest is BaseTest {
 
         assertEq(vault.totalAssets(), backing, "totalAssets intact");
     }
+
+    // ──────────────────────────────────────────────────────────
+    //  Constructor / mint / view branch coverage
+    // ──────────────────────────────────────────────────────────
+
+    function test_constructor_decimalsTooHigh_reverts() public {
+        MockERC20 weird = new MockERC20("Weird", "WRD", 19);
+        vm.expectRevert(abi.encodeWithSelector(IOwnVault.DecimalsTooHigh.selector, uint8(19)));
+        new OwnVault(address(weird), "Bad", "BAD", address(protocolRegistry), Actors.VM1);
+    }
+
+    /// @dev mint() is manager-only and otherwise untested; the bound manager mints shares to an LP.
+    function test_mint_byManager_succeeds() public {
+        uint256 shares = 1e24;
+        uint256 assetsNeeded = vault.previewMint(shares);
+        weth.mint(Actors.VM1, assetsNeeded);
+        vm.startPrank(Actors.VM1);
+        weth.approve(address(vault), assetsNeeded);
+        uint256 assets = vault.mint(shares, Actors.LP1);
+        vm.stopPrank();
+        assertEq(vault.balanceOf(Actors.LP1), shares, "shares minted to receiver");
+        assertEq(assets, assetsNeeded, "assets pulled == preview");
+    }
+
+    function test_requireDepositApproval_view() public {
+        assertFalse(vault.requireDepositApproval(), "default off");
+        _enableDepositApproval();
+        assertTrue(vault.requireDepositApproval(), "on after toggle");
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Async deposit queue — remaining revert branches
+    // ──────────────────────────────────────────────────────────
+
+    /// @dev Request a deposit in approval mode (assumes the gate is already enabled).
+    function _requestDeposit(address lp, uint256 amount) internal returns (uint256 id) {
+        weth.mint(lp, amount);
+        vm.startPrank(lp);
+        weth.approve(address(vault), amount);
+        id = vault.requestDeposit(amount, lp, 0);
+        vm.stopPrank();
+    }
+
+    function test_acceptDeposit_notFound_reverts() public {
+        vm.prank(Actors.VM1);
+        vm.expectRevert(abi.encodeWithSelector(IOwnVault.DepositRequestNotFound.selector, uint256(999)));
+        vault.acceptDeposit(999);
+    }
+
+    function test_rejectDeposit_notFound_reverts() public {
+        vm.prank(Actors.VM1);
+        vm.expectRevert(abi.encodeWithSelector(IOwnVault.DepositRequestNotFound.selector, uint256(999)));
+        vault.rejectDeposit(999);
+    }
+
+    function test_rejectDeposit_notPending_reverts() public {
+        _enableDepositApproval();
+        uint256 id = _requestDeposit(Actors.LP1, 10 ether);
+        vm.startPrank(Actors.VM1);
+        vault.acceptDeposit(id); // now Accepted
+        vm.expectRevert(abi.encodeWithSelector(IOwnVault.DepositRequestNotPending.selector, id));
+        vault.rejectDeposit(id);
+        vm.stopPrank();
+    }
+
+    function test_cancelDeposit_notFound_reverts() public {
+        vm.expectRevert(abi.encodeWithSelector(IOwnVault.DepositRequestNotFound.selector, uint256(999)));
+        vault.cancelDeposit(999);
+    }
+
+    function test_cancelDeposit_notPending_reverts() public {
+        _enableDepositApproval();
+        uint256 id = _requestDeposit(Actors.LP1, 10 ether);
+        vm.prank(Actors.VM1);
+        vault.acceptDeposit(id); // Accepted
+        vm.prank(Actors.LP1);
+        vm.expectRevert(abi.encodeWithSelector(IOwnVault.DepositRequestNotPending.selector, id));
+        vault.cancelDeposit(id);
+    }
+
+    function test_getDepositRequest_notFound_reverts() public {
+        vm.expectRevert(abi.encodeWithSelector(IOwnVault.DepositRequestNotFound.selector, uint256(999)));
+        vault.getDepositRequest(999);
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Async withdrawal queue — remaining revert branches
+    // ──────────────────────────────────────────────────────────
+
+    function test_cancelWithdrawal_notFound_reverts() public {
+        vm.expectRevert(abi.encodeWithSelector(IOwnVault.WithdrawalRequestNotFound.selector, uint256(999)));
+        vault.cancelWithdrawal(999);
+    }
+
+    function test_cancelWithdrawal_notPending_reverts() public {
+        uint256 shares = _depositAs(Actors.LP1, 10 ether);
+        vm.startPrank(Actors.LP1);
+        uint256 id = vault.requestWithdrawal(shares);
+        vault.cancelWithdrawal(id); // now Cancelled
+        vm.expectRevert(abi.encodeWithSelector(IOwnVault.WithdrawalNotPending.selector, id));
+        vault.cancelWithdrawal(id);
+        vm.stopPrank();
+    }
+
+    function test_fulfillWithdrawal_notPending_reverts() public {
+        uint256 shares = _depositAs(Actors.LP1, 10 ether);
+        vm.prank(Actors.LP1);
+        uint256 id = vault.requestWithdrawal(shares);
+        vault.fulfillWithdrawal(id); // Fulfilled
+        vm.expectRevert(abi.encodeWithSelector(IOwnVault.WithdrawalNotPending.selector, id));
+        vault.fulfillWithdrawal(id);
+    }
+
+    function test_getWithdrawalRequest_notFound_reverts() public {
+        vm.expectRevert(abi.encodeWithSelector(IOwnVault.WithdrawalRequestNotFound.selector, uint256(999)));
+        vault.getWithdrawalRequest(999);
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Status transition + release-collateral guards
+    // ──────────────────────────────────────────────────────────
+
+    function test_unpause_notPaused_reverts() public {
+        vm.prank(Actors.ADMIN);
+        vm.expectRevert(IOwnVault.InvalidStatusTransition.selector);
+        vault.unpause();
+    }
+
+    function test_releaseCollateral_notMarket_reverts() public {
+        _depositAs(Actors.LP1, 10 ether);
+        vm.prank(Actors.ATTACKER);
+        vm.expectRevert(IOwnVault.OnlyMarket.selector);
+        vault.releaseCollateral(Actors.LP1, 1 ether);
+    }
+
+    function test_releaseCollateral_zeroTo_reverts() public {
+        _depositAs(Actors.LP1, 10 ether);
+        vm.prank(mockMarket);
+        vm.expectRevert(IOwnVault.ZeroAddress.selector);
+        vault.releaseCollateral(address(0), 1 ether);
+    }
+
+    function test_releaseCollateral_zeroAmount_reverts() public {
+        _depositAs(Actors.LP1, 10 ether);
+        vm.prank(mockMarket);
+        vm.expectRevert(IOwnVault.ZeroAmount.selector);
+        vault.releaseCollateral(Actors.LP1, 0);
+    }
+
+    /// @dev With a borrow manager bound, releaseCollateral runs the Aave health-factor gate (which
+    ///      passes here) — exercising the `_borrowManager != address(0)` branch.
+    function test_releaseCollateral_withBorrowManager_checksHealth() public {
+        _depositAs(Actors.LP1, 10 ether);
+        MockHealthBorrowManager bm = new MockHealthBorrowManager(); // safe → gate passes
+        vm.prank(Actors.ADMIN);
+        vault.setBorrowManager(address(bm));
+
+        vm.prank(mockMarket);
+        vault.releaseCollateral(Actors.LP1, 5 ether);
+        assertEq(weth.balanceOf(Actors.LP1), 5 ether, "collateral released after health check");
+    }
+
+    function test_releaseCollateralForBadDebt_notBorrowManager_reverts() public {
+        vm.prank(Actors.ATTACKER);
+        vm.expectRevert(IOwnVault.OnlyBorrowManager.selector);
+        vault.releaseCollateralForBadDebt(1 ether);
+    }
+
+    function test_releaseCollateralForBadDebt_zeroAmount_reverts() public {
+        address bm = makeAddr("bm");
+        vm.prank(Actors.ADMIN);
+        vault.setBorrowManager(bm);
+        vm.prank(bm);
+        vm.expectRevert(IOwnVault.ZeroAmount.selector);
+        vault.releaseCollateralForBadDebt(0);
+    }
+
+    function test_releaseCollateralForBadDebt_treasuryNotSet_reverts() public {
+        _depositAs(Actors.LP1, 10 ether); // backing so the amount-vs-backing check passes
+        address bm = makeAddr("bm");
+        vm.prank(Actors.ADMIN);
+        vault.setBorrowManager(bm);
+        // registry.treasury() is unset (zero) in this suite.
+        vm.prank(bm);
+        vm.expectRevert(IOwnVault.TreasuryNotSet.selector);
+        vault.releaseCollateralForBadDebt(1 ether);
+    }
 }
 
 /// @dev Minimal asset registry stub: every asset uses the in-house oracle. Lets the VaultManager

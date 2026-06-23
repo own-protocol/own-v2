@@ -42,6 +42,26 @@ contract BlocklistToken is MockERC20 {
     }
 }
 
+/// @dev Redeem-order owner with no `receive`/`fallback`, so a force-execute surplus-ETH refund
+///      fails — exercising the ETHRefundFailed guard.
+contract RejectingRedeemer {
+    function placeRedeem(
+        OwnMarket m,
+        MockERC20 token,
+        bytes32 asset,
+        uint256 amount,
+        uint256 price,
+        uint256 expiry
+    ) external returns (uint256) {
+        token.approve(address(m), amount);
+        return m.placeOrder(asset, OrderType.Redeem, amount, price, expiry);
+    }
+
+    function force(OwnMarket m, uint256 orderId, address vault, bytes calldata a, bytes calldata c) external payable {
+        m.forceExecuteOrder{value: msg.value}(orderId, vault, a, c);
+    }
+}
+
 contract OwnMarketTest is BaseTest {
     OwnMarket public market;
     AssetRegistry public assetReg;
@@ -1294,5 +1314,249 @@ contract OwnMarketTest is BaseTest {
         market.executeOrder(q, sig);
 
         assertEq(eTSLAToken.balanceOf(Actors.MINTER1), _expectedMintOut(amount, price), "minted (no mark to bound)");
+    }
+
+    // ══════════════════════════════════════════════════════════
+    //  executeOrder / fillOrder — remaining input-guard branches
+    // ══════════════════════════════════════════════════════════
+
+    function test_executeOrder_zeroAmount_reverts() public {
+        Quote memory q = _quote(0, Actors.MINTER1, OrderType.Mint, 0, TSLA_PRICE);
+        vm.prank(Actors.MINTER1);
+        vm.expectRevert(IOwnMarket.ZeroAmount.selector);
+        market.executeOrder(q, _sign(q, rfqVMPk));
+    }
+
+    function test_executeOrder_zeroPrice_reverts() public {
+        Quote memory q = _quote(0, Actors.MINTER1, OrderType.Mint, 1000e6, 0);
+        vm.prank(Actors.MINTER1);
+        vm.expectRevert(IOwnMarket.InvalidPrice.selector);
+        market.executeOrder(q, _sign(q, rfqVMPk));
+    }
+
+    function test_fillOrder_orderNotFound_reverts() public {
+        Quote memory q = _quote(999, Actors.MINTER1, OrderType.Mint, 1000e6, TSLA_PRICE);
+        vm.prank(rfqVM);
+        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.OrderNotFound.selector, uint256(999)));
+        market.fillOrder(q, _sign(q, rfqVMPk));
+    }
+
+    function test_fillOrder_expiredOrder_reverts() public {
+        uint256 orderId = _placeMint(Actors.MINTER1, 1000e6, TSLA_PRICE);
+        Order memory o = market.getOrder(orderId);
+        vm.warp(o.expiry + 1); // order past its expiry but still Open
+        Quote memory q = _quote(orderId, Actors.MINTER1, OrderType.Mint, 1000e6, TSLA_PRICE);
+        vm.prank(rfqVM);
+        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.OrderExpiredError.selector, orderId));
+        market.fillOrder(q, _sign(q, rfqVMPk));
+    }
+
+    function test_fillOrder_zeroAmount_reverts() public {
+        uint256 orderId = _placeMint(Actors.MINTER1, 1000e6, TSLA_PRICE);
+        Quote memory q = _quote(orderId, Actors.MINTER1, OrderType.Mint, 0, TSLA_PRICE);
+        vm.prank(rfqVM);
+        vm.expectRevert(IOwnMarket.ZeroAmount.selector);
+        market.fillOrder(q, _sign(q, rfqVMPk));
+    }
+
+    function test_fillOrder_zeroPrice_reverts() public {
+        uint256 orderId = _placeMint(Actors.MINTER1, 1000e6, TSLA_PRICE);
+        Quote memory q = _quote(orderId, Actors.MINTER1, OrderType.Mint, 1000e6, 0);
+        vm.prank(rfqVM);
+        vm.expectRevert(IOwnMarket.InvalidPrice.selector);
+        market.fillOrder(q, _sign(q, rfqVMPk));
+    }
+
+    // ══════════════════════════════════════════════════════════
+    //  forceExecuteOrder — remaining guard branches
+    // ══════════════════════════════════════════════════════════
+
+    function test_forceExecuteOrder_orderNotFound_reverts() public {
+        vm.prank(Actors.MINTER1);
+        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.OrderNotFound.selector, uint256(999)));
+        market.forceExecuteOrder(999, mockVault, _assetPriceData(TSLA_PRICE), _assetPriceData(ETH_PRICE));
+    }
+
+    function test_forceExecuteOrder_vaultNotRegistered_reverts() public {
+        uint256 orderId = _placeRedeem(Actors.MINTER1, 4e18, TSLA_PRICE);
+        vm.warp(block.timestamp + CLAIM_THRESHOLD);
+        // The designated vault is no longer registered (e.g. deregistered after designation).
+        vm.mockCall(
+            mockVaultManager,
+            abi.encodeWithSelector(IVaultManager.isRegisteredVault.selector, mockVault),
+            abi.encode(false)
+        );
+        vm.prank(Actors.MINTER1);
+        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.VaultNotRegistered.selector, mockVault));
+        market.forceExecuteOrder(orderId, mockVault, _assetPriceData(TSLA_PRICE), _assetPriceData(ETH_PRICE));
+    }
+
+    function test_forceExecuteOrder_assetPaused_reverts() public {
+        uint256 orderId = _placeRedeem(Actors.MINTER1, 4e18, TSLA_PRICE);
+        vm.warp(block.timestamp + CLAIM_THRESHOLD);
+        vm.mockCall(mockVaultManager, abi.encodeWithSelector(IVaultManager.isTradingPaused.selector), abi.encode(true));
+        vm.prank(Actors.MINTER1);
+        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.AssetPaused.selector, TSLA));
+        market.forceExecuteOrder(orderId, mockVault, _assetPriceData(TSLA_PRICE), _assetPriceData(ETH_PRICE));
+    }
+
+    function test_forceExecuteOrder_assetOracleNotSet_reverts() public {
+        uint256 orderId = _placeRedeem(Actors.MINTER1, 4e18, TSLA_PRICE);
+        vm.warp(block.timestamp + CLAIM_THRESHOLD);
+        // Point TSLA at the pyth oracle, which is unset (address 0) in this harness.
+        AssetConfig memory cfg = AssetConfig({
+            activeToken: address(eTSLAToken),
+            legacyTokens: new address[](0),
+            active: true,
+            volatilityLevel: 2,
+            oracleType: 0
+        });
+        vm.prank(Actors.ADMIN);
+        assetReg.updateAssetConfig(TSLA, cfg);
+        vm.prank(Actors.MINTER1);
+        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.AssetOracleNotSet.selector, TSLA));
+        market.forceExecuteOrder(orderId, mockVault, _assetPriceData(TSLA_PRICE), _assetPriceData(ETH_PRICE));
+    }
+
+    function test_forceExecuteOrder_collateralOracleNotSet_reverts() public {
+        uint256 orderId = _placeRedeem(Actors.MINTER1, 4e18, TSLA_PRICE);
+        vm.warp(block.timestamp + CLAIM_THRESHOLD);
+        // Asset oracle stays set; point the collateral asset (ETH) at the unset pyth oracle.
+        AssetConfig memory cfg = AssetConfig({
+            activeToken: address(weth),
+            legacyTokens: new address[](0),
+            active: true,
+            volatilityLevel: 1,
+            oracleType: 0
+        });
+        vm.prank(Actors.ADMIN);
+        assetReg.updateAssetConfig(ETH_ASSET, cfg);
+        vm.prank(Actors.MINTER1);
+        vm.expectRevert(IOwnMarket.CollateralOracleNotSet.selector);
+        market.forceExecuteOrder(orderId, mockVault, _assetPriceData(TSLA_PRICE), _assetPriceData(ETH_PRICE));
+    }
+
+    function test_forceExecuteOrder_refundsExcessEth() public {
+        uint256 orderId = _placeRedeem(Actors.MINTER1, 4e18, TSLA_PRICE);
+        vm.warp(block.timestamp + CLAIM_THRESHOLD);
+        vm.deal(Actors.MINTER1, 1 ether);
+        uint256 balBefore = Actors.MINTER1.balance;
+        vm.prank(Actors.MINTER1);
+        market.forceExecuteOrder{value: 1 ether}(
+            orderId, mockVault, _assetPriceData(TSLA_PRICE), _assetPriceData(ETH_PRICE)
+        );
+        // Oracle fee is 0 (mock), so the full 1 ether is refunded.
+        assertEq(Actors.MINTER1.balance, balBefore, "excess ETH refunded to caller");
+        assertEq(address(market).balance, 0, "market holds no ETH");
+    }
+
+    function test_forceExecuteOrder_ethRefundFails_reverts() public {
+        RejectingRedeemer owner = new RejectingRedeemer();
+        eTSLAToken.mint(address(owner), 4e18);
+        uint256 orderId = owner.placeRedeem(market, eTSLAToken, TSLA, 4e18, TSLA_PRICE, _defaultExpiry());
+        vm.warp(block.timestamp + CLAIM_THRESHOLD);
+        vm.deal(address(this), 1 ether);
+        vm.expectRevert(IOwnMarket.ETHRefundFailed.selector);
+        owner.force{value: 1}(market, orderId, mockVault, _assetPriceData(TSLA_PRICE), _assetPriceData(ETH_PRICE));
+    }
+
+    // ══════════════════════════════════════════════════════════
+    //  redeemHalted / convertLegacy — remaining guard branches
+    // ══════════════════════════════════════════════════════════
+
+    function test_redeemHalted_zeroAmount_reverts() public {
+        vm.prank(Actors.MINTER1);
+        vm.expectRevert(IOwnMarket.ZeroAmount.selector);
+        market.redeemHalted(TSLA, 0);
+    }
+
+    /// @dev Halted but with a zero halt price (defensive) must reject rather than pay out nothing.
+    function test_redeemHalted_zeroHaltPrice_reverts() public {
+        vm.mockCall(mockVaultManager, abi.encodeWithSelector(IVaultManager.isAssetHalted.selector), abi.encode(true));
+        // assetHaltPrice default mock returns 0.
+        vm.prank(Actors.MINTER1);
+        vm.expectRevert(IOwnMarket.InvalidHaltPrice.selector);
+        market.redeemHalted(TSLA, 1e18);
+    }
+
+    function test_redeemHalted_haltAddrNotSet_reverts() public {
+        vm.mockCall(mockVaultManager, abi.encodeWithSelector(IVaultManager.isAssetHalted.selector), abi.encode(true));
+        vm.mockCall(
+            mockVaultManager, abi.encodeWithSelector(IVaultManager.assetHaltPrice.selector), abi.encode(uint256(200e18))
+        );
+        vm.mockCall(
+            mockVaultManager, abi.encodeWithSelector(IVaultManager.haltRedeemAddress.selector), abi.encode(address(0))
+        );
+        vm.prank(Actors.MINTER1);
+        vm.expectRevert(IOwnMarket.HaltRedeemAddressNotSet.selector);
+        market.redeemHalted(TSLA, 1e18);
+    }
+
+    function test_convertLegacy_zeroAmount_reverts() public {
+        _migrate(3e18);
+        vm.prank(Actors.MINTER1);
+        vm.expectRevert(IOwnMarket.ZeroAmount.selector);
+        market.convertLegacy(TSLA, address(eTSLAToken), 0);
+    }
+
+    /// @dev A reverse split with a sub-unit input rounds the converted amount to zero — rejected.
+    function test_convertLegacy_dustRoundsToZero_reverts() public {
+        _migrate(1); // ratio = 1 wei → newAmount = amount * 1 / 1e18 floors to 0 for amount == 1
+        eTSLAToken.mint(Actors.MINTER1, 1);
+        vm.prank(Actors.MINTER1);
+        vm.expectRevert(IOwnMarket.ZeroAmount.selector);
+        market.convertLegacy(TSLA, address(eTSLAToken), 1);
+    }
+
+    // ══════════════════════════════════════════════════════════
+    //  cancel / expire / sweep / getOrder / placeOrder — remaining branches
+    // ══════════════════════════════════════════════════════════
+
+    function test_cancelOrder_notFound_reverts() public {
+        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.OrderNotFound.selector, uint256(999)));
+        market.cancelOrder(999);
+    }
+
+    function test_expireOrder_notFound_reverts() public {
+        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.OrderNotFound.selector, uint256(999)));
+        market.expireOrder(999);
+    }
+
+    function test_expireOrder_notOpen_reverts() public {
+        uint256 orderId = _placeMint(Actors.MINTER1, 1000e6, TSLA_PRICE);
+        vm.prank(Actors.MINTER1);
+        market.cancelOrder(orderId); // status Cancelled
+        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.InvalidOrderStatus.selector, orderId));
+        market.expireOrder(orderId);
+    }
+
+    function test_sweepDividends_noDividends_reverts() public {
+        EToken divToken = new EToken("Own X", "eX", bytes32("XXX"), address(protocolRegistry), address(usdc));
+        AssetConfig memory cfg = AssetConfig({
+            activeToken: address(divToken),
+            legacyTokens: new address[](0),
+            active: true,
+            volatilityLevel: 1,
+            oracleType: 1
+        });
+        vm.prank(Actors.ADMIN);
+        assetReg.addAsset(bytes32("XXX"), address(divToken), cfg);
+
+        vm.expectRevert(IOwnMarket.NoDividendsToSweep.selector);
+        market.sweepDividends(address(divToken));
+    }
+
+    function test_getOrder_notFound_reverts() public {
+        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.OrderNotFound.selector, uint256(999)));
+        market.getOrder(999);
+    }
+
+    function test_placeOrder_paymentTokenNotSet_reverts() public {
+        vm.mockCall(
+            mockVaultManager, abi.encodeWithSelector(IVaultManager.paymentToken.selector), abi.encode(address(0))
+        );
+        vm.prank(Actors.MINTER1);
+        vm.expectRevert(IOwnMarket.PaymentTokenNotSet.selector);
+        market.placeOrder(TSLA, OrderType.Mint, 1000e6, TSLA_PRICE, _defaultExpiry());
     }
 }

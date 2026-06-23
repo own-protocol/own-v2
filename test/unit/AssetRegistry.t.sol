@@ -426,6 +426,45 @@ contract AssetRegistryTest is BaseTest {
         vm.expectRevert(abi.encodeWithSelector(IAssetRegistry.AssetNotFound.selector, TSLA));
         registry.getOracleType(TSLA);
     }
+
+    // ──────────────────────────────────────────────────────────
+    //  Constructor + remaining revert / view branches
+    // ──────────────────────────────────────────────────────────
+
+    function test_constructor_zeroRegistry_reverts() public {
+        vm.expectRevert(IAssetRegistry.ZeroAddress.selector);
+        new AssetRegistry(address(0));
+    }
+
+    function test_migrateToken_nonExistent_reverts() public {
+        vm.prank(Actors.ADMIN);
+        vm.expectRevert(abi.encodeWithSelector(IAssetRegistry.AssetNotFound.selector, TSLA));
+        registry.migrateToken(TSLA, makeAddr("eTSLAv2"), 3e18);
+    }
+
+    function test_getActiveToken_nonExistent_reverts() public {
+        vm.expectRevert(abi.encodeWithSelector(IAssetRegistry.AssetNotFound.selector, TSLA));
+        registry.getActiveToken(TSLA);
+    }
+
+    function test_getLegacyTokens_nonExistent_reverts() public {
+        vm.expectRevert(abi.encodeWithSelector(IAssetRegistry.AssetNotFound.selector, TSLA));
+        registry.getLegacyTokens(TSLA);
+    }
+
+    /// @dev Query a token that is neither active nor the (single) legacy entry — forces the
+    ///      isValidToken loop to advance past index 0 (covers the loop-increment path).
+    function test_isValidToken_legacyMiss_iteratesLoop() public {
+        AssetConfig memory config = _defaultConfig(eTSLA);
+        address v2 = makeAddr("eTSLAv2");
+        vm.startPrank(Actors.ADMIN);
+        registry.addAsset(TSLA, eTSLA, config);
+        registry.migrateToken(TSLA, v2, 3e18); // eTSLA becomes legacy[0], v2 active
+        vm.stopPrank();
+
+        // Neither active (v2) nor legacy (eTSLA): loop checks legacy[0], misses, increments, exits.
+        assertFalse(registry.isValidToken(TSLA, makeAddr("unrelated")));
+    }
 }
 
 /// @dev Records the applySplit call migrateToken now makes (L-07 atomic coupling), without

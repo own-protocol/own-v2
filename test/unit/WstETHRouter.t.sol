@@ -10,7 +10,9 @@ import {BaseTest} from "../helpers/BaseTest.sol";
 import {MockERC20} from "../helpers/MockERC20.sol";
 import {MockWstETH} from "../helpers/MockWstETH.sol";
 import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
+import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {ERC20Permit} from "@openzeppelin/contracts/token/ERC20/extensions/ERC20Permit.sol";
 import {Test} from "forge-std/Test.sol";
 
 /// @dev stETH whose transfers credit the recipient 2 wei less than requested,
@@ -21,6 +23,19 @@ contract MockRoundingStETH is MockERC20 {
     function transferFrom(address from, address to, uint256 value) public override returns (bool ok) {
         ok = super.transferFrom(from, to, value);
         _burn(to, 2);
+    }
+}
+
+/// @dev ERC-2612 permit-capable stETH, used to drive the depositStETHWithPermit happy path.
+contract MockPermitStETH is ERC20, ERC20Permit {
+    constructor() ERC20("Staked Ether", "stETH") ERC20Permit("Staked Ether") {}
+
+    function decimals() public pure override returns (uint8) {
+        return 18;
+    }
+
+    function mint(address to, uint256 amount) external {
+        _mint(to, amount);
     }
 }
 
@@ -186,6 +201,67 @@ contract WstETHRouterTest is BaseTest {
         // Vault should hold wstETH, not stETH
         assertGt(wstETH.balanceOf(address(vault)), 0);
         assertEq(stETH.balanceOf(address(vault)), 0);
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  depositStETHWithPermit
+    // ──────────────────────────────────────────────────────────
+
+    /// @dev Build a signed ERC-2612 permit for the stETH mock (extracted to keep the
+    ///      happy-path test under the no-optimizer stack limit used by coverage runs).
+    function _signStETHPermit(
+        MockPermitStETH token,
+        address owner,
+        uint256 ownerPk,
+        address spender,
+        uint256 value,
+        uint256 deadline
+    ) internal view returns (uint8 v, bytes32 r, bytes32 s) {
+        bytes32 permitTypehash =
+            keccak256("Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)");
+        bytes32 structHash = keccak256(abi.encode(permitTypehash, owner, spender, value, token.nonces(owner), deadline));
+        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", token.DOMAIN_SEPARATOR(), structHash));
+        return vm.sign(ownerPk, digest);
+    }
+
+    function test_depositStETHWithPermit_succeeds() public {
+        (address lp, uint256 lpPk) = makeAddrAndKey("permitLP");
+
+        // Permit-capable stETH + matching wstETH/router/vault.
+        MockPermitStETH pStETH = new MockPermitStETH();
+        MockWstETH pWstETH = new MockWstETH(address(pStETH));
+        WstETHRouter r = new WstETHRouter(address(pWstETH), address(pStETH));
+        vm.prank(Actors.ADMIN);
+        OwnVault vlt = new OwnVault(address(pWstETH), "Own wstETH", "owstETH", address(protocolRegistry), address(r));
+
+        uint256 amount = 10 ether;
+        pStETH.mint(lp, amount);
+        uint256 deadline = block.timestamp + 1 hours;
+        (uint8 v, bytes32 rr, bytes32 ss) = _signStETHPermit(pStETH, lp, lpPk, address(r), amount, deadline);
+
+        vm.prank(lp);
+        uint256 shares = r.depositStETHWithPermit(IERC4626(address(vlt)), amount, lp, 0, deadline, v, rr, ss);
+
+        assertGt(shares, 0);
+        assertEq(vlt.balanceOf(lp), shares);
+        assertEq(pStETH.balanceOf(address(r)), 0, "Router should hold no stETH");
+        assertEq(pWstETH.balanceOf(address(r)), 0, "Router should hold no wstETH");
+    }
+
+    function test_depositStETHWithPermit_zeroAmount_reverts() public {
+        vm.prank(Actors.LP1);
+        vm.expectRevert(IWstETHRouter.ZeroAmount.selector);
+        router.depositStETHWithPermit(
+            IERC4626(address(vault)), 0, Actors.LP1, 0, block.timestamp + 1, 0, bytes32(0), bytes32(0)
+        );
+    }
+
+    function test_depositStETHWithPermit_zeroReceiver_reverts() public {
+        vm.prank(Actors.LP1);
+        vm.expectRevert(IWstETHRouter.ZeroAddress.selector);
+        router.depositStETHWithPermit(
+            IERC4626(address(vault)), 10 ether, address(0), 0, block.timestamp + 1, 0, bytes32(0), bytes32(0)
+        );
     }
 
     // ──────────────────────────────────────────────────────────

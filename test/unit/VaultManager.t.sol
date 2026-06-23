@@ -1200,4 +1200,126 @@ contract VaultManagerTest is Test {
     function test_globalUtilizationBps_zeroCollateralZeroExposure_isZero() public view {
         assertEq(manager.globalUtilizationBps(), 0);
     }
+
+    // ──────────────────────────────────────────────────────────
+    //  pullAssetPrice — halted asset (fixed-mark path)
+    // ──────────────────────────────────────────────────────────
+
+    /// @dev A halted asset's mark is pinned at the halt price; a keeper pull is a no-op when the
+    ///      stored mark already equals the halt price (the common case).
+    function test_pullAssetPrice_haltedAsset_noOpWhenMarkMatches() public {
+        _bootstrap();
+        _open(1000e18);
+        vm.prank(admin);
+        manager.haltAsset(TSLA, 200e18); // sets _assetMark == haltPrice == 200e18
+
+        manager.pullAssetPrice(TSLA); // halted branch, hp == old → returns without re-marking
+        assertEq(manager.assetMark(TSLA), 200e18);
+        assertEq(manager.globalExposureUSD(), 200_000e18);
+    }
+
+    /// @dev Defensive re-mark: if a halted asset's stored mark ever drifts from the fixed halt price
+    ///      (here forced via a direct applySplit), the keeper pull re-pins it to the halt price.
+    function test_pullAssetPrice_haltedAsset_remarksOnDrift() public {
+        _bootstrap();
+        _open(1000e18);
+        vm.prank(admin);
+        manager.haltAsset(TSLA, 200e18); // _assetMark = 200e18
+
+        // Desync the stored mark from the halt price (applySplit only checks the caller, not halt state).
+        vm.prank(address(assetRegistry));
+        manager.applySplit(TSLA, 2e18); // _assetMark = 100e18, units x2 → 2000e18; haltPrice still 200e18
+
+        vm.expectEmit(true, false, false, true);
+        emit IVaultManager.AssetPricePulled(TSLA, 100e18, 200e18);
+        manager.pullAssetPrice(TSLA); // hp(200) != old(100) → re-pin to halt price
+
+        assertEq(manager.assetMark(TSLA), 200e18, "re-pinned to fixed halt price");
+        assertEq(manager.globalExposureUSD(), 400_000e18, "2000 units * $200");
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Zero resolved price guards (Pyth normalises to 0)
+    // ──────────────────────────────────────────────────────────
+
+    function test_pullAssetPrice_zeroResolvedPrice_reverts() public {
+        oracle.setForceZeroPrice(true);
+        vm.expectRevert(abi.encodeWithSelector(IVaultManager.PriceUnavailable.selector, TSLA));
+        manager.pullAssetPrice(TSLA);
+    }
+
+    function test_pullCollateralPrice_zeroResolvedPrice_reverts() public {
+        vm.prank(admin);
+        manager.registerVault(address(vault), USDC_TICKER);
+        oracle.setForceZeroPrice(true);
+        vm.expectRevert(abi.encodeWithSelector(IVaultManager.PriceUnavailable.selector, USDC_TICKER));
+        manager.pullCollateralPrice(address(vault));
+    }
+
+    function test_onVaultUnhalted_zeroResolvedPrice_reverts() public {
+        _bootstrap();
+        vm.prank(address(vault));
+        manager.onVaultHalted();
+
+        oracle.setForceZeroPrice(true);
+        vm.prank(address(vault));
+        vm.expectRevert(abi.encodeWithSelector(IVaultManager.PriceUnavailable.selector, USDC_TICKER));
+        manager.onVaultUnhalted();
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Remaining branch coverage
+    // ──────────────────────────────────────────────────────────
+
+    /// @dev Deregistering a non-last vault exercises the O(1) swap-remove (idx != lastIdx).
+    function test_deregisterVault_swapRemoveNonLast() public {
+        vm.startPrank(admin);
+        manager.registerVault(address(vault), USDC_TICKER);
+        StubVault vaultB = new StubVault(address(usdc));
+        manager.registerVault(address(vaultB), USDC_TICKER);
+        manager.deregisterVault(address(vault)); // idx 1 of 2 → swap last into the freed slot
+        vm.stopPrank();
+
+        address[] memory all = manager.getAllVaults();
+        assertEq(all.length, 1);
+        assertEq(all[0], address(vaultB), "last vault swapped into freed slot");
+        assertFalse(manager.isRegisteredVault(address(vault)));
+        assertTrue(manager.isRegisteredVault(address(vaultB)));
+    }
+
+    /// @dev Releasing more than the vault holds clamps the removed USD to the stored mark (no underflow).
+    function test_onCollateralReleased_clampsToMark() public {
+        _bootstrap(); // mark $1M, totalAssets 1M USDC
+        vm.prank(address(vault));
+        manager.onCollateralReleased(2_000_000e6); // assets > totalAssets → removedUSD would exceed mark
+
+        assertEq(manager.collateralMark(address(vault)), 0, "mark fully cleared, clamped not underflowed");
+        assertEq(manager.globalCollateralUSD(), 0);
+    }
+
+    function test_updateSignerLinkedAddress_zeroAddress_reverts() public {
+        address signer = makeAddr("signer");
+        vm.startPrank(admin);
+        manager.registerSigner(signer, makeAddr("linked"));
+        vm.expectRevert(IVaultManager.ZeroAddress.selector);
+        manager.updateSignerLinkedAddress(signer, address(0));
+        vm.stopPrank();
+    }
+
+    function test_setPaymentToken_decimalsAbove18_reverts() public {
+        MockERC20 weird = new MockERC20("Weird", "WRD", 19);
+        vm.prank(admin);
+        vm.expectRevert(IVaultManager.ZeroAddress.selector); // contract rejects >18-decimal tokens via ZeroAddress
+        manager.setPaymentToken(address(weird));
+    }
+
+    function test_setForceExecuteVault_excludedVault_reverts() public {
+        _bootstrap();
+        vm.prank(address(vault));
+        manager.onVaultHalted(); // vault now excluded
+
+        vm.expectRevert(abi.encodeWithSelector(IVaultManager.VaultAlreadyExcluded.selector, address(vault)));
+        vm.prank(admin);
+        manager.setForceExecuteVault(address(vault));
+    }
 }

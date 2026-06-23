@@ -19,6 +19,22 @@ import {MockAToken, MockAaveDebtToken, MockAaveV3Pool} from "../helpers/MockAave
 import {MockERC20} from "../helpers/MockERC20.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
+/// @dev A borrower contract with no `receive`/`fallback`, so the manager's surplus-ETH refund
+///      fails — exercising the EthRefundFailed guard.
+contract EthRejecter {
+    function doBorrow(
+        BorrowManager bm,
+        EToken e,
+        bytes32 asset,
+        uint256 eAmt,
+        uint256 stable,
+        bytes calldata pd
+    ) external payable {
+        e.approve(address(bm), eAmt);
+        bm.borrow{value: msg.value}(asset, eAmt, stable, pd);
+    }
+}
+
 /// @title BorrowManager Unit Tests
 /// @notice Covers borrow / repay / liquidate flows, eligibility gating,
 ///         interest accrual, and admin guards.
@@ -1299,6 +1315,162 @@ contract BorrowManagerTest is BaseTest {
         vm.prank(Actors.ADMIN);
         vm.expectRevert(IBorrowManager.InvalidMinClaimHealthFactor.selector);
         borrowManager.setMinClaimHealthFactor(1e18 - 1);
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Market surface for settleHaltedPosition (this contract is the MARKET)
+    // ──────────────────────────────────────────────────────────
+
+    /// @dev Minimal redeemHalted: burns the manager's covering eTokens (this contract is the order
+    ///      system) and pays back stablecoin proceeds at the asset's fixed halt price.
+    function redeemHalted(bytes32 asset, uint256 eTokenAmount) external returns (uint256 proceeds) {
+        eTSLA.burn(msg.sender, eTokenAmount);
+        uint256 haltPrice = vaultManager.assetHaltPrice(asset);
+        proceeds = (eTokenAmount * haltPrice / PRECISION) / 10 ** (18 - 6); // 18-dec USD → 6-dec USDC
+        usdc.mint(msg.sender, proceeds);
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  repay / liquidate / absorb / settle revert + clamp branches
+    // ──────────────────────────────────────────────────────────
+
+    function test_repay_zeroAmount_reverts() public {
+        _openTypical(Actors.MINTER1);
+        vm.prank(Actors.MINTER1);
+        vm.expectRevert(IBorrowManager.ZeroAmount.selector);
+        borrowManager.repay(ASSET, 0);
+    }
+
+    function test_liquidate_noPosition_reverts() public {
+        vm.expectRevert(abi.encodeWithSelector(IBorrowManager.NoPosition.selector, Actors.MINTER1, ASSET));
+        borrowManager.liquidate(Actors.MINTER1, ASSET, 100e6, _priceData(TSLA_PX));
+    }
+
+    function test_liquidate_zeroRepay_reverts() public {
+        _openTypical(Actors.MINTER1);
+        vm.expectRevert(IBorrowManager.ZeroAmount.selector);
+        borrowManager.liquidate(Actors.MINTER1, ASSET, 0, _priceData(TSLA_PX));
+    }
+
+    function test_absorbBadDebt_noPosition_reverts() public {
+        vm.prank(Actors.ADMIN);
+        vm.expectRevert(abi.encodeWithSelector(IBorrowManager.NoPosition.selector, Actors.MINTER1, ASSET));
+        borrowManager.absorbBadDebt(Actors.MINTER1, ASSET, 0, _priceData(4000e18));
+    }
+
+    /// @dev absorbAmount above the residual is clamped to the residual (treasury can't over-absorb).
+    function test_absorbBadDebt_absorbExceedsResidual_clamps() public {
+        uint256 residual = _stripToBadDebt(); // $2000
+        usdc.mint(Actors.ADMIN, residual);
+        vm.startPrank(Actors.ADMIN);
+        usdc.approve(address(borrowManager), residual);
+        borrowManager.absorbBadDebt(Actors.MINTER1, ASSET, residual + 5000e6, _priceData(4000e18));
+        vm.stopPrank();
+
+        assertEq(borrowManager.positionOf(Actors.MINTER1, ASSET).principal, 0, "position cleared");
+        assertEq(awstETH.balanceOf(Actors.FEE_RECIPIENT), 0, "fully absorbed, no LP collateral slice");
+    }
+
+    function test_settleHaltedPosition_noPosition_reverts() public {
+        vm.expectRevert(abi.encodeWithSelector(IBorrowManager.NoPosition.selector, Actors.MINTER1, ASSET));
+        borrowManager.settleHaltedPosition(Actors.MINTER1, ASSET);
+    }
+
+    function test_settleHaltedPosition_notHalted_reverts() public {
+        _openTypical(Actors.MINTER1);
+        vm.expectRevert(abi.encodeWithSelector(IBorrowManager.AssetNotHalted.selector, ASSET));
+        borrowManager.settleHaltedPosition(Actors.MINTER1, ASSET);
+    }
+
+    /// @dev Halt at the $250 mark: covering 40 eTSLA clears the $10k debt and 60 eTSLA returns
+    ///      to the borrower (full-clear branch).
+    function test_settleHaltedPosition_fullClear_returnsResidual() public {
+        (uint256 eAmt,) = _openTypical(Actors.MINTER1);
+        _haltAsset(ASSET, TSLA_PX);
+
+        borrowManager.settleHaltedPosition(Actors.MINTER1, ASSET);
+
+        assertEq(borrowManager.positionOf(Actors.MINTER1, ASSET).principal, 0, "position closed");
+        assertEq(eTSLA.balanceOf(Actors.MINTER1), eAmt - 40e18, "60 eTSLA residual returned");
+        assertEq(aavePool.debtOf(address(vault), address(usdc)), 0, "aave debt cleared");
+    }
+
+    /// @dev Halt at $50: covering the full $10k debt needs 200 eTSLA but only 100 are posted, so the
+    ///      seize clamps to all collateral and a zero-collateral debt residual is left (partial branch).
+    function test_settleHaltedPosition_collateralExhausted_leavesResidual() public {
+        _openTypical(Actors.MINTER1);
+        _haltAsset(ASSET, 50e18);
+
+        borrowManager.settleHaltedPosition(Actors.MINTER1, ASSET);
+
+        IBorrowManager.Position memory pos = borrowManager.positionOf(Actors.MINTER1, ASSET);
+        assertGt(pos.principal, 0, "debt residual remains");
+        assertEq(pos.eTokenCollateral, 0, "collateral fully consumed");
+        assertEq(eTSLA.balanceOf(Actors.MINTER1), 0, "nothing returned to borrower");
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  requireVaultHealthy / admin setters / idle accrual / refund / band
+    // ──────────────────────────────────────────────────────────
+
+    function test_requireVaultHealthy_unsafeHf_reverts() public {
+        aavePool.setHealthFactor(1e18); // below the 1.1 default
+        vm.expectRevert(abi.encodeWithSelector(IBorrowManager.VaultUnsafeHealthFactor.selector, uint256(1e18)));
+        borrowManager.requireVaultHealthy();
+    }
+
+    function test_setLiquidationCloseFactorBps_validatesAndSets() public {
+        vm.startPrank(Actors.ADMIN);
+        vm.expectRevert(IBorrowManager.InvalidLiquidationConfig.selector);
+        borrowManager.setLiquidationCloseFactorBps(0);
+        vm.expectRevert(IBorrowManager.InvalidLiquidationConfig.selector);
+        borrowManager.setLiquidationCloseFactorBps(BPS + 1);
+        borrowManager.setLiquidationCloseFactorBps(6000);
+        vm.stopPrank();
+        assertEq(borrowManager.liquidationCloseFactorBps(), 6000);
+    }
+
+    function test_setTargetLtvBps_validatesAndSets() public {
+        vm.startPrank(Actors.ADMIN);
+        vm.expectRevert(IBorrowManager.InvalidLtv.selector);
+        borrowManager.setTargetLtvBps(0);
+        vm.expectRevert(IBorrowManager.InvalidLtv.selector);
+        borrowManager.setTargetLtvBps(BPS);
+        borrowManager.setTargetLtvBps(5000);
+        vm.stopPrank();
+        assertEq(borrowManager.targetLtvBps(), 5000);
+    }
+
+    /// @dev With no open positions, accrue() rolls the clock (dt != 0) and is a no-op in the same
+    ///      block (dt == 0), leaving the index at 1.0 — a fresh borrow still records principal == stable.
+    function test_accrue_noDebt_rollsClockWithoutGrowth() public {
+        skip(1 days);
+        borrowManager.accrue(); // dt != 0, zero debt → roll timestamp
+        borrowManager.accrue(); // dt == 0, zero debt → early return
+
+        (, uint256 stable) = _openTypical(Actors.MINTER1);
+        assertEq(borrowManager.positionOf(Actors.MINTER1, ASSET).principal, stable, "index still 1.0");
+    }
+
+    function test_borrow_ethRefundFails_reverts() public {
+        EthRejecter rej = new EthRejecter();
+        _giveTSLA(address(rej), 100e18);
+        vm.deal(address(this), 1 ether);
+        vm.expectRevert(IBorrowManager.EthRefundFailed.selector);
+        rej.doBorrow{value: 1}(borrowManager, eTSLA, ASSET, 100e18, 10_000e6, _priceData(TSLA_PX));
+    }
+
+    /// @dev A fresh price proof still reverts if the keeper-side VaultManager mark has gone stale.
+    function test_borrow_staleMark_revertsPriceMarkStale() public {
+        _setMaxMarkAge(15 minutes);
+        skip(16 minutes); // VM asset mark (pulled in setUp) now older than maxMarkAge
+
+        _giveTSLA(Actors.MINTER1, 100e18);
+        vm.startPrank(Actors.MINTER1);
+        eTSLA.approve(address(borrowManager), 100e18);
+        vm.expectRevert(abi.encodeWithSelector(IBorrowManager.PriceMarkStale.selector, ASSET));
+        borrowManager.borrow(ASSET, 100e18, 10_000e6, _priceData(TSLA_PX));
+        vm.stopPrank();
     }
 }
 

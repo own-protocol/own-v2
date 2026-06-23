@@ -22,6 +22,9 @@ contract MockOracleVerifier is IOracleVerifier {
     bool public forceStale;
     bool public forceInvalidSignature;
     bool public forceDeviation;
+    /// @dev When set, getPrice returns (0, now) instead of reverting — mimics a Pyth feed that
+    ///      normalises (via exponent truncation) to exactly zero, exercising consumers' `price == 0` guards.
+    bool public forceZeroPrice;
 
     // ──────────────────────────────────────────────────────────
     //  Test helpers — set prices directly
@@ -53,6 +56,12 @@ contract MockOracleVerifier is IOracleVerifier {
         forceDeviation = value;
     }
 
+    function setForceZeroPrice(
+        bool value
+    ) external {
+        forceZeroPrice = value;
+    }
+
     // ──────────────────────────────────────────────────────────
     //  IOracleVerifier — push
     // ──────────────────────────────────────────────────────────
@@ -78,6 +87,7 @@ contract MockOracleVerifier is IOracleVerifier {
         bytes32 asset
     ) external view override returns (uint256 price, uint256 timestamp) {
         if (forceStale) revert StalePrice(asset, 0, 0);
+        if (forceZeroPrice) return (0, block.timestamp);
 
         AssetPrice storage ap = _prices[asset];
         if (ap.price == 0) revert PriceNotAvailable(asset);

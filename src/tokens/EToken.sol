@@ -241,8 +241,6 @@ contract EToken is ERC20, ERC20Permit, IEToken {
             // Rounding: floor — protocol keeps dust
             _accruedRewards[account] += balanceOf(account).mulDiv(owed, PRECISION);
             _userRewardsPerSharePaid[account] = _rewardsPerShare;
-        } else if (_userRewardsPerSharePaid[account] != _rewardsPerShare) {
-            _userRewardsPerSharePaid[account] = _rewardsPerShare;
         }
     }
 }

@@ -425,4 +425,60 @@ contract PythOracleVerifierTest is BaseTest {
         uint256 expected = uint256(rawPrice) * (10 ** (18 - uint256(absExpo)));
         assertEq(price, expected);
     }
+
+    // ──────────────────────────────────────────────────────────
+    //  Constructor + session / disable / config branch coverage
+    // ──────────────────────────────────────────────────────────
+
+    function test_constructor_zeroRegistry_reverts() public {
+        vm.expectRevert(IOracleVerifier.ZeroAddress.selector);
+        new PythOracleVerifier(address(0), address(mockPyth), MAX_PRICE_AGE, MAX_CONF_BPS);
+    }
+
+    function test_setFeedId_invalidSession_reverts() public {
+        vm.prank(Actors.ADMIN);
+        vm.expectRevert(abi.encodeWithSelector(PythOracleVerifier.InvalidSessionId.selector, uint8(4)));
+        verifier.setFeedId(TSLA, 4, bytes32(uint256(99)));
+    }
+
+    function test_verifyPriceForSession_validSession_succeeds() public {
+        bytes[] memory updates = new bytes[](1);
+        updates[0] = _encodeFeedUpdate(TSLA_FEED_ID, 25_000_000_000, -8, block.timestamp);
+        bytes memory priceData = abi.encode(updates, uint64(block.timestamp - 60), uint64(block.timestamp + 60));
+
+        (uint256 price, uint256 ts) = verifier.verifyPriceForSession{value: 1}(TSLA, priceData, 0);
+        assertEq(price, 250e18);
+        assertEq(ts, block.timestamp);
+    }
+
+    function test_verifyPriceForSession_invalidSession_reverts() public {
+        bytes[] memory updates = new bytes[](1);
+        updates[0] = _encodeFeedUpdate(TSLA_FEED_ID, 25_000_000_000, -8, block.timestamp);
+        bytes memory priceData = abi.encode(updates, uint64(block.timestamp - 60), uint64(block.timestamp + 60));
+
+        vm.expectRevert(abi.encodeWithSelector(PythOracleVerifier.InvalidSessionId.selector, uint8(4)));
+        verifier.verifyPriceForSession{value: 1}(TSLA, priceData, 4);
+    }
+
+    function test_getAssetOracleConfig_reverts() public {
+        vm.expectRevert("PythOracle: use getFeedId/maxPriceAge");
+        verifier.getAssetOracleConfig(TSLA);
+    }
+
+    /// @dev Emergency kill-switch: operator clears all session feeds; reads then revert FeedNotConfigured.
+    function test_disableFeed_operator_succeeds() public {
+        vm.prank(Actors.ADMIN); // ADMIN also holds the OPERATOR role in the test bootstrap
+        vm.expectEmit(true, false, false, false);
+        emit PythOracleVerifier.FeedDisabled(TSLA);
+        verifier.disableFeed(TSLA);
+
+        vm.expectRevert(abi.encodeWithSelector(PythOracleVerifier.FeedNotConfigured.selector, TSLA));
+        verifier.getPrice(TSLA);
+    }
+
+    function test_disableFeed_nonOperator_reverts() public {
+        vm.prank(Actors.ATTACKER);
+        vm.expectRevert();
+        verifier.disableFeed(TSLA);
+    }
 }

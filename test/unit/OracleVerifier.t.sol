@@ -390,4 +390,66 @@ contract OracleVerifierTest is BaseTest {
         (uint256 retPrice,) = verifier.verifyPrice(ASSET, priceData);
         assertEq(retPrice, price);
     }
+
+    // ──────────────────────────────────────────────────────────
+    //  Constructor + remaining branch coverage
+    // ──────────────────────────────────────────────────────────
+
+    function test_constructor_zeroRegistry_reverts() public {
+        vm.expectRevert(IOracleVerifier.ZeroAddress.selector);
+        new OracleVerifier(address(0));
+    }
+
+    /// @dev updatePrice has its own zero-price guard (distinct from the verifyPrice path).
+    function test_updatePrice_zeroPrice_reverts() public {
+        bytes memory priceData = _signPrice(ASSET, 0, block.timestamp);
+        vm.expectRevert(IOracleVerifier.ZeroPrice.selector);
+        verifier.updatePrice(ASSET, priceData);
+    }
+
+    /// @dev updatePrice has its own unauthorized-signer guard (distinct from the verifyPrice path).
+    function test_updatePrice_invalidSigner_reverts() public {
+        uint256 wrongPk = 0xDEAD;
+        bytes32 digest = _priceDigest(ASSET, 250e18, block.timestamp, block.chainid, address(verifier));
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(wrongPk, digest);
+        bytes memory priceData = abi.encode(250e18, block.timestamp, v, r, s);
+
+        vm.expectRevert(abi.encodeWithSelector(IOracleVerifier.UnauthorizedSigner.selector, vm.addr(wrongPk)));
+        verifier.updatePrice(ASSET, priceData);
+    }
+
+    /// @dev Deviation else-branch: a price *decrease* within the band must be accepted.
+    function test_updatePrice_priceDecreaseWithinDeviation_succeeds() public {
+        verifier.updatePrice(ASSET, _signPrice(ASSET, 250e18, block.timestamp));
+
+        vm.warp(block.timestamp + 60);
+        // 240 < 250 → ~4% drop, within the 10% band. Exercises the `price <= existing` branch.
+        verifier.updatePrice(ASSET, _signPrice(ASSET, 240e18, block.timestamp));
+
+        (uint256 retPrice,) = verifier.getPrice(ASSET);
+        assertEq(retPrice, 240e18);
+    }
+
+    function test_getPrice_noPrice_reverts() public {
+        bytes32 unset = bytes32("GOLD");
+        vm.expectRevert(abi.encodeWithSelector(IOracleVerifier.PriceNotAvailable.selector, unset));
+        verifier.getPrice(unset);
+    }
+
+    function test_updatePriceFeeds_reverts() public {
+        vm.expectRevert(bytes("OracleVerifier: use updatePrice + multicall"));
+        verifier.updatePriceFeeds("");
+    }
+
+    /// @dev In-house oracle has no session concept — it delegates straight to verifyPrice.
+    function test_verifyPriceForSession_delegatesToVerifyPrice() public {
+        bytes memory priceData = _signPrice(ASSET, 250e18, block.timestamp);
+        (uint256 price, uint256 ts) = verifier.verifyPriceForSession(ASSET, priceData, 0);
+        assertEq(price, 250e18);
+        assertEq(ts, block.timestamp);
+    }
+
+    function test_verifyFee_returnsZero() public view {
+        assertEq(verifier.verifyFee(""), 0);
+    }
 }

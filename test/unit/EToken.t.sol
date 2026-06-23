@@ -52,6 +52,11 @@ contract ETokenTest is BaseTest {
         assertEq(eToken.rewardToken(), address(rewardToken));
     }
 
+    function test_constructor_zeroRegistry_reverts() public {
+        vm.expectRevert(IEToken.ZeroAddress.selector);
+        new EToken(NAME, SYMBOL, TICKER, address(0), address(rewardToken));
+    }
+
     function test_constructor_initialSupplyZero() public view {
         assertEq(eToken.totalSupply(), 0);
     }
