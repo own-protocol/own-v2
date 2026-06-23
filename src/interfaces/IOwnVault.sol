@@ -32,6 +32,7 @@ interface IOwnVault is IERC4626 {
     event DepositApprovalUpdated(bool required);
     event LendingEnabled(address indexed borrowManager);
     event CreditDelegationGranted(address indexed creditToken, address indexed borrowManager);
+    event AaveCollateralEnabled(address indexed pool, address indexed underlying);
     event CollateralReleasedForBadDebt(address indexed to, uint256 amount);
 
     // ──────────────────────────────────────────────────────────
@@ -66,6 +67,7 @@ interface IOwnVault is IERC4626 {
     error DepositApprovalRequired();
     error LendingAlreadyEnabled();
     error LendingNotEnabled();
+    error InvalidUnderlying();
     error OnlyBorrowManager();
     error TreasuryNotSet();
     error AmountExceedsBackedCollateral();
@@ -262,6 +264,17 @@ interface IOwnVault is IERC4626 {
     function grantCreditDelegation(
         address creditToken
     ) external;
+
+    /// @notice Mark the vault's aToken as Aave collateral so the bound borrow manager can borrow against
+    ///         it. Aave only auto-enables collateral on a holder's first `supply(onBehalfOf)`, never on
+    ///         the aToken transfer the deposit path uses — so the vault must flip the bit itself. Call
+    ///         once after the first deposit (Aave requires a non-zero aToken balance), and again to
+    ///         re-arm after a full drain (Aave clears the bit when the balance reaches zero).
+    /// @dev    Admin-only. `underlying` is validated against the vault's own asset, so a wrong reserve
+    ///         cannot be enabled. The call cannot move assets or disable collateral.
+    /// @param pool       The Aave V3 pool the bound borrow manager borrows from.
+    /// @param underlying The reserve underlying (e.g. wstETH) whose aToken is this vault's asset.
+    function enableAaveCollateral(address pool, address underlying) external;
 
     /// @notice Address of the borrow manager (zero if lending not enabled).
     function borrowManager() external view returns (address);

@@ -5,6 +5,8 @@ import {IBorrowManager} from "../interfaces/IBorrowManager.sol";
 import {IOwnVault} from "../interfaces/IOwnVault.sol";
 import {IProtocolRegistry} from "../interfaces/IProtocolRegistry.sol";
 import {IVaultManager} from "../interfaces/IVaultManager.sol";
+
+import {IAaveV3Pool} from "../interfaces/external/IAaveV3Pool.sol";
 import {ICreditDelegation} from "../interfaces/external/ILendingVenue.sol";
 import {
     DepositRequest,
@@ -541,6 +543,16 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
         // grants borrow delegation only; it cannot move the vault's collateral.
         ICreditDelegation(creditToken).approveDelegation(_borrowManager, type(uint256).max);
         emit CreditDelegationGranted(creditToken, _borrowManager);
+    }
+
+    /// @inheritdoc IOwnVault
+    function enableAaveCollateral(address pool, address underlying) external onlyAdmin {
+        if (pool == address(0) || underlying == address(0)) revert ZeroAddress();
+        // Aave only auto-enables collateral on a first supply-on-behalf, not on the aToken transfer the
+        // deposit path uses, so we must manually enable it here.
+        if (IAaveV3Pool(pool).getReserveData(underlying).aTokenAddress != asset()) revert InvalidUnderlying();
+        IAaveV3Pool(pool).setUserUseReserveAsCollateral(underlying, true);
+        emit AaveCollateralEnabled(pool, underlying);
     }
 
     /// @inheritdoc IOwnVault
