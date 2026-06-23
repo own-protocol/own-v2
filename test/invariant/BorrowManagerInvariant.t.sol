@@ -128,19 +128,26 @@ contract BorrowManagerInvariant is BaseTest {
     //  Invariants
     // ═════════════════════════════════════════════════════════════
 
-    /// @notice INV-BM-01 (index floor): the manager's total book debt never sits below the vault's real
-    ///         Aave debt, so a full repay always clears the Aave loan. Skipped below a 1-USDC dust base
-    ///         (where the floor is intentionally disabled); a 1e3 tolerance absorbs per-position index flooring.
+    /// @notice INV-BM-01 (index floor): while the floor is active, the manager's total book debt never
+    ///         sits below the vault's real Aave debt, so a full repay always clears the Aave loan. The
+    ///         floor is intentionally disabled below a dust SCALED-debt base (`10 ** stableDecimals`, M-08),
+    ///         so the guard mirrors that exact condition — `Position.principal` is the scaled debt, so the
+    ///         sum across positions is the contract's `_totalScaledDebt`. Guarding on actual `book` would
+    ///         over-assert once accrued interest lifts the index above 1.0 (scaled < dust while actual
+    ///         book >= 1 USDC), where the floor makes no guarantee. A 1e3 tolerance absorbs per-position
+    ///         index flooring across the open positions.
     function invariant_bookDebtCoversRealAaveDebt() external view {
         uint256 book;
+        uint256 scaled;
         uint256 n = handler.borrowerCount();
         for (uint256 i; i < n; ++i) {
-            book += borrowManager.debtOf(handler.borrowerAt(i), ASSET);
+            address b = handler.borrowerAt(i);
+            scaled += borrowManager.positionOf(b, ASSET).principal; // principal == scaled debt
+            book += borrowManager.debtOf(b, ASSET);
         }
+        if (scaled < 1e6) return; // floor disabled at dust scale (matches contract)
         uint256 realAave = aavePool.debtOf(address(vault), address(usdc));
-        if (book >= 1e6) {
-            assert(book + 1e3 >= realAave);
-        }
+        assert(book + 1e3 >= realAave);
     }
 
     /// @notice INV-BM-02 (collateral custody): the manager holds at least the eToken collateral escrowed
