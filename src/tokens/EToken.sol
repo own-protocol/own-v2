@@ -25,9 +25,6 @@ contract EToken is ERC20, ERC20Permit, IEToken {
     /// @notice Asset ticker this eToken represents.
     bytes32 public immutable override ticker;
 
-    /// @notice ERC-20 token used for dividend payouts.
-    address public immutable override rewardToken;
-
     /// @notice Protocol registry for resolving all contract addresses.
     IProtocolRegistry public immutable registry;
 
@@ -37,6 +34,9 @@ contract EToken is ERC20, ERC20Permit, IEToken {
 
     string private _name;
     string private _symbol;
+
+    /// @notice ERC-20 token used for dividend payouts. Settable once, only while unset.
+    address public override rewardToken;
 
     // ──────────────────────────────────────────────────────────
     //  Rewards-per-share accumulator
@@ -158,6 +158,16 @@ contract EToken is ERC20, ERC20Permit, IEToken {
         emit SymbolUpdated(oldSymbol, newSymbol);
     }
 
+    /// @inheritdoc IEToken
+    function setRewardToken(
+        address newRewardToken
+    ) external onlyAdmin {
+        if (rewardToken != address(0)) revert RewardTokenAlreadySet();
+        if (newRewardToken == address(0)) revert ZeroAddress();
+        rewardToken = newRewardToken;
+        emit RewardTokenSet(newRewardToken);
+    }
+
     // ──────────────────────────────────────────────────────────
     //  Dividend / rewards functions
     // ──────────────────────────────────────────────────────────
@@ -166,6 +176,7 @@ contract EToken is ERC20, ERC20Permit, IEToken {
     function depositRewards(
         uint256 amount
     ) external {
+        if (rewardToken == address(0)) revert RewardTokenNotSet();
         if (amount == 0) revert ZeroAmount();
         uint256 supply = totalSupply();
         require(supply > 0, "EToken: no supply");

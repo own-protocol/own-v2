@@ -39,6 +39,10 @@ interface IEToken is IERC20, IERC20Permit {
     /// @param amount Amount of reward tokens claimed.
     event RewardsClaimed(address indexed user, uint256 amount);
 
+    /// @notice Emitted when the admin sets the reward token (one-time, from unset).
+    /// @param rewardToken The reward token address.
+    event RewardTokenSet(address indexed rewardToken);
+
     /// @notice Emitted when eTokens are minted by the order system.
     /// @param to     Recipient.
     /// @param amount Amount minted.
@@ -67,6 +71,12 @@ interface IEToken is IERC20, IERC20Permit {
 
     /// @notice The reward amount is too small to move rewards-per-share (would be stuck).
     error RewardTooSmall();
+
+    /// @notice The reward token has already been set and cannot be changed.
+    error RewardTokenAlreadySet();
+
+    /// @notice No reward token is configured for this eToken.
+    error RewardTokenNotSet();
 
     // ──────────────────────────────────────────────────────────
     //  Restricted functions (order system only)
@@ -98,6 +108,13 @@ interface IEToken is IERC20, IERC20Permit {
     /// @param newSymbol The new symbol string.
     function updateSymbol(
         string calldata newSymbol
+    ) external;
+
+    /// @notice Set the reward token. Callable once, only while currently unset.
+    /// @dev Reverts if already set or if `newRewardToken` is the zero address.
+    /// @param newRewardToken The ERC-20 token to use for dividend payouts.
+    function setRewardToken(
+        address newRewardToken
     ) external;
 
     // ──────────────────────────────────────────────────────────

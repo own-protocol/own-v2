@@ -220,8 +220,78 @@ contract ETokenTest is BaseTest {
     }
 
     // ──────────────────────────────────────────────────────────
+    //  Admin: set reward token
+    // ──────────────────────────────────────────────────────────
+
+    /// @dev Deploy a fresh eToken with no reward token configured.
+    function _deployUnsetEToken() internal returns (EToken) {
+        return new EToken(NAME, SYMBOL, TICKER, address(protocolRegistry), address(0));
+    }
+
+    function test_setRewardToken_fromUnset_admin_succeeds() public {
+        EToken unset = _deployUnsetEToken();
+        assertEq(unset.rewardToken(), address(0));
+
+        vm.expectEmit(true, false, false, false);
+        emit IEToken.RewardTokenSet(address(rewardToken));
+
+        vm.prank(Actors.ADMIN);
+        unset.setRewardToken(address(rewardToken));
+
+        assertEq(unset.rewardToken(), address(rewardToken));
+    }
+
+    function test_setRewardToken_alreadySet_reverts() public {
+        // setUp deploys eToken with rewardToken already configured
+        vm.prank(Actors.ADMIN);
+        vm.expectRevert(IEToken.RewardTokenAlreadySet.selector);
+        eToken.setRewardToken(address(rewardToken));
+    }
+
+    function test_setRewardToken_zeroAddress_reverts() public {
+        EToken unset = _deployUnsetEToken();
+
+        vm.prank(Actors.ADMIN);
+        vm.expectRevert(IEToken.ZeroAddress.selector);
+        unset.setRewardToken(address(0));
+    }
+
+    function test_setRewardToken_nonAdmin_reverts() public {
+        EToken unset = _deployUnsetEToken();
+
+        vm.prank(Actors.ATTACKER);
+        vm.expectRevert(IEToken.Unauthorized.selector);
+        unset.setRewardToken(address(rewardToken));
+    }
+
+    function test_setRewardToken_thenDepositRewards_succeeds() public {
+        EToken unset = _deployUnsetEToken();
+
+        vm.prank(Actors.ADMIN);
+        unset.setRewardToken(address(rewardToken));
+
+        // Register the order system for the fresh token, then mint supply
+        unset.mint(Actors.MINTER1, 100e18);
+
+        uint256 rewardAmount = 1000e6;
+        rewardToken.mint(address(this), rewardAmount);
+        rewardToken.approve(address(unset), rewardAmount);
+        unset.depositRewards(rewardAmount);
+
+        assertEq(unset.claimableRewards(Actors.MINTER1), rewardAmount);
+    }
+
+    // ──────────────────────────────────────────────────────────
     //  Rewards: deposit
     // ──────────────────────────────────────────────────────────
+
+    function test_depositRewards_rewardTokenNotSet_reverts() public {
+        EToken unset = _deployUnsetEToken();
+        unset.mint(Actors.MINTER1, 100e18);
+
+        vm.expectRevert(IEToken.RewardTokenNotSet.selector);
+        unset.depositRewards(1000e6);
+    }
 
     function test_depositRewards_updatesAccumulator() public {
         // Mint eTokens to holder so there's a non-zero supply
