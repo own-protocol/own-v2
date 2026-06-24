@@ -29,77 +29,197 @@ interface IVaultManager {
     //  Events
     // ──────────────────────────────────────────────────────────
 
+    /// @notice Emitted when a vault is registered into the global pool.
+    /// @param vault           Registered vault.
+    /// @param collateralAsset Ticker of the vault's collateral asset.
     event VaultRegistered(address indexed vault, bytes32 indexed collateralAsset);
+
+    /// @notice Emitted when a vault is removed from the global pool.
+    /// @param vault Deregistered vault.
     event VaultDeregistered(address indexed vault);
 
     /// @notice Emitted when exposure is opened (eTokens minted) against an asset.
+    /// @param asset   Asset ticker.
+    /// @param units   eToken units added to global exposure (18 dec).
+    /// @param markUSD Per-unit asset mark used (USD, 1e18).
     event ExposureOpened(bytes32 indexed asset, uint256 units, uint256 markUSD);
 
     /// @notice Emitted when exposure is closed (eTokens redeemed) against an asset.
+    /// @param asset   Asset ticker.
+    /// @param units   eToken units removed from global exposure (18 dec).
+    /// @param markUSD Per-unit asset mark used (USD, 1e18).
     event ExposureClosed(bytes32 indexed asset, uint256 units, uint256 markUSD);
 
+    /// @notice Emitted when a keeper refreshes an asset's cached mark price.
+    /// @param asset   Asset ticker.
+    /// @param oldMark Previous per-unit mark (USD, 1e18).
+    /// @param newMark New per-unit mark (USD, 1e18).
     event AssetPricePulled(bytes32 indexed asset, uint256 oldMark, uint256 newMark);
+
+    /// @notice Emitted when a keeper refreshes a vault's cached collateral mark.
+    /// @param vault      Registered vault.
+    /// @param oldMarkUSD Previous counted collateral mark (USD, 1e18).
+    /// @param newMarkUSD New counted collateral mark, post-cap (USD, 1e18).
     event CollateralPricePulled(address indexed vault, uint256 oldMarkUSD, uint256 newMarkUSD);
 
     /// @notice Emitted when a vault's concentration cap binds — its raw collateral exceeds its
     ///         allowed share, so only `countedMarkUSD` (< rawMarkUSD) counts toward global collateral.
+    /// @param vault          Registered vault.
+    /// @param rawMarkUSD     Uncapped collateral value (USD, 1e18).
+    /// @param countedMarkUSD Capped value counted toward the pool (USD, 1e18).
     event CollateralCapApplied(address indexed vault, uint256 rawMarkUSD, uint256 countedMarkUSD);
 
+    /// @notice Emitted when an asset's per-asset USD concentration cap is set.
+    /// @param asset  Asset ticker.
+    /// @param capUSD New cap (USD, 1e18); 0 blocks minting the asset.
     event AssetCapUpdated(bytes32 indexed asset, uint256 capUSD);
+
+    /// @notice Emitted when the global max utilisation cap is updated.
+    /// @param oldBps Previous cap (BPS).
+    /// @param newBps New cap (BPS).
     event GlobalMaxUtilizationUpdated(uint256 oldBps, uint256 newBps);
 
     /// @notice Emitted when the global settle-price band is updated.
+    /// @param oldBps Previous band (BPS).
+    /// @param newBps New band (BPS).
     event SettleBandUpdated(uint256 oldBps, uint256 newBps);
 
     /// @notice Emitted when the max mark age (keeper-mark freshness bound) is updated.
+    /// @param oldAge Previous max mark age (seconds).
+    /// @param newAge New max mark age (seconds).
     event MaxMarkAgeUpdated(uint256 oldAge, uint256 newAge);
 
     /// @notice Emitted when a vault's collateral concentration cap (bps of total) is updated.
+    /// @param vault  Registered vault.
+    /// @param oldBps Previous cap (BPS; 0 = uncapped).
+    /// @param newBps New cap (BPS; 0 = uncapped).
     event CollateralCapUpdated(address indexed vault, uint256 oldBps, uint256 newBps);
 
-    /// @notice Emitted when a registered vault notifies its halt/unhalt transition.
+    /// @notice Emitted when a halting vault's collateral is dropped from the global pool.
+    /// @param vault         Halted vault.
+    /// @param removedMarkUSD Collateral value removed from the pool (USD, 1e18).
     event VaultCollateralExcluded(address indexed vault, uint256 removedMarkUSD);
+
+    /// @notice Emitted when a vault's collateral mark is reduced ahead of a bad-debt collateral release.
+    /// @param vault          Releasing vault.
+    /// @param assets         Collateral token amount leaving the vault.
+    /// @param removedMarkUSD Collateral value removed from the pool (USD, 1e18).
     event CollateralMarkReduced(address indexed vault, uint256 assets, uint256 removedMarkUSD);
+
+    /// @notice Emitted when an unhalting vault's collateral is re-added to the global pool.
+    /// @param vault       Unhalted vault.
+    /// @param addedMarkUSD Collateral value re-added to the pool, post-cap (USD, 1e18).
     event VaultCollateralReincluded(address indexed vault, uint256 addedMarkUSD);
 
     // ── Control surface ──────────────────────────────────────
+    /// @notice Emitted when a signer is authorised with a linked settlement address.
+    /// @param signer        Authorised signer.
+    /// @param linkedAddress Mint sink / redeem source bound to the signer.
     event SignerRegistered(address indexed signer, address indexed linkedAddress);
+
+    /// @notice Emitted when a signer's linked settlement address is changed.
+    /// @param signer        Signer.
+    /// @param linkedAddress New mint sink / redeem source.
     event SignerLinkedAddressUpdated(address indexed signer, address indexed linkedAddress);
+
+    /// @notice Emitted when a signer is revoked.
+    /// @param signer Removed signer.
     event SignerRemoved(address indexed signer);
+
+    /// @notice Emitted when the global order-settlement payment token is changed.
+    /// @param oldToken Previous payment token.
+    /// @param newToken New payment token.
     event PaymentTokenUpdated(address indexed oldToken, address indexed newToken);
+
+    /// @notice Emitted when global trading pause is toggled.
+    /// @param paused True if all order execution / force-execute is now blocked.
     event TradingPausedUpdated(bool paused);
+
+    /// @notice Emitted when per-asset trading pause is toggled.
+    /// @param asset  Asset ticker.
+    /// @param paused True if trading for `asset` is now blocked.
     event AssetTradingPausedUpdated(bytes32 indexed asset, bool paused);
+
+    /// @notice Emitted when an asset is permanently halted at a fixed settlement price.
+    /// @param asset     Halted asset ticker.
+    /// @param haltPrice Fixed redeem settlement price (USD, 1e18).
     event AssetHalted(bytes32 indexed asset, uint256 haltPrice);
+
+    /// @notice Emitted when the wallet settling halted-asset redemptions is changed.
+    /// @param oldAddr Previous halt redeem address.
+    /// @param newAddr New halt redeem address.
     event HaltRedeemAddressUpdated(address indexed oldAddr, address indexed newAddr);
+
+    /// @notice Emitted when the force-execute claim threshold is changed.
+    /// @param oldThreshold Previous delay before a resting redeem can be force-executed (seconds).
+    /// @param newThreshold New delay (seconds).
     event ClaimThresholdUpdated(uint256 oldThreshold, uint256 newThreshold);
+
+    /// @notice Emitted when the designated force-execution collateral vault is changed.
+    /// @param oldVault Previous force-execute vault (0 = disabled).
+    /// @param newVault New force-execute vault (0 = disabled).
     event ForceExecuteVaultUpdated(address indexed oldVault, address indexed newVault);
+
+    /// @notice Emitted when an asset's exposure is re-denominated for a stock split.
+    /// @param asset    Asset ticker.
+    /// @param ratio    New units per old unit (1e18-scaled).
+    /// @param newUnits Re-denominated global unit count (18 dec).
+    /// @param newMark  Re-denominated per-unit mark (USD, 1e18).
     event SplitApplied(bytes32 indexed asset, uint256 ratio, uint256 newUnits, uint256 newMark);
 
     // ──────────────────────────────────────────────────────────
     //  Errors
     // ──────────────────────────────────────────────────────────
 
+    /// @notice Caller is not the market contract.
     error OnlyMarket();
+    /// @notice Caller is not the admin.
     error OnlyAdmin();
+    /// @notice Caller is not the operator.
     error OnlyOperator();
+    /// @notice Caller is not a registered vault.
     error OnlyRegisteredVault();
+    /// @notice Caller is not the asset registry.
     error OnlyAssetRegistry();
+    /// @notice A required address was the zero address.
     error ZeroAddress();
+    /// @notice A required amount was zero.
     error ZeroAmount();
+    /// @notice Vault is not registered.
     error VaultNotRegistered(address vault);
+    /// @notice Vault is already registered.
     error VaultAlreadyRegistered(address vault);
+    /// @notice Collateral asset ticker is zero / invalid.
     error InvalidCollateralAsset();
+    /// @notice Mint would breach the asset's per-asset USD concentration cap.
+    /// @param attemptedUSD Asset exposure after the mint (USD, 1e18).
+    /// @param capUSD       Maximum allowed exposure (USD, 1e18).
     error AssetCapBreached(bytes32 asset, uint256 attemptedUSD, uint256 capUSD);
+    /// @notice Mint would breach the global utilisation cap.
+    /// @param projectedBps Utilisation after the mint (BPS).
+    /// @param maxBps       Maximum allowed utilisation (BPS).
     error GlobalUtilizationBreached(uint256 projectedBps, uint256 maxBps);
+    /// @notice Redeem exceeds the asset's recorded global exposure.
+    /// @param have Current global exposure units (18 dec).
+    /// @param want Units requested to close (18 dec).
     error InsufficientExposure(bytes32 asset, uint256 have, uint256 want);
+    /// @notice Global collateral has not been initialised.
     error CollateralNotInitialized();
+    /// @notice No price is available for the asset.
     error PriceUnavailable(bytes32 asset);
+    /// @notice Deregistering the vault would push global utilisation over the cap.
     error DeregisterWouldBreachUtilization();
+    /// @notice Address is not a registered signer.
     error NotSigner(address signer);
+    /// @notice Address is already a registered signer.
     error AlreadySigner(address signer);
+    /// @notice Asset is already permanently halted.
     error AssetAlreadyHalted(bytes32 asset);
+    /// @notice Halt price is zero / invalid.
     error InvalidHaltPrice();
+    /// @notice Split ratio is zero.
     error InvalidRatio();
+    /// @notice Vault's collateral is already excluded from the pool.
     error VaultAlreadyExcluded(address vault);
 
     /// @notice The settle band is zero or exceeds 100% (BPS).

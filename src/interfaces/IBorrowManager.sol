@@ -42,6 +42,12 @@ interface IBorrowManager {
     //  Events
     // ──────────────────────────────────────────────────────────
 
+    /// @notice Emitted when a borrow position is opened.
+    /// @param borrower         Position owner.
+    /// @param asset            Asset ticker borrowed against.
+    /// @param eTokenCollateral eToken collateral deposited (18 dec).
+    /// @param stablecoinAmount Stablecoin handed to the borrower.
+    /// @param oraclePrice      Signed asset price at borrow time.
     event Borrowed(
         address indexed borrower,
         bytes32 indexed asset,
@@ -49,6 +55,13 @@ interface IBorrowManager {
         uint256 stablecoinAmount,
         uint256 oraclePrice
     );
+
+    /// @notice Emitted when debt is repaid on a position (partial or full).
+    /// @param borrower           Position owner.
+    /// @param asset              Asset ticker.
+    /// @param repayAmount        Stablecoin repaid.
+    /// @param collateralReleased eToken returned to the borrower.
+    /// @param remainingPrincipal Scaled debt left after repay (0 if closed).
     event Repaid(
         address indexed borrower,
         bytes32 indexed asset,
@@ -56,6 +69,14 @@ interface IBorrowManager {
         uint256 collateralReleased,
         uint256 remainingPrincipal
     );
+
+    /// @notice Emitted when an underwater position is liquidated (partial or full).
+    /// @param borrower                     Position owner.
+    /// @param asset                        Asset ticker.
+    /// @param liquidator                   Caller repaying debt for collateral.
+    /// @param repayAmount                  Stablecoin debt repaid (post-cap).
+    /// @param collateralSeized             eToken paid to the liquidator.
+    /// @param collateralReturnedToBorrower eToken refunded to the borrower on full close.
     event Liquidated(
         address indexed borrower,
         bytes32 indexed asset,
@@ -64,8 +85,19 @@ interface IBorrowManager {
         uint256 collateralSeized,
         uint256 collateralReturnedToBorrower
     );
+
+    /// @notice Emitted when the interest-rate curve parameters change.
+    /// @param params New rate-model parameters.
     event RateParamsUpdated(InterestRateModel.Params params);
+
+    /// @notice Emitted when the liquidation threshold and/or bonus changes.
+    /// @param liquidationThresholdBps New liquidation threshold (BPS).
+    /// @param liquidationBonusBps     New liquidation bonus (BPS).
     event LiquidationConfigUpdated(uint256 liquidationThresholdBps, uint256 liquidationBonusBps);
+
+    /// @notice Emitted when the vault-wide target Aave LTV changes.
+    /// @param oldBps Previous target LTV (BPS).
+    /// @param newBps New target LTV (BPS).
     event TargetLtvBpsUpdated(uint256 oldBps, uint256 newBps);
 
     /// @notice Emitted when the admin changes whether borrowing against an asset is allowed on this
@@ -87,10 +119,22 @@ interface IBorrowManager {
     event InterestClaimed(address indexed manager, uint256 amount);
 
     /// @notice Emitted when the earned-interest safety buffer (retained, unclaimable fraction) is updated.
+    /// @param oldBps Previous buffer (BPS).
+    /// @param newBps New buffer (BPS).
     event InterestBufferUpdated(uint256 oldBps, uint256 newBps);
 
     /// @notice Emitted when the minimum post-claim vault Aave health factor is updated.
+    /// @param oldHf Previous minimum health factor (1e18).
+    /// @param newHf New minimum health factor (1e18).
     event MinClaimHealthFactorUpdated(uint256 oldHf, uint256 newHf);
+
+    /// @notice Emitted when zero-collateral residual bad debt is closed out.
+    /// @param borrower          Borrower whose residual debt was cleared.
+    /// @param asset             Asset ticker of the position.
+    /// @param caller            Admin that fronted the residual debt.
+    /// @param residualRepaid    Stablecoin residual repaid to the vault's Aave loan.
+    /// @param treasuryAbsorbed  Loss socialized to LPs (collateral value to treasury).
+    /// @param collateralReleased Vault collateral (aToken) released to the treasury.
     event BadDebtAbsorbed(
         address indexed borrower,
         bytes32 indexed asset,
@@ -125,32 +169,69 @@ interface IBorrowManager {
     //  Errors
     // ──────────────────────────────────────────────────────────
 
+    /// @notice A required amount was zero.
     error ZeroAmount();
+    /// @notice Amount is too small to register as scaled debt.
     error AmountTooSmall();
+    /// @notice Token is not a recognized eToken.
     error InvalidEToken(address token);
+    /// @notice Payment token does not match the manager's stablecoin.
     error PaymentTokenMismatch();
+    /// @notice Refund of surplus ETH to the caller failed.
     error EthRefundFailed();
+    /// @notice A required address was the zero address.
     error ZeroAddress();
+    /// @notice Caller is not the admin.
     error OnlyAdmin();
+    /// @notice Caller is not the operator.
     error OnlyOperator();
+    /// @notice Asset is not active in the registry.
     error AssetNotActive(bytes32 asset);
+    /// @notice Borrowing against this asset is disabled.
     error AssetNotBorrowable(bytes32 asset);
+    /// @notice Asset is halted, blocking the operation.
     error VaultEffectivelyHalted();
+    /// @notice Vault is not active.
     error VaultNotActive();
+    /// @notice Interest-rate parameters are invalid.
     error InvalidRateParams();
-    error ETokenMismatch(address expected, address actual);
+    /// @notice Requested collateral release exceeds what the position holds.
+    /// @param requested  Collateral requested.
+    /// @param maxAllowed Collateral available.
     error InsufficientCollateral(uint256 requested, uint256 maxAllowed);
+    /// @notice A position is already open for this (borrower, asset).
     error PositionAlreadyOpen(address borrower, bytes32 asset);
+    /// @notice No open position for this (borrower, asset).
     error NoPosition(address borrower, bytes32 asset);
+    /// @notice Position is healthy and cannot be liquidated.
+    /// @param healthFactor Current health factor (1e18 = 1.0).
     error NotLiquidatable(uint256 healthFactor);
+    /// @notice Liquidation threshold/bonus configuration is invalid.
     error InvalidLiquidationConfig();
+    /// @notice Loan-to-value is out of range.
     error InvalidLtv();
+    /// @notice Borrow would exceed the protocol debt cap.
+    /// @param attempted Total debt after the borrow.
+    /// @param cap       Maximum allowed debt.
     error BorrowExceedsCap(uint256 attempted, uint256 cap);
+    /// @notice Position still holds collateral and cannot be closed as bad debt.
+    /// @param collateral Remaining collateral.
     error PositionStillCollateralized(uint256 collateral);
+    /// @notice Asset is not in a permanent-halt state.
     error AssetNotHalted(bytes32 asset);
+    /// @notice Signed price is older than the maximum allowed age.
+    /// @param timestamp Price timestamp.
+    /// @param maxAge    Maximum allowed age (seconds).
     error StalePrice(uint256 timestamp, uint256 maxAge);
+    /// @notice Signed price deviates from the mark beyond the allowed band.
+    /// @param asset Asset ticker.
+    /// @param price Signed price.
+    /// @param mark  Reference mark price.
+    /// @param band  Allowed deviation (BPS).
     error PriceOutOfBand(bytes32 asset, uint256 price, uint256 mark, uint256 band);
+    /// @notice The asset's mark price is stale.
     error PriceMarkStale(bytes32 asset);
+    /// @notice No dividends are available to sweep.
     error NoDividendsToSweep();
 
     /// @notice Caller is not the bound vault's manager.
@@ -171,6 +252,7 @@ interface IBorrowManager {
 
     /// @notice The minimum claim health factor is below 1.0 (1e18).
     error InvalidMinClaimHealthFactor();
+    /// @notice The minimum Aave borrow rate exceeds 100% (BPS).
     error InvalidMinAaveBorrowRate();
 
     // ──────────────────────────────────────────────────────────

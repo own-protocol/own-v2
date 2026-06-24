@@ -12,31 +12,55 @@ interface IOracleVerifier {
     // ──────────────────────────────────────────────────────────
 
     /// @notice Emitted when a price feed is updated.
+    /// @param asset     Asset ticker.
+    /// @param price     New price (18 dec).
+    /// @param timestamp Price observation timestamp (unix seconds).
     event PriceUpdated(bytes32 indexed asset, uint256 price, uint256 timestamp);
 
     /// @notice Emitted when an authorised signer is added.
+    /// @param signer Newly authorised oracle signer.
     event SignerAdded(address indexed signer);
 
     /// @notice Emitted when an authorised signer is removed.
+    /// @param signer Signer whose authorisation was revoked.
     event SignerRemoved(address indexed signer);
 
     /// @notice Emitted when an asset's oracle bounds are configured (in-house oracle only).
+    /// @param asset        Asset ticker.
+    /// @param maxStaleness Max accepted price age (seconds).
+    /// @param maxDeviation Max accepted deviation from the last price (BPS).
     event AssetOracleConfigSet(bytes32 indexed asset, uint256 maxStaleness, uint256 maxDeviation);
 
     // ──────────────────────────────────────────────────────────
     //  Errors
     // ──────────────────────────────────────────────────────────
 
+    /// @notice Cached/proven price is older than the asset's max staleness.
+    /// @param priceTimestamp Price observation timestamp (unix seconds).
+    /// @param maxStaleness   Max accepted age (seconds).
     error StalePrice(bytes32 asset, uint256 priceTimestamp, uint256 maxStaleness);
+    /// @notice New price deviates from the last cached price beyond the allowed band.
+    /// @param reportedPrice New price (18 dec).
+    /// @param lastPrice     Previous cached price (18 dec).
+    /// @param maxDeviation  Allowed deviation (BPS).
     error PriceDeviationExceeded(bytes32 asset, uint256 reportedPrice, uint256 lastPrice, uint256 maxDeviation);
+    /// @notice Price proof signature is invalid.
     error InvalidSignature();
+    /// @notice Price was signed by an address that is not an authorised signer.
     error UnauthorizedSigner(address signer);
+    /// @notice Price is zero.
     error ZeroPrice();
+    /// @notice A required address was the zero address.
     error ZeroAddress();
+    /// @notice No cached price exists for the asset.
     error PriceNotAvailable(bytes32 asset);
+    /// @notice The asset has no oracle config (staleness/deviation bounds unset).
     error OracleConfigNotSet(bytes32 asset);
+    /// @notice Oracle config is invalid (zero staleness or deviation).
     error InvalidOracleConfig();
+    /// @notice Caller is not the admin.
     error OnlyAdmin();
+    /// @notice Caller is not the operator.
     error OnlyOperator();
 
     // ──────────────────────────────────────────────────────────

@@ -37,19 +37,43 @@ contract PythOracleVerifier is IOracleVerifier {
     //  Errors
     // ──────────────────────────────────────────────────────────
 
+    /// @notice No Pyth feed is configured for this asset/session.
     error FeedNotConfigured(bytes32 asset);
+    /// @notice Session index is out of range (must be 0–3).
     error InvalidSessionId(uint8 sessionId);
+    /// @notice Pyth returned a non-positive price.
+    /// @param rawPrice Raw Pyth price (signed, feed exponent).
     error NegativePrice(bytes32 asset, int64 rawPrice);
+    /// @notice Pyth confidence interval exceeds the allowed band relative to price.
+    /// @param conf       Confidence interval (feed exponent units).
+    /// @param price      Raw Pyth price (feed exponent units).
+    /// @param maxConfBps Allowed confidence relative to price (BPS).
     error ConfidenceTooWide(bytes32 asset, uint256 conf, uint256 price, uint256 maxConfBps);
+    /// @notice Max confidence band is zero (BPS).
     error InvalidMaxConfBps();
 
     // ──────────────────────────────────────────────────────────
     //  Events
     // ──────────────────────────────────────────────────────────
 
+    /// @notice Emitted when a Pyth feed ID is set for an asset and trading session.
+    /// @param asset     Asset ticker.
+    /// @param sessionId Session index (0=regular, 1=pre-market, 2=post-market, 3=overnight).
+    /// @param feedId    Pyth price feed ID.
     event FeedIdSet(bytes32 indexed asset, uint8 sessionId, bytes32 feedId);
+
+    /// @notice Emitted when all session feeds for an asset are cleared (emergency kill-switch).
+    /// @param asset Asset ticker disabled.
     event FeedDisabled(bytes32 indexed asset);
+
+    /// @notice Emitted when the max accepted price age is updated.
+    /// @param oldAge Previous max age (seconds).
+    /// @param newAge New max age (seconds).
     event MaxPriceAgeUpdated(uint256 oldAge, uint256 newAge);
+
+    /// @notice Emitted when the max accepted confidence band is updated.
+    /// @param oldBps Previous max confidence relative to price (BPS).
+    /// @param newBps New max confidence relative to price (BPS).
     event MaxConfBpsUpdated(uint256 oldBps, uint256 newBps);
 
     // ──────────────────────────────────────────────────────────

@@ -5,6 +5,9 @@ pragma solidity 0.8.28;
 /// @notice Deploys eToken instances. Admin-only creation.
 interface IETokenFactory {
     /// @notice Emitted when a new eToken is deployed.
+    /// @param token  Address of the deployed eToken.
+    /// @param ticker Asset identifier (e.g. bytes32("TSLA")).
+    /// @param symbol Token symbol (e.g. "eTSLA").
     event ETokenCreated(address indexed token, bytes32 indexed ticker, string symbol);
 
     /// @notice Caller does not hold the eToken-factory admin role.

@@ -31,12 +31,22 @@ interface IAaveRouter {
     // ──────────────────────────────────────────────────────────
 
     /// @notice Emitted when an admin registers a new reserve. One-shot per `underlying`.
+    /// @param underlying Reserve underlying asset.
+    /// @param aToken     Aave aToken paired with the underlying.
     event ReserveRegistered(address indexed underlying, address indexed aToken);
 
     /// @notice Emitted when an admin enables or disables a registered reserve.
+    /// @param underlying Reserve underlying asset.
+    /// @param enabled    True if routing through the reserve is now allowed.
     event ReserveEnabledChanged(address indexed underlying, bool enabled);
 
     /// @notice Emitted when underlying is supplied to Aave and shares are minted.
+    /// @param vault            OwnVault that minted the shares.
+    /// @param sender           Caller that supplied the underlying.
+    /// @param receiver         Recipient of the vault shares.
+    /// @param underlying       Reserve underlying supplied.
+    /// @param underlyingAmount Underlying supplied to Aave.
+    /// @param shares           Vault shares minted.
     event Deposit(
         address indexed vault,
         address indexed sender,
@@ -47,6 +57,11 @@ interface IAaveRouter {
     );
 
     /// @notice Emitted when aToken is burned back to underlying via Aave withdrawal.
+    /// @param sender           Caller that redeemed the aToken.
+    /// @param receiver         Recipient of the underlying.
+    /// @param underlying       Reserve underlying returned.
+    /// @param aTokenAmount     aToken redeemed.
+    /// @param underlyingAmount Underlying returned by Aave.
     event Withdraw(
         address indexed sender,
         address indexed receiver,
@@ -80,10 +95,14 @@ interface IAaveRouter {
     /// @notice The reserve exists but is currently disabled.
     error ReserveDisabled(address underlying);
 
-    /// @notice Slippage check failed.
+    /// @notice Slippage check failed: minted shares fell below the caller's minimum.
+    /// @param shares       Shares that would be minted.
+    /// @param minSharesOut Minimum acceptable shares.
     error MinSharesError(uint256 shares, uint256 minSharesOut);
 
     /// @notice The vault's underlying asset does not match the reserve's aToken.
+    /// @param expected Reserve aToken.
+    /// @param actual   Vault's underlying asset.
     error VaultAssetMismatch(address expected, address actual);
 
     // ──────────────────────────────────────────────────────────

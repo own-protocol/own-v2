@@ -18,7 +18,13 @@ interface IOwnMarket {
     // ──────────────────────────────────────────────────────────
 
     /// @notice Emitted when a market order settles atomically against a signed quote.
-    /// @param maker The signer's linked settlement address (mint sink / redeem source).
+    /// @param quoteId   VM-signed quote identifier (replay key).
+    /// @param user      Taker that executed the order.
+    /// @param maker     The signer's linked settlement address (mint sink / redeem source).
+    /// @param asset     Asset ticker.
+    /// @param orderType 0 = Mint, 1 = Redeem.
+    /// @param amountIn  Input pulled: stablecoins (Mint) or eTokens (Redeem, 18 dec).
+    /// @param amountOut Output delivered: eTokens (Mint, 18 dec) or stablecoins (Redeem).
     event OrderExecuted(
         uint256 indexed quoteId,
         address indexed user,
@@ -30,6 +36,12 @@ interface IOwnMarket {
     );
 
     /// @notice Emitted when a user places a resting (limit / redeem) order.
+    /// @param orderId    New order identifier.
+    /// @param user       Order owner.
+    /// @param orderType  0 = Mint, 1 = Redeem.
+    /// @param asset      Asset ticker.
+    /// @param amount     Input escrowed: stablecoins (Mint) or eTokens (Redeem, 18 dec).
+    /// @param limitPrice Max price per eToken (Mint) or min price per eToken (Redeem) (18 dec).
     event OrderPlaced(
         uint256 indexed orderId,
         address indexed user,
@@ -40,7 +52,12 @@ interface IOwnMarket {
     );
 
     /// @notice Emitted when a resting order is filled (fully or partially) against a signed quote.
-    /// @param remaining Input amount still outstanding after this fill (0 = fully filled).
+    /// @param orderId    Order being filled.
+    /// @param quoteId    VM-signed quote identifier (replay key).
+    /// @param maker      The signer's linked settlement address (mint sink / redeem source).
+    /// @param fillAmount Input consumed this fill: stablecoins (Mint) or eTokens (Redeem, 18 dec).
+    /// @param amountOut  Output delivered: eTokens (Mint, 18 dec) or stablecoins (Redeem).
+    /// @param remaining  Input amount still outstanding after this fill (0 = fully filled).
     event OrderFilled(
         uint256 indexed orderId,
         uint256 indexed quoteId,
@@ -51,27 +68,49 @@ interface IOwnMarket {
     );
 
     /// @notice Emitted when a user force-executes the remaining amount of a redeem order.
+    /// @param orderId       Redeem order force-executed.
+    /// @param user          Order owner.
+    /// @param fillAmount    eToken amount burned and redeemed (18 dec).
+    /// @param collateralOut Collateral released to the user (collateral-token units).
     event OrderForceExecuted(uint256 indexed orderId, address indexed user, uint256 fillAmount, uint256 collateralOut);
 
     /// @notice Emitted when a holder redeems a halted asset against the halt redeem address.
+    /// @param user         Redeemer.
+    /// @param asset        Halted asset ticker.
+    /// @param eTokenAmount eToken amount burned (18 dec).
+    /// @param payout       Payment-token amount paid out at the halt price.
     event OrderRedeemedHalted(address indexed user, bytes32 indexed asset, uint256 eTokenAmount, uint256 payout);
 
     /// @notice Emitted when a holder converts a legacy token to the active token after a migration.
+    /// @param user        Holder converting.
+    /// @param asset       Asset ticker.
+    /// @param legacyToken Legacy token burned.
+    /// @param amountIn    Legacy token amount burned (18 dec).
+    /// @param amountOut   Active token amount minted (18 dec).
     event LegacyConverted(
         address indexed user, bytes32 indexed asset, address indexed legacyToken, uint256 amountIn, uint256 amountOut
     );
 
     /// @notice Emitted when a user cancels the remaining amount of a resting order.
+    /// @param orderId Cancelled order.
+    /// @param user    Order owner.
     event OrderCancelled(uint256 indexed orderId, address indexed user);
 
     /// @notice Emitted when an expired resting order is closed and its escrow returned.
+    /// @param orderId Expired order.
     event OrderExpired(uint256 indexed orderId);
 
     /// @notice Emitted when an escrow return to `user` failed (e.g. blocklist freeze) and the
     ///         funds were swept to the protocol treasury for off-chain resolution.
+    /// @param user   Owner the escrow could not be returned to.
+    /// @param token  Escrow token swept (stablecoin or eToken).
+    /// @param amount Token amount swept to the treasury.
     event EscrowSweptToTreasury(address indexed user, address token, uint256 amount);
 
     /// @notice Emitted when dividends accrued on escrowed eTokens are swept to the treasury.
+    /// @param eToken   eToken whose dividends were swept.
+    /// @param treasury Protocol treasury receiving the dividends.
+    /// @param amount   Reward tokens forwarded.
     event EscrowDividendsSwept(address indexed eToken, address indexed treasury, uint256 amount);
 
     // ──────────────────────────────────────────────────────────
@@ -148,6 +187,10 @@ interface IOwnMarket {
     error LimitNotSatisfied();
 
     /// @notice The settle price deviates from the VaultManager mark by more than the allowed band.
+    /// @param asset   Asset ticker.
+    /// @param price   Settle price (18 dec).
+    /// @param mark    Reference mark price (18 dec).
+    /// @param bandBps Allowed deviation (BPS).
     error PriceOutOfBand(bytes32 asset, uint256 price, uint256 mark, uint256 bandBps);
 
     /// @notice The settle-band reference mark is stale (older than maxMarkAge); refresh it first.

@@ -11,65 +11,149 @@ interface IOwnVault is IERC4626 {
     //  Events
     // ──────────────────────────────────────────────────────────
 
+    /// @notice Emitted when an async deposit is requested and assets are escrowed.
+    /// @param requestId Deposit request id.
+    /// @param depositor Caller who escrowed the assets.
+    /// @param receiver  Address credited the shares on acceptance.
+    /// @param assets    Collateral escrowed (asset() units).
     event DepositRequested(uint256 indexed requestId, address indexed depositor, address receiver, uint256 assets);
+    /// @notice Emitted when a pending deposit request is accepted and shares are minted.
+    /// @param requestId Deposit request id.
+    /// @param depositor Caller whose request was accepted.
+    /// @param shares    Vault shares minted.
     event DepositAccepted(uint256 indexed requestId, address indexed depositor, uint256 shares);
+    /// @notice Emitted when a pending deposit request is rejected; escrowed assets are returned to the depositor.
+    /// @param requestId Deposit request id.
+    /// @param depositor Caller refunded the escrowed assets.
     event DepositRejected(uint256 indexed requestId, address indexed depositor);
+    /// @notice Emitted when a pending deposit request is cancelled by the depositor; escrowed assets are returned.
+    /// @param requestId Deposit request id.
+    /// @param depositor Caller refunded the escrowed assets.
     event DepositCancelled(uint256 indexed requestId, address indexed depositor);
 
+    /// @notice Emitted when an async withdrawal is requested and shares are escrowed.
+    /// @param requestId Withdrawal request id.
+    /// @param owner     Share owner who escrowed the shares.
+    /// @param shares    Vault shares escrowed.
     event WithdrawalRequested(uint256 indexed requestId, address indexed owner, uint256 shares);
+    /// @notice Emitted when a pending withdrawal request is cancelled; escrowed shares are returned to the owner.
+    /// @param requestId Withdrawal request id.
+    /// @param owner     Share owner refunded the escrowed shares.
     event WithdrawalCancelled(uint256 indexed requestId, address indexed owner);
+    /// @notice Emitted when a withdrawal request is fulfilled: shares are burned and collateral is paid out.
+    /// @param requestId Withdrawal request id.
+    /// @param owner     Share owner receiving the collateral.
+    /// @param assets    Collateral paid out (asset() units).
+    /// @param shares    Vault shares burned.
     event WithdrawalFulfilled(uint256 indexed requestId, address indexed owner, uint256 assets, uint256 shares);
 
+    /// @notice Emitted when the vault is paused; LP deposits and withdrawals are temporarily frozen.
+    /// @param reason Caller-supplied pause reason tag.
     event VaultPaused(bytes32 indexed reason);
+    /// @notice Emitted when the vault is unpaused; LP deposits and withdrawals resume.
     event VaultUnpaused();
+    /// @notice Emitted when the vault is halted for emergency wind-down; collateral is excluded from the global risk pool.
     event VaultHalted();
+    /// @notice Emitted when the vault is unhalted; collateral is re-included in the global risk pool.
     event VaultUnhalted();
 
     /// @notice Emitted when the manager adds collateral yield to the vault, raising the share price for all LPs.
+    /// @param manager Manager that contributed the yield.
+    /// @param amount  Collateral added (asset() units).
     event ShareYieldAdded(address indexed manager, uint256 amount);
 
+    /// @notice Emitted when the vault's bound manager (operator) is changed.
+    /// @param oldManager Previous manager address.
+    /// @param newManager New manager address.
     event ManagerUpdated(address indexed oldManager, address indexed newManager);
+    /// @notice Emitted when the deposit-approval requirement is toggled.
+    /// @param required True if LP deposits now require VM approval.
     event DepositApprovalUpdated(bool required);
+    /// @notice Emitted when lending is enabled and the borrow manager is bound (one-shot).
+    /// @param borrowManager Borrow manager bound to this vault.
     event LendingEnabled(address indexed borrowManager);
+    /// @notice Emitted when borrow credit delegation is granted to the bound borrow manager.
+    /// @param creditToken   Debt/credit token delegated on (e.g. Aave variable debt token).
+    /// @param borrowManager Borrow manager granted the delegation.
     event CreditDelegationGranted(address indexed creditToken, address indexed borrowManager);
+    /// @notice Emitted when the vault's aToken is enabled as Aave collateral.
+    /// @param pool       Aave V3 pool the bit was flipped on.
+    /// @param underlying Reserve underlying whose aToken is this vault's asset.
     event AaveCollateralEnabled(address indexed pool, address indexed underlying);
+    /// @notice Emitted when collateral is released to the treasury to cover bad debt (loss socialized to LPs).
+    /// @param to     Recipient (protocol treasury).
+    /// @param amount aToken collateral released.
     event CollateralReleasedForBadDebt(address indexed to, uint256 amount);
 
     // ──────────────────────────────────────────────────────────
     //  Errors
     // ──────────────────────────────────────────────────────────
 
+    /// @notice Caller is not the vault's bound manager.
     error OnlyManager();
+    /// @notice Direct (synchronous) withdrawal is disabled; use the async withdrawal queue.
     error DirectWithdrawalDisabled();
+    /// @notice Operation blocked because the vault is paused.
     error VaultIsPaused();
+    /// @notice Operation blocked because the vault is halted.
     error VaultIsHalted();
+    /// @notice Requested vault status transition is not allowed from the current status.
     error InvalidStatusTransition();
+    /// @notice Vault has insufficient collateral to satisfy the request.
     error InsufficientCollateral();
+    /// @notice Withdrawal would push utilization past the allowed maximum.
     error MaxUtilizationExceeded();
+    /// @notice No withdrawal request exists for this id.
     error WithdrawalRequestNotFound(uint256 requestId);
-    error WithdrawalNotReady(uint256 requestId);
+    /// @notice Caller is not the owner of this request.
     error NotRequestOwner(uint256 requestId, address caller);
+    /// @notice No deposit request exists for this id.
     error DepositRequestNotFound(uint256 requestId);
+    /// @notice Deposit request is not in the pending state.
     error DepositRequestNotPending(uint256 requestId);
+    /// @notice Caller is not the original depositor of this request.
     error OnlyDepositor(uint256 requestId);
+    /// @notice A required amount was zero.
     error ZeroAmount();
+    /// @notice A required address was the zero address.
     error ZeroAddress();
+    /// @notice No shares exist to distribute yield to (totalSupply == 0).
     error NoSharesToReward();
+    /// @notice Minted shares fell below the caller's slippage floor.
+    /// @param sharesOut    Shares that would be minted.
+    /// @param minSharesOut Caller's minimum acceptable shares.
     error InsufficientSharesOut(uint256 sharesOut, uint256 minSharesOut);
+    /// @notice Caller is not the admin.
     error OnlyAdmin();
+    /// @notice Caller is not the operator.
     error OnlyOperator();
+    /// @notice Caller is not the registry's market contract.
     error OnlyMarket();
+    /// @notice Caller is neither the vault's manager nor the operator.
     error OnlyManagerOrOperator();
+    /// @notice Withdrawal request is not in the pending state.
     error WithdrawalNotPending(uint256 requestId);
+    /// @notice Collateral token has more than 18 decimals (unsupported).
+    /// @param decimals Collateral token decimals.
     error DecimalsTooHigh(uint256 decimals);
+    /// @notice Withdrawal wait period has not yet elapsed.
+    /// @param readyAt Timestamp the request becomes fulfillable.
     error WithdrawalWaitPeriodNotElapsed(uint256 requestId, uint256 readyAt);
+    /// @notice Deposit approval is not required, so this approval-gated path is unavailable.
     error DepositApprovalNotRequired();
+    /// @notice Deposit approval is required; use the async request flow.
     error DepositApprovalRequired();
+    /// @notice Lending is already enabled (setBorrowManager is one-shot).
     error LendingAlreadyEnabled();
+    /// @notice Lending is not enabled on this vault.
     error LendingNotEnabled();
+    /// @notice The supplied reserve underlying does not match the vault's asset.
     error InvalidUnderlying();
+    /// @notice Caller is not the bound borrow manager.
     error OnlyBorrowManager();
+    /// @notice The protocol treasury address is not configured.
     error TreasuryNotSet();
+    /// @notice Requested amount exceeds the vault's backed collateral (totalAssets).
     error AmountExceedsBackedCollateral();
 
     // ──────────────────────────────────────────────────────────

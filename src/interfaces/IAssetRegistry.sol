@@ -27,10 +27,11 @@ interface IAssetRegistry {
     /// @param active New active flag (false = no new orders / borrows; existing positions wind down).
     event AssetActiveUpdated(bytes32 indexed ticker, bool active);
 
-    /// @notice Emitted on a stock-split token migration.
+    /// @notice Emitted when an asset is migrated to a new token (e.g. stock split).
     /// @param ticker   Asset ticker.
     /// @param oldToken Previous active eToken (now legacy).
     /// @param newToken New active eToken.
+    /// @param ratio    New tokens per old token (1e18-scaled).
     event TokenMigrated(bytes32 indexed ticker, address indexed oldToken, address indexed newToken, uint256 ratio);
 
     // ──────────────────────────────────────────────────────────

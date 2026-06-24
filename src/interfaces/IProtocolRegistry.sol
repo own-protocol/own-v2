@@ -15,24 +15,24 @@ interface IProtocolRegistry is IAccessControl {
     // ──────────────────────────────────────────────────────────────
 
     /// @notice Emitted when a contract address slot is set or updated.
-    /// @param key     Identifier for the contract slot.
-    /// @param oldAddr The previous address (address(0) if first set).
-    /// @param newAddr The address that is now active.
+    /// @param key     Contract slot identifier.
+    /// @param oldAddr Previous address (address(0) if first set).
+    /// @param newAddr Address now active.
     event AddressSet(bytes32 indexed key, address oldAddr, address newAddr);
 
     /// @notice Emitted when the global price-proof max age is updated.
-    /// @param oldMaxAge The previous max age (seconds).
-    /// @param newMaxAge The new max age (seconds).
+    /// @param oldMaxAge Previous max age (seconds).
+    /// @param newMaxAge New max age (seconds).
     event PriceMaxAgeUpdated(uint256 oldMaxAge, uint256 newMaxAge);
 
     // ──────────────────────────────────────────────────────────────
     //  Errors
     // ──────────────────────────────────────────────────────────────
 
-    /// @notice Thrown when a zero address is provided.
+    /// @notice A required address was the zero address.
     error ZeroAddress();
 
-    /// @notice Thrown when a zero price-proof max age is provided (would reject all proofs).
+    /// @notice Price-proof max age was zero (would reject all proofs).
     error InvalidPriceMaxAge();
 
     // ──────────────────────────────────────────────────────────────

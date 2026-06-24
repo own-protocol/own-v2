@@ -35,9 +35,6 @@ interface IWETHRouter {
     /// @notice Slippage check failed: received fewer shares than minimum.
     error MinSharesError(uint256 shares, uint256 minSharesOut);
 
-    /// @notice Slippage check failed: received fewer assets than minimum.
-    error MinAmountError(uint256 amount, uint256 minAmountOut);
-
     /// @notice A zero amount was provided.
     error ZeroAmount();
 
