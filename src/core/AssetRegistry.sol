@@ -62,7 +62,7 @@ contract AssetRegistry is IAssetRegistry {
     // ──────────────────────────────────────────────────────────
 
     /// @inheritdoc IAssetRegistry
-    function addAsset(bytes32 ticker, address eToken, AssetConfig calldata config) external onlyOperator {
+    function addAsset(bytes32 ticker, address eToken, AssetConfig calldata config) external onlyAdmin {
         if (_registered[ticker]) revert AssetAlreadyExists(ticker);
         if (eToken == address(0)) revert ZeroAddress();
 
