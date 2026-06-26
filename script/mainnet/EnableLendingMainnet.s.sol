@@ -37,7 +37,7 @@ contract EnableLendingMainnet is Script {
 
         vm.startBroadcast(vm.envUint("DEPLOYER_PRIVATE_KEY_MAINNET"));
 
-        // Interest-rate curve premium: base 4%, optimal util 80%, slope1 4%, slope2 72%.
+        // Interest-rate curve premium: base 3%, optimal util 80%, slope1 1% (→4% at 80%), slope2 72%.
         BorrowManager borrowManager = new BorrowManager(
             vaultAddr,
             USDC,
@@ -45,7 +45,7 @@ contract EnableLendingMainnet is Script {
             AAVE_V3_POOL,
             registryAddr,
             TARGET_LTV_BPS,
-            InterestRateModel.Params({basePremiumBps: 400, optimalUtilBps: 8000, slope1Bps: 400, slope2Bps: 7200})
+            InterestRateModel.Params({basePremiumBps: 300, optimalUtilBps: 8000, slope1Bps: 100, slope2Bps: 7200})
         );
         console.log("BorrowManager:", address(borrowManager));
 
