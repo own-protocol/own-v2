@@ -8,6 +8,8 @@ Own is a permissionless protocol for bringing tokenized real-world assets (RWAs)
 
 See [docs/protocol.md](docs/protocol.md) for comprehensive protocol documentation.
 
+See [docs/Own Protocol Whitepaper.pdf](docs/Own%20Protocol%20Whitepaper.pdf) for the whitepaper.
+
 ## Getting Started
 
 ### Prerequisites
