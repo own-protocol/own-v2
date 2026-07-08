@@ -163,7 +163,8 @@ contract ReserveVault is IReserveVault, ReentrancyGuard {
         IVaultManager vmgr = IVaultManager(registry.vaultManager());
         bytes32 backed = vmgr.vaultBackedAsset(address(this));
         if (backed == bytes32(0)) revert VaultNotRwaRegistered();
-        // Re-mark at the current price and balance so the surplus guard reads honestly.
+        // Re-mark both legs so the surplus guard compares same-time values.
+        vmgr.pullAssetPrice(backed);
         vmgr.pullCollateralPrice(address(this));
         vmgr.onCollateralReleased(amount);
         if (vmgr.assetRwaCollateralUSD(backed) < vmgr.assetExposureUSD(backed)) {

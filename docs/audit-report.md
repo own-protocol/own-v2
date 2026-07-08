@@ -1,6 +1,6 @@
 # Own Protocol v2 — Audit Report & Remediation Status
 
-**Branch:** `main` (pre-audit hardening on `pre-audit-fixes-1`; PSM feature set on `psm-module`) · **Last updated:** 2026-07-08 · **Test suite:** 955 passing
+**Branch:** `main` (pre-audit hardening on `pre-audit-fixes-1`; PSM feature set on `psm-module`) · **Last updated:** 2026-07-08 · **Test suite:** 957 passing
 
 Consolidated from the 2026-06-09 full manual audit, the 2026-06-10/11 focused re-audits
 (BorrowManager, AaveRouter, H-02 migration changes), and the 2026-06-11 multi-agent re-audit
@@ -48,7 +48,10 @@ the H-06 round-2 "designated force-execute vault" was replaced by an admin-appro
 redeemer choice (product decision — see the dated update under H-06 for what still holds). The
 GPT-5-noted "force-execute-vault deploy wiring" Low is resolved — `AddAssetsMainnet.s.sol` now arms
 all per-asset grants at asset registration. Suite: 955 passing incl. 4 invariant campaigns at
-1000 runs × depth 100.
+1000 runs × depth 100. A same-day review of the reserve release path surfaced **M-14** (Medium) —
+`ReserveVault._releaseCollateral`'s surplus guard compared a freshly-marked collateral leg against
+a stale exposure mark — fixed the same day with mutation-checked regression tests (§1). Suite:
+957 passing.
 
 ## Status at a Glance
 
@@ -56,10 +59,10 @@ all per-asset grants at asset registration. Suite: 955 passing incl. 4 invariant
 | -------- | ----- | ----- | ---- | --------- |
 | Critical | 1     | 1     | 0    | —         |
 | High     | 10    | 10    | 0    | —         |
-| Medium   | 13    | 11    | 0    | 2         |
+| Medium   | 14    | 12    | 0    | 2         |
 | Low      | 18    | 14    | 0    | 4         |
 
-**No findings are open. The 2026-06-19 re-audits' findings are all fixed — round 1: H-06 (High), L-14 (Low), L-07 (Low, reopened then fixed); round 2: H-07 (High), M-11 + M-12 (Medium), L-15 (Low), plus the H-06 amplifier removed. All carry regression tests (H-07 via a live-Aave fork test). All earlier findings remain closed (fixed, mitigated, documented, or by-design). A 2026-06-19 withdrawal loss-ordering follow-up added **M-13** (Medium) — the user-bad-debt sibling of H-07 — accepted by design with an operational pause-on-volatility mitigation (no code change; see §3). A 2026-06-19 lead deep-dive (3-agent verification of all post-audit leads) added **L-17** (Low, Fixed — `fillOrder` missing the active-asset gate) and **L-16** (Low, accepted — `absorbBadDebt` premium over-charge, controllable via `absorbAmount`); the other 18 leads resolved to already-addressed or not-exploitable. The §5 leads are triaged.**
+**No findings are open. The 2026-07-08 PSM review's M-14 (Medium — `ReserveVault` mixed-mark surplus guard) is fixed with mutation-checked regression tests (§1). All earlier findings remain closed. The 2026-06-19 re-audits' findings are all fixed — round 1: H-06 (High), L-14 (Low), L-07 (Low, reopened then fixed); round 2: H-07 (High), M-11 + M-12 (Medium), L-15 (Low), plus the H-06 amplifier removed. All carry regression tests (H-07 via a live-Aave fork test). All earlier findings remain closed (fixed, mitigated, documented, or by-design). A 2026-06-19 withdrawal loss-ordering follow-up added **M-13** (Medium) — the user-bad-debt sibling of H-07 — accepted by design with an operational pause-on-volatility mitigation (no code change; see §3). A 2026-06-19 lead deep-dive (3-agent verification of all post-audit leads) added **L-17** (Low, Fixed — `fillOrder` missing the active-asset gate) and **L-16** (Low, accepted — `absorbBadDebt` premium over-charge, controllable via `absorbAmount`); the other 18 leads resolved to already-addressed or not-exploitable. The §5 leads are triaged.**
 
 | ID        | Severity | Finding                                                                                                                                                                       | Status                                                                         |
 | --------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
@@ -87,6 +90,7 @@ all per-asset grants at asset registration. Suite: 955 passing incl. 4 invariant
 | M-11      | Medium   | Redeem settle band bounded against a stale mark (mint leg gated by `maxMarkAge`, redeem leg not)                                                                              | **Fixed** (2026-06-19, round 2)                                                |
 | M-12      | Medium   | `migrateToken` on a halted asset desyncs its frozen halt price → `redeemHalted` over-pays                                                                                     | **Fixed** (2026-06-19, round 2)                                                |
 | M-13      | Medium   | `fulfillWithdrawal` can settle before a borrower's bad debt is absorbed → loss socialized to remaining LPs (user-bad-debt sibling of H-07; the Aave-HF gate doesn't catch it) | **By design** — accepted with pause-on-volatility mitigation (see §3)          |
+| M-14      | Medium   | `ReserveVault._releaseCollateral` surplus guard compared a freshly-marked collateral leg against a stale `assetExposureUSD` mark → allowlisted maker/operator could (even innocently) skim reserve that wasn't surplus during keeper lag, under-backing eToken holders | **Fixed** (2026-07-08)                                                         |
 | L-01–L-13 | Low      | See §4                                                                                                                                                                        | 10 closed (9 fixed + L-02 mitigated) · 3 by design/accepted (L-04, L-09, L-11) |
 | L-14      | Low      | In-house `getPrice` has no read-time staleness bound; `pullAssetPrice` re-stamps `block.timestamp`                                                                            | **Fixed** (2026-06-19)                                                         |
 | L-15      | Low      | `maxDeposit`/`maxMint` report unlimited while `deposit`/`mint` revert (approval gate / `onlyManager`) → ERC-4626 integrators revert                                           | **Fixed** (2026-06-19, round 2)                                                |
@@ -538,6 +542,39 @@ assumption rather than rebuild the accounting:
   explosion ($0.50 → $50.50) without the guard; `test_accrue_floorsBookDebtToRealAaveDebt` still
   passes, confirming the floor works above the threshold.
 
+### M-14 (Medium) — `ReserveVault` surplus guard compared a fresh collateral mark against a stale exposure mark
+
+**Problem.** `ReserveVault._releaseCollateral` (backing `withdraw` — maker recovery — and
+`skimExcess`) re-marked only the collateral leg before its surplus guard: `pullCollateralPrice`
+valued the reserve at the current wrapper oracle price × live balance, but the exposure leg read
+`_assetExposureUSD[backed]`, which is only rewritten by `openExposure` / `closeExposure` /
+`pullAssetPrice` / `haltAsset` (`applySplit` is exposure-invariant) — never on this path. No
+freshness gate applied (PA-03's `maxMarkAge` covers `openExposure` only), and the wrapper oracle's
+stored price updates independently of the keeper cadence, so the legs diverged without bound
+during keeper lag. Trace: 1000 eTSLA exposure @ mark $100 (exposureUSD $100k), reserve
+1000 ondoTSLA; TSLA → $110 and the wrapper oracle posts $110 with no `pullAssetPrice` yet. An
+allowlisted maker's `withdraw` re-marks collateral to $110k against the stale $100k exposure → the
+guard permits releasing ~$10k of wrapper (~90.9 ondoTSLA). The next `pullAssetPrice` re-marks
+exposure to $110k against a $100k reserve — the 1:1 backing is short $10k, and
+`_setAssetRwaCollateral` folds the shortfall into `_globalNetExposureUSD`, silently shifting it
+onto the generic collateral pool. Callers are permissioned (`withdraw`: VM signer + per-asset
+maker allowlist; `skimExcess`: manager/operator), but the guard exists precisely to clamp those
+actors to surplus-only, no malice is required (an honest skim during a rally with a lagging keeper
+under-backs holders), and funds exit to the maker's settlement address — not
+governance-recoverable.
+
+**Fix (2026-07-08).** `_releaseCollateral` calls `vmgr.pullAssetPrice(backed)` (permissionless;
+halt-aware — a halted asset re-marks at its frozen halt price) before the guard, so both legs read
+current stored oracle prices in the same transaction. Residual divergence is bounded by oracle
+posting cadence rather than keeper cadence — the same trust level as the PSM conversion ratio.
+Fail-closed side effect: a release reverts `PriceUnavailable` while the backed asset's oracle
+price is unset, consistent with the fail-safe-zero posture.
+**Tests.** `ReserveVault.t.sol::test_skimExcess_staleAssetMark_phantomSurplus_reverts` (fails
+without the fix — the phantom surplus was skimmable),
+`test_skimExcess_staleAssetMark_trueSurplus_releasable` (liveness: a genuine surplus stays
+spendable at same-time marks, and the release path syncs the asset mark). Both mutation-checked
+against the pre-fix code.
+
 ### Fixed Info item — EToken pass-through dividends
 
 The EToken dividend accumulator was rewritten (pass-through holder redirect) and re-verified correct
@@ -548,8 +585,8 @@ in the 2026-06-11 re-audit.
 ## 2. Open Findings
 
 No open findings at any severity. The three findings surfaced by the 2026-06-19 re-audit are all
-fixed with regression tests — **H-06** (High, §1), and **L-07** + **L-14** (Low, §4). Remaining
-future work: the unconfirmed leads in §5.
+fixed with regression tests — **H-06** (High, §1), and **L-07** + **L-14** (Low, §4) — as is the
+2026-07-08 PSM review's **M-14** (Medium, §1). Remaining future work: the unconfirmed leads in §5.
 
 ---
 

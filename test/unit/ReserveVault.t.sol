@@ -383,6 +383,44 @@ contract ReserveVaultTest is Test {
         reserve.withdraw(5e18); // one wrapper into matched backing
     }
 
+    function test_skimExcess_staleAssetMark_phantomSurplus_reverts() public {
+        // M-14: price rallies and the wrapper oracle updates, but no keeper pullAssetPrice —
+        // the fresh collateral leg must not read as surplus against the stale exposure leg.
+        _seed(10e18);
+        vm.prank(market);
+        manager.openExposure(TSLA, 10e18); // matched at $100 — zero true surplus
+
+        oracle.setPrice(TSLA, 110e18);
+        oracle.setPrice(ONDO_TSLA, 110e18);
+        assertEq(manager.assetExposureUSD(TSLA), 1000e18, "exposure mark stale at $100");
+
+        vm.prank(admin);
+        vm.expectRevert(IReserveVault.SkimExceedsSurplus.selector);
+        reserve.skimExcess(1); // any release digs into matched backing
+    }
+
+    function test_skimExcess_staleAssetMark_trueSurplus_releasable() public {
+        // M-14 liveness half: the inline pullAssetPrice syncs the exposure leg, and a genuine
+        // surplus stays spendable at the same-time marks.
+        _seed(10e18);
+        vm.prank(market);
+        manager.openExposure(TSLA, 6e18); // E = 6 units → true surplus = 4 ondo
+
+        oracle.setPrice(TSLA, 110e18);
+        oracle.setPrice(ONDO_TSLA, 110e18); // exposure mark still stale at $100
+
+        vm.startPrank(admin);
+        vm.expectRevert(IReserveVault.SkimExceedsSurplus.selector);
+        reserve.skimExcess(5e18); // one wrapper too many, even post-rally
+
+        reserve.skimExcess(4e18); // exactly the surplus (unit-invariant across the rally)
+        vm.stopPrank();
+
+        assertEq(ondo.balanceOf(admin), 4e18);
+        assertEq(manager.assetExposureUSD(TSLA), 660e18, "release path synced the asset mark");
+        assertEq(manager.assetRwaCollateralUSD(TSLA), 660e18, "remaining reserve still covers E");
+    }
+
     function test_skimExcess_remarksBeforeGuard() public {
         // Donation arrives without a keeper pull: skim must still see it (inline re-mark).
         _seed(10e18);
