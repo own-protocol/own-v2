@@ -54,7 +54,7 @@ contract PsmInvariantTest is BaseTest {
 
         ondo = new MockERC20("Ondo Tesla", "ondoTSLA", 18);
         assetRegistry.addAsset(ONDO_TSLA, address(ondo), _cfg(address(ondo)));
-        reserve = new ReserveVault(address(ondo), address(protocolRegistry));
+        reserve = new ReserveVault(address(ondo), address(protocolRegistry), Actors.VM1);
         vaultManager.registerVault(address(reserve), ONDO_TSLA, TSLA);
         assetRegistry.setPsmConfig(TSLA, address(ondo), address(reserve));
         // Fail-closed guard: arm wide (100%) so the campaign explores freely; big price-drift

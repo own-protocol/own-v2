@@ -1,6 +1,6 @@
 # Own Protocol v2 — Audit Report & Remediation Status
 
-**Branch:** `main` (pre-audit hardening on `pre-audit-fixes-1`) · **Last updated:** 2026-06-19 · **Test suite:** 723 passing
+**Branch:** `main` (pre-audit hardening on `pre-audit-fixes-1`; PSM feature set on `psm-module`) · **Last updated:** 2026-07-08 · **Test suite:** 955 passing
 
 Consolidated from the 2026-06-09 full manual audit, the 2026-06-10/11 focused re-audits
 (BorrowManager, AaveRouter, H-02 migration changes), and the 2026-06-11 multi-agent re-audit
@@ -37,6 +37,18 @@ accepted/by-design tradeoffs; the full per-finding disposition is appended to th
 A). A few legitimate Lows were noted for future hardening (force-execute-vault and withdrawal-delay
 deploy wiring, accrue-before-rate-change, pull-based manager revenue); the permit-domain-on-rename note
 is resolved by-design with documentation (§3).
+
+A **2026-07-08 PSM feature pass** (psm-module branch, `docs/psm-design.md`) added the PSM/reserve
+stack: vault classes + per-asset delta netting (VaultManager), `ReserveVault` (wrapper custody,
+maker recovery, manager-bound skim/sweep), `OwnMarket.psmMint/psmRedeem` with a derived conversion
+ratio and a fail-closed ratio-jump guard, and four per-asset AssetRegistry allowlists — maker
+(quote settlement + reserve recovery), lending-vault, and a force-execute vault pool — all
+default-deny, armed only by the deploy scripts. **One prior remediation was deliberately revised:**
+the H-06 round-2 "designated force-execute vault" was replaced by an admin-approved pool with
+redeemer choice (product decision — see the dated update under H-06 for what still holds). The
+GPT-5-noted "force-execute-vault deploy wiring" Low is resolved — `AddAssetsMainnet.s.sol` now arms
+all per-asset grants at asset registration. Suite: 955 passing incl. 4 invariant campaigns at
+1000 runs × depth 100.
 
 ## Status at a Glance
 
@@ -227,6 +239,20 @@ collateral cost on any chosen vault's LPs while the exposure reduction socialize
 tests: `OwnMarket.t.sol` (no-designation and wrong-vault reverts), `VaultManager.t.sol`
 (`setForceExecuteVault` success / onlyOperator / unregistered / clear-to-zero).
 
+**Update (2026-07-08, PSM pass).** The round-2 single-designation model was **revised to an
+admin-approved pool with redeemer choice** (`AssetRegistry.setForceExecuteVaultAllowed`; the caller
+names any pool vault at execution) — an explicit product decision prioritizing the user's
+last-resort exit over LP-distribution control. What still holds: the **original H-06 fix is
+untouched** (`releaseCollateral` bounded by `totalAssets()` — escrow can never be drained); the
+pool is admin-vetted (grant requires vmgr-registered + non-RWA), empty-pool default keeps the
+fail-safe; use-time checks re-verify registered / not-excluded / non-RWA (the RWA re-check is new —
+a stale pool entry re-registered as a ReserveVault cannot drain PSM reserves); and H-07's Aave-HF
+gate still prevents pushing any chosen vault into liquidation. Residual accepted risk: within the
+pool, a redeemer chooses which vault's LPs fund the payout (and hence the payout collateral) —
+bounded by pool composition, which is the operational risk lever (keep pools small/homogeneous).
+Tests: `OwnMarket.t.sol` (empty-pool / not-in-pool / per-asset keying / RWA-drift reverts),
+`AssetRegistry.t.sol` (pool grant validation + auth).
+
 **Tests.** `OwnVault.t.sol::test_releaseCollateral_exceedingBackedCollateral_reverts` (verified to
 fail — vault bricks via `Panic(0x11)` in `totalAssets()` — without the guard),
 `test_releaseCollateralForBadDebt_exceedingBackedCollateral_reverts`,
@@ -251,8 +277,9 @@ enabled with outstanding Aave debt; compounds with the H-06 force-execute path.
 is called by `OwnVault.fulfillWithdrawal` (active vaults) and `releaseCollateral` _after_ the aTokens
 leave, reverting `VaultUnsafeHealthFactor` if the release dropped the vault below the floor.
 Lending-disabled vaults (`_borrowManager == 0`) and halted-vault emergency exits are exempt. Composes
-with the H-06 designated-vault fix: a force-execute can neither pick a victim vault nor push it to
-liquidation.
+with the H-06 force-execute-vault gating (single designation at the time; an admin-approved pool
+with redeemer choice since 2026-07-08 — see H-06's dated update): whichever pool vault a
+force-execute draws from, this HF gate still prevents pushing it into liquidation.
 
 **Tests.** `AaveBaseFork.t.sol::test_fork_releaseCollateral_unsafeHealthFactor_reverts` — against live
 Aave V3 on Base, the vault borrows real USDC against its awstETH, then a collateral release sized to

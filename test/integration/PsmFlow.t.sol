@@ -42,8 +42,6 @@ abstract contract PsmFlowBase is BaseTest {
     uint256 constant LP_SEED_WETH = 50_000e18;
     uint256 constant CLAIM_THRESHOLD = 6 hours;
 
-    address internal treasury = makeAddr("treasury");
-
     function setUp() public override {
         super.setUp();
 
@@ -72,8 +70,8 @@ abstract contract PsmFlowBase is BaseTest {
         xs = new MockERC20("xStocks Tesla", "xsTSLA", 6);
         assetRegistry.addAsset(ONDO_TSLA, address(ondo), _assetConfig(address(ondo)));
         assetRegistry.addAsset(XS_TSLA, address(xs), _assetConfig(address(xs)));
-        ondoReserve = new ReserveVault(address(ondo), address(protocolRegistry));
-        xsReserve = new ReserveVault(address(xs), address(protocolRegistry));
+        ondoReserve = new ReserveVault(address(ondo), address(protocolRegistry), Actors.VM1);
+        xsReserve = new ReserveVault(address(xs), address(protocolRegistry), Actors.VM1);
         vaultManager.registerVault(address(ondoReserve), ONDO_TSLA, TSLA);
         vaultManager.registerVault(address(xsReserve), XS_TSLA, TSLA);
         assetRegistry.setPsmConfig(TSLA, address(ondo), address(ondoReserve));
@@ -456,11 +454,10 @@ contract PsmFlowTest is PsmFlowBase {
         assertEq(vaultManager.assetRwaCollateralUSD(TSLA), Math.mulDiv(10e18, TSLA_PRICE, PRECISION));
         assertEq(vaultManager.globalNetExposureUSD(), 0, "excess reserve clamps at zero");
 
-        // The operator can skim the surplus to the treasury...
-        _setTreasury(treasury);
+        // The operator can skim the surplus (paid to the caller)...
         vm.prank(Actors.ADMIN);
         ondoReserve.skimExcess(10e18);
-        assertEq(ondo.balanceOf(treasury), 10e18);
+        assertEq(ondo.balanceOf(Actors.ADMIN), 10e18);
         assertEq(vaultManager.assetRwaCollateralUSD(TSLA), 0);
     }
 
@@ -501,7 +498,6 @@ contract PsmFlowTest is PsmFlowBase {
 
     function test_skimExcess_cannotCutIntoMatchedBacking() public {
         _psmMintOndo(Actors.MINTER1, 10e18); // E = R: zero surplus
-        _setTreasury(treasury);
 
         vm.prank(Actors.ADMIN);
         vm.expectRevert(IReserveVault.SkimExceedsSurplus.selector);
@@ -513,10 +509,10 @@ contract PsmFlowTest is PsmFlowBase {
         vm.expectRevert(IReserveVault.SkimExceedsSurplus.selector);
         ondoReserve.skimExcess(5e18);
 
-        // Skimming within the surplus succeeds.
+        // Skimming within the surplus succeeds (paid to the caller).
         vm.prank(Actors.ADMIN);
         ondoReserve.skimExcess(4e18);
-        assertEq(ondo.balanceOf(treasury), 4e18);
+        assertEq(ondo.balanceOf(Actors.ADMIN), 4e18);
     }
 
     // ──────────────────────────────────────────────────────────

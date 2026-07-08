@@ -14,7 +14,8 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 /// @notice Protocol-owned custody of a single wrapper token, registered on the VaultManager as
 ///         an RWA vault so its balance nets against the backed asset's exposure. No LP shares,
 ///         no queues, no lending. Reserve enters via the OwnMarket PSM paths and exits via
-///         {releaseCollateral}, {withdraw}, or {skimExcess}.
+///         {releaseCollateral}, {withdraw}, or {skimExcess}. Skims and dividend sweeps are
+///         restricted to the bound manager (operating VM) or an operator, paying the caller.
 contract ReserveVault is IReserveVault, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
@@ -28,9 +29,17 @@ contract ReserveVault is IReserveVault, ReentrancyGuard {
     IERC20 private immutable _wrapper;
 
     // ──────────────────────────────────────────────────────────
+    //  State
+    // ──────────────────────────────────────────────────────────
+
+    /// @inheritdoc IReserveVault
+    address public manager;
+
+    // ──────────────────────────────────────────────────────────
     //  Modifiers
     // ──────────────────────────────────────────────────────────
 
+    bytes32 private constant ADMIN = keccak256("ADMIN");
     bytes32 private constant OPERATOR = keccak256("OPERATOR");
 
     modifier onlyMarket() {
@@ -43,18 +52,32 @@ contract ReserveVault is IReserveVault, ReentrancyGuard {
         _;
     }
 
+    modifier onlyAdmin() {
+        if (!registry.hasRole(ADMIN, msg.sender)) revert OnlyAdmin();
+        _;
+    }
+
+    modifier onlyManagerOrOperator() {
+        if (msg.sender != manager && !registry.hasRole(OPERATOR, msg.sender)) {
+            revert OnlyManagerOrOperator();
+        }
+        _;
+    }
+
     // ──────────────────────────────────────────────────────────
     //  Constructor
     // ──────────────────────────────────────────────────────────
 
     /// @param wrapper_  Wrapper token held as reserve (e.g. ondoTSLA).
     /// @param registry_ ProtocolRegistry contract address.
-    constructor(address wrapper_, address registry_) {
-        if (wrapper_ == address(0) || registry_ == address(0)) revert ZeroAddress();
+    /// @param manager_  Operational manager (skim/sweep destination).
+    constructor(address wrapper_, address registry_, address manager_) {
+        if (wrapper_ == address(0) || registry_ == address(0) || manager_ == address(0)) revert ZeroAddress();
         uint8 dec = IERC20Metadata(wrapper_).decimals();
         if (dec > 18) revert DecimalsTooHigh(dec);
         _wrapper = IERC20(wrapper_);
         registry = IProtocolRegistry(registry_);
+        manager = manager_;
     }
 
     // ──────────────────────────────────────────────────────────
@@ -88,11 +111,9 @@ contract ReserveVault is IReserveVault, ReentrancyGuard {
     /// @inheritdoc IReserveVault
     function skimExcess(
         uint256 amount
-    ) external onlyOperator nonReentrant {
-        address to = registry.treasury();
-        if (to == address(0)) revert TreasuryNotSet();
-        _releaseCollateral(to, amount);
-        emit ExcessSkimmed(to, amount);
+    ) external onlyManagerOrOperator nonReentrant {
+        _releaseCollateral(msg.sender, amount);
+        emit ExcessSkimmed(msg.sender, amount);
     }
 
     /// @inheritdoc IReserveVault
@@ -110,6 +131,27 @@ contract ReserveVault is IReserveVault, ReentrancyGuard {
         address to = vmgr.signerLinkedAddress(msg.sender);
         _releaseCollateral(to, amount);
         emit SurplusWithdrawn(msg.sender, to, amount);
+    }
+
+    /// @inheritdoc IReserveVault
+    function sweepToken(
+        address token
+    ) external onlyManagerOrOperator nonReentrant {
+        if (token == address(_wrapper)) revert CannotSweepWrapper();
+        uint256 amount = IERC20(token).balanceOf(address(this));
+        if (amount == 0) revert ZeroAmount();
+        IERC20(token).safeTransfer(msg.sender, amount);
+        emit TokenSwept(token, msg.sender, amount);
+    }
+
+    /// @inheritdoc IReserveVault
+    function setManager(
+        address newManager
+    ) external onlyAdmin {
+        if (newManager == address(0)) revert ZeroAddress();
+        address old = manager;
+        manager = newManager;
+        emit ManagerUpdated(old, newManager);
     }
 
     /// @dev Shared surplus release: re-mark, reduce, and require the remaining reserve to still

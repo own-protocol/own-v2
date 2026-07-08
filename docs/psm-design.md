@@ -128,6 +128,14 @@ A lean custody contract (`src/core/ReserveVault.sol`), deliberately **not** an O
 One ReserveVault per (asset, wrapper) pair. Multiple wrappers per asset (e.g. `ondoTSLA` and
 `xTSLA`) are separate ReserveVaults, all netting against the same asset (§5).
 
+> **As built (2026-07-08).** Three deltas from the sketch above: (1) the vault binds an
+> operational `manager` (constructor-set, admin-rotatable) — `skimExcess` is **manager-or-
+> operator** and pays the **caller**, not the treasury; (2) a `sweepToken(token)` companion
+> (same auth, pays caller) recovers non-wrapper balances — issuer dividend stablecoins (e.g.
+> Dinari pays dividends in USDC to holder wallets) would otherwise strand; the wrapper itself is
+> unsweepable; (3) `withdraw` additionally requires the signer to be on the per-asset **maker
+> allowlist** (§4.3) — recovery is asset-scoped, not global.
+
 ### 4.3 AssetRegistry — per-asset routing config
 
 New per-asset state (AssetRegistry is the natural home; it already resolves per-asset config and
@@ -146,11 +154,21 @@ mapping(bytes32 => address[]) psmWrappers;
 
 // ticker → vaults whose BorrowManager may lend against this eToken
 mapping(bytes32 => mapping(address => bool)) allowedLendingVault;
+
+// As built (2026-07-08) — two more per-asset allowlists live here, same shape:
+// ticker → signer → may settle quotes / recover reserve surplus (default-deny)
+mapping(bytes32 => mapping(address => bool)) makerAllowed;
+// ticker → vault → admin-approved force-execute collateral sources (default-deny)
+mapping(bytes32 => mapping(address => bool)) forceExecuteVaultAllowed;
 ```
 
 - `setPsmConfig(ticker, wrapper, config)` — admin. Registering requires the ReserveVault to be a
   registered RWA vault on VaultManager (`backedAsset == ticker`).
 - `setLendingVaultAllowed(ticker, vault, allowed)` — admin.
+- As built: `setMakerAllowed(ticker, signer, allowed)` — admin; grant requires a live signer
+  registration. Enforced in `OwnMarket._consumeQuote` and `ReserveVault.withdraw`.
+- As built: `setForceExecuteVaultAllowed(ticker, vault, allowed)` — admin; supersedes §4.4's
+  VaultManager designation (see the note there).
 - **The conversion ratio is derived, not stored** (§8.3): wrapper issuers (Ondo) are total-return
   trackers whose share multiplier (`sValue`) drifts with dividend reinvestment and jumps at
   splits. A static ratio would systematically misprice the PSM. Instead:
@@ -172,9 +190,14 @@ mapping(bytes32 => mapping(address => bool)) allowedLendingVault;
   - `backedAsset == 0` → **generic vault** (all existing vaults; behavior unchanged).
   - `backedAsset != 0` → **RWA vault**: its mark accrues to `_assetRwaCollateralUSD[backedAsset]`
     instead of `_globalCollateralUSD` (§5).
-- `_forceExecuteVault` becomes `mapping(bytes32 => address)`. `setForceExecuteVault(asset, vault)`
-  keeps the operator role, the zero-default = disabled fail-safe, and adds the guard
-  `backedAsset(vault) == 0`.
+- ~~`_forceExecuteVault` becomes `mapping(bytes32 => address)`~~ **Superseded as built
+  (2026-07-08):** the force-execute designation left the VaultManager entirely. AssetRegistry
+  hosts a per-asset **pool** (`setForceExecuteVaultAllowed`, admin, default-deny = disabled
+  fail-safe) and the **redeemer names any pool vault at execution** — a product decision favoring
+  the user's last-resort exit; pool composition is the risk lever. `forceExecuteOrder` re-checks
+  registered / not-excluded / non-RWA at use time (the RWA re-check keeps a stale pool entry from
+  ever routing a force-execute into PSM reserves). See `docs/audit-report.md` H-06 (2026-07-08
+  update) for the security disposition.
 
 ### 4.5 OwnMarket — PSM entrypoints
 
@@ -469,7 +492,8 @@ configured first at deployment.
 | 5 | Tests, invariants, docs, deployment scripts | test/, script/, docs/ |
 
 Interfaces first, then tests, then implementation (per AGENTS.md). This is a **redeploy** of
-VaultManager, OwnMarket, and AssetRegistry (non-upgradeable) — bundle as a v2.1 deployment.
+VaultManager, OwnMarket, and AssetRegistry (non-upgradeable) — ships in the v2 launch
+deployment itself (no prior production deployment to upgrade).
 
 ## 10. Invariants (additions)
 

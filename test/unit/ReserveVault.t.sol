@@ -44,7 +44,7 @@ contract ReserveVaultTest is Test {
 
     address internal admin = Actors.ADMIN;
     address internal market = makeAddr("market");
-    address internal treasury = makeAddr("treasury");
+    address internal rvManager = makeAddr("rvManager");
     address internal user = makeAddr("user");
 
     bytes32 internal constant TSLA = bytes32("TSLA");
@@ -78,7 +78,7 @@ contract ReserveVaultTest is Test {
         oracle.setPrice(ONDO_TSLA, TSLA_MARK);
         manager.pullAssetPrice(TSLA);
 
-        reserve = new ReserveVault(address(ondo), address(registry));
+        reserve = new ReserveVault(address(ondo), address(registry), rvManager);
         vm.prank(admin);
         manager.registerVault(address(reserve), ONDO_TSLA, TSLA);
     }
@@ -97,15 +97,17 @@ contract ReserveVaultTest is Test {
 
     function test_constructor_zeroAddresses_revert() public {
         vm.expectRevert(IReserveVault.ZeroAddress.selector);
-        new ReserveVault(address(0), address(registry));
+        new ReserveVault(address(0), address(registry), rvManager);
         vm.expectRevert(IReserveVault.ZeroAddress.selector);
-        new ReserveVault(address(ondo), address(0));
+        new ReserveVault(address(ondo), address(0), rvManager);
+        vm.expectRevert(IReserveVault.ZeroAddress.selector);
+        new ReserveVault(address(ondo), address(registry), address(0));
     }
 
     function test_constructor_decimalsTooHigh_reverts() public {
         MockERC20 weird = new MockERC20("Weird", "WRD", 19);
         vm.expectRevert(abi.encodeWithSelector(IReserveVault.DecimalsTooHigh.selector, 19));
-        new ReserveVault(address(weird), address(registry));
+        new ReserveVault(address(weird), address(registry), rvManager);
     }
 
     function test_views_assetAndTotalAssets() public {
@@ -140,7 +142,7 @@ contract ReserveVaultTest is Test {
 
     function test_deposit_unregisteredVault_reverts() public {
         // pullCollateralPrice reverts for an unregistered vault — deposits fail closed.
-        ReserveVault orphan = new ReserveVault(address(ondo), address(registry));
+        ReserveVault orphan = new ReserveVault(address(ondo), address(registry), rvManager);
         ondo.mint(user, 1e18);
         vm.startPrank(user);
         ondo.approve(address(orphan), 1e18);
@@ -197,7 +199,7 @@ contract ReserveVaultTest is Test {
 
     function test_skimExcess_onlyOperator_reverts() public {
         _seed(10e18);
-        vm.expectRevert(IReserveVault.OnlyOperator.selector);
+        vm.expectRevert(IReserveVault.OnlyManagerOrOperator.selector);
         vm.prank(user);
         reserve.skimExcess(1e18);
     }
@@ -205,7 +207,6 @@ contract ReserveVaultTest is Test {
     function test_skimExcess_zeroAndExceeds_revert() public {
         _seed(10e18);
         vm.startPrank(admin);
-        registry.setAddress(registry.TREASURY(), treasury);
         vm.expectRevert(IReserveVault.ZeroAmount.selector);
         reserve.skimExcess(0);
         vm.expectRevert(IReserveVault.AmountExceedsReserve.selector);
@@ -213,19 +214,21 @@ contract ReserveVaultTest is Test {
         vm.stopPrank();
     }
 
-    function test_skimExcess_treasuryNotSet_reverts() public {
+    function test_skimExcess_managerCanCall_paysCaller() public {
         _seed(10e18);
-        vm.prank(admin);
-        vm.expectRevert(IReserveVault.TreasuryNotSet.selector);
-        reserve.skimExcess(1e18);
+        // The bound manager (no protocol role) skims; surplus lands at the caller.
+        vm.expectEmit(true, false, false, true);
+        emit IReserveVault.ExcessSkimmed(rvManager, 2e18);
+        vm.prank(rvManager);
+        reserve.skimExcess(2e18);
+        assertEq(ondo.balanceOf(rvManager), 2e18, "surplus paid to the calling manager");
     }
 
     function test_skimExcess_notRwaRegistered_reverts() public {
         // A reserve vault that was never registered (or registered generic) has no backed asset.
-        ReserveVault orphan = new ReserveVault(address(ondo), address(registry));
+        ReserveVault orphan = new ReserveVault(address(ondo), address(registry), rvManager);
         ondo.mint(address(orphan), 5e18);
         vm.startPrank(admin);
-        registry.setAddress(registry.TREASURY(), treasury);
         vm.expectRevert(IReserveVault.VaultNotRwaRegistered.selector);
         orphan.skimExcess(1e18);
         vm.stopPrank();
@@ -236,11 +239,9 @@ contract ReserveVaultTest is Test {
         vm.prank(market);
         manager.openExposure(TSLA, 10e18); // E = $1000 — zero surplus
 
-        vm.startPrank(admin);
-        registry.setAddress(registry.TREASURY(), treasury);
+        vm.prank(admin);
         vm.expectRevert(IReserveVault.SkimExceedsSurplus.selector);
         reserve.skimExcess(1e18);
-        vm.stopPrank();
     }
 
     function test_skimExcess_spendsOnlyClampedSurplus() public {
@@ -249,16 +250,15 @@ contract ReserveVaultTest is Test {
         manager.openExposure(TSLA, 6e18); // E = $600 → surplus = 4 ondo
 
         vm.startPrank(admin);
-        registry.setAddress(registry.TREASURY(), treasury);
         vm.expectRevert(IReserveVault.SkimExceedsSurplus.selector);
         reserve.skimExcess(5e18); // one wrapper too many
 
         vm.expectEmit(true, false, false, true);
-        emit IReserveVault.ExcessSkimmed(treasury, 4e18);
+        emit IReserveVault.ExcessSkimmed(admin, 4e18);
         reserve.skimExcess(4e18); // exactly the surplus
         vm.stopPrank();
 
-        assertEq(ondo.balanceOf(treasury), 4e18);
+        assertEq(ondo.balanceOf(admin), 4e18, "surplus paid to the calling operator");
         assertEq(reserve.totalAssets(), 6e18);
         assertEq(manager.assetRwaCollateralUSD(TSLA), 600e18, "remaining reserve still covers E");
         assertEq(manager.globalNetExposureUSD(), 0, "skim never re-loads the buffer");
@@ -273,6 +273,65 @@ contract ReserveVaultTest is Test {
         vm.expectRevert(IReserveVault.OnlyMaker.selector);
         vm.prank(user);
         reserve.withdraw(1e18);
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  sweepToken (dividend recovery)
+    // ──────────────────────────────────────────────────────────
+
+    function test_sweepToken_sendsFullNonWrapperBalanceToTreasury() public {
+        // Issuer dividend stablecoins land on the vault; sweep recovers them without touching
+        // the wrapper reserve.
+        MockERC20 usdc = new MockERC20("USD Coin", "USDC", 6);
+        usdc.mint(address(reserve), 123e6);
+        _seed(10e18);
+
+        vm.expectEmit(true, true, false, true);
+        emit IReserveVault.TokenSwept(address(usdc), rvManager, 123e6);
+        vm.prank(rvManager);
+        reserve.sweepToken(address(usdc));
+
+        assertEq(usdc.balanceOf(rvManager), 123e6, "dividends paid to the calling manager");
+        assertEq(usdc.balanceOf(address(reserve)), 0);
+        assertEq(reserve.totalAssets(), 10e18, "wrapper reserve untouched");
+    }
+
+    function test_sweepToken_wrapper_reverts() public {
+        _seed(10e18);
+        vm.prank(admin);
+        vm.expectRevert(IReserveVault.CannotSweepWrapper.selector);
+        reserve.sweepToken(address(ondo));
+    }
+
+    function test_sweepToken_authAndEdgeCases_revert() public {
+        MockERC20 usdc = new MockERC20("USD Coin", "USDC", 6);
+
+        // Neither manager nor operator.
+        vm.prank(user);
+        vm.expectRevert(IReserveVault.OnlyManagerOrOperator.selector);
+        reserve.sweepToken(address(usdc));
+
+        // Nothing to sweep (operator caller).
+        vm.prank(admin);
+        vm.expectRevert(IReserveVault.ZeroAmount.selector);
+        reserve.sweepToken(address(usdc));
+    }
+
+    function test_setManager_rotatesAndGuards() public {
+        address next = makeAddr("nextManager");
+        vm.expectEmit(true, true, false, false);
+        emit IReserveVault.ManagerUpdated(rvManager, next);
+        vm.prank(admin);
+        reserve.setManager(next);
+        assertEq(reserve.manager(), next);
+
+        vm.prank(admin);
+        vm.expectRevert(IReserveVault.ZeroAddress.selector);
+        reserve.setManager(address(0));
+
+        vm.prank(user);
+        vm.expectRevert(IReserveVault.OnlyAdmin.selector);
+        reserve.setManager(user);
     }
 
     function test_withdraw_makerNotAllowedForAsset_reverts() public {
@@ -331,10 +390,8 @@ contract ReserveVaultTest is Test {
         manager.openExposure(TSLA, 10e18); // matched
         ondo.mint(address(reserve), 3e18); // unmarked donation
 
-        vm.startPrank(admin);
-        registry.setAddress(registry.TREASURY(), treasury);
+        vm.prank(admin);
         reserve.skimExcess(3e18); // re-mark makes the donation skimmable
-        vm.stopPrank();
-        assertEq(ondo.balanceOf(treasury), 3e18);
+        assertEq(ondo.balanceOf(admin), 3e18);
     }
 }

@@ -225,10 +225,13 @@ After the global **claim threshold** elapses (measured from the order's creation
 resting redeem order calls
 `forceExecuteOrder(orderId, vault, assetPriceData, collateralPriceData)` to settle the remaining
 amount at their committed `limitPrice`, gated by a fresh oracle price. **The caller names the
-collateral-source `vault`** at this point — orders
-are vault-less, so the redeemer freely chooses which registered vault to draw collateral from (the
-choice was always theirs; it is simply deferred to force time). The named vault must be registered
-(`VaultNotRegistered` otherwise).
+collateral-source `vault`**, chosen from the asset's **admin-approved force-execute pool**
+(`AssetRegistry.setForceExecuteVaultAllowed`) — force-execution is the user's last-resort exit, so
+source flexibility within a vetted pool is deliberate. A vault outside the pool reverts
+(`ForceExecuteVaultNotAllowed`); an **empty pool — the pre-deploy default — disables
+force-execution for the asset** (fail-safe). The named vault must also currently be registered,
+not excluded, and not an RWA reserve vault (re-checked at execution, so a stale pool entry can
+never route a force-execute into PSM reserves).
 
 ### Mechanism
 
@@ -761,3 +764,82 @@ reverts `OnlyAssetRegistry` if invoked any other way. There is no window where t
 is live (`convertLegacy` mintable) while the exposure book is still in old units, so the two ratios
 cannot diverge and the calls cannot be separated. (Previously a manual single-batch ops requirement;
 hardened in code 2026-06-19 — audit finding L-07.)
+
+---
+
+## 14. PSM & Reserve Vaults
+
+The PSM (peg-stability module) is a second, quote-less issuance channel: users convert an
+issuer's **wrapper token** (a 1:1-backed tokenized stock, e.g. a Dinari dShare) directly to and
+from the protocol's eToken for the same equity. Full design + rationale: `docs/psm-design.md`.
+
+### Vault classes
+
+`VaultManager.registerVault` has two forms:
+
+| Class       | Registration                            | Collateral accounting                                  |
+| ----------- | --------------------------------------- | ------------------------------------------------------ |
+| **Generic** | `registerVault(vault, collateralAsset)` | Mark accrues to the global pool (`globalCollateralUSD`) |
+| **RWA**     | `registerVault(vault, wrapperTicker, backedAsset)` | Mark accrues to `assetRwaCollateralUSD[backedAsset]` |
+
+Per-asset **delta netting**: with gross exposure `E_a` and RWA reserve value `R_a`, the global
+net exposure sums `max(0, E_a − R_a)` per asset. A PSM mint adds equal USD to both sides, so a
+matched book adds **zero** net risk and needs no generic LP collateral. RWA vaults never join the
+generic pool, never take LP deposits, never source force-executions, and never enter the lending
+allowlist.
+
+### ReserveVault
+
+A share-less custody vault holding one wrapper token as protocol-owned backing for one asset:
+
+- `deposit(amount)` — permissionless backfill (maker hedge delivery); syncs the reserve mark
+  inline so the deposit nets immediately.
+- `releaseCollateral(to, amount)` — market-only exit for PSM redemptions (mark-sync before
+  transfer).
+- `withdraw(amount)` — **maker recovery**: a registered quote signer, allowlisted for the backed
+  asset, withdraws surplus to its **linked settlement address** (never the hot key). Works
+  off-hours (no freshness gate — nothing is minted).
+- `skimExcess(amount)` / `sweepToken(token)` — **manager-or-operator**, paid to the caller.
+  `sweepToken` recovers non-wrapper balances (e.g. issuer dividend stablecoins) and can never
+  touch the wrapper. Every wrapper exit is clamped by the **surplus guard**: the remaining
+  reserve must still cover the asset's gross exposure.
+- `manager` — the operating VM bound at construction (admin-rotatable via `setManager`).
+
+### PSM mint / redeem
+
+`OwnMarket.psmMint(asset, wrapper, amount)` / `psmRedeem(asset, wrapper, amount)` convert at a
+**derived ratio** — `oracle wrapper-token price ÷ VaultManager asset mark` — the same numbers the
+netting books use, so unit conversion and USD accounting can never disagree. No stored ratio; a
+total-return issuer's sValue drift and stock splits re-derive automatically.
+
+Safety gates (all fail-closed):
+
+| Gate | Behavior |
+| ---- | -------- |
+| **Ratio-jump guard** | Per-(asset, wrapper) `lastUsedRatio`; a per-op move beyond the global bps bound reverts. Bound 0 (pre-deploy default) keeps PSM mint/redeem inert; the setter can never return it to zero. Operator `resetRatioGuard` disarms once (corporate-action acknowledgment). |
+| **Per-wrapper pause** | `setPsmPaused(asset, wrapper, paused)` — operator, instant. |
+| **Freshness** | Mint needs fresh wrapper + asset marks; redeem works off-hours and during halts (pays the frozen halt price) but needs a fresh wrapper leg. |
+
+### Per-asset allowlists (AssetRegistry)
+
+All default-deny; armed by the deploy scripts; admin-granted, revocation always possible:
+
+| Allowlist | Gates | Consumer |
+| --------- | ----- | -------- |
+| `setMakerAllowed(asset, signer)` | Quote settlement + reserve recovery | `OwnMarket._consumeQuote`, `ReserveVault.withdraw` |
+| `setLendingVaultAllowed(asset, vault)` | New borrows (repay/liquidate unaffected) | `BorrowManager._validateEligibility` |
+| `setForceExecuteVaultAllowed(asset, vault)` | Force-execute collateral source pool | `OwnMarket.forceExecuteOrder` (§5) |
+
+### Corporate-action runbook (operator)
+
+On an issuer corporate action (split / ticker change) with ≥24h notice:
+
+1. `setPsmPaused(asset, wrapper, true)` before the event window.
+2. After the issuer re-syncs (rebase or sValue jump) and the oracle publishes the post-event
+   wrapper token price: verify the derived ratio, `resetRatioGuard(asset, wrapper)` (disarms the
+   jump guard once), then unpause. The next PSM operation re-arms the guard.
+
+**Oracle note:** the wrapper ticker publishes the wrapper **token** price — for a price-tracking
+issuer (Dinari) that is the share price (splits rebase balances in place); for a total-return
+issuer (Ondo) it is share price × sValue. It equals the underlying equity feed only while the
+multiplier is 1.

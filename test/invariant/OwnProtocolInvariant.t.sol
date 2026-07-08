@@ -7,14 +7,17 @@ import {BaseTest} from "../helpers/BaseTest.sol";
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {OwnMarket} from "../../src/core/OwnMarket.sol";
 import {OwnVault} from "../../src/core/OwnVault.sol";
+import {ReserveVault} from "../../src/core/ReserveVault.sol";
 
 import {AssetConfig, PRECISION} from "../../src/interfaces/types/Types.sol";
 import {EToken} from "../../src/tokens/EToken.sol";
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
+import {MockERC20} from "../helpers/MockERC20.sol";
 import {ETokenHandler} from "./handlers/ETokenHandler.sol";
 import {MarketHandler} from "./handlers/MarketHandler.sol";
+import {PsmHandler} from "./handlers/PsmHandler.sol";
 import {VaultHandler} from "./handlers/VaultHandler.sol";
 
 /// @title OwnProtocolInvariant — Stateful fuzz tests for the Own Protocol
@@ -27,12 +30,15 @@ contract OwnProtocolInvariant is BaseTest {
     OwnMarket public market;
     OwnVault public vault;
     EToken public eTSLA;
+    MockERC20 public ondo;
+    ReserveVault public reserve;
 
     // ── Handlers ────────────────────────────────────────────────
 
     VaultHandler public vaultHandler;
     MarketHandler public marketHandler;
     ETokenHandler public eTokenHandler;
+    PsmHandler public psmHandler;
 
     // ── Constants ───────────────────────────────────────────────
 
@@ -42,6 +48,7 @@ contract OwnProtocolInvariant is BaseTest {
     uint256 constant LP_SEED_AMOUNT = 50_000e18; // 50k WETH
 
     bytes32 constant ETH_ASSET = bytes32("ETH");
+    bytes32 constant ONDO_TSLA = bytes32("ONDO.TSLA");
 
     // ── Setup ───────────────────────────────────────────────────
 
@@ -49,6 +56,7 @@ contract OwnProtocolInvariant is BaseTest {
         super.setUp();
         _deployProtocol();
         _configureAssets();
+        _configurePsm();
         _configureVault();
         _seedVault();
         _deployHandlers();
@@ -123,6 +131,33 @@ contract OwnProtocolInvariant is BaseTest {
         _setAssetCap(TSLA, DEFAULT_ASSET_CAP_USD);
     }
 
+    /// @dev PSM channel: ondoTSLA wrapper + ReserveVault registered as the TSLA RWA reserve.
+    function _configurePsm() private {
+        vm.startPrank(Actors.ADMIN);
+        ondo = new MockERC20("Ondo Tesla", "ondoTSLA", 18);
+        assetRegistry.addAsset(
+            ONDO_TSLA,
+            address(ondo),
+            AssetConfig({
+                activeToken: address(ondo),
+                legacyTokens: new address[](0),
+                active: true,
+                volatilityLevel: 2,
+                oracleType: 1
+            })
+        );
+        reserve = new ReserveVault(address(ondo), address(protocolRegistry), Actors.VM1);
+        vaultManager.registerVault(address(reserve), ONDO_TSLA, TSLA);
+        assetRegistry.setPsmConfig(TSLA, address(ondo), address(reserve));
+        // Fail-closed guard: arm wide (100%) — prices are fixed in this campaign, so the
+        // guard never trips; the bound must still be non-zero for PSM ops to run at all.
+        assetRegistry.setRatioJumpBoundBps(10_000);
+        vm.stopPrank();
+
+        // Wrapper trades 1:1 with the asset (sValue = 1); price is FIXED for the campaign.
+        _setOraclePrice(ONDO_TSLA, TSLA_PRICE);
+    }
+
     function _configureVault() private {
         // Payment token is now a global VaultManager setting.
         _setPaymentToken(address(usdc));
@@ -146,11 +181,22 @@ contract OwnProtocolInvariant is BaseTest {
             address(market), address(vault), address(usdc), address(eTSLA), address(oracle), vm1SignerPk
         );
         eTokenHandler = new ETokenHandler(address(eTSLA), address(usdc));
+        psmHandler = new PsmHandler(
+            address(market),
+            address(vaultManager),
+            address(eTSLA),
+            address(usdc),
+            address(ondo),
+            address(reserve),
+            address(oracle),
+            vm1SignerPk
+        );
 
         // Register handlers as target contracts
         targetContract(address(vaultHandler));
         targetContract(address(marketHandler));
         targetContract(address(eTokenHandler));
+        targetContract(address(psmHandler));
 
         // Restrict to handler functions only (exclude ghost getters)
         bytes4[] memory vaultSelectors = new bytes4[](5);
@@ -178,6 +224,18 @@ contract OwnProtocolInvariant is BaseTest {
         eTokenSelectors[1] = ETokenHandler.depositRewards.selector;
         eTokenSelectors[2] = ETokenHandler.claimRewards.selector;
         targetSelector(FuzzSelector({addr: address(eTokenHandler), selectors: eTokenSelectors}));
+
+        // PSM channel: mint/redeem/backfill/maker-recovery + same-price timestamp refresh.
+        // The DRIFT actions are deliberately excluded — this campaign holds every price fixed so
+        // the utilisation-cap invariant (INV-07c) stays assertable; drifting-price PSM coverage
+        // lives in PsmInvariant.t.sol.
+        bytes4[] memory psmSelectors = new bytes4[](5);
+        psmSelectors[0] = PsmHandler.psmMint.selector;
+        psmSelectors[1] = PsmHandler.psmRedeem.selector;
+        psmSelectors[2] = PsmHandler.depositReserve.selector;
+        psmSelectors[3] = PsmHandler.withdraw.selector;
+        psmSelectors[4] = PsmHandler.refreshWrapperPrice.selector;
+        targetSelector(FuzzSelector({addr: address(psmHandler), selectors: psmSelectors}));
     }
 
     // ═════════════════════════════════════════════════════════════
@@ -230,13 +288,23 @@ contract OwnProtocolInvariant is BaseTest {
         assert(vault.pendingWithdrawalShares() <= vault.totalSupply());
     }
 
-    /// @notice INV-07: Global exposure USD equals Σ globalAssetUnits[a] × assetMark[a] / 1e18.
-    ///         Single asset here, so it reduces to the TSLA term.
+    /// @notice INV-07: gross exposure equals units × mark, and the global net total equals the
+    ///         per-asset netted sum max(0, E − R) (single asset ⇒ single term). With the PSM in
+    ///         the mix R is non-zero, so net ≠ gross whenever reserve backs the book.
     function invariant_exposureConsistency() external view {
-        uint256 globalExp = vaultManager.globalNetExposureUSD();
         uint256 units = vaultManager.globalAssetUnits(TSLA);
         uint256 mark = vaultManager.assetMark(TSLA);
-        assert(globalExp == (units * mark) / PRECISION);
+        uint256 e = vaultManager.assetExposureUSD(TSLA);
+        uint256 r = vaultManager.assetRwaCollateralUSD(TSLA);
+        assert(e == (units * mark) / PRECISION);
+        assert(vaultManager.globalNetExposureUSD() == (e > r ? e - r : 0));
+    }
+
+    /// @notice INV-07d: collateral segregation — the generic pool counts only the generic vault,
+    ///         and the RWA running total matches the reserve vault's mark.
+    function invariant_collateralSegregation() external view {
+        assert(vaultManager.globalCollateralUSD() == vaultManager.collateralMark(address(vault)));
+        assert(vaultManager.assetRwaCollateralUSD(TSLA) == vaultManager.collateralMark(address(reserve)));
     }
 
     /// @notice INV-07b: Global outstanding units for an asset equal the eToken's total supply.

@@ -153,6 +153,15 @@ contract PsmHandler is CommonBase, StdCheats, StdUtils {
         manager.pullCollateralPrice(address(reserve));
     }
 
+    /// @dev Re-stamp the wrapper price at its CURRENT value and re-pull the reserve mark:
+    ///      keeps PSM ops fresh across warpForward without moving any price (fixed-mark
+    ///      campaigns exclude the drift actions but still need live timestamps).
+    function refreshWrapperPrice() external {
+        (uint256 price,) = oracle.getPrice(ONDO_TSLA);
+        oracle.setPrice(ONDO_TSLA, price, block.timestamp);
+        manager.pullCollateralPrice(address(reserve));
+    }
+
     // ── Internal ────────────────────────────────────────────────
 
     function _signedQuote(

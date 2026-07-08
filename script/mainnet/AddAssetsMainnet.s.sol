@@ -11,12 +11,17 @@ import {ETokenFactory} from "../../src/tokens/ETokenFactory.sol";
 
 /// @title AddAssetsMainnet — Register the launch asset set (Base mainnet)
 /// @notice For each asset: creates its EToken, registers it in the AssetRegistry (in-house oracle),
-///         and sets the per-asset USD issuance cap on the VaultManager. Run by the deployer (= admin)
-///         after DeployMainnet.s.sol. Only PROTOCOL_REGISTRY is read from env.
+///         sets the per-asset USD issuance cap on the VaultManager, and arms the per-asset
+///         fail-closed grants (v2 default-deny): maker allowlist (RFQ settlement), lending-vault
+///         allowlist (borrows), and force-execute vault pool. Without the grants every one of
+///         those paths reverts. Run by the deployer (= admin) after DeployMainnet.s.sol.
 ///
 /// Launch set (6): MU (Micron), SPCX (SpaceX), MSFT (Microsoft), GOOG (Alphabet), TSLA (Tesla),
 /// SPY (S&P 500 ETF). NOTE: SPCX IPO'd 2026-06-12 — confirm the oracle data provider serves an SPCX
 /// quote before flipping it active, else pullAssetPrice reverts PriceUnavailable.
+///
+/// Env: DEPLOYER_PRIVATE_KEY_MAINNET, VAULT_ADDRESS_MAINNET (collateral vault from DeployMainnet),
+///      QUOTE_SIGNER_MAINNET (registered RFQ signer)
 ///
 /// Usage:
 ///   forge script script/mainnet/AddAssetsMainnet.s.sol --rpc-url base --broadcast --verify
@@ -47,6 +52,9 @@ contract AddAssetsMainnet is Script {
         (tickers[4], names[4], symbols[4], vols[4]) = (bytes32("TSLA"), "Tesla", "eTSLA", 2);
         (tickers[5], names[5], symbols[5], vols[5]) = (bytes32("SPY"), "S&P 500 ETF", "eSPY", 1);
 
+        address vault = vm.envAddress("VAULT_ADDRESS_MAINNET");
+        address quoteSigner = vm.envAddress("QUOTE_SIGNER_MAINNET");
+
         vm.startBroadcast(vm.envUint("DEPLOYER_PRIVATE_KEY_MAINNET"));
 
         for (uint256 i = 0; i < n; i++) {
@@ -63,6 +71,12 @@ contract AddAssetsMainnet is Script {
                 })
             );
             vaultManager.setAssetCapUSD(tickers[i], ASSET_CAP_USD);
+
+            // Arm the per-asset fail-closed grants (all default-deny in v2).
+            assetRegistry.setMakerAllowed(tickers[i], quoteSigner, true);
+            assetRegistry.setLendingVaultAllowed(tickers[i], vault, true);
+            assetRegistry.setForceExecuteVaultAllowed(tickers[i], vault, true);
+
             console.log(symbols[i], eToken);
         }
 
@@ -71,6 +85,7 @@ contract AddAssetsMainnet is Script {
         console.log("");
         console.log("=== Assets Added ===", n);
         console.log("Per-asset cap (USD 1e18):", ASSET_CAP_USD);
+        console.log("Maker / lending / force-execute grants armed for:", vault);
         console.log("Keepers must pullAssetPrice(ticker) before any mint.");
     }
 }
