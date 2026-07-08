@@ -75,6 +75,12 @@ interface IAssetRegistry {
     /// @param allowed New allowlist flag.
     event MakerAllowedUpdated(bytes32 indexed ticker, address indexed signer, bool allowed);
 
+    /// @notice Emitted when a vault's force-execute candidate-pool entry for an asset is updated.
+    /// @param ticker  Asset ticker.
+    /// @param vault   Candidate collateral-source vault.
+    /// @param allowed New pool flag.
+    event ForceExecuteVaultAllowedUpdated(bytes32 indexed ticker, address indexed vault, bool allowed);
+
     // ──────────────────────────────────────────────────────────
     //  Errors
     // ──────────────────────────────────────────────────────────
@@ -125,6 +131,9 @@ interface IAssetRegistry {
 
     /// @notice The signer is not registered on the VaultManager's signer registry.
     error SignerNotRegistered(address signer);
+
+    /// @notice The vault is not registered on the VaultManager.
+    error VaultNotRegistered(address vault);
 
     // ──────────────────────────────────────────────────────────
     //  Admin functions
@@ -240,6 +249,24 @@ interface IAssetRegistry {
     /// @notice Whether `signer` may settle quotes for `ticker` (OwnMarket) and recover reserve
     ///         surplus from `ticker`'s ReserveVaults (ReserveVault.withdraw).
     function isMakerAllowed(bytes32 ticker, address signer) external view returns (bool);
+
+    // ──────────────────────────────────────────────────────────
+    //  Force-execute vault allowlist
+    // ──────────────────────────────────────────────────────────
+
+    /// @notice Admit or remove `vault` from the admin-approved pool of collateral sources for
+    ///         `ticker` force-executions. The redeemer picks any allowlisted vault at execution
+    ///         time — force-execution is the user's last-resort exit, so source flexibility is
+    ///         deliberate. An empty pool (the default) disables force-execution for the asset
+    ///         (fail-safe). Granting requires the vault to be registered on the VaultManager and
+    ///         non-RWA; revocation is always possible and bites immediately. Admin-only.
+    /// @param ticker  Asset ticker.
+    /// @param vault   Collateral-source vault.
+    /// @param allowed New pool flag.
+    function setForceExecuteVaultAllowed(bytes32 ticker, address vault, bool allowed) external;
+
+    /// @notice Whether `vault` may source collateral for `ticker` force-executions.
+    function isForceExecuteVaultAllowed(bytes32 ticker, address vault) external view returns (bool);
 
     // ──────────────────────────────────────────────────────────
     //  View functions

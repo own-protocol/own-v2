@@ -675,6 +675,58 @@ contract AssetRegistryTest is BaseTest {
     }
 
     // ──────────────────────────────────────────────────────────
+    //  Force-execute vault allowlist
+    // ──────────────────────────────────────────────────────────
+
+    function _feSetup() internal returns (address vault) {
+        vault = makeAddr("feVault");
+        stubVM.setRegisteredVault(vault, true);
+        vm.prank(Actors.ADMIN);
+        registry.addAsset(TSLA, eTSLA, _defaultConfig(eTSLA));
+    }
+
+    function test_setForceExecuteVaultAllowed_togglesAndEmits() public {
+        address vault = _feSetup();
+
+        assertFalse(registry.isForceExecuteVaultAllowed(TSLA, vault), "default-deny");
+
+        vm.expectEmit(true, true, false, true);
+        emit IAssetRegistry.ForceExecuteVaultAllowedUpdated(TSLA, vault, true);
+        vm.prank(Actors.ADMIN);
+        registry.setForceExecuteVaultAllowed(TSLA, vault, true);
+        assertTrue(registry.isForceExecuteVaultAllowed(TSLA, vault));
+        assertFalse(registry.isForceExecuteVaultAllowed(GOLD, vault), "per-asset keying");
+
+        vm.prank(Actors.ADMIN);
+        registry.setForceExecuteVaultAllowed(TSLA, vault, false);
+        assertFalse(registry.isForceExecuteVaultAllowed(TSLA, vault));
+    }
+
+    function test_setForceExecuteVaultAllowed_validation_reverts() public {
+        address vault = _feSetup();
+
+        vm.startPrank(Actors.ADMIN);
+        vm.expectRevert(abi.encodeWithSelector(IAssetRegistry.AssetNotFound.selector, GOLD));
+        registry.setForceExecuteVaultAllowed(GOLD, vault, true);
+        vm.expectRevert(IAssetRegistry.ZeroAddress.selector);
+        registry.setForceExecuteVaultAllowed(TSLA, address(0), true);
+        // Grants require a VaultManager-registered, non-RWA vault.
+        address unregistered = makeAddr("unregisteredVault");
+        vm.expectRevert(abi.encodeWithSelector(IAssetRegistry.VaultNotRegistered.selector, unregistered));
+        registry.setForceExecuteVaultAllowed(TSLA, unregistered, true);
+        address rwaVault = makeAddr("rwaVault");
+        stubVM.setRegisteredVault(rwaVault, true);
+        stubVM.setVaultBackedAsset(rwaVault, TSLA);
+        vm.expectRevert(abi.encodeWithSelector(IAssetRegistry.RwaVaultNotEligible.selector, rwaVault));
+        registry.setForceExecuteVaultAllowed(TSLA, rwaVault, true);
+        vm.stopPrank();
+
+        vm.prank(Actors.ATTACKER);
+        vm.expectRevert(IAssetRegistry.OnlyAdmin.selector);
+        registry.setForceExecuteVaultAllowed(TSLA, vault, true);
+    }
+
+    // ──────────────────────────────────────────────────────────
     //  Maker allowlist
     // ──────────────────────────────────────────────────────────
 
@@ -781,6 +833,7 @@ contract RecordingVaultManagerForRegistry {
 
     mapping(address => bytes32) public backedAssets;
     mapping(address => bool) public signers;
+    mapping(address => bool) public registeredVaults;
 
     function setVaultBackedAsset(address vault, bytes32 ticker) external {
         backedAssets[vault] = ticker;
@@ -794,6 +847,16 @@ contract RecordingVaultManagerForRegistry {
         address signer
     ) external view returns (bool) {
         return signers[signer];
+    }
+
+    function setRegisteredVault(address vault, bool registered) external {
+        registeredVaults[vault] = registered;
+    }
+
+    function isRegisteredVault(
+        address vault
+    ) external view returns (bool) {
+        return registeredVaults[vault];
     }
 
     function vaultBackedAsset(

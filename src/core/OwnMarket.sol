@@ -205,13 +205,17 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard, EIP712 {
         if (order.escrowToken != _activeToken(order.asset)) revert OrderTokenMigrated(orderId);
 
         IVaultManager vmgr = _vaultManager();
-        // Collateral source is protocol-designated per asset; the redeemer cannot pick an arbitrary
-        // vault. address(0) (the default) disables force-execution for the asset (fail-safe).
-        address designated = vmgr.forceExecuteVault(order.asset);
-        if (designated == address(0)) revert ForceExecuteVaultNotSet();
-        if (vault != designated) revert VaultNotDesignated(vault, designated);
+        // Collateral source: the redeemer picks any vault in the registry's admin-approved pool —
+        // force-execution is the user's last-resort exit, so source flexibility is deliberate.
+        // An empty pool (the default) disables force-execution for the asset (fail-safe).
+        if (!_assetRegistry().isForceExecuteVaultAllowed(order.asset, vault)) {
+            revert ForceExecuteVaultNotAllowed(order.asset, vault);
+        }
         if (!vmgr.isRegisteredVault(vault)) revert VaultNotRegistered(vault);
         if (vmgr.isVaultExcluded(vault)) revert VaultExcludedFromPool(vault);
+        // Pool entries can go stale (deregister → re-register as RWA); reserves never source
+        // force-execution — releaseCollateral there is market-gated, which this call would pass.
+        if (vmgr.vaultBackedAsset(vault) != bytes32(0)) revert RwaVaultNotEligible(vault);
         // Pause and halt both disable the force path.
         if (vmgr.isTradingPaused(order.asset)) revert AssetPaused(order.asset);
         if (vmgr.isAssetHalted(order.asset)) revert ForceDisabledDuringHalt(order.asset);

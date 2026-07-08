@@ -362,12 +362,6 @@ contract BaseTest is Test {
         vaultManager.setClaimThreshold(threshold);
     }
 
-    /// @notice Set an asset's protocol-designated force-execution collateral vault (operator-only).
-    function _setForceExecuteVault(bytes32 asset, address vault) internal {
-        vm.prank(Actors.ADMIN);
-        vaultManager.setForceExecuteVault(asset, vault);
-    }
-
     /// @notice Permanently halt an asset at a fixed price (admin-only).
     function _haltAsset(bytes32 asset, uint256 haltPrice) internal {
         vm.prank(Actors.ADMIN);

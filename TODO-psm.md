@@ -116,20 +116,56 @@ No phase mixes feature code with refactoring of earlier phases.
 - [x] `forge test` green (950/950), `forge fmt --check` clean
 - [ ] **STOP — user review & commit**
 
-## Phase 4b — Per-asset maker allowlist (added 2026-07-08, outside original scope)
+## Phase 4b — Per-asset maker allowlist ✅ (added 2026-07-08; awaiting review & commit)
 
-- [ ] `IAssetRegistry` + `AssetRegistry`: `setMakerAllowed(ticker, signer, allowed)` (admin;
-      registered-ticker + non-zero-signer checks, grant requires `vmgr.isSigner(signer)`,
-      revoke unguarded), `isMakerAllowed(ticker, signer)` view, `MakerAllowedUpdated` event
-- [ ] `OwnMarket._consumeQuote`: after `isSigner`, require `isMakerAllowed(quote.asset, signer)`
-      (new `MakerNotAllowed` error) — scopes each signer key to its assets
-- [ ] `ReserveVault.withdraw`: same gate on the vault's `backedAsset` (maker recovery is
-      asset-scoped too); single flag gates both quoting and recovery — off-boarding makers
-      recover their wrapper before revocation
-- [ ] Unit + integration tests; fixtures updated to default-deny (grants after signer
-      registration). Phase 5 deploy bundle must call `setMakerAllowed` per (asset, signer) —
-      RFQ settlement inert until granted
-- [ ] `forge test -vvv` green, `forge fmt`
+- [x] `IAssetRegistry` + `AssetRegistry`: `setMakerAllowed(ticker, signer, allowed)` (admin;
+      registered-ticker + non-zero-signer checks, grant requires `vmgr.isSigner(signer)` —
+      new `SignerNotRegistered` error — revoke unguarded so entries clear even after signer
+      removal), `isMakerAllowed(ticker, signer)` view, `MakerAllowedUpdated` event
+- [x] `OwnMarket._consumeQuote`: after `isSigner`, require `isMakerAllowed(quote.asset, signer)`
+      (new `MakerNotAllowed` error) — scopes each signer key to its assets, composing with the
+      settle band as leaked-key blast-radius containment
+- [x] `ReserveVault.withdraw`: same gate on the vault's `backedAsset` (new `MakerNotAllowed`
+      error); single flag gates both quoting and recovery — off-boarding makers recover their
+      wrapper before revocation
+- [x] Unit tests: registry toggle/auth/validation + signer-guard + revoke-after-removal (3 in
+      AssetRegistry.t.sol, stub VM gained `isSigner`), `MakerNotAllowed` on executeOrder
+      (OwnMarket.t.sol) and on withdraw (ReserveVault.t.sol, stub registry gained the
+      allowlist); 13 integration/invariant fixtures + OwnMarket mock fixture updated to
+      default-deny (grants after signer registration, quoted tickers only). Phase 5 deploy
+      bundle must call `setMakerAllowed` per (asset, signer) — RFQ settlement inert until
+      granted
+- [x] `forge test` green (955/955), `forge fmt --check` clean
+- [ ] **STOP — user review & commit**
+
+## Phase 4c — forceExecute vault allowlist, moved to AssetRegistry ✅ (added 2026-07-08; awaiting review & commit)
+
+Decisions: ALL per-asset config lives in AssetRegistry; VaultManager keeps no forceExecute
+state. Single-tier allowlist (no operator designation): the REDEEMER picks any admin-approved
+vault at execution time — force-execute is the user's last-resort exit, so source flexibility
+is deliberate (supersedes Phase 1's single-designation model).
+
+- [x] `IAssetRegistry` + `AssetRegistry`: `setForceExecuteVaultAllowed(ticker, vault, allowed)`
+      (admin; grant requires vmgr-registered + non-RWA — new `VaultNotRegistered` error; revoke
+      unguarded, bites immediately since the pool is read at use time),
+      `isForceExecuteVaultAllowed` view, `ForceExecuteVaultAllowedUpdated` event; empty pool
+      (default) = force-execution disabled (fail-safe)
+- [x] `IVaultManager` + `VaultManager`: `setForceExecuteVault`/`forceExecuteVault`/
+      `ForceExecuteVaultUpdated` removed (VM −677 B)
+- [x] `OwnMarket.forceExecuteOrder`: caller-supplied vault checked against the registry pool
+      (`ForceExecuteVaultNotAllowed` replaces `ForceExecuteVaultNotSet`/`VaultNotDesignated`);
+      registered/excluded checks kept; NEW use-time RWA guard (`RwaVaultNotEligible`) — a stale
+      pool entry re-registered as RWA must not drain a ReserveVault (its releaseCollateral is
+      market-gated, which this call would pass); pause/halt/threshold/fresh-price unchanged
+- [x] Tests: AssetRegistry pool toggle/validation (stub VM gained isRegisteredVault); OwnMarket
+      empty-pool, per-asset keying, vault-not-in-pool, and RWA-drift reverts (fixtures grant the
+      pool entry); OrderLifecycle + HaltWithPriceFlow fixtures grant-only; stale
+      `_setForceExecuteVault` BaseTest helper deleted
+- [x] Note for Phase 5: deploy bundle calls `setForceExecuteVaultAllowed` per (asset, vault) —
+      force-execution inert until granted; design-doc §4.3/§4.4 updated in the docs pass;
+      ops note: multi-vault pools let redeemers choose their payout collateral — pool
+      composition is the risk lever (keep pools small/homogeneous per asset)
+- [x] `forge test` green (950/950), `forge fmt --check` clean
 - [ ] **STOP — user review & commit**
 
 ## Phase 5 — Full-system verification, docs, deployment

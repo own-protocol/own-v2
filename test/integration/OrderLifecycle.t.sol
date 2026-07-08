@@ -61,7 +61,6 @@ contract OrderLifecycleTest is BaseTest {
         vm.stopPrank();
 
         _setClaimThreshold(CLAIM_THRESHOLD);
-        _setForceExecuteVault(TSLA, address(vault));
         _registerSigner(vm1Signer, Actors.VM1);
     }
 
@@ -87,6 +86,9 @@ contract OrderLifecycleTest is BaseTest {
             oracleType: 1
         });
         assetRegistry.addAsset(ethAsset, address(weth), ethConfig);
+
+        // Force-execute pool: the vault is an admin-allowlisted collateral source for TSLA.
+        assetRegistry.setForceExecuteVaultAllowed(TSLA, address(vault), true);
 
         // Scope the maker to its quoted asset (default-deny since Phase 4b).
         assetRegistry.setMakerAllowed(TSLA, vm1Signer, true);

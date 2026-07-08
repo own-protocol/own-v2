@@ -1173,60 +1173,6 @@ contract VaultManagerTest is Test {
     }
 
     // ──────────────────────────────────────────────────────────
-    //  Force-execute designated vault
-    // ──────────────────────────────────────────────────────────
-
-    function test_forceExecuteVault_defaultsToZero() public view {
-        // Pre-deploy default; OwnMarket.forceExecuteOrder treats this as force-disabled.
-        assertEq(manager.forceExecuteVault(TSLA), address(0));
-    }
-
-    function test_setForceExecuteVault_succeeds() public {
-        vm.prank(admin);
-        manager.registerVault(address(vault), USDC_TICKER);
-
-        vm.expectEmit(true, true, true, false);
-        emit IVaultManager.ForceExecuteVaultUpdated(TSLA, address(0), address(vault));
-        vm.prank(admin);
-        manager.setForceExecuteVault(TSLA, address(vault));
-        assertEq(manager.forceExecuteVault(TSLA), address(vault));
-    }
-
-    function test_setForceExecuteVault_perAssetIsolation() public {
-        vm.prank(admin);
-        manager.registerVault(address(vault), USDC_TICKER);
-
-        // Designating TSLA leaves every other asset force-disabled (zero default).
-        vm.prank(admin);
-        manager.setForceExecuteVault(TSLA, address(vault));
-        assertEq(manager.forceExecuteVault(TSLA), address(vault));
-        assertEq(manager.forceExecuteVault(bytes32("GOLD")), address(0));
-    }
-
-    function test_setForceExecuteVault_onlyOperator_reverts() public {
-        vm.expectRevert(IVaultManager.OnlyOperator.selector);
-        vm.prank(nonAdmin);
-        manager.setForceExecuteVault(TSLA, address(vault));
-    }
-
-    function test_setForceExecuteVault_unregistered_reverts() public {
-        vm.expectRevert(abi.encodeWithSelector(IVaultManager.VaultNotRegistered.selector, address(vault)));
-        vm.prank(admin);
-        manager.setForceExecuteVault(TSLA, address(vault));
-    }
-
-    function test_setForceExecuteVault_clearToZero_succeeds() public {
-        vm.prank(admin);
-        manager.registerVault(address(vault), USDC_TICKER);
-        vm.prank(admin);
-        manager.setForceExecuteVault(TSLA, address(vault));
-        // address(0) clears the designation (disables force-execution for the asset); allowed.
-        vm.prank(admin);
-        manager.setForceExecuteVault(TSLA, address(0));
-        assertEq(manager.forceExecuteVault(TSLA), address(0));
-    }
-
-    // ──────────────────────────────────────────────────────────
     //  Views — utilisation edge cases
     // ──────────────────────────────────────────────────────────
 
@@ -1346,16 +1292,6 @@ contract VaultManagerTest is Test {
         manager.setPaymentToken(address(weird));
     }
 
-    function test_setForceExecuteVault_excludedVault_reverts() public {
-        _bootstrap();
-        vm.prank(address(vault));
-        manager.onVaultHalted(); // vault now excluded
-
-        vm.expectRevert(abi.encodeWithSelector(IVaultManager.VaultAlreadyExcluded.selector, address(vault)));
-        vm.prank(admin);
-        manager.setForceExecuteVault(TSLA, address(vault));
-    }
-
     // ──────────────────────────────────────────────────────────
     //  RWA reserve vaults — registration & class
     // ──────────────────────────────────────────────────────────
@@ -1375,14 +1311,6 @@ contract VaultManagerTest is Test {
         vm.prank(admin);
         manager.registerVault(address(vault), USDC_TICKER);
         assertEq(manager.vaultBackedAsset(address(vault)), bytes32(0));
-    }
-
-    function test_setForceExecuteVault_rwaVault_reverts() public {
-        vm.prank(admin);
-        manager.registerVault(address(rwaVault), ONDO_TSLA, TSLA);
-        vm.expectRevert(abi.encodeWithSelector(IVaultManager.RwaVaultNotEligible.selector, address(rwaVault)));
-        vm.prank(admin);
-        manager.setForceExecuteVault(TSLA, address(rwaVault));
     }
 
     function test_setCollateralCapBps_rwaVault_reverts() public {

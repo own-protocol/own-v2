@@ -170,11 +170,13 @@ interface IOwnMarket {
     /// @notice Force-execution is not enabled: the global claim threshold is unset (zero).
     error ForceNotEnabled();
 
-    /// @notice No collateral vault is designated for force-execution (disabled until an operator sets one).
-    error ForceExecuteVaultNotSet();
+    /// @notice The supplied vault is not in the registry's force-execute pool for this asset
+    ///         (an empty pool — the default — disables force-execution for the asset).
+    error ForceExecuteVaultNotAllowed(bytes32 asset, address vault);
 
-    /// @notice The supplied vault is not the protocol-designated force-execution vault.
-    error VaultNotDesignated(address provided, address designated);
+    /// @notice The supplied vault is RWA-registered (a ReserveVault); reserves never source
+    ///         force-execution.
+    error RwaVaultNotEligible(address vault);
 
     /// @notice Force execution is not available for mint orders.
     error ForceMintNotAllowed(uint256 orderId);

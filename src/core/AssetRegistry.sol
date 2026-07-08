@@ -44,6 +44,9 @@ contract AssetRegistry is IAssetRegistry {
     /// @dev Ticker → signer → whether the signer may settle quotes / recover reserve surplus.
     mapping(bytes32 => mapping(address => bool)) private _makerAllowed;
 
+    /// @dev Ticker → vault → admin-approved collateral sources for force-executions.
+    mapping(bytes32 => mapping(address => bool)) private _forceExecuteVaultAllowed;
+
     // ──────────────────────────────────────────────────────────
     //  Modifiers
     // ──────────────────────────────────────────────────────────
@@ -274,6 +277,29 @@ contract AssetRegistry is IAssetRegistry {
     /// @inheritdoc IAssetRegistry
     function isMakerAllowed(bytes32 ticker, address signer) external view returns (bool) {
         return _makerAllowed[ticker][signer];
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Force-execute vault allowlist
+    // ──────────────────────────────────────────────────────────
+
+    /// @inheritdoc IAssetRegistry
+    function setForceExecuteVaultAllowed(bytes32 ticker, address vault, bool allowed) external onlyAdmin {
+        if (!_registered[ticker]) revert AssetNotFound(ticker);
+        if (vault == address(0)) revert ZeroAddress();
+        if (allowed) {
+            IVaultManager vmgr = IVaultManager(registry.vaultManager());
+            if (!vmgr.isRegisteredVault(vault)) revert VaultNotRegistered(vault);
+            // RWA reserves never source force-execution.
+            if (vmgr.vaultBackedAsset(vault) != bytes32(0)) revert RwaVaultNotEligible(vault);
+        }
+        _forceExecuteVaultAllowed[ticker][vault] = allowed;
+        emit ForceExecuteVaultAllowedUpdated(ticker, vault, allowed);
+    }
+
+    /// @inheritdoc IAssetRegistry
+    function isForceExecuteVaultAllowed(bytes32 ticker, address vault) external view returns (bool) {
+        return _forceExecuteVaultAllowed[ticker][vault];
     }
 
     // ──────────────────────────────────────────────────────────
