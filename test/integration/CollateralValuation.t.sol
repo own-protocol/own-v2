@@ -49,7 +49,7 @@ contract CollateralValuationTest is BaseTest {
     /// @dev Reproduces the old vault healthFactor semantics from the manager's globals:
     ///      collateral / exposure (1e18 = 1.0), or max when there is no exposure.
     function _healthFactor() internal view returns (uint256) {
-        uint256 exposure = vaultManager.globalExposureUSD();
+        uint256 exposure = vaultManager.globalNetExposureUSD();
         if (exposure == 0) return type(uint256).max;
         return Math.mulDiv(vaultManager.globalCollateralUSD(), PRECISION, exposure);
     }
@@ -159,7 +159,7 @@ contract CollateralValuationTest is BaseTest {
 
     function test_healthFactor_degradesWithExposure() public {
         assertEq(_healthFactor(), type(uint256).max, "initial health = max");
-        assertEq(vaultManager.globalExposureUSD(), 0, "initial exposure = 0");
+        assertEq(vaultManager.globalNetExposureUSD(), 0, "initial exposure = 0");
 
         // Collateral value = 100 ETH * $3000 = $300,000
         uint256 expectedCollateral = Math.mulDiv(LP_DEPOSIT_WETH, ETH_PRICE, PRECISION);
@@ -170,7 +170,7 @@ contract CollateralValuationTest is BaseTest {
         uint256 healthAfterConfirm = _healthFactor();
         assertLt(healthAfterConfirm, type(uint256).max, "health decreased from max");
         assertGt(healthAfterConfirm, 0, "health still positive");
-        assertGt(vaultManager.globalExposureUSD(), 0, "exposure > 0");
+        assertGt(vaultManager.globalNetExposureUSD(), 0, "exposure > 0");
     }
 
     // ══════════════════════════════════════════════════════════
@@ -183,14 +183,14 @@ contract CollateralValuationTest is BaseTest {
 
         uint256 healthWithExposure = _healthFactor();
         assertLt(healthWithExposure, type(uint256).max, "health decreased with mint exposure");
-        assertGt(vaultManager.globalExposureUSD(), 0, "exposure > 0 after mint");
+        assertGt(vaultManager.globalNetExposureUSD(), 0, "exposure > 0 after mint");
 
         // Redeem all eTokens to remove exposure
         uint256 eTokenUnits = Math.mulDiv(MINT_AMOUNT * 1e12, PRECISION, TSLA_PRICE);
         _marketRedeem(TSLA, eTokenUnits, TSLA_PRICE);
 
         assertEq(_healthFactor(), type(uint256).max, "health recovered to max after redeem");
-        assertEq(vaultManager.globalExposureUSD(), 0, "exposure back to 0");
+        assertEq(vaultManager.globalNetExposureUSD(), 0, "exposure back to 0");
     }
 
     // ══════════════════════════════════════════════════════════
@@ -219,7 +219,7 @@ contract CollateralValuationTest is BaseTest {
         // Create exposure via market mint
         _marketMint(TSLA, MINT_AMOUNT, TSLA_PRICE);
 
-        uint256 exposureBefore = vaultManager.globalExposureUSD();
+        uint256 exposureBefore = vaultManager.globalNetExposureUSD();
         assertGt(exposureBefore, 0, "exposure > 0");
 
         // TSLA price doubles
@@ -227,7 +227,7 @@ contract CollateralValuationTest is BaseTest {
         _setOraclePrice(TSLA, newTslaPrice);
         vaultManager.pullAssetPrice(TSLA);
 
-        uint256 exposureAfter = vaultManager.globalExposureUSD();
+        uint256 exposureAfter = vaultManager.globalNetExposureUSD();
         assertEq(exposureAfter, exposureBefore * 2, "exposure doubled with price");
     }
 
@@ -240,13 +240,13 @@ contract CollateralValuationTest is BaseTest {
         _marketMint(TSLA, MINT_AMOUNT, TSLA_PRICE);
 
         uint256 healthAfterTSLA = _healthFactor();
-        uint256 exposureAfterTSLA = vaultManager.globalExposureUSD();
+        uint256 exposureAfterTSLA = vaultManager.globalNetExposureUSD();
 
         // Market mint GOLD ($10,000)
         _marketMint(GOLD, MINT_AMOUNT, GOLD_PRICE);
 
         uint256 healthAfterBoth = _healthFactor();
-        uint256 exposureAfterBoth = vaultManager.globalExposureUSD();
+        uint256 exposureAfterBoth = vaultManager.globalNetExposureUSD();
 
         assertGt(exposureAfterBoth, exposureAfterTSLA, "combined exposure > single");
         assertLt(healthAfterBoth, healthAfterTSLA, "health lower with more exposure");

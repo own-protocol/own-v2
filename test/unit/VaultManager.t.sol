@@ -45,7 +45,10 @@ contract VaultManagerTest is Test {
     StubAssetRegistry internal assetRegistry;
     MockOracleVerifier internal oracle;
     MockERC20 internal usdc;
+    MockERC20 internal ondo;
     StubVault internal vault;
+    StubVault internal rwaVault;
+    StubVault internal rwaVault2;
 
     address internal admin = Actors.ADMIN;
     address internal market = makeAddr("market");
@@ -53,6 +56,8 @@ contract VaultManagerTest is Test {
 
     bytes32 internal constant TSLA = bytes32("TSLA");
     bytes32 internal constant USDC_TICKER = bytes32("USDC");
+    bytes32 internal constant ONDO_TSLA = bytes32("ONDO.TSLA");
+    bytes32 internal constant XS_TSLA = bytes32("XS.TSLA");
 
     uint256 internal constant TSLA_MARK = 100e18; // $100 per eTSLA
     uint256 internal constant USDC_MARK = 1e18; //   $1 per USDC
@@ -65,7 +70,10 @@ contract VaultManagerTest is Test {
         assetRegistry = new StubAssetRegistry();
         oracle = new MockOracleVerifier();
         usdc = new MockERC20("USD Coin", "USDC", 6);
+        ondo = new MockERC20("Ondo Tesla", "ondoTSLA", 18);
         vault = new StubVault(address(usdc));
+        rwaVault = new StubVault(address(ondo));
+        rwaVault2 = new StubVault(address(ondo));
 
         vm.startPrank(admin);
         registry.grantRole(keccak256("ADMIN"), admin);
@@ -80,6 +88,9 @@ contract VaultManagerTest is Test {
 
         oracle.setPrice(TSLA, TSLA_MARK);
         oracle.setPrice(USDC_TICKER, USDC_MARK);
+        // Wrapper token feeds: token price = underlying × sValue (= 1 at launch).
+        oracle.setPrice(ONDO_TSLA, TSLA_MARK);
+        oracle.setPrice(XS_TSLA, TSLA_MARK);
 
         vm.startPrank(admin);
         manager.setGlobalMaxUtilizationBps(MAX_UTIL_BPS);
@@ -102,6 +113,17 @@ contract VaultManagerTest is Test {
 
         vm.prank(admin);
         manager.setAssetCapUSD(TSLA, ASSET_CAP);
+    }
+
+    /// @dev Register the RWA reserve vault backing TSLA and mark `wrapperUnits` of reserve
+    ///      (18-dec wrapper units at $100 each).
+    function _bootstrapRwa(
+        uint256 wrapperUnits
+    ) internal {
+        vm.prank(admin);
+        manager.registerVault(address(rwaVault), ONDO_TSLA, TSLA);
+        rwaVault.setTotalAssets(wrapperUnits);
+        manager.pullCollateralPrice(address(rwaVault));
     }
 
     function _open(
@@ -133,7 +155,7 @@ contract VaultManagerTest is Test {
 
     function test_registerVault_setsStateAndScale() public {
         vm.expectEmit(true, true, false, true);
-        emit IVaultManager.VaultRegistered(address(vault), USDC_TICKER);
+        emit IVaultManager.VaultRegistered(address(vault), USDC_TICKER, bytes32(0));
         vm.prank(admin);
         manager.registerVault(address(vault), USDC_TICKER);
 
@@ -359,13 +381,13 @@ contract VaultManagerTest is Test {
     function test_pullAssetPricePrice_remarksExposure() public {
         _bootstrap();
         _open(1000e18); // $100k exposure
-        assertEq(manager.globalExposureUSD(), 100_000e18);
+        assertEq(manager.globalNetExposureUSD(), 100_000e18);
 
         oracle.setPrice(TSLA, 200e18); // price doubles
         manager.pullAssetPrice(TSLA);
 
         assertEq(manager.assetMark(TSLA), 200e18);
-        assertEq(manager.globalExposureUSD(), 200_000e18);
+        assertEq(manager.globalNetExposureUSD(), 200_000e18);
     }
 
     function test_pullAssetPricePrice_unavailable_reverts() public {
@@ -386,7 +408,7 @@ contract VaultManagerTest is Test {
         _open(1000e18);
 
         assertEq(manager.globalAssetUnits(TSLA), 1000e18);
-        assertEq(manager.globalExposureUSD(), 100_000e18);
+        assertEq(manager.globalNetExposureUSD(), 100_000e18);
         assertEq(manager.globalUtilizationBps(), 1000); // 100k / 1M = 10%
     }
 
@@ -397,14 +419,14 @@ contract VaultManagerTest is Test {
     function test_applySplit_redenominatesUnitsAndMark_usdInvariant() public {
         _bootstrap();
         _open(1000e18);
-        uint256 usdBefore = manager.globalExposureUSD();
+        uint256 usdBefore = manager.globalNetExposureUSD();
 
         vm.prank(address(assetRegistry));
         manager.applySplit(TSLA, 3e18); // 3:1 split — now driven by the AssetRegistry
 
         assertEq(manager.globalAssetUnits(TSLA), 3000e18, "units x3");
         assertEq(manager.assetMark(TSLA), TSLA_MARK / 3, "mark /3");
-        assertEq(manager.globalExposureUSD(), usdBefore, "USD exposure invariant across split");
+        assertEq(manager.globalNetExposureUSD(), usdBefore, "USD exposure invariant across split");
     }
 
     function test_applySplit_onlyAssetRegistry_reverts() public {
@@ -592,7 +614,7 @@ contract VaultManagerTest is Test {
         _close(400e18);
 
         assertEq(manager.globalAssetUnits(TSLA), 600e18);
-        assertEq(manager.globalExposureUSD(), 60_000e18);
+        assertEq(manager.globalNetExposureUSD(), 60_000e18);
     }
 
     function test_closeExposure_onlyMarket_reverts() public {
@@ -624,7 +646,7 @@ contract VaultManagerTest is Test {
         _open(1000e18);
         _close(1000e18);
         assertEq(manager.globalAssetUnits(TSLA), 0);
-        assertEq(manager.globalExposureUSD(), 0);
+        assertEq(manager.globalNetExposureUSD(), 0);
     }
 
     /// @dev closeExposure (risk-reducing) is exempt from the mark-staleness guard: a redeem must
@@ -670,11 +692,11 @@ contract VaultManagerTest is Test {
         // Closing all three at once subtracts the bulk floor(3 * 0.4) = 1; must not underflow.
         _close(3);
         assertEq(manager.globalAssetUnits(TSLA), 0);
-        assertEq(manager.globalExposureUSD(), 0);
+        assertEq(manager.globalNetExposureUSD(), 0);
 
         // A price pull on the now-empty book is also safe.
         manager.pullAssetPrice(TSLA);
-        assertEq(manager.globalExposureUSD(), 0);
+        assertEq(manager.globalNetExposureUSD(), 0);
     }
 
     // ──────────────────────────────────────────────────────────
@@ -1067,7 +1089,7 @@ contract VaultManagerTest is Test {
         // Halt at $200 → exposure re-marks to $200k.
         vm.prank(admin);
         manager.haltAsset(TSLA, 200e18);
-        assertEq(manager.globalExposureUSD(), 200_000e18);
+        assertEq(manager.globalNetExposureUSD(), 200_000e18);
     }
 
     function test_haltAsset_onlyAdmin_reverts() public {
@@ -1226,7 +1248,7 @@ contract VaultManagerTest is Test {
 
         manager.pullAssetPrice(TSLA); // halted branch, hp == old → returns without re-marking
         assertEq(manager.assetMark(TSLA), 200e18);
-        assertEq(manager.globalExposureUSD(), 200_000e18);
+        assertEq(manager.globalNetExposureUSD(), 200_000e18);
     }
 
     /// @dev Defensive re-mark: if a halted asset's stored mark ever drifts from the fixed halt price
@@ -1246,7 +1268,7 @@ contract VaultManagerTest is Test {
         manager.pullAssetPrice(TSLA); // hp(200) != old(100) → re-pin to halt price
 
         assertEq(manager.assetMark(TSLA), 200e18, "re-pinned to fixed halt price");
-        assertEq(manager.globalExposureUSD(), 400_000e18, "2000 units * $200");
+        assertEq(manager.globalNetExposureUSD(), 400_000e18, "2000 units * $200");
     }
 
     // ──────────────────────────────────────────────────────────
@@ -1332,5 +1354,255 @@ contract VaultManagerTest is Test {
         vm.expectRevert(abi.encodeWithSelector(IVaultManager.VaultAlreadyExcluded.selector, address(vault)));
         vm.prank(admin);
         manager.setForceExecuteVault(TSLA, address(vault));
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  RWA reserve vaults — registration & class
+    // ──────────────────────────────────────────────────────────
+
+    function test_registerVault_backedAsset_setsClass() public {
+        vm.expectEmit(true, true, true, true);
+        emit IVaultManager.VaultRegistered(address(rwaVault), ONDO_TSLA, TSLA);
+        vm.prank(admin);
+        manager.registerVault(address(rwaVault), ONDO_TSLA, TSLA);
+
+        assertEq(manager.vaultBackedAsset(address(rwaVault)), TSLA);
+        assertEq(manager.vaultCollateralAsset(address(rwaVault)), ONDO_TSLA);
+        assertTrue(manager.isRegisteredVault(address(rwaVault)));
+    }
+
+    function test_registerVault_twoArg_defaultsGeneric() public {
+        vm.prank(admin);
+        manager.registerVault(address(vault), USDC_TICKER);
+        assertEq(manager.vaultBackedAsset(address(vault)), bytes32(0));
+    }
+
+    function test_setForceExecuteVault_rwaVault_reverts() public {
+        vm.prank(admin);
+        manager.registerVault(address(rwaVault), ONDO_TSLA, TSLA);
+        vm.expectRevert(abi.encodeWithSelector(IVaultManager.RwaVaultNotEligible.selector, address(rwaVault)));
+        vm.prank(admin);
+        manager.setForceExecuteVault(TSLA, address(rwaVault));
+    }
+
+    function test_setCollateralCapBps_rwaVault_reverts() public {
+        vm.prank(admin);
+        manager.registerVault(address(rwaVault), ONDO_TSLA, TSLA);
+        vm.expectRevert(abi.encodeWithSelector(IVaultManager.RwaVaultNotEligible.selector, address(rwaVault)));
+        vm.prank(admin);
+        manager.setCollateralCapBps(address(rwaVault), 5000);
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  RWA reserve vaults — netting math
+    // ──────────────────────────────────────────────────────────
+
+    function test_pullCollateralPrice_rwaVault_updatesReserveNotGlobalPool() public {
+        _bootstrap(); // $1M generic collateral
+        uint256 genericCollateral = manager.globalCollateralUSD();
+
+        _bootstrapRwa(400e18); // 400 wrappers × $100 = $40k reserve
+
+        assertEq(manager.assetRwaCollateralUSD(TSLA), 40_000e18, "reserve marked");
+        assertEq(manager.collateralMark(address(rwaVault)), 40_000e18, "vault mark stored");
+        assertEq(manager.globalCollateralUSD(), genericCollateral, "generic pool untouched");
+    }
+
+    function test_netting_partialCoverage() public {
+        _bootstrap();
+        _open(1000e18); // E = $100k
+        assertEq(manager.globalNetExposureUSD(), 100_000e18);
+
+        _bootstrapRwa(400e18); // R = $40k
+        assertEq(manager.assetExposureUSD(TSLA), 100_000e18, "gross unchanged");
+        assertEq(manager.globalNetExposureUSD(), 60_000e18, "net = E - R");
+    }
+
+    function test_netting_exactCoverage() public {
+        _bootstrap();
+        _open(1000e18);
+        _bootstrapRwa(1000e18); // R = $100k = E
+        assertEq(manager.globalNetExposureUSD(), 0, "fully netted");
+        assertEq(manager.globalUtilizationBps(), 0);
+    }
+
+    function test_netting_excessReserveClamped() public {
+        _bootstrap();
+        _open(1000e18); // E(TSLA) = $100k
+        _bootstrapRwa(5000e18); // R = $500k > E
+
+        // Clamped at zero: excess reserve must not go negative or credit other assets.
+        assertEq(manager.globalNetExposureUSD(), 0, "clamped, not negative");
+
+        // A second asset's exposure is NOT offset by TSLA's excess reserve.
+        bytes32 gold = bytes32("GOLD");
+        oracle.setPrice(gold, 2000e18);
+        manager.pullAssetPrice(gold);
+        vm.prank(admin);
+        manager.setAssetCapUSD(gold, ASSET_CAP);
+        vm.prank(market);
+        manager.openExposure(gold, 10e18); // $20k GOLD
+        assertEq(manager.globalNetExposureUSD(), 20_000e18, "GOLD unhedged; TSLA excess gives no credit");
+    }
+
+    function test_openExposure_matchedByReserve_needsNoGenericCollateral() public {
+        // No generic vault at all: reserve-covered mint must still clear.
+        _bootstrapRwa(1000e18); // R = $100k
+        manager.pullAssetPrice(TSLA);
+        vm.prank(admin);
+        manager.setAssetCapUSD(TSLA, ASSET_CAP);
+
+        _open(1000e18); // E = $100k, fully netted
+        assertEq(manager.globalNetExposureUSD(), 0);
+        assertEq(manager.globalCollateralUSD(), 0);
+
+        // The next unit is an unhedged residual — with zero generic collateral it must revert.
+        vm.expectRevert(IVaultManager.CollateralNotInitialized.selector);
+        vm.prank(market);
+        manager.openExposure(TSLA, 1e18);
+    }
+
+    function test_openExposure_residualBreachesUtil_reverts() public {
+        // Small generic pool: $10k × 80% cap = $8k residual headroom.
+        vm.prank(admin);
+        manager.registerVault(address(vault), USDC_TICKER);
+        vault.setTotalAssets(10_000e6);
+        manager.pullCollateralPrice(address(vault));
+        manager.pullAssetPrice(TSLA);
+        vm.prank(admin);
+        manager.setAssetCapUSD(TSLA, ASSET_CAP);
+
+        _bootstrapRwa(1000e18); // R = $100k
+
+        _open(1080e18); // E = $108k → residual $8k = exactly at the 80% cap
+        assertEq(manager.globalNetExposureUSD(), 8000e18);
+
+        vm.expectRevert(abi.encodeWithSelector(IVaultManager.GlobalUtilizationBreached.selector, 9000, MAX_UTIL_BPS));
+        vm.prank(market);
+        manager.openExposure(TSLA, 10e18); // +$1k residual → $9k on $10k pool = 9000 bps
+    }
+
+    function test_closeExposure_renets() public {
+        _bootstrap();
+        _open(1000e18); // E = $100k
+        _bootstrapRwa(400e18); // R = $40k → net $60k
+
+        _close(500e18); // E → $50k
+        assertEq(manager.assetExposureUSD(TSLA), 50_000e18);
+        assertEq(manager.globalNetExposureUSD(), 10_000e18, "net = 50k - 40k");
+
+        _close(500e18); // E → 0; net clamps at 0 (R now exceeds E)
+        assertEq(manager.globalNetExposureUSD(), 0);
+    }
+
+    function test_pullAssetPrice_renets_withReserve() public {
+        _bootstrap();
+        _open(1000e18); // E = $100k @ $100
+        _bootstrapRwa(400e18); // R = $40k → net $60k
+
+        oracle.setPrice(TSLA, 2 * TSLA_MARK); // TSLA doubles
+        manager.pullAssetPrice(TSLA);
+        assertEq(manager.assetExposureUSD(TSLA), 200_000e18);
+        assertEq(manager.globalNetExposureUSD(), 160_000e18, "net = 200k - 40k");
+
+        // Wrapper feed catches up (delta-1 collateral): reserve doubles too, net back to 2×60k.
+        oracle.setPrice(ONDO_TSLA, 2 * TSLA_MARK);
+        manager.pullCollateralPrice(address(rwaVault));
+        assertEq(manager.assetRwaCollateralUSD(TSLA), 80_000e18);
+        assertEq(manager.globalNetExposureUSD(), 120_000e18, "net = 200k - 80k");
+    }
+
+    function test_netting_multiWrapper_sums() public {
+        _bootstrap();
+        _open(1000e18); // E = $100k
+
+        _bootstrapRwa(400e18); // ondo reserve $40k
+        vm.prank(admin);
+        manager.registerVault(address(rwaVault2), XS_TSLA, TSLA);
+        rwaVault2.setTotalAssets(300e18); // xstock reserve $30k
+        manager.pullCollateralPrice(address(rwaVault2));
+
+        assertEq(manager.assetRwaCollateralUSD(TSLA), 70_000e18, "wrappers sum");
+        assertEq(manager.globalNetExposureUSD(), 30_000e18, "net = 100k - 70k");
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  RWA reserve vaults — release / halt / deregister branches
+    // ──────────────────────────────────────────────────────────
+
+    function test_onCollateralReleased_rwaVault_reducesReserve() public {
+        _bootstrap();
+        _open(1000e18); // E = $100k
+        _bootstrapRwa(1000e18); // R = $100k → net 0
+
+        // Release half the reserve (mark reduced proportionally; called before assets leave).
+        vm.prank(address(rwaVault));
+        manager.onCollateralReleased(500e18);
+
+        assertEq(manager.assetRwaCollateralUSD(TSLA), 50_000e18, "reserve halved");
+        assertEq(manager.globalNetExposureUSD(), 50_000e18, "net exposure rises");
+        uint256 generic = manager.globalCollateralUSD();
+        assertEq(generic, 1_000_000e18, "generic pool untouched");
+    }
+
+    function test_onVaultHalted_rwaVault_removesReserve_andUnhaltRestores() public {
+        _bootstrap();
+        _open(1000e18); // E = $100k
+        _bootstrapRwa(400e18); // net $60k
+
+        vm.prank(address(rwaVault));
+        manager.onVaultHalted();
+        assertEq(manager.assetRwaCollateralUSD(TSLA), 0, "reserve excluded");
+        assertEq(manager.globalNetExposureUSD(), 100_000e18, "net back to gross");
+        assertEq(manager.collateralMark(address(rwaVault)), 0);
+        assertTrue(manager.isVaultExcluded(address(rwaVault)));
+
+        vm.prank(address(rwaVault));
+        manager.onVaultUnhalted();
+        assertEq(manager.assetRwaCollateralUSD(TSLA), 40_000e18, "reserve re-included");
+        assertEq(manager.globalNetExposureUSD(), 60_000e18, "net restored");
+    }
+
+    function test_deregisterVault_rwaVault_breachesUtil_reverts() public {
+        // Generic pool $10k; E = $100k fully netted by R = $100k.
+        vm.prank(admin);
+        manager.registerVault(address(vault), USDC_TICKER);
+        vault.setTotalAssets(10_000e6);
+        manager.pullCollateralPrice(address(vault));
+        manager.pullAssetPrice(TSLA);
+        vm.prank(admin);
+        manager.setAssetCapUSD(TSLA, ASSET_CAP);
+        _bootstrapRwa(1000e18);
+        _open(1000e18);
+
+        // Removing the reserve would leave a $100k residual on a $10k pool.
+        vm.expectRevert(IVaultManager.DeregisterWouldBreachUtilization.selector);
+        vm.prank(admin);
+        manager.deregisterVault(address(rwaVault));
+
+        // Wind the exposure down; now the reserve can leave.
+        _close(1000e18);
+        vm.prank(admin);
+        manager.deregisterVault(address(rwaVault));
+        assertEq(manager.assetRwaCollateralUSD(TSLA), 0);
+        assertEq(manager.vaultBackedAsset(address(rwaVault)), bytes32(0), "class cleared");
+    }
+
+    function test_withdrawalBreachesUtil_rwaVault_checksResidual() public {
+        // Same construction: $10k generic, E = R = $100k.
+        vm.prank(admin);
+        manager.registerVault(address(vault), USDC_TICKER);
+        vault.setTotalAssets(10_000e6);
+        manager.pullCollateralPrice(address(vault));
+        manager.pullAssetPrice(TSLA);
+        vm.prank(admin);
+        manager.setAssetCapUSD(TSLA, ASSET_CAP);
+        _bootstrapRwa(1000e18);
+        _open(1000e18);
+
+        // Releasing 80 wrappers ($8k) leaves an $8k residual = exactly the 80% cap → not a breach.
+        assertFalse(manager.withdrawalBreachesUtil(address(rwaVault), 80e18));
+        // 90 wrappers → $9k residual > $8k headroom → breach.
+        assertTrue(manager.withdrawalBreachesUtil(address(rwaVault), 90e18));
     }
 }

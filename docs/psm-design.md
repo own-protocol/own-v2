@@ -239,9 +239,9 @@ Then:
 
 ```
 netExposure_a       = max(0, E_a − R_a)
-_globalExposureUSD  = Σ_a netExposure_a            (running total)
+_globalNetExposureUSD  = Σ_a netExposure_a            (running total)
 _globalCollateralUSD = Σ marks of GENERIC vaults only
-utilization         = _globalExposureUSD / _globalCollateralUSD
+utilization         = _globalNetExposureUSD / _globalCollateralUSD
 ```
 
 Semantics: wrapper collateral perfectly hedges its own asset's exposure and nets to zero; the
@@ -256,7 +256,7 @@ that one asset's `netExposure` contribution:
 
 | Site | Change |
 | --- | --- |
-| `openExposure` / `closeExposure` | update `E_a`, then re-net `a` into `_globalExposureUSD` |
+| `openExposure` / `closeExposure` | update `E_a`, then re-net `a` into `_globalNetExposureUSD` |
 | `pullAssetPrice` / `haltAsset` | re-mark `E_a`, re-net `a` |
 | `pullCollateralPrice` | RWA vault: update `R_a`, re-net `a`. Generic vault: unchanged |
 | `onCollateralReleased` | branch by class: RWA → `R_a` + re-net; generic → `_globalCollateralUSD` |
@@ -453,13 +453,13 @@ VaultManager, OwnMarket, and AssetRegistry (non-upgradeable) — bundle as a v2.
 
 - **Supply == units (preserved):** `Σ eToken supply == globalAssetUnits[a]` across all mint/burn
   paths — RFQ settle, forceExecute, redeemHalted, psmMint, psmRedeem.
-- **Netting consistency:** `_globalExposureUSD == Σ_a max(0, E_a − R_a)` and
+- **Netting consistency:** `_globalNetExposureUSD == Σ_a max(0, E_a − R_a)` and
   `_globalCollateralUSD == Σ generic-vault marks` after any operation sequence.
 - **Reserve bound:** `psmRedeem` never releases more than the ReserveVault balance; reserve
   releases only via `psmRedeem` (+ `skim` of surplus above `E_a`, if implemented).
 - **Class segregation:** forceExecute never sources a vault with `backedAsset != 0`; ReserveVault
   never binds a BorrowManager; RWA marks never enter `_globalCollateralUSD`.
 - **Matched-mint neutrality:** a `psmMint` at fresh equal marks does not increase
-  `_globalExposureUSD` (mint is util-neutral up to mark drift within `maxMarkAge`).
+  `_globalNetExposureUSD` (mint is util-neutral up to mark drift within `maxMarkAge`).
 - **Conversion rounding:** both PSM directions round in the protocol's favor (mint floors eTokens
   out; redeem floors wrapper out).

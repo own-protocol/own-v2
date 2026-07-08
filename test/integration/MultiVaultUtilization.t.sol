@@ -18,7 +18,7 @@ import {EToken} from "../../src/tokens/EToken.sol";
 ///         collateral can unblock a mint, a withdrawal from one vault can be gated by protocol-wide
 ///         exposure that was never "in" that vault, and deregistering a vault is gated the same way.
 ///         Fills a coverage gap — every other integration test exercises a single vault, yet the
-///         utilisation math (`_globalCollateralUSD` / `_globalExposureUSD`) is protocol-wide.
+///         utilisation math (`_globalCollateralUSD` / `_globalNetExposureUSD`) is protocol-wide.
 contract MultiVaultUtilizationTest is BaseTest {
     AssetRegistry public assetRegistry;
     OwnMarket public market;

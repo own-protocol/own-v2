@@ -230,7 +230,7 @@ contract OwnProtocolInvariant is BaseTest {
     /// @notice INV-07: Global exposure USD equals Σ globalAssetUnits[a] × assetMark[a] / 1e18.
     ///         Single asset here, so it reduces to the TSLA term.
     function invariant_exposureConsistency() external view {
-        uint256 globalExp = vaultManager.globalExposureUSD();
+        uint256 globalExp = vaultManager.globalNetExposureUSD();
         uint256 units = vaultManager.globalAssetUnits(TSLA);
         uint256 mark = vaultManager.assetMark(TSLA);
         assert(globalExp == (units * mark) / PRECISION);

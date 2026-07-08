@@ -23,23 +23,28 @@ No phase mixes feature code with refactoring of earlier phases.
 - [x] `forge test` green (864/864 incl. fork tests), `forge fmt --check` clean
 - [ ] **STOP — user review & commit**
 
-## Phase 2 — Vault classes + per-asset delta netting (VaultManager)
+## Phase 2 — Vault classes + per-asset delta netting (VaultManager) ✅ (awaiting review & commit)
 
-- [ ] `IVaultManager`: `registerVault(vault, collateralAsset, backedAsset)`,
-      `vaultBackedAsset(vault)`, `assetRwaCollateralUSD(asset)`, netting-aware NatSpec on
-      exposure/collateral views; new events
-- [ ] `VaultManager` state: `_vaultBackedAsset`, `_assetRwaCollateralUSD`; RWA marks excluded
-      from `_globalCollateralUSD`; `_globalExposureUSD` = Σ max(0, E_a − R_a)
-- [ ] Internal helper `_renetAsset(bytes32 a)` (recompute net contribution O(1)); wire into:
-      `openExposure`, `closeExposure`, `pullAssetPrice`, `haltAsset`, `pullCollateralPrice`,
-      `onCollateralReleased`, `onVaultHalted`, `onVaultUnhalted`, `deregisterVault`
-- [ ] `setForceExecuteVault`: add `backedAsset == 0` guard (Phase 1 cross-ref)
-- [ ] Unit tests: netting math (R < E, R == E, R > E clamp), multi-wrapper sum, generic vaults
-      unchanged, util-neutrality of matched changes, withdrawal gate on netted figures,
-      halt/unhalt + release branches per class, deregister guard on netted util
-- [ ] Invariant test: `_globalExposureUSD == Σ max(0, E_a − R_a)` and
-      `_globalCollateralUSD == Σ generic marks` after any op sequence (handler update)
-- [ ] `forge test -vvv` green, `forge fmt`
+- [x] `IVaultManager`: `registerVault(vault, collateralAsset, backedAsset)` overload (2-arg form
+      kept = generic, zero churn for callers), `vaultBackedAsset`, `assetRwaCollateralUSD`,
+      `assetExposureUSD` views; `VaultRegistered` event carries `backedAsset`; netting NatSpec;
+      new `RwaVaultNotEligible` error
+- [x] `VaultManager` state: `_vaultBackedAsset`, `_assetRwaCollateralUSD`; RWA marks excluded
+      from `_globalCollateralUSD`; `_globalNetExposureUSD` = Σ max(0, E_a − R_a)
+- [x] Netting helpers (`_netExposure`/`_netOf`/`_setAssetExposure`/`_setAssetRwaCollateral`)
+      wired into `openExposure`, `closeExposure`, `pullAssetPrice`, `haltAsset`,
+      `pullCollateralPrice`, `onCollateralReleased`, `onVaultHalted`, `onVaultUnhalted`,
+      `deregisterVault`, `withdrawalBreachesUtil`; fully-netted opens need no generic collateral
+- [x] `setForceExecuteVault`: `RwaVaultNotEligible` guard; `setCollateralCapBps` likewise
+      (concentration caps are generic-pool-only; the netting clamp bounds RWA vaults)
+- [x] Unit tests (16 new): netting math (R < E, R == E, R > E clamp + no cross-asset credit),
+      multi-wrapper sum, reserve-covered open with zero generic collateral, residual util breach,
+      close/pull re-netting, release/halt/unhalt RWA branches, deregister guard, withdrawal gate,
+      class guards
+- [x] Invariant suite `NettingInvariant.t.sol` + `NettingHandler` (2 assets, generic + 3 RWA
+      vaults): INV-N1 net-exposure sum, INV-N2 generic-only collateral, INV-N3 per-asset reserve
+      sums — green at 1000 runs × depth 50 (50k calls each)
+- [x] `forge test` green (884/884), `forge fmt --check` clean
 - [ ] **STOP — user review & commit**
 
 ## Phase 3 — ReserveVault + PSM entrypoints + AssetRegistry config
