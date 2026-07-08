@@ -81,6 +81,11 @@ contract MultiVaultUtilizationTest is BaseTest {
         // Each vault is signed by its own VM; register both signers so either can fill.
         _registerSigner(vm1Signer, Actors.VM1);
         _registerSigner(vm2Signer, Actors.VM2);
+        // Scope the makers to the quoted asset (default-deny since Phase 4b).
+        vm.startPrank(Actors.ADMIN);
+        assetRegistry.setMakerAllowed(TSLA, vm1Signer, true);
+        assetRegistry.setMakerAllowed(TSLA, vm2Signer, true);
+        vm.stopPrank();
     }
 
     // ──────────────────────────────────────────────────────────

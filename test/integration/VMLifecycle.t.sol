@@ -81,6 +81,9 @@ contract VMLifecycleTest is BaseTest {
         _setClaimThreshold(6 hours);
         // vm2Signer is intentionally NOT registered, so its quotes are rejected (wrong-VM test).
         _registerSigner(vm1Signer, Actors.VM1);
+        // Scope the maker to its quoted assets (default-deny since Phase 4b).
+        vm.prank(Actors.ADMIN);
+        assetRegistry.setMakerAllowed(TSLA, vm1Signer, true);
 
         // Per-asset issuance ceiling (global util default is set by _deployVaultManager).
         _setAssetCap(TSLA, DEFAULT_ASSET_CAP_USD);

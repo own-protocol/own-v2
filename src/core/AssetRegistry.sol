@@ -41,6 +41,9 @@ contract AssetRegistry is IAssetRegistry {
     /// @dev Ticker → vault → whether the vault's bound BorrowManager may open new borrows.
     mapping(bytes32 => mapping(address => bool)) private _lendingVaultAllowed;
 
+    /// @dev Ticker → signer → whether the signer may settle quotes / recover reserve surplus.
+    mapping(bytes32 => mapping(address => bool)) private _makerAllowed;
+
     // ──────────────────────────────────────────────────────────
     //  Modifiers
     // ──────────────────────────────────────────────────────────
@@ -249,6 +252,28 @@ contract AssetRegistry is IAssetRegistry {
     /// @inheritdoc IAssetRegistry
     function isLendingVaultAllowed(bytes32 ticker, address vault) external view returns (bool) {
         return _lendingVaultAllowed[ticker][vault];
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Maker allowlist
+    // ──────────────────────────────────────────────────────────
+
+    /// @inheritdoc IAssetRegistry
+    function setMakerAllowed(bytes32 ticker, address signer, bool allowed) external onlyAdmin {
+        if (!_registered[ticker]) revert AssetNotFound(ticker);
+        if (signer == address(0)) revert ZeroAddress();
+        // Grants require a live signer registration; revocation stays unguarded so entries
+        // always clear (even after the signer is removed from the VaultManager).
+        if (allowed && !IVaultManager(registry.vaultManager()).isSigner(signer)) {
+            revert SignerNotRegistered(signer);
+        }
+        _makerAllowed[ticker][signer] = allowed;
+        emit MakerAllowedUpdated(ticker, signer, allowed);
+    }
+
+    /// @inheritdoc IAssetRegistry
+    function isMakerAllowed(bytes32 ticker, address signer) external view returns (bool) {
+        return _makerAllowed[ticker][signer];
     }
 
     // ──────────────────────────────────────────────────────────

@@ -63,6 +63,9 @@ contract PsmInvariantTest is BaseTest {
         vm.stopPrank();
 
         _registerSigner(vm1Signer, Actors.VM1);
+        // Scope the maker to its quoted assets (default-deny since Phase 4b).
+        vm.prank(Actors.ADMIN);
+        assetRegistry.setMakerAllowed(TSLA, vm1Signer, true);
         _setPaymentToken(address(usdc));
         _setAssetCap(TSLA, DEFAULT_ASSET_CAP_USD);
         _setOraclePrice(TSLA, TSLA_PRICE);

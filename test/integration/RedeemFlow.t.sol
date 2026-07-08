@@ -93,6 +93,9 @@ contract RedeemFlowTest is BaseTest {
         });
         assetRegistry.addAsset(ethAsset, address(weth), ethConfig);
 
+        // Scope the maker to its quoted asset (default-deny since Phase 4b).
+        assetRegistry.setMakerAllowed(TSLA, vm1Signer, true);
+
         vm.stopPrank();
 
         _setOraclePrice(ethAsset, ETH_PRICE);

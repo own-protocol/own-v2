@@ -108,6 +108,10 @@ contract CollateralValuationTest is BaseTest {
         });
         assetRegistry.addAsset(ETH_ASSET, address(weth), ethConfig);
 
+        // Scope the maker to its quoted assets (default-deny since Phase 4b).
+        assetRegistry.setMakerAllowed(TSLA, vm1Signer, true);
+        assetRegistry.setMakerAllowed(GOLD, vm1Signer, true);
+
         vm.stopPrank();
 
         _setOraclePrice(ETH_ASSET, ETH_PRICE);

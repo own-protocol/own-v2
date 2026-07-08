@@ -674,6 +674,73 @@ contract AssetRegistryTest is BaseTest {
         registry.setLendingVaultAllowed(TSLA, lendingVault, true);
     }
 
+    // ──────────────────────────────────────────────────────────
+    //  Maker allowlist
+    // ──────────────────────────────────────────────────────────
+
+    function test_setMakerAllowed_togglesAndEmits() public {
+        address signer = makeAddr("makerSigner");
+        stubVM.setSigner(signer, true);
+        vm.prank(Actors.ADMIN);
+        registry.addAsset(TSLA, eTSLA, _defaultConfig(eTSLA));
+
+        assertFalse(registry.isMakerAllowed(TSLA, signer), "default-deny");
+
+        vm.expectEmit(true, true, false, true);
+        emit IAssetRegistry.MakerAllowedUpdated(TSLA, signer, true);
+        vm.prank(Actors.ADMIN);
+        registry.setMakerAllowed(TSLA, signer, true);
+        assertTrue(registry.isMakerAllowed(TSLA, signer));
+
+        // Keyed per (asset, signer): no bleed across tickers or signers.
+        assertFalse(registry.isMakerAllowed(GOLD, signer));
+        assertFalse(registry.isMakerAllowed(TSLA, makeAddr("otherSigner")));
+
+        vm.prank(Actors.ADMIN);
+        registry.setMakerAllowed(TSLA, signer, false);
+        assertFalse(registry.isMakerAllowed(TSLA, signer));
+    }
+
+    function test_setMakerAllowed_validation_reverts() public {
+        address signer = makeAddr("makerSigner");
+        stubVM.setSigner(signer, true);
+        vm.prank(Actors.ADMIN);
+        registry.addAsset(TSLA, eTSLA, _defaultConfig(eTSLA));
+
+        vm.startPrank(Actors.ADMIN);
+        vm.expectRevert(abi.encodeWithSelector(IAssetRegistry.AssetNotFound.selector, GOLD));
+        registry.setMakerAllowed(GOLD, signer, true);
+        vm.expectRevert(IAssetRegistry.ZeroAddress.selector);
+        registry.setMakerAllowed(TSLA, address(0), true);
+        // Grants require a registered signer on the VaultManager.
+        address unregistered = makeAddr("unregisteredSigner");
+        vm.expectRevert(abi.encodeWithSelector(IAssetRegistry.SignerNotRegistered.selector, unregistered));
+        registry.setMakerAllowed(TSLA, unregistered, true);
+        vm.stopPrank();
+
+        vm.prank(Actors.ATTACKER);
+        vm.expectRevert(IAssetRegistry.OnlyAdmin.selector);
+        registry.setMakerAllowed(TSLA, signer, true);
+    }
+
+    function test_setMakerAllowed_revokeAfterSignerRemoved_works() public {
+        address signer = makeAddr("makerSigner");
+        stubVM.setSigner(signer, true);
+        vm.startPrank(Actors.ADMIN);
+        registry.addAsset(TSLA, eTSLA, _defaultConfig(eTSLA));
+        registry.setMakerAllowed(TSLA, signer, true);
+        vm.stopPrank();
+
+        // Signer removed from the VaultManager: re-granting reverts, revoking still works.
+        stubVM.setSigner(signer, false);
+        vm.startPrank(Actors.ADMIN);
+        vm.expectRevert(abi.encodeWithSelector(IAssetRegistry.SignerNotRegistered.selector, signer));
+        registry.setMakerAllowed(TSLA, signer, true);
+        registry.setMakerAllowed(TSLA, signer, false);
+        vm.stopPrank();
+        assertFalse(registry.isMakerAllowed(TSLA, signer));
+    }
+
     function test_setLendingVaultAllowed_rwaVaultBlocked_revokeStillWorks() public {
         address reserveVault = makeAddr("reserveVault");
         vm.prank(Actors.ADMIN);
@@ -713,9 +780,20 @@ contract RecordingVaultManagerForRegistry {
     bool public assetHalted;
 
     mapping(address => bytes32) public backedAssets;
+    mapping(address => bool) public signers;
 
     function setVaultBackedAsset(address vault, bytes32 ticker) external {
         backedAssets[vault] = ticker;
+    }
+
+    function setSigner(address signer, bool registered) external {
+        signers[signer] = registered;
+    }
+
+    function isSigner(
+        address signer
+    ) external view returns (bool) {
+        return signers[signer];
     }
 
     function vaultBackedAsset(

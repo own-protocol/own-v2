@@ -116,6 +116,22 @@ No phase mixes feature code with refactoring of earlier phases.
 - [x] `forge test` green (950/950), `forge fmt --check` clean
 - [ ] **STOP — user review & commit**
 
+## Phase 4b — Per-asset maker allowlist (added 2026-07-08, outside original scope)
+
+- [ ] `IAssetRegistry` + `AssetRegistry`: `setMakerAllowed(ticker, signer, allowed)` (admin;
+      registered-ticker + non-zero-signer checks, grant requires `vmgr.isSigner(signer)`,
+      revoke unguarded), `isMakerAllowed(ticker, signer)` view, `MakerAllowedUpdated` event
+- [ ] `OwnMarket._consumeQuote`: after `isSigner`, require `isMakerAllowed(quote.asset, signer)`
+      (new `MakerNotAllowed` error) — scopes each signer key to its assets
+- [ ] `ReserveVault.withdraw`: same gate on the vault's `backedAsset` (maker recovery is
+      asset-scoped too); single flag gates both quoting and recovery — off-boarding makers
+      recover their wrapper before revocation
+- [ ] Unit + integration tests; fixtures updated to default-deny (grants after signer
+      registration). Phase 5 deploy bundle must call `setMakerAllowed` per (asset, signer) —
+      RFQ settlement inert until granted
+- [ ] `forge test -vvv` green, `forge fmt`
+- [ ] **STOP — user review & commit**
+
 ## Phase 5 — Full-system verification, docs, deployment
 
 - [ ] Extend invariant handlers to exercise PSM paths alongside RFQ/lending/withdrawals;

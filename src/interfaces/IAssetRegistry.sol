@@ -69,6 +69,12 @@ interface IAssetRegistry {
     /// @param allowed New allowlist flag.
     event LendingVaultAllowedUpdated(bytes32 indexed ticker, address indexed vault, bool allowed);
 
+    /// @notice Emitted when a maker's allowlist entry for an asset is updated.
+    /// @param ticker  Asset ticker.
+    /// @param signer  Maker's quote-signing key.
+    /// @param allowed New allowlist flag.
+    event MakerAllowedUpdated(bytes32 indexed ticker, address indexed signer, bool allowed);
+
     // ──────────────────────────────────────────────────────────
     //  Errors
     // ──────────────────────────────────────────────────────────
@@ -116,6 +122,9 @@ interface IAssetRegistry {
     /// @notice The vault is RWA-registered (a ReserveVault); it never binds a BorrowManager and
     ///         cannot enter the lending allowlist.
     error RwaVaultNotEligible(address vault);
+
+    /// @notice The signer is not registered on the VaultManager's signer registry.
+    error SignerNotRegistered(address signer);
 
     // ──────────────────────────────────────────────────────────
     //  Admin functions
@@ -213,6 +222,24 @@ interface IAssetRegistry {
 
     /// @notice Whether the BorrowManager bound to `vault` may open new borrows against `ticker`.
     function isLendingVaultAllowed(bytes32 ticker, address vault) external view returns (bool);
+
+    // ──────────────────────────────────────────────────────────
+    //  Maker allowlist
+    // ──────────────────────────────────────────────────────────
+
+    /// @notice Allow or revoke `signer` as a maker for `ticker`. Default-deny: quote settlement
+    ///         and reserve recovery revert until the (asset, signer) pair is allowed. Scopes each
+    ///         signer key to its assets (leaked-key blast-radius containment, composing with the
+    ///         settle band). Granting requires the signer to be registered on the VaultManager;
+    ///         revocation is always possible. Admin-only.
+    /// @param ticker  Asset ticker.
+    /// @param signer  Maker's quote-signing key.
+    /// @param allowed New allowlist flag.
+    function setMakerAllowed(bytes32 ticker, address signer, bool allowed) external;
+
+    /// @notice Whether `signer` may settle quotes for `ticker` (OwnMarket) and recover reserve
+    ///         surplus from `ticker`'s ReserveVaults (ReserveVault.withdraw).
+    function isMakerAllowed(bytes32 ticker, address signer) external view returns (bool);
 
     // ──────────────────────────────────────────────────────────
     //  View functions

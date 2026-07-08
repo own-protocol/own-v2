@@ -164,6 +164,9 @@ contract OwnMarketTest is BaseTest {
         vm.mockCall(
             mockVaultManager, abi.encodeWithSelector(IVaultManager.signerLinkedAddress.selector), abi.encode(rfqVM)
         );
+        // Scope the maker to its quoted asset (default-deny since Phase 4b).
+        vm.prank(Actors.ADMIN);
+        assetReg.setMakerAllowed(TSLA, rfqVM, true);
         // Exposure accounting: open/close are no-ops here; vaultCollateralAsset feeds force-exec
         // collateral conversion.
         vm.mockCall(mockVaultManager, abi.encodeWithSelector(IVaultManager.openExposure.selector), abi.encode());
@@ -377,6 +380,8 @@ contract OwnMarketTest is BaseTest {
             abi.encodeWithSelector(IVaultManager.signerLinkedAddress.selector, altSigner),
             abi.encode(rfqVM)
         );
+        vm.prank(Actors.ADMIN);
+        assetReg.setMakerAllowed(TSLA, altSigner, true);
 
         uint256 amount = 1000e6;
         _fundUserForMint(Actors.MINTER1, amount);
@@ -388,6 +393,21 @@ contract OwnMarketTest is BaseTest {
 
         assertEq(eTSLAToken.balanceOf(Actors.MINTER1), _expectedMintOut(amount, TSLA_PRICE));
         assertEq(usdc.balanceOf(rfqVM), amount, "funds still flow to operational vm");
+    }
+
+    function test_executeOrder_makerNotAllowed_reverts() public {
+        // A registered signer without an allowlist entry for the quoted asset is rejected.
+        vm.prank(Actors.ADMIN);
+        assetReg.setMakerAllowed(TSLA, rfqVM, false);
+
+        uint256 amount = 1000e6;
+        _fundUserForMint(Actors.MINTER1, amount);
+        Quote memory q = _quote(0, Actors.MINTER1, OrderType.Mint, amount, TSLA_PRICE);
+        bytes memory sig = _sign(q, rfqVMPk);
+
+        vm.prank(Actors.MINTER1);
+        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.MakerNotAllowed.selector, TSLA, rfqVM));
+        market.executeOrder(q, sig);
     }
 
     function test_executeOrder_expiredQuote_reverts() public {

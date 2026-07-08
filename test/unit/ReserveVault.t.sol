@@ -11,12 +11,23 @@ import {MockERC20} from "../helpers/MockERC20.sol";
 import {MockOracleVerifier} from "../helpers/MockOracleVerifier.sol";
 import {Test} from "forge-std/Test.sol";
 
-/// @dev Minimal asset registry stub: every ticker resolves to the in-house oracle.
+/// @dev Minimal asset registry stub: every ticker resolves to the in-house oracle; maker
+///      allowlist is a plain mapping (default-deny, mirroring the real registry).
 contract PsmStubAssetRegistry {
+    mapping(bytes32 => mapping(address => bool)) public makerAllowed;
+
     function getOracleType(
         bytes32
     ) external pure returns (uint8) {
         return 1;
+    }
+
+    function setMakerAllowed(bytes32 ticker, address signer, bool allowed) external {
+        makerAllowed[ticker][signer] = allowed;
+    }
+
+    function isMakerAllowed(bytes32 ticker, address signer) external view returns (bool) {
+        return makerAllowed[ticker][signer];
     }
 }
 
@@ -26,6 +37,7 @@ contract PsmStubAssetRegistry {
 contract ReserveVaultTest is Test {
     ProtocolRegistry internal registry;
     VaultManager internal manager;
+    PsmStubAssetRegistry internal assetRegistry;
     MockOracleVerifier internal oracle;
     MockERC20 internal ondo;
     ReserveVault internal reserve;
@@ -48,7 +60,8 @@ contract ReserveVaultTest is Test {
         registry.grantRole(keccak256("ADMIN"), admin);
         registry.grantRole(keccak256("OPERATOR"), admin);
         registry.setAddress(registry.MARKET(), market);
-        registry.setAddress(registry.ASSET_REGISTRY(), address(new PsmStubAssetRegistry()));
+        assetRegistry = new PsmStubAssetRegistry();
+        registry.setAddress(registry.ASSET_REGISTRY(), address(assetRegistry));
         registry.setAddress(registry.INHOUSE_ORACLE(), address(oracle));
         registry.setAddress(registry.PYTH_ORACLE(), address(oracle));
         vm.stopPrank();
@@ -262,11 +275,24 @@ contract ReserveVaultTest is Test {
         reserve.withdraw(1e18);
     }
 
+    function test_withdraw_makerNotAllowedForAsset_reverts() public {
+        // Registered signer without a maker-allowlist entry for the backed asset is rejected.
+        address signer = makeAddr("signer");
+        vm.prank(admin);
+        manager.registerSigner(signer, makeAddr("linked"));
+
+        _seed(10e18);
+        vm.prank(signer);
+        vm.expectRevert(abi.encodeWithSelector(IReserveVault.MakerNotAllowed.selector, TSLA, signer));
+        reserve.withdraw(1e18);
+    }
+
     function test_withdraw_paysLinkedAddress_notSigner() public {
         address signer = makeAddr("signer");
         address linked = makeAddr("linked");
         vm.prank(admin);
         manager.registerSigner(signer, linked);
+        assetRegistry.setMakerAllowed(TSLA, signer, true);
 
         _seed(10e18);
         vm.prank(market);
@@ -287,6 +313,7 @@ contract ReserveVaultTest is Test {
         address signer = makeAddr("signer");
         vm.prank(admin);
         manager.registerSigner(signer, makeAddr("linked"));
+        assetRegistry.setMakerAllowed(TSLA, signer, true);
 
         _seed(10e18);
         vm.prank(market);

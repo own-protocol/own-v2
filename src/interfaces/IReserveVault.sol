@@ -41,6 +41,8 @@ interface IReserveVault {
     error OnlyOperator();
     /// @notice Caller is not a registered quote signer (maker).
     error OnlyMaker();
+    /// @notice The maker is not on the registry's allowlist for the vault's backed asset.
+    error MakerNotAllowed(bytes32 asset, address maker);
     /// @notice A required address was the zero address.
     error ZeroAddress();
     /// @notice A required amount was zero.

@@ -110,6 +110,9 @@ contract RFQAusdcFlowsTest is BaseTest {
         // ── Global protocol config (now on the VaultManager) ──
         _setClaimThreshold(6 hours);
         _registerSigner(vm1Signer, Actors.VM1);
+        // Scope the maker to its quoted assets (default-deny since Phase 4b).
+        vm.prank(Actors.ADMIN);
+        assetRegistry.setMakerAllowed(TSLA, vm1Signer, true);
         _setPaymentToken(address(usdc));
 
         _setAssetCap(TSLA, DEFAULT_ASSET_CAP_USD);

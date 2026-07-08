@@ -461,8 +461,9 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard, EIP712 {
     //  Internal — quote verification
     // ──────────────────────────────────────────────────────────
 
-    /// @dev Validate expiry, replay, and signer (an authorised global signer), then mark the
-    ///      quote used. Returns the signer's linked settlement address (mint sink / redeem source).
+    /// @dev Validate expiry, replay, and signer (an authorised global signer scoped to the
+    ///      quote's asset by the registry's maker allowlist), then mark the quote used. Returns
+    ///      the signer's linked settlement address (mint sink / redeem source).
     function _consumeQuote(Quote calldata quote, bytes calldata signature) private returns (address maker) {
         if (block.timestamp > quote.expiry) revert QuoteExpired();
         bytes32 digest = quoteDigest(quote);
@@ -470,6 +471,9 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard, EIP712 {
         address signer = digest.recover(signature);
         IVaultManager vmgr = _vaultManager();
         if (!vmgr.isSigner(signer)) revert InvalidQuoteSigner();
+        if (!_assetRegistry().isMakerAllowed(quote.asset, signer)) {
+            revert MakerNotAllowed(quote.asset, signer);
+        }
         maker = vmgr.signerLinkedAddress(signer);
         _usedQuotes[digest] = true;
     }

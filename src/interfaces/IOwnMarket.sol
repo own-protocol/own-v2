@@ -203,6 +203,9 @@ interface IOwnMarket {
     /// @notice The recovered quote signer is not an authorised protocol signer.
     error InvalidQuoteSigner();
 
+    /// @notice The quote signer is not on the registry's maker allowlist for this asset.
+    error MakerNotAllowed(bytes32 asset, address signer);
+
     /// @notice The quote has already been used (replay protection).
     error QuoteAlreadyUsed();
 

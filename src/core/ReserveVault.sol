@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 pragma solidity 0.8.28;
 
+import {IAssetRegistry} from "../interfaces/IAssetRegistry.sol";
 import {IProtocolRegistry} from "../interfaces/IProtocolRegistry.sol";
 import {IReserveVault} from "../interfaces/IReserveVault.sol";
 import {IVaultManager} from "../interfaces/IVaultManager.sol";
@@ -100,6 +101,11 @@ contract ReserveVault is IReserveVault, ReentrancyGuard {
     ) external nonReentrant {
         IVaultManager vmgr = IVaultManager(registry.vaultManager());
         if (!vmgr.isSigner(msg.sender)) revert OnlyMaker();
+        // Recovery is asset-scoped: the maker must be allowlisted for the backed asset.
+        bytes32 backed = vmgr.vaultBackedAsset(address(this));
+        if (!IAssetRegistry(registry.assetRegistry()).isMakerAllowed(backed, msg.sender)) {
+            revert MakerNotAllowed(backed, msg.sender);
+        }
         // Payout goes to the signer's linked settlement address, never the hot key.
         address to = vmgr.signerLinkedAddress(msg.sender);
         _releaseCollateral(to, amount);
