@@ -47,50 +47,52 @@ No phase mixes feature code with refactoring of earlier phases.
 - [x] `forge test` green (884/884), `forge fmt --check` clean
 - [ ] **STOP — user review & commit**
 
-## Phase 3 — ReserveVault + PSM entrypoints + AssetRegistry config
+## Phase 3 — ReserveVault + PSM entrypoints + AssetRegistry config ✅ (awaiting review & commit)
 
-- [ ] Interfaces: `IReserveVault`, PSM additions to `IOwnMarket` + `IAssetRegistry`
-      (`PsmConfig`, events, errors)
-- [ ] `ReserveVault` (`src/core/ReserveVault.sol`): immutable wrapper `asset()`, `totalAssets()`,
-      `releaseCollateral(to, amount)` onlyMarket (mark-sync via `onCollateralReleased` before
-      transfer, mirroring OwnVault), `skimExcess(amount)` onlyOperator → treasury with the
-      net-exposure-must-not-increase guard (design §4.2)
-- [ ] `AssetRegistry`: `setPsmConfig(ticker, wrapper, config)` (admin; requires ReserveVault
-      registered with `backedAsset == ticker`), `psmConfig` / `psmWrappers` views,
-      `setLendingVaultAllowed` **deferred to Phase 4**
-- [ ] **Derived conversion ratio** (design §4.3 / §8.3 — wrapper is a total-return tracker,
-      ratio ≡ Ondo sValue): `ratio = mark(WRAPPER_TICKER) / mark(ASSET_TICKER)` from cached
-      VaultManager marks at execution time; no stored/static ratio, no applySplit hook
-- [ ] **Ratio-jump guard**: store `lastUsedRatio` per (ticker, wrapper); PSM op reverts if
-      derived ratio moved > `ratioJumpBoundBps` since last use; operator
-      `acknowledgeRatio(ticker, wrapper)` resets it (this is also the manual confirmation
-      step after our own eToken splits and Ondo corporate actions)
-- [ ] `OwnMarket.psmMint`: gates (asset active, not paused, not halted, config set + not paused,
-      **wrapper mark fresh** vs `maxMarkAge`; asset-mark freshness via openExposure) → pull
-      wrapper → ReserveVault (fee-on-transfer check) → `pullCollateralPrice` → `openExposure` →
-      mint eToken; floor rounding
-- [ ] `OwnMarket.psmRedeem`: gates (config set + not paused, **not trading-paused**;
-      **allowed while halted** — frozen halt mark makes the derived ratio settle at
-      haltPrice-worth of wrapper; halted redeems gate on wrapper-mark freshness only) →
-      burn → `closeExposure` → `releaseCollateral`; floor rounding
-- [ ] `OwnMarket.psmBackfill`: gates (config set + not paused) → transfer → `pullCollateralPrice`
-- [ ] Unit tests: mint/redeem/backfill happy paths + every revert (paused asset, paused PSM,
-      halted mint blocked, halted redeem **allowed** and settles at halt price, stale wrapper
-      mark blocks mint + halted redeem, redeem exceeding reserve, zero amounts, unregistered
-      wrapper, conversion rounding at 1-wei boundaries, wrapper decimals ≠ 18)
-- [ ] Unit tests: derived ratio — sValue drift (wrapper mark rises vs asset mark: mint gives
-      more eTokens per wrapper, redeem gives fewer wrapper per eToken), ratio-jump guard trips
-      + operator ack path, post-`applySplit` ratio scales by N automatically with no
-      AssetRegistry state change
-- [ ] Unit tests: `skimExcess` (only clamped surplus spendable, guard reverts otherwise, auth;
-      dividend-drift scenario: wrapper mark appreciation creates skimmable surplus — design
-      §8.3.5)
-- [ ] Integration test: full loop — RFQ mint → psmBackfill frees buffer → psmRedeem in-kind →
-      books consistent; PSM mint → RFQ redeem cross-channel
-- [ ] Invariant tests: supply == globalAssetUnits across all mint/burn paths incl. PSM;
-      psmRedeem bounded by reserve; reserve leaves only via psmRedeem/skimExcess;
-      matched-mint util-neutrality
-- [ ] `forge test -vvv` green, `forge fmt`
+- [x] Interfaces: `IReserveVault` (new), PSM additions to `IOwnMarket` + `IAssetRegistry`,
+      `PsmConfig` in Types.sol; events + errors throughout
+- [x] `ReserveVault` (`src/core/ReserveVault.sol`): immutable wrapper, `asset()`/`totalAssets()`
+      (balance-based), `releaseCollateral` onlyMarket with mark-sync-before-transfer,
+      `skimExcess` onlyOperator → treasury with inline re-mark + surplus guard (remaining
+      reserve must still cover gross exposure) + `VaultNotRwaRegistered` misconfig guard
+- [x] `AssetRegistry`: `setPsmConfig` (admin; validates `vaultBackedAsset == ticker` and
+      `IReserveVault.asset() == wrapper`; reconfig resets guard, no duplicate wrapper entries),
+      `setPsmPaused` (operator), `setRatioJumpBoundBps` (admin, ≤ BPS, 0 = off),
+      `resetRatioGuard` (operator, disarm semantics), `notePsmRatio` (onlyMarket),
+      `getPsmConfig`/`getPsmWrappers`/`ratioJumpBoundBps` views
+- [x] **Derived conversion ratio**: `ratio = oracle wrapper-token price / vmgr assetMark(asset)`
+      — numerator identical to what `pullCollateralPrice` marks the reserve with in the same tx,
+      denominator identical to what open/closeExposure value units with → unit conversion and
+      USD netting can never disagree; no stored ratio, no applySplit hook (verified by the split
+      integration test)
+- [x] **Ratio-jump guard**: per-(ticker, wrapper) `lastUsedRatio`, global bps bound, revert
+      `RatioJumpExceeded`, operator `resetRatioGuard` disarms (re-arms on next op)
+- [x] **Guard is FAIL-CLOSED** (design §8.3.4): bound 0 = pre-deploy default → PSM mint/redeem
+      revert `RatioGuardNotConfigured`; `setRatioJumpBoundBps` requires 0 < bps ≤ BPS and can
+      never return to zero; backfill exempt. Phase 5 deploy script MUST set the bound.
+      Rationale: guard also catches intraday oracle-push vs keeper-pull ratio desync
+- [x] `OwnMarket.psmMint` / `psmRedeem` per design (mint: active+tradeable+fresh wrapper price;
+      redeem: works off-hours, allowed while halted with fresh wrapper leg, blocked by pauses);
+      floor rounding both directions; fee-on-transfer checks; CEI + nonReentrant
+- [x] Backfill moved to `ReserveVault.deposit` (design §4.5): deposits are vault-local,
+      ungated (additions are inherently ungateable and only add backing), sync the mark inline
+- [x] `ReserveVault.withdraw` — maker recovery path (registered signer → linked
+      settlement address, same surplus clamp as skimExcess, works off-hours); replaces the
+      mint+redeem extraction loop (design §4.2)
+- [x] Unit tests: `ReserveVault.t.sol` (17: custody, release auth/bounds/mark-sync, skim guard
+      incl. unmarked-donation re-mark, withdraw auth/linked-payout/clamp),
+      AssetRegistry PSM section (8: config validation, pause, bound, reset/note auth)
+- [x] Integration `PsmFlow.t.sol` (26): happy paths incl. 6-dec wrapper scaling, sValue drift,
+      every revert gate, ratio-guard trip/ack, off-hours redeem with frozen pair, halted redeem
+      at halt price + stale-wrapper revert, backfill-frees-buffer loop, PSM-mint→RFQ-redeem
+      surplus + skim, maker recovery via withdraw (incl. off-hours), 2:1 split
+      auto-rescale, multi-wrapper netting, dust rounding
+- [x] Invariant `PsmInvariant.t.sol` + `PsmHandler` (mixed PSM + RFQ channels + price drift):
+      supply == units, netting identity, collateral segregation, reserve-mark sanity — green at
+      1000 runs × depth 50 (50k calls each)
+- [x] `forge test` green (944/944), `forge fmt --check` clean
+- [x] Deploy note for Phase 5: wrapper tickers (`ONDO.TSLA` etc.) must be `addAsset`-registered
+      in AssetRegistry so `getOracleType` resolves their feeds (same pattern as the ETH ticker)
 - [ ] **STOP — user review & commit**
 
 ## Phase 4 — Per-asset lending-vault allowlist
@@ -119,7 +121,8 @@ No phase mixes feature code with refactoring of earlier phases.
       classes) and `docs/deployment.md`
 - [ ] Deployment scripts: v2.1 bundle (redeploy VaultManager, OwnMarket, AssetRegistry;
       deploy ReserveVault(s); re-register vaults with `backedAsset`; per-asset forceExecute
-      designations; PSM configs; wrapper oracle ticker)
+      designations; PSM configs; wrapper oracle ticker; **`setRatioJumpBoundBps` — required,
+      PSM mint/redeem inert until set** — recommend 100–200 bps)
 - [ ] Oracle service ops notes: wrapper ticker publishes **token price** (underlying × sValue —
       numerically equal to the underlying feed only while sValue = 1); runbook for Ondo
       corporate-action pause windows (≥24h notice → set `psmPaused` for the wrapper; unpause +

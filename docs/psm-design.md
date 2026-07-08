@@ -34,8 +34,8 @@ the same way: PSM reserves back DAI directly and carry no LP claim.)
 Therefore the RWA vault is a **share-less reserve pool**:
 
 - No ERC-4626 shares, no deposit queue, no withdrawal queue, no LP accounting.
-- Reserve enters via `psmMint` (mints matching eTokens) or `psmBackfill` (no mint — hedge
-  delivery, see §4.2).
+- Reserve enters via `psmMint` (mints matching eTokens) or `ReserveVault.deposit` (no mint —
+  hedge delivery, see §4.2).
 - Reserve exits only via `psmRedeem` (burns matching eTokens 1:1).
 - Every unit of reserve is matched by a unit of eToken liability; vault equity is ~0 by
   construction (plus any fee/skim surplus).
@@ -48,7 +48,7 @@ require reserve/equity separation inside the vault and change the share-price de
 1. Buyer pays 1x USDC via RFQ (`executeOrder` / `fillOrder`) → eTSLA minted instantly, backed
    temporarily by the crypto buffer (existing path, `openExposure`).
 2. The maker received the buyer's USDC, buys `ondoTSLA` with it, and **backfills** it into the
-   TSLA reserve vault (`psmBackfill`). The maker keeps the spread and ends flat — no LP shares,
+   TSLA reserve vault (`ReserveVault.deposit`). The maker keeps the spread and ends flat — no LP shares,
    no residual delta.
 3. Netting (§5) recognizes the reserve against TSLA exposure; the buffer frees for the next order.
 
@@ -89,7 +89,8 @@ self-balance with flow direction.
 
 ### 4.1 Design principle: PSM routes through OwnMarket
 
-`psmMint` / `psmRedeem` / `psmBackfill` are **OwnMarket external functions**, not a standalone
+`psmMint` / `psmRedeem` are **OwnMarket external functions** (reserve deposits live on the
+ReserveVault itself, §4.2), not a standalone
 contract. This keeps every existing authority boundary intact:
 
 - `EToken.mint/burn` stays market-only — unchanged.
@@ -112,9 +113,17 @@ A lean custody contract (`src/core/ReserveVault.sol`), deliberately **not** an O
   governs the PSM paths), no Aave, no BorrowManager, no credit delegation (see §8.6 for the
   future-lending path).
 - `skimExcess(uint256 amount)` (operator) — moves reserve **in excess of the asset's outstanding
-  exposure** to the treasury (fee surplus / donations). On-chain guard: the skim must not
-  increase the asset's `netExposure` (§5), i.e. it can only spend the clamped surplus where
-  `R_a > E_a`. Required in v1.
+  exposure** to the treasury (protocol-owned surplus: dividend drift, rounding, donations).
+  On-chain guard: the skim must not increase the asset's `netExposure` (§5), i.e. it can only
+  spend the clamped surplus where `R_a > E_a`. Required in v1.
+- `withdraw(uint256 amount)` (any registered quote signer → its linked settlement
+  address) — the **maker recovery path**, same surplus clamp as `skimExcess`. When a maker
+  honors an RFQ redemption with its own stablecoins, the burned supply leaves matched reserve
+  behind (`R > E`); the maker frees that surplus in one transaction to sell and recover its
+  cash. No mint/burn churn and no freshness gate (nothing is priced), so it works off-hours.
+  The clamp makes it self-limiting: matched backing is untouchable, and only redemption-freed
+  (or drift) surplus is ever withdrawable. First-come-first-served among registered makers —
+  fine with one maker per asset; per-maker attribution is a future multi-maker concern.
 
 One ReserveVault per (asset, wrapper) pair. Multiple wrappers per asset (e.g. `ondoTSLA` and
 `xTSLA`) are separate ReserveVaults, all netting against the same asset (§5).
@@ -202,12 +211,15 @@ psmRedeem(bytes32 asset, address wrapper, uint256 eTokenAmount)
    automatically (revert on insufficient reserve).
 
 ```
-psmBackfill(bytes32 asset, address wrapper, uint256 wrapperAmount)
+ReserveVault.deposit(uint256 amount)          // lives on the vault, not OwnMarket
 ```
-1. Gates: PSM config exists and not paused.
-2. Transfer wrapper user → ReserveVault; `pullCollateralPrice(reserveVault)`.
-3. No mint, no exposure change — the donated reserve nets against existing exposure (§5),
+1. Transfer wrapper user → ReserveVault; `pullCollateralPrice(reserveVault)`.
+2. No mint, no exposure change — the deposited reserve nets against existing exposure (§5),
    freeing the crypto buffer. This is the maker's hedge-delivery door.
+3. Deliberately ungated (beyond zero/fee-on-transfer checks): reserve *additions* cannot be
+   meaningfully gated anyway — `totalAssets()` is balance-based, so a plain transfer plus the
+   permissionless `pullCollateralPrice` achieves the same effect — and they only ever add
+   backing. The PSM pause governs mint/redeem (value-out paths), not deposits.
 
 No quote, no signature, no settle band on any PSM path — there is no price input from the caller.
 Fees (`tin`/`tout` bps) are deferred; if added later they accrue to the reserve as surplus and
@@ -314,7 +326,7 @@ Mint via RFQ (instant, buffer-backed)          Mint via PSM (1:1, reserve-backed
 buyer USDC → maker (quote)                     user ondoTSLA → ReserveVault
 openExposure(TSLA, x)                          pullCollateralPrice(reserve)
 eTSLA → buyer                                  openExposure(TSLA, x)
-[maker later: buy ondoTSLA → psmBackfill]      eTSLA → user
+[maker later: buy ondoTSLA → reserve deposit]      eTSLA → user
 
 Redeem via RFQ                                 Redeem via PSM (instant, in-kind)
 ────────────────────────────────────           ───────────────────────────────────
@@ -371,10 +383,19 @@ Consequences for this design:
    the derived ratio; Ondo gives ≥24h notice; (b) the protocol's own `migrateToken` event window
    until both feeds reflect post-split values. Runbook items, mirroring the trading pause the
    protocol would apply around a split anyway.
-4. **Ratio-jump guard (hardening):** store the last-used ratio per wrapper; if a PSM operation
-   sees the derived ratio move more than a configured bps bound since last use (mirroring Ondo's
-   own 1%/24h small-update rule), revert and require operator acknowledgment. Protects against a
-   bad feed print or a missed pause window. Recommended for v1, cheap to implement.
+4. **Ratio-jump guard (FAIL-CLOSED, required config):** the last-used ratio is stored per
+   wrapper; if a PSM operation sees the derived ratio move more than `ratioJumpBoundBps` since
+   last use (mirroring Ondo's own 1%/24h small-update rule), it reverts until the operator
+   acknowledges via `resetRatioGuard`. This is load-bearing, not just corporate-action hygiene:
+   it also catches the intraday desync between the oracle-fresh wrapper leg and the
+   keeper-cached asset mark (an oracle push before the next `pullAssetPrice` would otherwise
+   misprice the ratio by the move). Accordingly the bound is fail-closed: zero is the reserved
+   pre-deploy default that keeps PSM mint/redeem inert (`RatioGuardNotConfigured`), it must be
+   set non-zero (≤ 100%) to enable them, and can never return to zero — `setPsmPaused` is the
+   kill switch, not disabling the safety check. `ReserveVault.deposit` (no conversion) is
+   exempt, so makers can always deliver hedges. Keeper runbook: pull `pullAssetPrice(asset)`
+   alongside every
+   oracle push for PSM-enabled assets to shrink the desync window.
 5. **Dividend payers close the loop via `skimExcess`.** For assets like TLT the reserve
    appreciates with reinvested dividends (`R_a` grows; `E_a` doesn't), while eToken holders are
    owed dividends via the eToken reward accumulator. The reserve surplus **is** that dividend
@@ -386,8 +407,9 @@ Blocked-while-halted rules from `migrateToken` apply unchanged.
 
 PSM redeem stays live for a **halted** asset: in-kind and price-free, strictly better than the
 halt-fund path while reserve lasts; `closeExposure` at the frozen halt price keeps books
-consistent. Trading **pause** (global or per-asset) blocks **all** PSM paths — mint, redeem, and
-backfill.
+consistent. Trading **pause** (global or per-asset) blocks psmMint and psmRedeem.
+`ReserveVault.deposit` is not pause-gated — reserve additions are inherently ungateable
+(donation-by-transfer) and only ever add backing (§4.5).
 
 ### 8.5 Out of scope for v1
 
@@ -442,7 +464,7 @@ configured first at deployment.
 | --- | --- | --- |
 | 1 | Per-asset forceExecute designation (independently shippable) | VaultManager, OwnMarket |
 | 2 | Vault classes (`backedAsset`) + delta netting | VaultManager |
-| 3 | ReserveVault + `psmMint`/`psmRedeem`/`psmBackfill` + PSM config | ReserveVault (new), OwnMarket, AssetRegistry |
+| 3 | ReserveVault (incl. deposit) + `psmMint`/`psmRedeem` + PSM config | ReserveVault (new), OwnMarket, AssetRegistry |
 | 4 | Per-asset lending-vault allowlist | AssetRegistry, BorrowManager |
 | 5 | Tests, invariants, docs, deployment scripts | test/, script/, docs/ |
 

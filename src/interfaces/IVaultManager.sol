@@ -224,9 +224,7 @@ interface IVaultManager {
     error InvalidRatio();
     /// @notice Vault's collateral is already excluded from the pool.
     error VaultAlreadyExcluded(address vault);
-    /// @notice The operation requires a generic (crypto-native) vault, but an RWA reserve vault was
-    ///         given. RWA reserves are 1:1 backing and never source force-execution, nor do they take
-    ///         a concentration cap (the netting clamp bounds their effect).
+    /// @notice The operation requires a generic vault, but an RWA reserve vault was given.
     error RwaVaultNotEligible(address vault);
 
     /// @notice The settle band is zero or exceeds 100% (BPS).
@@ -274,17 +272,15 @@ interface IVaultManager {
     //  Registration — admin only
     // ──────────────────────────────────────────────────────────
 
-    /// @notice Register an admin-deployed generic (crypto-native) vault and cache its collateral
-    ///         scaling. Its collateral counts toward the global pool. Admin-only.
+    /// @notice Register an admin-deployed generic vault and cache its collateral scaling.
+    ///         Admin-only.
     function registerVault(address vault, bytes32 collateralAsset) external;
 
-    /// @notice Register an admin-deployed vault with an explicit class. A non-zero `backedAsset`
-    ///         marks an RWA reserve vault: its collateral is delta-matched backing for that asset
-    ///         and nets against the asset's exposure (never entering the generic collateral pool).
-    ///         `bytes32(0)` registers a generic vault. Admin-only.
+    /// @notice Register an admin-deployed vault with an explicit class. Admin-only.
     /// @param vault           Vault address (must expose `asset()` / `totalAssets()`).
     /// @param collateralAsset Ticker pricing the vault's collateral token.
-    /// @param backedAsset     Asset ticker the collateral nets against, or bytes32(0) for generic.
+    /// @param backedAsset     Asset ticker the collateral nets against (RWA reserve vault), or
+    ///                        bytes32(0) for generic.
     function registerVault(address vault, bytes32 collateralAsset, bytes32 backedAsset) external;
 
     /// @notice Deregister a vault, removing its collateral from the global pool. Reverts if removing

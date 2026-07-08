@@ -16,11 +16,8 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 ///         and the claim threshold. Vaults keep custody, LP shares, yield, and lending; this
 ///         manager pools risk globally. Exposure and collateral are valued only at keeper-cached
 ///         marks refreshed by permissionless price pulls. Risk paths are O(1): `_globalNetExposureUSD`
-///         and `_globalCollateralUSD` are running totals.
-///         Vaults come in two classes: GENERIC (crypto-native collateral; counts toward
-///         `_globalCollateralUSD`) and RWA reserve vaults (wrapper-token collateral registered with
-///         a non-zero `backedAsset`; delta-matched 1:1 backing that nets against that asset's own
-///         exposure and never enters the generic pool). Global exposure is therefore NET:
+///         and `_globalCollateralUSD` are running totals. RWA reserve vaults (non-zero `backedAsset`)
+///         net against their own asset's exposure instead of joining the generic pool:
 ///         `_globalNetExposureUSD = Σ_a max(0, assetExposureUSD[a] − assetRwaCollateralUSD[a])`.
 /// @dev No external calls reach untrusted code (oracle/vault reads are views), so no ReentrancyGuard.
 contract VaultManager is IVaultManager {
@@ -164,8 +161,7 @@ contract VaultManager is IVaultManager {
         uint256 cap = _assetCapUSD[asset];
         if (newAssetUSD > cap) revert AssetCapBreached(asset, newAssetUSD, cap);
 
-        // Net the asset's RWA reserve collateral against its own exposure; only the unhedged
-        // residual is gated on generic collateral. Fully-netted books need none.
+        // Only the residual above the asset's RWA reserve is gated on generic collateral.
         uint256 projExposure = _globalNetExposureUSD - _netExposure(asset) + _netOf(newAssetUSD, asset);
         if (projExposure != 0) {
             if (_globalCollateralUSD == 0) revert CollateralNotInitialized();
@@ -245,8 +241,7 @@ contract VaultManager is IVaultManager {
 
         bytes32 backed = _vaultBackedAsset[vault];
         if (backed != bytes32(0)) {
-            // RWA reserve vault: nets against its own asset's exposure, never the generic pool.
-            // No concentration cap — the max(0, ·) netting clamp bounds its effect.
+            // RWA vault: nets against its own asset, never the generic pool; no concentration cap.
             _collateralMark[vault] = rawMark;
             _setAssetRwaCollateral(backed, _assetRwaCollateralUSD[backed] - old + rawMark);
             emit CollateralPricePulled(vault, old, rawMark);
@@ -302,8 +297,7 @@ contract VaultManager is IVaultManager {
 
         bytes32 backed = _vaultBackedAsset[vault];
         if (backed != bytes32(0)) {
-            // Removing an RWA reserve raises its asset's NET exposure; that residual must still fit
-            // under the utilisation cap. (_collateralMark is already 0 for an excluded vault.)
+            // Removing RWA reserve raises net exposure; the residual must fit under the util cap.
             uint256 newR = _assetRwaCollateralUSD[backed] - _collateralMark[vault];
             uint256 e = _assetExposureUSD[backed];
             uint256 projExposure = _globalNetExposureUSD - _netExposure(backed) + (e > newR ? e - newR : 0);
@@ -478,8 +472,7 @@ contract VaultManager is IVaultManager {
     /// @inheritdoc IVaultManager
     function setCollateralCapBps(address vault, uint256 bps) external override onlyAdmin {
         if (!_registered[vault]) revert VaultNotRegistered(vault);
-        // Concentration caps are a generic-pool concept; an RWA reserve's contribution is already
-        // bounded by its own asset's exposure via the netting clamp.
+        // Concentration caps are generic-pool-only; the netting clamp bounds RWA vaults.
         if (_vaultBackedAsset[vault] != bytes32(0)) revert RwaVaultNotEligible(vault);
         // 0 disables the cap; BPS (100%) and above are meaningless and divide-by-zero in the share
         // formula. The new cap takes effect on the vault's next pullCollateralPrice.
@@ -656,8 +649,7 @@ contract VaultManager is IVaultManager {
         if (vault != address(0)) {
             if (!_registered[vault]) revert VaultNotRegistered(vault);
             if (_excluded[vault]) revert VaultAlreadyExcluded(vault);
-            // Force-execution must never drain an RWA reserve: it releases collateral at a USD
-            // conversion that can exceed the 1:1 unit match backing all remaining holders.
+            // RWA reserves never source force-execution.
             if (_vaultBackedAsset[vault] != bytes32(0)) revert RwaVaultNotEligible(vault);
         }
         address old = _forceExecuteVault[asset];

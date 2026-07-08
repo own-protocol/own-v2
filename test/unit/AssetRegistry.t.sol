@@ -3,7 +3,7 @@ pragma solidity 0.8.28;
 
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {IAssetRegistry} from "../../src/interfaces/IAssetRegistry.sol";
-import {AssetConfig} from "../../src/interfaces/types/Types.sol";
+import {AssetConfig, PsmConfig} from "../../src/interfaces/types/Types.sol";
 import {Actors} from "../helpers/Actors.sol";
 import {BaseTest} from "../helpers/BaseTest.sol";
 
@@ -465,6 +465,182 @@ contract AssetRegistryTest is BaseTest {
         // Neither active (v2) nor legacy (eTSLA): loop checks legacy[0], misses, increments, exits.
         assertFalse(registry.isValidToken(TSLA, makeAddr("unrelated")));
     }
+
+    // ──────────────────────────────────────────────────────────
+    //  PSM configuration
+    // ──────────────────────────────────────────────────────────
+
+    function _psmSetup() internal returns (address wrapper, address reserveVault) {
+        StubReserveVaultForRegistry stub = new StubReserveVaultForRegistry(makeAddr("ondoTSLA"));
+        wrapper = stub.asset();
+        reserveVault = address(stub);
+        vm.prank(Actors.ADMIN);
+        registry.addAsset(TSLA, eTSLA, _defaultConfig(eTSLA));
+        stubVM.setVaultBackedAsset(reserveVault, TSLA);
+    }
+
+    function test_setPsmConfig_succeeds() public {
+        (address wrapper, address reserveVault) = _psmSetup();
+
+        vm.expectEmit(true, true, true, false);
+        emit IAssetRegistry.PsmConfigUpdated(TSLA, wrapper, reserveVault);
+        vm.prank(Actors.ADMIN);
+        registry.setPsmConfig(TSLA, wrapper, reserveVault);
+
+        PsmConfig memory cfg = registry.getPsmConfig(TSLA, wrapper);
+        assertEq(cfg.reserveVault, reserveVault);
+        assertEq(cfg.lastUsedRatio, 0, "guard unarmed");
+        assertFalse(cfg.paused);
+        address[] memory wrappers = registry.getPsmWrappers(TSLA);
+        assertEq(wrappers.length, 1);
+        assertEq(wrappers[0], wrapper);
+    }
+
+    function test_setPsmConfig_reconfigure_noDuplicateWrapper_resetsGuard() public {
+        (address wrapper, address reserveVault) = _psmSetup();
+        vm.prank(Actors.ADMIN);
+        registry.setPsmConfig(TSLA, wrapper, reserveVault);
+
+        // Arm the guard, then reconfigure with a replacement vault for the same wrapper.
+        address marketAddr = makeAddr("market");
+        vm.startPrank(Actors.ADMIN);
+        protocolRegistry.setAddress(protocolRegistry.MARKET(), marketAddr);
+        vm.stopPrank();
+        vm.prank(marketAddr);
+        registry.notePsmRatio(TSLA, wrapper, 1e18);
+
+        StubReserveVaultForRegistry stub2 = new StubReserveVaultForRegistry(wrapper);
+        stubVM.setVaultBackedAsset(address(stub2), TSLA);
+        vm.prank(Actors.ADMIN);
+        registry.setPsmConfig(TSLA, wrapper, address(stub2));
+
+        PsmConfig memory cfg = registry.getPsmConfig(TSLA, wrapper);
+        assertEq(cfg.reserveVault, address(stub2));
+        assertEq(cfg.lastUsedRatio, 0, "reconfiguration disarms the guard");
+        assertEq(registry.getPsmWrappers(TSLA).length, 1, "no duplicate list entry");
+    }
+
+    function test_setPsmConfig_validation_reverts() public {
+        (address wrapper, address reserveVault) = _psmSetup();
+
+        vm.startPrank(Actors.ADMIN);
+        // Unknown asset.
+        vm.expectRevert(abi.encodeWithSelector(IAssetRegistry.AssetNotFound.selector, GOLD));
+        registry.setPsmConfig(GOLD, wrapper, reserveVault);
+        // Zero addresses.
+        vm.expectRevert(IAssetRegistry.ZeroAddress.selector);
+        registry.setPsmConfig(TSLA, address(0), reserveVault);
+        vm.expectRevert(IAssetRegistry.ZeroAddress.selector);
+        registry.setPsmConfig(TSLA, wrapper, address(0));
+        // Vault not registered as RWA backing this ticker.
+        StubReserveVaultForRegistry unregistered = new StubReserveVaultForRegistry(wrapper);
+        vm.expectRevert(
+            abi.encodeWithSelector(IAssetRegistry.ReserveVaultMismatch.selector, address(unregistered), TSLA)
+        );
+        registry.setPsmConfig(TSLA, wrapper, address(unregistered));
+        // Vault holds a different token than the wrapper being configured.
+        address otherToken = makeAddr("otherToken");
+        vm.expectRevert(abi.encodeWithSelector(IAssetRegistry.WrapperMismatch.selector, otherToken, wrapper));
+        registry.setPsmConfig(TSLA, otherToken, reserveVault);
+        vm.stopPrank();
+
+        // Non-admin.
+        vm.prank(Actors.ATTACKER);
+        vm.expectRevert(IAssetRegistry.OnlyAdmin.selector);
+        registry.setPsmConfig(TSLA, wrapper, reserveVault);
+    }
+
+    function test_setPsmPaused_andReverts() public {
+        (address wrapper, address reserveVault) = _psmSetup();
+
+        // Not configured yet.
+        vm.prank(Actors.ADMIN);
+        vm.expectRevert(abi.encodeWithSelector(IAssetRegistry.PsmNotConfigured.selector, TSLA, wrapper));
+        registry.setPsmPaused(TSLA, wrapper, true);
+
+        vm.startPrank(Actors.ADMIN);
+        registry.setPsmConfig(TSLA, wrapper, reserveVault);
+        vm.expectEmit(true, true, false, true);
+        emit IAssetRegistry.PsmPausedUpdated(TSLA, wrapper, true);
+        registry.setPsmPaused(TSLA, wrapper, true);
+        vm.stopPrank();
+        assertTrue(registry.getPsmConfig(TSLA, wrapper).paused);
+
+        vm.prank(Actors.ATTACKER);
+        vm.expectRevert(IAssetRegistry.OnlyOperator.selector);
+        registry.setPsmPaused(TSLA, wrapper, false);
+    }
+
+    function test_setRatioJumpBoundBps_boundsAndAuth() public {
+        vm.startPrank(Actors.ADMIN);
+        vm.expectEmit(false, false, false, true);
+        emit IAssetRegistry.RatioJumpBoundUpdated(0, 200);
+        registry.setRatioJumpBoundBps(200);
+        assertEq(registry.ratioJumpBoundBps(), 200);
+
+        vm.expectRevert(IAssetRegistry.InvalidRatioJumpBound.selector);
+        registry.setRatioJumpBoundBps(10_001);
+        // Fail-closed: zero is the reserved pre-deploy default and can never be set again.
+        vm.expectRevert(IAssetRegistry.InvalidRatioJumpBound.selector);
+        registry.setRatioJumpBoundBps(0);
+        vm.stopPrank();
+
+        vm.prank(Actors.ATTACKER);
+        vm.expectRevert(IAssetRegistry.OnlyAdmin.selector);
+        registry.setRatioJumpBoundBps(100);
+    }
+
+    function test_resetRatioGuard_andNotePsmRatio_auth() public {
+        (address wrapper, address reserveVault) = _psmSetup();
+        vm.prank(Actors.ADMIN);
+        registry.setPsmConfig(TSLA, wrapper, reserveVault);
+
+        // notePsmRatio is market-only.
+        vm.prank(Actors.ATTACKER);
+        vm.expectRevert(IAssetRegistry.OnlyMarket.selector);
+        registry.notePsmRatio(TSLA, wrapper, 1e18);
+
+        address marketAddr = makeAddr("market");
+        vm.startPrank(Actors.ADMIN);
+        protocolRegistry.setAddress(protocolRegistry.MARKET(), marketAddr);
+        vm.stopPrank();
+        vm.prank(marketAddr);
+        vm.expectEmit(true, true, false, true);
+        emit IAssetRegistry.PsmRatioNoted(TSLA, wrapper, 1.05e18);
+        registry.notePsmRatio(TSLA, wrapper, 1.05e18);
+        assertEq(registry.getPsmConfig(TSLA, wrapper).lastUsedRatio, 1.05e18);
+
+        // Operator reset disarms.
+        vm.prank(Actors.ADMIN);
+        vm.expectEmit(true, true, false, false);
+        emit IAssetRegistry.RatioGuardReset(TSLA, wrapper);
+        registry.resetRatioGuard(TSLA, wrapper);
+        assertEq(registry.getPsmConfig(TSLA, wrapper).lastUsedRatio, 0);
+
+        // Reset on an unconfigured wrapper reverts; non-operator reverts.
+        vm.prank(Actors.ADMIN);
+        vm.expectRevert(abi.encodeWithSelector(IAssetRegistry.PsmNotConfigured.selector, TSLA, makeAddr("unknown")));
+        registry.resetRatioGuard(TSLA, makeAddr("unknown"));
+        vm.prank(Actors.ATTACKER);
+        vm.expectRevert(IAssetRegistry.OnlyOperator.selector);
+        registry.resetRatioGuard(TSLA, wrapper);
+    }
+
+    function test_getPsmConfig_notConfigured_reverts() public {
+        vm.expectRevert(abi.encodeWithSelector(IAssetRegistry.PsmNotConfigured.selector, TSLA, makeAddr("wrapper")));
+        registry.getPsmConfig(TSLA, makeAddr("wrapper"));
+    }
+}
+
+/// @dev Minimal IReserveVault surface for PSM config validation.
+contract StubReserveVaultForRegistry {
+    address public asset;
+
+    constructor(
+        address asset_
+    ) {
+        asset = asset_;
+    }
 }
 
 /// @dev Records the applySplit call migrateToken now makes (L-07 atomic coupling), without
@@ -474,6 +650,18 @@ contract RecordingVaultManagerForRegistry {
     uint256 public lastRatio;
     uint256 public calls;
     bool public assetHalted;
+
+    mapping(address => bytes32) public backedAssets;
+
+    function setVaultBackedAsset(address vault, bytes32 ticker) external {
+        backedAssets[vault] = ticker;
+    }
+
+    function vaultBackedAsset(
+        address vault
+    ) external view returns (bytes32) {
+        return backedAssets[vault];
+    }
 
     function applySplit(bytes32 asset, uint256 ratio) external {
         lastAsset = asset;

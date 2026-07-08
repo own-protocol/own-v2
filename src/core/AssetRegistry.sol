@@ -4,8 +4,9 @@ pragma solidity 0.8.28;
 import {IAssetRegistry} from "../interfaces/IAssetRegistry.sol";
 
 import {IProtocolRegistry} from "../interfaces/IProtocolRegistry.sol";
+import {IReserveVault} from "../interfaces/IReserveVault.sol";
 import {IVaultManager} from "../interfaces/IVaultManager.sol";
-import {AssetConfig, PRECISION} from "../interfaces/types/Types.sol";
+import {AssetConfig, BPS, PRECISION, PsmConfig} from "../interfaces/types/Types.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 /// @title AssetRegistry — Asset whitelisting and token tracking
@@ -28,6 +29,15 @@ contract AssetRegistry is IAssetRegistry {
     /// @dev Legacy token → conversion ratio (1e18) to the current active token.
     mapping(address => uint256) private _legacyRatio;
 
+    /// @dev Ticker → wrapper token → PSM configuration.
+    mapping(bytes32 => mapping(address => PsmConfig)) private _psmConfigs;
+
+    /// @dev Ticker → wrapper tokens ever configured (ops/indexing enumeration; no on-chain iteration).
+    mapping(bytes32 => address[]) private _psmWrappers;
+
+    /// @dev Max per-op drift of the derived PSM ratio (BPS). 0 = unconfigured (mint/redeem inert).
+    uint256 private _ratioJumpBoundBps;
+
     // ──────────────────────────────────────────────────────────
     //  Modifiers
     // ──────────────────────────────────────────────────────────
@@ -42,6 +52,11 @@ contract AssetRegistry is IAssetRegistry {
 
     modifier onlyOperator() {
         if (!registry.hasRole(OPERATOR, msg.sender)) revert OnlyOperator();
+        _;
+    }
+
+    modifier onlyMarket() {
+        if (msg.sender != registry.market()) revert OnlyMarket();
         _;
     }
 
@@ -134,6 +149,81 @@ contract AssetRegistry is IAssetRegistry {
         address token
     ) external view returns (uint256) {
         return _legacyRatio[token];
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  PSM configuration
+    // ──────────────────────────────────────────────────────────
+
+    /// @inheritdoc IAssetRegistry
+    function setPsmConfig(bytes32 ticker, address wrapper, address reserveVault) external onlyAdmin {
+        if (!_registered[ticker]) revert AssetNotFound(ticker);
+        if (wrapper == address(0) || reserveVault == address(0)) revert ZeroAddress();
+        // Vault must be RWA-registered for this ticker and custody this wrapper.
+        if (IVaultManager(registry.vaultManager()).vaultBackedAsset(reserveVault) != ticker) {
+            revert ReserveVaultMismatch(reserveVault, ticker);
+        }
+        address vaultAsset = IReserveVault(reserveVault).asset();
+        if (vaultAsset != wrapper) revert WrapperMismatch(wrapper, vaultAsset);
+
+        PsmConfig storage cfg = _psmConfigs[ticker][wrapper];
+        if (cfg.reserveVault == address(0)) _psmWrappers[ticker].push(wrapper);
+        cfg.reserveVault = reserveVault;
+        // (Re)configuration disarms the ratio-jump guard; the next PSM operation re-arms it.
+        cfg.lastUsedRatio = 0;
+
+        emit PsmConfigUpdated(ticker, wrapper, reserveVault);
+    }
+
+    /// @inheritdoc IAssetRegistry
+    function setPsmPaused(bytes32 ticker, address wrapper, bool paused) external onlyOperator {
+        PsmConfig storage cfg = _psmConfigs[ticker][wrapper];
+        if (cfg.reserveVault == address(0)) revert PsmNotConfigured(ticker, wrapper);
+        cfg.paused = paused;
+        emit PsmPausedUpdated(ticker, wrapper, paused);
+    }
+
+    /// @inheritdoc IAssetRegistry
+    function setRatioJumpBoundBps(
+        uint256 bps
+    ) external onlyAdmin {
+        // Fail-closed: zero (pre-deploy default) can never be set again; > 100% is meaningless.
+        if (bps == 0 || bps > BPS) revert InvalidRatioJumpBound();
+        uint256 old = _ratioJumpBoundBps;
+        _ratioJumpBoundBps = bps;
+        emit RatioJumpBoundUpdated(old, bps);
+    }
+
+    /// @inheritdoc IAssetRegistry
+    function resetRatioGuard(bytes32 ticker, address wrapper) external onlyOperator {
+        PsmConfig storage cfg = _psmConfigs[ticker][wrapper];
+        if (cfg.reserveVault == address(0)) revert PsmNotConfigured(ticker, wrapper);
+        cfg.lastUsedRatio = 0;
+        emit RatioGuardReset(ticker, wrapper);
+    }
+
+    /// @inheritdoc IAssetRegistry
+    function notePsmRatio(bytes32 ticker, address wrapper, uint256 ratio) external onlyMarket {
+        _psmConfigs[ticker][wrapper].lastUsedRatio = ratio;
+        emit PsmRatioNoted(ticker, wrapper, ratio);
+    }
+
+    /// @inheritdoc IAssetRegistry
+    function getPsmConfig(bytes32 ticker, address wrapper) external view returns (PsmConfig memory config) {
+        config = _psmConfigs[ticker][wrapper];
+        if (config.reserveVault == address(0)) revert PsmNotConfigured(ticker, wrapper);
+    }
+
+    /// @inheritdoc IAssetRegistry
+    function getPsmWrappers(
+        bytes32 ticker
+    ) external view returns (address[] memory) {
+        return _psmWrappers[ticker];
+    }
+
+    /// @inheritdoc IAssetRegistry
+    function ratioJumpBoundBps() external view returns (uint256) {
+        return _ratioJumpBoundBps;
     }
 
     // ──────────────────────────────────────────────────────────

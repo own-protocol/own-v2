@@ -167,6 +167,17 @@ struct DepositRequest {
     DepositStatus status;
 }
 
+/// @notice PSM configuration for one (asset, wrapper token) pair.
+/// @param reserveVault  ReserveVault holding this wrapper as 1:1 backing (0 = not configured).
+/// @param lastUsedRatio Conversion ratio (eTokens per wrapper unit, 1e18) at the last PSM
+///                      operation; 0 = guard unarmed.
+/// @param paused        Per-wrapper PSM pause (blocks psmMint / psmRedeem).
+struct PsmConfig {
+    address reserveVault;
+    uint256 lastUsedRatio;
+    bool paused;
+}
+
 /// @notice Onchain state for a registered vault manager.
 /// @param maxExposure     Max USD notional the VM will hedge (18 decimals).
 /// @param currentExposure Current outstanding notional (18 decimals).

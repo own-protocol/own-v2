@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {AssetConfig} from "./types/Types.sol";
+import {AssetConfig, PsmConfig} from "./types/Types.sol";
 
 /// @title IAssetRegistry — Asset whitelisting and token tracking
 /// @notice Manages the set of tradeable assets, their active eToken addresses,
@@ -34,6 +34,35 @@ interface IAssetRegistry {
     /// @param ratio    New tokens per old token (1e18-scaled).
     event TokenMigrated(bytes32 indexed ticker, address indexed oldToken, address indexed newToken, uint256 ratio);
 
+    /// @notice Emitted when a (asset, wrapper) PSM configuration is set or replaced.
+    /// @param ticker       Asset ticker.
+    /// @param wrapper      Wrapper token address.
+    /// @param reserveVault ReserveVault holding the wrapper reserve.
+    event PsmConfigUpdated(bytes32 indexed ticker, address indexed wrapper, address indexed reserveVault);
+
+    /// @notice Emitted when a wrapper's PSM pause flag is toggled.
+    /// @param ticker  Asset ticker.
+    /// @param wrapper Wrapper token address.
+    /// @param paused  New pause flag.
+    event PsmPausedUpdated(bytes32 indexed ticker, address indexed wrapper, bool paused);
+
+    /// @notice Emitted when the global PSM ratio-jump bound is updated.
+    /// @param oldBps Previous bound (BPS; 0 = unconfigured pre-deploy default).
+    /// @param newBps New bound (BPS; always non-zero once configured).
+    event RatioJumpBoundUpdated(uint256 oldBps, uint256 newBps);
+
+    /// @notice Emitted when a wrapper's last-used conversion ratio is recorded by the market.
+    /// @param ticker  Asset ticker.
+    /// @param wrapper Wrapper token address.
+    /// @param ratio   Conversion ratio used (eTokens per wrapper unit, 1e18).
+    event PsmRatioNoted(bytes32 indexed ticker, address indexed wrapper, uint256 ratio);
+
+    /// @notice Emitted when the operator disarms a wrapper's ratio-jump guard (post
+    ///         corporate-action acknowledgment); the next PSM operation re-arms it.
+    /// @param ticker  Asset ticker.
+    /// @param wrapper Wrapper token address.
+    event RatioGuardReset(bytes32 indexed ticker, address indexed wrapper);
+
     // ──────────────────────────────────────────────────────────
     //  Errors
     // ──────────────────────────────────────────────────────────
@@ -61,6 +90,22 @@ interface IAssetRegistry {
 
     /// @notice Caller does not hold the asset-registry operator role.
     error OnlyOperator();
+
+    /// @notice Caller is not the market contract.
+    error OnlyMarket();
+
+    /// @notice The reserve vault is not registered on the VaultManager as an RWA vault backing
+    ///         this ticker (`vaultBackedAsset(reserveVault) != ticker`).
+    error ReserveVaultMismatch(address reserveVault, bytes32 ticker);
+
+    /// @notice The reserve vault holds a different token than the wrapper being configured.
+    error WrapperMismatch(address wrapper, address vaultAsset);
+
+    /// @notice No PSM configuration exists for this (ticker, wrapper) pair.
+    error PsmNotConfigured(bytes32 ticker, address wrapper);
+
+    /// @notice The ratio-jump bound must be non-zero and at most BPS (100%).
+    error InvalidRatioJumpBound();
 
     // ──────────────────────────────────────────────────────────
     //  Admin functions
@@ -101,6 +146,47 @@ interface IAssetRegistry {
     function legacyRatioToActive(
         address token
     ) external view returns (uint256 ratio);
+
+    // ──────────────────────────────────────────────────────────
+    //  PSM configuration
+    // ──────────────────────────────────────────────────────────
+
+    /// @notice Configure (or replace) the ReserveVault backing a wrapper for `ticker`. Admin-only.
+    ///         The vault must be registered on the VaultManager with `backedAsset == ticker` and
+    ///         must hold `wrapper` as its asset. Re-configuring resets the ratio-jump guard.
+    /// @param ticker       Asset ticker.
+    /// @param wrapper      Wrapper token address (e.g. ondoTSLA).
+    /// @param reserveVault ReserveVault holding the wrapper reserve.
+    function setPsmConfig(bytes32 ticker, address wrapper, address reserveVault) external;
+
+    /// @notice Pause or resume PSM operations for one wrapper. Operator-only (instant response).
+    function setPsmPaused(bytes32 ticker, address wrapper, bool paused) external;
+
+    /// @notice Set the global PSM ratio-jump bound in BPS (max per-operation drift of the derived
+    ///         conversion ratio). Must be non-zero and ≤ BPS; zero is the pre-deploy default that
+    ///         disables PSM mint/redeem and can never be set again. Admin-only.
+    function setRatioJumpBoundBps(
+        uint256 bps
+    ) external;
+
+    /// @notice Disarm a wrapper's ratio-jump guard after an acknowledged corporate action; the
+    ///         next PSM operation re-arms it. Operator-only.
+    function resetRatioGuard(bytes32 ticker, address wrapper) external;
+
+    /// @notice Record the conversion ratio used by a PSM operation (ratio-jump guard state).
+    ///         Market-only.
+    function notePsmRatio(bytes32 ticker, address wrapper, uint256 ratio) external;
+
+    /// @notice PSM configuration for a (ticker, wrapper) pair. Reverts if not configured.
+    function getPsmConfig(bytes32 ticker, address wrapper) external view returns (PsmConfig memory config);
+
+    /// @notice All wrapper tokens ever configured for `ticker` (ops/indexing enumeration).
+    function getPsmWrappers(
+        bytes32 ticker
+    ) external view returns (address[] memory wrappers);
+
+    /// @notice Global PSM ratio-jump bound (BPS; 0 = unconfigured — PSM mint/redeem inert).
+    function ratioJumpBoundBps() external view returns (uint256);
 
     // ──────────────────────────────────────────────────────────
     //  View functions
