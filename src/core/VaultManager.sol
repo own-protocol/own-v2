@@ -90,9 +90,10 @@ contract VaultManager is IVaultManager {
     /// @dev Delay after a resting redeem order is placed before it can be force-executed.
     uint256 private _claimThreshold;
 
-    /// @dev Protocol-designated vault that sources collateral for force-execution. Zero (the default)
-    ///      disables force-execution entirely; the operator rotates it (e.g. to the healthiest vault).
-    address private _forceExecuteVault;
+    /// @dev Per-asset protocol-designated vault that sources collateral for force-execution. Zero
+    ///      (the default) disables force-execution for that asset; the operator rotates it per asset
+    ///      (e.g. to the healthiest vault).
+    mapping(bytes32 => address) private _forceExecuteVault;
 
     // ──────────────────────────────────────────────────────────
     //  Modifiers
@@ -573,23 +574,24 @@ contract VaultManager is IVaultManager {
     }
 
     /// @inheritdoc IVaultManager
-    function setForceExecuteVault(
-        address vault
-    ) external override onlyOperator {
-        // address(0) clears the designation and disables force-execution (fail-safe). A real vault
-        // must be registered and currently in the pool; runtime exclusion/halt is re-checked at use.
+    function setForceExecuteVault(bytes32 asset, address vault) external override onlyOperator {
+        // address(0) clears the designation and disables force-execution for the asset (fail-safe).
+        // A real vault must be registered and currently in the pool; runtime exclusion/halt is
+        // re-checked at use.
         if (vault != address(0)) {
             if (!_registered[vault]) revert VaultNotRegistered(vault);
             if (_excluded[vault]) revert VaultAlreadyExcluded(vault);
         }
-        address old = _forceExecuteVault;
-        _forceExecuteVault = vault;
-        emit ForceExecuteVaultUpdated(old, vault);
+        address old = _forceExecuteVault[asset];
+        _forceExecuteVault[asset] = vault;
+        emit ForceExecuteVaultUpdated(asset, old, vault);
     }
 
     /// @inheritdoc IVaultManager
-    function forceExecuteVault() external view override returns (address) {
-        return _forceExecuteVault;
+    function forceExecuteVault(
+        bytes32 asset
+    ) external view override returns (address) {
+        return _forceExecuteVault[asset];
     }
 
     // ──────────────────────────────────────────────────────────

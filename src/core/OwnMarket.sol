@@ -208,9 +208,9 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard, EIP712 {
         if (order.escrowToken != _activeToken(order.asset)) revert OrderTokenMigrated(orderId);
 
         IVaultManager vmgr = IVaultManager(registry.vaultManager());
-        // Collateral source is protocol-designated; the redeemer cannot pick an arbitrary vault.
-        // address(0) (the default) disables force-execution entirely (fail-safe).
-        address designated = vmgr.forceExecuteVault();
+        // Collateral source is protocol-designated per asset; the redeemer cannot pick an arbitrary
+        // vault. address(0) (the default) disables force-execution for the asset (fail-safe).
+        address designated = vmgr.forceExecuteVault(order.asset);
         if (designated == address(0)) revert ForceExecuteVaultNotSet();
         if (vault != designated) revert VaultNotDesignated(vault, designated);
         if (!vmgr.isRegisteredVault(vault)) revert VaultNotRegistered(vault);

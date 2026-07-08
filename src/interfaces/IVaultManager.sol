@@ -155,10 +155,11 @@ interface IVaultManager {
     /// @param newThreshold New delay (seconds).
     event ClaimThresholdUpdated(uint256 oldThreshold, uint256 newThreshold);
 
-    /// @notice Emitted when the designated force-execution collateral vault is changed.
+    /// @notice Emitted when an asset's designated force-execution collateral vault is changed.
+    /// @param asset    Asset ticker the designation applies to.
     /// @param oldVault Previous force-execute vault (0 = disabled).
     /// @param newVault New force-execute vault (0 = disabled).
-    event ForceExecuteVaultUpdated(address indexed oldVault, address indexed newVault);
+    event ForceExecuteVaultUpdated(bytes32 indexed asset, address indexed oldVault, address indexed newVault);
 
     /// @notice Emitted when an asset's exposure is re-denominated for a stock split.
     /// @param asset    Asset ticker.
@@ -415,15 +416,16 @@ interface IVaultManager {
     ) external;
     function claimThreshold() external view returns (uint256);
 
-    /// @notice Set the protocol-designated vault that sources collateral for force-execution.
-    ///         `address(0)` clears it and disables force-execution (fail-safe default); a real vault
-    ///         must be registered and not excluded. Operator-only; rotate to the healthiest vault.
-    function setForceExecuteVault(
-        address vault
-    ) external;
-    /// @notice The designated force-execution collateral vault, or `address(0)` if force-execution
-    ///         is currently disabled.
-    function forceExecuteVault() external view returns (address);
+    /// @notice Set the protocol-designated vault that sources collateral when `asset` redeem orders
+    ///         are force-executed. `address(0)` clears it and disables force-execution for that asset
+    ///         (fail-safe default); a real vault must be registered and not excluded. Operator-only;
+    ///         rotate per asset (e.g. to the healthiest vault).
+    function setForceExecuteVault(bytes32 asset, address vault) external;
+    /// @notice The designated force-execution collateral vault for `asset`, or `address(0)` if
+    ///         force-execution is currently disabled for that asset.
+    function forceExecuteVault(
+        bytes32 asset
+    ) external view returns (address);
 
     // ──────────────────────────────────────────────────────────
     //  Views — risk accounting

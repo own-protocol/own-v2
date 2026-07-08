@@ -75,7 +75,7 @@ contract HaltWithPriceFlowTest is BaseTest {
 
         // Global controls now live on the VaultManager.
         _setClaimThreshold(CLAIM_THRESHOLD);
-        _setForceExecuteVault(address(vault));
+        _setForceExecuteVault(TSLA, address(vault));
         _registerSigner(vm1Signer, Actors.VM1);
 
         _setAssetCap(TSLA, DEFAULT_ASSET_CAP_USD);

@@ -827,6 +827,22 @@ contract OwnMarketTest is BaseTest {
         market.forceExecuteOrder(orderId, mockVault, _assetPriceData(TSLA_PRICE), _assetPriceData(ETH_PRICE));
     }
 
+    /// @dev The designation lookup is keyed by the order's asset: an exact-calldata mock for
+    ///      forceExecuteVault(TSLA) returning zero overrides the catch-all designation, so the
+    ///      revert proves the market queried the VaultManager with `order.asset`.
+    function test_forceExecuteOrder_perAssetDesignation_usesOrderAsset() public {
+        vm.mockCall(
+            mockVaultManager,
+            abi.encodeWithSelector(IVaultManager.forceExecuteVault.selector, TSLA),
+            abi.encode(address(0))
+        );
+        uint256 orderId = _placeRedeem(Actors.MINTER1, 4e18, TSLA_PRICE);
+        vm.warp(block.timestamp + CLAIM_THRESHOLD);
+        vm.prank(Actors.MINTER1);
+        vm.expectRevert(IOwnMarket.ForceExecuteVaultNotSet.selector);
+        market.forceExecuteOrder(orderId, mockVault, _assetPriceData(TSLA_PRICE), _assetPriceData(ETH_PRICE));
+    }
+
     /// @dev The redeemer cannot source collateral from a vault other than the protocol-designated one.
     function test_forceExecuteOrder_wrongVault_reverts() public {
         address otherVault = makeAddr("otherVault");
