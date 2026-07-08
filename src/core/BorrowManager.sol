@@ -146,14 +146,24 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
     bytes32 private constant ADMIN = keccak256("ADMIN");
     bytes32 private constant OPERATOR = keccak256("OPERATOR");
 
+    // Modifier bodies inline at every use site; delegating to a shared internal
+    // check keeps one copy of the role-read + revert in the bytecode.
     modifier onlyAdmin() {
-        if (!registry.hasRole(ADMIN, msg.sender)) revert OnlyAdmin();
+        _checkAdmin();
         _;
     }
 
     modifier onlyOperator() {
-        if (!registry.hasRole(OPERATOR, msg.sender)) revert OnlyOperator();
+        _checkOperator();
         _;
+    }
+
+    function _checkAdmin() internal view {
+        if (!registry.hasRole(ADMIN, msg.sender)) revert OnlyAdmin();
+    }
+
+    function _checkOperator() internal view {
+        if (!registry.hasRole(OPERATOR, msg.sender)) revert OnlyOperator();
     }
 
     // ──────────────────────────────────────────────────────────
@@ -244,7 +254,7 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
         IERC20(eToken).safeTransferFrom(msg.sender, address(this), eTokenAmount);
 
         // Borrow stablecoin from Aave on the vault's behalf via credit delegation.
-        IAaveV3Pool(aavePool).borrow(stablecoin, stablecoinAmount, AAVE_VARIABLE_RATE_MODE, 0, vault);
+        _drawFromAave(stablecoinAmount);
 
         // Forward the borrowed stablecoin to the borrower.
         IERC20(stablecoin).safeTransfer(msg.sender, stablecoinAmount);
@@ -333,7 +343,7 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
         if (_positions[borrower][asset].principal == 0) revert NoPosition(borrower, asset);
         if (repayAmount == 0) revert ZeroAmount();
         // Halted assets settle only via settleHaltedPosition() at the frozen halt price (GPT5-H-01).
-        if (IVaultManager(registry.vaultManager()).isAssetHalted(asset)) revert VaultEffectivelyHalted();
+        if (_vaultManager().isAssetHalted(asset)) revert VaultEffectivelyHalted();
 
         _accrue();
         uint256 oraclePrice = _verifyPrice(asset, priceData);
@@ -480,7 +490,7 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
         Position storage p = _positions[borrower][asset];
         if (p.principal == 0) revert NoPosition(borrower, asset);
 
-        IVaultManager vmgr = IVaultManager(registry.vaultManager());
+        IVaultManager vmgr = _vaultManager();
         if (!vmgr.isAssetHalted(asset)) revert AssetNotHalted(asset);
         // Proceeds below are accounted in stablecoin units; the assumption must hold on-chain.
         if (vmgr.paymentToken() != stablecoin) revert PaymentTokenMismatch();
@@ -545,7 +555,7 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
     function sweepDividends(
         address eToken
     ) external nonReentrant returns (uint256 amount) {
-        if (!IAssetRegistry(registry.assetRegistry()).isValidToken(IEToken(eToken).ticker(), eToken)) {
+        if (!_assetRegistry().isValidToken(IEToken(eToken).ticker(), eToken)) {
             revert InvalidEToken(eToken);
         }
         amount = IEToken(eToken).claimableRewards(address(this));
@@ -554,7 +564,7 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
         // Realize the pooled dividends, then forward them to the VM (fixed destination), matching the
         // premium sweep in {_repayAaveAndSweep}. The VM handles downstream distribution off-chain.
         IEToken(eToken).claimRewards();
-        address beneficiary = IOwnVault(vault).manager();
+        address beneficiary = _boundManager();
         IERC20(IEToken(eToken).rewardToken()).safeTransfer(beneficiary, amount);
 
         emit DividendsSwept(eToken, beneficiary, amount);
@@ -564,7 +574,7 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
     function claimEarnedInterest(
         uint256 amount
     ) external nonReentrant {
-        address mgr = IOwnVault(vault).manager();
+        address mgr = _boundManager();
         if (msg.sender != mgr) revert OnlyManager();
         if (amount == 0) revert ZeroAmount();
 
@@ -575,10 +585,10 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
         // The interest is earned but not yet collected from borrowers, so draw the cash from the
         // vault's Aave credit line. Borrower repayments later retire this draw via the smaller surplus
         // left to sweep in {_repayAaveAndSweep}; the carry (Aave interest on the draw) is borne by the VM.
-        IAaveV3Pool(aavePool).borrow(stablecoin, amount, AAVE_VARIABLE_RATE_MODE, 0, vault);
+        _drawFromAave(amount);
 
         // Aave blocks HF < 1.0 on the borrow itself; this enforces a configurable margin above that.
-        (,,,,, uint256 hf) = IAaveV3Pool(aavePool).getUserAccountData(vault);
+        uint256 hf = _vaultAaveHealthFactor();
         if (hf < minClaimHealthFactor) revert ClaimUnsafeHealthFactor(hf);
 
         IERC20(stablecoin).safeTransfer(mgr, amount);
@@ -603,7 +613,7 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
     function requireVaultHealthy() external view {
         // Aave only blocks HF < 1.0 on its own actions; enforce the configured margin above it after
         // collateral leaves on a release, so the vault's Aave position can't be driven to liquidation.
-        (,,,,, uint256 hf) = IAaveV3Pool(aavePool).getUserAccountData(vault);
+        uint256 hf = _vaultAaveHealthFactor();
         if (hf < minClaimHealthFactor) revert VaultUnsafeHealthFactor(hf);
     }
 
@@ -748,7 +758,7 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
 
     /// @inheritdoc IBorrowManager
     function maxDebtUSD() public view returns (uint256) {
-        return IVaultManager(registry.vaultManager()).collateralMark(vault).mulDiv(targetLtvBps, BPS);
+        return _vaultManager().collateralMark(vault).mulDiv(targetLtvBps, BPS);
     }
 
     /// @inheritdoc IBorrowManager
@@ -769,7 +779,7 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
     /// @dev Earned, uncollected premium = book debt − the vault's real Aave debt (≥ 0 by the floor).
     function earnedInterest() public view returns (uint256) {
         uint256 book = LendingMath.scaledToActual(_totalScaledDebt, _projectedIndex());
-        uint256 aaveDebt = IERC20(debtToken).balanceOf(vault);
+        uint256 aaveDebt = _vaultAaveDebt();
         return book > aaveDebt ? book - aaveDebt : 0;
     }
 
@@ -844,7 +854,7 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
         uint256 idx
     ) internal view returns (uint256) {
         if (_totalScaledDebt < 10 ** _stableDecimals) return idx;
-        uint256 realAaveDebt = IERC20(debtToken).balanceOf(vault);
+        uint256 realAaveDebt = _vaultAaveDebt();
         if (realAaveDebt == 0) return idx;
         uint256 minIndex = realAaveDebt.mulDiv(PRECISION, _totalScaledDebt);
         return idx < minIndex ? minIndex : idx;
@@ -877,19 +887,58 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
     }
 
     // ──────────────────────────────────────────────────────────
+    //  Internal — shared reads (single bytecode copy per external-call pattern)
+    // ──────────────────────────────────────────────────────────
+
+    function _vaultManager() internal view returns (IVaultManager) {
+        return IVaultManager(registry.vaultManager());
+    }
+
+    function _assetRegistry() internal view returns (IAssetRegistry) {
+        return IAssetRegistry(registry.assetRegistry());
+    }
+
+    /// @dev The vault's live Aave debt (variable debt token balance).
+    function _vaultAaveDebt() internal view returns (uint256) {
+        return IERC20(debtToken).balanceOf(vault);
+    }
+
+    /// @dev The VM bound to this manager's vault (lending-revenue destination).
+    function _boundManager() internal view returns (address) {
+        return IOwnVault(vault).manager();
+    }
+
+    /// @dev The vault's live Aave health factor.
+    function _vaultAaveHealthFactor() internal view returns (uint256 hf) {
+        (,,,,, hf) = IAaveV3Pool(aavePool).getUserAccountData(vault);
+    }
+
+    /// @dev Draw stablecoin from Aave on the vault's behalf via credit delegation.
+    function _drawFromAave(
+        uint256 amount
+    ) internal {
+        IAaveV3Pool(aavePool).borrow(stablecoin, amount, AAVE_VARIABLE_RATE_MODE, 0, vault);
+    }
+
+    // ──────────────────────────────────────────────────────────
     //  Internal — eligibility / oracle
     // ──────────────────────────────────────────────────────────
 
-    /// @dev Gate a borrow: the asset must be active in the registry, admin-enabled for borrowing on
-    ///      this manager, and not effectively paused or halted on the vault.
+    /// @dev Gate a borrow: the asset must be active in the registry, this manager's vault must be
+    ///      on the registry's per-asset lending allowlist, the asset must be admin-enabled for
+    ///      borrowing on this manager, and not effectively paused or halted on the vault. Borrow-only
+    ///      gate: repay/liquidate/halt-settle stay open after an allowlist revocation so existing
+    ///      positions wind down.
     /// @param asset Ticker being borrowed against.
     function _validateEligibility(
         bytes32 asset
     ) internal view {
         if (IOwnVault(vault).vaultStatus() != VaultStatus.Active) revert VaultNotActive();
-        if (!IAssetRegistry(registry.assetRegistry()).isActiveAsset(asset)) revert AssetNotActive(asset);
+        IAssetRegistry assetRegistry = _assetRegistry();
+        if (!assetRegistry.isActiveAsset(asset)) revert AssetNotActive(asset);
+        if (!assetRegistry.isLendingVaultAllowed(asset, vault)) revert LendingVaultNotAllowed(asset, vault);
         if (_assetBorrowDisabled[asset]) revert AssetNotBorrowable(asset);
-        IVaultManager vmgr = IVaultManager(registry.vaultManager());
+        IVaultManager vmgr = _vaultManager();
         // Lending pauses with trading: no new borrows while the asset is paused or halted.
         if (vmgr.isAssetHalted(asset) || vmgr.isTradingPaused(asset)) {
             revert VaultEffectivelyHalted();
@@ -901,7 +950,7 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
     function _resolveActiveEToken(
         bytes32 asset
     ) internal view returns (address) {
-        return IAssetRegistry(registry.assetRegistry()).getActiveToken(asset);
+        return _assetRegistry().getActiveToken(asset);
     }
 
     /// @dev Price of one `collateralToken` unit given the active asset price. Active collateral uses
@@ -912,7 +961,7 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
         uint256 activePrice
     ) internal view returns (uint256) {
         if (collateralToken == _resolveActiveEToken(asset)) return activePrice;
-        uint256 ratio = IAssetRegistry(registry.assetRegistry()).legacyRatioToActive(collateralToken);
+        uint256 ratio = _assetRegistry().legacyRatioToActive(collateralToken);
         return activePrice.mulDiv(ratio, PRECISION);
     }
 
@@ -923,7 +972,7 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
     /// @param priceData Signed price payload.
     /// @return price Verified price, 18-decimal USD per token.
     function _verifyPrice(bytes32 asset, bytes calldata priceData) internal returns (uint256 price) {
-        uint8 oracleType = IAssetRegistry(registry.assetRegistry()).getOracleType(asset);
+        uint8 oracleType = _assetRegistry().getOracleType(asset);
         address oracleAddr = oracleType == 0 ? registry.pythOracle() : registry.inhouseOracle();
         uint256 timestamp;
         // Forward only the verifier's fee; payable entry points refund the surplus.
@@ -941,7 +990,7 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
     ///      rejecting an off-mark attestation (over-value → over-borrow, under-value → wrongful
     ///      liquidation). Fail-closed: a missing or stale mark reverts.
     function _checkPriceBand(bytes32 asset, uint256 price) internal view {
-        IVaultManager vmgr = IVaultManager(registry.vaultManager());
+        IVaultManager vmgr = _vaultManager();
         uint256 mark = vmgr.assetMark(asset);
         if (mark == 0 || block.timestamp - vmgr.assetMarkUpdatedAt(asset) > vmgr.maxMarkAge()) {
             revert PriceMarkStale(asset);
@@ -954,7 +1003,7 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
     /// @dev Convert an 18-dec USD value to the bound vault's collateral, in native token units
     ///      (fresh-price verified, floored to the asset's decimals — protocol-favorable).
     function _convertToCollateral(uint256 usdValue, bytes calldata collateralPriceData) internal returns (uint256) {
-        bytes32 collatAsset = IVaultManager(registry.vaultManager()).vaultCollateralAsset(vault);
+        bytes32 collatAsset = _vaultManager().vaultCollateralAsset(vault);
         uint256 price = _verifyPrice(collatAsset, collateralPriceData);
         uint256 collateral18 = usdValue.mulDiv(PRECISION, price);
         uint256 collatDecimals = IERC20Metadata(IOwnVault(vault).asset()).decimals();
@@ -979,12 +1028,12 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
         // Aave's repay reverts on zero outstanding debt, and anyone can drive the vault's pooled debt
         // to zero by repaying on its behalf; skip the call when nothing is owed so closes never brick
         // (the whole amount is surplus then).
-        uint256 outstanding = IERC20(debtToken).balanceOf(vault);
+        uint256 outstanding = _vaultAaveDebt();
         uint256 actualRepaid =
             outstanding == 0 ? 0 : IAaveV3Pool(aavePool).repay(stablecoin, amount, AAVE_VARIABLE_RATE_MODE, vault);
         uint256 surplus = amount > actualRepaid ? amount - actualRepaid : 0;
         if (surplus > 0) {
-            address vaultManager = IOwnVault(vault).manager();
+            address vaultManager = _boundManager();
             IERC20(stablecoin).safeTransfer(vaultManager, surplus);
             emit LendingFeeAccrued(vaultManager, surplus);
         }

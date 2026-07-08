@@ -178,6 +178,7 @@ contract BorrowManagerAaveForkTest is Test {
         );
         vault.setBorrowManager(address(bm));
         vault.grantCreditDelegation(usdcDebt);
+        assetReg.setLendingVaultAllowed(TSLA, address(vault), true);
         vm.stopPrank();
     }
 

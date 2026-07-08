@@ -38,6 +38,9 @@ contract AssetRegistry is IAssetRegistry {
     /// @dev Max per-op drift of the derived PSM ratio (BPS). 0 = unconfigured (mint/redeem inert).
     uint256 private _ratioJumpBoundBps;
 
+    /// @dev Ticker → vault → whether the vault's bound BorrowManager may open new borrows.
+    mapping(bytes32 => mapping(address => bool)) private _lendingVaultAllowed;
+
     // ──────────────────────────────────────────────────────────
     //  Modifiers
     // ──────────────────────────────────────────────────────────
@@ -224,6 +227,28 @@ contract AssetRegistry is IAssetRegistry {
     /// @inheritdoc IAssetRegistry
     function ratioJumpBoundBps() external view returns (uint256) {
         return _ratioJumpBoundBps;
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Lending allowlist
+    // ──────────────────────────────────────────────────────────
+
+    /// @inheritdoc IAssetRegistry
+    function setLendingVaultAllowed(bytes32 ticker, address vault, bool allowed) external onlyAdmin {
+        if (!_registered[ticker]) revert AssetNotFound(ticker);
+        if (vault == address(0)) revert ZeroAddress();
+        // ReserveVaults never bind a BorrowManager; keep the RWA class out of the allowlist.
+        // Revocation stays unguarded so an entry can always be cleared.
+        if (allowed && IVaultManager(registry.vaultManager()).vaultBackedAsset(vault) != bytes32(0)) {
+            revert RwaVaultNotEligible(vault);
+        }
+        _lendingVaultAllowed[ticker][vault] = allowed;
+        emit LendingVaultAllowedUpdated(ticker, vault, allowed);
+    }
+
+    /// @inheritdoc IAssetRegistry
+    function isLendingVaultAllowed(bytes32 ticker, address vault) external view returns (bool) {
+        return _lendingVaultAllowed[ticker][vault];
     }
 
     // ──────────────────────────────────────────────────────────

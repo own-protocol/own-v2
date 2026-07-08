@@ -63,6 +63,12 @@ interface IAssetRegistry {
     /// @param wrapper Wrapper token address.
     event RatioGuardReset(bytes32 indexed ticker, address indexed wrapper);
 
+    /// @notice Emitted when a vault's lending allowlist entry for an asset is updated.
+    /// @param ticker  Asset ticker.
+    /// @param vault   Vault whose bound BorrowManager the entry gates.
+    /// @param allowed New allowlist flag.
+    event LendingVaultAllowedUpdated(bytes32 indexed ticker, address indexed vault, bool allowed);
+
     // ──────────────────────────────────────────────────────────
     //  Errors
     // ──────────────────────────────────────────────────────────
@@ -106,6 +112,10 @@ interface IAssetRegistry {
 
     /// @notice The ratio-jump bound must be non-zero and at most BPS (100%).
     error InvalidRatioJumpBound();
+
+    /// @notice The vault is RWA-registered (a ReserveVault); it never binds a BorrowManager and
+    ///         cannot enter the lending allowlist.
+    error RwaVaultNotEligible(address vault);
 
     // ──────────────────────────────────────────────────────────
     //  Admin functions
@@ -187,6 +197,22 @@ interface IAssetRegistry {
 
     /// @notice Global PSM ratio-jump bound (BPS; 0 = unconfigured — PSM mint/redeem inert).
     function ratioJumpBoundBps() external view returns (uint256);
+
+    // ──────────────────────────────────────────────────────────
+    //  Lending allowlist
+    // ──────────────────────────────────────────────────────────
+
+    /// @notice Allow or revoke lending against `ticker` by the BorrowManager bound to `vault`.
+    ///         Default-deny: borrows revert until the (asset, vault) pair is allowed. Revocation
+    ///         blocks new borrows only — existing positions still repay, liquidate, and
+    ///         halt-settle. RWA vaults (ReserveVaults) are never eligible. Admin-only.
+    /// @param ticker  Asset ticker.
+    /// @param vault   Vault whose bound BorrowManager the entry gates.
+    /// @param allowed New allowlist flag.
+    function setLendingVaultAllowed(bytes32 ticker, address vault, bool allowed) external;
+
+    /// @notice Whether the BorrowManager bound to `vault` may open new borrows against `ticker`.
+    function isLendingVaultAllowed(bytes32 ticker, address vault) external view returns (bool);
 
     // ──────────────────────────────────────────────────────────
     //  View functions

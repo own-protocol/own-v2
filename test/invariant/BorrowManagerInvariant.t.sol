@@ -96,6 +96,8 @@ contract BorrowManagerInvariant is BaseTest {
             _params()
         );
         _enableAaveLending(address(vault), address(borrowManager), address(usdcDebt));
+        vm.prank(Actors.ADMIN);
+        assetRegistry.setLendingVaultAllowed(ASSET, address(vault), true);
 
         usdc.mint(address(aavePool), 100_000_000e6); // Aave borrow liquidity
         _setOraclePrice(ASSET, TSLA_PX);

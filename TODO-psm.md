@@ -8,7 +8,7 @@ No phase mixes feature code with refactoring of earlier phases.
 
 ---
 
-## Phase 1 — Per-asset forceExecute designation ✅ (awaiting review & commit)
+## Phase 1 — Per-asset forceExecute designation ✅ (committed)
 
 - [x] `IVaultManager`: `setForceExecuteVault(bytes32 asset, address vault)`,
       `forceExecuteVault(bytes32 asset)`; update events
@@ -21,9 +21,9 @@ No phase mixes feature code with refactoring of earlier phases.
       `test_forceExecuteOrder_perAssetDesignation_usesOrderAsset`)
 - [x] Update existing forceExecute tests + deploy/ops scripts (none call the setter — verified)
 - [x] `forge test` green (864/864 incl. fork tests), `forge fmt --check` clean
-- [ ] **STOP — user review & commit**
+- [x] **STOP — user review & commit** (committed)
 
-## Phase 2 — Vault classes + per-asset delta netting (VaultManager) ✅ (awaiting review & commit)
+## Phase 2 — Vault classes + per-asset delta netting (VaultManager) ✅ (committed)
 
 - [x] `IVaultManager`: `registerVault(vault, collateralAsset, backedAsset)` overload (2-arg form
       kept = generic, zero churn for callers), `vaultBackedAsset`, `assetRwaCollateralUSD`,
@@ -45,9 +45,9 @@ No phase mixes feature code with refactoring of earlier phases.
       vaults): INV-N1 net-exposure sum, INV-N2 generic-only collateral, INV-N3 per-asset reserve
       sums — green at 1000 runs × depth 50 (50k calls each)
 - [x] `forge test` green (884/884), `forge fmt --check` clean
-- [ ] **STOP — user review & commit**
+- [x] **STOP — user review & commit** (committed)
 
-## Phase 3 — ReserveVault + PSM entrypoints + AssetRegistry config ✅ (awaiting review & commit)
+## Phase 3 — ReserveVault + PSM entrypoints + AssetRegistry config ✅ (committed)
 
 - [x] Interfaces: `IReserveVault` (new), PSM additions to `IOwnMarket` + `IAssetRegistry`,
       `PsmConfig` in Types.sol; events + errors throughout
@@ -93,19 +93,27 @@ No phase mixes feature code with refactoring of earlier phases.
 - [x] `forge test` green (944/944), `forge fmt --check` clean
 - [x] Deploy note for Phase 5: wrapper tickers (`ONDO.TSLA` etc.) must be `addAsset`-registered
       in AssetRegistry so `getOracleType` resolves their feeds (same pattern as the ETH ticker)
-- [ ] **STOP — user review & commit**
+- [x] **STOP — user review & commit** (committed)
 
-## Phase 4 — Per-asset lending-vault allowlist
+## Phase 4 — Per-asset lending-vault allowlist ✅ (awaiting review & commit)
 
-- [ ] `IAssetRegistry` + `AssetRegistry`: `setLendingVaultAllowed(ticker, vault, allowed)`
-      (admin), `isLendingVaultAllowed(ticker, vault)` view, event
-- [ ] `BorrowManager._validateEligibility`: require own bound vault is allowed for the asset
-      (composes with existing per-asset borrow blocklist)
-- [ ] Decide + implement stance for existing open positions when an allowlist entry is revoked
-      (borrow blocked; repay/liquidate must keep working)
-- [ ] Unit tests: borrow gated per (asset, vault); repay + liquidate unaffected by revocation;
-      auth; existing BorrowManager suite updated (allowlist setup in fixtures)
-- [ ] `forge test -vvv` green, `forge fmt`
+- [x] `IAssetRegistry` + `AssetRegistry`: `setLendingVaultAllowed(ticker, vault, allowed)`
+      (admin; registered-ticker + non-zero-vault checks, `RwaVaultNotEligible` guard on allow —
+      ReserveVaults never enter the allowlist; revoke stays unguarded so entries always clear),
+      `isLendingVaultAllowed(ticker, vault)` view, `LendingVaultAllowedUpdated` event
+- [x] `BorrowManager._validateEligibility`: require own bound vault is allowed for the asset
+      (new `LendingVaultNotAllowed` error; composes with existing per-asset borrow blocklist;
+      check ordered after the active-asset gate)
+- [x] Revocation stance: **borrow-only gate** — only `_validateEligibility` reads the allowlist,
+      so repay / liquidate / settleHaltedPosition / absorbBadDebt keep working on open positions
+      after a revoke (documented in interface + `_validateEligibility` NatSpec)
+- [x] Unit tests: registry toggle/auth/validation + RWA-guard (3 in AssetRegistry.t.sol),
+      borrow gated per (asset, vault) + revocation leaves repay & liquidate working (3 in
+      BorrowManager.t.sol); fixtures updated to default-deny (BorrowManager ×2 suites,
+      BorrowBrickPoC, BorrowAndLiquidateFlow, RFQAusdcFlows, BorrowManagerInvariant,
+      BorrowManagerAaveFork). Phase 5 deploy bundle must call `setLendingVaultAllowed` per
+      (asset, vault) — borrows are inert until allowlisted
+- [x] `forge test` green (950/950), `forge fmt --check` clean
 - [ ] **STOP — user review & commit**
 
 ## Phase 5 — Full-system verification, docs, deployment

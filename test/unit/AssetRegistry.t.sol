@@ -630,6 +630,67 @@ contract AssetRegistryTest is BaseTest {
         vm.expectRevert(abi.encodeWithSelector(IAssetRegistry.PsmNotConfigured.selector, TSLA, makeAddr("wrapper")));
         registry.getPsmConfig(TSLA, makeAddr("wrapper"));
     }
+
+    // ──────────────────────────────────────────────────────────
+    //  Lending allowlist
+    // ──────────────────────────────────────────────────────────
+
+    function test_setLendingVaultAllowed_togglesAndEmits() public {
+        address lendingVault = makeAddr("lendingVault");
+        vm.prank(Actors.ADMIN);
+        registry.addAsset(TSLA, eTSLA, _defaultConfig(eTSLA));
+
+        assertFalse(registry.isLendingVaultAllowed(TSLA, lendingVault), "default-deny");
+
+        vm.expectEmit(true, true, false, true);
+        emit IAssetRegistry.LendingVaultAllowedUpdated(TSLA, lendingVault, true);
+        vm.prank(Actors.ADMIN);
+        registry.setLendingVaultAllowed(TSLA, lendingVault, true);
+        assertTrue(registry.isLendingVaultAllowed(TSLA, lendingVault));
+
+        // Keyed per (asset, vault): no bleed across tickers or vaults.
+        assertFalse(registry.isLendingVaultAllowed(GOLD, lendingVault));
+        assertFalse(registry.isLendingVaultAllowed(TSLA, makeAddr("otherVault")));
+
+        vm.prank(Actors.ADMIN);
+        registry.setLendingVaultAllowed(TSLA, lendingVault, false);
+        assertFalse(registry.isLendingVaultAllowed(TSLA, lendingVault));
+    }
+
+    function test_setLendingVaultAllowed_validation_reverts() public {
+        address lendingVault = makeAddr("lendingVault");
+        vm.prank(Actors.ADMIN);
+        registry.addAsset(TSLA, eTSLA, _defaultConfig(eTSLA));
+
+        vm.startPrank(Actors.ADMIN);
+        vm.expectRevert(abi.encodeWithSelector(IAssetRegistry.AssetNotFound.selector, GOLD));
+        registry.setLendingVaultAllowed(GOLD, lendingVault, true);
+        vm.expectRevert(IAssetRegistry.ZeroAddress.selector);
+        registry.setLendingVaultAllowed(TSLA, address(0), true);
+        vm.stopPrank();
+
+        vm.prank(Actors.ATTACKER);
+        vm.expectRevert(IAssetRegistry.OnlyAdmin.selector);
+        registry.setLendingVaultAllowed(TSLA, lendingVault, true);
+    }
+
+    function test_setLendingVaultAllowed_rwaVaultBlocked_revokeStillWorks() public {
+        address reserveVault = makeAddr("reserveVault");
+        vm.prank(Actors.ADMIN);
+        registry.addAsset(TSLA, eTSLA, _defaultConfig(eTSLA));
+
+        // Allow while generic, then reclassify as RWA: re-allowing reverts, revoking still works.
+        vm.prank(Actors.ADMIN);
+        registry.setLendingVaultAllowed(TSLA, reserveVault, true);
+        stubVM.setVaultBackedAsset(reserveVault, TSLA);
+
+        vm.startPrank(Actors.ADMIN);
+        vm.expectRevert(abi.encodeWithSelector(IAssetRegistry.RwaVaultNotEligible.selector, reserveVault));
+        registry.setLendingVaultAllowed(TSLA, reserveVault, true);
+        registry.setLendingVaultAllowed(TSLA, reserveVault, false);
+        vm.stopPrank();
+        assertFalse(registry.isLendingVaultAllowed(TSLA, reserveVault));
+    }
 }
 
 /// @dev Minimal IReserveVault surface for PSM config validation.

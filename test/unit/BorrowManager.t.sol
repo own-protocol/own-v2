@@ -126,7 +126,9 @@ contract BorrowManagerTest is BaseTest {
         // Wire lending: authorise the manager + grant Aave credit delegation.
         _enableAaveLending(address(vault), address(borrowManager), address(usdcDebt));
 
-        // Borrowing is enabled for every asset by default — no per-asset opt-in needed.
+        // Allowlist the vault for TSLA lending (default-deny since Phase 4).
+        vm.prank(Actors.ADMIN);
+        assetRegistry.setLendingVaultAllowed(ASSET, address(vault), true);
 
         // Seed Aave with USDC liquidity so borrows can pay out.
         usdc.mint(address(aavePool), 1_000_000e6);
@@ -385,6 +387,70 @@ contract BorrowManagerTest is BaseTest {
         vm.expectRevert(abi.encodeWithSelector(IBorrowManager.AssetNotBorrowable.selector, ASSET));
         borrowManager.borrow(ASSET, 100e18, 1000e6, _priceData(TSLA_PX));
         vm.stopPrank();
+    }
+
+    function test_borrow_lendingVaultNotAllowed_reverts() public {
+        // Revoke the fixture's allowlist entry — new borrows are blocked.
+        vm.prank(Actors.ADMIN);
+        assetRegistry.setLendingVaultAllowed(ASSET, address(vault), false);
+
+        _giveTSLA(Actors.MINTER1, 100e18);
+        vm.startPrank(Actors.MINTER1);
+        eTSLA.approve(address(borrowManager), 100e18);
+        vm.expectRevert(abi.encodeWithSelector(IBorrowManager.LendingVaultNotAllowed.selector, ASSET, address(vault)));
+        borrowManager.borrow(ASSET, 100e18, 1000e6, _priceData(TSLA_PX));
+        vm.stopPrank();
+    }
+
+    function test_borrow_lendingAllowlist_perAsset() public {
+        // GOLD is registered and active but this vault is only allowlisted for TSLA.
+        bytes32 newAsset = bytes32("GOLD");
+        EToken eGold = new EToken("Own GOLD", "eGOLD", newAsset, address(protocolRegistry), address(usdc));
+        AssetConfig memory cfg = AssetConfig({
+            activeToken: address(eGold),
+            legacyTokens: new address[](0),
+            active: true,
+            volatilityLevel: 1,
+            oracleType: 1
+        });
+        vm.prank(Actors.ADMIN);
+        assetRegistry.addAsset(newAsset, address(eGold), cfg);
+
+        eGold.mint(Actors.MINTER1, 1e18);
+        vm.startPrank(Actors.MINTER1);
+        eGold.approve(address(borrowManager), 1e18);
+        vm.expectRevert(
+            abi.encodeWithSelector(IBorrowManager.LendingVaultNotAllowed.selector, newAsset, address(vault))
+        );
+        borrowManager.borrow(newAsset, 1e18, 100e6, _priceData(2000e18));
+        vm.stopPrank();
+    }
+
+    /// @dev Allowlist revocation is a borrow-only gate: open positions still repay and liquidate.
+    function test_lendingAllowlist_revocation_repayAndLiquidateUnaffected() public {
+        (uint256 eAmt, uint256 stable) = _openTypical(Actors.MINTER1);
+        _openTypical(Actors.MINTER2);
+
+        vm.prank(Actors.ADMIN);
+        assetRegistry.setLendingVaultAllowed(ASSET, address(vault), false);
+
+        // Repay in full — collateral comes back despite the revocation.
+        vm.startPrank(Actors.MINTER1);
+        usdc.approve(address(borrowManager), stable);
+        uint256 released = borrowManager.repay(ASSET, stable);
+        vm.stopPrank();
+        assertEq(released, eAmt, "full repay releases all collateral");
+        assertEq(borrowManager.positionOf(Actors.MINTER1, ASSET).principal, 0);
+
+        // Liquidation also unaffected: crash the price and close the second position.
+        uint256 crashPx = 100e18;
+        _setOraclePrice(ASSET, crashPx);
+        usdc.mint(Actors.LIQUIDATOR, stable);
+        vm.startPrank(Actors.LIQUIDATOR);
+        usdc.approve(address(borrowManager), stable);
+        borrowManager.liquidate(Actors.MINTER2, ASSET, stable, _priceData(crashPx));
+        vm.stopPrank();
+        assertEq(borrowManager.positionOf(Actors.MINTER2, ASSET).principal, 0, "position liquidated");
     }
 
     function test_borrow_overLtv_reverts() public {
@@ -1552,6 +1618,8 @@ contract BorrowManagerBadDebt6DecTest is BaseTest {
             _params()
         );
         _enableAaveLending(address(vault), address(borrowManager), address(usdcDebt));
+        vm.prank(Actors.ADMIN);
+        assetRegistry.setLendingVaultAllowed(ASSET, address(vault), true);
 
         usdc.mint(address(aavePool), 1_000_000e6); // Aave borrow liquidity
         _setOraclePrice(ASSET, TSLA_PX);

@@ -96,6 +96,8 @@ contract BorrowBrickPoCTest is BaseTest {
         vm.label(address(borrowManager), "BorrowManager");
 
         _enableAaveLending(address(vault), address(borrowManager), address(usdcDebt));
+        vm.prank(Actors.ADMIN);
+        assetRegistry.setLendingVaultAllowed(ASSET, address(vault), true);
 
         usdc.mint(address(aavePool), 1_000_000e6);
 
