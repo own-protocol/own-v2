@@ -361,9 +361,46 @@ forceExecute (backstop, unchanged semantics)
 ────────────────────────────────────
 resting redeem order + claimThreshold elapsed + fresh oracle price ≥ limitPrice
 → releaseCollateral from the PER-ASSET designated GENERIC vault, USD-valued
+
+psmFillOrder — trustless DvP fill (permissionless, atomic)
+────────────────────────────────────
+Mint order:  filler ondoTSLA → ReserveVault (ceil)   Redeem order:  filler USDC → order owner
+             pullCollateralPrice + openExposure                     burn escrowed eTSLA, closeExposure
+             eTSLA → order owner                                    ReserveVault → ondoTSLA → filler (floor)
+             USDC escrow → filler                                   [bounded by reserve balance]
 ```
 
 ## 8. Decisions & open items
+
+### 8.0 Trustless DvP fills (`psmFillOrder`) — implemented 2026-07-09
+
+Resting orders can be filled permissionlessly against the PSM reserve — atomic
+delivery-vs-payment, no quote, no signer, no maker allowlist. Any filler holding wrapper (mint
+side) or stablecoins (redeem side) participates at their own discretion; Own KYCs nobody on this
+path (wrapper sourcing remains gated by the issuer's own compliance — §8.1).
+
+Design decisions:
+
+- **Settle price = the order's limit price.** No quote signature; the user wrote the price. The
+  settle band (±`settleBandBps` of a keeper-fresh mark) bounds fat-fingered limits and stale-mark
+  windows — same PA-01 damage cap as the RFQ paths.
+- **The wrapper leg must always be fresh** (`_psmContext(…, true)`, both directions). Fills are
+  discretionary maker trades, not holder exits, so `psmRedeem`'s staleness tolerance (exit
+  liveness) deliberately does not apply — a stale-low wrapper price on a redeem fill would leak
+  reserve (the M-14 shape).
+- **Rounding is protocol-favorable both ways**: mint fills ceil the wrapper the filler delivers;
+  redeem fills floor the wrapper the filler receives (mirrors `psmMint`/`psmRedeem`).
+- **Redeem fills are bounded by the reserve balance** — they serve reserve-backed supply only.
+  Buffer-backed (RFQ-minted) supply cannot drain the reserve through this path; those redeems
+  use the RFQ channel or force-execution.
+- **Halt/pause**: fills are blocked while paused or halted in both directions (mint via
+  `MintBlockedDuringHalt`, redeem via `TradingHalted`) — halted holders exit via
+  `psmRedeem`/`redeemHalted` at the frozen mark, never via discretionary fills.
+- **Per-asset fill kill switch** (`AssetRegistry.setPsmFillPaused`, operator-only, default live):
+  pauses the DvP fill channel alone — `psmMint`/`psmRedeem` and the RFQ paths stay up. Finer than
+  the per-wrapper `setPsmPaused` (which darkens all PSM ops for that wrapper); the two compose.
+- Mint fills open reserve-matched exposure (util-neutral); partial fills reuse the resting-order
+  `filledAmount` accounting.
 
 ### 8.1 Ondo transfer restrictions — resolved (monitor)
 
@@ -508,4 +545,11 @@ deployment itself (no prior production deployment to upgrade).
 - **Matched-mint neutrality:** a `psmMint` at fresh equal marks does not increase
   `_globalNetExposureUSD` (mint is util-neutral up to mark drift within `maxMarkAge`).
 - **Conversion rounding:** both PSM directions round in the protocol's favor (mint floors eTokens
-  out; redeem floors wrapper out).
+  out; redeem floors wrapper out); DvP fills likewise (mint fills ceil wrapper in; redeem fills
+  floor wrapper out).
+- **Escrow conservation (INV-P5):** the market holds exactly the unfilled remainders of open
+  resting orders (stablecoin for mints, eTokens for redeems) — quote fills, DvP fills, partial
+  fills, and cancels never strand or leak escrow.
+- **Self-fill equivalence:** a `psmFillOrder` self-fill at the mark produces protocol state
+  identical to the direct `psmMint`/`psmRedeem` (the escrow leg round-trips) — pinned by directed
+  tests so the fill channel can never grant more than the permissionless PSM paths already do.

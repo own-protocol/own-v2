@@ -1,6 +1,6 @@
 # Own Protocol v2 — Audit Report & Remediation Status
 
-**Branch:** `main` (pre-audit hardening on `pre-audit-fixes-1`; PSM feature set on `psm-module`) · **Last updated:** 2026-07-09 · **Test suite:** 970 passing
+**Branch:** `main` (pre-audit hardening on `pre-audit-fixes-1`; PSM feature set on `psm-module`) · **Last updated:** 2026-07-09 · **Test suite:** 987 passing
 
 Consolidated from the 2026-06-09 full manual audit, the 2026-06-10/11 focused re-audits
 (BorrowManager, AaveRouter, H-02 migration changes), and the 2026-06-11 multi-agent re-audit
@@ -50,8 +50,19 @@ GPT-5-noted "force-execute-vault deploy wiring" Low is resolved — `AddAssetsMa
 all per-asset grants at asset registration. Suite: 955 passing incl. 4 invariant campaigns at
 1000 runs × depth 100. A same-day review of the reserve release path surfaced **M-14** (Medium) —
 `ReserveVault._releaseCollateral`'s surplus guard compared a freshly-marked collateral leg against
-a stale exposure mark — fixed the same day with mutation-checked regression tests (§1). Suite:
-957 passing.
+a stale exposure mark — fixed the same day with mutation-checked regression tests (§1).
+
+A **2026-07-09 PSM extension** added `OwnMarket.psmFillOrder` — permissionless atomic
+delivery-vs-payment fills of resting orders against the PSM reserve (no quote, no signer, no maker
+allowlist; settles at the order's limit price inside the settle band; fresh wrapper leg required in
+both directions; ceil/floor rounding protocol-favorable; redeem fills bounded by the reserve
+balance). A per-asset operator kill switch (`AssetRegistry.setPsmFillPaused`, default live) pauses
+the fill channel alone, leaving `psmMint`/`psmRedeem`/RFQ up. Design rationale in
+`docs/psm-design.md` §8.0; 15 integration tests in `PsmFlow.t.sol` (incl. self-fill ≡
+psmMint/psmRedeem equivalence pins), and the PSM invariant campaign now drives resting orders,
+partial DvP fills, cancels, and the fill pause alongside the PSM/RFQ channels, with a new
+escrow-conservation invariant (INV-P5) — 8 invariants green at 1000 runs × depth 100.
+Suite: 987 passing.
 
 ## Status at a Glance
 

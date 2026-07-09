@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
+import {AssetRegistry} from "../../../src/core/AssetRegistry.sol";
 import {OwnMarket} from "../../../src/core/OwnMarket.sol";
 import {ReserveVault} from "../../../src/core/ReserveVault.sol";
 import {VaultManager} from "../../../src/core/VaultManager.sol";
-import {OrderType, Quote} from "../../../src/interfaces/types/Types.sol";
+import {Order, OrderStatus, OrderType, Quote} from "../../../src/interfaces/types/Types.sol";
 import {EToken} from "../../../src/tokens/EToken.sol";
 
 import {Actors} from "../../helpers/Actors.sol";
@@ -14,14 +15,16 @@ import {CommonBase} from "forge-std/Base.sol";
 import {StdCheats} from "forge-std/StdCheats.sol";
 import {StdUtils} from "forge-std/StdUtils.sol";
 
-/// @title PsmHandler — invariant driver mixing the PSM and RFQ mint/burn channels
-/// @notice Exercises psmMint / psmRedeem / reserve deposits alongside RFQ market mints and redeems
-///         (signed quotes) with drifting asset and wrapper prices, so the one-set-of-books
-///         property (supply == units) and the netting identities are checked across BOTH
-///         channels interleaving arbitrarily.
+/// @title PsmHandler — invariant driver mixing the PSM, RFQ, and DvP-fill channels
+/// @notice Exercises psmMint / psmRedeem / reserve deposits alongside RFQ market mints and
+///         redeems (signed quotes), resting orders with permissionless psmFillOrder DvP fills
+///         (partial fills, cancels, the per-asset fill pause), and drifting asset + wrapper
+///         prices — so the one-set-of-books property (supply == units), the netting identities,
+///         and escrow conservation are checked across ALL channels interleaving arbitrarily.
 contract PsmHandler is CommonBase, StdCheats, StdUtils {
     OwnMarket public market;
     VaultManager public manager;
+    AssetRegistry public assetRegistry;
     EToken public eTSLA;
     MockERC20 public usdc;
     MockERC20 public ondo;
@@ -31,8 +34,10 @@ contract PsmHandler is CommonBase, StdCheats, StdUtils {
 
     bytes32 public constant TSLA = bytes32("TSLA");
     bytes32 public constant ONDO_TSLA = bytes32("ONDO.TSLA");
+    address public FILLER; // permissionless DvP filler
 
     address[] public actors;
+    uint256[] public orders; // every resting order the campaign has placed
     uint256 private _quoteNonce = 1;
 
     constructor(
@@ -53,8 +58,14 @@ contract PsmHandler is CommonBase, StdCheats, StdUtils {
         reserve = ReserveVault(reserve_);
         oracle = MockOracleVerifier(oracle_);
         vmPk = vmPk_;
+        assetRegistry = AssetRegistry(OwnMarket(market_).registry().assetRegistry());
+        FILLER = makeAddr("filler");
         actors.push(Actors.MINTER1);
         actors.push(Actors.MINTER2);
+    }
+
+    function ordersLength() external view returns (uint256) {
+        return orders.length;
     }
 
     // ── PSM channel ─────────────────────────────────────────────
@@ -97,6 +108,83 @@ contract PsmHandler is CommonBase, StdCheats, StdUtils {
         address signer = vm.addr(vmPk);
         vm.prank(signer);
         try reserve.withdraw(amount) {} catch {}
+    }
+
+    // ── Resting orders + DvP fills ──────────────────────────────
+
+    function placeMintOrder(uint256 actorSeed, uint256 usdcAmount, uint256 limitSeed) external {
+        address actor = actors[actorSeed % actors.length];
+        usdcAmount = bound(usdcAmount, 1e6, 50_000e6);
+        uint256 mark = manager.assetMark(TSLA);
+        if (mark == 0) return;
+        uint256 limit = bound(limitSeed, (mark * 95) / 100, (mark * 105) / 100);
+        usdc.mint(actor, usdcAmount);
+        vm.startPrank(actor);
+        usdc.approve(address(market), usdcAmount);
+        try market.placeOrder(TSLA, OrderType.Mint, usdcAmount, limit, block.timestamp + 30 days) returns (uint256 id) {
+            orders.push(id);
+        } catch {}
+        vm.stopPrank();
+    }
+
+    function placeRedeemOrder(uint256 actorSeed, uint256 amount, uint256 limitSeed) external {
+        address actor = actors[actorSeed % actors.length];
+        uint256 bal = eTSLA.balanceOf(actor);
+        if (bal == 0) return;
+        amount = bound(amount, 1, bal);
+        uint256 mark = manager.assetMark(TSLA);
+        if (mark == 0) return;
+        uint256 limit = bound(limitSeed, (mark * 95) / 100, (mark * 105) / 100);
+        vm.startPrank(actor);
+        eTSLA.approve(address(market), amount);
+        try market.placeOrder(TSLA, OrderType.Redeem, amount, limit, block.timestamp + 30 days) returns (uint256 id) {
+            orders.push(id);
+        } catch {}
+        vm.stopPrank();
+    }
+
+    /// @dev Permissionless DvP fill of a random chunk of a random resting order; the filler is
+    ///      funded generously (wrapper for mints, stablecoin for redeems) so only protocol-level
+    ///      guards decide the outcome.
+    function psmFillOrder(uint256 orderSeed, uint256 amountSeed) external {
+        if (orders.length == 0) return;
+        uint256 id = orders[orderSeed % orders.length];
+        Order memory o = market.getOrder(id);
+        if (o.status != OrderStatus.Open) return;
+        uint256 amount = bound(amountSeed, 1, o.amount - o.filledAmount);
+
+        vm.startPrank(FILLER);
+        if (o.orderType == OrderType.Mint) {
+            // Worst-case wrapper need: eTokens at the limit, ceil, ratio floor 200/300 → < 2×.
+            uint256 fund = (amount * 1e12 * 2e18) / o.limitPrice + 2;
+            ondo.mint(FILLER, fund);
+            ondo.approve(address(market), fund);
+        } else {
+            uint256 payout = (amount * o.limitPrice) / (1e18 * 1e12) + 1;
+            usdc.mint(FILLER, payout);
+            usdc.approve(address(market), payout);
+        }
+        try market.psmFillOrder(id, address(ondo), amount) {} catch {}
+        vm.stopPrank();
+    }
+
+    function cancelOrder(
+        uint256 orderSeed
+    ) external {
+        if (orders.length == 0) return;
+        uint256 id = orders[orderSeed % orders.length];
+        Order memory o = market.getOrder(id);
+        if (o.status != OrderStatus.Open) return;
+        vm.prank(o.user);
+        try market.cancelOrder(id) {} catch {}
+    }
+
+    /// @dev Flip the per-asset fill kill switch (paused ~25% of the time so fills still explore).
+    function toggleFillPause(
+        uint256 seed
+    ) external {
+        vm.prank(Actors.ADMIN); // holds OPERATOR in the test bootstrap
+        assetRegistry.setPsmFillPaused(TSLA, seed % 4 == 0);
     }
 
     // ── RFQ channel ─────────────────────────────────────────────

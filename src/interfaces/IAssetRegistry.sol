@@ -46,6 +46,11 @@ interface IAssetRegistry {
     /// @param paused  New pause flag.
     event PsmPausedUpdated(bytes32 indexed ticker, address indexed wrapper, bool paused);
 
+    /// @notice Emitted when trustless DvP fills (psmFillOrder) are paused or resumed for an asset.
+    /// @param ticker Asset ticker.
+    /// @param paused New pause flag.
+    event PsmFillPausedUpdated(bytes32 indexed ticker, bool paused);
+
     /// @notice Emitted when the global PSM ratio-jump bound is updated.
     /// @param oldBps Previous bound (BPS; 0 = unconfigured pre-deploy default).
     /// @param newBps New bound (BPS; always non-zero once configured).
@@ -192,6 +197,20 @@ interface IAssetRegistry {
     /// @param wrapper Wrapper token address.
     /// @param paused  New pause flag.
     function setPsmPaused(bytes32 ticker, address wrapper, bool paused) external;
+
+    /// @notice Pause or resume trustless DvP fills (psmFillOrder) for an asset — the fill channel
+    ///         only; psmMint/psmRedeem and the RFQ paths are unaffected. Default false = live.
+    ///         Operator-only (instant response).
+    /// @param ticker Asset ticker.
+    /// @param paused New pause flag.
+    function setPsmFillPaused(bytes32 ticker, bool paused) external;
+
+    /// @notice Whether trustless DvP fills (psmFillOrder) are paused for `ticker`.
+    /// @param ticker Asset ticker.
+    /// @return True if fills are paused.
+    function isPsmFillPaused(
+        bytes32 ticker
+    ) external view returns (bool);
 
     /// @notice Set the global PSM ratio-jump bound in BPS (max per-operation drift of the derived
     ///         conversion ratio). Must be non-zero and ≤ BPS; zero is the pre-deploy default that

@@ -571,6 +571,30 @@ contract AssetRegistryTest is BaseTest {
         registry.setPsmPaused(TSLA, wrapper, false);
     }
 
+    function test_setPsmFillPaused_andReverts() public {
+        // Unregistered asset.
+        vm.prank(Actors.ADMIN);
+        vm.expectRevert(abi.encodeWithSelector(IAssetRegistry.AssetNotFound.selector, bytes32("NOPE")));
+        registry.setPsmFillPaused(bytes32("NOPE"), true);
+
+        // Default live; operator toggles both ways with events.
+        vm.prank(Actors.ADMIN);
+        registry.addAsset(TSLA, eTSLA, _defaultConfig(eTSLA));
+        assertFalse(registry.isPsmFillPaused(TSLA), "fills live by default");
+        vm.startPrank(Actors.ADMIN);
+        vm.expectEmit(true, false, false, true);
+        emit IAssetRegistry.PsmFillPausedUpdated(TSLA, true);
+        registry.setPsmFillPaused(TSLA, true);
+        assertTrue(registry.isPsmFillPaused(TSLA));
+        registry.setPsmFillPaused(TSLA, false);
+        assertFalse(registry.isPsmFillPaused(TSLA));
+        vm.stopPrank();
+
+        vm.prank(Actors.ATTACKER);
+        vm.expectRevert(IAssetRegistry.OnlyOperator.selector);
+        registry.setPsmFillPaused(TSLA, true);
+    }
+
     function test_setRatioJumpBoundBps_boundsAndAuth() public {
         vm.startPrank(Actors.ADMIN);
         vm.expectEmit(false, false, false, true);

@@ -9,7 +9,7 @@ import {IAssetRegistry} from "../../src/interfaces/IAssetRegistry.sol";
 import {IOwnMarket} from "../../src/interfaces/IOwnMarket.sol";
 import {IReserveVault} from "../../src/interfaces/IReserveVault.sol";
 import {IVaultManager} from "../../src/interfaces/IVaultManager.sol";
-import {AssetConfig, BPS, OrderType, PRECISION, Quote} from "../../src/interfaces/types/Types.sol";
+import {AssetConfig, BPS, Order, OrderStatus, OrderType, PRECISION, Quote} from "../../src/interfaces/types/Types.sol";
 
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {OwnMarket} from "../../src/core/OwnMarket.sol";
@@ -132,6 +132,23 @@ abstract contract PsmFlowBase is BaseTest {
         vm.startPrank(user);
         ondo.approve(address(market), amount);
         out = market.psmMint(TSLA, address(ondo), amount);
+        vm.stopPrank();
+    }
+
+    /// @dev Place a resting Mint order (stablecoin escrow) for `user`.
+    function _placeMintOrder(address user, uint256 usdcAmount, uint256 limit) internal returns (uint256 id) {
+        _fundUSDC(user, usdcAmount);
+        vm.startPrank(user);
+        usdc.approve(address(market), usdcAmount);
+        id = market.placeOrder(TSLA, OrderType.Mint, usdcAmount, limit, block.timestamp + 1 days);
+        vm.stopPrank();
+    }
+
+    /// @dev Place a resting Redeem order (eToken escrow) for `user`.
+    function _placeRedeemOrder(address user, uint256 eAmount, uint256 limit) internal returns (uint256 id) {
+        vm.startPrank(user);
+        eTSLA.approve(address(market), eAmount);
+        id = market.placeOrder(TSLA, OrderType.Redeem, eAmount, limit, block.timestamp + 1 days);
         vm.stopPrank();
     }
 
@@ -340,6 +357,364 @@ contract PsmFlowTest is PsmFlowBase {
         vm.expectRevert(IOwnMarket.ZeroAmount.selector);
         market.psmMint(TSLA, address(xs), 1);
         vm.stopPrank();
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  psmFillOrder — trustless DvP fills
+    // ──────────────────────────────────────────────────────────
+
+    function test_psmFillOrder_mint_happyPath() public {
+        // Filler is a random address: no signer registration, no maker allowlist.
+        address arb = makeAddr("arb");
+        // User bids $251/eTSLA with $25,100 — the $1 over mark is the filler's spread.
+        uint256 orderId = _placeMintOrder(Actors.MINTER1, 25_100e6, 251e18);
+
+        ondo.mint(arb, 100e18);
+        vm.startPrank(arb);
+        ondo.approve(address(market), 100e18);
+        vm.expectEmit(true, true, true, true);
+        emit IOwnMarket.PsmOrderFilled(orderId, arb, address(ondo), 25_100e6, 100e18, 100e18, 0);
+        uint256 out = market.psmFillOrder(orderId, address(ondo), 25_100e6);
+        vm.stopPrank();
+
+        assertEq(out, 100e18, "eTokens at the $251 limit");
+        assertEq(eTSLA.balanceOf(Actors.MINTER1), 100e18);
+        assertEq(usdc.balanceOf(arb), 25_100e6, "filler paid from escrow");
+        assertEq(ondo.balanceOf(address(ondoReserve)), 100e18, "wrapper in reserve");
+        assertEq(uint8(market.getOrder(orderId).status), uint8(OrderStatus.Filled));
+        // DvP mint is reserve-matched: fully netted, books consistent.
+        assertEq(vaultManager.globalNetExposureUSD(), 0, "fully reserve-covered");
+        assertEq(eTSLA.totalSupply(), vaultManager.globalAssetUnits(TSLA));
+    }
+
+    function test_psmFillOrder_mint_partialFills() public {
+        address arb1 = makeAddr("arb1");
+        address arb2 = makeAddr("arb2");
+        uint256 orderId = _placeMintOrder(Actors.MINTER1, 25_100e6, 251e18);
+
+        ondo.mint(arb1, 50e18);
+        vm.startPrank(arb1);
+        ondo.approve(address(market), 50e18);
+        market.psmFillOrder(orderId, address(ondo), 12_550e6);
+        vm.stopPrank();
+
+        Order memory o = market.getOrder(orderId);
+        assertEq(o.filledAmount, 12_550e6);
+        assertEq(uint8(o.status), uint8(OrderStatus.Open));
+
+        ondo.mint(arb2, 50e18);
+        vm.startPrank(arb2);
+        ondo.approve(address(market), 50e18);
+        market.psmFillOrder(orderId, address(ondo), 12_550e6);
+        vm.stopPrank();
+
+        assertEq(uint8(market.getOrder(orderId).status), uint8(OrderStatus.Filled));
+        assertEq(eTSLA.balanceOf(Actors.MINTER1), 100e18, "both chunks minted to the owner");
+        assertEq(ondo.balanceOf(address(ondoReserve)), 100e18);
+    }
+
+    function test_psmFillOrder_redeem_happyPath() public {
+        address arb = makeAddr("arb");
+        _psmMintOndo(Actors.MINTER1, 100e18); // reserve-backed supply
+        uint256 orderId = _placeRedeemOrder(Actors.MINTER1, 100e18, 249e18);
+
+        uint256 payout = 24_900e6; // 100 eTSLA × the $249 floor
+        _fundUSDC(arb, payout);
+        vm.startPrank(arb);
+        usdc.approve(address(market), payout);
+        vm.expectEmit(true, true, true, true);
+        emit IOwnMarket.PsmOrderFilled(orderId, arb, address(ondo), 100e18, payout, 100e18, 0);
+        uint256 out = market.psmFillOrder(orderId, address(ondo), 100e18);
+        vm.stopPrank();
+
+        assertEq(out, payout, "owner paid at the $249 floor");
+        assertEq(usdc.balanceOf(Actors.MINTER1), payout);
+        assertEq(ondo.balanceOf(arb), 100e18, "filler receives the reserve wrapper");
+        assertEq(eTSLA.totalSupply(), 0, "escrowed eTokens burned");
+        assertEq(vaultManager.assetExposureUSD(TSLA), 0, "exposure fully closed");
+        assertEq(uint8(market.getOrder(orderId).status), uint8(OrderStatus.Filled));
+    }
+
+    function test_psmFillOrder_mint_ceilRoundsWrapperUp() public {
+        address arb = makeAddr("arb");
+        uint256 orderId = _placeMintOrder(Actors.MINTER1, 1e6, 251e18); // $1 at $251
+
+        xs.mint(arb, 4000);
+        vm.startPrank(arb);
+        xs.approve(address(market), 4000);
+        uint256 out = market.psmFillOrder(orderId, address(xs), 1e6);
+        vm.stopPrank();
+
+        // eTokens floor to 3.984…e15; the 6-dec wrapper leg ceils to 3985 units so the reserve
+        // can never under-back the freshly minted exposure.
+        assertEq(out, 3_984_063_745_019_920);
+        assertEq(xs.balanceOf(address(xsReserve)), 3985, "ceil-rounded against the filler");
+        assertGe(xs.balanceOf(address(xsReserve)) * 1e12, out, "reserve covers minted exposure");
+        assertEq(vaultManager.globalNetExposureUSD(), 0);
+    }
+
+    function test_psmFillOrder_limitOutsideBand_reverts() public {
+        address arb = makeAddr("arb");
+        // Fat-finger: $300 limit is 20% over the $250 mark — the band caps the damage.
+        uint256 orderId = _placeMintOrder(Actors.MINTER1, 300e6, 300e18);
+        _setSettleBandBps(500);
+
+        ondo.mint(arb, 2e18);
+        vm.startPrank(arb);
+        ondo.approve(address(market), 2e18);
+        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.PriceOutOfBand.selector, TSLA, 300e18, TSLA_PRICE, 500));
+        market.psmFillOrder(orderId, address(ondo), 300e6);
+        vm.stopPrank();
+    }
+
+    function test_psmFillOrder_staleWrapper_reverts() public {
+        address arb = makeAddr("arb");
+        // Long-dated order so it survives the staleness warp.
+        _fundUSDC(Actors.MINTER1, 251e6);
+        vm.startPrank(Actors.MINTER1);
+        usdc.approve(address(market), 251e6);
+        uint256 orderId = market.placeOrder(TSLA, OrderType.Mint, 251e6, 251e18, block.timestamp + 400 days);
+        vm.stopPrank();
+
+        // Wrapper price goes stale while the asset mark stays keeper-fresh — fills are
+        // discretionary trades, so the fresh-wrapper gate applies to both directions.
+        vm.warp(block.timestamp + DEFAULT_MAX_MARK_AGE + 1);
+        _setOraclePrice(TSLA, TSLA_PRICE);
+        _pullAssetPrice(TSLA);
+
+        ondo.mint(arb, 2e18);
+        vm.startPrank(arb);
+        ondo.approve(address(market), 2e18);
+        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.StaleWrapperPrice.selector, ONDO_TSLA));
+        market.psmFillOrder(orderId, address(ondo), 251e6);
+        vm.stopPrank();
+    }
+
+    function test_psmFillOrder_halted_bothDirections_revert() public {
+        _psmMintOndo(Actors.MINTER1, 10e18);
+        uint256 mintId = _placeMintOrder(Actors.MINTER2, 251e6, 251e18);
+        uint256 redeemId = _placeRedeemOrder(Actors.MINTER1, 5e18, 249e18);
+
+        _haltAsset(TSLA, TSLA_PRICE);
+
+        address arb = makeAddr("arb");
+        vm.prank(arb);
+        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.MintBlockedDuringHalt.selector, TSLA));
+        market.psmFillOrder(mintId, address(ondo), 251e6);
+
+        // Halted holders exit via psmRedeem / redeemHalted, never via discretionary fills.
+        vm.prank(arb);
+        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.TradingHalted.selector, TSLA));
+        market.psmFillOrder(redeemId, address(ondo), 5e18);
+    }
+
+    function test_psmFillOrder_selfFill_equivalentToPsmMint() public {
+        // Direct PSM mint…
+        uint256 snap = vm.snapshotState();
+        _psmMintOndo(Actors.MINTER1, 100e18);
+        uint256 supplyD = eTSLA.totalSupply();
+        uint256 expD = vaultManager.assetExposureUSD(TSLA);
+        uint256 rwaD = vaultManager.assetRwaCollateralUSD(TSLA);
+        uint256 netD = vaultManager.globalNetExposureUSD();
+        uint256 resD = ondo.balanceOf(address(ondoReserve));
+        uint256 balD = eTSLA.balanceOf(Actors.MINTER1);
+        vm.revertToState(snap);
+
+        // …must equal a self-filled resting order at the mark (the USDC leg round-trips).
+        uint256 orderId = _placeMintOrder(Actors.MINTER1, 25_000e6, TSLA_PRICE);
+        ondo.mint(Actors.MINTER1, 100e18);
+        vm.startPrank(Actors.MINTER1);
+        ondo.approve(address(market), 100e18);
+        market.psmFillOrder(orderId, address(ondo), 25_000e6);
+        vm.stopPrank();
+
+        assertEq(eTSLA.totalSupply(), supplyD, "supply");
+        assertEq(vaultManager.assetExposureUSD(TSLA), expD, "exposure");
+        assertEq(vaultManager.assetRwaCollateralUSD(TSLA), rwaD, "reserve mark");
+        assertEq(vaultManager.globalNetExposureUSD(), netD, "netting");
+        assertEq(ondo.balanceOf(address(ondoReserve)), resD, "reserve balance");
+        assertEq(eTSLA.balanceOf(Actors.MINTER1), balD, "user eTokens");
+        assertEq(usdc.balanceOf(Actors.MINTER1), 25_000e6, "escrow round-tripped to self");
+    }
+
+    function test_psmFillOrder_selfFill_equivalentToPsmRedeem() public {
+        _psmMintOndo(Actors.MINTER1, 100e18);
+
+        // Direct PSM redeem…
+        uint256 snap = vm.snapshotState();
+        vm.prank(Actors.MINTER1);
+        market.psmRedeem(TSLA, address(ondo), 40e18);
+        uint256 supplyD = eTSLA.totalSupply();
+        uint256 expD = vaultManager.assetExposureUSD(TSLA);
+        uint256 rwaD = vaultManager.assetRwaCollateralUSD(TSLA);
+        uint256 netD = vaultManager.globalNetExposureUSD();
+        uint256 resD = ondo.balanceOf(address(ondoReserve));
+        uint256 wrapD = ondo.balanceOf(Actors.MINTER1);
+        vm.revertToState(snap);
+
+        // …must equal a self-filled redeem order at the mark (the USDC leg round-trips).
+        uint256 orderId = _placeRedeemOrder(Actors.MINTER1, 40e18, TSLA_PRICE);
+        uint256 payout = 10_000e6; // 40 eTSLA × $250
+        _fundUSDC(Actors.MINTER1, payout);
+        vm.startPrank(Actors.MINTER1);
+        usdc.approve(address(market), payout);
+        market.psmFillOrder(orderId, address(ondo), 40e18);
+        vm.stopPrank();
+
+        assertEq(eTSLA.totalSupply(), supplyD, "supply");
+        assertEq(vaultManager.assetExposureUSD(TSLA), expD, "exposure");
+        assertEq(vaultManager.assetRwaCollateralUSD(TSLA), rwaD, "reserve mark");
+        assertEq(vaultManager.globalNetExposureUSD(), netD, "netting");
+        assertEq(ondo.balanceOf(address(ondoReserve)), resD, "reserve balance");
+        assertEq(ondo.balanceOf(Actors.MINTER1), wrapD, "user wrapper");
+        assertEq(usdc.balanceOf(Actors.MINTER1), payout, "payout round-tripped to self");
+    }
+
+    function test_psmFillOrder_redeem_sixDecWrapper_floorLeavesDust() public {
+        address arb = makeAddr("arb");
+        // Seed the xs reserve: 10e6 xs → 10e18 eTSLA.
+        xs.mint(Actors.MINTER1, 10e6);
+        vm.startPrank(Actors.MINTER1);
+        xs.approve(address(market), 10e6);
+        market.psmMint(TSLA, address(xs), 10e6);
+        vm.stopPrank();
+
+        // An amount that doesn't divide into 6-dec wrapper units: the filler's wrapper floors,
+        // while burn/exposure are keyed on the full eToken amount — dust accrues to the reserve.
+        uint256 eAmount = 1e18 + 1;
+        uint256 orderId = _placeRedeemOrder(Actors.MINTER1, eAmount, TSLA_PRICE);
+        uint256 payout = (eAmount * TSLA_PRICE) / (PRECISION * 1e12);
+        _fundUSDC(arb, payout);
+        vm.startPrank(arb);
+        usdc.approve(address(market), payout);
+        market.psmFillOrder(orderId, address(xs), eAmount);
+        vm.stopPrank();
+
+        assertEq(xs.balanceOf(arb), 1e6, "wrapper floor-rounded against the filler");
+        assertEq(xs.balanceOf(address(xsReserve)), 9e6, "dust stays in the reserve");
+        assertEq(eTSLA.totalSupply(), 10e18 - eAmount, "burn keyed on the full eToken amount");
+    }
+
+    function test_psmFillOrder_mixesWithQuoteFills() public {
+        address arb = makeAddr("arb");
+        uint256 orderId = _placeMintOrder(Actors.MINTER1, 25_000e6, TSLA_PRICE);
+
+        // Half via a signed maker quote (RFQ channel, buffer-backed)…
+        Quote memory q = _buildQuote(orderId, Actors.MINTER1, TSLA, OrderType.Mint, 12_500e6, TSLA_PRICE);
+        bytes memory sig = _signQuote(market, q, vm1SignerPk);
+        vm.prank(arb); // fills are caller-agnostic; the signature authorizes
+        market.fillOrder(q, sig);
+
+        // …half via a trustless DvP fill — shared filledAmount accounting.
+        ondo.mint(arb, 50e18);
+        vm.startPrank(arb);
+        ondo.approve(address(market), 50e18);
+        market.psmFillOrder(orderId, address(ondo), 12_500e6);
+        vm.stopPrank();
+
+        assertEq(uint8(market.getOrder(orderId).status), uint8(OrderStatus.Filled));
+        assertEq(eTSLA.balanceOf(Actors.MINTER1), 100e18, "both channels minted to the owner");
+        assertEq(ondo.balanceOf(address(ondoReserve)), 50e18, "only the DvP half is reserve-backed");
+    }
+
+    function test_psmFillOrder_partialThenCancel_returnsRemainder() public {
+        address arb = makeAddr("arb");
+        uint256 orderId = _placeMintOrder(Actors.MINTER1, 25_000e6, TSLA_PRICE);
+
+        ondo.mint(arb, 40e18);
+        vm.startPrank(arb);
+        ondo.approve(address(market), 40e18);
+        market.psmFillOrder(orderId, address(ondo), 10_000e6); // 40 eTSLA chunk
+        vm.stopPrank();
+
+        vm.prank(Actors.MINTER1);
+        market.cancelOrder(orderId);
+
+        assertEq(usdc.balanceOf(Actors.MINTER1), 15_000e6, "exact unfilled escrow returned");
+        assertEq(eTSLA.balanceOf(Actors.MINTER1), 40e18, "filled chunk kept");
+        assertEq(usdc.balanceOf(address(market)), 0, "no escrow stranded");
+    }
+
+    function test_psmFillOrder_fillPause_blocksOnlyTheFillChannel() public {
+        address arb = makeAddr("arb");
+        _psmMintOndo(Actors.MINTER1, 10e18);
+        uint256 orderId = _placeMintOrder(Actors.MINTER2, 2510e6, 251e18);
+
+        vm.prank(Actors.ADMIN); // operator role in the test bootstrap
+        assetRegistry.setPsmFillPaused(TSLA, true);
+
+        // The fill channel is dark…
+        ondo.mint(arb, 10e18);
+        vm.startPrank(arb);
+        ondo.approve(address(market), 10e18);
+        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.PsmFillPaused.selector, TSLA));
+        market.psmFillOrder(orderId, address(ondo), 2510e6);
+        vm.stopPrank();
+
+        // …while the direct PSM paths stay live.
+        uint256 out = _psmMintOndo(Actors.MINTER1, 1e18);
+        assertEq(out, 1e18, "psmMint unaffected");
+        vm.prank(Actors.MINTER1);
+        market.psmRedeem(TSLA, address(ondo), 1e18);
+
+        // Resume: the same fill now settles.
+        vm.prank(Actors.ADMIN);
+        assetRegistry.setPsmFillPaused(TSLA, false);
+        vm.startPrank(arb);
+        market.psmFillOrder(orderId, address(ondo), 2510e6);
+        vm.stopPrank();
+        assertEq(eTSLA.balanceOf(Actors.MINTER2), 10e18, "fill settles after resume");
+    }
+
+    function test_psmFillOrder_redeem_reserveShortfall_reverts() public {
+        address arb = makeAddr("arb");
+        // RFQ-minted supply is buffer-backed — no wrapper in reserve to serve a DvP redeem.
+        _rfqMint(Actors.MINTER1, 25_000e6);
+        uint256 orderId = _placeRedeemOrder(Actors.MINTER1, 10e18, 249e18);
+
+        _fundUSDC(arb, 2490e6);
+        vm.startPrank(arb);
+        usdc.approve(address(market), 2490e6);
+        vm.expectRevert(IReserveVault.AmountExceedsReserve.selector);
+        market.psmFillOrder(orderId, address(ondo), 10e18);
+        vm.stopPrank();
+    }
+
+    function test_psmFillOrder_validation_reverts() public {
+        address arb = makeAddr("arb");
+        vm.prank(arb);
+        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.OrderNotFound.selector, 999));
+        market.psmFillOrder(999, address(ondo), 1e6);
+
+        uint256 orderId = _placeMintOrder(Actors.MINTER1, 251e6, 251e18);
+
+        vm.prank(arb);
+        vm.expectRevert(IOwnMarket.ZeroAmount.selector);
+        market.psmFillOrder(orderId, address(ondo), 0);
+
+        vm.prank(arb);
+        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.FillExceedsRemaining.selector, orderId));
+        market.psmFillOrder(orderId, address(ondo), 252e6);
+
+        // Unconfigured wrapper fails closed.
+        vm.prank(arb);
+        vm.expectRevert(abi.encodeWithSelector(IAssetRegistry.PsmNotConfigured.selector, TSLA, address(weth)));
+        market.psmFillOrder(orderId, address(weth), 251e6);
+
+        // Per-wrapper PSM pause blocks fills.
+        vm.prank(Actors.ADMIN);
+        assetRegistry.setPsmPaused(TSLA, address(ondo), true);
+        vm.prank(arb);
+        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.PsmIsPaused.selector, TSLA, address(ondo)));
+        market.psmFillOrder(orderId, address(ondo), 251e6);
+        vm.prank(Actors.ADMIN);
+        assetRegistry.setPsmPaused(TSLA, address(ondo), false);
+
+        // Expired orders cannot be filled.
+        vm.warp(block.timestamp + 1 days + 1);
+        vm.prank(arb);
+        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.OrderExpiredError.selector, orderId));
+        market.psmFillOrder(orderId, address(ondo), 251e6);
     }
 
     // ──────────────────────────────────────────────────────────

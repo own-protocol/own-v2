@@ -142,9 +142,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard, EIP712 {
     function fillOrder(Quote calldata quote, bytes calldata signature) external nonReentrant {
         if (quote.orderId == 0) revert QuoteOrderMismatch();
 
-        Order storage order = _orders[quote.orderId];
-        if (order.user == address(0)) revert OrderNotFound(quote.orderId);
-        if (order.status != OrderStatus.Open) revert InvalidOrderStatus(quote.orderId);
+        Order storage order = _openOrder(quote.orderId);
         if (block.timestamp > order.expiry) revert OrderExpiredError(quote.orderId);
         if (quote.amount == 0) revert ZeroAmount();
         if (quote.price == 0) revert InvalidPrice();
@@ -160,9 +158,6 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard, EIP712 {
             revert OrderTokenMigrated(quote.orderId);
         }
 
-        uint256 remaining = order.amount - order.filledAmount;
-        if (quote.amount > remaining) revert FillExceedsRemaining(quote.orderId);
-
         // The quote price must respect the order's limit.
         if (order.orderType == OrderType.Mint) {
             if (quote.price > order.limitPrice) revert LimitNotSatisfied();
@@ -177,9 +172,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard, EIP712 {
 
         // Effects.
         address maker = _consumeQuote(quote, signature);
-        order.filledAmount += quote.amount;
-        uint256 newRemaining = remaining - quote.amount;
-        if (newRemaining == 0) order.status = OrderStatus.Filled;
+        uint256 newRemaining = _recordFill(order, quote.amount);
 
         // Interactions.
         uint256 amountOut = order.orderType == OrderType.Mint
@@ -196,10 +189,8 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard, EIP712 {
         bytes calldata assetPriceData,
         bytes calldata collateralPriceData
     ) external payable nonReentrant {
-        Order storage order = _orders[orderId];
-        if (order.user == address(0)) revert OrderNotFound(orderId);
+        Order storage order = _openOrder(orderId);
         if (order.user != msg.sender) revert OnlyOrderOwner(orderId);
-        if (order.status != OrderStatus.Open) revert InvalidOrderStatus(orderId);
         if (order.orderType != OrderType.Redeem) revert ForceMintNotAllowed(orderId);
         // A redeem order escrowed in a now-legacy token cannot be force-executed; cancel to recover.
         if (order.escrowToken != _activeToken(order.asset)) revert OrderTokenMigrated(orderId);
@@ -264,7 +255,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard, EIP712 {
         if (haltAddr == address(0)) revert HaltRedeemAddressNotSet();
 
         address pay = _paymentToken();
-        payout = Math.mulDiv(eTokenAmount, haltPrice, PRECISION * _tokenScale(pay));
+        payout = _eTokensToPay(eTokenAmount, pay, haltPrice);
 
         // Pull stables from the halt fund to the caller, burn the eTokens, shrink global exposure.
         IERC20(pay).safeTransferFrom(haltAddr, msg.sender, payout);
@@ -359,13 +350,50 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard, EIP712 {
     }
 
     /// @inheritdoc IOwnMarket
+    function psmFillOrder(
+        uint256 orderId,
+        address wrapper,
+        uint256 amount
+    ) external nonReentrant returns (uint256 amountOut) {
+        Order storage order = _openOrder(orderId);
+        if (block.timestamp > order.expiry) revert OrderExpiredError(orderId);
+        if (amount == 0) revert ZeroAmount();
+
+        // Same gates as a quote fill: mint opens exposure (active asset required); both legs are
+        // blocked by pause/halt — halted holders exit via psmRedeem/redeemHalted instead.
+        if (order.orderType == OrderType.Mint) _validateAsset(order.asset);
+        _checkTradeable(order.asset, order.orderType);
+        // Per-asset kill switch for the fill channel only; psmMint/psmRedeem/RFQ stay live.
+        if (_assetRegistry().isPsmFillPaused(order.asset)) revert PsmFillPaused(order.asset);
+
+        // A redeem order escrowed in a now-legacy token cannot be filled (mirrors fillOrder).
+        if (order.orderType == OrderType.Redeem && order.escrowToken != _activeToken(order.asset)) {
+            revert OrderTokenMigrated(orderId);
+        }
+
+        // No quote: the order's own limit is the settle price, fat-finger/stale-mark bounded by
+        // the settle band. Fills are discretionary trades, so the wrapper leg must be fresh.
+        _checkSettleBand(order.asset, order.limitPrice);
+        (address reserveVault, uint256 ratio) = _psmContext(order.asset, wrapper, true);
+
+        // Effects.
+        uint256 newRemaining = _recordFill(order, amount);
+
+        // Interactions.
+        uint256 wrapperAmount;
+        (amountOut, wrapperAmount) = order.orderType == OrderType.Mint
+            ? _psmFillMint(order, wrapper, amount, reserveVault, ratio)
+            : _psmFillRedeem(order, wrapper, amount, reserveVault, ratio);
+
+        emit PsmOrderFilled(orderId, msg.sender, wrapper, amount, amountOut, wrapperAmount, newRemaining);
+    }
+
+    /// @inheritdoc IOwnMarket
     function cancelOrder(
         uint256 orderId
     ) external nonReentrant {
-        Order storage order = _orders[orderId];
-        if (order.user == address(0)) revert OrderNotFound(orderId);
+        Order storage order = _openOrder(orderId);
         if (order.user != msg.sender) revert OnlyOrderOwner(orderId);
-        if (order.status != OrderStatus.Open) revert InvalidOrderStatus(orderId);
 
         uint256 remaining = order.amount - order.filledAmount;
         order.status = OrderStatus.Cancelled;
@@ -378,9 +406,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard, EIP712 {
     function expireOrder(
         uint256 orderId
     ) external nonReentrant {
-        Order storage order = _orders[orderId];
-        if (order.user == address(0)) revert OrderNotFound(orderId);
-        if (order.status != OrderStatus.Open) revert InvalidOrderStatus(orderId);
+        Order storage order = _openOrder(orderId);
         if (block.timestamp <= order.expiry) revert ExpiryNotReached(orderId);
 
         uint256 remaining = order.amount - order.filledAmount;
@@ -523,7 +549,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard, EIP712 {
 
         // Escrow fills settle in the token escrowed at placement (payToken == order.escrowToken),
         // so a later payment-token change cannot mismatch the escrow.
-        eTokenAmount = Math.mulDiv(amountIn * _tokenScale(payToken), PRECISION, price);
+        eTokenAmount = _payToETokens(amountIn, payToken, price);
 
         // Atomic check + commit of global exposure (asset cap + global utilisation) before any
         // external token movement, so a breach reverts cleanly with no side effects.
@@ -554,13 +580,43 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard, EIP712 {
         _checkSettleBand(asset, price);
 
         address pay = _paymentToken();
-        netPayout = Math.mulDiv(amountIn, price, PRECISION * _tokenScale(pay));
+        netPayout = _eTokensToPay(amountIn, pay, price);
 
         IERC20(pay).safeTransferFrom(maker, user, netPayout);
 
         // Burn the eTokens and shrink global exposure.
         IEToken(_activeToken(asset)).burn(fromEscrow ? address(this) : user, amountIn);
         _vaultManager().closeExposure(asset, amountIn);
+    }
+
+    /// @dev Payment/escrow-token units → eTokens at `price` (18-dec USD per eToken; floor).
+    function _payToETokens(uint256 amountIn, address payToken, uint256 price) private view returns (uint256) {
+        return Math.mulDiv(amountIn * _tokenScale(payToken), PRECISION, price);
+    }
+
+    /// @dev eTokens → payment-token units at `price` (18-dec USD per eToken; floor).
+    function _eTokensToPay(uint256 eTokenAmount, address payToken, uint256 price) private view returns (uint256) {
+        return Math.mulDiv(eTokenAmount, price, PRECISION * _tokenScale(payToken));
+    }
+
+    /// @dev Load an order that exists and is still Open — the shared head of every fill,
+    ///      cancel, expire, and force path.
+    function _openOrder(
+        uint256 orderId
+    ) private view returns (Order storage order) {
+        order = _orders[orderId];
+        if (order.user == address(0)) revert OrderNotFound(orderId);
+        if (order.status != OrderStatus.Open) revert InvalidOrderStatus(orderId);
+    }
+
+    /// @dev Record a fill chunk against an order: bound it to the unfilled remainder, advance
+    ///      `filledAmount`, and flip to Filled when nothing remains.
+    function _recordFill(Order storage order, uint256 amount) private returns (uint256 newRemaining) {
+        uint256 remaining = order.amount - order.filledAmount;
+        if (amount > remaining) revert FillExceedsRemaining(order.orderId);
+        order.filledAmount += amount;
+        newRemaining = remaining - amount;
+        if (newRemaining == 0) order.status = OrderStatus.Filled;
     }
 
     /// @dev Return the unfilled escrow to the order owner.
@@ -666,6 +722,59 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard, EIP712 {
             if (diff * BPS > last * bound) revert RatioJumpExceeded(asset, wrapper, ratio, last);
         }
         if (ratio != last) ar.notePsmRatio(asset, wrapper, ratio);
+    }
+
+    /// @dev Mint-side DvP fill: pull ceil-rounded wrapper from the filler into the reserve, open
+    ///      exposure at the order's limit price, mint eTokens to the owner, pay the filler the
+    ///      stablecoin escrow chunk.
+    function _psmFillMint(
+        Order storage order,
+        address wrapper,
+        uint256 amount,
+        address reserveVault,
+        uint256 ratio
+    ) private returns (uint256 eTokenAmount, uint256 wrapperAmount) {
+        // Same conversion as _settleMint: escrow units → 18-dec → eTokens at the limit price.
+        eTokenAmount = _payToETokens(amount, order.escrowToken, order.limitPrice);
+        if (eTokenAmount == 0) revert ZeroAmount();
+
+        // eTokens → wrapper units at the derived ratio (ceil — the filler delivers, protocol-favorable).
+        wrapperAmount =
+            Math.ceilDiv(Math.mulDiv(eTokenAmount, PRECISION, ratio, Math.Rounding.Ceil), _tokenScale(wrapper));
+
+        // Pull the wrapper straight into the reserve and mark it before the exposure gate
+        // (matched mint is util-neutral) — mirrors psmMint.
+        _pullExact(wrapper, reserveVault, wrapperAmount);
+        IVaultManager vmgr = _vaultManager();
+        vmgr.pullCollateralPrice(reserveVault);
+        vmgr.openExposure(order.asset, eTokenAmount);
+
+        IEToken(_activeToken(order.asset)).mint(order.user, eTokenAmount);
+        IERC20(order.escrowToken).safeTransfer(msg.sender, amount);
+    }
+
+    /// @dev Redeem-side DvP fill: pull the filler's stablecoin payout to the owner at the limit
+    ///      price, burn the escrowed eTokens, shrink exposure, then release floor-rounded reserve
+    ///      wrapper to the filler (bounded by the vault's balance).
+    function _psmFillRedeem(
+        Order storage order,
+        address wrapper,
+        uint256 amount,
+        address reserveVault,
+        uint256 ratio
+    ) private returns (uint256 netPayout, uint256 wrapperAmount) {
+        address pay = _paymentToken();
+        netPayout = _eTokensToPay(amount, pay, order.limitPrice);
+        if (netPayout == 0) revert ZeroAmount();
+
+        // eTokens → wrapper units at the derived ratio (floor — protocol-favorable), as psmRedeem.
+        wrapperAmount = Math.mulDiv(amount, PRECISION, ratio) / _tokenScale(wrapper);
+        if (wrapperAmount == 0) revert ZeroAmount();
+
+        IERC20(pay).safeTransferFrom(msg.sender, order.user, netPayout);
+        IEToken(_activeToken(order.asset)).burn(address(this), amount);
+        _vaultManager().closeExposure(order.asset, amount);
+        IReserveVault(reserveVault).releaseCollateral(msg.sender, wrapperAmount);
     }
 
     // ──────────────────────────────────────────────────────────

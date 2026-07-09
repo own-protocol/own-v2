@@ -9,7 +9,7 @@ import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {OwnMarket} from "../../src/core/OwnMarket.sol";
 import {OwnVault} from "../../src/core/OwnVault.sol";
 import {ReserveVault} from "../../src/core/ReserveVault.sol";
-import {AssetConfig} from "../../src/interfaces/types/Types.sol";
+import {AssetConfig, Order, OrderStatus, OrderType} from "../../src/interfaces/types/Types.sol";
 import {EToken} from "../../src/tokens/EToken.sol";
 
 import {PsmHandler} from "./handlers/PsmHandler.sol";
@@ -123,6 +123,24 @@ contract PsmInvariantTest is BaseTest {
     function invariant_collateralSegregation() external view {
         assertEq(vaultManager.globalCollateralUSD(), vaultManager.collateralMark(address(vault)));
         assertEq(vaultManager.assetRwaCollateralUSD(TSLA), vaultManager.collateralMark(address(reserve)));
+    }
+
+    /// @notice INV-P5: escrow conservation — the market holds exactly the unfilled remainders of
+    ///         open resting orders (USDC for mints, eTSLA for redeems). Quote fills, DvP fills,
+    ///         partial fills, and cancels never strand or leak a wei of escrow.
+    function invariant_escrowConservation() external view {
+        uint256 usdcEscrow;
+        uint256 eEscrow;
+        uint256 n = handler.ordersLength();
+        for (uint256 i; i < n; ++i) {
+            Order memory o = market.getOrder(handler.orders(i));
+            if (o.status != OrderStatus.Open) continue;
+            uint256 rem = o.amount - o.filledAmount;
+            if (o.orderType == OrderType.Mint) usdcEscrow += rem;
+            else eEscrow += rem;
+        }
+        assertEq(usdc.balanceOf(address(market)), usdcEscrow, "USDC escrow leaked/stranded");
+        assertEq(eTSLA.balanceOf(address(market)), eEscrow, "eToken escrow leaked/stranded");
     }
 
     /// @notice INV-P4: reserve custody solvency — the vault's wrapper balance never goes negative
