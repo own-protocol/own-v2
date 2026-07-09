@@ -85,6 +85,9 @@ interface IOwnVault is IERC4626 {
     /// @param amount aToken collateral released.
     event CollateralReleasedForBadDebt(address indexed to, uint256 amount);
 
+    /// @notice Emitted when a non-asset token balance is swept to the caller.
+    event TokenSwept(address indexed token, address indexed to, uint256 amount);
+
     // ──────────────────────────────────────────────────────────
     //  Errors
     // ──────────────────────────────────────────────────────────
@@ -155,6 +158,8 @@ interface IOwnVault is IERC4626 {
     error TreasuryNotSet();
     /// @notice Requested amount exceeds the vault's backed collateral (totalAssets).
     error AmountExceedsBackedCollateral();
+
+    error CannotSweepAsset();
 
     // ──────────────────────────────────────────────────────────
     //  Manager binding
@@ -362,4 +367,15 @@ interface IOwnVault is IERC4626 {
 
     /// @notice Address of the borrow manager (zero if lending not enabled).
     function borrowManager() external view returns (address);
+
+    /// @notice Sweep this vault's full balance of a NON-asset token to the caller (mistaken
+    ///         sends, airdrops, or claimed reward tokens would otherwise strand here). The vault
+    ///         accounts only in `asset()`, which can never be swept, so LP backing and the
+    ///         pending-deposit escrow are untouchable through this path. Sweeping the vault's own
+    ///         share token is deliberately allowed — it is the only recovery route for shares
+    ///         mistakenly transferred to the vault. Manager- or operator-only.
+    /// @param token The token to sweep (must not be the vault's asset).
+    function sweepToken(
+        address token
+    ) external;
 }

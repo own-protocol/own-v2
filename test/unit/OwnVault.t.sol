@@ -1226,6 +1226,66 @@ contract OwnVaultTest is BaseTest {
         vm.expectRevert(IOwnVault.TreasuryNotSet.selector);
         vault.releaseCollateralForBadDebt(1 ether);
     }
+
+    // ──────────────────────────────────────────────────────────
+    //  sweepToken (stranded-token recovery)
+    // ──────────────────────────────────────────────────────────
+
+    function test_sweepToken_sendsFullNonAssetBalanceToCaller() public {
+        _depositAs(Actors.LP1, 10 ether);
+        MockERC20 usdc = new MockERC20("USD Coin", "USDC", 6);
+        usdc.mint(address(vault), 123e6);
+
+        vm.expectEmit(true, true, false, true);
+        emit IOwnVault.TokenSwept(address(usdc), Actors.VM1, 123e6);
+        vm.prank(Actors.VM1);
+        vault.sweepToken(address(usdc));
+
+        assertEq(usdc.balanceOf(Actors.VM1), 123e6, "stranded balance paid to the calling manager");
+        assertEq(usdc.balanceOf(address(vault)), 0);
+        assertEq(vault.totalAssets(), 10 ether, "LP backing untouched");
+    }
+
+    function test_sweepToken_operatorCanCall() public {
+        MockERC20 usdc = new MockERC20("USD Coin", "USDC", 6);
+        usdc.mint(address(vault), 5e6);
+        vm.prank(Actors.ADMIN); // holds OPERATOR in the test bootstrap
+        vault.sweepToken(address(usdc));
+        assertEq(usdc.balanceOf(Actors.ADMIN), 5e6, "operator sweep paid to the caller");
+    }
+
+    function test_sweepToken_asset_reverts() public {
+        _depositAs(Actors.LP1, 10 ether);
+        vm.prank(Actors.VM1);
+        vm.expectRevert(IOwnVault.CannotSweepAsset.selector);
+        vault.sweepToken(address(weth));
+    }
+
+    function test_sweepToken_ownShares_sweepable() public {
+        // Shares mistakenly transferred to the vault are dead weight; the manager is the
+        // deliberate recovery route (restitution handled off-chain).
+        uint256 shares = _depositAs(Actors.LP1, 10 ether);
+        vm.prank(Actors.LP1);
+        vault.transfer(address(vault), shares);
+
+        vm.prank(Actors.VM1);
+        vault.sweepToken(address(vault));
+        assertEq(vault.balanceOf(Actors.VM1), shares, "lost shares recovered by the manager");
+    }
+
+    function test_sweepToken_authAndEdgeCases_revert() public {
+        MockERC20 usdc = new MockERC20("USD Coin", "USDC", 6);
+
+        // Neither manager nor operator.
+        vm.prank(Actors.ATTACKER);
+        vm.expectRevert(IOwnVault.OnlyManagerOrOperator.selector);
+        vault.sweepToken(address(usdc));
+
+        // Nothing to sweep (manager caller).
+        vm.prank(Actors.VM1);
+        vm.expectRevert(IOwnVault.ZeroAmount.selector);
+        vault.sweepToken(address(usdc));
+    }
 }
 
 /// @dev Minimal asset registry stub: every asset uses the in-house oracle. Lets the VaultManager
