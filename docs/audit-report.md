@@ -1,6 +1,6 @@
 # Own Protocol v2 — Audit Report & Remediation Status
 
-**Branch:** `main` (pre-audit hardening on `pre-audit-fixes-1`; PSM feature set on `psm-module`) · **Last updated:** 2026-07-09 · **Test suite:** 987 passing
+**Branch:** `main` (pre-audit hardening on `pre-audit-fixes-1`; PSM feature set on `psm-module`) · **Last updated:** 2026-07-09 · **Test suite:** 989 passing
 
 Consolidated from the 2026-06-09 full manual audit, the 2026-06-10/11 focused re-audits
 (BorrowManager, AaveRouter, H-02 migration changes), and the 2026-06-11 multi-agent re-audit
@@ -64,16 +64,26 @@ partial DvP fills, cancels, and the fill pause alongside the PSM/RFQ channels, w
 escrow-conservation invariant (INV-P5) — 8 invariants green at 1000 runs × depth 100.
 Suite: 987 passing.
 
+A **2026-07-09 solidity-auditor re-audit** (12-agent pipeline over the full `src/` tree) surfaced one
+new Medium — **M-15**: `OwnVault.sweepToken` (added with the vault stray-token sweep feature) did not
+reserve the withdrawal-queue escrow that lives as the vault's own share-token balance, so the
+manager/OPERATOR could sweep escrowed shares — bricking every pending withdrawal and redeeming the
+fungible shares for collateral, not governance-recoverable. Fixed the same day with mutation-checked
+regression tests (§1). The pass's other outputs validated to already-closed findings, by-design
+operator-trust levers (`haltAsset` price/redemption-ratio, the protocol-wide `OPERATOR` role scope
+vs per-contract NatSpec), or accepted dust/self-harm (`redeemHalted` zero-payout, `applySplit`
+sub-dust drift, trapped ETH on direct oracle overpayment); no other code change. Suite: 989 passing.
+
 ## Status at a Glance
 
 | Severity | Total | Fixed | Open | By design |
 | -------- | ----- | ----- | ---- | --------- |
 | Critical | 1     | 1     | 0    | —         |
 | High     | 10    | 10    | 0    | —         |
-| Medium   | 14    | 12    | 0    | 2         |
+| Medium   | 15    | 13    | 0    | 2         |
 | Low      | 18    | 14    | 0    | 4         |
 
-**No findings are open. The 2026-07-08 PSM review's M-14 (Medium — `ReserveVault` mixed-mark surplus guard) is fixed with mutation-checked regression tests (§1). All earlier findings remain closed. The 2026-06-19 re-audits' findings are all fixed — round 1: H-06 (High), L-14 (Low), L-07 (Low, reopened then fixed); round 2: H-07 (High), M-11 + M-12 (Medium), L-15 (Low), plus the H-06 amplifier removed. All carry regression tests (H-07 via a live-Aave fork test). All earlier findings remain closed (fixed, mitigated, documented, or by-design). A 2026-06-19 withdrawal loss-ordering follow-up added **M-13** (Medium) — the user-bad-debt sibling of H-07 — accepted by design with an operational pause-on-volatility mitigation (no code change; see §3). A 2026-06-19 lead deep-dive (3-agent verification of all post-audit leads) added **L-17** (Low, Fixed — `fillOrder` missing the active-asset gate) and **L-16** (Low, accepted — `absorbBadDebt` premium over-charge, controllable via `absorbAmount`); the other 18 leads resolved to already-addressed or not-exploitable. The §5 leads are triaged.**
+**No findings are open. The 2026-07-08 PSM review's M-14 (Medium — `ReserveVault` mixed-mark surplus guard) is fixed with mutation-checked regression tests (§1). The 2026-07-09 solidity-auditor re-audit's M-15 (Medium — `sweepToken` withdrawal-escrow drain) is likewise fixed with mutation-checked regression tests (§1). All earlier findings remain closed. The 2026-06-19 re-audits' findings are all fixed — round 1: H-06 (High), L-14 (Low), L-07 (Low, reopened then fixed); round 2: H-07 (High), M-11 + M-12 (Medium), L-15 (Low), plus the H-06 amplifier removed. All carry regression tests (H-07 via a live-Aave fork test). All earlier findings remain closed (fixed, mitigated, documented, or by-design). A 2026-06-19 withdrawal loss-ordering follow-up added **M-13** (Medium) — the user-bad-debt sibling of H-07 — accepted by design with an operational pause-on-volatility mitigation (no code change; see §3). A 2026-06-19 lead deep-dive (3-agent verification of all post-audit leads) added **L-17** (Low, Fixed — `fillOrder` missing the active-asset gate) and **L-16** (Low, accepted — `absorbBadDebt` premium over-charge, controllable via `absorbAmount`); the other 18 leads resolved to already-addressed or not-exploitable. The §5 leads are triaged.**
 
 | ID        | Severity | Finding                                                                                                                                                                       | Status                                                                         |
 | --------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
@@ -102,6 +112,7 @@ Suite: 987 passing.
 | M-12      | Medium   | `migrateToken` on a halted asset desyncs its frozen halt price → `redeemHalted` over-pays                                                                                     | **Fixed** (2026-06-19, round 2)                                                |
 | M-13      | Medium   | `fulfillWithdrawal` can settle before a borrower's bad debt is absorbed → loss socialized to remaining LPs (user-bad-debt sibling of H-07; the Aave-HF gate doesn't catch it) | **By design** — accepted with pause-on-volatility mitigation (see §3)          |
 | M-14      | Medium   | `ReserveVault._releaseCollateral` surplus guard compared a freshly-marked collateral leg against a stale `assetExposureUSD` mark → allowlisted maker/operator could (even innocently) skim reserve that wasn't surplus during keeper lag, under-backing eToken holders | **Fixed** (2026-07-08)                                                         |
+| M-15      | Medium   | `OwnVault.sweepToken` swept the vault's own share token without reserving withdrawal-queue escrow → manager/OPERATOR could drain escrowed shares (bricking every pending withdrawal, irreversibly) and redeem them for collateral | **Fixed** (2026-07-09)                                                         |
 | L-01–L-13 | Low      | See §4                                                                                                                                                                        | 10 closed (9 fixed + L-02 mitigated) · 3 by design/accepted (L-04, L-09, L-11) |
 | L-14      | Low      | In-house `getPrice` has no read-time staleness bound; `pullAssetPrice` re-stamps `block.timestamp`                                                                            | **Fixed** (2026-06-19)                                                         |
 | L-15      | Low      | `maxDeposit`/`maxMint` report unlimited while `deposit`/`mint` revert (approval gate / `onlyManager`) → ERC-4626 integrators revert                                           | **Fixed** (2026-06-19, round 2)                                                |
@@ -585,6 +596,35 @@ without the fix — the phantom surplus was skimmable),
 `test_skimExcess_staleAssetMark_trueSurplus_releasable` (liveness: a genuine surplus stays
 spendable at same-time marks, and the release path syncs the asset mark). Both mutation-checked
 against the pre-fix code.
+
+### M-15 (Medium) — `sweepToken` could sweep the vault's own share-token escrow, draining the withdrawal queue
+
+**Problem.** `OwnVault.sweepToken` (added on `psm-module`, stray-token recovery, `onlyManagerOrOperator`)
+guarded only `token == asset()`, then swept the vault's **entire** balance of `token` to the caller.
+But an ERC-4626 vault _is_ its own share token, and `requestWithdrawal` escrows shares via
+`_transfer(msg.sender, address(this), shares)`, so
+`IERC20(address(this)).balanceOf(address(this)) == _pendingWithdrawalShares`. Calling
+`sweepToken(address(this))` therefore transferred the whole withdrawal-queue escrow out: afterwards
+`fulfillWithdrawal`'s `_burn(address(this), …)` and `cancelWithdrawal`'s `_transfer(address(this), …)`
+revert (no balance), permanently bricking every pending withdrawal, and the swept shares are fungible
+LP claims the caller can route back through `requestWithdrawal`→`fulfillWithdrawal` for the underlying
+collateral. No malice required — an honest operator recovering genuinely-stray shares would take the
+escrow with them. Privileged trigger, no unprivileged amplifier (hence Medium, parallel to M-14), but
+the OPERATOR role is instant/non-timelocked and the loss is not governance-recoverable (shares land in
+the caller's address).
+
+**Fix (2026-07-09).** `sweepToken` reserves the tracked escrow before sweeping the share token:
+`if (token == address(this)) amount -= _pendingWithdrawalShares;`. Only the surplus above the escrow (a
+genuine stray transfer) is recoverable; an escrow-only balance yields `amount == 0` and reverts
+`ZeroAmount`. `_pendingWithdrawalShares` moves in lockstep with the escrow (`requestWithdrawal` +,
+`cancel`/`fulfill` −), so `balanceOf(address(this)) >= _pendingWithdrawalShares` is invariant and the
+subtraction cannot underflow. Stray-share recovery (the function's purpose) is preserved.
+**Tests.** `OwnVault.t.sol::test_sweepToken_cannotDrainWithdrawalEscrow` (escrow-only sweep reverts
+`ZeroAmount`, escrow intact, LP can still cancel and recover — verified to **fail without the fix**: the
+full escrow is swept) and `test_sweepToken_recoversStrayAboveEscrow` (a stray transfer on top of live
+escrow: only the surplus is swept, escrow slice preserved); existing `test_sweepToken_ownShares_sweepable`
+(no-escrow stray recovery) still passes. Surfaced by the 2026-07-09 solidity-auditor 12-agent re-audit.
+Full suite green (989 passing).
 
 ### Fixed Info item — EToken pass-through dividends
 

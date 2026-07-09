@@ -1262,8 +1262,8 @@ contract OwnVaultTest is BaseTest {
     }
 
     function test_sweepToken_ownShares_sweepable() public {
-        // Shares mistakenly transferred to the vault are dead weight; the manager is the
-        // deliberate recovery route (restitution handled off-chain).
+        // Shares mistakenly transferred to the vault (no withdrawal escrow present) are dead weight;
+        // the manager is the deliberate recovery route (restitution handled off-chain).
         uint256 shares = _depositAs(Actors.LP1, 10 ether);
         vm.prank(Actors.LP1);
         vault.transfer(address(vault), shares);
@@ -1271,6 +1271,45 @@ contract OwnVaultTest is BaseTest {
         vm.prank(Actors.VM1);
         vault.sweepToken(address(vault));
         assertEq(vault.balanceOf(Actors.VM1), shares, "lost shares recovered by the manager");
+    }
+
+    function test_sweepToken_cannotDrainWithdrawalEscrow() public {
+        // M-15: escrowed withdrawal shares live as the vault's own-share balance; sweepToken must
+        // reserve them so the manager/operator cannot drain the queue and brick pending exits.
+        uint256 shares = _depositAs(Actors.LP1, 10 ether);
+        vm.prank(Actors.LP1);
+        uint256 requestId = vault.requestWithdrawal(shares);
+        assertEq(vault.balanceOf(address(vault)), shares, "shares escrowed on the vault");
+
+        // Nothing but escrow is held → no stray surplus → sweep reverts instead of taking the escrow.
+        vm.prank(Actors.VM1);
+        vm.expectRevert(IOwnVault.ZeroAmount.selector);
+        vault.sweepToken(address(vault));
+        assertEq(vault.balanceOf(address(vault)), shares, "escrow untouched by the sweep attempt");
+
+        // Escrow stays usable: the LP can still cancel and recover their shares.
+        vm.prank(Actors.LP1);
+        vault.cancelWithdrawal(requestId);
+        assertEq(vault.balanceOf(Actors.LP1), shares, "LP recovered their shares");
+    }
+
+    function test_sweepToken_recoversStrayAboveEscrow() public {
+        // A stray transfer on top of live escrow: only the surplus above _pendingWithdrawalShares
+        // is sweepable; the escrow slice remains protected.
+        uint256 shares = _depositAs(Actors.LP1, 10 ether);
+        uint256 escrowed = shares / 2;
+        uint256 stray = shares - escrowed;
+
+        vm.prank(Actors.LP1);
+        vault.requestWithdrawal(escrowed);
+        vm.prank(Actors.LP1);
+        vault.transfer(address(vault), stray); // fat-fingered shares land on top of the escrow
+
+        vm.prank(Actors.VM1);
+        vault.sweepToken(address(vault));
+
+        assertEq(vault.balanceOf(Actors.VM1), stray, "only the stray surplus is recovered");
+        assertEq(vault.balanceOf(address(vault)), escrowed, "escrow slice preserved");
     }
 
     function test_sweepToken_authAndEdgeCases_revert() public {
