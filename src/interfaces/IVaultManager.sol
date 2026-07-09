@@ -252,6 +252,8 @@ interface IVaultManager {
     //  Keeper — permissionless
     // ──────────────────────────────────────────────────────────
 
+    /// @notice Pull an asset's price fresh and re-mark its global exposure.
+    /// @dev A permanently halted asset re-marks at its fixed halt price; keepers cannot override it.
     function pullAssetPrice(
         bytes32 asset
     ) external;

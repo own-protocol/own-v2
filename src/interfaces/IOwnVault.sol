@@ -158,7 +158,7 @@ interface IOwnVault is IERC4626 {
     error TreasuryNotSet();
     /// @notice Requested amount exceeds the vault's backed collateral (totalAssets).
     error AmountExceedsBackedCollateral();
-
+    /// @notice The vault's asset token cannot be swept.
     error CannotSweepAsset();
 
     // ──────────────────────────────────────────────────────────

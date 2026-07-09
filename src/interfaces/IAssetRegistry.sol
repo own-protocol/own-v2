@@ -188,27 +188,41 @@ interface IAssetRegistry {
     function setPsmConfig(bytes32 ticker, address wrapper, address reserveVault) external;
 
     /// @notice Pause or resume PSM operations for one wrapper. Operator-only (instant response).
+    /// @param ticker  Asset ticker.
+    /// @param wrapper Wrapper token address.
+    /// @param paused  New pause flag.
     function setPsmPaused(bytes32 ticker, address wrapper, bool paused) external;
 
     /// @notice Set the global PSM ratio-jump bound in BPS (max per-operation drift of the derived
     ///         conversion ratio). Must be non-zero and ≤ BPS; zero is the pre-deploy default that
     ///         disables PSM mint/redeem and can never be set again. Admin-only.
+    /// @param bps New bound in basis points.
     function setRatioJumpBoundBps(
         uint256 bps
     ) external;
 
     /// @notice Disarm a wrapper's ratio-jump guard after an acknowledged corporate action; the
     ///         next PSM operation re-arms it. Operator-only.
+    /// @param ticker  Asset ticker.
+    /// @param wrapper Wrapper token address.
     function resetRatioGuard(bytes32 ticker, address wrapper) external;
 
     /// @notice Record the conversion ratio used by a PSM operation (ratio-jump guard state).
     ///         Market-only.
+    /// @param ticker  Asset ticker.
+    /// @param wrapper Wrapper token address.
+    /// @param ratio   Conversion ratio used (eTokens per wrapper unit, 1e18-scaled).
     function notePsmRatio(bytes32 ticker, address wrapper, uint256 ratio) external;
 
     /// @notice PSM configuration for a (ticker, wrapper) pair. Reverts if not configured.
+    /// @param ticker  Asset ticker.
+    /// @param wrapper Wrapper token address.
+    /// @return config The PSM configuration.
     function getPsmConfig(bytes32 ticker, address wrapper) external view returns (PsmConfig memory config);
 
     /// @notice All wrapper tokens ever configured for `ticker` (ops/indexing enumeration).
+    /// @param ticker Asset ticker.
+    /// @return wrappers Array of configured wrapper token addresses.
     function getPsmWrappers(
         bytes32 ticker
     ) external view returns (address[] memory wrappers);
@@ -230,6 +244,9 @@ interface IAssetRegistry {
     function setLendingVaultAllowed(bytes32 ticker, address vault, bool allowed) external;
 
     /// @notice Whether the BorrowManager bound to `vault` may open new borrows against `ticker`.
+    /// @param ticker Asset ticker.
+    /// @param vault  Vault whose bound BorrowManager is checked.
+    /// @return True if the (asset, vault) pair is allowed.
     function isLendingVaultAllowed(bytes32 ticker, address vault) external view returns (bool);
 
     // ──────────────────────────────────────────────────────────
@@ -248,6 +265,9 @@ interface IAssetRegistry {
 
     /// @notice Whether `signer` may settle quotes for `ticker` (OwnMarket) and recover reserve
     ///         surplus from `ticker`'s ReserveVaults (ReserveVault.withdraw).
+    /// @param ticker Asset ticker.
+    /// @param signer Maker's quote-signing key.
+    /// @return True if the (asset, signer) pair is allowed.
     function isMakerAllowed(bytes32 ticker, address signer) external view returns (bool);
 
     // ──────────────────────────────────────────────────────────
@@ -266,6 +286,9 @@ interface IAssetRegistry {
     function setForceExecuteVaultAllowed(bytes32 ticker, address vault, bool allowed) external;
 
     /// @notice Whether `vault` may source collateral for `ticker` force-executions.
+    /// @param ticker Asset ticker.
+    /// @param vault  Collateral-source vault.
+    /// @return True if the (asset, vault) pair is in the pool.
     function isForceExecuteVaultAllowed(bytes32 ticker, address vault) external view returns (bool);
 
     // ──────────────────────────────────────────────────────────

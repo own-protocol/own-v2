@@ -158,10 +158,12 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
         _;
     }
 
+    /// @dev Revert unless the caller holds the protocol ADMIN role.
     function _checkAdmin() internal view {
         if (!registry.hasRole(ADMIN, msg.sender)) revert OnlyAdmin();
     }
 
+    /// @dev Revert unless the caller holds the protocol OPERATOR role.
     function _checkOperator() internal view {
         if (!registry.hasRole(OPERATOR, msg.sender)) revert OnlyOperator();
     }
