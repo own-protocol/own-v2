@@ -614,6 +614,36 @@ contract AssetRegistryTest is BaseTest {
         registry.setRatioJumpBoundBps(100);
     }
 
+    function test_setPsmFillSpreadShareBps_boundsAndAuth() public {
+        assertEq(registry.psmFillSpreadShareBps(), 0, "no fee by default");
+
+        // Non-zero share routes fees to the treasury, so it must be configured first.
+        vm.prank(Actors.ADMIN);
+        vm.expectRevert(IAssetRegistry.TreasuryNotSet.selector);
+        registry.setPsmFillSpreadShareBps(2000);
+
+        _setTreasury(makeAddr("treasury"));
+        vm.startPrank(Actors.ADMIN);
+        vm.expectEmit(false, false, false, true);
+        emit IAssetRegistry.PsmFillSpreadShareUpdated(0, 2000);
+        registry.setPsmFillSpreadShareBps(2000);
+        assertEq(registry.psmFillSpreadShareBps(), 2000);
+
+        // 100% is the natural ceiling; beyond it the "fee" would exceed the filler's spread.
+        registry.setPsmFillSpreadShareBps(10_000);
+        vm.expectRevert(IAssetRegistry.InvalidSpreadShare.selector);
+        registry.setPsmFillSpreadShareBps(10_001);
+
+        // Zero disables the fee and never needs a treasury.
+        registry.setPsmFillSpreadShareBps(0);
+        assertEq(registry.psmFillSpreadShareBps(), 0);
+        vm.stopPrank();
+
+        vm.prank(Actors.ATTACKER);
+        vm.expectRevert(IAssetRegistry.OnlyAdmin.selector);
+        registry.setPsmFillSpreadShareBps(100);
+    }
+
     function test_resetRatioGuard_andNotePsmRatio_auth() public {
         (address wrapper, address reserveVault) = _psmSetup();
         vm.prank(Actors.ADMIN);

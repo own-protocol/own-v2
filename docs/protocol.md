@@ -531,7 +531,9 @@ VaultManager states — orthogonal to a vault's own status.
 | Set payment token / claim threshold / halt redeem address | Protocol admin (VaultManager)                        |
 | Register/update/remove quote signers                      | Protocol admin (VaultManager)                        |
 | Sign order quotes (off-chain)                             | Globally-registered signers                          |
-| Fill resting limit orders                                 | Anyone with a valid signed quote                     |
+| Fill resting limit orders (RFQ)                           | Anyone with a valid signed quote                     |
+| Fill resting orders vs the PSM reserve (`psmFillOrder`)   | Anyone (permissionless DvP; spread fee to treasury)  |
+| PSM mint / redeem (`psmMint` / `psmRedeem`)               | Any user (permissionless wrapper ↔ eToken, no fee)   |
 | Accept/reject LP deposits                                 | Vault's `manager`                                    |
 | Execute market orders / place orders                      | Any user (market order needs a signed quote)         |
 | Cancel orders                                             | Order owner                                          |
@@ -819,6 +821,31 @@ Safety gates (all fail-closed):
 | **Ratio-jump guard** | Per-(asset, wrapper) `lastUsedRatio`; a per-op move beyond the global bps bound reverts. Bound 0 (pre-deploy default) keeps PSM mint/redeem inert; the setter can never return it to zero. Operator `resetRatioGuard` disarms once (corporate-action acknowledgment). |
 | **Per-wrapper pause** | `setPsmPaused(asset, wrapper, paused)` — operator, instant. |
 | **Freshness** | Mint needs fresh wrapper + asset marks; redeem works off-hours and during halts (pays the frozen halt price) but needs a fresh wrapper leg. |
+
+### PSM fills (`psmFillOrder`)
+
+Resting limit orders can also be filled **permissionlessly** against the PSM reserve — atomic
+delivery-vs-payment, no quote, no signer, no maker allowlist. A mint fill pulls wrapper from the
+filler into the ReserveVault (ceil-rounded) and pays them the order's stablecoin escrow; a redeem
+fill pulls the filler's stablecoins to the order owner and releases reserve wrapper to the filler
+(floor-rounded, **bounded by the reserve balance** — buffer-backed supply cannot drain the
+reserve through this path).
+
+- **Settle price = the order's limit price**, bounded by the settle band (±`settleBandBps` of a
+  keeper-fresh mark). The wrapper leg must always be fresh — fills are discretionary trades, not
+  holder exits — and fills are blocked while the asset is paused or halted (halted holders exit
+  via `psmRedeem`/`redeemHalted`).
+- **Spread fee**: the protocol collects `AssetRegistry.psmFillSpreadShareBps` (admin-set, default
+  0, max 100%) of the filler's spread over the mark, paid in the fill's stablecoin leg to the
+  treasury — deducted from the mint payout, charged on top of the redeem payout. Zero edge → zero
+  fee, so the fee can never turn a profitable fill unprofitable, and the wrapper/eToken legs (and
+  therefore backing) are untouched. The order owner's terms are unaffected; `psmMint`/`psmRedeem`
+  and the RFQ channel stay fee-free.
+- **Per-asset fill kill switch**: `setPsmFillPaused(asset, paused)` — operator, default live —
+  darkens the fill channel alone; `psmMint`/`psmRedeem` and the RFQ paths stay up. Composes with
+  the per-wrapper `setPsmPaused`.
+
+Full decision log: `docs/psm-design.md` §8.0.
 
 ### Per-asset allowlists (AssetRegistry)
 

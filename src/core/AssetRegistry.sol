@@ -41,6 +41,9 @@ contract AssetRegistry is IAssetRegistry {
     /// @dev Ticker → whether trustless DvP fills (psmFillOrder) are paused. Default false = live.
     mapping(bytes32 => bool) private _psmFillPaused;
 
+    /// @dev Protocol share of the spread captured by PSM fills (BPS). 0 = no fee.
+    uint256 private _psmFillSpreadShareBps;
+
     /// @dev Ticker → vault → whether the vault's bound BorrowManager may open new borrows.
     mapping(bytes32 => mapping(address => bool)) private _lendingVaultAllowed;
 
@@ -207,6 +210,22 @@ contract AssetRegistry is IAssetRegistry {
         bytes32 ticker
     ) external view returns (bool) {
         return _psmFillPaused[ticker];
+    }
+
+    /// @inheritdoc IAssetRegistry
+    function setPsmFillSpreadShareBps(
+        uint256 bps
+    ) external onlyAdmin {
+        if (bps > BPS) revert InvalidSpreadShare();
+        if (bps != 0 && registry.treasury() == address(0)) revert TreasuryNotSet();
+        uint256 old = _psmFillSpreadShareBps;
+        _psmFillSpreadShareBps = bps;
+        emit PsmFillSpreadShareUpdated(old, bps);
+    }
+
+    /// @inheritdoc IAssetRegistry
+    function psmFillSpreadShareBps() external view returns (uint256) {
+        return _psmFillSpreadShareBps;
     }
 
     /// @inheritdoc IAssetRegistry

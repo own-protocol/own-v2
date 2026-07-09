@@ -401,6 +401,15 @@ Design decisions:
   the per-wrapper `setPsmPaused` (which darkens all PSM ops for that wrapper); the two compose.
 - Mint fills open reserve-matched exposure (util-neutral); partial fills reuse the resting-order
   `filledAmount` accounting.
+- **Spread fee** (`AssetRegistry.setPsmFillSpreadShareBps`, admin-only, default 0, max 100%): the
+  protocol collects a share of the filler's spread — the gap between the order's limit price and
+  the mark — in the fill's stablecoin leg, routed to the treasury (deducted from the mint payout;
+  charged on top of the redeem payout). Proportional to the filler's edge, so it can never turn a
+  profitable fill unprofitable (zero edge → zero fee, losing fills never charged), and it never
+  touches the wrapper/eToken legs — backing is bit-identical with the fee on or off. The order
+  owner's terms are unaffected. `psmMint`/`psmRedeem` stay fee-free (peg channels + the
+  unblockable halted exit); the RFQ channel is fee-free by design (allowlisted makers would price
+  a fee into quotes anyway).
 
 ### 8.1 Ondo transfer restrictions — resolved (monitor)
 

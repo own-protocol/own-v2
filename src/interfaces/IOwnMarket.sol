@@ -164,6 +164,14 @@ interface IOwnMarket {
         uint256 remaining
     );
 
+    /// @notice Emitted when the protocol collects its share of a PSM fill's spread — the gap
+    ///         between the order's limit price and the mark — paid in the fill's stablecoin leg.
+    /// @param orderId  Resting order filled.
+    /// @param filler   Filler whose spread was shared.
+    /// @param payToken Stablecoin the fee was paid in (escrow token on mint, payment token on redeem).
+    /// @param fee      Fee routed to the treasury (payToken units).
+    event PsmSpreadFeeCollected(uint256 indexed orderId, address indexed filler, address payToken, uint256 fee);
+
     // ──────────────────────────────────────────────────────────
     //  Errors
     // ──────────────────────────────────────────────────────────
@@ -446,7 +454,10 @@ interface IOwnMarket {
     ///         order owner and release reserve wrapper to the caller (floor-rounded, bounded by
     ///         the reserve balance). The wrapper leg must always be fresh — fills are
     ///         discretionary maker trades, not exits — and fills are blocked while the asset is
-    ///         paused or halted (halted holders exit via {psmRedeem}/{redeemHalted}).
+    ///         paused or halted (halted holders exit via {psmRedeem}/{redeemHalted}). The
+    ///         protocol collects `psmFillSpreadShareBps` of the filler's spread over the mark in
+    ///         the stablecoin leg (deducted from the mint payout; charged on top of the redeem
+    ///         payout) — never more than the filler's edge, zero when they have none.
     /// @param orderId Resting order to fill.
     /// @param wrapper Wrapper token to settle against (must be PSM-configured for the asset).
     /// @param amount  Chunk of the order to fill (order units: stablecoin for mint, eTokens for redeem).

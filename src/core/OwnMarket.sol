@@ -750,7 +750,14 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard, EIP712 {
         vmgr.openExposure(order.asset, eTokenAmount);
 
         IEToken(_activeToken(order.asset)).mint(order.user, eTokenAmount);
-        IERC20(order.escrowToken).safeTransfer(msg.sender, amount);
+
+        // Pay the filler the escrow chunk less the protocol's share of their spread.
+        uint256 fee = _psmSpreadFee(order.asset, eTokenAmount, order.escrowToken, amount, true);
+        IERC20(order.escrowToken).safeTransfer(msg.sender, amount - fee);
+        if (fee != 0) {
+            IERC20(order.escrowToken).safeTransfer(registry.treasury(), fee);
+            emit PsmSpreadFeeCollected(order.orderId, msg.sender, order.escrowToken, fee);
+        }
     }
 
     /// @dev Redeem-side DvP fill: pull the filler's stablecoin payout to the owner at the limit
@@ -772,9 +779,36 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard, EIP712 {
         if (wrapperAmount == 0) revert ZeroAmount();
 
         IERC20(pay).safeTransferFrom(msg.sender, order.user, netPayout);
+
+        // The filler additionally pays the protocol's share of their spread on top of the payout.
+        uint256 fee = _psmSpreadFee(order.asset, amount, pay, netPayout, false);
+        if (fee != 0) {
+            IERC20(pay).safeTransferFrom(msg.sender, registry.treasury(), fee);
+            emit PsmSpreadFeeCollected(order.orderId, msg.sender, pay, fee);
+        }
+
         IEToken(_activeToken(order.asset)).burn(address(this), amount);
         _vaultManager().closeExposure(order.asset, amount);
         IReserveVault(reserveVault).releaseCollateral(msg.sender, wrapperAmount);
+    }
+
+    /// @dev Protocol's cut of a PSM fill's spread: `psmFillSpreadShareBps` of the gap between
+    ///      the fill's stablecoin leg at the order's limit price and the same eTokens valued at
+    ///      the settle-band-fresh mark (floor). Zero when the share is unset or the filler has
+    ///      no edge, so a fee can never turn a profitable fill unprofitable or block a fill.
+    function _psmSpreadFee(
+        bytes32 asset,
+        uint256 eTokenAmount,
+        address payToken,
+        uint256 limitLeg,
+        bool isMint
+    ) private view returns (uint256) {
+        uint256 share = _assetRegistry().psmFillSpreadShareBps();
+        if (share == 0) return 0;
+        uint256 markLeg = _eTokensToPay(eTokenAmount, payToken, _vaultManager().assetMark(asset));
+        uint256 spread =
+            isMint ? (limitLeg > markLeg ? limitLeg - markLeg : 0) : (markLeg > limitLeg ? markLeg - limitLeg : 0);
+        return Math.mulDiv(spread, share, BPS);
     }
 
     // ──────────────────────────────────────────────────────────

@@ -718,6 +718,116 @@ contract PsmFlowTest is PsmFlowBase {
     }
 
     // ──────────────────────────────────────────────────────────
+    //  psmFillOrder — spread fee
+    // ──────────────────────────────────────────────────────────
+
+    /// @dev Route fees to a fresh treasury and set the protocol's spread share.
+    function _enableSpreadFee(
+        uint256 shareBps
+    ) internal returns (address treasury) {
+        treasury = makeAddr("treasury");
+        _setTreasury(treasury);
+        vm.prank(Actors.ADMIN);
+        assetRegistry.setPsmFillSpreadShareBps(shareBps);
+    }
+
+    function test_psmFillOrder_mint_spreadFee() public {
+        address treasury = _enableSpreadFee(2000); // 20%
+        address arb = makeAddr("arb");
+        // $251 limit over the $250 mark: $100 spread on a full fill; the protocol takes $20.
+        uint256 orderId = _placeMintOrder(Actors.MINTER1, 25_100e6, 251e18);
+
+        ondo.mint(arb, 100e18);
+        vm.startPrank(arb);
+        ondo.approve(address(market), 100e18);
+        vm.expectEmit(true, true, false, true);
+        emit IOwnMarket.PsmSpreadFeeCollected(orderId, arb, address(usdc), 20e6);
+        market.psmFillOrder(orderId, address(ondo), 25_100e6);
+        vm.stopPrank();
+
+        assertEq(usdc.balanceOf(arb), 25_080e6, "filler keeps 80% of the spread");
+        assertEq(usdc.balanceOf(treasury), 20e6, "protocol takes 20%");
+        // Order terms and backing are untouched by the fee.
+        assertEq(eTSLA.balanceOf(Actors.MINTER1), 100e18, "owner minted at the limit");
+        assertEq(ondo.balanceOf(address(ondoReserve)), 100e18, "wrapper fully backs the mint");
+        assertEq(vaultManager.globalNetExposureUSD(), 0, "fully reserve-covered");
+        assertEq(eTSLA.totalSupply(), vaultManager.globalAssetUnits(TSLA));
+    }
+
+    function test_psmFillOrder_redeem_spreadFee() public {
+        address treasury = _enableSpreadFee(2000); // 20%
+        address arb = makeAddr("arb");
+        _psmMintOndo(Actors.MINTER1, 100e18);
+        // $249 limit under the $250 mark: $100 spread; the filler pays the $20 cut on top.
+        uint256 orderId = _placeRedeemOrder(Actors.MINTER1, 100e18, 249e18);
+
+        _fundUSDC(arb, 24_920e6);
+        vm.startPrank(arb);
+        usdc.approve(address(market), 24_920e6);
+        vm.expectEmit(true, true, false, true);
+        emit IOwnMarket.PsmSpreadFeeCollected(orderId, arb, address(usdc), 20e6);
+        uint256 out = market.psmFillOrder(orderId, address(ondo), 100e18);
+        vm.stopPrank();
+
+        assertEq(out, 24_900e6, "owner's payout is untouched");
+        assertEq(usdc.balanceOf(Actors.MINTER1), 24_900e6);
+        assertEq(usdc.balanceOf(treasury), 20e6);
+        assertEq(usdc.balanceOf(arb), 0, "filler paid payout + fee");
+        assertEq(ondo.balanceOf(arb), 100e18, "wrapper leg unchanged");
+        assertEq(vaultManager.assetExposureUSD(TSLA), 0, "exposure fully closed");
+    }
+
+    function test_psmFillOrder_spreadFee_zeroWhenNoEdge() public {
+        address treasury = _enableSpreadFee(2000);
+        address arb = makeAddr("arb");
+        // Limit at the mark: the filler earns nothing, so the protocol takes nothing.
+        uint256 orderId = _placeMintOrder(Actors.MINTER1, 25_000e6, TSLA_PRICE);
+
+        ondo.mint(arb, 100e18);
+        vm.startPrank(arb);
+        ondo.approve(address(market), 100e18);
+        market.psmFillOrder(orderId, address(ondo), 25_000e6);
+        vm.stopPrank();
+
+        assertEq(usdc.balanceOf(arb), 25_000e6, "full escrow to the filler");
+        assertEq(usdc.balanceOf(treasury), 0, "no edge, no fee");
+    }
+
+    function test_psmFillOrder_spreadFee_zeroOnInvertedSpread() public {
+        address treasury = _enableSpreadFee(2000);
+        address arb = makeAddr("arb");
+        _psmMintOndo(Actors.MINTER1, 100e18);
+        // Redeem limit above the mark: the filler overpays the owner — no edge to share.
+        uint256 orderId = _placeRedeemOrder(Actors.MINTER1, 100e18, 251e18);
+
+        _fundUSDC(arb, 25_100e6);
+        vm.startPrank(arb);
+        usdc.approve(address(market), 25_100e6);
+        market.psmFillOrder(orderId, address(ondo), 100e18);
+        vm.stopPrank();
+
+        assertEq(usdc.balanceOf(Actors.MINTER1), 25_100e6, "owner paid at their limit");
+        assertEq(usdc.balanceOf(treasury), 0, "losing fill is never charged");
+        assertEq(ondo.balanceOf(arb), 100e18);
+    }
+
+    function test_psmFillOrder_spreadFee_fullShare_partialFill() public {
+        address treasury = _enableSpreadFee(BPS); // 100% — the uncapped maximum
+        address arb = makeAddr("arb");
+        uint256 orderId = _placeMintOrder(Actors.MINTER1, 25_100e6, 251e18);
+
+        ondo.mint(arb, 50e18);
+        vm.startPrank(arb);
+        ondo.approve(address(market), 50e18);
+        market.psmFillOrder(orderId, address(ondo), 12_550e6); // half the order
+        vm.stopPrank();
+
+        // Half fill → $50 spread, all of it to the treasury; the filler nets the mark value.
+        assertEq(usdc.balanceOf(treasury), 50e6);
+        assertEq(usdc.balanceOf(arb), 12_500e6, "filler nets exactly the mark value");
+    }
+
+    // ──────────────────────────────────────────────────────────
     //  Ratio-jump guard
     // ──────────────────────────────────────────────────────────
 

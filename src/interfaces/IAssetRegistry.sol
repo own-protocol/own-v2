@@ -68,6 +68,11 @@ interface IAssetRegistry {
     /// @param wrapper Wrapper token address.
     event RatioGuardReset(bytes32 indexed ticker, address indexed wrapper);
 
+    /// @notice Emitted when the protocol's share of PSM fill spreads is updated.
+    /// @param oldBps Previous share (BPS).
+    /// @param newBps New share (BPS).
+    event PsmFillSpreadShareUpdated(uint256 oldBps, uint256 newBps);
+
     /// @notice Emitted when a vault's lending allowlist entry for an asset is updated.
     /// @param ticker  Asset ticker.
     /// @param vault   Vault whose bound BorrowManager the entry gates.
@@ -129,6 +134,12 @@ interface IAssetRegistry {
 
     /// @notice The ratio-jump bound must be non-zero and at most BPS (100%).
     error InvalidRatioJumpBound();
+
+    /// @notice The PSM fill spread share must be at most BPS (100%).
+    error InvalidSpreadShare();
+
+    /// @notice A non-zero spread share routes fees to the treasury, which is not configured.
+    error TreasuryNotSet();
 
     /// @notice The vault is RWA-registered (a ReserveVault); it never binds a BorrowManager and
     ///         cannot enter the lending allowlist.
@@ -219,6 +230,18 @@ interface IAssetRegistry {
     function setRatioJumpBoundBps(
         uint256 bps
     ) external;
+
+    /// @notice Set the protocol's share of the spread captured by PSM fills — the gap between a
+    ///         resting order's limit price and the mark, paid in the fill's stablecoin leg to the
+    ///         treasury. At most BPS (100%); zero (the default) disables the fee. A non-zero
+    ///         share requires the treasury to be configured. Admin-only.
+    /// @param bps New share in basis points.
+    function setPsmFillSpreadShareBps(
+        uint256 bps
+    ) external;
+
+    /// @notice Protocol share of PSM fill spreads (BPS; 0 = no fee).
+    function psmFillSpreadShareBps() external view returns (uint256);
 
     /// @notice Disarm a wrapper's ratio-jump guard after an acknowledged corporate action; the
     ///         next PSM operation re-arms it. Operator-only.
