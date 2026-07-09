@@ -1054,6 +1054,70 @@ contract PsmFlowTest is PsmFlowBase {
     }
 
     // ──────────────────────────────────────────────────────────
+    //  Reserve rotation — ondo → xs, fully backed at every step
+    // ──────────────────────────────────────────────────────────
+
+    /// @dev Ops rotation (deposit-first): backfill the new wrapper, then skim the old one. The
+    ///      surplus guard forces this ordering — extraction before backfill must revert. Both
+    ///      reserves aggregate into the asset's RWA book, which is what unlocks the skim.
+    function test_reserveRotation_depositThenSkim() public {
+        _psmMintOndo(Actors.MINTER1, 1000e18); // 1000 eTSLA backed 1:1 by ondo
+
+        // Extract-first is impossible: zero surplus, the guard blocks it.
+        vm.prank(Actors.ADMIN);
+        vm.expectRevert(IReserveVault.SkimExceedsSurplus.selector);
+        ondoReserve.skimExcess(500e18);
+
+        // Ops backfills 500 TSLA of the 6-dec wrapper into its reserve…
+        address ops = makeAddr("ops");
+        xs.mint(ops, 500e6);
+        vm.startPrank(ops);
+        xs.approve(address(xsReserve), 500e6);
+        xsReserve.deposit(500e6);
+        vm.stopPrank();
+
+        // …and the same extraction now passes.
+        vm.prank(Actors.ADMIN);
+        ondoReserve.skimExcess(500e18);
+
+        assertEq(eTSLA.totalSupply(), 1000e18, "supply untouched");
+        assertEq(ondo.balanceOf(address(ondoReserve)), 500e18, "half the old wrapper out");
+        assertEq(xs.balanceOf(address(xsReserve)), 500e6, "half the new wrapper in");
+        assertGe(
+            vaultManager.assetRwaCollateralUSD(TSLA), vaultManager.assetExposureUSD(TSLA), "fully backed after rotation"
+        );
+        assertEq(vaultManager.globalNetExposureUSD(), 0, "no residual risk on the buffer");
+    }
+
+    /// @dev Market rotation (PSM round-trip): mint on the new wrapper, redeem on the old one.
+    ///      Supply and exposure return to the start; only the backing rotates. Permissionless —
+    ///      any MM with the new wrapper can perform it; no admin action beyond PSM config.
+    function test_reserveRotation_psmRoundTrip() public {
+        _psmMintOndo(Actors.MINTER1, 1000e18);
+
+        address mm = makeAddr("mm");
+        xs.mint(mm, 500e6); // the MM sources the new wrapper with its own capital
+        vm.startPrank(mm);
+        xs.approve(address(market), 500e6);
+        uint256 minted = market.psmMint(TSLA, address(xs), 500e6);
+        assertEq(minted, 500e18, "6-dec wrapper scales to 18-dec eTokens");
+        // The transient +500 mint is reserve-matched: no residual risk even mid-rotation.
+        assertEq(vaultManager.globalNetExposureUSD(), 0, "matched mid-rotation");
+
+        uint256 ondoOut = market.psmRedeem(TSLA, address(ondo), minted);
+        vm.stopPrank();
+
+        assertEq(ondoOut, 500e18, "old wrapper released at the same ratio");
+        assertEq(ondo.balanceOf(mm), 500e18, "MM recycles by selling the ondo");
+        assertEq(eTSLA.balanceOf(mm), 0, "round trip leaves the MM flat");
+        assertEq(eTSLA.totalSupply(), 1000e18, "supply back to the start");
+        assertEq(vaultManager.assetExposureUSD(TSLA), 250_000e18, "exposure back to the start");
+        assertEq(ondo.balanceOf(address(ondoReserve)), 500e18);
+        assertEq(xs.balanceOf(address(xsReserve)), 500e6);
+        assertEq(vaultManager.globalNetExposureUSD(), 0, "fully backed throughout");
+    }
+
+    // ──────────────────────────────────────────────────────────
     //  eToken split — derived ratio auto-rescales
     // ──────────────────────────────────────────────────────────
 
