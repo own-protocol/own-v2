@@ -31,6 +31,16 @@ contract PsmStubAssetRegistry {
     }
 }
 
+/// @dev Wrapper that skims 1 wei on every transferFrom — exercises the deposit escrow check.
+contract FeeOnTransferWrapper is MockERC20 {
+    constructor() MockERC20("FoT Tesla", "fTSLA", 18) {}
+
+    function transferFrom(address from, address to, uint256 value) public override returns (bool ok) {
+        ok = super.transferFrom(from, to, value);
+        _burn(to, 1);
+    }
+}
+
 /// @title ReserveVault Unit Tests
 /// @notice Custody, market-only release with mark sync, and the operator surplus skim guard.
 ///         Uses a real VaultManager so the netted-books interactions are exercised for real.
@@ -148,6 +158,17 @@ contract ReserveVaultTest is Test {
         ondo.approve(address(orphan), 1e18);
         vm.expectRevert();
         orphan.deposit(1e18);
+        vm.stopPrank();
+    }
+
+    function test_deposit_feeOnTransfer_reverts() public {
+        FeeOnTransferWrapper fot = new FeeOnTransferWrapper();
+        ReserveVault fotReserve = new ReserveVault(address(fot), address(registry), rvManager);
+        fot.mint(user, 1e18);
+        vm.startPrank(user);
+        fot.approve(address(fotReserve), 1e18);
+        vm.expectRevert(IReserveVault.FeeOnTransferNotSupported.selector);
+        fotReserve.deposit(1e18);
         vm.stopPrank();
     }
 

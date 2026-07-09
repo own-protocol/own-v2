@@ -1491,6 +1491,41 @@ contract VaultManagerTest is Test {
         assertEq(manager.globalNetExposureUSD(), 60_000e18, "net restored");
     }
 
+    function test_deregisterVault_rwaVault_zeroGenericCollateral_reverts() public {
+        // E = R = $100k with NO generic pool: removing the reserve leaves a residual no
+        // collateral can absorb — fail closed.
+        manager.pullAssetPrice(TSLA);
+        vm.prank(admin);
+        manager.setAssetCapUSD(TSLA, ASSET_CAP);
+        _bootstrapRwa(1000e18);
+        _open(1000e18);
+
+        vm.expectRevert(IVaultManager.DeregisterWouldBreachUtilization.selector);
+        vm.prank(admin);
+        manager.deregisterVault(address(rwaVault));
+    }
+
+    function test_deregisterVault_rwaVault_residualUnderCap_succeeds() public {
+        // Generic pool $1M; E = $100k fully netted by R. Removing the reserve leaves a $100k
+        // residual at 10% utilization — under the cap, so the reserve may exit.
+        vm.prank(admin);
+        manager.registerVault(address(vault), USDC_TICKER);
+        vault.setTotalAssets(1_000_000e6);
+        manager.pullCollateralPrice(address(vault));
+        manager.pullAssetPrice(TSLA);
+        vm.prank(admin);
+        manager.setAssetCapUSD(TSLA, ASSET_CAP);
+        _bootstrapRwa(1000e18);
+        _open(1000e18);
+        assertEq(manager.globalNetExposureUSD(), 0, "fully netted before exit");
+
+        vm.prank(admin);
+        manager.deregisterVault(address(rwaVault));
+
+        assertEq(manager.assetRwaCollateralUSD(TSLA), 0, "reserve removed");
+        assertEq(manager.globalNetExposureUSD(), 100_000e18, "residual re-loads the generic pool");
+    }
+
     function test_deregisterVault_rwaVault_breachesUtil_reverts() public {
         // Generic pool $10k; E = $100k fully netted by R = $100k.
         vm.prank(admin);

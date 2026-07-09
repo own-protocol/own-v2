@@ -289,6 +289,59 @@ contract PsmFlowTest is PsmFlowBase {
         market.psmMint(TSLA, address(ondo), 0);
     }
 
+    function test_psmRedeem_zeroAmount_reverts() public {
+        vm.prank(Actors.MINTER1);
+        vm.expectRevert(IOwnMarket.ZeroAmount.selector);
+        market.psmRedeem(TSLA, address(ondo), 0);
+    }
+
+    function test_psmMint_wrapperPriceUnavailable_reverts() public {
+        // Feed normalises to exactly zero (Pyth exponent truncation) — fail closed.
+        oracle.setForceZeroPrice(true);
+        vm.prank(Actors.MINTER1);
+        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.WrapperPriceUnavailable.selector, ONDO_TSLA));
+        market.psmMint(TSLA, address(ondo), 1e18);
+    }
+
+    function test_psmMint_assetMarkUnavailable_reverts() public {
+        // A configured PSM whose asset mark was never keeper-pulled fails closed.
+        bytes32 aapl = bytes32("AAPL");
+        bytes32 wAaplTicker = bytes32("W.AAPL");
+        vm.startPrank(Actors.ADMIN);
+        EToken eAAPL = new EToken("Own Apple", "eAAPL", aapl, address(protocolRegistry), address(usdc));
+        MockERC20 wAapl = new MockERC20("Wrapped Apple", "wAAPL", 18);
+        assetRegistry.addAsset(aapl, address(eAAPL), _assetConfig(address(eAAPL)));
+        assetRegistry.addAsset(wAaplTicker, address(wAapl), _assetConfig(address(wAapl)));
+        ReserveVault aaplReserve = new ReserveVault(address(wAapl), address(protocolRegistry), Actors.VM1);
+        vaultManager.registerVault(address(aaplReserve), wAaplTicker, aapl);
+        assetRegistry.setPsmConfig(aapl, address(wAapl), address(aaplReserve));
+        vm.stopPrank();
+        _setOraclePrice(wAaplTicker, TSLA_PRICE); // wrapper leg fresh; asset mark never pulled
+
+        vm.prank(Actors.MINTER1);
+        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.AssetMarkUnavailable.selector, aapl));
+        market.psmMint(aapl, address(wAapl), 1e18);
+    }
+
+    function test_psmMint_ratioFloorsToZero_reverts() public {
+        // wrapperPrice « mark floors the derived ratio to 0 — fail closed, never a free mint.
+        _setOraclePrice(ONDO_TSLA, 1); // 1e-18 USD vs the $250 mark → ratio 0
+        vm.prank(Actors.MINTER1);
+        vm.expectRevert(IOwnMarket.InvalidPrice.selector);
+        market.psmMint(TSLA, address(ondo), 1e18);
+    }
+
+    function test_psmMint_dustFloorsToZero_reverts() public {
+        // 1 unit of the 6-dec wrapper at a collapsed ratio yields 0 eTokens — the floor rejects it.
+        _setOraclePrice(XS_TSLA, 1e7); // ratio = 4e4 (4e-14); 1 xs unit → 0.04 wei eToken → 0
+        xs.mint(Actors.MINTER1, 1);
+        vm.startPrank(Actors.MINTER1);
+        xs.approve(address(market), 1);
+        vm.expectRevert(IOwnMarket.ZeroAmount.selector);
+        market.psmMint(TSLA, address(xs), 1);
+        vm.stopPrank();
+    }
+
     // ──────────────────────────────────────────────────────────
     //  Ratio-jump guard
     // ──────────────────────────────────────────────────────────

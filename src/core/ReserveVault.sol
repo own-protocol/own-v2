@@ -47,11 +47,6 @@ contract ReserveVault is IReserveVault, ReentrancyGuard {
         _;
     }
 
-    modifier onlyOperator() {
-        if (!registry.hasRole(OPERATOR, msg.sender)) revert OnlyOperator();
-        _;
-    }
-
     modifier onlyAdmin() {
         if (!registry.hasRole(ADMIN, msg.sender)) revert OnlyAdmin();
         _;

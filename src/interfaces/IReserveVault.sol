@@ -51,8 +51,6 @@ interface IReserveVault {
 
     /// @notice Caller is not the market contract.
     error OnlyMarket();
-    /// @notice Caller does not hold the operator role.
-    error OnlyOperator();
     /// @notice Caller does not hold the admin role.
     error OnlyAdmin();
     /// @notice Caller is neither the vault's manager nor an operator.
