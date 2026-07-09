@@ -44,8 +44,6 @@ interface IOracleVerifier {
     /// @param lastPrice     Previous cached price (18 dec).
     /// @param maxDeviation  Allowed deviation (BPS).
     error PriceDeviationExceeded(bytes32 asset, uint256 reportedPrice, uint256 lastPrice, uint256 maxDeviation);
-    /// @notice Price proof signature is invalid.
-    error InvalidSignature();
     /// @notice Price was signed by an address that is not an authorised signer.
     error UnauthorizedSigner(address signer);
     /// @notice Price is zero.

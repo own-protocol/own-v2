@@ -3,7 +3,7 @@ pragma solidity 0.8.28;
 
 import {IOracleVerifier} from "../interfaces/IOracleVerifier.sol";
 import {IProtocolRegistry} from "../interfaces/IProtocolRegistry.sol";
-import {BPS, PRECISION} from "../interfaces/types/Types.sol";
+import {BPS} from "../interfaces/types/Types.sol";
 import {IPyth} from "@pythnetwork/IPyth.sol";
 import {PythStructs} from "@pythnetwork/PythStructs.sol";
 
