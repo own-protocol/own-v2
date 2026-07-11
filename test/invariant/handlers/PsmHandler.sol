@@ -179,12 +179,12 @@ contract PsmHandler is CommonBase, StdCheats, StdUtils {
         try market.cancelOrder(id) {} catch {}
     }
 
-    /// @dev Flip the per-asset fill kill switch (paused ~25% of the time so fills still explore).
+    /// @dev Flip the per-wrapper fill kill switch (paused ~25% of the time so fills still explore).
     function toggleFillPause(
         uint256 seed
     ) external {
         vm.prank(Actors.ADMIN); // holds OPERATOR in the test bootstrap
-        assetRegistry.setPsmFillPaused(TSLA, seed % 4 == 0);
+        assetRegistry.setPsmFillPaused(TSLA, address(ondo), seed % 4 == 0);
     }
 
     // ── RFQ channel ─────────────────────────────────────────────

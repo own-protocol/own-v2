@@ -396,9 +396,12 @@ Design decisions:
 - **Halt/pause**: fills are blocked while paused or halted in both directions (mint via
   `MintBlockedDuringHalt`, redeem via `TradingHalted`) — halted holders exit via
   `psmRedeem`/`redeemHalted` at the frozen mark, never via discretionary fills.
-- **Per-asset fill kill switch** (`AssetRegistry.setPsmFillPaused`, operator-only, default live):
-  pauses the DvP fill channel alone — `psmMint`/`psmRedeem` and the RFQ paths stay up. Finer than
-  the per-wrapper `setPsmPaused` (which darkens all PSM ops for that wrapper); the two compose.
+- **Per-wrapper fill kill switch** (`AssetRegistry.setPsmFillPaused(asset, wrapper, paused)`,
+  operator-only, default live, stored as `PsmConfig.fillPaused`): pauses the DvP fill channel
+  alone for that wrapper — `psmMint`/`psmRedeem` and the RFQ paths stay up. Finer than the full
+  `setPsmPaused` (which darkens all PSM ops for that wrapper); the two flags are independent and
+  compose. Originally per-asset; moved into `PsmConfig` (2026-07-11) so fills pause per wrapper —
+  an asset-wide fill halt is one call per configured wrapper (enumerable via `getPsmWrappers`).
 - Mint fills open reserve-matched exposure (util-neutral); partial fills reuse the resting-order
   `filledAmount` accounting.
 - **Spread fee** (`AssetRegistry.setPsmFillSpreadShareBps`, admin-only, default 0, max 100%): the

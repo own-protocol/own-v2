@@ -57,7 +57,8 @@ delivery-vs-payment fills of resting orders against the PSM reserve (no quote, n
 allowlist; settles at the order's limit price inside the settle band; fresh wrapper leg required in
 both directions; ceil/floor rounding protocol-favorable; redeem fills bounded by the reserve
 balance). A per-asset operator kill switch (`AssetRegistry.setPsmFillPaused`, default live) pauses
-the fill channel alone, leaving `psmMint`/`psmRedeem`/RFQ up. Design rationale in
+the fill channel alone, leaving `psmMint`/`psmRedeem`/RFQ up (2026-07-11: moved into
+`PsmConfig.fillPaused`, scope now per asset+wrapper). Design rationale in
 `docs/psm-design.md` §8.0; 15 integration tests in `PsmFlow.t.sol` (incl. self-fill ≡
 psmMint/psmRedeem equivalence pins), and the PSM invariant campaign now drives resting orders,
 partial DvP fills, cancels, and the fill pause alongside the PSM/RFQ channels, with a new

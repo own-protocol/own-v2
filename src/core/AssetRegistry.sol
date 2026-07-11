@@ -38,9 +38,6 @@ contract AssetRegistry is IAssetRegistry {
     /// @dev Max per-op drift of the derived PSM ratio (BPS). 0 = unconfigured (mint/redeem inert).
     uint256 private _ratioJumpBoundBps;
 
-    /// @dev Ticker → whether trustless DvP fills (psmFillOrder) are paused. Default false = live.
-    mapping(bytes32 => bool) private _psmFillPaused;
-
     /// @dev Protocol share of the spread captured by PSM fills (BPS). 0 = no fee.
     uint256 private _psmFillSpreadShareBps;
 
@@ -199,17 +196,11 @@ contract AssetRegistry is IAssetRegistry {
     }
 
     /// @inheritdoc IAssetRegistry
-    function setPsmFillPaused(bytes32 ticker, bool paused) external onlyOperator {
-        if (!_registered[ticker]) revert AssetNotFound(ticker);
-        _psmFillPaused[ticker] = paused;
-        emit PsmFillPausedUpdated(ticker, paused);
-    }
-
-    /// @inheritdoc IAssetRegistry
-    function isPsmFillPaused(
-        bytes32 ticker
-    ) external view returns (bool) {
-        return _psmFillPaused[ticker];
+    function setPsmFillPaused(bytes32 ticker, address wrapper, bool paused) external onlyOperator {
+        PsmConfig storage cfg = _psmConfigs[ticker][wrapper];
+        if (cfg.reserveVault == address(0)) revert PsmNotConfigured(ticker, wrapper);
+        cfg.fillPaused = paused;
+        emit PsmFillPausedUpdated(ticker, wrapper, paused);
     }
 
     /// @inheritdoc IAssetRegistry

@@ -841,9 +841,9 @@ reserve through this path).
   fee, so the fee can never turn a profitable fill unprofitable, and the wrapper/eToken legs (and
   therefore backing) are untouched. The order owner's terms are unaffected; `psmMint`/`psmRedeem`
   and the RFQ channel stay fee-free.
-- **Per-asset fill kill switch**: `setPsmFillPaused(asset, paused)` — operator, default live —
-  darkens the fill channel alone; `psmMint`/`psmRedeem` and the RFQ paths stay up. Composes with
-  the per-wrapper `setPsmPaused`.
+- **Per-wrapper fill kill switch**: `setPsmFillPaused(asset, wrapper, paused)` — operator, default
+  live — darkens the fill channel alone for that wrapper (`PsmConfig.fillPaused`); `psmMint`/
+  `psmRedeem` and the RFQ paths stay up. Composes with the full per-wrapper `setPsmPaused`.
 
 Full decision log: `docs/psm-design.md` §8.0.
 

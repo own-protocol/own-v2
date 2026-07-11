@@ -363,8 +363,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard, EIP712 {
         // blocked by pause/halt — halted holders exit via psmRedeem/redeemHalted instead.
         if (order.orderType == OrderType.Mint) _validateAsset(order.asset);
         _checkTradeable(order.asset, order.orderType);
-        // Per-asset kill switch for the fill channel only; psmMint/psmRedeem/RFQ stay live.
-        if (_assetRegistry().isPsmFillPaused(order.asset)) revert PsmFillPaused(order.asset);
+        _checkFillPaused(order.asset, wrapper);
 
         // A redeem order escrowed in a now-legacy token cannot be filled (mirrors fillOrder).
         if (order.orderType == OrderType.Redeem && order.escrowToken != _activeToken(order.asset)) {
@@ -682,6 +681,11 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard, EIP712 {
     // ──────────────────────────────────────────────────────────
     //  Internal — PSM helpers
     // ──────────────────────────────────────────────────────────
+
+    /// @dev Per-wrapper kill switch for the fill channel only; psmMint/psmRedeem/RFQ stay live.
+    function _checkFillPaused(bytes32 asset, address wrapper) private view {
+        if (_assetRegistry().getPsmConfig(asset, wrapper).fillPaused) revert PsmFillPaused(asset, wrapper);
+    }
 
     /// @dev Resolve a wrapper's PSM config and derive the conversion ratio (eTokens per wrapper
     ///      unit, 1e18) = wrapper oracle price / asset mark. Enforces the fail-closed ratio-jump

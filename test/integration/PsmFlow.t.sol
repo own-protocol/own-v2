@@ -641,13 +641,13 @@ contract PsmFlowTest is PsmFlowBase {
         uint256 orderId = _placeMintOrder(Actors.MINTER2, 2510e6, 251e18);
 
         vm.prank(Actors.ADMIN); // operator role in the test bootstrap
-        assetRegistry.setPsmFillPaused(TSLA, true);
+        assetRegistry.setPsmFillPaused(TSLA, address(ondo), true);
 
         // The fill channel is dark…
         ondo.mint(arb, 10e18);
         vm.startPrank(arb);
         ondo.approve(address(market), 10e18);
-        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.PsmFillPaused.selector, TSLA));
+        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.PsmFillPaused.selector, TSLA, address(ondo)));
         market.psmFillOrder(orderId, address(ondo), 2510e6);
         vm.stopPrank();
 
@@ -659,7 +659,7 @@ contract PsmFlowTest is PsmFlowBase {
 
         // Resume: the same fill now settles.
         vm.prank(Actors.ADMIN);
-        assetRegistry.setPsmFillPaused(TSLA, false);
+        assetRegistry.setPsmFillPaused(TSLA, address(ondo), false);
         vm.startPrank(arb);
         market.psmFillOrder(orderId, address(ondo), 2510e6);
         vm.stopPrank();

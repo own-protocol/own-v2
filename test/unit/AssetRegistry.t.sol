@@ -572,27 +572,30 @@ contract AssetRegistryTest is BaseTest {
     }
 
     function test_setPsmFillPaused_andReverts() public {
-        // Unregistered asset.
+        (address wrapper, address reserveVault) = _psmSetup();
+
+        // Not configured yet.
         vm.prank(Actors.ADMIN);
-        vm.expectRevert(abi.encodeWithSelector(IAssetRegistry.AssetNotFound.selector, bytes32("NOPE")));
-        registry.setPsmFillPaused(bytes32("NOPE"), true);
+        vm.expectRevert(abi.encodeWithSelector(IAssetRegistry.PsmNotConfigured.selector, TSLA, wrapper));
+        registry.setPsmFillPaused(TSLA, wrapper, true);
 
         // Default live; operator toggles both ways with events.
-        vm.prank(Actors.ADMIN);
-        registry.addAsset(TSLA, eTSLA, _defaultConfig(eTSLA));
-        assertFalse(registry.isPsmFillPaused(TSLA), "fills live by default");
         vm.startPrank(Actors.ADMIN);
-        vm.expectEmit(true, false, false, true);
-        emit IAssetRegistry.PsmFillPausedUpdated(TSLA, true);
-        registry.setPsmFillPaused(TSLA, true);
-        assertTrue(registry.isPsmFillPaused(TSLA));
-        registry.setPsmFillPaused(TSLA, false);
-        assertFalse(registry.isPsmFillPaused(TSLA));
+        registry.setPsmConfig(TSLA, wrapper, reserveVault);
+        assertFalse(registry.getPsmConfig(TSLA, wrapper).fillPaused, "fills live by default");
+        vm.expectEmit(true, true, false, true);
+        emit IAssetRegistry.PsmFillPausedUpdated(TSLA, wrapper, true);
+        registry.setPsmFillPaused(TSLA, wrapper, true);
+        assertTrue(registry.getPsmConfig(TSLA, wrapper).fillPaused);
+        // Fill pause is independent of the full PSM pause.
+        assertFalse(registry.getPsmConfig(TSLA, wrapper).paused);
+        registry.setPsmFillPaused(TSLA, wrapper, false);
+        assertFalse(registry.getPsmConfig(TSLA, wrapper).fillPaused);
         vm.stopPrank();
 
         vm.prank(Actors.ATTACKER);
         vm.expectRevert(IAssetRegistry.OnlyOperator.selector);
-        registry.setPsmFillPaused(TSLA, true);
+        registry.setPsmFillPaused(TSLA, wrapper, true);
     }
 
     function test_setRatioJumpBoundBps_boundsAndAuth() public {

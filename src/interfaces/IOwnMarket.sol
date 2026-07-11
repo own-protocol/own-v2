@@ -328,8 +328,8 @@ interface IOwnMarket {
     /// @notice The wrapper's PSM is paused for this asset.
     error PsmIsPaused(bytes32 asset, address wrapper);
 
-    /// @notice Trustless DvP fills (psmFillOrder) are paused for this asset.
-    error PsmFillPaused(bytes32 asset);
+    /// @notice Trustless DvP fills (psmFillOrder) are paused for this wrapper.
+    error PsmFillPaused(bytes32 asset, address wrapper);
 
     /// @notice No usable price for the wrapper's collateral ticker.
     error WrapperPriceUnavailable(bytes32 wrapperTicker);
