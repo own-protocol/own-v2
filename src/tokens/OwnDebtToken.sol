@@ -11,33 +11,49 @@ import {ICreditDelegation} from "../interfaces/external/ILendingVenue.sol";
 ///         implement credit delegation for on-behalf borrows. Balances are a
 ///         view onto the pool's ledger; this contract stores only allowances.
 contract OwnDebtToken is ICreditDelegation {
-    /// @notice The OwnLendingPool this debt token belongs to.
+    /// @notice The OwnLendingPool this debt token belongs to (debt ledger + allowance authority).
     address public immutable pool;
 
+    /// @notice ERC-20 token name.
     string public name;
+
+    /// @notice ERC-20 token symbol.
     string public symbol;
+
+    /// @notice Token decimals, mirroring the pool's underlying.
     uint8 public immutable decimals;
 
     /// @dev delegator => delegatee => remaining borrow allowance.
     mapping(address => mapping(address => uint256)) private _borrowAllowances;
 
-    /// @notice `delegatee` was approved to incur `amount` of debt on `delegator`'s behalf.
+    /// @notice Emitted when a delegator sets a delegatee's borrow allowance.
+    /// @param delegator Account whose credit line is delegated (the debtor-to-be).
+    /// @param delegatee Account permitted to borrow on the delegator's behalf.
+    /// @param amount    New allowance (absolute, not additive).
     event BorrowAllowanceDelegated(address indexed delegator, address indexed delegatee, uint256 amount);
 
-    /// @notice Caller is not the pool.
+    /// @notice Thrown when a pool-only function is called by another account.
     error OnlyPool();
 
-    /// @notice Debt tokens cannot be transferred or approved.
+    /// @notice Thrown on any transfer/approve call — debt tokens are non-transferable.
     error NonTransferable();
 
-    /// @notice Delegated borrow exceeds the delegatee's remaining allowance.
+    /// @notice Thrown when a delegated borrow exceeds the delegatee's remaining allowance.
+    /// @param delegator Account whose allowance was checked.
+    /// @param delegatee Account attempting the delegated borrow.
+    /// @param requested Amount requested that exceeded the allowance.
     error InsufficientDelegation(address delegator, address delegatee, uint256 requested);
 
+    /// @dev Restricts allowance consumption to the owning pool.
     modifier onlyPool() {
         if (msg.sender != pool) revert OnlyPool();
         _;
     }
 
+    /// @param name_     ERC-20 token name.
+    /// @param symbol_   ERC-20 token symbol.
+    /// @param decimals_ Decimals to expose (mirrors the pool underlying).
+    /// @param pool_     The owning OwnLendingPool (debt ledger source and allowance consumer).
     constructor(string memory name_, string memory symbol_, uint8 decimals_, address pool_) {
         name = name_;
         symbol = symbol_;
@@ -45,7 +61,9 @@ contract OwnDebtToken is ICreditDelegation {
         pool = pool_;
     }
 
-    /// @notice Live variable debt of `user` — reads the pool ledger (single source of truth).
+    /// @notice Live variable debt of `user`, read from the pool ledger (single source of truth).
+    /// @param user Account to query.
+    /// @return The account's outstanding debt, in underlying units.
     function balanceOf(
         address user
     ) external view returns (uint256) {
@@ -53,6 +71,7 @@ contract OwnDebtToken is ICreditDelegation {
     }
 
     /// @notice Total outstanding pool debt.
+    /// @return The pool's total debt, in underlying units.
     function totalSupply() external view returns (uint256) {
         return IOwnLendingPool(pool).totalDebt();
     }
@@ -64,12 +83,18 @@ contract OwnDebtToken is ICreditDelegation {
     }
 
     /// @notice Remaining amount `delegatee` may borrow on `delegator`'s behalf.
+    /// @param delegator Account whose credit line is delegated.
+    /// @param delegatee Account permitted to borrow.
+    /// @return The remaining borrow allowance, in underlying units.
     function borrowAllowance(address delegator, address delegatee) external view returns (uint256) {
         return _borrowAllowances[delegator][delegatee];
     }
 
-    /// @notice Consume `amount` of `delegatee`'s allowance from `delegator` — pool-only,
-    ///         on delegated borrows. Infinite allowance is not decremented (Aave parity).
+    /// @notice Consume a delegatee's allowance on a delegated borrow — pool-only.
+    /// @dev Infinite allowance (`type(uint256).max`) is not decremented (Aave parity).
+    /// @param delegator Account whose allowance is spent.
+    /// @param delegatee Account performing the delegated borrow.
+    /// @param amount    Amount to deduct from the allowance.
     function consumeAllowance(address delegator, address delegatee, uint256 amount) external onlyPool {
         uint256 allowed = _borrowAllowances[delegator][delegatee];
         if (allowed < amount) revert InsufficientDelegation(delegator, delegatee, amount);
@@ -78,17 +103,17 @@ contract OwnDebtToken is ICreditDelegation {
         }
     }
 
-    /// @notice Debt is non-transferable (Aave parity).
+    /// @notice Reverts — debt is non-transferable (Aave parity).
     function transfer(address, uint256) external pure returns (bool) {
         revert NonTransferable();
     }
 
-    /// @notice Debt is non-transferable (Aave parity).
+    /// @notice Reverts — debt is non-transferable (Aave parity).
     function transferFrom(address, address, uint256) external pure returns (bool) {
         revert NonTransferable();
     }
 
-    /// @notice Debt cannot be approved for transfer (Aave parity).
+    /// @notice Reverts — debt cannot be approved for transfer (Aave parity).
     function approve(address, uint256) external pure returns (bool) {
         revert NonTransferable();
     }

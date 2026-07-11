@@ -20,17 +20,26 @@ interface IVaultYieldManager {
     //  Events
     // ──────────────────────────────────────────────────────────
 
-    /// @notice Revenue split executed: `treasuryCut` stablecoin to the treasury,
-    ///         `lpYield` supplied to the pool and shared to vault LPs.
+    /// @notice Emitted when {distribute} splits held revenue.
+    /// @param caller      Account that cranked the distribution.
+    /// @param treasuryCut Stablecoin sent to the protocol treasury, in stablecoin units.
+    /// @param lpYield     Stablecoin converted to aToken and pushed to LPs, in stablecoin units.
     event YieldDistributed(address indexed caller, uint256 treasuryCut, uint256 lpYield);
 
-    /// @notice Treasury cut updated (BPS).
+    /// @notice Emitted on construction and whenever the treasury cut changes.
+    /// @param oldBps Previous treasury cut (BPS); 0 at construction.
+    /// @param newBps New treasury cut (BPS).
     event TreasuryCutUpdated(uint256 oldBps, uint256 newBps);
 
-    /// @notice Shell manager (the VM entity driving deposit acceptance) updated.
+    /// @notice Emitted on construction and whenever the shell manager changes.
+    /// @param oldManager Previous manager; the zero address at construction.
+    /// @param newManager New manager (the VM entity driving the deposit queue).
     event ManagerUpdated(address indexed oldManager, address indexed newManager);
 
-    /// @notice Non-revenue token rescued to `to`.
+    /// @notice Emitted when a non-revenue token is rescued out of the shell.
+    /// @param token  Rescued token.
+    /// @param to     Recipient of the rescued balance.
+    /// @param amount Amount rescued (the shell's full balance of `token`).
     event TokenRescued(address indexed token, address indexed to, uint256 amount);
 
     // ──────────────────────────────────────────────────────────
@@ -50,9 +59,12 @@ interface IVaultYieldManager {
     error ZeroAddress();
 
     /// @notice Treasury cut exceeds 100%.
+    /// @param bps The rejected treasury cut, in basis points.
     error InvalidTreasuryCut(uint256 bps);
 
     /// @notice The pool's aToken is not the vault's ERC-4626 asset.
+    /// @param vaultAsset The vault's ERC-4626 asset.
+    /// @param poolAToken The pool's aToken (expected to equal `vaultAsset`).
     error AssetMismatch(address vaultAsset, address poolAToken);
 
     /// @notice No undistributed revenue held.
@@ -63,6 +75,7 @@ interface IVaultYieldManager {
     error NoSharesOutstanding();
 
     /// @notice The revenue stablecoin cannot be rescued — it exits only via {distribute}.
+    /// @param token The token that was refused for rescue (the revenue stablecoin).
     error CannotRescueRevenue(address token);
 
     // ──────────────────────────────────────────────────────────
@@ -105,11 +118,13 @@ interface IVaultYieldManager {
     // ──────────────────────────────────────────────────────────
 
     /// @notice Update the treasury cut (BPS, <= 10_000). ADMIN only.
+    /// @param bps New treasury cut in basis points.
     function setTreasuryCutBps(
         uint256 bps
     ) external;
 
     /// @notice Update the shell manager (the VM entity). ADMIN only.
+    /// @param newManager New manager address (must be non-zero).
     function setManager(
         address newManager
     ) external;
@@ -126,20 +141,26 @@ interface IVaultYieldManager {
     // ──────────────────────────────────────────────────────────
 
     /// @notice The OwnVault this shell manages.
+    /// @return The managed vault address.
     function vault() external view returns (address);
 
     /// @notice The shell manager — the VM entity that drives the deposit queue.
+    /// @return The manager address.
     function manager() external view returns (address);
 
     /// @notice The OwnLendingPool used for 1:1 stablecoin → aToken conversion.
+    /// @return The pool address.
     function pool() external view returns (address);
 
     /// @notice The revenue stablecoin (the pool's underlying).
+    /// @return The stablecoin token address.
     function stablecoin() external view returns (address);
 
     /// @notice Treasury cut in BPS.
+    /// @return The treasury cut in basis points.
     function treasuryCutBps() external view returns (uint256);
 
     /// @notice Undistributed revenue currently held (stablecoin units).
+    /// @return The shell's current stablecoin balance awaiting distribution.
     function pendingYield() external view returns (uint256);
 }

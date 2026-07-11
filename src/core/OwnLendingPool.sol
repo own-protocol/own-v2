@@ -210,11 +210,9 @@ contract OwnLendingPool is IOwnLendingPool, ReentrancyGuard {
 
         uint256 toRepay = amount > outstanding ? outstanding : amount;
 
-        // Pull only the actual repayment — the caller keeps any surplus
-        // (BorrowManager's premium sweep depends on this Aave behavior).
-        _pullExact(msg.sender, toRepay);
         debtOf[onBehalfOf] = outstanding - toRepay;
         totalDebt -= toRepay;
+        _pullExact(msg.sender, toRepay);
 
         emit Repaid(msg.sender, onBehalfOf, toRepay);
         return toRepay;
@@ -322,8 +320,10 @@ contract OwnLendingPool is IOwnLendingPool, ReentrancyGuard {
     //  Internal
     // ──────────────────────────────────────────────────────────
 
-    /// @dev Pull exactly `amount` of underlying from `from`; reverts on
-    ///      fee-on-transfer shortfalls (unsupported by protocol policy).
+    /// @dev Pull exactly `amount` of underlying from `from`, reverting on a balance
+    ///      shortfall — fee-on-transfer tokens are unsupported by protocol policy.
+    /// @param from   Account to pull from (must have approved this pool).
+    /// @param amount Exact amount expected to arrive.
     function _pullExact(address from, uint256 amount) private {
         uint256 before = IERC20(underlying).balanceOf(address(this));
         IERC20(underlying).safeTransferFrom(from, address(this), amount);
@@ -332,9 +332,10 @@ contract OwnLendingPool is IOwnLendingPool, ReentrancyGuard {
         }
     }
 
-    /// @dev Revert unless `user`'s debt is covered by their aToken collateral at
-    ///      the liquidation threshold (HF >= 1). Called after withdrawals and
-    ///      aToken transfers — the only sites where health can decrease.
+    /// @dev Revert unless `user`'s debt is covered by their aToken collateral at the
+    ///      liquidation threshold (health factor >= 1). Called after withdrawals and
+    ///      aToken transfers — the only sites where an account's health can decrease.
+    /// @param user Account whose health is being validated.
     function _requireHealthy(
         address user
     ) private view {
@@ -345,14 +346,20 @@ contract OwnLendingPool is IOwnLendingPool, ReentrancyGuard {
         }
     }
 
-    /// @dev Underlying units → Aave base currency (1e8 USD; 1 unit == $1).
+    /// @dev Convert underlying units to Aave base currency (1e8 = $1), assuming the
+    ///      underlying is a $1 stablecoin. Used only for the informational `*Base`
+    ///      fields of {getUserAccountData}; `healthFactor` never depends on it.
+    /// @param amount Amount in underlying units.
+    /// @return The value in Aave base currency (1e8 USD).
     function _toBase(
         uint256 amount
     ) private view returns (uint256) {
         return amount.mulDiv(BASE_CURRENCY_UNIT, 10 ** _underlyingDecimals);
     }
 
-    /// @dev Shared LTV/LT bounds check: 0 < ltv <= lt <= 100%.
+    /// @dev Shared LTV/LT bounds check: require 0 < ltv <= lt <= 100% (BPS).
+    /// @param ltvBps_                  Proposed borrow LTV.
+    /// @param liquidationThresholdBps_ Proposed liquidation threshold.
     function _validateLtvConfig(uint256 ltvBps_, uint256 liquidationThresholdBps_) private pure {
         if (ltvBps_ == 0 || ltvBps_ > liquidationThresholdBps_ || liquidationThresholdBps_ > BPS) {
             revert InvalidLtvConfig(ltvBps_, liquidationThresholdBps_);
