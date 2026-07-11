@@ -2,8 +2,8 @@
 pragma solidity 0.8.28;
 
 import {OwnVault} from "../../src/core/OwnVault.sol";
-import {IAaveRouter} from "../../src/interfaces/IAaveRouter.sol";
-import {AaveRouter} from "../../src/periphery/AaveRouter.sol";
+import {ILendingRouter} from "../../src/interfaces/ILendingRouter.sol";
+import {LendingRouter} from "../../src/periphery/LendingRouter.sol";
 
 import {Actors} from "../helpers/Actors.sol";
 import {BaseTest} from "../helpers/BaseTest.sol";
@@ -12,12 +12,12 @@ import {MockERC20} from "../helpers/MockERC20.sol";
 import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
-/// @title AaveRouter Unit Tests
+/// @title LendingRouter Unit Tests
 /// @notice Single multi-reserve router. Tests cover reserve registration / enable
 ///         toggling and deposit/withdraw flows for multiple underlyings (wstETH,
 ///         WETH, wBTC) routed through the same router.
-contract AaveRouterTest is BaseTest {
-    AaveRouter public router;
+contract LendingRouterTest is BaseTest {
+    LendingRouter public router;
     MockAaveV3Pool public aavePool;
     address public mockMarket = makeAddr("market");
 
@@ -54,7 +54,7 @@ contract AaveRouterTest is BaseTest {
         vm.startPrank(Actors.ADMIN);
         protocolRegistry.setAddress(protocolRegistry.MARKET(), mockMarket);
 
-        router = new AaveRouter(address(aavePool), address(protocolRegistry));
+        router = new LendingRouter(address(aavePool), address(protocolRegistry));
 
         router.registerReserve(address(wstETHU), address(awstETH));
         router.registerReserve(address(wethU), address(aweth));
@@ -68,7 +68,7 @@ contract AaveRouterTest is BaseTest {
         ausdcVault = new OwnVault(address(ausdc), "Own aUSDC", "owaUSDC", address(protocolRegistry), address(router));
         vm.stopPrank();
 
-        vm.label(address(router), "AaveRouter");
+        vm.label(address(router), "LendingRouter");
         vm.label(address(aavePool), "MockAaveV3Pool");
     }
 
@@ -101,13 +101,13 @@ contract AaveRouterTest is BaseTest {
     }
 
     function test_constructor_zeroPool_reverts() public {
-        vm.expectRevert(IAaveRouter.ZeroAddress.selector);
-        new AaveRouter(address(0), address(protocolRegistry));
+        vm.expectRevert(ILendingRouter.ZeroAddress.selector);
+        new LendingRouter(address(0), address(protocolRegistry));
     }
 
     function test_constructor_zeroRegistry_reverts() public {
-        vm.expectRevert(IAaveRouter.ZeroAddress.selector);
-        new AaveRouter(address(aavePool), address(0));
+        vm.expectRevert(ILendingRouter.ZeroAddress.selector);
+        new LendingRouter(address(aavePool), address(0));
     }
 
     // ──────────────────────────────────────────────────────────
@@ -127,31 +127,31 @@ contract AaveRouterTest is BaseTest {
 
         vm.startPrank(Actors.ADMIN);
         vm.expectEmit(true, true, false, false);
-        emit IAaveRouter.ReserveRegistered(address(newU), address(newA));
+        emit ILendingRouter.ReserveRegistered(address(newU), address(newA));
         vm.expectEmit(true, false, false, true);
-        emit IAaveRouter.ReserveEnabledChanged(address(newU), true);
+        emit ILendingRouter.ReserveEnabledChanged(address(newU), true);
         router.registerReserve(address(newU), address(newA));
         vm.stopPrank();
     }
 
     function test_registerReserve_alreadyRegistered_reverts() public {
         vm.prank(Actors.ADMIN);
-        vm.expectRevert(abi.encodeWithSelector(IAaveRouter.ReserveAlreadyRegistered.selector, address(wstETHU)));
+        vm.expectRevert(abi.encodeWithSelector(ILendingRouter.ReserveAlreadyRegistered.selector, address(wstETHU)));
         router.registerReserve(address(wstETHU), address(awstETH));
     }
 
     function test_registerReserve_zeroAddresses_revert() public {
         vm.startPrank(Actors.ADMIN);
-        vm.expectRevert(IAaveRouter.ZeroAddress.selector);
+        vm.expectRevert(ILendingRouter.ZeroAddress.selector);
         router.registerReserve(address(0), address(awstETH));
-        vm.expectRevert(IAaveRouter.ZeroAddress.selector);
+        vm.expectRevert(ILendingRouter.ZeroAddress.selector);
         router.registerReserve(address(wstETHU), address(0));
         vm.stopPrank();
     }
 
     function test_registerReserve_onlyAdmin() public {
         vm.prank(Actors.ATTACKER);
-        vm.expectRevert(IAaveRouter.OnlyAdmin.selector);
+        vm.expectRevert(ILendingRouter.OnlyAdmin.selector);
         router.registerReserve(makeAddr("u"), makeAddr("a"));
     }
 
@@ -162,7 +162,7 @@ contract AaveRouterTest is BaseTest {
     function test_setReserveEnabled_togglesAndEmits() public {
         vm.startPrank(Actors.ADMIN);
         vm.expectEmit(true, false, false, true);
-        emit IAaveRouter.ReserveEnabledChanged(address(wstETHU), false);
+        emit ILendingRouter.ReserveEnabledChanged(address(wstETHU), false);
         router.setReserveEnabled(address(wstETHU), false);
         (, bool enabled) = router.reserves(address(wstETHU));
         assertFalse(enabled);
@@ -176,13 +176,13 @@ contract AaveRouterTest is BaseTest {
     function test_setReserveEnabled_unregistered_reverts() public {
         address bogus = makeAddr("bogus");
         vm.prank(Actors.ADMIN);
-        vm.expectRevert(abi.encodeWithSelector(IAaveRouter.ReserveNotRegistered.selector, bogus));
+        vm.expectRevert(abi.encodeWithSelector(ILendingRouter.ReserveNotRegistered.selector, bogus));
         router.setReserveEnabled(bogus, false);
     }
 
     function test_setReserveEnabled_onlyAdmin() public {
         vm.prank(Actors.ATTACKER);
-        vm.expectRevert(IAaveRouter.OnlyOperator.selector);
+        vm.expectRevert(ILendingRouter.OnlyOperator.selector);
         router.setReserveEnabled(address(wstETHU), false);
     }
 
@@ -262,7 +262,7 @@ contract AaveRouterTest is BaseTest {
 
         vm.prank(Actors.LP1);
         vm.expectEmit(true, true, true, false);
-        emit IAaveRouter.Deposit(address(wstETHVault), Actors.LP1, Actors.LP1, address(wstETHU), amount, 0);
+        emit ILendingRouter.Deposit(address(wstETHVault), Actors.LP1, Actors.LP1, address(wstETHU), amount, 0);
         router.deposit(address(wstETHU), IERC4626(address(wstETHVault)), amount, Actors.LP1, 0);
     }
 
@@ -283,14 +283,14 @@ contract AaveRouterTest is BaseTest {
 
     function test_deposit_zeroAmount_reverts() public {
         vm.prank(Actors.LP1);
-        vm.expectRevert(IAaveRouter.ZeroAmount.selector);
+        vm.expectRevert(ILendingRouter.ZeroAmount.selector);
         router.deposit(address(wstETHU), IERC4626(address(wstETHVault)), 0, Actors.LP1, 0);
     }
 
     function test_deposit_zeroReceiver_reverts() public {
         _fundAndApprove(wstETHU, Actors.LP1, 1 ether);
         vm.prank(Actors.LP1);
-        vm.expectRevert(IAaveRouter.ZeroAddress.selector);
+        vm.expectRevert(ILendingRouter.ZeroAddress.selector);
         router.deposit(address(wstETHU), IERC4626(address(wstETHVault)), 1 ether, address(0), 0);
     }
 
@@ -298,7 +298,7 @@ contract AaveRouterTest is BaseTest {
         MockERC20 bogus = new MockERC20("X", "X", 18);
         _fundAndApprove(bogus, Actors.LP1, 1 ether);
         vm.prank(Actors.LP1);
-        vm.expectRevert(abi.encodeWithSelector(IAaveRouter.ReserveNotRegistered.selector, address(bogus)));
+        vm.expectRevert(abi.encodeWithSelector(ILendingRouter.ReserveNotRegistered.selector, address(bogus)));
         router.deposit(address(bogus), IERC4626(address(wstETHVault)), 1 ether, Actors.LP1, 0);
     }
 
@@ -308,7 +308,7 @@ contract AaveRouterTest is BaseTest {
 
         _fundAndApprove(wstETHU, Actors.LP1, 1 ether);
         vm.prank(Actors.LP1);
-        vm.expectRevert(abi.encodeWithSelector(IAaveRouter.ReserveDisabled.selector, address(wstETHU)));
+        vm.expectRevert(abi.encodeWithSelector(ILendingRouter.ReserveDisabled.selector, address(wstETHU)));
         router.deposit(address(wstETHU), IERC4626(address(wstETHVault)), 1 ether, Actors.LP1, 0);
     }
 
@@ -318,7 +318,7 @@ contract AaveRouterTest is BaseTest {
 
         vm.prank(Actors.LP1);
         vm.expectRevert(
-            abi.encodeWithSelector(IAaveRouter.VaultAssetMismatch.selector, address(aweth), address(awstETH))
+            abi.encodeWithSelector(ILendingRouter.VaultAssetMismatch.selector, address(aweth), address(awstETH))
         );
         router.deposit(address(wethU), IERC4626(address(wstETHVault)), 1 ether, Actors.LP1, 0);
     }
@@ -329,7 +329,9 @@ contract AaveRouterTest is BaseTest {
         uint256 expectedShares = wstETHVault.previewDeposit(amount);
 
         vm.prank(Actors.LP1);
-        vm.expectRevert(abi.encodeWithSelector(IAaveRouter.MinSharesError.selector, expectedShares, type(uint256).max));
+        vm.expectRevert(
+            abi.encodeWithSelector(ILendingRouter.MinSharesError.selector, expectedShares, type(uint256).max)
+        );
         router.deposit(address(wstETHU), IERC4626(address(wstETHVault)), amount, Actors.LP1, type(uint256).max);
     }
 
@@ -356,26 +358,26 @@ contract AaveRouterTest is BaseTest {
 
         vm.prank(Actors.LP1);
         vm.expectEmit(true, true, true, true);
-        emit IAaveRouter.Withdraw(Actors.LP1, Actors.LP1, address(wstETHU), amount, amount);
+        emit ILendingRouter.Withdraw(Actors.LP1, Actors.LP1, address(wstETHU), amount, amount);
         router.withdraw(address(wstETHU), amount, Actors.LP1);
     }
 
     function test_withdraw_zeroAmount_reverts() public {
         vm.prank(Actors.LP1);
-        vm.expectRevert(IAaveRouter.ZeroAmount.selector);
+        vm.expectRevert(ILendingRouter.ZeroAmount.selector);
         router.withdraw(address(wstETHU), 0, Actors.LP1);
     }
 
     function test_withdraw_zeroReceiver_reverts() public {
         vm.prank(Actors.LP1);
-        vm.expectRevert(IAaveRouter.ZeroAddress.selector);
+        vm.expectRevert(ILendingRouter.ZeroAddress.selector);
         router.withdraw(address(wstETHU), 1, address(0));
     }
 
     function test_withdraw_unregistered_reverts() public {
         address bogus = makeAddr("bogus");
         vm.prank(Actors.LP1);
-        vm.expectRevert(abi.encodeWithSelector(IAaveRouter.ReserveNotRegistered.selector, bogus));
+        vm.expectRevert(abi.encodeWithSelector(ILendingRouter.ReserveNotRegistered.selector, bogus));
         router.withdraw(bogus, 1, Actors.LP1);
     }
 
@@ -384,7 +386,7 @@ contract AaveRouterTest is BaseTest {
         router.setReserveEnabled(address(wstETHU), false);
 
         vm.prank(Actors.LP1);
-        vm.expectRevert(abi.encodeWithSelector(IAaveRouter.ReserveDisabled.selector, address(wstETHU)));
+        vm.expectRevert(abi.encodeWithSelector(ILendingRouter.ReserveDisabled.selector, address(wstETHU)));
         router.withdraw(address(wstETHU), 1, Actors.LP1);
     }
 }

@@ -3,7 +3,7 @@
 **Branch:** `main` (pre-audit hardening on `pre-audit-fixes-1`; PSM feature set on `psm-module`) · **Last updated:** 2026-07-09 · **Test suite:** 989 passing
 
 Consolidated from the 2026-06-09 full manual audit, the 2026-06-10/11 focused re-audits
-(BorrowManager, AaveRouter, H-02 migration changes), and the 2026-06-11 multi-agent re-audit
+(BorrowManager, LendingRouter, H-02 migration changes), and the 2026-06-11 multi-agent re-audit
 (16-agent pipeline). This single document replaces `audit-2026-06-09.md`,
 `audit-fixes-2026-06-10.md`, and the raw re-audit report. IDs are stable across all passes.
 
@@ -483,7 +483,7 @@ held less than `stETHAmount` and `wstETH.wrap(stETHAmount)` reverted on insuffic
 breaking every stETH deposit.
 
 **Fix (2026-06-12).** `_depositStETHInternal` measures the received balance-diff and wraps that
-(the same pattern `AaveRouter.deposit` uses). The existing `minSharesOut` check covers the
+(the same pattern `LendingRouter.deposit` uses). The existing `minSharesOut` check covers the
 wei-level shortfall.
 **Test.** `WstETHRouter.t.sol::test_depositStETH_lidoRounding_succeeds` — a rounding stETH mock
 that delivers 2 wei short; reproduces the exact `ERC20InsufficientBalance` revert without the fix.

@@ -11,7 +11,7 @@ import {IProtocolRegistry} from "../../src/interfaces/IProtocolRegistry.sol";
 import {IAaveV3Pool} from "../../src/interfaces/external/IAaveV3Pool.sol";
 import {AssetConfig, BPS} from "../../src/interfaces/types/Types.sol";
 import {InterestRateModel} from "../../src/libraries/InterestRateModel.sol";
-import {AaveRouter} from "../../src/periphery/AaveRouter.sol";
+import {LendingRouter} from "../../src/periphery/LendingRouter.sol";
 import {EToken} from "../../src/tokens/EToken.sol";
 
 import {MockOracleVerifier} from "../helpers/MockOracleVerifier.sol";
@@ -52,7 +52,7 @@ contract BorrowManagerAaveForkTest is Test {
     VaultManager public vaultManager;
     AssetRegistry public assetReg;
     MockOracleVerifier public oracle;
-    AaveRouter public router;
+    LendingRouter public router;
     EToken public eTSLA;
 
     bytes32 constant TSLA = bytes32("TSLA");
@@ -111,7 +111,7 @@ contract BorrowManagerAaveForkTest is Test {
         vaultManager.setMaxMarkAge(365 days);
         vaultManager.setPaymentToken(USDC);
 
-        router = new AaveRouter(AAVE_V3_POOL, address(registry));
+        router = new LendingRouter(AAVE_V3_POOL, address(registry));
         router.registerReserve(USDC, aUSDC);
         router.registerReserve(WSTETH, aWSTETH);
         vm.stopPrank();
@@ -139,7 +139,7 @@ contract BorrowManagerAaveForkTest is Test {
         assetReg.addAsset(ticker, token, cfg);
     }
 
-    /// @dev Stand up an OwnVault backed by `aToken`, fund it with real collateral via the AaveRouter,
+    /// @dev Stand up an OwnVault backed by `aToken`, fund it with real collateral via the LendingRouter,
     ///      register its mark, and bind a BorrowManager with delegation. When `enableCollateral` is
     ///      true the vault enables its aToken as Aave collateral via the production `enableAaveCollateral`
     ///      path; pass false to leave it disabled (the unfixed deposit-path state — see
@@ -252,7 +252,7 @@ contract BorrowManagerAaveForkTest is Test {
 
     /// @dev Regression test for the collateral-enablement fix. Aave V3 auto-enables a reserve as
     ///      collateral only on a holder's FIRST `supply(onBehalfOf)` — NOT on the plain aToken transfer
-    ///      the deposit path uses (`AaveRouter` supplies on-behalf of the router, then transfers the
+    ///      the deposit path uses (`LendingRouter` supplies on-behalf of the router, then transfers the
     ///      aToken into the vault). So a freshly funded vault has zero Aave borrowing power and the
     ///      delegated borrow reverts. `OwnVault.enableAaveCollateral` is the fix: the vault flips its own
     ///      collateral bit (Aave keys it on msg.sender). This test proves both halves against live Aave —

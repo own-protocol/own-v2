@@ -5,12 +5,13 @@ import {BorrowManager} from "../../src/core/BorrowManager.sol";
 import {OwnVault} from "../../src/core/OwnVault.sol";
 import {ProtocolRegistry} from "../../src/core/ProtocolRegistry.sol";
 import {VaultManager} from "../../src/core/VaultManager.sol";
-import {IAaveRouter} from "../../src/interfaces/IAaveRouter.sol";
+
 import {IBorrowManager} from "../../src/interfaces/IBorrowManager.sol";
+import {ILendingRouter} from "../../src/interfaces/ILendingRouter.sol";
 import {IProtocolRegistry} from "../../src/interfaces/IProtocolRegistry.sol";
 import {IAaveV3Pool} from "../../src/interfaces/external/IAaveV3Pool.sol";
 import {InterestRateModel} from "../../src/libraries/InterestRateModel.sol";
-import {AaveRouter} from "../../src/periphery/AaveRouter.sol";
+import {LendingRouter} from "../../src/periphery/LendingRouter.sol";
 
 import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -18,7 +19,7 @@ import {Test} from "forge-std/Test.sol";
 
 /// @title AaveBaseFork — Fork tests against live Aave V3 on Base mainnet
 /// @notice Skipped if `BASE_RPC` is not set. Otherwise:
-///         - Verifies the AaveRouter deposit/withdraw round-trip against the
+///         - Verifies the LendingRouter deposit/withdraw round-trip against the
 ///           real Aave V3 Pool, real wstETH, and real awstETH.
 ///         - Verifies BorrowManager's live rate read returns a sensible
 ///           non-zero rate from Aave's USDC reserve.
@@ -36,7 +37,7 @@ contract AaveBaseForkTest is Test {
     address public lp = makeAddr("lp");
 
     ProtocolRegistry public registry;
-    AaveRouter public router;
+    LendingRouter public router;
     OwnVault public vault;
     BorrowManager public borrowManager;
 
@@ -73,7 +74,7 @@ contract AaveBaseForkTest is Test {
         registry.grantRole(keccak256("OPERATOR"), admin);
         registry.setAddress(registry.MARKET(), makeAddr("market"));
 
-        router = new AaveRouter(AAVE_V3_POOL_BASE, address(registry));
+        router = new LendingRouter(AAVE_V3_POOL_BASE, address(registry));
         router.registerReserve(WSTETH_BASE, awstETH);
 
         vault = new OwnVault(awstETH, "Own awstETH", "owawstETH", address(registry), address(router));

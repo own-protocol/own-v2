@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 pragma solidity 0.8.28;
 
-import {IAaveRouter} from "../interfaces/IAaveRouter.sol";
+import {ILendingRouter} from "../interfaces/ILendingRouter.sol";
 import {IProtocolRegistry} from "../interfaces/IProtocolRegistry.sol";
 import {IAaveV3Pool} from "../interfaces/external/IAaveV3Pool.sol";
 import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
@@ -9,19 +9,27 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
-/// @title AaveRouter — Multi-reserve periphery router for Aave V3 ↔ OwnVault
-/// @notice Single router instance that handles any number of Aave V3 reserves
-///         (wstETH, WETH, wBTC, …). Reserves are registered by the protocol
-///         admin; once registered, the `(underlying, aToken)` pair is
-///         immutable. Admin can toggle a reserve's `enabled` flag to pause or
-///         resume routing without changing the mapping.
+/// @title LendingRouter — Multi-reserve deposit/withdraw router for aToken vaults
+/// @notice Single router instance that fronts one lending pool exposing the
+///         {IAaveV3Pool} supply/withdraw interface — either a canonical Aave V3
+///         deployment or the protocol's in-house {OwnLendingPool} on chains where
+///         Aave is unavailable. It converts a plain underlying (wstETH, WETH, USDG,
+///         …) into aToken vault shares in one call: pull underlying → `pool.supply`
+///         → deposit the received aToken into the matching OwnVault (and the reverse
+///         on withdraw). The pool is venue-agnostic; only the `pool` address chosen
+///         at construction determines the funding source.
+///
+///         Handles any number of reserves. Reserves are registered by the protocol
+///         admin; once registered, the `(underlying, aToken)` pair is immutable.
+///         Admin can toggle a reserve's `enabled` flag to pause or resume routing
+///         without changing the mapping.
 ///
 ///         The router holds no state other than the reserve registry and no
 ///         tokens between transactions.
-contract AaveRouter is IAaveRouter, ReentrancyGuard {
+contract LendingRouter is ILendingRouter, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
-    /// @inheritdoc IAaveRouter
+    /// @inheritdoc ILendingRouter
     address public immutable override pool;
 
     /// @notice ProtocolRegistry used to resolve ADMIN / OPERATOR roles.
@@ -53,7 +61,7 @@ contract AaveRouter is IAaveRouter, ReentrancyGuard {
     //  Reserve management
     // ──────────────────────────────────────────────────────────
 
-    /// @inheritdoc IAaveRouter
+    /// @inheritdoc ILendingRouter
     function registerReserve(address underlying, address aToken) external onlyAdmin {
         if (underlying == address(0) || aToken == address(0)) revert ZeroAddress();
         if (_reserves[underlying].aToken != address(0)) revert ReserveAlreadyRegistered(underlying);
@@ -67,7 +75,7 @@ contract AaveRouter is IAaveRouter, ReentrancyGuard {
         emit ReserveEnabledChanged(underlying, true);
     }
 
-    /// @inheritdoc IAaveRouter
+    /// @inheritdoc ILendingRouter
     function setReserveEnabled(address underlying, bool enabled) external onlyOperator {
         ReserveInfo storage info = _reserves[underlying];
         if (info.aToken == address(0)) revert ReserveNotRegistered(underlying);
@@ -75,7 +83,7 @@ contract AaveRouter is IAaveRouter, ReentrancyGuard {
         emit ReserveEnabledChanged(underlying, enabled);
     }
 
-    /// @inheritdoc IAaveRouter
+    /// @inheritdoc ILendingRouter
     function reserves(
         address underlying
     ) external view returns (address aToken, bool enabled) {
@@ -87,7 +95,7 @@ contract AaveRouter is IAaveRouter, ReentrancyGuard {
     //  Deposit / withdraw
     // ──────────────────────────────────────────────────────────
 
-    /// @inheritdoc IAaveRouter
+    /// @inheritdoc ILendingRouter
     function deposit(
         address underlying,
         IERC4626 vault,
@@ -118,7 +126,7 @@ contract AaveRouter is IAaveRouter, ReentrancyGuard {
         emit Deposit(address(vault), msg.sender, receiver, underlying, aTokenReceived, shares);
     }
 
-    /// @inheritdoc IAaveRouter
+    /// @inheritdoc ILendingRouter
     function withdraw(
         address underlying,
         uint256 aTokenAmount,

@@ -21,7 +21,7 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 ///         `currentVariableBorrowRate` as 0.
 ///
 ///         Implements exactly the {IAaveV3Pool} subset the protocol consumes, so it
-///         drops in as the `aavePool` for AaveRouter (supply/withdraw), BorrowManager
+///         drops in as the `aavePool` for LendingRouter (supply/withdraw), BorrowManager
 ///         (delegated borrow/repay, health reads), and OwnVault (collateral wiring).
 ///
 ///         Supply is allowlist-gated (router-only by policy); borrow, repay, and

@@ -8,7 +8,7 @@ import {IAaveV3Pool} from "./external/IAaveV3Pool.sol";
 ///         stablecoin reserve, issues a 1:1 aToken, and tracks principal-only debt
 ///         (no interest accrual at the pool level — all interest is charged by the
 ///         BorrowManager premium layer). Implements exactly the {IAaveV3Pool} subset
-///         the protocol consumes (AaveRouter supply/withdraw, BorrowManager
+///         the protocol consumes (LendingRouter supply/withdraw, BorrowManager
 ///         delegated borrow/repay, OwnVault collateral wiring), so it is a drop-in
 ///         `aavePool` for those contracts.
 ///

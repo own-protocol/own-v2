@@ -3,7 +3,7 @@ pragma solidity 0.8.28;
 
 /// @title IAaveV3Pool — Minimal Aave V3 Pool interface
 /// @notice The subset of Aave V3 Pool functions used by Own Protocol periphery
-///         contracts (AaveRouter for supplies/withdrawals, UserBorrowManager for
+///         contracts (LendingRouter for supplies/withdrawals, UserBorrowManager for
 ///         delegated borrowing and repayment, plus account-data reads).
 interface IAaveV3Pool {
     /// @dev Mirrors Aave's `DataTypes.ReserveConfigurationMap`.

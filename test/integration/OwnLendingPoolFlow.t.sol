@@ -7,7 +7,7 @@ import {OwnLendingPool} from "../../src/core/OwnLendingPool.sol";
 import {OwnVault} from "../../src/core/OwnVault.sol";
 import {AssetConfig, BPS} from "../../src/interfaces/types/Types.sol";
 import {InterestRateModel} from "../../src/libraries/InterestRateModel.sol";
-import {AaveRouter} from "../../src/periphery/AaveRouter.sol";
+import {LendingRouter} from "../../src/periphery/LendingRouter.sol";
 import {VaultYieldManager} from "../../src/periphery/VaultYieldManager.sol";
 import {EToken} from "../../src/tokens/EToken.sol";
 import {OwnAToken} from "../../src/tokens/OwnAToken.sol";
@@ -20,7 +20,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 /// @title OwnLendingPoolFlow — drop-in integration test
 /// @notice Proves OwnLendingPool is a drop-in `aavePool` for the real protocol
-///         stack: AaveRouter supplies LP funds into it, OwnVault holds its aToken
+///         stack: LendingRouter supplies LP funds into it, OwnVault holds its aToken
 ///         as ERC-4626 collateral and wires credit delegation, and BorrowManager
 ///         runs its full lifecycle against it — delegated borrow, premium-only
 ///         accrual (pool rate is 0 by design), mid-term VM interest claim via a
@@ -32,7 +32,7 @@ contract OwnLendingPoolFlowTest is BaseTest {
     EToken public eTSLA;
     OwnLendingPool public pool;
     OwnAToken public poolAToken;
-    AaveRouter public router;
+    LendingRouter public router;
     OwnVault public vault;
     BorrowManager public borrowManager;
 
@@ -59,7 +59,7 @@ contract OwnLendingPoolFlowTest is BaseTest {
         );
 
         // Router is the only allowed supplier.
-        router = new AaveRouter(address(pool), address(protocolRegistry));
+        router = new LendingRouter(address(pool), address(protocolRegistry));
         router.registerReserve(address(usdc), pool.aToken());
         pool.setSupplierAllowed(address(router), true);
 
