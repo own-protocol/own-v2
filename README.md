@@ -1,14 +1,23 @@
 # Own Protocol v2
 
-Own is a permissionless protocol for bringing tokenized real-world assets (RWAs) onchain. Users mint ERC-20 tokens called **eTokens** (e.g. eTSLA, eGOLD) by using stablecoins. Each eToken tracks the price of its underlying asset through onchain oracles. The tokens are backed by on-chain collateral deposited by LPs in Own Vaults.
+Own is a permissionless protocol for bringing tokenized real-world assets (RWAs) onchain as **Collateral-Secured Tokens (CSTs)** — ERC-20 **eTokens** (e.g. eTSLA, eGOLD) that track the price of a real-world asset and are backed by a diversified collateral portfolio instead of a single custodian.
 
-**Core contracts**: ProtocolRegistry, OwnMarket, OwnVault, VaultManager, AssetRegistry, BorrowManager, OracleVerifier, PythOracleVerifier, EToken
+The backing stack has two layers:
 
-**Peripheral contracts**: WETHRouter, WstETHRouter
+- **Reserve Vaults** — protocol-owned, share-less custody of an existing wrapper token (a regulated issuer's tokenized stock) held 1:1 by value against issued supply. A fully reserved eToken is delta-one backed and consumes no LP capital.
+- **Multi-Purpose Vaults (MPVs / Own Vaults)** — overcollateralized crypto collateral posted by LPs that insures any exposure not matched by reserves, and simultaneously underwrites the lending market while earning yield.
 
-See [docs/protocol.md](docs/protocol.md) for comprehensive protocol documentation.
+Issuance runs through two paths: an **RFQ marketplace** where market makers quote mints and redeems against signed oracle-priced quotes, and a **PSM (peg-stability module)** for permissionless two-way 1:1 conversion between wrapper tokens and eTokens (`psmMint` / `psmRedeem`, plus permissionless DvP fills of resting orders against the reserve via `psmFillOrder`). Every holder has a code-property exit: a maker fill, an in-kind PSM redemption against the reserve, or a forced redemption against vault collateral at the oracle price.
 
-See [docs/Own Protocol Whitepaper.pdf](docs/Own%20Protocol%20Whitepaper.pdf) for the whitepaper.
+**Core contracts**: ProtocolRegistry, OwnMarket, OwnVault, ReserveVault, VaultManager, AssetRegistry, BorrowManager, OwnLendingPool, OracleVerifier, PythOracleVerifier
+
+**Tokens**: EToken, ETokenFactory, OwnAToken, OwnDebtToken
+
+**Peripheral contracts**: LendingRouter, VaultYieldManager, WETHRouter, WstETHRouter
+
+See [docs/protocol.md](docs/protocol.md) for comprehensive protocol documentation and [docs/psm-design.md](docs/psm-design.md) for the PSM & reserve-vault design.
+
+See [docs/Own Protocol Whitepaper.pdf](docs/Own%20Protocol%20Whitepaper.pdf) for the whitepaper — _CST: A Decentralized Real-World Asset Standard_.
 
 ## Getting Started
 
@@ -48,22 +57,26 @@ forge script script/Deploy.s.sol --rpc-url base_sepolia --broadcast --verify
 
 ```
 src/
-  core/           Core protocol contracts (OwnVault, OwnMarket, registries)
+  core/           Core protocol contracts (OwnMarket, OwnVault, ReserveVault,
+                  OwnLendingPool, registries)
   interfaces/     Interface definitions and shared types
-  tokens/         EToken (synthetic asset token)
-  periphery/      Router contracts (WETHRouter, WstETHRouter)
+  libraries/      Interest-rate model and lending math
+  tokens/         EToken (CST), lending pool receipt/debt tokens
+  periphery/      Routers and vault yield manager
 test/
   unit/           Unit tests with mocked dependencies
   integration/    End-to-end flow tests
   invariant/      Stateful property tests
-script/           Deployment scripts
-docs/             Protocol and deployment documentation
+  fork/           Mainnet-fork tests
+script/           Deployment scripts (testnet + mainnet)
+docs/             Protocol, PSM design, and deployment documentation
 ```
 
 ## Documentation
 
-- [Protocol Documentation](docs/protocol.md) — how the protocol works, contract architecture, order lifecycle, fee model, oracle system
-- [Deployment Guide](docs/deployment.md) — step-by-step deployment instructions for Base Sepolia
+- [Protocol Documentation](docs/protocol.md) — how the protocol works, contract architecture, order lifecycle, oracle system, PSM & reserve vaults
+- [PSM Design](docs/psm-design.md) — peg-stability module and RWA reserve-vault design and decision log
+- [Deployment Guide](docs/deployment.md) — step-by-step deployment instructions
 - [Development Guide](AGENTS.md) — coding conventions, security patterns, testing standards
 
 ## License
