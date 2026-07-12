@@ -145,9 +145,10 @@ contract OwnMarketTest is BaseTest {
         vm.mockCall(
             mockVaultManager, abi.encodeWithSelector(IVaultManager.claimThreshold.selector), abi.encode(CLAIM_THRESHOLD)
         );
-        // Force-execution collateral source: mockVault is the designated vault by default.
+        // Force-execution collateral source: mockVault is the designated vault by default
+        // (real two-tier AssetRegistry designation; pool grant checks the mocked VaultManager).
         vm.mockCall(
-            mockVaultManager, abi.encodeWithSelector(IVaultManager.forceExecuteVault.selector), abi.encode(mockVault)
+            mockVaultManager, abi.encodeWithSelector(IVaultManager.vaultBackedAsset.selector), abi.encode(bytes32(0))
         );
         vm.mockCall(
             mockVaultManager, abi.encodeWithSelector(IVaultManager.haltRedeemAddress.selector), abi.encode(haltFund)
@@ -164,6 +165,12 @@ contract OwnMarketTest is BaseTest {
         vm.mockCall(
             mockVaultManager, abi.encodeWithSelector(IVaultManager.signerLinkedAddress.selector), abi.encode(rfqVM)
         );
+        // Scope the maker to its quoted asset (default-deny since Phase 4b).
+        vm.prank(Actors.ADMIN);
+        assetReg.setMakerAllowed(TSLA, rfqVM, true);
+        // Force-execute pool: mockVault is an admin-allowlisted collateral source for TSLA.
+        vm.prank(Actors.ADMIN);
+        assetReg.setForceExecuteVaultAllowed(TSLA, mockVault, true);
         // Exposure accounting: open/close are no-ops here; vaultCollateralAsset feeds force-exec
         // collateral conversion.
         vm.mockCall(mockVaultManager, abi.encodeWithSelector(IVaultManager.openExposure.selector), abi.encode());
@@ -377,6 +384,8 @@ contract OwnMarketTest is BaseTest {
             abi.encodeWithSelector(IVaultManager.signerLinkedAddress.selector, altSigner),
             abi.encode(rfqVM)
         );
+        vm.prank(Actors.ADMIN);
+        assetReg.setMakerAllowed(TSLA, altSigner, true);
 
         uint256 amount = 1000e6;
         _fundUserForMint(Actors.MINTER1, amount);
@@ -388,6 +397,21 @@ contract OwnMarketTest is BaseTest {
 
         assertEq(eTSLAToken.balanceOf(Actors.MINTER1), _expectedMintOut(amount, TSLA_PRICE));
         assertEq(usdc.balanceOf(rfqVM), amount, "funds still flow to operational vm");
+    }
+
+    function test_executeOrder_makerNotAllowed_reverts() public {
+        // A registered signer without an allowlist entry for the quoted asset is rejected.
+        vm.prank(Actors.ADMIN);
+        assetReg.setMakerAllowed(TSLA, rfqVM, false);
+
+        uint256 amount = 1000e6;
+        _fundUserForMint(Actors.MINTER1, amount);
+        Quote memory q = _quote(0, Actors.MINTER1, OrderType.Mint, amount, TSLA_PRICE);
+        bytes memory sig = _sign(q, rfqVMPk);
+
+        vm.prank(Actors.MINTER1);
+        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.MakerNotAllowed.selector, TSLA, rfqVM));
+        market.executeOrder(q, sig);
     }
 
     function test_executeOrder_expiredQuote_reverts() public {
@@ -815,26 +839,53 @@ contract OwnMarketTest is BaseTest {
         market.forceExecuteOrder(orderId, mockVault, _assetPriceData(TSLA_PRICE), _assetPriceData(ETH_PRICE));
     }
 
-    /// @dev No designated force-execute vault (the default) disables force-execution entirely.
-    function test_forceExecuteOrder_noDesignatedVault_reverts() public {
-        vm.mockCall(
-            mockVaultManager, abi.encodeWithSelector(IVaultManager.forceExecuteVault.selector), abi.encode(address(0))
-        );
+    /// @dev An empty pool (the default) disables force-execution entirely.
+    function test_forceExecuteOrder_emptyPool_reverts() public {
+        vm.prank(Actors.ADMIN);
+        assetReg.setForceExecuteVaultAllowed(TSLA, mockVault, false);
         uint256 orderId = _placeRedeem(Actors.MINTER1, 4e18, TSLA_PRICE);
         vm.warp(block.timestamp + CLAIM_THRESHOLD);
         vm.prank(Actors.MINTER1);
-        vm.expectRevert(IOwnMarket.ForceExecuteVaultNotSet.selector);
+        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.ForceExecuteVaultNotAllowed.selector, TSLA, mockVault));
         market.forceExecuteOrder(orderId, mockVault, _assetPriceData(TSLA_PRICE), _assetPriceData(ETH_PRICE));
     }
 
-    /// @dev The redeemer cannot source collateral from a vault other than the protocol-designated one.
-    function test_forceExecuteOrder_wrongVault_reverts() public {
+    /// @dev The pool lookup is keyed by the order's asset: revoking TSLA's entry makes the force
+    ///      path revert even though the same vault could be allowlisted for other tickers,
+    ///      proving the market queried the registry with `order.asset`.
+    function test_forceExecuteOrder_perAssetPool_usesOrderAsset() public {
+        vm.prank(Actors.ADMIN);
+        assetReg.setForceExecuteVaultAllowed(TSLA, mockVault, false);
+        uint256 orderId = _placeRedeem(Actors.MINTER1, 4e18, TSLA_PRICE);
+        vm.warp(block.timestamp + CLAIM_THRESHOLD);
+        vm.prank(Actors.MINTER1);
+        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.ForceExecuteVaultNotAllowed.selector, TSLA, mockVault));
+        market.forceExecuteOrder(orderId, mockVault, _assetPriceData(TSLA_PRICE), _assetPriceData(ETH_PRICE));
+    }
+
+    /// @dev The redeemer cannot source collateral from a vault outside the admin-approved pool.
+    function test_forceExecuteOrder_vaultNotInPool_reverts() public {
         address otherVault = makeAddr("otherVault");
         uint256 orderId = _placeRedeem(Actors.MINTER1, 4e18, TSLA_PRICE);
         vm.warp(block.timestamp + CLAIM_THRESHOLD);
         vm.prank(Actors.MINTER1);
-        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.VaultNotDesignated.selector, otherVault, mockVault));
+        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.ForceExecuteVaultNotAllowed.selector, TSLA, otherVault));
         market.forceExecuteOrder(orderId, otherVault, _assetPriceData(TSLA_PRICE), _assetPriceData(ETH_PRICE));
+    }
+
+    /// @dev A stale pool entry pointing at a now-RWA vault is rejected at use time (reserves
+    ///      never source force-execution; their releaseCollateral is market-gated).
+    function test_forceExecuteOrder_rwaVault_reverts() public {
+        vm.mockCall(
+            mockVaultManager,
+            abi.encodeWithSelector(IVaultManager.vaultBackedAsset.selector, mockVault),
+            abi.encode(TSLA)
+        );
+        uint256 orderId = _placeRedeem(Actors.MINTER1, 4e18, TSLA_PRICE);
+        vm.warp(block.timestamp + CLAIM_THRESHOLD);
+        vm.prank(Actors.MINTER1);
+        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.RwaVaultNotEligible.selector, mockVault));
+        market.forceExecuteOrder(orderId, mockVault, _assetPriceData(TSLA_PRICE), _assetPriceData(ETH_PRICE));
     }
 
     function test_forceExecuteOrder_mintOrder_reverts() public {

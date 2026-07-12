@@ -8,7 +8,7 @@ pragma solidity 0.8.28;
 ///         are paused or permanently halted.
 ///
 ///         Risk caps (both O(1)):
-///           1. Global utilisation — solvency: `globalExposureUSD / globalCollateralUSD <= maxBps`.
+///           1. Global utilisation — solvency: `globalNetExposureUSD / globalCollateralUSD <= maxBps`.
 ///           2. Per-asset USD ceiling — concentration: `globalAssetUnits[asset] * mark <= assetCapUSD`.
 ///              `assetCapUSD == 0` blocks minting that asset (safe default).
 ///
@@ -31,8 +31,10 @@ interface IVaultManager {
 
     /// @notice Emitted when a vault is registered into the global pool.
     /// @param vault           Registered vault.
-    /// @param collateralAsset Ticker of the vault's collateral asset.
-    event VaultRegistered(address indexed vault, bytes32 indexed collateralAsset);
+    /// @param collateralAsset Ticker of the vault's collateral asset (prices the collateral).
+    /// @param backedAsset     Asset ticker this vault's collateral nets against (RWA reserve vault),
+    ///                        or bytes32(0) for a generic (crypto-native) vault.
+    event VaultRegistered(address indexed vault, bytes32 indexed collateralAsset, bytes32 indexed backedAsset);
 
     /// @notice Emitted when a vault is removed from the global pool.
     /// @param vault Deregistered vault.
@@ -155,11 +157,6 @@ interface IVaultManager {
     /// @param newThreshold New delay (seconds).
     event ClaimThresholdUpdated(uint256 oldThreshold, uint256 newThreshold);
 
-    /// @notice Emitted when the designated force-execution collateral vault is changed.
-    /// @param oldVault Previous force-execute vault (0 = disabled).
-    /// @param newVault New force-execute vault (0 = disabled).
-    event ForceExecuteVaultUpdated(address indexed oldVault, address indexed newVault);
-
     /// @notice Emitted when an asset's exposure is re-denominated for a stock split.
     /// @param asset    Asset ticker.
     /// @param ratio    New units per old unit (1e18-scaled).
@@ -221,6 +218,8 @@ interface IVaultManager {
     error InvalidRatio();
     /// @notice Vault's collateral is already excluded from the pool.
     error VaultAlreadyExcluded(address vault);
+    /// @notice The operation requires a generic vault, but an RWA reserve vault was given.
+    error RwaVaultNotEligible(address vault);
 
     /// @notice The settle band is zero or exceeds 100% (BPS).
     error InvalidSettleBand();
@@ -253,6 +252,8 @@ interface IVaultManager {
     //  Keeper — permissionless
     // ──────────────────────────────────────────────────────────
 
+    /// @notice Pull an asset's price fresh and re-mark its global exposure.
+    /// @dev A permanently halted asset re-marks at its fixed halt price; keepers cannot override it.
     function pullAssetPrice(
         bytes32 asset
     ) external;
@@ -267,8 +268,16 @@ interface IVaultManager {
     //  Registration — admin only
     // ──────────────────────────────────────────────────────────
 
-    /// @notice Register an admin-deployed vault and cache its collateral scaling. Admin-only.
+    /// @notice Register an admin-deployed generic vault and cache its collateral scaling.
+    ///         Admin-only.
     function registerVault(address vault, bytes32 collateralAsset) external;
+
+    /// @notice Register an admin-deployed vault with an explicit class. Admin-only.
+    /// @param vault           Vault address (must expose `asset()` / `totalAssets()`).
+    /// @param collateralAsset Ticker pricing the vault's collateral token.
+    /// @param backedAsset     Asset ticker the collateral nets against (RWA reserve vault), or
+    ///                        bytes32(0) for generic.
+    function registerVault(address vault, bytes32 collateralAsset, bytes32 backedAsset) external;
 
     /// @notice Deregister a vault, removing its collateral from the global pool. Reverts if removing
     ///         it would breach global utilisation. Admin-only.
@@ -415,23 +424,19 @@ interface IVaultManager {
     ) external;
     function claimThreshold() external view returns (uint256);
 
-    /// @notice Set the protocol-designated vault that sources collateral for force-execution.
-    ///         `address(0)` clears it and disables force-execution (fail-safe default); a real vault
-    ///         must be registered and not excluded. Operator-only; rotate to the healthiest vault.
-    function setForceExecuteVault(
-        address vault
-    ) external;
-    /// @notice The designated force-execution collateral vault, or `address(0)` if force-execution
-    ///         is currently disabled.
-    function forceExecuteVault() external view returns (address);
-
     // ──────────────────────────────────────────────────────────
     //  Views — risk accounting
     // ──────────────────────────────────────────────────────────
 
     function withdrawalBreachesUtil(address vault, uint256 assets) external view returns (bool);
     function globalUtilizationBps() external view returns (uint256);
-    function globalExposureUSD() external view returns (uint256);
+
+    /// @notice Global NET exposure: Σ per asset of max(0, gross exposure − RWA reserve collateral).
+    ///         Delta-matched RWA backing nets to zero; only unhedged residuals load the pool.
+    function globalNetExposureUSD() external view returns (uint256);
+
+    /// @notice Global collateral counted from GENERIC vaults only; RWA reserve collateral nets
+    ///         against its own asset's exposure instead (see {globalNetExposureUSD}).
     function globalCollateralUSD() external view returns (uint256);
     function assetMark(
         bytes32 asset
@@ -442,6 +447,22 @@ interface IVaultManager {
     function vaultCollateralAsset(
         address vault
     ) external view returns (bytes32);
+
+    /// @notice Asset ticker a vault's collateral nets against (RWA reserve vault), or bytes32(0)
+    ///         for a generic vault.
+    function vaultBackedAsset(
+        address vault
+    ) external view returns (bytes32);
+
+    /// @notice An asset's GROSS exposure (units × mark, USD 1e18) before RWA netting.
+    function assetExposureUSD(
+        bytes32 asset
+    ) external view returns (uint256);
+
+    /// @notice Total RWA reserve collateral currently netting against an asset's exposure (USD 1e18).
+    function assetRwaCollateralUSD(
+        bytes32 asset
+    ) external view returns (uint256);
     function globalAssetUnits(
         bytes32 asset
     ) external view returns (uint256);

@@ -75,7 +75,6 @@ contract HaltWithPriceFlowTest is BaseTest {
 
         // Global controls now live on the VaultManager.
         _setClaimThreshold(CLAIM_THRESHOLD);
-        _setForceExecuteVault(address(vault));
         _registerSigner(vm1Signer, Actors.VM1);
 
         _setAssetCap(TSLA, DEFAULT_ASSET_CAP_USD);
@@ -114,6 +113,13 @@ contract HaltWithPriceFlowTest is BaseTest {
             oracleType: 1
         });
         assetRegistry.addAsset(ethAsset, address(weth), ethConfig);
+
+        // Force-execute pool: the vault is an admin-allowlisted collateral source for TSLA.
+        assetRegistry.setForceExecuteVaultAllowed(TSLA, address(vault), true);
+
+        // Scope the maker to its quoted assets (default-deny since Phase 4b).
+        assetRegistry.setMakerAllowed(TSLA, vm1Signer, true);
+        assetRegistry.setMakerAllowed(GOLD, vm1Signer, true);
 
         vm.stopPrank();
 

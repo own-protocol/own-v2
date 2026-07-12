@@ -14,7 +14,7 @@
 | VaultManager                    | `0x4A3c284f3293250C84899A220Cf4Cb6dFCd317ba`    | [↗](https://basescan.org/address/0x4A3c284f3293250C84899A220Cf4Cb6dFCd317ba) |
 | ETokenFactory                   | `0x93e08ca467046737F75AAD4C936356c196AaA36F`    | [↗](https://basescan.org/address/0x93e08ca467046737F75AAD4C936356c196AaA36F) |
 | OracleVerifier (INHOUSE_ORACLE) | `0xc82f5835Fe132D34A7491961e2875941CF37aE03`    | [↗](https://basescan.org/address/0xc82f5835Fe132D34A7491961e2875941CF37aE03) |
-| AaveRouter (USDC→aUSDC)         | `0x5744daea555ebbE2d8e093fF8b79eD7513bb20DF`    | [↗](https://basescan.org/address/0x5744daea555ebbE2d8e093fF8b79eD7513bb20DF) |
+| LendingRouter (USDC→aUSDC)         | `0x5744daea555ebbE2d8e093fF8b79eD7513bb20DF`    | [↗](https://basescan.org/address/0x5744daea555ebbE2d8e093fF8b79eD7513bb20DF) |
 | OwnVault (aUSDC)                | `0xfF8d4d4D139716d32d3A3C0bD7a2cE55a916E91A`    | [↗](https://basescan.org/address/0xfF8d4d4D139716d32d3A3C0bD7a2cE55a916E91A) |
 | BorrowManager                   | `0xfc9BBa82bC0cc8E9B5A1847847A2F89D5458443f`    | [↗](https://basescan.org/address/0xfc9BBa82bC0cc8E9B5A1847847A2F89D5458443f) |
 
@@ -74,7 +74,7 @@ All verified on Basescan. SPCX is registered but not mintable until the signer s
 - [x] **Step 1** — `DeployMainnet.s.sol` (core + oracle + router + vault + globals) — verified
 - [x] **Step 2** — `AddAssetsMainnet.s.sol` (6 eTokens) — verified, caps $1M each
 - [~] **Step 3** — USDC mark attested ($1) via `BootstrapUsdcPriceMainnet.s.sol`. Collateral mark = 0 until the seed deposit; re-pull `pullCollateralPrice(vault)` after step 4.
-- [x] **Step 4** — VM seed deposit: 100 USDC via AaveRouter (`SeedDepositMainnet.s.sol`); collateral mark re-pulled ≈ $100
+- [x] **Step 4** — VM seed deposit: 100 USDC via LendingRouter (`SeedDepositMainnet.s.sol`); collateral mark re-pulled ≈ $100
 - [x] **Step 5** — `EnableLendingMainnet.s.sol` — BorrowManager bound (1:1, permanent), credit delegated, aUSDC collateral enabled. Vault has ~$75 Aave borrow power.
 - [ ] **Step 6** — per asset: `setAssetOracleConfig(ticker)` (`SetOracleConfigsMainnet.s.sol`) → price service pushes mark → `pullAssetPrice(ticker)`
 - [ ] Governance migration (`SetupGovernance.s.sol`)

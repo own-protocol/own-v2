@@ -103,12 +103,16 @@ contract RFQAusdcFlowsTest is BaseTest {
         );
         vault.setBorrowManager(address(borrowManager));
         vault.grantCreditDelegation(address(usdcDebt));
-        // Borrowing is enabled for every asset by default.
+        // Allowlist the vault for TSLA lending (default-deny since Phase 4).
+        assetRegistry.setLendingVaultAllowed(TSLA, address(vault), true);
         vm.stopPrank();
 
         // ── Global protocol config (now on the VaultManager) ──
         _setClaimThreshold(6 hours);
         _registerSigner(vm1Signer, Actors.VM1);
+        // Scope the maker to its quoted assets (default-deny since Phase 4b).
+        vm.prank(Actors.ADMIN);
+        assetRegistry.setMakerAllowed(TSLA, vm1Signer, true);
         _setPaymentToken(address(usdc));
 
         _setAssetCap(TSLA, DEFAULT_ASSET_CAP_USD);

@@ -124,7 +124,7 @@ contract RouterIntegrationTest is BaseTest {
         // Deposit first
         _fundETH(Actors.LP1, DEPOSIT_AMOUNT_ETH);
         vm.prank(Actors.LP1);
-        uint256 shares = wethRouter.depositETH{value: DEPOSIT_AMOUNT_ETH}(IERC4626(address(wethVault)), Actors.LP1, 0);
+        wethRouter.depositETH{value: DEPOSIT_AMOUNT_ETH}(IERC4626(address(wethVault)), Actors.LP1, 0);
 
         // Direct withdraw should revert
         vm.prank(Actors.LP1);

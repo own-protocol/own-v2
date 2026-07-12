@@ -189,6 +189,8 @@ interface IBorrowManager {
     error AssetNotActive(bytes32 asset);
     /// @notice Borrowing against this asset is disabled.
     error AssetNotBorrowable(bytes32 asset);
+    /// @notice The manager's bound vault is not on the registry's lending allowlist for this asset.
+    error LendingVaultNotAllowed(bytes32 asset, address vault);
     /// @notice Asset is halted, blocking the operation.
     error VaultEffectivelyHalted();
     /// @notice Vault is not active.

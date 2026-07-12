@@ -98,6 +98,14 @@ Before any in-house asset can be minted, a keeper must pull its mark
 (`VaultManager.pullAssetPrice`) and the vault's collateral mark (`VaultManager.pullCollateralPrice`)
 so marks are non-zero.
 
+> **Per-asset grants (v2, default-deny).** Quote settlement, borrowing, and force-execution are
+> all inert per asset until the AssetRegistry grants are armed:
+> `setMakerAllowed(ticker, signer, true)`, `setLendingVaultAllowed(ticker, vault, true)`,
+> `setForceExecuteVaultAllowed(ticker, vault, true)`. The mainnet asset script
+> (`script/mainnet/AddAssetsMainnet.s.sol`) arms them alongside each `addAsset`; when adding
+> assets by hand, arm them explicitly or the corresponding paths revert
+> (`MakerNotAllowed` / `LendingVaultNotAllowed` / `ForceExecuteVaultNotAllowed`).
+
 ## Step 4: Create Vault
 
 Deploys a MockWETH-collateral `OwnVault` directly and registers it on the VaultManager (admin-only).
@@ -154,6 +162,23 @@ cast send $VAULT_MANAGER "registerSigner(address,address)" <SIGNER_ADDRESS> <LIN
 cast send $VAULT_MANAGER "setClaimThreshold(uint256)" 21600 \
   --rpc-url base_sepolia --private-key $DEPLOYER_PRIVATE_KEY
 ```
+
+## Step 6: Configure the PSM (optional at launch)
+
+The PSM (wrapper-token mint/redeem — `docs/protocol.md` §14) ships fail-closed: it stays inert
+until a wrapper is configured **and** the global ratio-jump bound is set. Configure with
+`script/mainnet/DeployPsmMainnet.s.sol` (set the real wrapper token / ticker / backed asset —
+the checked-in constants are placeholders), which:
+
+1. registers the wrapper ticker (so its oracle feed resolves),
+2. deploys the `ReserveVault` (env `RESERVE_MANAGER_MAINNET` = the operating VM),
+3. registers it as the backed asset's RWA reserve (`registerVault(reserve, wrapperTicker, asset)`),
+4. wires `setPsmConfig` and arms `setRatioJumpBoundBps` (100–200 bps recommended; the on-switch).
+
+Pre-verify the wrapper token with `test/fork/WrapperBaseFork.t.sol` (`BASE_RPC` +
+`WRAPPER_TOKEN_BASE` env): metadata, transfer restrictions, custody round-trip. The oracle
+service must publish the wrapper **token** price under the wrapper ticker, and a keeper must
+`pullCollateralPrice(reserve)` before the first mint.
 
 ## Post-Deployment Verification
 

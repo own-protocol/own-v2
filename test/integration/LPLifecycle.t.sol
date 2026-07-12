@@ -306,7 +306,7 @@ contract LPLifecycleTest is BaseTest {
         assertEq(vault.totalAssets(), LP_DEPOSIT);
         assertEq(uint8(vault.vaultStatus()), uint8(VaultStatus.Active));
         assertEq(vaultManager.globalMaxUtilizationBps(), 8000);
-        assertEq(vaultManager.globalExposureUSD(), 0);
+        assertEq(vaultManager.globalNetExposureUSD(), 0);
         // TODO(exposure-refactor): vault.healthFactor() removed; no manager equivalent to repoint to.
         // assertEq(vault.healthFactor(), type(uint256).max);
         assertEq(vaultManager.globalUtilizationBps(), 0);

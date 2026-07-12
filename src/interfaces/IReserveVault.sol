@@ -1,0 +1,126 @@
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.28;
+
+/// @title IReserveVault — Share-less RWA reserve pool backing one asset's eToken supply 1:1
+/// @notice Holds a single wrapper token as protocol-owned backing for the asset it is registered
+///         against on the VaultManager. No LP shares or queues; reserve enters via the OwnMarket
+///         PSM paths and exits via {releaseCollateral}, {withdraw}, or {skimExcess}. Skims and
+///         dividend sweeps are restricted to the bound manager (the operating VM) or an
+///         operator, paying the caller.
+interface IReserveVault {
+    // ──────────────────────────────────────────────────────────
+    //  Events
+    // ──────────────────────────────────────────────────────────
+
+    /// @notice Emitted when wrapper reserve is deposited (maker hedge delivery / donation).
+    /// @param sender Depositor.
+    /// @param amount Wrapper token amount deposited.
+    event ReserveDeposited(address indexed sender, uint256 amount);
+
+    /// @notice Emitted when reserve collateral is released to a PSM redeemer.
+    /// @param to     Recipient of the wrapper tokens.
+    /// @param amount Wrapper token amount released.
+    event CollateralReleased(address indexed to, uint256 amount);
+
+    /// @notice Emitted when surplus reserve above the asset's outstanding exposure is skimmed.
+    /// @param to     Caller (manager or operator) receiving the surplus.
+    /// @param amount Wrapper token amount skimmed.
+    event ExcessSkimmed(address indexed to, uint256 amount);
+
+    /// @notice Emitted when a maker withdraws surplus reserve to its linked settlement address.
+    /// @param signer Registered quote signer that initiated the withdrawal.
+    /// @param to     The signer's linked settlement address receiving the wrapper.
+    /// @param amount Wrapper token amount withdrawn.
+    event SurplusWithdrawn(address indexed signer, address indexed to, uint256 amount);
+
+    /// @notice Emitted when a non-wrapper token balance (e.g. issuer dividend stablecoins) is
+    ///         swept out of the vault.
+    /// @param token  Token swept (never the wrapper).
+    /// @param to     Caller (manager or operator) receiving the balance.
+    /// @param amount Token amount swept.
+    event TokenSwept(address indexed token, address indexed to, uint256 amount);
+
+    /// @notice Emitted when the vault's manager is rotated.
+    /// @param oldManager Previous manager.
+    /// @param newManager New manager.
+    event ManagerUpdated(address indexed oldManager, address indexed newManager);
+
+    // ──────────────────────────────────────────────────────────
+    //  Errors
+    // ──────────────────────────────────────────────────────────
+
+    /// @notice Caller is not the market contract.
+    error OnlyMarket();
+    /// @notice Caller does not hold the admin role.
+    error OnlyAdmin();
+    /// @notice Caller is neither the vault's manager nor an operator.
+    error OnlyManagerOrOperator();
+    /// @notice Caller is not a registered quote signer (maker).
+    error OnlyMaker();
+    /// @notice The maker is not on the registry's allowlist for the vault's backed asset.
+    error MakerNotAllowed(bytes32 asset, address maker);
+    /// @notice A required address was the zero address.
+    error ZeroAddress();
+    /// @notice A required amount was zero.
+    error ZeroAmount();
+    /// @notice Release amount exceeds the reserve balance.
+    error AmountExceedsReserve();
+    /// @notice The wrapper token reports more than 18 decimals.
+    error DecimalsTooHigh(uint8 decimals);
+    /// @notice The release would drop the reserve below the asset's outstanding exposure.
+    error SkimExceedsSurplus();
+    /// @notice The deposit received less than the sent amount (fee-on-transfer token).
+    error FeeOnTransferNotSupported();
+    /// @notice This vault is not registered on the VaultManager as an RWA reserve vault.
+    error VaultNotRwaRegistered();
+    /// @notice The wrapper (reserve backing) can never be swept; use skimExcess/withdraw.
+    error CannotSweepWrapper();
+
+    // ──────────────────────────────────────────────────────────
+    //  Functions
+    // ──────────────────────────────────────────────────────────
+
+    /// @notice The wrapper token held as reserve.
+    function asset() external view returns (address);
+
+    /// @notice Operational manager bound to this vault (skim/sweep destination).
+    function manager() external view returns (address);
+
+    /// @notice Rotate the vault's manager. Admin-only.
+    function setManager(
+        address newManager
+    ) external;
+
+    /// @notice Current reserve balance (wrapper token units held by this vault).
+    function totalAssets() external view returns (uint256);
+
+    /// @notice Deposit wrapper reserve without minting (maker hedge delivery); syncs the
+    ///         collateral mark so the deposit nets against the asset's exposure immediately.
+    function deposit(
+        uint256 amount
+    ) external;
+
+    /// @notice Release `amount` of reserve to `to` for a PSM redemption, syncing the collateral
+    ///         mark before the transfer. Market-only.
+    function releaseCollateral(address to, uint256 amount) external;
+
+    /// @notice Skim reserve in excess of the asset's outstanding exposure to the caller.
+    ///         Manager- or operator-only; only the surplus above gross exposure is spendable.
+    function skimExcess(
+        uint256 amount
+    ) external;
+
+    /// @notice Withdraw surplus reserve to the caller's linked settlement address. Callable by
+    ///         registered quote signers; only the surplus above gross exposure is spendable.
+    function withdraw(
+        uint256 amount
+    ) external;
+
+    /// @notice Sweep this vault's full balance of a NON-wrapper token to the caller (issuer
+    ///         dividend stablecoins would otherwise strand here — e.g. Dinari pays dividends in
+    ///         stablecoins to holder wallets). The wrapper itself can never be swept, so
+    ///         reserve backing is untouchable through this path. Manager- or operator-only.
+    function sweepToken(
+        address token
+    ) external;
+}

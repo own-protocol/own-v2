@@ -11,11 +11,11 @@ import {ProtocolRegistry} from "../../src/core/ProtocolRegistry.sol";
 import {VaultManager} from "../../src/core/VaultManager.sol";
 import {IProtocolRegistry} from "../../src/interfaces/IProtocolRegistry.sol";
 import {AssetConfig} from "../../src/interfaces/types/Types.sol";
-import {AaveRouter} from "../../src/periphery/AaveRouter.sol";
+import {LendingRouter} from "../../src/periphery/LendingRouter.sol";
 import {ETokenFactory} from "../../src/tokens/ETokenFactory.sol";
 
 /// @title DeployMainnet — Own Protocol core deploy for Base mainnet (aUSDC collateral vault)
-/// @notice Deploys all core contracts, the in-house OracleVerifier, the AaveRouter (USDC→aUSDC),
+/// @notice Deploys all core contracts, the in-house OracleVerifier, the LendingRouter (USDC→aUSDC),
 ///         registers the aUSDC collateral asset, deploys + registers a single aUSDC OwnVault, and sets
 ///         global risk parameters + the USDC payment token. Borrowing is enabled separately by
 ///         EnableLendingMainnet.s.sol (after the vault's first deposit). Assets are added by
@@ -53,7 +53,7 @@ contract DeployMainnet is Script {
         address vaultManager;
         address etokenFactory;
         address oracle;
-        address aaveRouter;
+        address lendingRouter;
         address vault;
     }
 
@@ -86,7 +86,7 @@ contract DeployMainnet is Script {
         console.log("VAULT_MANAGER=", d.vaultManager);
         console.log("ETOKEN_FACTORY=", d.etokenFactory);
         console.log("INHOUSE_ORACLE=", d.oracle);
-        console.log("AAVE_ROUTER=", d.aaveRouter);
+        console.log("LENDING_ROUTER=", d.lendingRouter);
         console.log("VAULT_ADDRESS=", d.vault);
         console.log("");
         console.log("NEXT: AddAssetsMainnet.s.sol, then first LP deposit, then EnableLendingMainnet.s.sol.");
@@ -128,14 +128,14 @@ contract DeployMainnet is Script {
         console.log("Oracle price signer:", oracleSigner);
     }
 
-    /// @dev Deploys the AaveRouter, registers the USDC↔aUSDC reserve, registers the aUSDC collateral
+    /// @dev Deploys the LendingRouter, registers the USDC↔aUSDC reserve, registers the aUSDC collateral
     ///      asset, deploys the aUSDC OwnVault, and registers it on the VaultManager.
     function _deployRouterAndVault(Deployed memory d, address vm_) internal {
-        // AaveRouter (single instance, multi-reserve). Register the USDC→aUSDC reserve.
-        AaveRouter router = new AaveRouter(AAVE_V3_POOL, d.registry);
+        // LendingRouter (single instance, multi-reserve). Register the USDC→aUSDC reserve.
+        LendingRouter router = new LendingRouter(AAVE_V3_POOL, d.registry);
         router.registerReserve(USDC, AUSDC);
-        d.aaveRouter = address(router);
-        console.log("AaveRouter:", d.aaveRouter);
+        d.lendingRouter = address(router);
+        console.log("LendingRouter:", d.lendingRouter);
 
         // Register the aUSDC collateral asset (oracle-priced via the "USDC" ticker; not mintable —
         // no asset cap is set for it, so its mint cap stays 0).

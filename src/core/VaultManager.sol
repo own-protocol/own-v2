@@ -15,8 +15,10 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 ///         control surface: the signer registry, the payment token, trading pause, asset halts,
 ///         and the claim threshold. Vaults keep custody, LP shares, yield, and lending; this
 ///         manager pools risk globally. Exposure and collateral are valued only at keeper-cached
-///         marks refreshed by permissionless price pulls. Risk paths are O(1): `_globalExposureUSD`
-///         and `_globalCollateralUSD` are running totals.
+///         marks refreshed by permissionless price pulls. Risk paths are O(1): `_globalNetExposureUSD`
+///         and `_globalCollateralUSD` are running totals. RWA reserve vaults (non-zero `backedAsset`)
+///         net against their own asset's exposure instead of joining the generic pool:
+///         `_globalNetExposureUSD = Σ_a max(0, assetExposureUSD[a] − assetRwaCollateralUSD[a])`.
 /// @dev No external calls reach untrusted code (oracle/vault reads are views), so no ReentrancyGuard.
 contract VaultManager is IVaultManager {
     using Math for uint256;
@@ -37,10 +39,10 @@ contract VaultManager is IVaultManager {
     /// @inheritdoc IVaultManager
     uint256 public override maxMarkAge;
 
-    /// @dev Running Σ _assetExposureUSD[a] (18-decimal USD).
-    uint256 private _globalExposureUSD;
+    /// @dev Running Σ_a max(0, _assetExposureUSD[a] − _assetRwaCollateralUSD[a]) (18-decimal USD).
+    uint256 private _globalNetExposureUSD;
 
-    /// @dev Running Σ collateralMark[vault] over non-excluded vaults (18-decimal USD).
+    /// @dev Running Σ collateralMark[vault] over non-excluded GENERIC vaults (18-decimal USD).
     uint256 private _globalCollateralUSD;
 
     mapping(bytes32 => uint256) private _assetMark;
@@ -49,8 +51,13 @@ contract VaultManager is IVaultManager {
     mapping(bytes32 => uint256) private _assetExposureUSD;
     mapping(bytes32 => uint256) private _assetCapUSD;
 
+    /// @dev Asset → Σ collateralMark of non-excluded RWA reserve vaults backing it (18-decimal USD).
+    mapping(bytes32 => uint256) private _assetRwaCollateralUSD;
+
     mapping(address => bool) private _registered;
     mapping(address => bytes32) private _vaultCollateralAsset;
+    /// @dev Vault → asset its collateral nets against (bytes32(0) = generic vault).
+    mapping(address => bytes32) private _vaultBackedAsset;
     mapping(address => uint256) private _collateralScale;
     mapping(address => uint256) private _collateralMark;
 
@@ -89,10 +96,6 @@ contract VaultManager is IVaultManager {
 
     /// @dev Delay after a resting redeem order is placed before it can be force-executed.
     uint256 private _claimThreshold;
-
-    /// @dev Protocol-designated vault that sources collateral for force-execution. Zero (the default)
-    ///      disables force-execution entirely; the operator rotates it (e.g. to the healthiest vault).
-    address private _forceExecuteVault;
 
     // ──────────────────────────────────────────────────────────
     //  Modifiers
@@ -147,20 +150,25 @@ contract VaultManager is IVaultManager {
         if (block.timestamp - _assetMarkUpdatedAt[asset] > maxMarkAge) {
             revert StaleAssetMark(asset, _assetMarkUpdatedAt[asset], maxMarkAge);
         }
-        if (_globalCollateralUSD == 0) revert CollateralNotInitialized();
 
         uint256 newUnits = _globalAssetUnits[asset] + units;
         uint256 newAssetUSD = newUnits.mulDiv(mark, PRECISION);
         uint256 cap = _assetCapUSD[asset];
         if (newAssetUSD > cap) revert AssetCapBreached(asset, newAssetUSD, cap);
 
-        uint256 projExposure = _globalExposureUSD - _assetExposureUSD[asset] + newAssetUSD;
-        uint256 projUtil = projExposure.mulDiv(BPS, _globalCollateralUSD);
-        if (projUtil > globalMaxUtilizationBps) revert GlobalUtilizationBreached(projUtil, globalMaxUtilizationBps);
+        // Only the residual above the asset's RWA reserve is gated on generic collateral.
+        uint256 projExposure = _globalNetExposureUSD - _netExposure(asset) + _netOf(newAssetUSD, asset);
+        if (projExposure != 0) {
+            if (_globalCollateralUSD == 0) revert CollateralNotInitialized();
+            uint256 projUtil = projExposure.mulDiv(BPS, _globalCollateralUSD);
+            if (projUtil > globalMaxUtilizationBps) {
+                revert GlobalUtilizationBreached(projUtil, globalMaxUtilizationBps);
+            }
+        }
 
         _globalAssetUnits[asset] = newUnits;
         _assetExposureUSD[asset] = newAssetUSD;
-        _globalExposureUSD = projExposure;
+        _globalNetExposureUSD = projExposure;
 
         emit ExposureOpened(asset, units, mark);
     }
@@ -175,9 +183,7 @@ contract VaultManager is IVaultManager {
         uint256 mark = _assetMark[asset];
         if (mark == 0) revert PriceUnavailable(asset);
         uint256 newUnits = have - units;
-        uint256 newAssetUSD = newUnits.mulDiv(mark, PRECISION);
-        _globalExposureUSD = _globalExposureUSD - _assetExposureUSD[asset] + newAssetUSD;
-        _assetExposureUSD[asset] = newAssetUSD;
+        _setAssetExposure(asset, newUnits.mulDiv(mark, PRECISION));
         _globalAssetUnits[asset] = newUnits;
 
         emit ExposureClosed(asset, units, mark);
@@ -196,9 +202,7 @@ contract VaultManager is IVaultManager {
             uint256 hp = _assetHaltPrice[asset];
             uint256 old0 = _assetMark[asset];
             if (hp != old0) {
-                uint256 haltedUSD = _globalAssetUnits[asset].mulDiv(hp, PRECISION);
-                _globalExposureUSD = _globalExposureUSD - _assetExposureUSD[asset] + haltedUSD;
-                _assetExposureUSD[asset] = haltedUSD;
+                _setAssetExposure(asset, _globalAssetUnits[asset].mulDiv(hp, PRECISION));
                 _assetMark[asset] = hp;
                 _assetMarkUpdatedAt[asset] = block.timestamp;
                 emit AssetPricePulled(asset, old0, hp);
@@ -210,9 +214,7 @@ contract VaultManager is IVaultManager {
         if (price == 0) revert PriceUnavailable(asset);
 
         uint256 old = _assetMark[asset];
-        uint256 newAssetUSD = _globalAssetUnits[asset].mulDiv(price, PRECISION);
-        _globalExposureUSD = _globalExposureUSD - _assetExposureUSD[asset] + newAssetUSD;
-        _assetExposureUSD[asset] = newAssetUSD;
+        _setAssetExposure(asset, _globalAssetUnits[asset].mulDiv(price, PRECISION));
         _assetMark[asset] = price;
         _assetMarkUpdatedAt[asset] = block.timestamp;
 
@@ -231,6 +233,16 @@ contract VaultManager is IVaultManager {
 
         uint256 rawMark = (IERC4626(vault).totalAssets() * _collateralScale[vault]).mulDiv(price, PRECISION);
         uint256 old = _collateralMark[vault];
+
+        bytes32 backed = _vaultBackedAsset[vault];
+        if (backed != bytes32(0)) {
+            // RWA vault: nets against its own asset, never the generic pool; no concentration cap.
+            _collateralMark[vault] = rawMark;
+            _setAssetRwaCollateral(backed, _assetRwaCollateralUSD[backed] - old + rawMark);
+            emit CollateralPricePulled(vault, old, rawMark);
+            return;
+        }
+
         uint256 others = _globalCollateralUSD - old;
         uint256 newMark = _cappedContribution(vault, rawMark, others);
         _globalCollateralUSD = others + newMark;
@@ -246,18 +258,30 @@ contract VaultManager is IVaultManager {
 
     /// @inheritdoc IVaultManager
     function registerVault(address vault, bytes32 collateralAsset) external override onlyAdmin {
+        _registerVault(vault, collateralAsset, bytes32(0));
+    }
+
+    /// @inheritdoc IVaultManager
+    function registerVault(address vault, bytes32 collateralAsset, bytes32 backedAsset) external override onlyAdmin {
+        _registerVault(vault, collateralAsset, backedAsset);
+    }
+
+    /// @dev Shared registration body. A non-zero `backedAsset` marks an RWA reserve vault whose
+    ///      collateral nets against that asset's exposure instead of joining the generic pool.
+    function _registerVault(address vault, bytes32 collateralAsset, bytes32 backedAsset) private {
         if (vault == address(0)) revert ZeroAddress();
         if (collateralAsset == bytes32(0)) revert InvalidCollateralAsset();
         if (_registered[vault]) revert VaultAlreadyRegistered(vault);
 
         _registered[vault] = true;
         _vaultCollateralAsset[vault] = collateralAsset;
+        if (backedAsset != bytes32(0)) _vaultBackedAsset[vault] = backedAsset;
         _collateralScale[vault] = 10 ** (18 - IERC20Metadata(IERC4626(vault).asset()).decimals());
 
         _vaultList.push(vault);
         _vaultIndex[vault] = _vaultList.length; // 1-based
 
-        emit VaultRegistered(vault, collateralAsset);
+        emit VaultRegistered(vault, collateralAsset, backedAsset);
     }
 
     /// @inheritdoc IVaultManager
@@ -266,14 +290,32 @@ contract VaultManager is IVaultManager {
     ) external override onlyAdmin {
         if (!_registered[vault]) revert VaultNotRegistered(vault);
 
-        // Removing this collateral must not push global utilisation over the cap.
-        uint256 projCollateral = _globalCollateralUSD - _collateralMark[vault];
-        if (_globalExposureUSD != 0) {
-            if (projCollateral == 0 || _globalExposureUSD.mulDiv(BPS, projCollateral) > globalMaxUtilizationBps) {
-                revert DeregisterWouldBreachUtilization();
+        bytes32 backed = _vaultBackedAsset[vault];
+        if (backed != bytes32(0)) {
+            // Removing RWA reserve raises net exposure; the residual must fit under the util cap.
+            uint256 newR = _assetRwaCollateralUSD[backed] - _collateralMark[vault];
+            uint256 e = _assetExposureUSD[backed];
+            uint256 projExposure = _globalNetExposureUSD - _netExposure(backed) + (e > newR ? e - newR : 0);
+            if (projExposure != 0) {
+                if (
+                    _globalCollateralUSD == 0
+                        || projExposure.mulDiv(BPS, _globalCollateralUSD) > globalMaxUtilizationBps
+                ) {
+                    revert DeregisterWouldBreachUtilization();
+                }
             }
+            _setAssetRwaCollateral(backed, newR);
+        } else {
+            // Removing this collateral must not push global utilisation over the cap.
+            uint256 projCollateral = _globalCollateralUSD - _collateralMark[vault];
+            if (_globalNetExposureUSD != 0) {
+                if (projCollateral == 0 || _globalNetExposureUSD.mulDiv(BPS, projCollateral) > globalMaxUtilizationBps)
+                {
+                    revert DeregisterWouldBreachUtilization();
+                }
+            }
+            _globalCollateralUSD = projCollateral;
         }
-        _globalCollateralUSD = projCollateral;
 
         // O(1) swap-remove from the enumerable list.
         uint256 idx = _vaultIndex[vault]; // 1-based
@@ -290,6 +332,7 @@ contract VaultManager is IVaultManager {
         delete _collateralCapBps[vault];
         delete _registered[vault];
         delete _vaultCollateralAsset[vault];
+        delete _vaultBackedAsset[vault];
         delete _collateralScale[vault];
         delete _excluded[vault];
 
@@ -304,7 +347,12 @@ contract VaultManager is IVaultManager {
     function onVaultHalted() external override onlyRegisteredVault {
         if (_excluded[msg.sender]) revert VaultAlreadyExcluded(msg.sender);
         uint256 removed = _collateralMark[msg.sender];
-        _globalCollateralUSD -= removed;
+        bytes32 backed = _vaultBackedAsset[msg.sender];
+        if (backed != bytes32(0)) {
+            _setAssetRwaCollateral(backed, _assetRwaCollateralUSD[backed] - removed);
+        } else {
+            _globalCollateralUSD -= removed;
+        }
         _collateralMark[msg.sender] = 0;
         _excluded[msg.sender] = true;
         emit VaultCollateralExcluded(msg.sender, removed);
@@ -318,6 +366,16 @@ contract VaultManager is IVaultManager {
         uint256 price = _resolvePrice(_vaultCollateralAsset[msg.sender]);
         if (price == 0) revert PriceUnavailable(_vaultCollateralAsset[msg.sender]);
         uint256 rawMark = (IERC4626(msg.sender).totalAssets() * _collateralScale[msg.sender]).mulDiv(price, PRECISION);
+
+        bytes32 backed = _vaultBackedAsset[msg.sender];
+        if (backed != bytes32(0)) {
+            // RWA reserve re-inclusion: uncapped, nets against its own asset.
+            _collateralMark[msg.sender] = rawMark;
+            _setAssetRwaCollateral(backed, _assetRwaCollateralUSD[backed] + rawMark);
+            emit VaultCollateralReincluded(msg.sender, rawMark);
+            return;
+        }
+
         // The unhalting vault currently contributes 0, so the rest of the pool is the full global.
         uint256 newMark = _cappedContribution(msg.sender, rawMark, _globalCollateralUSD);
         _globalCollateralUSD += newMark;
@@ -336,7 +394,13 @@ contract VaultManager is IVaultManager {
         uint256 removedUSD = ta == 0 ? mark : mark.mulDiv(assets, ta);
         if (removedUSD > mark) removedUSD = mark;
         _collateralMark[msg.sender] = mark - removedUSD;
-        _globalCollateralUSD -= removedUSD;
+        bytes32 backed = _vaultBackedAsset[msg.sender];
+        if (backed != bytes32(0)) {
+            // Reserve leaving an RWA vault raises its asset's net exposure.
+            _setAssetRwaCollateral(backed, _assetRwaCollateralUSD[backed] - removedUSD);
+        } else {
+            _globalCollateralUSD -= removedUSD;
+        }
         emit CollateralMarkReduced(msg.sender, assets, removedUSD);
     }
 
@@ -403,6 +467,8 @@ contract VaultManager is IVaultManager {
     /// @inheritdoc IVaultManager
     function setCollateralCapBps(address vault, uint256 bps) external override onlyAdmin {
         if (!_registered[vault]) revert VaultNotRegistered(vault);
+        // Concentration caps are generic-pool-only; the netting clamp bounds RWA vaults.
+        if (_vaultBackedAsset[vault] != bytes32(0)) revert RwaVaultNotEligible(vault);
         // 0 disables the cap; BPS (100%) and above are meaningless and divide-by-zero in the share
         // formula. The new cap takes effect on the vault's next pullCollateralPrice.
         if (bps >= BPS) revert InvalidCollateralCap();
@@ -513,9 +579,7 @@ contract VaultManager is IVaultManager {
         _assetHaltPrice[asset] = haltPrice;
 
         // Re-mark outstanding exposure at the fixed halt price so utilisation reflects the freeze.
-        uint256 haltedUSD = _globalAssetUnits[asset].mulDiv(haltPrice, PRECISION);
-        _globalExposureUSD = _globalExposureUSD - _assetExposureUSD[asset] + haltedUSD;
-        _assetExposureUSD[asset] = haltedUSD;
+        _setAssetExposure(asset, _globalAssetUnits[asset].mulDiv(haltPrice, PRECISION));
         _assetMark[asset] = haltPrice;
         _assetMarkUpdatedAt[asset] = block.timestamp;
 
@@ -572,26 +636,6 @@ contract VaultManager is IVaultManager {
         return _claimThreshold;
     }
 
-    /// @inheritdoc IVaultManager
-    function setForceExecuteVault(
-        address vault
-    ) external override onlyOperator {
-        // address(0) clears the designation and disables force-execution (fail-safe). A real vault
-        // must be registered and currently in the pool; runtime exclusion/halt is re-checked at use.
-        if (vault != address(0)) {
-            if (!_registered[vault]) revert VaultNotRegistered(vault);
-            if (_excluded[vault]) revert VaultAlreadyExcluded(vault);
-        }
-        address old = _forceExecuteVault;
-        _forceExecuteVault = vault;
-        emit ForceExecuteVaultUpdated(old, vault);
-    }
-
-    /// @inheritdoc IVaultManager
-    function forceExecuteVault() external view override returns (address) {
-        return _forceExecuteVault;
-    }
-
     // ──────────────────────────────────────────────────────────
     //  Views — risk accounting
     // ──────────────────────────────────────────────────────────
@@ -602,20 +646,33 @@ contract VaultManager is IVaultManager {
         if (ta == 0) return true;
 
         uint256 releasedUSD = _collateralMark[vault].mulDiv(assets, ta);
+
+        bytes32 backed = _vaultBackedAsset[vault];
+        if (backed != bytes32(0)) {
+            // Releasing RWA reserve raises the asset's NET exposure rather than shrinking the pool.
+            uint256 r = _assetRwaCollateralUSD[backed];
+            uint256 newR = releasedUSD >= r ? 0 : r - releasedUSD;
+            uint256 e = _assetExposureUSD[backed];
+            uint256 projExposure = _globalNetExposureUSD - _netExposure(backed) + (e > newR ? e - newR : 0);
+            if (projExposure == 0) return false;
+            if (_globalCollateralUSD == 0) return true;
+            return projExposure.mulDiv(BPS, _globalCollateralUSD) > globalMaxUtilizationBps;
+        }
+
         uint256 projCollateral = releasedUSD >= _globalCollateralUSD ? 0 : _globalCollateralUSD - releasedUSD;
-        if (projCollateral == 0) return _globalExposureUSD != 0;
-        return _globalExposureUSD.mulDiv(BPS, projCollateral) > globalMaxUtilizationBps;
+        if (projCollateral == 0) return _globalNetExposureUSD != 0;
+        return _globalNetExposureUSD.mulDiv(BPS, projCollateral) > globalMaxUtilizationBps;
     }
 
     /// @inheritdoc IVaultManager
     function globalUtilizationBps() external view override returns (uint256) {
-        if (_globalCollateralUSD == 0) return _globalExposureUSD == 0 ? 0 : type(uint256).max;
-        return _globalExposureUSD.mulDiv(BPS, _globalCollateralUSD);
+        if (_globalCollateralUSD == 0) return _globalNetExposureUSD == 0 ? 0 : type(uint256).max;
+        return _globalNetExposureUSD.mulDiv(BPS, _globalCollateralUSD);
     }
 
     /// @inheritdoc IVaultManager
-    function globalExposureUSD() external view override returns (uint256) {
-        return _globalExposureUSD;
+    function globalNetExposureUSD() external view override returns (uint256) {
+        return _globalNetExposureUSD;
     }
 
     /// @inheritdoc IVaultManager
@@ -659,6 +716,27 @@ contract VaultManager is IVaultManager {
     }
 
     /// @inheritdoc IVaultManager
+    function vaultBackedAsset(
+        address vault
+    ) external view override returns (bytes32) {
+        return _vaultBackedAsset[vault];
+    }
+
+    /// @inheritdoc IVaultManager
+    function assetExposureUSD(
+        bytes32 asset
+    ) external view override returns (uint256) {
+        return _assetExposureUSD[asset];
+    }
+
+    /// @inheritdoc IVaultManager
+    function assetRwaCollateralUSD(
+        bytes32 asset
+    ) external view override returns (uint256) {
+        return _assetRwaCollateralUSD[asset];
+    }
+
+    /// @inheritdoc IVaultManager
     function globalAssetUnits(
         bytes32 asset
     ) external view override returns (uint256) {
@@ -687,6 +765,34 @@ contract VaultManager is IVaultManager {
     // ──────────────────────────────────────────────────────────
     //  Internal — helpers
     // ──────────────────────────────────────────────────────────
+
+    /// @dev An asset's current NET contribution to `_globalNetExposureUSD`:
+    ///      max(0, gross exposure − RWA reserve collateral).
+    function _netExposure(
+        bytes32 asset
+    ) private view returns (uint256) {
+        return _netOf(_assetExposureUSD[asset], asset);
+    }
+
+    /// @dev Net a hypothetical gross exposure `exposureUSD` against the asset's RWA reserve.
+    function _netOf(uint256 exposureUSD, bytes32 asset) private view returns (uint256) {
+        uint256 r = _assetRwaCollateralUSD[asset];
+        return exposureUSD > r ? exposureUSD - r : 0;
+    }
+
+    /// @dev Set an asset's gross exposure and fold the netted delta into `_globalNetExposureUSD`.
+    function _setAssetExposure(bytes32 asset, uint256 newExposureUSD) private {
+        _globalNetExposureUSD = _globalNetExposureUSD - _netExposure(asset) + _netOf(newExposureUSD, asset);
+        _assetExposureUSD[asset] = newExposureUSD;
+    }
+
+    /// @dev Set an asset's RWA reserve collateral total and fold the netted delta into
+    ///      `_globalNetExposureUSD` (reserve moves re-net the asset, not the generic pool).
+    function _setAssetRwaCollateral(bytes32 asset, uint256 newRwaUSD) private {
+        uint256 e = _assetExposureUSD[asset];
+        _globalNetExposureUSD = _globalNetExposureUSD - _netExposure(asset) + (e > newRwaUSD ? e - newRwaUSD : 0);
+        _assetRwaCollateralUSD[asset] = newRwaUSD;
+    }
 
     /// @dev Cap a vault's counted collateral contribution to its concentration share. `others` is
     ///      the global counted collateral excluding this vault. Solving `counted <= cap/BPS ·

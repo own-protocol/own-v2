@@ -7,8 +7,9 @@ import {IOracleVerifier} from "../interfaces/IOracleVerifier.sol";
 import {IOwnMarket} from "../interfaces/IOwnMarket.sol";
 import {IOwnVault} from "../interfaces/IOwnVault.sol";
 import {IProtocolRegistry} from "../interfaces/IProtocolRegistry.sol";
+import {IReserveVault} from "../interfaces/IReserveVault.sol";
 import {IVaultManager} from "../interfaces/IVaultManager.sol";
-import {BPS, Order, OrderStatus, OrderType, PRECISION, Quote} from "../interfaces/types/Types.sol";
+import {BPS, Order, OrderStatus, OrderType, PRECISION, PsmConfig, Quote} from "../interfaces/types/Types.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
@@ -132,11 +133,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard, EIP712 {
         _userOrders[msg.sender].push(orderId);
 
         // Escrow accounting assumes sent == received; reject fee-on-transfer tokens.
-        uint256 balBefore = IERC20(escrowToken).balanceOf(address(this));
-        IERC20(escrowToken).safeTransferFrom(msg.sender, address(this), amount);
-        if (IERC20(escrowToken).balanceOf(address(this)) - balBefore != amount) {
-            revert FeeOnTransferNotSupported(escrowToken);
-        }
+        _pullExact(escrowToken, address(this), amount);
 
         emit OrderPlaced(orderId, msg.sender, uint8(orderType), asset, amount, limitPrice);
     }
@@ -145,9 +142,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard, EIP712 {
     function fillOrder(Quote calldata quote, bytes calldata signature) external nonReentrant {
         if (quote.orderId == 0) revert QuoteOrderMismatch();
 
-        Order storage order = _orders[quote.orderId];
-        if (order.user == address(0)) revert OrderNotFound(quote.orderId);
-        if (order.status != OrderStatus.Open) revert InvalidOrderStatus(quote.orderId);
+        Order storage order = _openOrder(quote.orderId);
         if (block.timestamp > order.expiry) revert OrderExpiredError(quote.orderId);
         if (quote.amount == 0) revert ZeroAmount();
         if (quote.price == 0) revert InvalidPrice();
@@ -163,9 +158,6 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard, EIP712 {
             revert OrderTokenMigrated(quote.orderId);
         }
 
-        uint256 remaining = order.amount - order.filledAmount;
-        if (quote.amount > remaining) revert FillExceedsRemaining(quote.orderId);
-
         // The quote price must respect the order's limit.
         if (order.orderType == OrderType.Mint) {
             if (quote.price > order.limitPrice) revert LimitNotSatisfied();
@@ -180,9 +172,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard, EIP712 {
 
         // Effects.
         address maker = _consumeQuote(quote, signature);
-        order.filledAmount += quote.amount;
-        uint256 newRemaining = remaining - quote.amount;
-        if (newRemaining == 0) order.status = OrderStatus.Filled;
+        uint256 newRemaining = _recordFill(order, quote.amount);
 
         // Interactions.
         uint256 amountOut = order.orderType == OrderType.Mint
@@ -199,22 +189,24 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard, EIP712 {
         bytes calldata assetPriceData,
         bytes calldata collateralPriceData
     ) external payable nonReentrant {
-        Order storage order = _orders[orderId];
-        if (order.user == address(0)) revert OrderNotFound(orderId);
+        Order storage order = _openOrder(orderId);
         if (order.user != msg.sender) revert OnlyOrderOwner(orderId);
-        if (order.status != OrderStatus.Open) revert InvalidOrderStatus(orderId);
         if (order.orderType != OrderType.Redeem) revert ForceMintNotAllowed(orderId);
         // A redeem order escrowed in a now-legacy token cannot be force-executed; cancel to recover.
         if (order.escrowToken != _activeToken(order.asset)) revert OrderTokenMigrated(orderId);
 
-        IVaultManager vmgr = IVaultManager(registry.vaultManager());
-        // Collateral source is protocol-designated; the redeemer cannot pick an arbitrary vault.
-        // address(0) (the default) disables force-execution entirely (fail-safe).
-        address designated = vmgr.forceExecuteVault();
-        if (designated == address(0)) revert ForceExecuteVaultNotSet();
-        if (vault != designated) revert VaultNotDesignated(vault, designated);
+        IVaultManager vmgr = _vaultManager();
+        // Collateral source: the redeemer picks any vault in the registry's admin-approved pool —
+        // force-execution is the user's last-resort exit, so source flexibility is deliberate.
+        // An empty pool (the default) disables force-execution for the asset (fail-safe).
+        if (!_assetRegistry().isForceExecuteVaultAllowed(order.asset, vault)) {
+            revert ForceExecuteVaultNotAllowed(order.asset, vault);
+        }
         if (!vmgr.isRegisteredVault(vault)) revert VaultNotRegistered(vault);
         if (vmgr.isVaultExcluded(vault)) revert VaultExcludedFromPool(vault);
+        // Pool entries can go stale (deregister → re-register as RWA); reserves never source
+        // force-execution — releaseCollateral there is market-gated, which this call would pass.
+        if (vmgr.vaultBackedAsset(vault) != bytes32(0)) revert RwaVaultNotEligible(vault);
         // Pause and halt both disable the force path.
         if (vmgr.isTradingPaused(order.asset)) revert AssetPaused(order.asset);
         if (vmgr.isAssetHalted(order.asset)) revert ForceDisabledDuringHalt(order.asset);
@@ -231,9 +223,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard, EIP712 {
         // stale favorable print can't be exercised after the market has moved. Payout settles at the
         // limit (bare oracle price, no maker spread).
         (uint256 currentPrice, uint256 assetTs) = _verifyAssetPrice(order.asset, assetPriceData);
-        if (assetTs > block.timestamp || block.timestamp - assetTs > registry.priceMaxAge()) {
-            revert StaleAssetPrice();
-        }
+        if (_isStale(assetTs, registry.priceMaxAge())) revert StaleAssetPrice();
         if (currentPrice < order.limitPrice) revert PriceBelowMinimum();
 
         uint256 grossUsd = Math.mulDiv(remaining, order.limitPrice, PRECISION);
@@ -257,7 +247,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard, EIP712 {
     function redeemHalted(bytes32 asset, uint256 eTokenAmount) external nonReentrant returns (uint256 payout) {
         if (eTokenAmount == 0) revert ZeroAmount();
 
-        IVaultManager vmgr = IVaultManager(registry.vaultManager());
+        IVaultManager vmgr = _vaultManager();
         if (!vmgr.isAssetHalted(asset)) revert AssetNotHalted(asset);
         uint256 haltPrice = vmgr.assetHaltPrice(asset);
         if (haltPrice == 0) revert InvalidHaltPrice();
@@ -265,7 +255,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard, EIP712 {
         if (haltAddr == address(0)) revert HaltRedeemAddressNotSet();
 
         address pay = _paymentToken();
-        payout = Math.mulDiv(eTokenAmount, haltPrice, PRECISION * 10 ** (18 - IERC20Metadata(pay).decimals()));
+        payout = _eTokensToPay(eTokenAmount, pay, haltPrice);
 
         // Pull stables from the halt fund to the caller, burn the eTokens, shrink global exposure.
         IERC20(pay).safeTransferFrom(haltAddr, msg.sender, payout);
@@ -283,7 +273,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard, EIP712 {
     ) external nonReentrant returns (uint256 newAmount) {
         if (amount == 0) revert ZeroAmount();
 
-        IAssetRegistry ar = IAssetRegistry(registry.assetRegistry());
+        IAssetRegistry ar = _assetRegistry();
         address active = ar.getActiveToken(asset);
         if (legacyToken == active || !ar.isValidToken(asset, legacyToken)) revert NotLegacyToken(legacyToken);
         uint256 ratio = ar.legacyRatioToActive(legacyToken);
@@ -301,14 +291,108 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard, EIP712 {
         emit LegacyConverted(msg.sender, asset, legacyToken, amount, newAmount);
     }
 
+    // ──────────────────────────────────────────────────────────
+    //  PSM — 1:1 wrapper reserve mint / redeem
+    // ──────────────────────────────────────────────────────────
+
+    /// @inheritdoc IOwnMarket
+    function psmMint(
+        bytes32 asset,
+        address wrapper,
+        uint256 wrapperAmount
+    ) external nonReentrant returns (uint256 eTokenAmount) {
+        if (wrapperAmount == 0) revert ZeroAmount();
+        _validateAsset(asset);
+        _checkTradeable(asset, OrderType.Mint); // pause blocks; halt blocks minting
+
+        // Wrapper leg must be fresh; the asset leg is enforced by openExposure below.
+        (address reserveVault, uint256 ratio) = _psmContext(asset, wrapper, true);
+
+        // Pull the wrapper straight into the reserve; escrow accounting assumes sent == received.
+        _pullExact(wrapper, reserveVault, wrapperAmount);
+
+        IVaultManager vmgr = _vaultManager();
+        // Mark the new reserve before the exposure gate (matched mint is util-neutral).
+        vmgr.pullCollateralPrice(reserveVault);
+
+        // Wrapper units → 18-dec → eTokens at the derived ratio (floor — protocol-favorable).
+        eTokenAmount = Math.mulDiv(wrapperAmount * _tokenScale(wrapper), ratio, PRECISION);
+        if (eTokenAmount == 0) revert ZeroAmount();
+
+        vmgr.openExposure(asset, eTokenAmount);
+        IEToken(_activeToken(asset)).mint(msg.sender, eTokenAmount);
+
+        emit PsmMinted(msg.sender, asset, wrapper, wrapperAmount, eTokenAmount, ratio);
+    }
+
+    /// @inheritdoc IOwnMarket
+    function psmRedeem(
+        bytes32 asset,
+        address wrapper,
+        uint256 eTokenAmount
+    ) external nonReentrant returns (uint256 wrapperAmount) {
+        if (eTokenAmount == 0) revert ZeroAmount();
+        IVaultManager vmgr = _vaultManager();
+        if (vmgr.isTradingPaused(asset)) revert AssetPaused(asset);
+        // Halted assets redeem in-kind at the frozen halt mark; the live wrapper leg must be fresh.
+        (address reserveVault, uint256 ratio) = _psmContext(asset, wrapper, vmgr.isAssetHalted(asset));
+
+        // eTokens → wrapper units at the derived ratio (floor — protocol-favorable).
+        wrapperAmount = Math.mulDiv(eTokenAmount, PRECISION, ratio) / _tokenScale(wrapper);
+        if (wrapperAmount == 0) revert ZeroAmount();
+
+        // Burn, shrink exposure, then release reserve (bounded by the vault's balance).
+        IEToken(_activeToken(asset)).burn(msg.sender, eTokenAmount);
+        vmgr.closeExposure(asset, eTokenAmount);
+        IReserveVault(reserveVault).releaseCollateral(msg.sender, wrapperAmount);
+
+        emit PsmRedeemed(msg.sender, asset, wrapper, eTokenAmount, wrapperAmount, ratio);
+    }
+
+    /// @inheritdoc IOwnMarket
+    function psmFillOrder(
+        uint256 orderId,
+        address wrapper,
+        uint256 amount
+    ) external nonReentrant returns (uint256 amountOut) {
+        Order storage order = _openOrder(orderId);
+        if (block.timestamp > order.expiry) revert OrderExpiredError(orderId);
+        if (amount == 0) revert ZeroAmount();
+
+        // Same gates as a quote fill: mint opens exposure (active asset required); both legs are
+        // blocked by pause/halt — halted holders exit via psmRedeem/redeemHalted instead.
+        if (order.orderType == OrderType.Mint) _validateAsset(order.asset);
+        _checkTradeable(order.asset, order.orderType);
+        _checkFillPaused(order.asset, wrapper);
+
+        // A redeem order escrowed in a now-legacy token cannot be filled (mirrors fillOrder).
+        if (order.orderType == OrderType.Redeem && order.escrowToken != _activeToken(order.asset)) {
+            revert OrderTokenMigrated(orderId);
+        }
+
+        // No quote: the order's own limit is the settle price, fat-finger/stale-mark bounded by
+        // the settle band. Fills are discretionary trades, so the wrapper leg must be fresh.
+        _checkSettleBand(order.asset, order.limitPrice);
+        (address reserveVault, uint256 ratio) = _psmContext(order.asset, wrapper, true);
+
+        // Effects.
+        uint256 newRemaining = _recordFill(order, amount);
+
+        // Interactions.
+        uint256 wrapperAmount;
+        (amountOut, wrapperAmount) = order.orderType == OrderType.Mint
+            ? _psmFillMint(order, wrapper, amount, reserveVault, ratio)
+            : _psmFillRedeem(order, wrapper, amount, reserveVault, ratio);
+
+        emit PsmOrderFilled(orderId, msg.sender, wrapper, amount, amountOut, wrapperAmount, newRemaining);
+    }
+
     /// @inheritdoc IOwnMarket
     function cancelOrder(
         uint256 orderId
     ) external nonReentrant {
-        Order storage order = _orders[orderId];
-        if (order.user == address(0)) revert OrderNotFound(orderId);
+        Order storage order = _openOrder(orderId);
         if (order.user != msg.sender) revert OnlyOrderOwner(orderId);
-        if (order.status != OrderStatus.Open) revert InvalidOrderStatus(orderId);
 
         uint256 remaining = order.amount - order.filledAmount;
         order.status = OrderStatus.Cancelled;
@@ -321,9 +405,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard, EIP712 {
     function expireOrder(
         uint256 orderId
     ) external nonReentrant {
-        Order storage order = _orders[orderId];
-        if (order.user == address(0)) revert OrderNotFound(orderId);
-        if (order.status != OrderStatus.Open) revert InvalidOrderStatus(orderId);
+        Order storage order = _openOrder(orderId);
         if (block.timestamp <= order.expiry) revert ExpiryNotReached(orderId);
 
         uint256 remaining = order.amount - order.filledAmount;
@@ -343,7 +425,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard, EIP712 {
     function sweepDividends(
         address eToken
     ) external nonReentrant returns (uint256 amount) {
-        if (!IAssetRegistry(registry.assetRegistry()).isValidToken(IEToken(eToken).ticker(), eToken)) {
+        if (!_assetRegistry().isValidToken(IEToken(eToken).ticker(), eToken)) {
             revert InvalidEToken(eToken);
         }
         amount = IEToken(eToken).claimableRewards(address(this));
@@ -408,15 +490,19 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard, EIP712 {
     //  Internal — quote verification
     // ──────────────────────────────────────────────────────────
 
-    /// @dev Validate expiry, replay, and signer (an authorised global signer), then mark the
-    ///      quote used. Returns the signer's linked settlement address (mint sink / redeem source).
+    /// @dev Validate expiry, replay, and signer (an authorised global signer scoped to the
+    ///      quote's asset by the registry's maker allowlist), then mark the quote used. Returns
+    ///      the signer's linked settlement address (mint sink / redeem source).
     function _consumeQuote(Quote calldata quote, bytes calldata signature) private returns (address maker) {
         if (block.timestamp > quote.expiry) revert QuoteExpired();
         bytes32 digest = quoteDigest(quote);
         if (_usedQuotes[digest]) revert QuoteAlreadyUsed();
         address signer = digest.recover(signature);
-        IVaultManager vmgr = IVaultManager(registry.vaultManager());
+        IVaultManager vmgr = _vaultManager();
         if (!vmgr.isSigner(signer)) revert InvalidQuoteSigner();
+        if (!_assetRegistry().isMakerAllowed(quote.asset, signer)) {
+            revert MakerNotAllowed(quote.asset, signer);
+        }
         maker = vmgr.signerLinkedAddress(signer);
         _usedQuotes[digest] = true;
     }
@@ -430,7 +516,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard, EIP712 {
     ///      execute/fill settle paths only; force-execute (oracle limit price) and redeemHalted
     ///      (fixed halt price) are intentionally exempt. Reverts {PriceOutOfBand} when breached.
     function _checkSettleBand(bytes32 asset, uint256 price) private view {
-        IVaultManager vmgr = IVaultManager(registry.vaultManager());
+        IVaultManager vmgr = _vaultManager();
         uint256 mark = vmgr.assetMark(asset);
         // No mark → openExposure/closeExposure already reverts (PriceUnavailable); nothing to bound.
         if (mark == 0) return;
@@ -462,11 +548,11 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard, EIP712 {
 
         // Escrow fills settle in the token escrowed at placement (payToken == order.escrowToken),
         // so a later payment-token change cannot mismatch the escrow.
-        eTokenAmount = Math.mulDiv(amountIn * (10 ** (18 - IERC20Metadata(payToken).decimals())), PRECISION, price);
+        eTokenAmount = _payToETokens(amountIn, payToken, price);
 
         // Atomic check + commit of global exposure (asset cap + global utilisation) before any
         // external token movement, so a breach reverts cleanly with no side effects.
-        IVaultManager(registry.vaultManager()).openExposure(asset, eTokenAmount);
+        _vaultManager().openExposure(asset, eTokenAmount);
 
         // Route the full stablecoin amount to the maker (spread captured offchain).
         if (fromEscrow) {
@@ -493,13 +579,43 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard, EIP712 {
         _checkSettleBand(asset, price);
 
         address pay = _paymentToken();
-        netPayout = Math.mulDiv(amountIn, price, PRECISION * 10 ** (18 - IERC20Metadata(pay).decimals()));
+        netPayout = _eTokensToPay(amountIn, pay, price);
 
         IERC20(pay).safeTransferFrom(maker, user, netPayout);
 
         // Burn the eTokens and shrink global exposure.
         IEToken(_activeToken(asset)).burn(fromEscrow ? address(this) : user, amountIn);
-        IVaultManager(registry.vaultManager()).closeExposure(asset, amountIn);
+        _vaultManager().closeExposure(asset, amountIn);
+    }
+
+    /// @dev Payment/escrow-token units → eTokens at `price` (18-dec USD per eToken; floor).
+    function _payToETokens(uint256 amountIn, address payToken, uint256 price) private view returns (uint256) {
+        return Math.mulDiv(amountIn * _tokenScale(payToken), PRECISION, price);
+    }
+
+    /// @dev eTokens → payment-token units at `price` (18-dec USD per eToken; floor).
+    function _eTokensToPay(uint256 eTokenAmount, address payToken, uint256 price) private view returns (uint256) {
+        return Math.mulDiv(eTokenAmount, price, PRECISION * _tokenScale(payToken));
+    }
+
+    /// @dev Load an order that exists and is still Open — the shared head of every fill,
+    ///      cancel, expire, and force path.
+    function _openOrder(
+        uint256 orderId
+    ) private view returns (Order storage order) {
+        order = _orders[orderId];
+        if (order.user == address(0)) revert OrderNotFound(orderId);
+        if (order.status != OrderStatus.Open) revert InvalidOrderStatus(orderId);
+    }
+
+    /// @dev Record a fill chunk against an order: bound it to the unfilled remainder, advance
+    ///      `filledAmount`, and flip to Filled when nothing remains.
+    function _recordFill(Order storage order, uint256 amount) private returns (uint256 newRemaining) {
+        uint256 remaining = order.amount - order.filledAmount;
+        if (amount > remaining) revert FillExceedsRemaining(order.orderId);
+        order.filledAmount += amount;
+        newRemaining = remaining - amount;
+        if (newRemaining == 0) order.status = OrderStatus.Filled;
     }
 
     /// @dev Return the unfilled escrow to the order owner.
@@ -529,6 +645,15 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard, EIP712 {
     ) private returns (uint256 price, uint256 timestamp) {
         address oracleAddr = _getOracleForAsset(asset);
         if (oracleAddr == address(0)) revert AssetOracleNotSet(asset);
+        return _verifyPaidPrice(oracleAddr, asset, priceData);
+    }
+
+    /// @dev Verify a signed price proof against `oracleAddr`, forwarding the oracle's ETH fee.
+    function _verifyPaidPrice(
+        address oracleAddr,
+        bytes32 asset,
+        bytes calldata priceData
+    ) private returns (uint256 price, uint256 timestamp) {
         IOracleVerifier oracle = IOracleVerifier(oracleAddr);
         uint256 fee = oracle.verifyFee(priceData);
         (price, timestamp) = oracle.verifyPrice{value: fee}(asset, priceData);
@@ -540,23 +665,154 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard, EIP712 {
         uint256 usdValue,
         bytes calldata collateralPriceData
     ) private returns (uint256) {
-        bytes32 collatAsset = IVaultManager(registry.vaultManager()).vaultCollateralAsset(vault);
+        bytes32 collatAsset = _vaultManager().vaultCollateralAsset(vault);
         address oracleAddr = _getOracleForAsset(collatAsset);
         if (oracleAddr == address(0)) revert CollateralOracleNotSet();
-        IOracleVerifier oracle = IOracleVerifier(oracleAddr);
-        uint256 fee = oracle.verifyFee(collateralPriceData);
-        (uint256 price, uint256 timestamp) = oracle.verifyPrice{value: fee}(collatAsset, collateralPriceData);
+        (uint256 price, uint256 timestamp) = _verifyPaidPrice(oracleAddr, collatAsset, collateralPriceData);
 
         // Collateral is released now, so its price must be current.
-        if (timestamp > block.timestamp || block.timestamp - timestamp > registry.priceMaxAge()) {
-            revert StaleCollateralPrice();
-        }
+        if (_isStale(timestamp, registry.priceMaxAge())) revert StaleCollateralPrice();
 
         // usdValue and price are 18-decimal, so this yields an 18-decimal collateral amount.
         // Scale down to the collateral token's decimals (floor — protocol-favorable).
-        uint256 collateral18 = Math.mulDiv(usdValue, PRECISION, price);
-        uint256 collatDecimals = IERC20Metadata(IOwnVault(vault).asset()).decimals();
-        return collateral18 / (10 ** (18 - collatDecimals));
+        return Math.mulDiv(usdValue, PRECISION, price) / _tokenScale(IOwnVault(vault).asset());
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Internal — PSM helpers
+    // ──────────────────────────────────────────────────────────
+
+    /// @dev Per-wrapper kill switch for the fill channel only; psmMint/psmRedeem/RFQ stay live.
+    function _checkFillPaused(bytes32 asset, address wrapper) private view {
+        if (_assetRegistry().getPsmConfig(asset, wrapper).fillPaused) revert PsmFillPaused(asset, wrapper);
+    }
+
+    /// @dev Resolve a wrapper's PSM config and derive the conversion ratio (eTokens per wrapper
+    ///      unit, 1e18) = wrapper oracle price / asset mark. Enforces the fail-closed ratio-jump
+    ///      guard and records the ratio used.
+    /// @param requireFreshWrapperPrice True on paths priced off a live wrapper leg (mint;
+    ///        halted redeem).
+    function _psmContext(
+        bytes32 asset,
+        address wrapper,
+        bool requireFreshWrapperPrice
+    ) private returns (address reserveVault, uint256 ratio) {
+        IAssetRegistry ar = _assetRegistry();
+        PsmConfig memory cfg = ar.getPsmConfig(asset, wrapper); // reverts PsmNotConfigured
+        if (cfg.paused) revert PsmIsPaused(asset, wrapper);
+        reserveVault = cfg.reserveVault;
+
+        IVaultManager vmgr = _vaultManager();
+        bytes32 wrapperTicker = vmgr.vaultCollateralAsset(reserveVault);
+        (uint256 wrapperPrice, uint256 priceTs) =
+            IOracleVerifier(_getOracleForAsset(wrapperTicker)).getPrice(wrapperTicker);
+        if (wrapperPrice == 0) revert WrapperPriceUnavailable(wrapperTicker);
+        if (requireFreshWrapperPrice && _isStale(priceTs, vmgr.maxMarkAge())) {
+            revert StaleWrapperPrice(wrapperTicker);
+        }
+
+        uint256 mark = vmgr.assetMark(asset);
+        if (mark == 0) revert AssetMarkUnavailable(asset);
+
+        ratio = Math.mulDiv(wrapperPrice, PRECISION, mark);
+        if (ratio == 0) revert InvalidPrice();
+
+        // Fail-closed ratio-jump guard: unset bound disables PSM mint/redeem.
+        uint256 bound = ar.ratioJumpBoundBps();
+        if (bound == 0) revert RatioGuardNotConfigured();
+        uint256 last = cfg.lastUsedRatio;
+        if (last != 0) {
+            uint256 diff = ratio > last ? ratio - last : last - ratio;
+            if (diff * BPS > last * bound) revert RatioJumpExceeded(asset, wrapper, ratio, last);
+        }
+        if (ratio != last) ar.notePsmRatio(asset, wrapper, ratio);
+    }
+
+    /// @dev Mint-side DvP fill: pull ceil-rounded wrapper from the filler into the reserve, open
+    ///      exposure at the order's limit price, mint eTokens to the owner, pay the filler the
+    ///      stablecoin escrow chunk.
+    function _psmFillMint(
+        Order storage order,
+        address wrapper,
+        uint256 amount,
+        address reserveVault,
+        uint256 ratio
+    ) private returns (uint256 eTokenAmount, uint256 wrapperAmount) {
+        // Same conversion as _settleMint: escrow units → 18-dec → eTokens at the limit price.
+        eTokenAmount = _payToETokens(amount, order.escrowToken, order.limitPrice);
+        if (eTokenAmount == 0) revert ZeroAmount();
+
+        // eTokens → wrapper units at the derived ratio (ceil — the filler delivers, protocol-favorable).
+        wrapperAmount =
+            Math.ceilDiv(Math.mulDiv(eTokenAmount, PRECISION, ratio, Math.Rounding.Ceil), _tokenScale(wrapper));
+
+        // Pull the wrapper straight into the reserve and mark it before the exposure gate
+        // (matched mint is util-neutral) — mirrors psmMint.
+        _pullExact(wrapper, reserveVault, wrapperAmount);
+        IVaultManager vmgr = _vaultManager();
+        vmgr.pullCollateralPrice(reserveVault);
+        vmgr.openExposure(order.asset, eTokenAmount);
+
+        IEToken(_activeToken(order.asset)).mint(order.user, eTokenAmount);
+
+        // Pay the filler the escrow chunk less the protocol's share of their spread.
+        uint256 fee = _psmSpreadFee(order.asset, eTokenAmount, order.escrowToken, amount, true);
+        IERC20(order.escrowToken).safeTransfer(msg.sender, amount - fee);
+        if (fee != 0) {
+            IERC20(order.escrowToken).safeTransfer(registry.treasury(), fee);
+            emit PsmSpreadFeeCollected(order.orderId, msg.sender, order.escrowToken, fee);
+        }
+    }
+
+    /// @dev Redeem-side DvP fill: pull the filler's stablecoin payout to the owner at the limit
+    ///      price, burn the escrowed eTokens, shrink exposure, then release floor-rounded reserve
+    ///      wrapper to the filler (bounded by the vault's balance).
+    function _psmFillRedeem(
+        Order storage order,
+        address wrapper,
+        uint256 amount,
+        address reserveVault,
+        uint256 ratio
+    ) private returns (uint256 netPayout, uint256 wrapperAmount) {
+        address pay = _paymentToken();
+        netPayout = _eTokensToPay(amount, pay, order.limitPrice);
+        if (netPayout == 0) revert ZeroAmount();
+
+        // eTokens → wrapper units at the derived ratio (floor — protocol-favorable), as psmRedeem.
+        wrapperAmount = Math.mulDiv(amount, PRECISION, ratio) / _tokenScale(wrapper);
+        if (wrapperAmount == 0) revert ZeroAmount();
+
+        IERC20(pay).safeTransferFrom(msg.sender, order.user, netPayout);
+
+        // The filler additionally pays the protocol's share of their spread on top of the payout.
+        uint256 fee = _psmSpreadFee(order.asset, amount, pay, netPayout, false);
+        if (fee != 0) {
+            IERC20(pay).safeTransferFrom(msg.sender, registry.treasury(), fee);
+            emit PsmSpreadFeeCollected(order.orderId, msg.sender, pay, fee);
+        }
+
+        IEToken(_activeToken(order.asset)).burn(address(this), amount);
+        _vaultManager().closeExposure(order.asset, amount);
+        IReserveVault(reserveVault).releaseCollateral(msg.sender, wrapperAmount);
+    }
+
+    /// @dev Protocol's cut of a PSM fill's spread: `psmFillSpreadShareBps` of the gap between
+    ///      the fill's stablecoin leg at the order's limit price and the same eTokens valued at
+    ///      the settle-band-fresh mark (floor). Zero when the share is unset or the filler has
+    ///      no edge, so a fee can never turn a profitable fill unprofitable or block a fill.
+    function _psmSpreadFee(
+        bytes32 asset,
+        uint256 eTokenAmount,
+        address payToken,
+        uint256 limitLeg,
+        bool isMint
+    ) private view returns (uint256) {
+        uint256 share = _assetRegistry().psmFillSpreadShareBps();
+        if (share == 0) return 0;
+        uint256 markLeg = _eTokensToPay(eTokenAmount, payToken, _vaultManager().assetMark(asset));
+        uint256 spread =
+            isMint ? (limitLeg > markLeg ? limitLeg - markLeg : 0) : (markLeg > limitLeg ? markLeg - limitLeg : 0);
+        return Math.mulDiv(spread, share, BPS);
     }
 
     // ──────────────────────────────────────────────────────────
@@ -566,7 +822,7 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard, EIP712 {
     /// @dev Trading-status gate shared by execute/fill/place: revert if the asset's trading is
     ///      paused, or if it is halted (mint blocked; redeem routed through {redeemHalted}).
     function _checkTradeable(bytes32 asset, OrderType orderType) private view {
-        IVaultManager vmgr = IVaultManager(registry.vaultManager());
+        IVaultManager vmgr = _vaultManager();
         if (vmgr.isTradingPaused(asset)) revert AssetPaused(asset);
         if (vmgr.isAssetHalted(asset)) {
             if (orderType == OrderType.Mint) revert MintBlockedDuringHalt(asset);
@@ -578,14 +834,14 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard, EIP712 {
     function _validateAsset(
         bytes32 asset
     ) private view {
-        if (!IAssetRegistry(registry.assetRegistry()).isActiveAsset(asset)) {
+        if (!_assetRegistry().isActiveAsset(asset)) {
             revert AssetNotActive(asset);
         }
     }
 
     /// @dev Resolve and validate the global payment token.
     function _paymentToken() private view returns (address token) {
-        token = IVaultManager(registry.vaultManager()).paymentToken();
+        token = _vaultManager().paymentToken();
         if (token == address(0)) revert PaymentTokenNotSet();
     }
 
@@ -593,16 +849,45 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard, EIP712 {
     function _activeToken(
         bytes32 asset
     ) private view returns (address) {
-        return IAssetRegistry(registry.assetRegistry()).getActiveToken(asset);
+        return _assetRegistry().getActiveToken(asset);
     }
 
     /// @dev Resolve the oracle address for an asset via ProtocolRegistry.
     function _getOracleForAsset(
         bytes32 asset
     ) private view returns (address) {
-        uint8 oracleType = IAssetRegistry(registry.assetRegistry()).getOracleType(asset);
+        uint8 oracleType = _assetRegistry().getOracleType(asset);
         if (oracleType == 0) return registry.pythOracle();
         return registry.inhouseOracle();
+    }
+
+    /// @dev Resolve the VaultManager from the protocol registry.
+    function _vaultManager() private view returns (IVaultManager) {
+        return IVaultManager(registry.vaultManager());
+    }
+
+    /// @dev Resolve the AssetRegistry from the protocol registry.
+    function _assetRegistry() private view returns (IAssetRegistry) {
+        return IAssetRegistry(registry.assetRegistry());
+    }
+
+    /// @dev 10^(18 − token decimals); all supported tokens have <= 18 decimals.
+    function _tokenScale(
+        address token
+    ) private view returns (uint256) {
+        return 10 ** (18 - IERC20Metadata(token).decimals());
+    }
+
+    /// @dev Pull exactly `amount` of `token` from the caller to `to` (rejects fee-on-transfer).
+    function _pullExact(address token, address to, uint256 amount) private {
+        uint256 balBefore = IERC20(token).balanceOf(to);
+        IERC20(token).safeTransferFrom(msg.sender, to, amount);
+        if (IERC20(token).balanceOf(to) - balBefore != amount) revert FeeOnTransferNotSupported(token);
+    }
+
+    /// @dev True if `ts` is in the future or older than `maxAge`.
+    function _isStale(uint256 ts, uint256 maxAge) private view returns (bool) {
+        return ts > block.timestamp || block.timestamp - ts > maxAge;
     }
 
     /// @dev Refund any ETH left after oracle fees to the caller.

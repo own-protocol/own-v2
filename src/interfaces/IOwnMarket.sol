@@ -113,6 +113,65 @@ interface IOwnMarket {
     /// @param amount   Reward tokens forwarded.
     event EscrowDividendsSwept(address indexed eToken, address indexed treasury, uint256 amount);
 
+    /// @notice Emitted when eTokens are minted against a wrapper deposit via the PSM.
+    /// @param user          Minter (wrapper source and eToken recipient).
+    /// @param asset         Asset ticker.
+    /// @param wrapper       Wrapper token deposited into the reserve.
+    /// @param wrapperAmount Wrapper token amount deposited.
+    /// @param eTokenAmount  eTokens minted (18 dec).
+    /// @param ratio         Derived conversion ratio used (eTokens per wrapper unit, 1e18).
+    event PsmMinted(
+        address indexed user,
+        bytes32 indexed asset,
+        address indexed wrapper,
+        uint256 wrapperAmount,
+        uint256 eTokenAmount,
+        uint256 ratio
+    );
+
+    /// @notice Emitted when eTokens are redeemed in-kind for wrapper reserve via the PSM.
+    /// @param user          Redeemer (eToken source and wrapper recipient).
+    /// @param asset         Asset ticker.
+    /// @param wrapper       Wrapper token released from the reserve.
+    /// @param eTokenAmount  eTokens burned (18 dec).
+    /// @param wrapperAmount Wrapper token amount released.
+    /// @param ratio         Derived conversion ratio used (eTokens per wrapper unit, 1e18).
+    event PsmRedeemed(
+        address indexed user,
+        bytes32 indexed asset,
+        address indexed wrapper,
+        uint256 eTokenAmount,
+        uint256 wrapperAmount,
+        uint256 ratio
+    );
+
+    /// @notice Emitted when a resting order is filled trustlessly against the PSM reserve
+    ///         (mint: filler delivers wrapper; redeem: filler pays stablecoins for wrapper).
+    /// @param orderId       Resting order filled.
+    /// @param filler        Permissionless filler (wrapper source on mint, recipient on redeem).
+    /// @param wrapper       Wrapper token delivered to / released from the reserve.
+    /// @param fillAmount    Chunk of the order filled (order units: stablecoin for mint, eTokens for redeem).
+    /// @param amountOut     Counter-amount (eTokens minted on mint, stablecoin payout on redeem).
+    /// @param wrapperAmount Wrapper tokens moved (into the reserve on mint, out on redeem).
+    /// @param remaining     Order amount still unfilled after this fill.
+    event PsmOrderFilled(
+        uint256 indexed orderId,
+        address indexed filler,
+        address indexed wrapper,
+        uint256 fillAmount,
+        uint256 amountOut,
+        uint256 wrapperAmount,
+        uint256 remaining
+    );
+
+    /// @notice Emitted when the protocol collects its share of a PSM fill's spread — the gap
+    ///         between the order's limit price and the mark — paid in the fill's stablecoin leg.
+    /// @param orderId  Resting order filled.
+    /// @param filler   Filler whose spread was shared.
+    /// @param payToken Stablecoin the fee was paid in (escrow token on mint, payment token on redeem).
+    /// @param fee      Fee routed to the treasury (payToken units).
+    event PsmSpreadFeeCollected(uint256 indexed orderId, address indexed filler, address payToken, uint256 fee);
+
     // ──────────────────────────────────────────────────────────
     //  Errors
     // ──────────────────────────────────────────────────────────
@@ -138,11 +197,13 @@ interface IOwnMarket {
     /// @notice Force-execution is not enabled: the global claim threshold is unset (zero).
     error ForceNotEnabled();
 
-    /// @notice No collateral vault is designated for force-execution (disabled until an operator sets one).
-    error ForceExecuteVaultNotSet();
+    /// @notice The supplied vault is not in the registry's force-execute pool for this asset
+    ///         (an empty pool — the default — disables force-execution for the asset).
+    error ForceExecuteVaultNotAllowed(bytes32 asset, address vault);
 
-    /// @notice The supplied vault is not the protocol-designated force-execution vault.
-    error VaultNotDesignated(address provided, address designated);
+    /// @notice The supplied vault is RWA-registered (a ReserveVault); reserves never source
+    ///         force-execution.
+    error RwaVaultNotEligible(address vault);
 
     /// @notice Force execution is not available for mint orders.
     error ForceMintNotAllowed(uint256 orderId);
@@ -170,6 +231,9 @@ interface IOwnMarket {
 
     /// @notice The recovered quote signer is not an authorised protocol signer.
     error InvalidQuoteSigner();
+
+    /// @notice The quote signer is not on the registry's maker allowlist for this asset.
+    error MakerNotAllowed(bytes32 asset, address signer);
 
     /// @notice The quote has already been used (replay protection).
     error QuoteAlreadyUsed();
@@ -261,6 +325,28 @@ interface IOwnMarket {
     /// @notice ETH refund to caller failed at end of force execution.
     error ETHRefundFailed();
 
+    /// @notice The wrapper's PSM is paused for this asset.
+    error PsmIsPaused(bytes32 asset, address wrapper);
+
+    /// @notice Trustless DvP fills (psmFillOrder) are paused for this wrapper.
+    error PsmFillPaused(bytes32 asset, address wrapper);
+
+    /// @notice No usable price for the wrapper's collateral ticker.
+    error WrapperPriceUnavailable(bytes32 wrapperTicker);
+
+    /// @notice The wrapper's oracle price is too old for this PSM operation (mint / halted redeem).
+    error StaleWrapperPrice(bytes32 wrapperTicker);
+
+    /// @notice The asset mark needed for the conversion ratio is unset.
+    error AssetMarkUnavailable(bytes32 asset);
+
+    /// @notice The derived conversion ratio moved more than the configured bound since the last
+    ///         PSM operation; requires operator acknowledgment (`AssetRegistry.resetRatioGuard`).
+    error RatioJumpExceeded(bytes32 asset, address wrapper, uint256 ratio, uint256 lastRatio);
+
+    /// @notice The PSM ratio-jump guard is unconfigured; PSM mint/redeem are disabled until set.
+    error RatioGuardNotConfigured();
+
     // ──────────────────────────────────────────────────────────
     //  Market orders (atomic)
     // ──────────────────────────────────────────────────────────
@@ -337,6 +423,46 @@ interface IOwnMarket {
     /// @param amount      Legacy token amount to convert.
     /// @return newAmount  Active token amount minted.
     function convertLegacy(bytes32 asset, address legacyToken, uint256 amount) external returns (uint256 newAmount);
+
+    // ──────────────────────────────────────────────────────────
+    //  PSM — 1:1 wrapper reserve mint / redeem
+    // ──────────────────────────────────────────────────────────
+
+    /// @notice Mint eTokens by depositing wrapper tokens into the asset's reserve vault at the
+    ///         derived conversion ratio. Requires the asset active + tradeable, the wrapper's
+    ///         PSM configured and unpaused, and a fresh wrapper price.
+    /// @param asset         Asset ticker.
+    /// @param wrapper       Wrapper token to deposit.
+    /// @param wrapperAmount Wrapper token amount to deposit.
+    /// @return eTokenAmount eTokens minted to the caller (18 dec, floor-rounded).
+    function psmMint(bytes32 asset, address wrapper, uint256 wrapperAmount) external returns (uint256 eTokenAmount);
+
+    /// @notice Redeem eTokens in-kind for wrapper reserve at the derived conversion ratio,
+    ///         bounded by the reserve balance. Allowed while halted (fresh wrapper price
+    ///         required); blocked by trading pause and per-wrapper PSM pause.
+    /// @param asset        Asset ticker.
+    /// @param wrapper      Wrapper token to receive.
+    /// @param eTokenAmount eTokens to burn (18 dec).
+    /// @return wrapperAmount Wrapper tokens released to the caller (floor-rounded).
+    function psmRedeem(bytes32 asset, address wrapper, uint256 eTokenAmount) external returns (uint256 wrapperAmount);
+
+    /// @notice Fill a resting order trustlessly against the PSM reserve — permissionless
+    ///         atomic delivery-vs-payment; no quote, no signer, no maker allowlist. Settles at
+    ///         the order's limit price, bounded by the settle band against a keeper-fresh mark.
+    ///         Mint fills pull wrapper from the caller into the reserve (ceil-rounded) and pay
+    ///         out the stablecoin escrow; redeem fills pull the caller's stablecoins to the
+    ///         order owner and release reserve wrapper to the caller (floor-rounded, bounded by
+    ///         the reserve balance). The wrapper leg must always be fresh — fills are
+    ///         discretionary maker trades, not exits — and fills are blocked while the asset is
+    ///         paused or halted (halted holders exit via {psmRedeem}/{redeemHalted}). The
+    ///         protocol collects `psmFillSpreadShareBps` of the filler's spread over the mark in
+    ///         the stablecoin leg (deducted from the mint payout; charged on top of the redeem
+    ///         payout) — never more than the filler's edge, zero when they have none.
+    /// @param orderId Resting order to fill.
+    /// @param wrapper Wrapper token to settle against (must be PSM-configured for the asset).
+    /// @param amount  Chunk of the order to fill (order units: stablecoin for mint, eTokens for redeem).
+    /// @return amountOut eTokens minted to the order owner (mint) or stablecoins paid to them (redeem).
+    function psmFillOrder(uint256 orderId, address wrapper, uint256 amount) external returns (uint256 amountOut);
 
     /// @notice Cancel the remaining amount of a resting order and return its escrow.
     /// @param orderId Order to cancel.

@@ -20,8 +20,6 @@ contract MockOracleVerifier is IOracleVerifier {
     mapping(address => bool) private _signers;
 
     bool public forceStale;
-    bool public forceInvalidSignature;
-    bool public forceDeviation;
     /// @dev When set, getPrice returns (0, now) instead of reverting — mimics a Pyth feed that
     ///      normalises (via exponent truncation) to exactly zero, exercising consumers' `price == 0` guards.
     bool public forceZeroPrice;
@@ -42,18 +40,6 @@ contract MockOracleVerifier is IOracleVerifier {
         bool value
     ) external {
         forceStale = value;
-    }
-
-    function setForceInvalidSignature(
-        bool value
-    ) external {
-        forceInvalidSignature = value;
-    }
-
-    function setForceDeviation(
-        bool value
-    ) external {
-        forceDeviation = value;
     }
 
     function setForceZeroPrice(
@@ -103,7 +89,6 @@ contract MockOracleVerifier is IOracleVerifier {
         bytes calldata priceData
     ) external payable override returns (uint256 price, uint256 timestamp) {
         if (forceStale) revert StalePrice(asset, 0, 0);
-        if (forceInvalidSignature) revert InvalidSignature();
 
         // In mock, priceData is just abi.encode(uint256 price, uint256 timestamp)
         (price, timestamp) = abi.decode(priceData, (uint256, uint256));

@@ -108,7 +108,9 @@ contract BorrowAndLiquidateFlowTest is BaseTest {
         _setPaymentToken(address(usdc));
 
         _enableAaveLending(address(vault), address(borrowManager), address(usdcDebt));
-        // Borrowing is enabled for every asset by default.
+        // Allowlist the vault for TSLA lending (default-deny since Phase 4).
+        vm.prank(Actors.ADMIN);
+        assetRegistry.setLendingVaultAllowed(ASSET, address(vault), true);
 
         _setOraclePrice(ASSET, TSLA_PX);
         _pullAssetPrice(ASSET); // cache the asset mark (borrow/liquidate band-check anchor)

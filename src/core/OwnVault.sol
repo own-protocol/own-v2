@@ -599,6 +599,24 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     }
 
     // ──────────────────────────────────────────────────────────
+    //  Maintenance
+    // ──────────────────────────────────────────────────────────
+
+    /// @inheritdoc IOwnVault
+    function sweepToken(
+        address token
+    ) external onlyManagerOrOperator nonReentrant {
+        if (token == asset()) revert CannotSweepAsset();
+        uint256 amount = IERC20(token).balanceOf(address(this));
+        // The vault custodies its own shares as withdrawal-queue escrow; only the excess above the
+        // tracked escrow is a stray token, so reserving it keeps the queue solvent while staying recoverable.
+        if (token == address(this)) amount -= _pendingWithdrawalShares;
+        if (amount == 0) revert ZeroAmount();
+        IERC20(token).safeTransfer(msg.sender, amount);
+        emit TokenSwept(token, msg.sender, amount);
+    }
+
+    // ──────────────────────────────────────────────────────────
     //  Required overrides for diamond inheritance
     // ──────────────────────────────────────────────────────────
 

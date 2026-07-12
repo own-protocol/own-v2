@@ -3,17 +3,20 @@ pragma solidity 0.8.28;
 
 import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
 
-/// @title IAaveRouter — Multi-reserve periphery router for Aave V3 ↔ OwnVault
-/// @notice Stateless deposit/withdraw helper for any registered Aave V3 reserve
-///         (e.g. wstETH, WETH, wBTC). Supplies the underlying to Aave on the
-///         router's own behalf, then deposits the resulting aToken into an
-///         OwnVault via standard `IERC4626.deposit`.
+/// @title ILendingRouter — Multi-reserve deposit/withdraw router for aToken vaults
+/// @notice Stateless deposit/withdraw helper for any registered reserve of a lending
+///         pool exposing the {IAaveV3Pool} supply/withdraw interface — a canonical
+///         Aave V3 deployment or the protocol's in-house {OwnLendingPool}. Supplies
+///         the underlying (e.g. wstETH, WETH, USDG) to the pool on the router's own
+///         behalf, then deposits the resulting aToken into an OwnVault via standard
+///         `IERC4626.deposit` (and reverses on withdraw).
 ///
-///         The pool is set at construction. Reserves are added by an admin via
+///         The pool is set at construction and determines the funding venue; the
+///         router logic is identical for both. Reserves are added by an admin via
 ///         `registerReserve(underlying, aToken)`. Once registered, the
 ///         `(underlying, aToken)` pair is immutable — the admin can only flip
 ///         `enabled` to pause or resume routing through that reserve.
-interface IAaveRouter {
+interface ILendingRouter {
     // ──────────────────────────────────────────────────────────
     //  Types
     // ──────────────────────────────────────────────────────────
