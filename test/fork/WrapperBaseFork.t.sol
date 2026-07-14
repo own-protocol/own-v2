@@ -65,9 +65,19 @@ contract WrapperBaseForkTest is Test {
         _;
     }
 
+    /// @dev Env var naming the fork RPC — override per chain (see WrapperRobinhoodFork.t.sol).
+    function _rpcEnvVar() internal pure virtual returns (string memory) {
+        return "BASE_RPC";
+    }
+
+    /// @dev Env var naming the candidate wrapper token — override per chain.
+    function _wrapperEnvVar() internal pure virtual returns (string memory) {
+        return "WRAPPER_TOKEN_BASE";
+    }
+
     function setUp() public {
-        string memory rpc = vm.envOr("BASE_RPC", string(""));
-        address wrapperAddr = vm.envOr("WRAPPER_TOKEN_BASE", address(0));
+        string memory rpc = vm.envOr(_rpcEnvVar(), string(""));
+        address wrapperAddr = vm.envOr(_wrapperEnvVar(), address(0));
         if (bytes(rpc).length == 0 || wrapperAddr == address(0)) {
             return; // not configured — every test skips
         }
