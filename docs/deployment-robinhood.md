@@ -7,16 +7,16 @@ verification goes through Blockscout (no API key required).
 
 ## What's different from the Base deploy
 
-| | Base mainnet | Robinhood Chain |
-|---|---|---|
-| Lending venue | Aave V3 (aBasUSDC) | **OwnLendingPool** (in-house, zero-rate; premium curve is the full rate) |
-| Payment token / collateral underlying | USDC (Circle) | **USDG** (Paxos Global Dollar, 6 dec) `0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168` |
-| Vault collateral | aBasUSDC | **oUSDG** (OwnLendingPool aToken, deployed by us) |
-| PSM backing | (issuer TBD, never launched) | **Gen-2 Robinhood Stock Tokens** (Jersey issuer, ERC-20 18 dec, ERC-8056 `uiMultiplier`) |
-| External oracles | none (in-house) | none at launch (Chainlink is the only 3rd-party option; no Pyth) |
-| Verification | Basescan (`--verify`) | Blockscout (`--verify --verifier blockscout --verifier-url …`) |
-| LP yield | manual VM sweep | **VaultYieldManager** installed as vault.manager (10% treasury cut) |
-| enableAaveCollateral timing | after first deposit (Aave constraint) | any time (no-op flag on OwnLendingPool) |
+|                                       | Base mainnet                          | Robinhood Chain                                                                          |
+| ------------------------------------- | ------------------------------------- | ---------------------------------------------------------------------------------------- |
+| Lending venue                         | Aave V3 (aBasUSDC)                    | **OwnLendingPool** (in-house, zero-rate; premium curve is the full rate)                 |
+| Payment token / collateral underlying | USDC (Circle)                         | **USDG** (Paxos Global Dollar, 6 dec) `0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168`       |
+| Vault collateral                      | aBasUSDC                              | **oUSDG** (OwnLendingPool aToken, deployed by us)                                        |
+| PSM backing                           | (issuer TBD, never launched)          | **Gen-2 Robinhood Stock Tokens** (Jersey issuer, ERC-20 18 dec, ERC-8056 `uiMultiplier`) |
+| External oracles                      | none (in-house)                       | none at launch (Chainlink is the only 3rd-party option; no Pyth)                         |
+| Verification                          | Basescan (`--verify`)                 | Blockscout (`--verify --verifier blockscout --verifier-url …`)                           |
+| LP yield                              | manual VM sweep                       | **VaultYieldManager** installed as vault.manager (10% treasury cut)                      |
+| enableAaveCollateral timing           | after first deposit (Aave constraint) | any time (no-op flag on OwnLendingPool)                                                  |
 
 ## Environment
 
@@ -99,7 +99,7 @@ forge script script/robinhood/AddAssetsRobinhood.s.sol --rpc-url robinhood --bro
   --verify --verifier blockscout --verifier-url https://robinhoodchain.blockscout.com/api/
 ```
 
-Creates the 7 eTokens (MU, SPCX, MSFT, GOOG, TSLA, SPY, QQQ — USDG reward token), registers them
+Creates the 7 eTokens (MU, SPCX, MSFT, GOOGL, TSLA, SPY, QQQ — USDG reward token), registers them
 (in-house oracle, $1M cap each), and arms the per-asset fail-closed grants (maker / lending-vault /
 force-execute). Keepers must `pullAssetPrice(ticker)` before any mint.
 
@@ -162,17 +162,17 @@ psmMint/psmRedeem round-trip.
 
 ## External addresses (Robinhood Chain, verified on-chain 2026-07-14)
 
-| Contract | Address |
-|---|---|
-| USDG (Paxos, 6 dec) | `0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168` |
-| WETH | `0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73` |
-| Gen-2 MU | `0xfF080c8ce2E5feadaCa0Da81314Ae59D232d4afD` |
-| Gen-2 SPCX | `0x4a0E65A3EcceC6dBe60AE065F2e7bb85Fae35eEa` |
-| Gen-2 MSFT | `0xe93237C50D904957Cf27E7B1133b510C669c2e74` |
+| Contract               | Address                                      |
+| ---------------------- | -------------------------------------------- |
+| USDG (Paxos, 6 dec)    | `0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168` |
+| WETH                   | `0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73` |
+| Gen-2 MU               | `0xfF080c8ce2E5feadaCa0Da81314Ae59D232d4afD` |
+| Gen-2 SPCX             | `0x4a0E65A3EcceC6dBe60AE065F2e7bb85Fae35eEa` |
+| Gen-2 MSFT             | `0xe93237C50D904957Cf27E7B1133b510C669c2e74` |
 | Gen-2 GOOGL (not GOOG) | `0x2e0847E8910a9732eB3fb1bb4b70a580ADAD4FE3` |
-| Gen-2 TSLA | `0x322F0929c4625eD5bAd873c95208D54E1c003b2d` |
-| Gen-2 SPY | `0x117cc2133c37B721F49dE2A7a74833232B3B4C0C` |
-| Gen-2 QQQ | `0xD5f3879160bc7c32ebb4dC785F8a4F505888de68` |
+| Gen-2 TSLA             | `0x322F0929c4625eD5bAd873c95208D54E1c003b2d` |
+| Gen-2 SPY              | `0x117cc2133c37B721F49dE2A7a74833232B3B4C0C` |
+| Gen-2 QQQ              | `0xD5f3879160bc7c32ebb4dC785F8a4F505888de68` |
 
 Full Gen-2 registry: <https://docs.robinhood.com/chain/contracts>. All Gen-2 tokens are 18
 decimals; issuer is Robinhood Assets (Jersey) Ltd (Reg S — no US persons).

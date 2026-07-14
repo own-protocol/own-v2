@@ -27,7 +27,7 @@ contract SetOracleConfigsRobinhood is Script {
         assets[0] = bytes32("MU");
         assets[1] = bytes32("SPCX");
         assets[2] = bytes32("MSFT");
-        assets[3] = bytes32("GOOG");
+        assets[3] = bytes32("GOOGL");
         assets[4] = bytes32("TSLA");
         assets[5] = bytes32("SPY");
         assets[6] = bytes32("QQQ");

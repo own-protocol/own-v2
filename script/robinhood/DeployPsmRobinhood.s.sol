@@ -4,6 +4,7 @@ pragma solidity 0.8.28;
 import {Script, console} from "forge-std/Script.sol";
 
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
+import {OracleVerifier} from "../../src/core/OracleVerifier.sol";
 import {ReserveVault} from "../../src/core/ReserveVault.sol";
 import {VaultManager} from "../../src/core/VaultManager.sol";
 import {IProtocolRegistry} from "../../src/interfaces/IProtocolRegistry.sol";
@@ -59,6 +60,10 @@ contract DeployPsmRobinhood is Script {
         address reserveManager = vm.envAddress("RESERVE_MANAGER_ROBINHOOD");
 
         vm.startBroadcast(vm.envUint("DEPLOYER_PRIVATE_KEY_ROBINHOOD"));
+
+        // 0. Oracle config for the wrapper ticker — without it every updatePrice(R.TSLA) reverts
+        //    OracleConfigNotSet and no wrapper mark can ever go live (found in the launch smoke test).
+        OracleVerifier(registry.inhouseOracle()).setAssetOracleConfig(WRAPPER_TICKER, 3600, 2000);
 
         // 1. Wrapper ticker so getOracleType resolves its feed (same pattern as the collateral
         //    ticker in DeployRobinhood). Not mintable: no asset cap is ever set for it.

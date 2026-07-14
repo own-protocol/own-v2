@@ -16,11 +16,12 @@ import {ETokenFactory} from "../../src/tokens/ETokenFactory.sol";
 ///         lending-vault allowlist (borrows), and force-execute vault pool. Without the grants every
 ///         one of those paths reverts. Run by the deployer (= admin) after DeployRobinhood.s.sol.
 ///
-/// Launch set (7): MU, SPCX, MSFT, GOOG, TSLA, SPY, QQQ. Confirm the set before running —
+/// Launch set (7): MU, SPCX, MSFT, GOOGL, TSLA, SPY, QQQ. Confirm the set before running —
 /// eToken tickers are protocol-native and independent of the Gen-2 Stock Token listings, but PSM
-/// backing (DeployPsmRobinhood) is only possible for assets with a Gen-2 token on this chain
-/// (note: Gen-2 lists GOOGL, not GOOG). SPCX: confirm the oracle data provider serves a quote
-/// before flipping it active, else pullAssetPrice reverts PriceUnavailable.
+/// backing (DeployPsmRobinhood) is only possible for assets with a Gen-2 token on this chain.
+/// GOOGL (Class A) is used rather than GOOG — it matches the Gen-2 backing token exactly.
+/// SPCX: confirm the oracle data provider serves a quote before flipping it active, else
+/// pullAssetPrice reverts PriceUnavailable.
 ///
 /// Env: DEPLOYER_PRIVATE_KEY_ROBINHOOD, PROTOCOL_REGISTRY_ROBINHOOD,
 ///      VAULT_ADDRESS_ROBINHOOD (collateral vault from DeployRobinhood),
@@ -51,7 +52,7 @@ contract AddAssetsRobinhood is Script {
         (tickers[0], names[0], symbols[0], vols[0]) = (bytes32("MU"), "Micron", "eMU", 2);
         (tickers[1], names[1], symbols[1], vols[1]) = (bytes32("SPCX"), "SpaceX", "eSPCX", 3);
         (tickers[2], names[2], symbols[2], vols[2]) = (bytes32("MSFT"), "Microsoft", "eMSFT", 2);
-        (tickers[3], names[3], symbols[3], vols[3]) = (bytes32("GOOG"), "Alphabet", "eGOOG", 2);
+        (tickers[3], names[3], symbols[3], vols[3]) = (bytes32("GOOGL"), "Alphabet", "eGOOGL", 2);
         (tickers[4], names[4], symbols[4], vols[4]) = (bytes32("TSLA"), "Tesla", "eTSLA", 2);
         (tickers[5], names[5], symbols[5], vols[5]) = (bytes32("SPY"), "S&P 500 ETF", "eSPY", 1);
         (tickers[6], names[6], symbols[6], vols[6]) = (bytes32("QQQ"), "Nasdaq-100 ETF", "eQQQ", 1);
