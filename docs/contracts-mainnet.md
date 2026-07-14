@@ -2,7 +2,7 @@
 
 **Network:** Base mainnet (chainId `8453`)
 **Deployed:** 2026-06-26 via `script/mainnet/DeployMainnet.s.sol`
-**Status:** Core live + verified on Basescan. Assets / lending added in later steps.
+**Status:** WOUND DOWN 2026-07-14 — protocol is moving to Robinhood Chain. Vault halted and drained; contracts remain on-chain but inactive. See "Wind-down" below.
 
 ## Core contracts
 
@@ -68,6 +68,23 @@ All verified on Basescan. SPCX is registered but not mintable until the signer s
 | Max mark age                     | 1 hour                                                         |
 | Per-asset cap (set in AddAssets) | 1,000,000e18 USD                                               |
 | Collateral oracle ticker         | `USDC` (~$1)                                                   |
+
+## Wind-down (2026-07-14)
+
+Executed for the move to Robinhood Chain. Scripts: `script/mainnet/HaltVaultMainnet.s.sol` (deployer/ADMIN) and
+`script/mainnet/WithdrawCollateralMainnet.s.sol` (VM operator, sole LP).
+
+| Step                                        | Tx                                                                   |
+| ------------------------------------------- | -------------------------------------------------------------------- |
+| `haltVault()` — vault → Halted              | `0x7bf0d8599557935c47040a8db5b1b5b321093eddf2dd99648ae2edb6be066fa5` |
+| `requestWithdrawal` (all shares)            | `0xcc1fc690f2908999bb187d2ce156c1f63d47b3a3815ba0adab94acfcc67695e6` |
+| `fulfillWithdrawal` → 100.15 aUSDC to VM    | `0x0c0469dc76ac4d609995d7a35969d2db62221cfa9292bcb9e2fb04da174cd891` |
+| Aave `withdraw` — aUSDC → USDC              | `0xf983153a01676f98790138e223fbf36f690268bf9a97ffdd284dbb8aa45ff293` |
+
+End state: vault status Halted, share supply 0, totalAssets 1 unit (rounding dust), zero Aave debt.
+Residual test mints (~0.01 eMU + ~0.02 eMSFT, team wallet `0x280C6655a0018FF7f274D70F6536C07E50c0424c`) left
+unredeemed — inert. Governance was never migrated off the deployer EOA. Remaining ops: decommission the KMS
+price signer + RFQ quote signer services; bridge the USDC off Base.
 
 ## Deploy sequence status
 
