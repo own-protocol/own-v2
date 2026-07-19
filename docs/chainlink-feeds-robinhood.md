@@ -67,12 +67,14 @@ No market calendar. The security boundary is the **band**, not the schedule:
    last Chainlink answer (the anchor). Anchor validity is capped by `maxAnchorAge`
    (must cover ~80h long weekends); no anchor → no in-house quotes (fail closed).
    `bandBps = 0` disables the in-house leg entirely (USDG).
-3. **Timestamp clamping (`clFreshWindow`, default 12h):** while a Chainlink answer is
+3. **Timestamp clamping (`clFreshWindow`, default 4h):** while a Chainlink answer is
    younger than `clFreshWindow` its value is within the 0.5% deviation band of spot, so
    reads report `block.timestamp`; beyond that the raw `updatedAt` is reported and consumer
    staleness checks (`priceMaxAge`, `maxMarkAge`) naturally fail over to the in-house leg.
-   Note: mid-week quiet stretches up to ~21h were observed, so with a 12h window the signer
-   service must fill in-session gaps too — it needs to run 24/7, not weekend-only.
+   Note: mid-week quiet stretches of 5–21h are routine (p90 gap ~3.4h on TSLA), so with a
+   4h window the signer service actively fills in-session gaps — it must run 24/7. The
+   short window also caps the dead-feed exposure (see audit CL-L03 in
+   chainlink-audit-report.md).
 4. **verifyPrice precedence:** feed fresh (≤ `clSilence`) → Chainlink, proof ignored;
    feed silent + proof supplied → verified in-house leg (band-checked); empty proof →
    Chainlink up to `clFreshWindow`.

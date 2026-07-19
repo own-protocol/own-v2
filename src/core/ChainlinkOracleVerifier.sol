@@ -8,6 +8,7 @@ import {Multicall} from "@openzeppelin/contracts/utils/Multicall.sol";
 import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import {EIP712} from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 
+/// @notice Minimal Chainlink AggregatorV3 proxy surface used by this verifier.
 interface IAggregatorV3 {
     function decimals() external view returns (uint8);
     function latestRoundData()
@@ -16,6 +17,7 @@ interface IAggregatorV3 {
         returns (uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound);
 }
 
+/// @notice ERC-8056 (Scaled UI Amount) surface — the corporate-action multiplier on Gen-2 Stock Tokens.
 interface IScaledUiToken {
     function uiMultiplier() external view returns (uint256);
 }
@@ -51,7 +53,7 @@ contract ChainlinkOracleVerifier is IOracleVerifier, Multicall, EIP712 {
     struct AssetConfig {
         address aggregator; // Chainlink proxy (required)
         uint32 clSilence; // in-house quotes allowed only when the feed is silent longer than this
-        uint32 clFreshWindow; // feed age within which reads report block.timestamp (e.g. 12h)
+        uint32 clFreshWindow; // feed age within which reads report block.timestamp (e.g. 4h)
         uint16 bandBps; // max in-house deviation from the Chainlink anchor; 0 disables the in-house leg
         uint8 clDecimals; // cached aggregator.decimals()
         address multiplierToken; // when set, reads divide the feed by its uiMultiplier() (underlying tickers)
@@ -71,13 +73,13 @@ contract ChainlinkOracleVerifier is IOracleVerifier, Multicall, EIP712 {
     /// @notice In-house quoting is disabled for this asset (bandBps == 0).
     error InhouseDisabled(bytes32 asset);
     /// @notice The Chainlink feed updated within `clSilence` — the in-house signer may not quote.
+    /// @param updatedAt The feed's latest round timestamp (unix seconds).
     error ChainlinkFresh(bytes32 asset, uint256 updatedAt);
     /// @notice No usable Chainlink anchor (feed dead, halted beyond maxAnchorAge, or bad answer).
     error NoAnchor(bytes32 asset);
     /// @notice Signed price timestamp is in the future.
+    /// @param timestamp The offending attestation timestamp (unix seconds).
     error FutureTimestamp(bytes32 asset, uint256 timestamp);
-    /// @notice Chainlink returned a non-positive answer.
-    error NonPositiveAnswer(bytes32 asset, int256 answer);
     /// @notice The token's uiMultiplier() is zero.
     error ZeroMultiplier(bytes32 asset);
     /// @notice Config bounds are inconsistent (see setChainlinkConfig).
@@ -88,6 +90,14 @@ contract ChainlinkOracleVerifier is IOracleVerifier, Multicall, EIP712 {
     // ──────────────────────────────────────────────────────────
 
     /// @notice Emitted when an asset's Chainlink config is set.
+    /// @param asset               Asset ticker.
+    /// @param aggregator          Chainlink proxy address.
+    /// @param multiplierToken     ERC-8056 token dividing the feed (0 = feed used as-is).
+    /// @param clSilence           Feed silence required before in-house quotes (seconds).
+    /// @param clFreshWindow       Feed age treated as current on reads (seconds).
+    /// @param maxAnchorAge        Feed age beyond which the Chainlink leg/anchor is unusable (seconds).
+    /// @param inhouseMaxStaleness Max age of an in-house price at read/push time (seconds).
+    /// @param bandBps             Max in-house deviation from the anchor (BPS); 0 disables in-house.
     event ChainlinkConfigSet(
         bytes32 indexed asset,
         address aggregator,
@@ -100,6 +110,7 @@ contract ChainlinkOracleVerifier is IOracleVerifier, Multicall, EIP712 {
     );
 
     /// @notice Emitted when an asset is disabled (emergency kill-switch).
+    /// @param asset Asset ticker disabled.
     event AssetDisabled(bytes32 indexed asset);
 
     // ──────────────────────────────────────────────────────────
@@ -360,7 +371,7 @@ contract ChainlinkOracleVerifier is IOracleVerifier, Multicall, EIP712 {
     /// @param aggregator          Chainlink proxy address.
     /// @param multiplierToken     ERC-8056 token whose uiMultiplier() divides the feed (0 = use as-is).
     /// @param clSilence           Feed silence required before in-house quotes are accepted (e.g. 15 min).
-    /// @param clFreshWindow       Feed age treated as current on reads (e.g. 12h); older reads report the
+    /// @param clFreshWindow       Feed age treated as current on reads (e.g. 4h); older reads report the
     ///                            raw feed timestamp, pushing consumers onto the in-house leg.
     /// @param maxAnchorAge        Feed age beyond which the Chainlink leg/anchor is unusable (e.g. 5 days).
     /// @param inhouseMaxStaleness Max age of an in-house price at read/push time.
@@ -400,8 +411,9 @@ contract ChainlinkOracleVerifier is IOracleVerifier, Multicall, EIP712 {
         );
     }
 
-    /// @notice Emergency kill-switch: clear an asset's config so all reads/verifies revert
-    ///         `OracleConfigNotSet`. Gated by the instant OPERATOR role.
+    /// @notice Emergency kill-switch: clear an asset's config (and cached in-house price) so all
+    ///         reads/verifies revert `OracleConfigNotSet`. Gated by the instant OPERATOR role.
+    /// @param asset Asset ticker to disable.
     function disableAsset(
         bytes32 asset
     ) external onlyOperator {
@@ -411,6 +423,7 @@ contract ChainlinkOracleVerifier is IOracleVerifier, Multicall, EIP712 {
     }
 
     /// @notice Return an asset's full Chainlink config.
+    /// @param asset Asset ticker.
     function getChainlinkConfig(
         bytes32 asset
     ) external view returns (AssetConfig memory) {
@@ -418,6 +431,9 @@ contract ChainlinkOracleVerifier is IOracleVerifier, Multicall, EIP712 {
     }
 
     /// @notice Return the last in-house pushed price (0,0 if none).
+    /// @param asset Asset ticker.
+    /// @return price     Last pushed price (18 dec), unfiltered by staleness.
+    /// @return timestamp Attestation timestamp of that price (unix seconds).
     function getInhousePrice(
         bytes32 asset
     ) external view returns (uint256 price, uint256 timestamp) {

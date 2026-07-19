@@ -17,7 +17,7 @@ contract ChainlinkOracleVerifierTest is BaseTest {
 
     bytes32 constant ASSET = bytes32("TSLA");
     uint32 constant CL_SILENCE = 900; // 15 min
-    uint32 constant CL_FRESH_WINDOW = 43_200; // 12h — beyond this, reads report the raw timestamp
+    uint32 constant CL_FRESH_WINDOW = 14_400; // 4h — beyond this, reads report the raw timestamp
     uint32 constant MAX_ANCHOR_AGE = 432_000; // 5 days
     uint32 constant INHOUSE_MAX_STALENESS = 3600; // 1h
     uint16 constant BAND_BPS = 500; // 5%
@@ -38,7 +38,14 @@ contract ChainlinkOracleVerifierTest is BaseTest {
         verifier = new ChainlinkOracleVerifier(address(protocolRegistry));
         verifier.addSigner(signer);
         verifier.setChainlinkConfig(
-            ASSET, address(feed), address(0), CL_SILENCE, CL_FRESH_WINDOW, MAX_ANCHOR_AGE, INHOUSE_MAX_STALENESS, BAND_BPS
+            ASSET,
+            address(feed),
+            address(0),
+            CL_SILENCE,
+            CL_FRESH_WINDOW,
+            MAX_ANCHOR_AGE,
+            INHOUSE_MAX_STALENESS,
+            BAND_BPS
         );
         vm.stopPrank();
     }
@@ -75,7 +82,7 @@ contract ChainlinkOracleVerifierTest is BaseTest {
     }
 
     function test_getPrice_clWithinFreshWindow_returnsClampedTimestamp() public {
-        _ageChainlink(10 hours);
+        _ageChainlink(3 hours);
         (uint256 price, uint256 ts) = verifier.getPrice(ASSET);
         assertEq(price, CL_PRICE_18);
         assertEq(ts, block.timestamp);
@@ -229,9 +236,7 @@ contract ChainlinkOracleVerifierTest is BaseTest {
         uint256 signedTs = block.timestamp - INHOUSE_MAX_STALENESS - 1;
         bytes memory data = _signPrice(ASSET, CL_PRICE_18, signedTs);
         vm.expectRevert(
-            abi.encodeWithSelector(
-                IOracleVerifier.StalePrice.selector, ASSET, signedTs, uint256(INHOUSE_MAX_STALENESS)
-            )
+            abi.encodeWithSelector(IOracleVerifier.StalePrice.selector, ASSET, signedTs, uint256(INHOUSE_MAX_STALENESS))
         );
         verifier.updatePrice(ASSET, data);
     }
@@ -293,7 +298,7 @@ contract ChainlinkOracleVerifierTest is BaseTest {
     }
 
     function test_verifyPrice_emptyProof_clWithinFreshWindow_succeeds() public {
-        _ageChainlink(10 hours);
+        _ageChainlink(3 hours);
         (uint256 price, uint256 ts) = verifier.verifyPrice(ASSET, "");
         assertEq(price, CL_PRICE_18);
         assertEq(ts, block.timestamp);
@@ -340,7 +345,14 @@ contract ChainlinkOracleVerifierTest is BaseTest {
         vm.prank(Actors.ATTACKER);
         vm.expectRevert(IOracleVerifier.OnlyAdmin.selector);
         verifier.setChainlinkConfig(
-            ASSET, address(feed), address(0), CL_SILENCE, CL_FRESH_WINDOW, MAX_ANCHOR_AGE, INHOUSE_MAX_STALENESS, BAND_BPS
+            ASSET,
+            address(feed),
+            address(0),
+            CL_SILENCE,
+            CL_FRESH_WINDOW,
+            MAX_ANCHOR_AGE,
+            INHOUSE_MAX_STALENESS,
+            BAND_BPS
         );
     }
 
@@ -386,5 +398,190 @@ contract ChainlinkOracleVerifierTest is BaseTest {
     function test_updatePriceFeeds_reverts() public {
         vm.expectRevert("ChainlinkOracle: use updatePrice + multicall");
         verifier.updatePriceFeeds(hex"00");
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Multiplier x band interaction
+    // ──────────────────────────────────────────────────────────
+
+    /// @dev With multiplierToken set, the anchor is the multiplier-adjusted (underlying) price —
+    ///      signed prices band-check against feed/mult, not the raw feed.
+    function test_updatePrice_multiplierAdjustedAnchor() public {
+        vm.prank(Actors.ADMIN);
+        verifier.setChainlinkConfig(
+            ASSET,
+            address(feed),
+            address(token),
+            CL_SILENCE,
+            CL_FRESH_WINDOW,
+            MAX_ANCHOR_AGE,
+            INHOUSE_MAX_STALENESS,
+            BAND_BPS
+        );
+        token.setUiMultiplier(2e18); // anchor = 380/2 = 190e18
+        _ageChainlink(CL_SILENCE + 1);
+
+        // Within band of the raw feed price but not of the adjusted anchor — must revert.
+        bytes memory rawScale = _signPrice(ASSET, CL_PRICE_18, block.timestamp);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IOracleVerifier.PriceDeviationExceeded.selector, ASSET, CL_PRICE_18, CL_PRICE_18 / 2, uint256(BAND_BPS)
+            )
+        );
+        verifier.updatePrice(ASSET, rawScale);
+
+        // Within band of the adjusted anchor — accepted.
+        uint256 goodPrice = CL_PRICE_18 / 2 * 102 / 100;
+        verifier.updatePrice(ASSET, _signPrice(ASSET, goodPrice, block.timestamp));
+        (uint256 price,) = verifier.getPrice(ASSET);
+        assertEq(price, goodPrice);
+    }
+
+    function test_verifyPrice_multiplierAdjustedAnchor() public {
+        vm.prank(Actors.ADMIN);
+        verifier.setChainlinkConfig(
+            ASSET,
+            address(feed),
+            address(token),
+            CL_SILENCE,
+            CL_FRESH_WINDOW,
+            MAX_ANCHOR_AGE,
+            INHOUSE_MAX_STALENESS,
+            BAND_BPS
+        );
+        token.setUiMultiplier(4e18);
+        _ageChainlink(CL_SILENCE + 1);
+
+        uint256 anchor = CL_PRICE_18 / 4;
+        (uint256 price, uint256 ts) = verifier.verifyPrice(ASSET, _signPrice(ASSET, anchor, block.timestamp));
+        assertEq(price, anchor);
+        assertEq(ts, block.timestamp);
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Non-8-decimal feed normalization
+    // ──────────────────────────────────────────────────────────
+
+    function test_getPrice_18DecimalFeed_normalizes() public {
+        MockAggregatorV3 feed18 = new MockAggregatorV3(18);
+        feed18.setAnswer(int256(CL_PRICE_18), block.timestamp);
+        bytes32 asset18 = bytes32("EXCH");
+        vm.prank(Actors.ADMIN);
+        verifier.setChainlinkConfig(
+            asset18, address(feed18), address(0), CL_SILENCE, CL_FRESH_WINDOW, MAX_ANCHOR_AGE, INHOUSE_MAX_STALENESS, 0
+        );
+        (uint256 price,) = verifier.getPrice(asset18);
+        assertEq(price, CL_PRICE_18);
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  verifyPriceForSession — proof leg
+    // ──────────────────────────────────────────────────────────
+
+    function test_verifyPriceForSession_proofLeg() public {
+        _ageChainlink(CL_SILENCE + 1);
+        uint256 proofPrice = CL_PRICE_18 * 101 / 100;
+        (uint256 price, uint256 ts) =
+            verifier.verifyPriceForSession(ASSET, _signPrice(ASSET, proofPrice, block.timestamp), 3);
+        assertEq(price, proofPrice);
+        assertEq(ts, block.timestamp);
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Multicall batch push
+    // ──────────────────────────────────────────────────────────
+
+    function test_multicall_batchUpdatePrice() public {
+        bytes32 asset2 = bytes32("MSFT");
+        MockAggregatorV3 feed2 = new MockAggregatorV3(8);
+        feed2.setAnswer(500e8, block.timestamp);
+        vm.prank(Actors.ADMIN);
+        verifier.setChainlinkConfig(
+            asset2,
+            address(feed2),
+            address(0),
+            CL_SILENCE,
+            CL_FRESH_WINDOW,
+            MAX_ANCHOR_AGE,
+            INHOUSE_MAX_STALENESS,
+            BAND_BPS
+        );
+        _ageChainlink(CL_SILENCE + 1);
+
+        bytes[] memory calls = new bytes[](2);
+        calls[0] = abi.encodeCall(verifier.updatePrice, (ASSET, _signPrice(ASSET, CL_PRICE_18, block.timestamp)));
+        calls[1] = abi.encodeCall(verifier.updatePrice, (asset2, _signPrice(asset2, 501e18, block.timestamp)));
+        verifier.multicall(calls);
+
+        (uint256 p1,) = verifier.getInhousePrice(ASSET);
+        (uint256 p2,) = verifier.getInhousePrice(asset2);
+        assertEq(p1, CL_PRICE_18);
+        assertEq(p2, 501e18);
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Remaining edges
+    // ──────────────────────────────────────────────────────────
+
+    function test_updatePrice_equalTimestamp_skipsSilently() public {
+        _ageChainlink(CL_SILENCE + 1);
+        uint256 ts = block.timestamp;
+        verifier.updatePrice(ASSET, _signPrice(ASSET, CL_PRICE_18, ts));
+        verifier.updatePrice(ASSET, _signPrice(ASSET, CL_PRICE_18 * 104 / 100, ts));
+        (uint256 price,) = verifier.getInhousePrice(ASSET);
+        assertEq(price, CL_PRICE_18);
+    }
+
+    function test_verifyPrice_clSilent_garbageProof_reverts() public {
+        _ageChainlink(CL_SILENCE + 1);
+        vm.expectRevert();
+        verifier.verifyPrice(ASSET, hex"deadbeef");
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Fuzz
+    // ──────────────────────────────────────────────────────────
+
+    /// @dev The band boundary is exact: accepted iff |price - anchor| * BPS <= anchor * bandBps.
+    function testFuzz_updatePrice_bandBoundary(uint256 deltaBps, bool up) public {
+        deltaBps = bound(deltaBps, 0, 2 * uint256(BAND_BPS));
+        _ageChainlink(CL_SILENCE + 1);
+
+        uint256 price = up ? CL_PRICE_18 * (10_000 + deltaBps) / 10_000 : CL_PRICE_18 * (10_000 - deltaBps) / 10_000;
+        uint256 diff = price > CL_PRICE_18 ? price - CL_PRICE_18 : CL_PRICE_18 - price;
+        bool shouldPass = diff * 10_000 <= CL_PRICE_18 * BAND_BPS;
+
+        bytes memory data = _signPrice(ASSET, price, block.timestamp);
+        if (!shouldPass) {
+            vm.expectRevert(
+                abi.encodeWithSelector(
+                    IOracleVerifier.PriceDeviationExceeded.selector, ASSET, price, CL_PRICE_18, uint256(BAND_BPS)
+                )
+            );
+        }
+        verifier.updatePrice(ASSET, data);
+        if (shouldPass) {
+            (uint256 stored,) = verifier.getInhousePrice(ASSET);
+            assertEq(stored, price);
+        }
+    }
+
+    /// @dev Timestamp semantics across the three windows: clamped inside clFreshWindow, raw between
+    ///      clFreshWindow and maxAnchorAge, unavailable beyond (no in-house price pushed).
+    function testFuzz_getPrice_timestampWindows(
+        uint256 age
+    ) public {
+        age = bound(age, 0, uint256(MAX_ANCHOR_AGE) + 2 days);
+        uint256 updated = block.timestamp;
+        vm.warp(block.timestamp + age);
+
+        if (age > MAX_ANCHOR_AGE) {
+            vm.expectRevert(abi.encodeWithSelector(IOracleVerifier.PriceNotAvailable.selector, ASSET));
+            verifier.getPrice(ASSET);
+        } else {
+            (uint256 price, uint256 ts) = verifier.getPrice(ASSET);
+            assertEq(price, CL_PRICE_18);
+            assertEq(ts, age <= CL_FRESH_WINDOW ? block.timestamp : updated);
+        }
     }
 }
