@@ -71,7 +71,11 @@ the script re-asserts symbol+decimals on-chain before broadcasting.
 ## State at deploy
 
 - Vault seeded: 100 USDG (VM `0x0e3d09603290f96e86Be1807AFADcd99C81e2a63`), collateral mark $100.
-- Operator key temporarily added as oracle signer for the USDG bootstrap — **remove once KMS is sole signer**.
+- Oracle signers rotated 2026-07-16: sole signer is now `0xa7C894ff35407Ef4b7e699D1AfBf35487BbdFeBF`
+  (original KMS key `0x6Ff4…2A32` and bootstrap operator key removed; one-off script, since deleted).
+- Maker rotated 2026-07-16: `0xefD77159Ff7eAE9DeaeC2F0D45e5171fb2fe2C1f` is sole VaultManager quote
+  signer (self-linked settlement wallet) and maker on all 7 active tickers; old MM signer
+  `0x7eAa…27e2` and operator test key fully deregistered (one-off script, since deleted).
 - Governance: deployer EOA is PROTOCOL_ADMIN/ADMIN/OPERATOR (3h transfer delay). Migrate to Safe.
 
 ## Deploy sequence status
@@ -100,16 +104,15 @@ Scripts: `TestSetupTslaRobinhood` / `TestMintBorrowTslaRobinhood` / `TestRepayRe
 `OracleVerifier` config, so no wrapper mark could ever be pushed (`OracleConfigNotSet`). Config was
 set on the live deploy (1h staleness / 20% deviation) and the script patched for future runs.
 
-**Test artifacts to clean up before public launch** (operator key `0xa0d8…5b4B` was stand-in for
-both KMS services): `VaultManager.removeSigner(operator)` + `setMakerAllowed(TSLA, operator, false)`
-
-- `OracleVerifier.removeSigner(operator)` once the real KMS quote + price signers are live.
+**Test artifacts cleanup** (operator key `0xa0d8…5b4B` was stand-in for both KMS services): all
+done 2026-07-16 — `OracleVerifier.removeSigner(operator)`, `VaultManager.removeSigner(operator)`,
+and `setMakerAllowed(TSLA, operator, false)` executed during the signer/maker rotations.
 
 ## Remaining ops (off-chain)
 
 - [ ] KMS price service: publish `USDG`, 7 launch tickers, `R.TSLA` (token price × uiMultiplier) under chainId-4663 domain
 - [ ] Keepers: `pullAssetPrice(ticker)` per asset, `pullCollateralPrice(reserve)` once R.TSLA feed live
 - [ ] RFQ quote service live; linked settlement wallet funded with USDG
-- [ ] Remove operator from oracle signers (`removeSigner`) once KMS is sole signer
+- [x] Remove operator from oracle signers (`removeSigner`) — done 2026-07-16; sole signer now `0xa7C8…FeBF`
 - [ ] Small psmMint/psmRedeem round-trip before announcing
 - [ ] Migrate PROTOCOL_ADMIN to Safe multisig
