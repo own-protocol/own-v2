@@ -10,10 +10,11 @@ import {BaseTest} from "../helpers/BaseTest.sol";
 import {MockAggregatorV3} from "../helpers/MockAggregatorV3.sol";
 
 /// @title ChainlinkOracleFlow — Integration test for the Chainlink oracle migration wiring
-/// @notice Mirrors the production migration plan: ChainlinkOracleVerifier is installed in the
-///         registry's PYTH_ORACLE slot and the asset's oracleType flipped to 0, so VaultManager's
-///         permissionless mark pulls resolve prices through the real verifier (not a mock) — the
-///         Chainlink leg while the feed is live, the band-limited in-house leg while it is silent.
+/// @notice Mirrors the production migration plan: ChainlinkOracleVerifier replaces the in-house
+///         verifier in the registry's INHOUSE_ORACLE slot (assets stay oracleType 1), so
+///         VaultManager's permissionless mark pulls resolve prices through the real verifier (not
+///         a mock) — the Chainlink leg while the feed is live, the band-limited in-house leg while
+///         it is silent.
 contract ChainlinkOracleFlowTest is BaseTest {
     AssetRegistry public assetRegistry;
     ChainlinkOracleVerifier public clVerifier;
@@ -41,9 +42,9 @@ contract ChainlinkOracleFlowTest is BaseTest {
         assetRegistry = new AssetRegistry(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.ASSET_REGISTRY(), address(assetRegistry));
 
-        // Migration wiring: new verifier in the PYTH_ORACLE slot, asset flipped to oracleType 0.
+        // Migration wiring: new verifier replaces the in-house oracle in the INHOUSE_ORACLE slot.
         clVerifier = new ChainlinkOracleVerifier(address(protocolRegistry));
-        protocolRegistry.setAddress(keccak256("PYTH_ORACLE"), address(clVerifier));
+        protocolRegistry.setAddress(keccak256("INHOUSE_ORACLE"), address(clVerifier));
         clVerifier.addSigner(signer);
         clVerifier.setChainlinkConfig(
             TSLA,
@@ -65,7 +66,7 @@ contract ChainlinkOracleFlowTest is BaseTest {
                 legacyTokens: new address[](0),
                 active: true,
                 volatilityLevel: 2,
-                oracleType: 0
+                oracleType: 1
             })
         );
         vm.stopPrank();
