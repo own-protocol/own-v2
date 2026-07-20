@@ -9,16 +9,16 @@
 
 | Contract                           | Address                                      |
 | ---------------------------------- | -------------------------------------------- |
-| ProtocolRegistry                   | `0x93E08Ca467046737f75aAd4C936356c196AAa36f` |
+| ProtocolRegistry                   | `0x93e08ca467046737F75AAD4C936356c196AaA36F` |
 | AssetRegistry                      | `0xDfEFfe8C385A28351Cc07a249A3B2C15Fe7b928A` |
 | OwnMarket                          | `0xF17Ce62F389B5bAA9C24f448D329E898c8f8dEf7` |
 | VaultManager                       | `0xfA2981bA6F5E955f3FF4c9DBd9a79Ff29015d352` |
-| ETokenFactory                      | `0x21C8Ab24844101eE7A2625a7f281F7cED679782a` |
+| ETokenFactory                      | `0x21C8Ab24844101EE7A2625A7f281f7ceD679782A` |
 | ChainlinkOracleVerifier (in-house) | `0x72158ca9C5Dab08f3c470188a34c6e609fa6af9b` |
-| OwnLendingPool                     | `0xADa84DAeBD59053CDbC49740E1F06F039Bb4FbbA` |
-| — oUSDG (aToken)                   | `0x8673efc9f9a561625b9B560a28127bCa42290143` |
-| — odUSDG (debt token)              | `0xB722B898897e3221eE09C51f03935D437FfbC85e` |
-| LendingRouter                      | `0xF3f1f274bFe61544d3045321E2c0c84Aa40274f1` |
+| OwnLendingPool                     | `0xaDa84daebD59053Cdbc49740E1f06F039BB4FbBa` |
+| — oUSDG (aToken)                   | `0x8673efc9f9a561625b9b560a28127bCa42290143` |
+| — odUSDG (debt token)              | `0xB722B898897e3221eE09C51F03935d437FfBc85e` |
+| LendingRouter                      | `0xf3f1f274bFe61544d3045321E2c0c84Aa40274f1` |
 | OwnVault (oUSDG, shares `ovUSDG`)  | `0x246705F13bF56e3A572ae1407c065126230557FC` |
 | BorrowManager                      | `0xa58738135ce8D44E746B04967590A831C7E01bF1` |
 | VaultYieldManager                  | `0x2efb4f919302f9548d7E497503Fa92E5dd93f841` |
@@ -76,7 +76,10 @@ the script re-asserts symbol+decimals on-chain before broadcasting.
 - Maker rotated 2026-07-16: `0xefD77159Ff7eAE9DeaeC2F0D45e5171fb2fe2C1f` is sole VaultManager quote
   signer (self-linked settlement wallet) and maker on all 7 active tickers; old MM signer
   `0x7eAa…27e2` and operator test key fully deregistered (one-off script, since deleted).
-- Governance: deployer EOA is PROTOCOL_ADMIN/ADMIN/OPERATOR (3h transfer delay). Migrate to Safe.
+- Governance (migrated 2026-07-20 via `MigrateAdminToSafeRobinhood.s.sol`): ADMIN → Safe
+  `0x470f35a7e5d4Cd490D74799AC01E7bEea7F478e2` (3/4, v1.4.1); PROTOCOL_ADMIN transfer to the Safe
+  begun (2-step, 3h delay — acceptable after 2026-07-20 17:29 UTC; Safe must call
+  `acceptDefaultAdminTransfer()`). Deployer EOA keeps OPERATOR (instant bucket) only.
 
 ## Deploy sequence status
 
@@ -133,4 +136,6 @@ and `setMakerAllowed(TSLA, operator, false)` executed during the signer/maker ro
 - [ ] RFQ quote service live; linked settlement wallet funded with USDG
 - [x] Remove operator from oracle signers (`removeSigner`) — done 2026-07-16; sole signer now `0xa7C8…FeBF`
 - [ ] Small psmMint/psmRedeem round-trip before announcing
-- [ ] Migrate PROTOCOL_ADMIN to Safe multisig
+- [x] Migrate ADMIN + begin PROTOCOL_ADMIN transfer to Safe — done 2026-07-20; PENDING: Safe calls
+      `acceptDefaultAdminTransfer()` on the registry after 17:29 UTC (no deadline, but root stays
+      with the deployer EOA until accepted)
