@@ -54,7 +54,9 @@ contract CheckChainlinkFeedsRobinhood is Script {
             "RHMU / USD", 0x425EEFdCf05ed6526C3cE61Af99429A228a6d596, 0xfF080c8ce2E5feadaCa0Da81314Ae59D232d4afD
         );
         feeds[1] = FeedCheck(
-            "Robinhood SPCX / USD", 0xB265810950ba6c5C0Ff821c9963014a56fD8Bffb, 0x4a0E65A3EcceC6dBe60AE065F2e7bb85Fae35eEa
+            "Robinhood SPCX / USD",
+            0xB265810950ba6c5C0Ff821c9963014a56fD8Bffb,
+            0x4a0E65A3EcceC6dBe60AE065F2e7bb85Fae35eEa
         );
         feeds[2] = FeedCheck(
             "RHMSFT / USD", 0x45C3C877C15E6BA2EBB19eA114Ea508d14C1Af2E, 0xe93237C50D904957Cf27E7B1133b510C669c2e74
@@ -71,7 +73,9 @@ contract CheckChainlinkFeedsRobinhood is Script {
             "RHSPY / USD", 0x319724394D3A0e3669269846abE664Cd621f9f6A, 0x117cc2133c37B721F49dE2A7a74833232B3B4C0C
         );
         feeds[6] = FeedCheck(
-            "Robinhood QQQ / USD", 0x80901d846d5D7B030F26B480776EE3b29374C2ae, 0xD5f3879160bc7c32ebb4dC785F8a4F505888de68
+            "Robinhood QQQ / USD",
+            0x80901d846d5D7B030F26B480776EE3b29374C2ae,
+            0xD5f3879160bc7c32ebb4dC785F8a4F505888de68
         );
         feeds[7] = FeedCheck("USDG / USD", 0x61B7e5650328764B076A108EFF5fa7282a1B9aD2, address(0));
 
