@@ -106,6 +106,19 @@ the script re-asserts symbol+decimals on-chain before broadcasting.
       signatures are invalid there), 24/7 gap-filling (quote when feed >15min quiet, band
       pre-check), feed-age + aggregator-upgrade alerting. Until then, tickers whose feed is >4h quiet read as stale to freshness-checking consumers.
 
+## Points program (2026-07-24)
+
+- [x] `DeployOwnershipNftRobinhood.s.sol` — OwnershipNFT (soulbound points-program NFT) at
+      `0x8fabA20d52Ea9CD636924Ce4083bB22E391f73e8`, Blockscout-verified. Standalone — no registry
+      wiring. Name/symbol `Ownership NFT` / `OwnNFT`; ids start at 1; transfers disabled
+      (soulbound) until governance flips `setTransfersEnabled`. Admin (DEFAULT_ADMIN_ROLE) =
+      deployer EOA `0xD9eA00C71df5b50493fCbD1f7e8c5C8DbB525bD1` (rotate with the Safe migration);
+      minter (MINTER_ROLE, mint-only) = points-service hot wallet
+      `0x609C0364cEae808bD2f8988CCBD472681150dcf3`. baseURI
+      `https://points.ownfinance.org/metadata/`, contractURI
+      `https://points.ownfinance.org/collection.json` (both admin-updatable). Verified on-chain
+      post-deploy: roles, soulbound state, URIs, `nextTokenId == 1`.
+
 ## E2E smoke tests (2026-07-14, all passed)
 
 Scripts: `TestSetupTslaRobinhood` / `TestMintBorrowTslaRobinhood` / `TestRepayRedeemTslaRobinhood` /
