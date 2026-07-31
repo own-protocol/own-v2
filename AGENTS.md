@@ -452,6 +452,66 @@ For each finding:
 
 After all findings, provide a summary table with severity counts and overall risk assessment.
 
+### Audit Document Format
+
+The canonical audit doc is a **living remediation tracker**, not a point-in-time report. Reference
+implementation: `docs/audit-report-3.md`. When generating a new one, follow this structure exactly.
+
+**Header**
+
+```
+# Own Protocol v2 — Audit Report & Remediation Status (Pass N)
+
+**Branch:** `x` · **Last updated:** YYYY-MM-DD · **Test suite:** N passing
+```
+
+Then consolidation prose: which passes and which superseded documents this doc absorbs, an explicit
+"IDs are stable across passes" statement, a headline paragraph naming the *shape* of the findings
+(not just counts), and any scope changes made during the pass. Then a fenced `Scope (N files, ~N LOC)`
+block listing every reviewed file, plus the exclusion list.
+
+**Sections, in order**
+
+1. `## Status at a Glance` — two tables. First: severity × (Total / Fixed / Open / By design).
+   Second: the master index — `ID | Severity | Finding | Status`, one row per finding, status in
+   bold (`**Fixed** (date)`, `**Open**`, `**By design** — reason`).
+2. `## 1. Fixed Findings` — full write-ups for anything fixed.
+3. `## 2. Open Findings` — full write-ups for anything outstanding.
+4. `## 3. By-Design / Withdrawn` — bulleted, each with the decision and its rationale.
+5. `## 4. Low Findings` — bulleted, grouped by status and date.
+6. `## 5. Leads` — grouped by theme, then `Noted, no action`.
+7. `## 6. Migration / ops checklist (open)` — `- [ ]` items, each tagged with the finding ID.
+8. `## 7. Verified sound (no finding)` — what was attacked and held. Do not omit this; negative
+   results are how a later pass avoids re-treading closed ground.
+9. `## 8. Verification notes` — methodology corrections and traps for future passes.
+
+**Per-finding write-up** (sections 1 and 2) uses bold-lead paragraphs, not tables:
+
+- `### ID (Severity) — Title` — title states the defect, not the symptom.
+- `**Problem.**` — mechanism first, then a worked numeric case with real deployed parameters.
+- `**Fix.**` (applied) or `**Suggested fix.**` (open) — a ```diff block. Where genuinely distinct
+  approaches exist, give `**Suggested fix (Option A — label):**` / `(Option B — label)`.
+- `**Tests.**` — name the tests, and state honestly if a regression test is still missing.
+- `**Residual.**` / `**Overlaps.**` / `**Open question.**` — as applicable.
+- `**Detected by** N of 12 agents (specialty names).`
+
+**ID rules**
+
+- Per-pass prefix, stable forever: `A2-`, `A3-` for full passes; `CL-` for a contract-scoped review;
+  `PA-` for pre-audit hardening. Severity letter + number: `A3-H-01`, `CL-I02`.
+- **Never renumber or reuse an ID.** When a new pass re-surfaces a closed item, reopen the existing
+  ID rather than minting a new one, and cross-reference overlapping findings to the IDs they extend.
+- Findings from passes whose document is no longer in-tree are referenced, not restated.
+- A downgrade or withdrawal keeps the ID and records the reason under §3.
+
+**Rules of thumb**
+
+- Severity is impact × likelihood, and is stated separately from confidence.
+- Rate configuration-dependent findings against `broadcast/<Script>.s.sol/<chainId>/run-latest.json`,
+  never against `script/` alone — executed scripts are sometimes deleted from the tree.
+- One document per protocol, superseding earlier ones; fold contract-scoped reviews in rather than
+  leaving them to drift as separate files.
+
 ## Gas Optimisation Review Process
 
 When asked to do a gas review on a contract:

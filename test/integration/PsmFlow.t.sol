@@ -514,6 +514,25 @@ contract PsmFlowTest is PsmFlowBase {
         vm.stopPrank();
     }
 
+    /// @dev Pins the band/refresh ordering: the band must bound the mark the fill settles against,
+    ///      not the pre-refresh one. Fails if _checkSettleBand is moved back above _psmContext.
+    function test_psmFillOrder_bandChecksRefreshedMark_reverts() public {
+        address arb = makeAddr("arb");
+        // Limit sits exactly on the +5% edge of the $250 mark, so it clears the band pre-refresh.
+        uint256 orderId = _placeMintOrder(Actors.MINTER1, 262.5e6, 262.5e18);
+        _setSettleBandBps(500);
+
+        // Market drops 8%; the mark still reads $250 until _psmContext pulls it inside the fill.
+        _setOraclePrice(TSLA, 230e18);
+
+        ondo.mint(arb, 2e18);
+        vm.startPrank(arb);
+        ondo.approve(address(market), 2e18);
+        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.PriceOutOfBand.selector, TSLA, 262.5e18, 230e18, 500));
+        market.psmFillOrder(orderId, address(ondo), 262.5e6);
+        vm.stopPrank();
+    }
+
     function test_psmFillOrder_staleWrapper_reverts() public {
         address arb = makeAddr("arb");
         // Long-dated order so it survives the staleness warp.

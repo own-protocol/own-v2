@@ -372,8 +372,9 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard, EIP712 {
 
         // No quote: the order's own limit is the settle price, fat-finger/stale-mark bounded by
         // the settle band. Fills are discretionary trades, so the wrapper leg must be fresh.
-        _checkSettleBand(order.asset, order.limitPrice);
+        // Band must bound the refreshed mark the fill settles against — order matters.
         (address reserveVault, uint256 ratio) = _psmContext(order.asset, wrapper, true);
+        _checkSettleBand(order.asset, order.limitPrice);
 
         // Effects.
         uint256 newRemaining = _recordFill(order, amount);
