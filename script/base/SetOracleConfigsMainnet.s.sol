@@ -3,7 +3,7 @@ pragma solidity 0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
 
-import {OracleVerifier} from "../../src/core/OracleVerifier.sol";
+import {OracleVerifier} from "../../archive/OracleVerifier.sol";
 
 /// @title SetOracleConfigsMainnet — Set per-asset oracle config for the 6 launch tickers
 /// @notice Without a config, updatePrice() reverts OracleConfigNotSet for an asset. Run by the admin

@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: BUSL-1.1
 pragma solidity 0.8.28;
 
-import {IOracleVerifier} from "../interfaces/IOracleVerifier.sol";
-import {IProtocolRegistry} from "../interfaces/IProtocolRegistry.sol";
-import {BPS} from "../interfaces/types/Types.sol";
+import {IOracleVerifier} from "../src/interfaces/IOracleVerifier.sol";
+import {IProtocolRegistry} from "../src/interfaces/IProtocolRegistry.sol";
+import {BPS} from "../src/interfaces/types/Types.sol";
 import {Multicall} from "@openzeppelin/contracts/utils/Multicall.sol";
 import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import {EIP712} from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";

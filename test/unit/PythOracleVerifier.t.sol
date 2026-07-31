@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {PythOracleVerifier} from "../../src/core/PythOracleVerifier.sol";
+import {PythOracleVerifier} from "../../archive/PythOracleVerifier.sol";
 import {IOracleVerifier} from "../../src/interfaces/IOracleVerifier.sol";
 import {PRECISION} from "../../src/interfaces/types/Types.sol";
 import {Actors} from "../helpers/Actors.sol";

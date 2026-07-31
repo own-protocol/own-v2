@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {OracleVerifier} from "../../src/core/OracleVerifier.sol";
+import {OracleVerifier} from "../../archive/OracleVerifier.sol";
 import {IOracleVerifier} from "../../src/interfaces/IOracleVerifier.sol";
 import {BPS, PRECISION} from "../../src/interfaces/types/Types.sol";
 import {Actors} from "../helpers/Actors.sol";

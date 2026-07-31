@@ -3,7 +3,7 @@ pragma solidity 0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
 
-import {OracleVerifier} from "../../src/core/OracleVerifier.sol";
+import {OracleVerifier} from "../../archive/OracleVerifier.sol";
 import {OwnMarket} from "../../src/core/OwnMarket.sol";
 import {VaultManager} from "../../src/core/VaultManager.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";

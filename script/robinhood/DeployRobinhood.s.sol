@@ -4,7 +4,7 @@ pragma solidity 0.8.28;
 import {Script, console} from "forge-std/Script.sol";
 
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
-import {OracleVerifier} from "../../src/core/OracleVerifier.sol";
+import {OracleVerifier} from "../../archive/OracleVerifier.sol";
 import {OwnLendingPool} from "../../src/core/OwnLendingPool.sol";
 import {OwnMarket} from "../../src/core/OwnMarket.sol";
 import {OwnVault} from "../../src/core/OwnVault.sol";
