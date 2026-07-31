@@ -1,6 +1,6 @@
 # Own Protocol v2 — Audit Report & Remediation Status (Pass 3)
 
-**Branch:** `upgrade-borrow-manager` · **Last updated:** 2026-07-31 · **Test suite:** 1,205 passing
+**Branch:** `upgrade-borrow-manager` · **Last updated:** 2026-07-31 · **Test suite:** 1,203 passing
 
 Consolidated from the 2026-07-19 `ChainlinkOracleVerifier` implementation review and the 2026-07-31
 full multi-agent re-audit (solidity-auditor, 12-agent pipeline — 9 specialty attackers + 3
@@ -46,7 +46,7 @@ Excluded as non-source: `out/`, `cache/`, `broadcast/` (Foundry artifacts), `scr
 | -------- | ----- | ----- | ---- | --------- |
 | Critical | 0     | 0     | 0    | —         |
 | High     | 3     | 3     | 0    | —         |
-| Medium   | 9     | 4     | 0    | 5         |
+| Medium   | 9     | 3     | 0    | 6         |
 | Low      | 8     | 1     | 0    | 7         |
 | Info     | 4     | 0     | 0    | 4         |
 
@@ -56,7 +56,7 @@ Excluded as non-source: `out/`, `cache/`, `broadcast/` (Foundry artifacts), `scr
 | A3-H-02   | High     | `_accrue` billed the whole elapsed window at an attacker-timed rate; no denominator change accrued first          | **Fixed** (2026-07-31)                    |
 | A3-H-03   | High     | `fulfillWithdrawal` is permissionless with no zero-check and no `minAssetsOut` → LP shares settled at a chosen trough | **Resolved** (2026-07-31) — zero-guard fixed; rest by design |
 | A3-M-01   | Medium   | JIT capture of accrued LP yield via permissionless `distribute` / `claimEarnedInterest`                          | **Fixed** (2026-07-31)                    |
-| A3-M-02   | Medium   | Concentration cap derived only from *other* vaults collapses a capped vault's counted collateral to zero          | **Fixed** (2026-07-31)                    |
+| A3-M-02   | Medium   | Concentration cap derived only from *other* vaults collapses a capped vault's counted collateral to zero          | **Acknowledged** — VaultManager immutable (§3) |
 | A3-M-03   | Medium   | Borrower `_drawFromAave` skips the Aave health floor that every collateral-decreasing path enforces               | **Fixed** (2026-07-31)                    |
 | A3-M-04   | Medium   | `migrateToken` desyncs every PSM wrapper's ratio-jump baseline → all PSM paths brick on a split                   | **By design** — ops runbook (§6)          |
 | A3-M-05   | Medium   | `releaseCollateral` ignores `Paused` → paused vault pays redeemers while its LPs are frozen                       | **By design** — pause is an LP pause (§3) |
@@ -312,35 +312,6 @@ share price exactly as `shareYield` did. Full suite green (1,197 passing / 0 fai
 
 **Detected by** 2 of 12 agents (periphery = finding; economic-security, first-principles = leads).
 
-### A3-M-02 (Medium) — Concentration cap collapses a capped vault's counted collateral to zero
-
-> **Status: ✅ Fixed (2026-07-31)** — self-referential floor added. Fix reaches **future
-> deployments only**: the live `VaultManager` is not redeployable. Live exposure is nil — no
-> `setCollateralCapBps` call exists in `broadcast/`, so every deployed cap is 0 (disabled). If a
-> cap is ever set on the live instance the collapse remains reachable there; recovery is
-> `setCollateralCapBps(vault, 0)`.
-
-**Problem.** `_cappedContribution` computed `maxCounted = others·cap/(BPS−cap)`, deriving a capped
-vault's allowance purely from *other* vaults' counted collateral. It floored to zero when the capped
-vault was the only counted vault and collapsed super-linearly as the rest of the pool shrank. Worked
-case at cap 3000 bps: vault A raw $9M counts $428,571 while uncapped vault B holds $1M; B drains to
-$1,000 → the next keeper pull counts A at **$428**. The zeroed global mark then reverts all
-`openExposure` (`CollateralNotInitialized`) and all `fulfillWithdrawal` (`MaxUtilizationExceeded`).
-Availability only — no fund loss. `onVaultUnhalted` shared the defect (passes `_globalCollateralUSD`
-as `others`).
-
-**Fix.** Option B (self-referential): `maxCounted` is floored at `rawMark·cap/BPS`, so a capped vault
-always counts at least `cap` bps of its own raw mark regardless of the rest of the pool. Both call
-sites route through `_cappedContribution`, so `pullCollateralPrice` and `onVaultUnhalted` are covered
-together. Under-cap and over-cap behaviour with a healthy pool is unchanged (existing cap tests all
-pass untouched).
-
-**Tests.** `VaultManager.t.sol::test_collateralCap_othersDrain_floorsAtOwnShare` (pool drains
-$3M → $1k; capped vault must count $750k, pre-fix counted $333) and
-`::test_collateralCap_soleVault_countsFloorShare` (others == 0; pre-fix counted 0). Both verified to
-**fail** against the pre-fix formula. Chains into **A3-L-01** remain as recorded there.
-**Detected by** 3 of 12 agents (math-precision, numerical-gap = findings; flow-gap = lead).
-
 ### A3-M-03 (Medium) — Borrower draws skip the Aave health floor every exit path enforces
 
 > **Status: ✅ Fixed (2026-07-31)** — `_executeBorrow` now enforces `minClaimHealthFactor` after the
@@ -417,6 +388,32 @@ against the pre-fix code.
   the jump guard disarmed; the runbook keeps wrappers PSM-paused across the migration and performs a
   controlled first operation before unpausing. The second mechanism (legacy-ratio zero-decay after
   ~19 successive 1-for-10 reverse splits) stays noted-no-action in §5 — not credible standalone.
+- **A3-M-02 — Concentration cap collapses a capped vault's counted collateral (acknowledged
+  2026-07-31, no code change).** `_cappedContribution` derives a capped vault's allowance purely
+  from *other* vaults' counted collateral (`others·cap/(BPS−cap)`), so it floors to zero when the
+  capped vault is the only counted vault and collapses super-linearly as the rest of the pool
+  shrinks: vault A raw $9M counting $428,571 drops to **$428** once uncapped vault B drains from
+  $1M to $1,000, reverting all `openExposure` (`CollateralNotInitialized`) and all
+  `fulfillWithdrawal` (`MaxUtilizationExceeded`). Availability only, no fund loss.
+  **Second mechanism (found 2026-07-31 while modelling the fix).** `withdrawalBreachesUtil`
+  subtracts only the withdrawn amount from the *current* `_globalCollateralUSD`; it never recomputes
+  the capped vault's contribution, which is a function of the very balance being withdrawn. A
+  withdrawal therefore passes the gate and is then pushed over the cap *retroactively* by the next
+  permissionless `pullCollateralPrice`. At cap 3000 / util 5000 with both vaults at $5M and $2M
+  exposure: a $3.14M oUSDG withdrawal clears the gate at exactly 50%, the ETH re-pull then drops
+  global counted collateral to $2.65M, and utilisation settles at **75.4%** — nothing reverts, but
+  mints and all further withdrawals are frozen. Because the capped vault tracks `others·3/7`, every
+  $1 leaving the uncapped base removes $1.43 of counted collateral.
+  **Decision: not fixed — `VaultManager` is immutable in the live system** (only `OwnVault`,
+  `BorrowManager` and `VaultYieldManager` are redeployable), so a code change could never reach the
+  deployed instance. A self-referential floor (`max(others·cap/(BPS−cap), rawMark·cap/BPS)`) was
+  implemented and reverted on that basis. **Note it addresses the first mechanism only** — a future
+  redeploy must also make the withdrawal gate cap-aware before caps are safe to enable.
+  **Live exposure is nil:** no `setCollateralCapBps` call exists anywhere in `broadcast/`, so every
+  deployed cap is 0 (disabled) and the branch is unreachable. **Ops rule: do not set a non-zero
+  concentration cap on the live `VaultManager`** (§6); recovery if one is ever set is
+  `setCollateralCapBps(vault, 0)`. Chains into **A3-L-01** as recorded there.
+  Detected by 3 of 12 agents (math-precision, numerical-gap = findings; flow-gap = lead).
 - **A3-M-09 — Reserve surplus release omits the PSM ratio-jump guard (acknowledged 2026-07-31,
   no code change).** `_releaseCollateral`'s surplus clamp values the reserve at the raw
   `wrapperPrice/mark` ratio with no `ratioJumpBoundBps` check, so a wrapper feed printing 10% high
@@ -687,10 +684,29 @@ authority (§3).
       M-13 pause trigger is automated and fast enough to act without the queue behind it.
 - [ ] Confirm deployed `targetLtvBps` against the pool's `liquidationThresholdBps` (**A3-M-03** —
       defence-in-depth; the runtime HF floor now enforces this at borrow time on redeploy).
-- [x] Confirm whether any vault carries a non-zero concentration cap (**A3-M-02**) — verified
-      2026-07-31: no `setCollateralCapBps` call anywhere in `broadcast/`; all deployed caps are 0
-      (disabled). Do not set a non-zero cap on the live (non-redeployable) `VaultManager` — it lacks
-      the self-referential floor fix.
+- [x] **DO NOT set collateral concentration caps (`setCollateralCapBps`) — standing rule, 2026-07-31
+      (A3-M-02).** Verified: no `setCollateralCapBps` call exists anywhere in `broadcast/`, so every
+      deployed cap is 0 (disabled) and the defect is unreachable. Leaving every cap at 0 is the
+      mitigation — a non-zero cap is the *only* thing that arms it. Two independent defects, neither
+      fixable on the live `VaultManager` (immutable):
+      1. **Allowance collapse.** A capped vault's counted collateral derives solely from *other*
+         vaults (`others·cap/(BPS−cap)`), so it floors to zero when it is the only counted vault and
+         collapses super-linearly as the rest of the pool shrinks. With exactly one uncapped generic
+         vault deployed today (oUSDG; the other 8 registrations are RWA reserves, which bypass the
+         cap), a capped vault's entire contribution hangs off that single vault — one halt or drain
+         of oUSDG zeroes it.
+      2. **Gate inconsistency.** `withdrawalBreachesUtil` subtracts only the withdrawn amount from
+         the current global; it does not recompute the capped vault's contribution. A withdrawal can
+         therefore pass the gate and then be pushed over the utilisation cap retroactively by the
+         next permissionless `pullCollateralPrice`. Worked example at cap 3000 / util 5000, both
+         vaults $5M, exposure $2M: a $3.14M oUSDG withdrawal passes at exactly 50%, then the ETH
+         re-pull drops global to $2.65M and utilisation lands at **75.4%** — mints and all further
+         withdrawals frozen, with $5M of real ETH counted at $796k.
+      **For concentration control today, use `setAssetCapUSD`** (per-ticker issuance ceiling) or
+      simply cap deposits into the vault — neither has this coupling. **A future `VaultManager`
+      redeploy must fix BOTH** before caps are safe to enable: the self-referential floor
+      (`max(others·cap/(BPS−cap), rawMark·cap/BPS)`) addresses (1) only; (2) needs the withdrawal
+      gate made cap-aware.
 - [ ] **Token-split migration runbook (A3-M-04, accepted ops-mitigated):** announce the migration
       and PSM hold → `setPsmPaused(ticker, wrapper, true)` for every wrapper of the ticker →
       `migrateToken` → `resetRatioGuard(ticker, wrapper)` per wrapper → perform one controlled PSM
