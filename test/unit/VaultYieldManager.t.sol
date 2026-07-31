@@ -141,6 +141,36 @@ contract VaultYieldManagerTest is BaseTest {
         assertApproxEqAbs(assetsAfter - assetsBefore, 8000e6, 1);
     }
 
+    /// @dev A3-M-01: a depositor arriving just before yield is realized must not capture any of it.
+    ///      The vault syncs yield before pricing shares, so the newcomer buys in at the post-yield
+    ///      price. Fails if OwnVault's `_syncLending` hook is removed from the deposit path.
+    function test_deposit_cannotFrontRunPendingYield() public {
+        _setTreasury(treasury);
+        _sweep(10_000e6); // 8_000e6 of it is the LP share
+
+        // Attacker arrives with 9x the incumbent's stake, right before the crank would fire.
+        address attacker = makeAddr("attacker");
+        uint256 stake = LP_DEPOSIT * 9;
+        usdg.mint(supplier, stake);
+        vm.startPrank(supplier);
+        usdg.approve(address(pool), stake);
+        pool.supply(address(usdg), stake, attacker, 0);
+        vm.stopPrank();
+
+        vm.startPrank(attacker);
+        aUSDG.approve(address(vault), stake);
+        vault.deposit(stake, attacker);
+        vm.stopPrank();
+
+        // The deposit itself realized the yield, so the attacker redeems only what they put in.
+        assertApproxEqAbs(vault.previewRedeem(vault.balanceOf(attacker)), stake, 2, "attacker captured yield");
+        // The incumbent keeps the whole LP share of the distribution.
+        assertApproxEqAbs(
+            vault.previewRedeem(vault.balanceOf(lp)), LP_DEPOSIT + 8000e6, 2, "incumbent lost yield to the newcomer"
+        );
+        assertEq(yieldManager.pendingYield(), 0, "shell drained by the deposit hook");
+    }
+
     function test_distribute_roundingFloorsTreasuryCut() public {
         _setTreasury(treasury);
         _sweep(33); // cut = 33 × 2000 / 10000 = 6.6 → 6 (floor favors LPs)

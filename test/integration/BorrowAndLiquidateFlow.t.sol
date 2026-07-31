@@ -124,6 +124,32 @@ contract BorrowAndLiquidateFlowTest is BaseTest {
         return abi.encode(px, block.timestamp);
     }
 
+    /// @dev Pins accrue-before-totalAssets-moves. The collateral mark tracks totalAssets() and is the
+    ///      rate's utilisation denominator, so an LP deposit must book the elapsed window first —
+    ///      otherwise the caller can move the mark and accrue in one bundle, billing the past at the
+    ///      rate their own action produced. Fails if the `_accrueLending` hook is removed.
+    function test_deposit_accruesBeforeTotalAssetsMoves() public {
+        eTSLA.mint(Actors.MINTER1, 100e18);
+        vm.startPrank(Actors.MINTER1);
+        eTSLA.approve(address(borrowManager), 100e18);
+        borrowManager.borrow(ASSET, 100e18, 10_000e6, _priceData(TSLA_PX));
+        vm.stopPrank();
+
+        uint256 bookedBefore = borrowManager.totalDebtUSD();
+
+        // The stored index only moves on a touch, so the warp alone changes nothing.
+        skip(180 days);
+        assertEq(borrowManager.totalDebtUSD(), bookedBefore, "stored index moved without a touch");
+
+        // An LP deposit raises totalAssets(); it must book the elapsed window before it does.
+        vm.prank(address(aavePool));
+        awstETH.mint(address(this), 1e18);
+        awstETH.approve(address(vault), 1e18);
+        vault.deposit(1e18, Actors.LP1);
+
+        assertGt(borrowManager.totalDebtUSD(), bookedBefore, "deposit did not accrue first");
+    }
+
     /// @dev End-to-end: borrow → dividend deposit while collateral in custody →
     ///      price crashes → liquidate. Verifies position close, Aave debt
     ///      cleared, liquidator gets the eTokens but NOT the dividends — those

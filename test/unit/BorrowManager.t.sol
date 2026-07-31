@@ -1657,7 +1657,7 @@ contract BorrowManagerTest is BaseTest {
     }
 
     function test_claimEarnedInterest_defaults() public view {
-        assertEq(borrowManager.interestBufferBps(), 1000, "10% buffer default");
+        assertEq(borrowManager.interestBufferBps(), 100, "1% buffer default");
         assertEq(borrowManager.minClaimHealthFactor(), 1.1e18, "1.1 HF default");
     }
 
@@ -1665,7 +1665,7 @@ contract BorrowManagerTest is BaseTest {
         uint256 earned = _openAndAccrue();
         assertGt(earned, 0, "interest accrued");
         uint256 claimable = borrowManager.claimableInterest();
-        assertEq(claimable, earned * 9000 / BPS, "90% claimable (10% buffer)");
+        assertEq(claimable, earned * 9900 / BPS, "99% claimable (1% buffer)");
 
         uint256 vmBefore = usdc.balanceOf(address(this)); // this contract is the bound VM
         uint256 aaveBefore = aavePool.debtOf(address(vault), address(usdc));
@@ -1731,7 +1731,7 @@ contract BorrowManagerTest is BaseTest {
 
     function test_setInterestBufferBps_emitsAndApplies() public {
         vm.expectEmit(false, false, false, true);
-        emit IBorrowManager.InterestBufferUpdated(1000, 2000);
+        emit IBorrowManager.InterestBufferUpdated(100, 2000);
         vm.prank(Actors.ADMIN);
         borrowManager.setInterestBufferBps(2000);
         assertEq(borrowManager.interestBufferBps(), 2000);

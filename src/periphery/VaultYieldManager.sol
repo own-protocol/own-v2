@@ -106,9 +106,29 @@ contract VaultYieldManager is IVaultYieldManager, ReentrancyGuard {
         uint256 balance = IERC20(stablecoin).balanceOf(address(this));
         if (balance == 0) revert NothingToDistribute();
         // Yield with no shares outstanding would accrue to the first depositor —
-        // hold revenue until LPs exist (mirrors OwnVault.shareYield's own guard).
+        // hold revenue until LPs exist.
         if (IERC4626(vault).totalSupply() == 0) revert NoSharesOutstanding();
+        _distribute(balance);
+    }
 
+    /// @inheritdoc IVaultYieldManager
+    /// @dev No reentrancy guard by design: the vault calls this from inside its own guarded LP
+    ///      paths, and the body is idempotent — it drains the held balance, so a nested call is a
+    ///      no-op. Nothing here calls back into the vault.
+    function syncYield() external override {
+        _claimBestEffort();
+        uint256 balance = IERC20(stablecoin).balanceOf(address(this));
+        if (balance == 0 || IERC4626(vault).totalSupply() == 0) return;
+        _distribute(balance);
+    }
+
+    /// @dev Split the held revenue: `treasuryCutBps` to the treasury, remainder converted 1:1 into
+    ///      the vault's aToken and transferred in — raising `totalAssets()` and so the share price.
+    ///      Transferred rather than pushed through {OwnVault.shareYield} so no call re-enters the
+    ///      vault, which shares one reentrancy guard across deposit / fulfillWithdrawal.
+    function _distribute(
+        uint256 balance
+    ) private {
         address treasury = registry.treasury();
         if (treasury == address(0)) revert ZeroAddress();
 
@@ -120,10 +140,21 @@ contract VaultYieldManager is IVaultYieldManager, ReentrancyGuard {
         if (lpYield > 0) {
             // Lossless 1:1 conversion: the pool mints its aToken 1:1 for the underlying.
             IOwnLendingPool(pool).supply(stablecoin, lpYield, address(this), 0);
-            IOwnVault(vault).shareYield(lpYield);
+            IERC20(_aToken).safeTransfer(vault, lpYield);
         }
 
         emit YieldDistributed(msg.sender, treasuryCut, lpYield);
+    }
+
+    /// @dev Pull the borrowers' accrued premium forward so the share price is current before LPs
+    ///      enter or exit. Best-effort: a draw that would breach the vault's Aave health floor, or a
+    ///      paused//capped venue, must never block the LP path — the yield just stays unrealized.
+    function _claimBestEffort() private {
+        address borrowManager = IOwnVault(vault).borrowManager();
+        if (borrowManager == address(0)) return;
+        uint256 claimable = IBorrowManager(borrowManager).claimableInterest();
+        if (claimable == 0) return;
+        try IBorrowManager(borrowManager).claimEarnedInterest(claimable) {} catch {}
     }
 
     /// @inheritdoc IVaultYieldManager

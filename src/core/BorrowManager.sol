@@ -232,7 +232,7 @@ contract BorrowManager is IBorrowManager, Initializable, UUPSUpgradeable, Reentr
         liquidationBonusBps = 500; // 5%
         borrowLtvBps = 7000; // 70%
         liquidationCloseFactorBps = 5000; // 50%
-        interestBufferBps = 1000; // retain 10% of earned interest as a safety buffer
+        interestBufferBps = 100; // retain 1% of earned interest as a safety buffer
         minClaimHealthFactor = 1.1e18; // refuse claims that would leave the vault's Aave HF below 1.1
 
         // Seed the global interest index at 1.0 and stamp the clock.

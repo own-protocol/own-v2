@@ -1,6 +1,6 @@
 # Own Protocol v2 — Audit Report & Remediation Status (Pass 3)
 
-**Branch:** `upgrade-borrow-manager` · **Last updated:** 2026-07-31 · **Test suite:** 1,195 passing
+**Branch:** `upgrade-borrow-manager` · **Last updated:** 2026-07-31 · **Test suite:** 1,197 passing
 
 Consolidated from the 2026-07-19 `ChainlinkOracleVerifier` implementation review and the 2026-07-31
 full multi-agent re-audit (solidity-auditor, 12-agent pipeline — 9 specialty attackers + 3
@@ -11,8 +11,8 @@ this pass.
 Findings from earlier passes (`C-`, `H-`, `M-`, `L-`, `PA-`, `A2-`) are referenced where a new
 finding extends or overlaps them, but are not restated — those passes' documents are not in-tree.
 
-The 2026-07-31 pass surfaced **3 High, 9 Medium, 5 Low**. One High (**A3-H-01**) was fixed during the
-pass with the full suite re-run. The internal accounting was attacked directly across multiple agents
+The 2026-07-31 pass surfaced **3 High, 9 Medium, 5 Low**. Two Highs (**A3-H-01**, **A3-H-02**) were
+fixed during the pass, each with a regression test verified to fail against the pre-fix code. The internal accounting was attacked directly across multiple agents
 and held (§7); the findings cluster instead in three shapes: **guard ordering** (a check evaluated
 against a value the same call then changes), **asymmetric guards** (a floor enforced on one side of a
 paired operation but not the other), and **permissionless cranks** whose timing an attacker chooses.
@@ -45,17 +45,17 @@ Excluded as non-source: `out/`, `cache/`, `broadcast/` (Foundry artifacts), `scr
 | Severity | Total | Fixed | Open | By design |
 | -------- | ----- | ----- | ---- | --------- |
 | Critical | 0     | 0     | 0    | —         |
-| High     | 3     | 1     | 2    | —         |
-| Medium   | 9     | 0     | 9    | —         |
+| High     | 3     | 2     | 1    | —         |
+| Medium   | 9     | 1     | 8    | —         |
 | Low      | 8     | 0     | 5    | 3         |
 | Info     | 4     | 0     | 0    | 4         |
 
 | ID        | Severity | Finding                                                                                                          | Status                                    |
 | --------- | -------- | ---------------------------------------------------------------------------------------------------------------- | ----------------------------------------- |
 | A3-H-01   | High     | `psmFillOrder` validates the settle band against a mark it then refreshes → filler edge = band + intra-`maxMarkAge` drift | **Fixed** (2026-07-31)              |
-| A3-H-02   | High     | `_accrue` bills the whole elapsed window at an attacker-timed rate; `fulfillWithdrawal` has no caller check       | **Open**                                  |
+| A3-H-02   | High     | `_accrue` billed the whole elapsed window at an attacker-timed rate; no denominator change accrued first          | **Fixed** (2026-07-31)                    |
 | A3-H-03   | High     | `fulfillWithdrawal` is permissionless with no zero-check and no `minAssetsOut` → LP shares settled at a chosen trough | **Open** (extends tracked lead, §5)   |
-| A3-M-01   | Medium   | JIT capture of accrued LP yield via permissionless `distribute` / `claimEarnedInterest`                          | **Open — deferred** (structural fix)      |
+| A3-M-01   | Medium   | JIT capture of accrued LP yield via permissionless `distribute` / `claimEarnedInterest`                          | **Fixed** (2026-07-31)                    |
 | A3-M-02   | Medium   | Concentration cap derived only from *other* vaults collapses a capped vault's counted collateral to zero          | **Open**                                  |
 | A3-M-03   | Medium   | Borrower `_drawFromAave` skips the Aave health floor that every collateral-decreasing path enforces               | **Open** (sequel to H-07)                 |
 | A3-M-04   | Medium   | `migrateToken` desyncs every PSM wrapper's ratio-jump baseline → all PSM paths brick on a split                   | **Open**                                  |
@@ -65,7 +65,7 @@ Excluded as non-source: `out/`, `cache/`, `broadcast/` (Foundry artifacts), `scr
 | A3-M-08   | Medium   | Saturated `totalAssets()` makes `previewDeposit` mint a near-unbounded share count                               | **Open** (venue-dependent)                |
 | A3-M-09   | Medium   | `ReserveVault._releaseCollateral` omits the PSM ratio-jump guard it shares a ratio with                           | **Open**                                  |
 | A3-L-01   | Low      | `utilizationBps` returns 0 for a zero cap with live debt → premium collapses to floor during a halt               | **Open**                                  |
-| A3-L-02   | Low      | `claimEarnedInterest` and `requireVaultHealthy` share one threshold → revenue crank consumes the exit floor       | **Open**                                  |
+| A3-L-02   | Low      | `claimEarnedInterest` and `requireVaultHealthy` share one threshold → revenue crank consumes the exit floor       | **Open** (more reachable after A3-M-01)   |
 | A3-L-03   | Low      | `forceExecuteOrder` is the only settle path with no price band                                                    | **Open** (downgraded, §3)                 |
 | A3-L-04   | Low      | `BorrowManager._convertToCollateral` divides by an unbanded signed price                                          | **Open** (downgraded, §3)                 |
 | A3-L-05   | Low      | ETH refund helpers pay out `address(this).balance`, not this call's surplus                                       | **Open**                                  |
@@ -116,41 +116,157 @@ Full suite green (1,195 passing / 0 failed).
 
 **Detected by** 1 of 12 agents (execution-trace).
 
+
+### A3-H-02 (High) — `_accrue` billed the whole elapsed window at an attacker-timed rate
+
+**Problem.** `_accrue` computes `accrueIndex(_index, _currentRateBps(), dt)` — the instantaneous rate
+sampled at call time, applied retroactively across the whole elapsed interval — and both inputs were
+attacker-controlled. `accrue()` (`BorrowManager.sol:513`) has no modifier, and the rate's denominator
+`maxDebtUSD()` derives from `collateralMark`, which tracks the vault's `totalAssets()`.
+`OwnVault.fulfillWithdrawal` has **no caller check**, so anyone can settle any matured request and
+move it.
+
+Stated as an invariant: every path changing the *numerator* already accrued first (all seven internal
+`_accrue()` sites — borrow / repay / liquidate / absorb / settle), but **no path changing the
+denominator did**, leaving a window whose rate was decided after the fact.
+
+With `rateParams` (base 100, optimal 8000, slope1 400, slope2 7500), mark $20M, `targetLtvBps` 5000 →
+cap $10M, book debt $5M → utilisation 5000 bps → premium 350 bps. Settling a matured $12M request
+drops the mark to $8M → cap $4M → utilisation clamps to 10000 bps → premium 8000 bps. Calling
+`accrue()` in the same transaction with `dt` = 7 days grew the index **+1.534%** instead of +0.067% —
+~$73.4k of debt on a $5M book in one block, making every position in HF ∈ [1.0, 1.0147) liquidatable
+at `liquidationBonusBps`. `withdrawalBreachesUtil` gates a different ratio and `requireVaultHealthy`
+passed at HF 1.28. The mirror direction pinned the premium at its 100 bps floor and starved LPs.
+
+**Fix.** A private `_accrueLending()` in `OwnVault` books interest at every point that moves
+`totalAssets()`: both `deposit` overloads (via `_depositWithMin`), `mint`, `acceptDeposit`,
+`fulfillWithdrawal`, `releaseCollateral`, and `shareYield`. It no-ops when lending is disabled
+(`_borrowManager == address(0)`) and needs no new imports — the vault already calls
+`IBorrowManager.requireVaultHealthy()`.
+
+**Why `OwnVault` alone is sufficient.** `VaultManager.pullCollateralPrice` recomputes the mark as
+`totalAssets() × price`; it cannot move the mark independently, only *reflect* `totalAssets()`. Since
+`totalAssets()` moves only through the six vault entry points above, timestamping accrual at each one
+bounds any subsequent `pullCollateralPrice` + `accrue()` bundle to `dt ≈ 0`. Both directions close:
+the withdrawal path books the window before the mark drops, and the deposit path books it before the
+mark can rise.
+
+**Deployment constraint.** `VaultManager` is **not redeployable** in the live system; `OwnVault`,
+`BorrowManager` and `VaultYieldManager` are. An earlier attempt placed the hook inside
+`VaultManager.pullCollateralPrice` / `onCollateralReleased` — cleaner as an invariant, but
+unshippable, and it additionally broke `pullCollateralPrice` for every reserve vault
+(`ReserveVault` does not implement `borrowManager()`). Any future fix must respect this boundary.
+
+**Not done: distribution on the LP path.** Realizing yield on every deposit and withdrawal — so the
+withdrawal delay could be dropped — is blocked by the reentrancy guard, not by preference.
+`OwnVault is ERC4626, IOwnVault, ReentrancyGuard` shares one `_status`, and `deposit`,
+`fulfillWithdrawal` and `shareYield` are all `nonReentrant`, so `vault → manager.distribute() →
+vault.shareYield()` reverts. Separately, `claimEarnedInterest` performs a real Aave draw and reverts
+below `minClaimHealthFactor`, so routing it through the LP path would make deposits and withdrawals
+fail exactly when the vault is near its health floor (the band **A3-M-03** lets a borrower create),
+both are resolved under **A3-M-01**, which also records the decisions to set `interestBufferBps` to
+1% and to move to instant withdrawal.
+
+**Residual.** A direct aToken transfer to the vault also raises `totalAssets()` and cannot be
+intercepted, but it is an unrecoverable gift to LPs that only pushes the rate *down* — the attacker
+funds the subsidy. An external Aave liquidation reducing the balance is likewise outside the vault's
+control. The Aave base-rate component of `_currentRateBps()` still drifts within a window and applies
+over the whole `dt`; that is inherent and matches Aave's own model. The manipulable component is the
+utilisation-driven premium, which the fix covers.
+
+**Tests.** `BorrowAndLiquidateFlow.t.sol::test_deposit_accruesBeforeTotalAssetsMoves` opens a
+position, warps 180 days, asserts `totalDebtUSD()` (which reads the *stored* index, not the projected
+one) is unchanged, then asserts an LP deposit moves it — proving accrual is booked before
+`totalAssets()` does. Verified to **fail** with the hook removed. Full suite green (1,196 passing /
+0 failed). `MockHealthBorrowManager` (`test/unit/OwnVault.t.sol`) gained an `accrue()` no-op; it was
+the only test double affected.
+
+**Overlaps.** Net-new. Adjacent to **M-06** (debt cap checked before `_accrue`), which fixed ordering
+within `borrow` but not the rate-sampling semantics.
+**Detected by** 1 of 12 agents (economic-security).
+
+### A3-M-01 (Medium) — JIT capture of accrued LP yield
+
+> **Status: ✅ Fixed (2026-07-31)** — the vault now realizes yield before it prices any LP entry or
+> exit, so a newcomer buys in at the post-yield share price. Residuals below.
+
+**Problem.** `VaultYieldManager.distribute` was permissionless and pushed the entire held balance
+through `OwnVault.shareYield` in one step, raising the share price instantly with no vesting.
+`claimEarnedInterest` was likewise permissionless, letting a caller first force-realize borrowers'
+accrued premium into the shell and then pay it to themselves. Whoever held shares at that instant
+took a pro-rata slice of everything accrued since the last distribution, regardless of how long they
+had been invested.
+
+**Rating correction (kept for the record).** Initially rated High on the assumption that
+`OwnVault._withdrawalWaitPeriod` sat at its `0` default, making the attack atomic and flash-loanable.
+That assumption was wrong: `broadcast/SetWithdrawalDelayRobinhood.s.sol/4663/run-latest.json` records
+`setWithdrawalWaitPeriod(28800)` — 8 hours — succeeding against the oUSDG OwnVault
+`0x246705F13bF56e3A572ae1407c065126230557FC` on 2026-07-20. See §8.
+
+**Fix, part 1 — remove the reentrant callback.** `distribute` no longer calls
+`IOwnVault.shareYield`; it transfers the converted aTokens straight to the vault. `totalAssets()` is
+`balanceOf(vault) − _pendingDepositAssets`, so a plain transfer lifts the share price identically,
+and the manager already performed `shareYield`'s only other check (`totalSupply() != 0`) itself. This
+matters because `OwnVault is ERC4626, IOwnVault, ReentrancyGuard` shares one `_status` across
+`deposit`, `fulfillWithdrawal` and `shareYield` — with the callback in place, a vault-side hook was
+impossible.
+
+**Fix, part 2 — sync before pricing.** `VaultYieldManager.syncYield()` performs a best-effort claim
+then a non-reverting distribute, and `OwnVault._syncLending()` calls it (after `accrue()`) on the
+four paths that price LP shares: both `deposit` overloads, `mint`, `acceptDeposit` and
+`fulfillWithdrawal`. `releaseCollateral` and `shareYield` keep accrue-only — they are not LP pricing
+points, and hooking `shareYield` would re-enter the manager that called it.
+
+`syncYield` deliberately carries **no reentrancy guard**: the vault calls it from inside its own
+guarded paths, the body is idempotent (it drains the held balance, so a nested call is a no-op), and
+nothing in it calls back into the vault. The claim leg is `try`/`catch` — a draw that would breach the
+vault's Aave health floor, or a paused or borrow-capped venue, must never block LP flow; the yield
+simply stays unrealized, which is the pre-fix behaviour. The vault-side call is guarded by
+`manager.code.length != 0` plus `try`/`catch`, since an EOA manager is a documented supported state.
+
+**Residual.** `interestBufferBps` rate-limits each claim to `(BPS − buffer)/BPS` of the *current*
+gap. It is a per-claim limiter, not a cumulative reserve — each claim draws from Aave and shrinks the
+gap, so successive claims extract ~all premium, and anything still unclaimed is not forfeited: it
+reaches the shell as `_repayAaveAndSweep` surplus at repayment and pays out to LPs on the next sync.
+The buffer therefore affects *when* premium lands, not how much LPs receive. (The only genuine
+reduction to LPs is `treasuryCutBps` — 1000 bps on Robinhood — the protocol fee, by design.)
+
+**Decision (2026-07-31): `interestBufferBps` → 1% (100 bps)**, down from 10%. Applied as the
+`BorrowManager` constructor default, so redeployed managers ship with it and no setter call is needed;
+existing deployments still need `setInterestBufferBps(100)`. Shrinks the repay-time
+lump roughly 10× while keeping about an 8× margin over the worst-case divergence between Aave's
+continuous compounding and the sampled simple-interest book — the divergence `_flooredIndex` exists to
+absorb. Admin setter, no redeploy. A direct aToken transfer into the vault remains uncapturable by the
+hook, but it is a gift to LPs.
+
+**Interaction with A3-L-02 — watch this.** The claim now fires on every LP entry and exit rather than
+on an occasional crank, so the shared-threshold issue in **A3-L-02** becomes materially more
+reachable: repeated claims can walk the vault's Aave HF down toward `minClaimHealthFactor`, which is
+the same value `requireVaultHealthy` gates exits on. The `try`/`catch` means a breaching claim is
+skipped rather than reverting the LP's transaction, and `claimEarnedInterest` still refuses to cross
+the floor, so exits remain possible at equality — but the recommended follow-up in **A3-L-02** (gate
+the claim on `minClaimHealthFactor + buffer`) is now the natural next change rather than an optional
+hardening.
+
+**Decision (2026-07-31): instant withdrawal.** `withdrawalWaitPeriod` goes to `0`, with no further
+code changes. The delay is no longer load-bearing for this finding, and at a 1% buffer the residual
+repay-time lump is small enough to accept. Two risks are knowingly accepted alongside it, recorded
+here rather than re-argued: **M-13**'s exit-before-bad-debt-is-absorbed window loses the queue half of
+its pause-plus-queue mitigation, so a proactive pause must now beat an exiting LP in the same block;
+and **A3-L-02** stays open while claims fire on every LP action.
+
+**Tests.** `VaultYieldManager.t.sol::test_deposit_cannotFrontRunPendingYield` sweeps 10,000e6 of
+revenue into the shell, has an attacker deposit 9× the incumbent's stake, and asserts the attacker
+redeems only their principal while the incumbent keeps the full 8,000e6 LP share — verified to
+**fail** with the `_syncLending` hook removed. Existing coverage retained, including
+`::test_distribute_splitsAndLiftsSharePrice`, which pins that the direct aToken transfer lifts the
+share price exactly as `shareYield` did. Full suite green (1,197 passing / 0 failed).
+
+**Detected by** 2 of 12 agents (periphery = finding; economic-security, first-principles = leads).
+
 ---
 
 ## 2. Open Findings
-
-### A3-H-02 (High) — `_accrue` bills the whole elapsed window at an attacker-timed rate
-
-**Problem.** `_accrue` computes `accrueIndex(_index, _currentRateBps(), dt)` — the instantaneous rate
-sampled at call time, applied retroactively across the entire elapsed interval. Both inputs are
-attacker-controlled: `accrue()` is permissionless, and the rate's denominator `maxDebtUSD()` derives
-from `collateralMark`, moved by the permissionless `pullCollateralPrice` and reduced by
-`onCollateralReleased` inside `OwnVault.fulfillWithdrawal` — which has **no caller check**, so anyone
-can settle any matured request.
-
-With `rateParams` (base 100, optimal 8000, slope1 400, slope2 7500), collateralMark $20M,
-`targetLtvBps` 5000 → cap $10M, book debt $5M → util 5000 bps → premium 350 bps. Settling a matured
-$12M request drops the mark to $8M → cap $4M → util clamps to 10000 bps → premium 8000 bps. With
-`dt` = 7 days the index jumps +1.534% instead of +0.067% — ~$73.4k of new debt on a $5M book in one
-block, making every position with HF ∈ [1.0, 1.0147) liquidatable in the same transaction at
-`liquidationBonusBps`. `withdrawalBreachesUtil` does not block it (it gates a different ratio) and
-`requireVaultHealthy` passes (HF 1.28). The mirror direction is equally free: deposit → pull → accrue
-→ withdraw pins the premium at its 100 bps floor and starves LPs.
-
-**Suggested fix.** Store the rate in effect at the last state change and bill the elapsed window at
-that stored value, recomputing only after the index advances — Aave/Compound ordering, so a rate an
-attacker creates can never apply to time already elapsed.
-
-```diff
-- _index = LendingMath.accrueIndex(_index, _currentRateBps(), dt);
-+ _index = LendingMath.accrueIndex(_index, _lastRateBps, dt);
-+ _lastRateBps = _currentRateBps();
-```
-
-**Overlaps.** Net-new. Adjacent to **M-06** (cap checked before `_accrue`), which fixed ordering
-within `borrow` but not the rate-sampling semantics.
-**Detected by** 1 of 12 agents (economic-security).
 
 ### A3-H-03 (High) — `fulfillWithdrawal` settles another LP's shares at a caller-chosen price
 
@@ -182,40 +298,6 @@ check or the silent zero settlement. Distinct from **M-13** (loss *ordering* vs 
 accepted by design) and **M-04** (capacity ordering).
 **Detected by** 1 of 12 agents (numerical-gap); the missing caller check independently corroborated
 via A3-H-02.
-
-### A3-M-01 (Medium) — JIT capture of accrued LP yield
-
-**Problem.** `VaultYieldManager.distribute` (`:105`) is permissionless and pushes the entire held
-balance through `OwnVault.shareYield` in one step, raising the share price instantly with no vesting.
-`claimEarnedInterest` (`:133`) is likewise permissionless, letting a caller first force-realize
-borrowers' accrued premium into the shell and then pay it to themselves. Whoever holds shares at that
-instant takes a pro-rata slice of everything accrued since the last distribution, regardless of how
-long they were invested.
-
-**Rating correction.** Initially rated High on the assumption that `OwnVault._withdrawalWaitPeriod`
-sat at its `0` default, making the attack atomic and flash-loanable. That assumption was wrong. The
-script setting it was executed and then deleted from the tree, so it does not appear under
-`script/robinhood/`, but `broadcast/SetWithdrawalDelayRobinhood.s.sol/4663/run-latest.json` records
-`setWithdrawalWaitPeriod(28800)` — 8 hours — succeeding (status `0x1`) against the oUSDG OwnVault
-`0x246705F13bF56e3A572ae1407c065126230557FC` on 2026-07-20. See §8.
-
-**Impact with the 8h delay in force.** No flash loan (real capital required for ≥8h), not atomic, and
-the attacker carries 8h of exposure. What survives is a timing and front-running game whose prize is
-exactly the size of the undistributed pool.
-
-**Suggested fix.** Gating `distribute()` to OPERATOR does **not** close it — an attacker can watch for
-the crank and deposit ahead of it, then wait out the delay. The fix that works is structural: vest the
-yield linearly so holding shares for 8h earns 8h of yield. That is the `StreamingVaultYieldManager`
-approach recorded as adopted on Base; **that contract is absent from this tree**, and the Robinhood
-scripts deploy the unvested shell.
-
-**Status: Open — deferred.** The structural fix is a contract swap and redeploy, not an audit-pass
-edit. Interim mitigation needing no code: crank `distribute()` frequently — the prize equals the
-undistributed balance, so a daily crank bounds exposure to about a day of yield.
-**Action required:** confirm the live value is still 28800, not 0 —
-`cast call 0x246705F13bF56e3A572ae1407c065126230557FC "withdrawalWaitPeriod()(uint256)"`. If it reads
-0, this reverts to High and becomes the most urgent item in this report.
-**Detected by** 2 of 12 agents (periphery = finding; economic-security, first-principles = leads).
 
 ### A3-M-02 (Medium) — Concentration cap collapses a capped vault's counted collateral to zero
 
@@ -500,6 +582,9 @@ this is a guard-parity gap on a semi-trusted path rather than an open drain.
   exit, force-redemption) depend on, converging precisely on the floor since the HF is re-read *after*
   the draw. Self-limiting: convergence is geometric and `distribute()` returns most of the drawn amount
   as collateral. Fix: gate the claim on `minClaimHealthFactor + buffer`. Detected by 2 of 12 agents.
+  **Raised priority:** since **A3-M-01** the claim fires on every LP entry and exit rather than on an
+  occasional crank, and instant withdrawal removes the queue that previously absorbed a temporarily
+  blocked exit. Accepted open for now.
 - **A3-L-03 — Force-execution is the only settle path with no price band.** `forceExecuteOrder` applies
   neither `_checkSettleBand` nor `_checkPriceBand`, though both exist expressly to cap leaked-signer
   damage; `placeOrder` bounds `limitPrice` only as non-zero. Under an honest oracle the
@@ -630,7 +715,10 @@ authority (§3).
       with `clFreshWindow = 4h` and the intended in-house cadence.
 - [ ] Signer service: 24/7 operation, band pre-check before signing, feed-age alerting (<4h),
       aggregator-upgrade monitoring on all feed proxies (**CL-L02**).
-- [ ] Confirm `OwnVault.withdrawalWaitPeriod` is still `28800` on the live oUSDG vault (**A3-M-01**).
+- [ ] `BorrowManager.setInterestBufferBps(100)` on any **already-deployed** manager — 1%, down from
+      10% (**A3-M-01** decision). Redeployed managers pick it up from the constructor default.
+- [ ] `OwnVault.setWithdrawalWaitPeriod(0)` — instant withdrawal (**A3-M-01** decision); confirm the
+      M-13 pause trigger is automated and fast enough to act without the queue behind it.
 - [ ] Confirm deployed `targetLtvBps` against the pool's `liquidationThresholdBps` (**A3-M-03**).
 - [ ] Confirm whether any vault carries a non-zero concentration cap (**A3-M-02**).
 - [ ] Confirm whether the `EToken.depositRewards` dividend channel is live (**A3-M-07**).

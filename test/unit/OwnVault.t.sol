@@ -33,6 +33,9 @@ contract MockHealthBorrowManager {
     function requireVaultHealthy() external view {
         if (unsafe) revert VaultUnsafeHealthFactor(0.5e18);
     }
+
+    /// @dev The vault books interest before totalAssets() moves; no-op for the health stub.
+    function accrue() external {}
 }
 
 /// @title OwnVault Unit Tests

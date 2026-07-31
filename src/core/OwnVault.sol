@@ -5,6 +5,7 @@ import {IBorrowManager} from "../interfaces/IBorrowManager.sol";
 import {IOwnVault} from "../interfaces/IOwnVault.sol";
 import {IProtocolRegistry} from "../interfaces/IProtocolRegistry.sol";
 import {IVaultManager} from "../interfaces/IVaultManager.sol";
+import {IVaultYieldManager} from "../interfaces/IVaultYieldManager.sol";
 
 import {IAaveV3Pool} from "../interfaces/external/IAaveV3Pool.sol";
 import {ICreditDelegation} from "../interfaces/external/ILendingVenue.sol";
@@ -180,6 +181,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     ///      slippage floor against share-price movement before execution.
     function _depositWithMin(uint256 assets, address receiver, uint256 minSharesOut) private returns (uint256 shares) {
         if (_requireDepositApproval && msg.sender != manager) revert DepositApprovalRequired();
+        _syncLending();
         shares = super.deposit(assets, receiver);
         if (shares < minSharesOut) revert InsufficientSharesOut(shares, minSharesOut);
     }
@@ -188,6 +190,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
         uint256 shares,
         address receiver
     ) public override(ERC4626, IERC4626) whenDepositsAllowed onlyManager nonReentrant returns (uint256) {
+        _syncLending();
         return super.mint(shares, receiver);
     }
 
@@ -246,6 +249,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
         if (req.depositor == address(0)) revert DepositRequestNotFound(requestId);
         if (req.status != DepositStatus.Pending) revert DepositRequestNotPending(requestId);
 
+        _syncLending();
         uint256 shares = previewDeposit(req.assets);
         if (shares < req.minSharesOut) revert InsufficientSharesOut(shares, req.minSharesOut);
         _pendingDepositAssets -= req.assets;
@@ -357,6 +361,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
         // Pause freezes withdrawals entirely.
         if (_vaultStatus == VaultStatus.Paused) revert VaultIsPaused();
 
+        _syncLending();
         uint256 shares = req.shares;
         assets = convertToAssets(shares);
 
@@ -486,6 +491,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
         // accrue to whoever deposits first.
         if (totalSupply() == 0) revert NoSharesToReward();
 
+        _accrueLending();
         // Manager transfers collateral in → totalAssets() rises → share price rises for all LPs.
         IERC20(asset()).safeTransferFrom(msg.sender, address(this), amount);
 
@@ -564,12 +570,31 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     //  Collateral release (force execution)
     // ──────────────────────────────────────────────────────────
 
+    /// @dev Book interest before totalAssets() moves. The collateral mark tracks totalAssets(), and
+    ///      the mark is the borrow rate's utilisation denominator, so an unbooked window would
+    ///      otherwise bill at whatever rate the caller's own deposit or withdrawal produced.
+    function _accrueLending() private {
+        if (_borrowManager != address(0)) IBorrowManager(_borrowManager).accrue();
+    }
+
+    /// @dev Accrue, then realize and distribute earned yield, so an LP entry or exit is priced on a
+    ///      current share price and cannot capture yield earned before it. Best-effort on the yield
+    ///      leg: an EOA manager, or one without the hook, must not block LP flow.
+    function _syncLending() private {
+        _accrueLending();
+        address mgr = manager;
+        if (mgr.code.length != 0) {
+            try IVaultYieldManager(mgr).syncYield() {} catch {}
+        }
+    }
+
     /// @inheritdoc IOwnVault
     function releaseCollateral(address to, uint256 amount) external onlyMarket nonReentrant {
         if (to == address(0)) revert ZeroAddress();
         if (amount == 0) revert ZeroAmount();
         // Spend only backing collateral, never pending-deposit escrow (else totalAssets underflows).
         if (amount > totalAssets()) revert AmountExceedsBackedCollateral();
+        _accrueLending();
         // Sync the cached mark before assets leave, so the withdrawal gate never reads stale-high.
         IVaultManager(registry.vaultManager()).onCollateralReleased(amount);
         IERC20(asset()).safeTransfer(to, amount);
