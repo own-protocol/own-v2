@@ -364,6 +364,8 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
         _syncLending();
         uint256 shares = req.shares;
         assets = convertToAssets(shares);
+        // totalAssets() saturates to 0 while balance ≤ pending-deposit escrow; never burn shares for nothing.
+        if (assets == 0) revert ZeroAmount();
 
         // A halted vault is an emergency wind-down: its collateral is already excluded from the
         // global pool, so LP exits are immediate and unconditional (no wait period, no util check).

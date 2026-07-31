@@ -449,6 +449,43 @@ contract OwnVaultTest is BaseTest {
         vault.fulfillWithdrawal(999);
     }
 
+    /// @dev A3-H-03: when totalAssets() saturates to 0 (balance below pending-deposit escrow),
+    ///      fulfillWithdrawal must revert rather than burn the owner's shares for a 0 transfer —
+    ///      the zero is an accounting artifact, not a price, and fulfilment is permissionless.
+    function test_fulfillWithdrawal_zeroAssets_reverts() public {
+        _enableDepositApproval();
+
+        uint256 shares = _depositAs(Actors.LP2, 5 ether);
+        vm.prank(Actors.LP2);
+        uint256 requestId = vault.requestWithdrawal(shares);
+
+        uint256 pending = 10 ether;
+        weth.mint(Actors.LP1, pending);
+        vm.startPrank(Actors.LP1);
+        weth.approve(address(vault), pending);
+        vault.requestDeposit(pending, Actors.LP1, 0);
+        vm.stopPrank();
+
+        // Simulate an external Aave liquidation seizing collateral below the pending total.
+        vm.prank(address(vault));
+        weth.transfer(address(0xdead), 13 ether); // balance 15 -> 2, below 10 pending
+        assertEq(vault.totalAssets(), 0, "totalAssets saturated");
+
+        // Halt: the emergency-exit branch skips the wait period and util gate, so pre-fix
+        // this settled silently at 0.
+        vm.prank(Actors.ADMIN);
+        vault.haltVault();
+
+        vm.prank(Actors.ATTACKER);
+        vm.expectRevert(IOwnVault.ZeroAmount.selector);
+        vault.fulfillWithdrawal(requestId);
+
+        // The claim survives: request still pending, shares still escrowed.
+        WithdrawalRequest memory req = vault.getWithdrawalRequest(requestId);
+        assertEq(uint256(req.status), uint256(WithdrawalStatus.Pending));
+        assertEq(vault.balanceOf(address(vault)), shares);
+    }
+
     function test_getPendingWithdrawals_fifoOrder() public {
         _depositAs(Actors.LP1, 10 ether);
         _depositAs(Actors.LP2, 20 ether);

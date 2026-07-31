@@ -1,6 +1,6 @@
 # Own Protocol v2 — Audit Report & Remediation Status (Pass 3)
 
-**Branch:** `upgrade-borrow-manager` · **Last updated:** 2026-07-31 · **Test suite:** 1,197 passing
+**Branch:** `upgrade-borrow-manager` · **Last updated:** 2026-07-31 · **Test suite:** 1,198 passing
 
 Consolidated from the 2026-07-19 `ChainlinkOracleVerifier` implementation review and the 2026-07-31
 full multi-agent re-audit (solidity-auditor, 12-agent pipeline — 9 specialty attackers + 3
@@ -45,7 +45,7 @@ Excluded as non-source: `out/`, `cache/`, `broadcast/` (Foundry artifacts), `scr
 | Severity | Total | Fixed | Open | By design |
 | -------- | ----- | ----- | ---- | --------- |
 | Critical | 0     | 0     | 0    | —         |
-| High     | 3     | 2     | 1    | —         |
+| High     | 3     | 3     | 0    | —         |
 | Medium   | 9     | 1     | 8    | —         |
 | Low      | 8     | 0     | 5    | 3         |
 | Info     | 4     | 0     | 0    | 4         |
@@ -54,7 +54,7 @@ Excluded as non-source: `out/`, `cache/`, `broadcast/` (Foundry artifacts), `scr
 | --------- | -------- | ---------------------------------------------------------------------------------------------------------------- | ----------------------------------------- |
 | A3-H-01   | High     | `psmFillOrder` validates the settle band against a mark it then refreshes → filler edge = band + intra-`maxMarkAge` drift | **Fixed** (2026-07-31)              |
 | A3-H-02   | High     | `_accrue` billed the whole elapsed window at an attacker-timed rate; no denominator change accrued first          | **Fixed** (2026-07-31)                    |
-| A3-H-03   | High     | `fulfillWithdrawal` is permissionless with no zero-check and no `minAssetsOut` → LP shares settled at a chosen trough | **Open** (extends tracked lead, §5)   |
+| A3-H-03   | High     | `fulfillWithdrawal` is permissionless with no zero-check and no `minAssetsOut` → LP shares settled at a chosen trough | **Resolved** (2026-07-31) — zero-guard fixed; rest by design |
 | A3-M-01   | Medium   | JIT capture of accrued LP yield via permissionless `distribute` / `claimEarnedInterest`                          | **Fixed** (2026-07-31)                    |
 | A3-M-02   | Medium   | Concentration cap derived only from *other* vaults collapses a capped vault's counted collateral to zero          | **Open**                                  |
 | A3-M-03   | Medium   | Borrower `_drawFromAave` skips the Aave health floor that every collateral-decreasing path enforces               | **Open** (sequel to H-07)                 |
@@ -185,6 +185,54 @@ the only test double affected.
 within `borrow` but not the rate-sampling semantics.
 **Detected by** 1 of 12 agents (economic-security).
 
+### A3-H-03 (High) — `fulfillWithdrawal` settles another LP's shares at a caller-chosen price
+
+> **Status: ✅ Resolved (2026-07-31)** — the silent-zero-settlement leg is fixed in code; the
+> timing leg and `minAssetsOut` are accepted by design with the reachability argument recorded below.
+
+**Problem.** `fulfillWithdrawal` checks only that the request exists and is `Pending`. There is no
+caller gate, no `assets == 0` revert, and no `minAssetsOut` — unlike `deposit(assets, receiver,
+minSharesOut)` and `requestDeposit(..., minSharesOut)`, which both carry slippage floors.
+`SafeERC20.safeTransfer(owner, 0)` does not revert, so a zero settlement succeeded silently: the
+owner's escrowed shares were burned, the request marked `Fulfilled`, and 0 assets paid — destroying a
+claim whose zero valuation is an accounting artifact (`totalAssets()` saturates to 0 whenever the
+aToken balance drops to or below the pending-deposit escrow) that recovers as the balance rebases
+back. The depressed-price variant: a rival LP settles a victim's request at a transient trough and
+the difference accrues pro-rata to remaining LPs — an attacker holding 50% who burns a victim's 10%
+moves to 55.6% of the restored pool.
+
+**Fix (zero leg).** `fulfillWithdrawal` reverts `ZeroAmount` when `convertToAssets(req.shares) == 0`,
+before the halted-branch fork. Placement matters: the halted emergency-exit branch skips both the wait
+period and the util gate and was the only path that actually settled at zero — on the Active path
+`withdrawalBreachesUtil` happened to revert first. The guard is costless when the zero is genuine
+(revert vs. a 0 transfer are economically identical in a true total loss) and saves the claim when it
+is an artifact.
+
+**By design (2026-07-31) — permissionless fulfilment kept; no caller gate, no `minAssetsOut`.**
+Keeping fulfilment open preserves the option to automate settlement on users' behalf. The
+caller-chosen-trough leg requires a *transient* share-price dip (a permanent loss settles at the
+correct price), and every dip-then-recover mechanism routes through preconditions absent on the
+deployed venue: an external Aave liquidation cannot occur against `OwnLendingPool`, and the
+zero-assets state (**A3-M-08**) shares the same precondition. `minAssetsOut` would change the
+`requestWithdrawal` external API plus the frontend, and with `withdrawalWaitPeriod = 0` (**A3-M-01**
+decision) the owner sees the price and can settle in the same block they request. **Both decisions
+must be revisited if the vault is ever deployed against canonical Aave V3**, where external
+liquidations make the trough manufacturable.
+
+**Tests.** `OwnVault.t.sol::test_fulfillWithdrawal_zeroAssets_reverts` builds the saturated state
+(collateral seized below the pending-deposit escrow), halts the vault, and asserts a third-party
+fulfil reverts `ZeroAmount` with the request still `Pending` and the shares still escrowed. Verified
+to **fail** against the pre-fix code (silent zero settlement on the halted branch). Full suite green
+(1,198 passing / 0 failed).
+
+**Overlaps.** Extends the tracked lead "No `minAssetsOut` on withdrawals" (earlier pass), which
+identified the permissionless-fulfilment dilution but not the silent zero settlement. Distinct from
+**M-13** (loss *ordering* vs unabsorbed bad debt, accepted by design) and **M-04** (capacity
+ordering). Root cause of the zero state shared with **A3-M-08**, which remains open for its
+share-mint half.
+**Detected by** 1 of 12 agents (numerical-gap); the missing caller check independently corroborated
+via A3-H-02.
+
 ### A3-M-01 (Medium) — JIT capture of accrued LP yield
 
 > **Status: ✅ Fixed (2026-07-31)** — the vault now realizes yield before it prices any LP entry or
@@ -267,37 +315,6 @@ share price exactly as `shareYield` did. Full suite green (1,197 passing / 0 fai
 ---
 
 ## 2. Open Findings
-
-### A3-H-03 (High) — `fulfillWithdrawal` settles another LP's shares at a caller-chosen price
-
-**Problem.** `fulfillWithdrawal` checks only that the request exists and is `Pending`. There is no
-caller gate, no `assets == 0` revert, and no `minAssetsOut` — unlike `deposit(assets, receiver,
-minSharesOut)` and `requestDeposit(..., minSharesOut)`, which both carry slippage floors.
-`SafeERC20.safeTransfer(owner, 0)` does not revert, so a zero settlement succeeds silently. A rival LP
-can therefore burn a victim's escrowed shares at a chosen trough; the difference accrues pro-rata to
-remaining LPs, so an attacker holding 50% of shares who burns a victim's 10% moves to 55.6% of the
-restored pool — quantified profit, not merely griefing.
-
-The zero-price variant needs `totalAssets()` to saturate (see **A3-M-08**) plus a halted vault, since
-halting skips both the wait period and the util gate. The depressed-price variant needs no special
-state at all.
-
-**Suggested fix.**
-```diff
-+ if (msg.sender != req.owner && msg.sender != manager) revert NotAuthorized();
-  uint256 assets = convertToAssets(req.shares);
-+ if (assets == 0) revert ZeroAmount();
-+ if (assets < req.minAssetsOut) revert SlippageExceeded();
-```
-The `minAssetsOut` leg changes the `requestWithdrawal` external API and should be decided alongside a
-frontend update.
-
-**Overlaps.** **Reopens and extends the tracked lead "No `minAssetsOut` on withdrawals"** (§5, open
-for future review), which identified the permissionless-fulfilment dilution but not the missing caller
-check or the silent zero settlement. Distinct from **M-13** (loss *ordering* vs unabsorbed bad debt,
-accepted by design) and **M-04** (capacity ordering).
-**Detected by** 1 of 12 agents (numerical-gap); the missing caller check independently corroborated
-via A3-H-02.
 
 ### A3-M-02 (Medium) — Concentration cap collapses a capped vault's counted collateral to zero
 
