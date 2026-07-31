@@ -1644,6 +1644,30 @@ contract BorrowManagerTest is BaseTest {
         vm.stopPrank();
     }
 
+    /// @dev A3-L-01: `onVaultHalted` zeroes the collateral mark (→ cap 0) but leaves debt standing.
+    ///      Reporting that as 0% utilisation collapsed the premium to its floor at the exact moment
+    ///      LPs exit unconditionally, and rewarded borrowers for not repaying during a halt.
+    function test_utilizationBps_zeroCapWithLiveDebt_isFull() public {
+        _openTypical(Actors.MINTER1);
+        assertGt(borrowManager.utilizationBps(), 0, "utilised while healthy");
+
+        // Halting the vault zeroes the mark → maxDebtUSD() == 0 with debt outstanding.
+        vm.prank(Actors.ADMIN);
+        vault.haltVault();
+        assertEq(borrowManager.maxDebtUSD(), 0, "cap zeroed by halt");
+
+        assertEq(borrowManager.utilizationBps(), BPS, "zero cap + live debt reads fully utilised");
+    }
+
+    /// @dev The zero-cap branch must still report idle when there is genuinely no debt (genesis,
+    ///      pre-first-price-pull), which is what the original `return 0` was written for.
+    function test_utilizationBps_zeroCapNoDebt_isZero() public {
+        vm.prank(Actors.ADMIN);
+        vault.haltVault();
+        assertEq(borrowManager.maxDebtUSD(), 0, "cap zeroed");
+        assertEq(borrowManager.utilizationBps(), 0, "no debt is genuinely idle");
+    }
+
     // ──────────────────────────────────────────────────────────
     //  claimEarnedInterest
     // ──────────────────────────────────────────────────────────

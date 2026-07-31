@@ -936,7 +936,8 @@ contract BorrowManager is IBorrowManager, Initializable, UUPSUpgradeable, Reentr
     /// @inheritdoc IBorrowManager
     function utilizationBps() public view returns (uint256) {
         uint256 cap = maxDebtUSD();
-        if (cap == 0) return 0;
+        // A zeroed cap with live debt (halt, genesis, released collateral) is fully utilised, not idle.
+        if (cap == 0) return _totalScaledDebt == 0 ? 0 : BPS;
         uint256 util = totalDebtUSD().mulDiv(BPS, cap);
         return util > BPS ? BPS : util;
     }
@@ -1032,9 +1033,12 @@ contract BorrowManager is IBorrowManager, Initializable, UUPSUpgradeable, Reentr
         return idx < minIndex ? minIndex : idx;
     }
 
-    /// @dev Refund any ETH left from `msg.value` after oracle fees. The contract has no
-    ///      `receive`, so its balance can only be the current call's surplus. Called last
-    ///      (after all state writes) inside `nonReentrant` entry points.
+    /// @dev Refund ETH left after oracle fees. Pays out the whole balance: the contract has no
+    ///      `receive`, but SELFDESTRUCT and coinbase payments bypass it, so force-fed ETH is swept
+    ///      by whichever caller next hits a payable entry point (and 1 wei bricks these paths for a
+    ///      contract caller with no payable `receive`). Accepted — the deployed venue pays no oracle
+    ///      fees, so no path forwards ETH. Snapshot `balance - msg.value` if that ever changes.
+    ///      Called last (after all state writes) inside `nonReentrant` entry points.
     function _refundExcessEth() internal {
         uint256 bal = address(this).balance;
         if (bal == 0) return;

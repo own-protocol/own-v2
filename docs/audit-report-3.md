@@ -1,6 +1,6 @@
 # Own Protocol v2 — Audit Report & Remediation Status (Pass 3)
 
-**Branch:** `upgrade-borrow-manager` · **Last updated:** 2026-07-31 · **Test suite:** 1,203 passing
+**Branch:** `upgrade-borrow-manager` · **Last updated:** 2026-07-31 · **Test suite:** 1,205 passing
 
 Consolidated from the 2026-07-19 `ChainlinkOracleVerifier` implementation review and the 2026-07-31
 full multi-agent re-audit (solidity-auditor, 12-agent pipeline — 9 specialty attackers + 3
@@ -47,7 +47,7 @@ Excluded as non-source: `out/`, `cache/`, `broadcast/` (Foundry artifacts), `scr
 | Critical | 0     | 0     | 0    | —         |
 | High     | 3     | 3     | 0    | —         |
 | Medium   | 9     | 4     | 0    | 5         |
-| Low      | 8     | 0     | 5    | 3         |
+| Low      | 8     | 1     | 0    | 7         |
 | Info     | 4     | 0     | 0    | 4         |
 
 | ID        | Severity | Finding                                                                                                          | Status                                    |
@@ -64,11 +64,11 @@ Excluded as non-source: `out/`, `cache/`, `broadcast/` (Foundry artifacts), `scr
 | A3-M-07   | Medium   | `depositRewards` has no ex-dividend snapshot; fee-free PSM round-trip front-runs it                               | **Dormant** — channel not live (§3)       |
 | A3-M-08   | Medium   | Saturated `totalAssets()` makes `previewDeposit` mint a near-unbounded share count                               | **Fixed** (2026-07-31)                    |
 | A3-M-09   | Medium   | `ReserveVault._releaseCollateral` omits the PSM ratio-jump guard it shares a ratio with                           | **Acknowledged** — live reserves (§3)     |
-| A3-L-01   | Low      | `utilizationBps` returns 0 for a zero cap with live debt → premium collapses to floor during a halt               | **Open**                                  |
-| A3-L-02   | Low      | `claimEarnedInterest` and `requireVaultHealthy` share one threshold → revenue crank consumes the exit floor       | **Open** (more reachable after A3-M-01)   |
-| A3-L-03   | Low      | `forceExecuteOrder` is the only settle path with no price band                                                    | **Open** (downgraded, §3)                 |
-| A3-L-04   | Low      | `BorrowManager._convertToCollateral` divides by an unbanded signed price                                          | **Open** (downgraded, §3)                 |
-| A3-L-05   | Low      | ETH refund helpers pay out `address(this).balance`, not this call's surplus                                       | **Open**                                  |
+| A3-L-01   | Low      | `utilizationBps` returns 0 for a zero cap with live debt → premium collapses to floor during a halt               | **Fixed** (2026-07-31)                    |
+| A3-L-02   | Low      | `claimEarnedInterest` and `requireVaultHealthy` share one threshold → revenue crank consumes the exit floor       | **Accepted** — claim size immaterial (§4) |
+| A3-L-03   | Low      | `forceExecuteOrder` is the only settle path with no price band                                                    | **Accepted** — anchor-band contained (§4) |
+| A3-L-04   | Low      | `BorrowManager._convertToCollateral` divides by an unbanded signed price                                          | **Accepted** — operator input, fixed dest (§4) |
+| A3-L-05   | Low      | ETH refund helpers pay out `address(this).balance`, not this call's surplus                                       | **Accepted** — comment corrected (§4)     |
 | CL-L01    | Low      | Reverting aggregator bricks both legs, including a fresh in-house price                                           | **By design** — fail-closed accepted      |
 | CL-L02    | Low      | Cached `clDecimals` can rot on an aggregator upgrade                                                              | **By design** — ops mitigation (§6)       |
 | CL-L03    | Low      | A feed that dies mid-session reads as current for up to `clFreshWindow`                                           | **By design** — ops mitigation (§6)       |
@@ -518,27 +518,43 @@ against the pre-fix code.
 
 ## 4. Low Findings
 
-### Open (2026-07-31)
+### Fixed (2026-07-31)
 
-- **A3-L-01 — Zero debt cap reported as zero utilisation.** `BorrowManager.utilizationBps`'s
-  `if (cap == 0) return 0` assumes `cap == 0 ⟹ debt == 0`, but `onVaultHalted` zeroes
-  `_collateralMark` while `_totalScaledDebt` is untouched. Halting a fully-drawn vault cuts the premium
-  from 6125 bps to the 100 bps floor at the exact moment LPs are exiting unconditionally, and hands
-  borrowers an incentive not to repay during a halt. Also reachable at genesis (before the first
-  `pullCollateralPrice`), whenever `onCollateralReleased` drives the mark to 0, and permissionlessly by
-  chaining **A3-M-02**. Loss is forgone premium only — `_flooredIndex` still pins book debt ≥ pool
-  debt, so LPs carry no shortfall risk. Fix: `if (cap == 0) return _totalScaledDebt == 0 ? 0 : BPS;`
-  Detected by 2 of 12 agents.
-- **A3-L-02 — Revenue claim and LP exit share one threshold.** `BorrowManager.claimEarnedInterest`
-  gates on `hf >= minClaimHealthFactor` and `requireVaultHealthy()` reads the identical storage
-  variable, so a junior claim — crankable by anyone via the unauthenticated
-  `VaultYieldManager.claimEarnedInterest` — can consume 100% of the margin senior claims (LP principal
-  exit, force-redemption) depend on, converging precisely on the floor since the HF is re-read *after*
-  the draw. Self-limiting: convergence is geometric and `distribute()` returns most of the drawn amount
-  as collateral. Fix: gate the claim on `minClaimHealthFactor + buffer`. Detected by 2 of 12 agents.
-  **Raised priority:** since **A3-M-01** the claim fires on every LP entry and exit rather than on an
-  occasional crank, and instant withdrawal removes the queue that previously absorbed a temporarily
-  blocked exit. Accepted open for now.
+- **A3-L-01 — Zero debt cap reported as zero utilisation. ✅ Fixed.** `utilizationBps`'s
+  `if (cap == 0) return 0` assumed `cap == 0 ⟹ debt == 0`, but `onVaultHalted` zeroes
+  `_collateralMark` while `_totalScaledDebt` is untouched. Halting a fully-drawn vault cut the premium
+  from 6125 bps to the 100 bps floor at the exact moment LPs exit unconditionally, and rewarded
+  borrowers for not repaying during a halt. Also reachable at genesis (before the first
+  `pullCollateralPrice`) and whenever `onCollateralReleased` drives the mark to 0. Loss was forgone
+  premium only — `_flooredIndex` pins book debt ≥ pool debt, so LPs carried no shortfall risk. Now
+  `if (cap == 0) return _totalScaledDebt == 0 ? 0 : BPS;`. Tests:
+  `BorrowManager.t.sol::test_utilizationBps_zeroCapWithLiveDebt_isFull` (verified to **fail** pre-fix)
+  and `::test_utilizationBps_zeroCapNoDebt_isZero` (pins the genuinely-idle branch the original
+  `return 0` existed for). Detected by 2 of 12 agents.
+
+### Accepted / won't fix (2026-07-31)
+
+- **A3-L-02 — Revenue claim and LP exit share one threshold (accepted).**
+  `claimEarnedInterest` gates on `hf >= minClaimHealthFactor` and `requireVaultHealthy()` reads the
+  identical storage variable, so a junior claim can in principle consume margin the senior claims (LP
+  exit, force-redemption) depend on, converging on the floor since the HF is re-read *after* the draw.
+  **Decision: no code change.** Claimed interest is the premium spread on outstanding debt — orders of
+  magnitude smaller than the LP withdrawal flows it would have to crowd out — so the margin it can
+  consume is immaterial, and a dedicated buffer parameter (storage + setter + ops surface) costs more
+  than it protects. A buffered variant was implemented and reverted on this basis. Self-limiting in any
+  case: convergence is geometric, `distribute()` returns most of the drawn amount as collateral, and a
+  breaching claim is skipped (`try`/`catch`) rather than blocking the LP's transaction. Revisit if
+  claim sizes ever approach withdrawal scale. Detected by 2 of 12 agents.
+- **A3-L-05 — ETH refund helpers pay out the whole contract balance (comment corrected, code
+  accepted).** Both helpers forward `address(this).balance` on the premise that "the contract has no
+  `receive`, so its balance can only be the current call's surplus" — false, since SELFDESTRUCT and
+  coinbase payments bypass `receive`, so force-fed ETH is swept by the next payable caller, and 1 wei
+  bricks `liquidate` for a contract caller lacking a payable `receive`. **Decision: fix the comment,
+  not the code.** No path on the deployed venue forwards ETH (`verifyFee` is always 0 for
+  `ChainlinkOracleVerifier`; Robinhood Chain has no oracle fee leg), so the sweep has nothing to sweep
+  and the griefing variant has no victim. The false invariant was the real hazard — a future refactor
+  building on it — so both comments now state the actual behaviour and the `balance - msg.value`
+  snapshot to apply if a fee leg is ever introduced. Detected by 3 of 12 agents.
 - **A3-L-03 — Force-execution is the only settle path with no price band.** `forceExecuteOrder` applies
   neither `_checkSettleBand` nor `_checkPriceBand`, though both exist expressly to cap leaked-signer
   damage; `placeOrder` bounds `limitPrice` only as non-zero. Under an honest oracle the
@@ -547,7 +563,10 @@ against the pre-fix code.
   this function: it is the only fill path with no `order.expiry` check (benign today, since the price
   gate means an expired order can only execute at or below market, but it diverges from the documented
   good-til-date lifecycle). Overlaps **H-01**, **H-06**, **PA-04** and **A2-H-01**, whose
-  caller-chosen-vault and stale-proof halves are already fixed. Detected by 3 of 12 agents.
+  caller-chosen-vault and stale-proof halves are already fixed. **Accepted 2026-07-31:** the
+  `currentPrice >= limitPrice` gate caps the payout at market under an honest oracle, and a leaked
+  signer is now anchor-band contained, so the band would add no reachable protection. Detected by 3 of
+  12 agents.
 - **A3-L-04 — Bad-debt collateral conversion uses an unbanded signed price.**
   `BorrowManager._convertToCollateral` verifies the collateral price for staleness only and uses it
   directly as a divisor, skipping the `_checkPriceBand` that guards `_executeBorrow` and `liquidate`;
@@ -556,17 +575,10 @@ against the pre-fix code.
   `_checkPriceBand` reads `vmgr.assetMark(collatAsset)` and a collateral-only ticker may legitimately
   carry no mark — so a clamp against the cached collateral mark is the practical form. Destination is
   the fixed registry treasury, which bounds where value can land. Related to **L-16** (accepted
-  over-socialization via the same function's `absorbAmount`). Detected by 2 of 12 agents.
-- **A3-L-05 — ETH refund helpers pay out the whole contract balance.**
-  `BorrowManager._refundExcessEth` and `OwnMarket._refundETH` forward `address(this).balance` on the
-  stated premise that "the contract has no `receive`, so its balance can only be the current call's
-  surplus" — false, since SELFDESTRUCT and coinbase payments bypass `receive`. Force-fed ETH is swept
-  by whichever unrelated caller next hits a payable entry point. Second mechanism: the helper reverts
-  the whole call on a failed send, so 1 wei force-sent bricks `liquidate` for any contract caller
-  lacking a payable `receive`, including flash-loan liquidator bots. Fix: snapshot
-  `address(this).balance - msg.value` at entry and refund only the delta; do not revert on a failed
-  send. At minimum correct the comment, so a future refactor does not build on a false invariant.
-  Detected by 3 of 12 agents.
+  over-socialization via the same function's `absorbAmount`). **Accepted 2026-07-31:** operator-gated
+  input with a fixed treasury destination; the band is structurally unavailable for collateral-only
+  tickers, so the practical form (a clamp against the cached collateral mark) buys little over the
+  existing trust assumption. Detected by 2 of 12 agents.
 
 ---
 
