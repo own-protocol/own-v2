@@ -688,8 +688,9 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard, EIP712 {
     }
 
     /// @dev Resolve a wrapper's PSM config and derive the conversion ratio (eTokens per wrapper
-    ///      unit, 1e18) = wrapper oracle price / asset mark. Enforces the fail-closed ratio-jump
-    ///      guard and records the ratio used.
+    ///      unit, 1e18) = wrapper oracle price / asset mark. Refreshes the asset mark in-tx
+    ///      (best-effort) so both legs are same-block, enforces the fail-closed ratio-jump guard,
+    ///      and records the ratio used.
     /// @param requireFreshWrapperPrice True on paths priced off a live wrapper leg (mint;
     ///        halted redeem).
     function _psmContext(
@@ -710,6 +711,11 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard, EIP712 {
         if (requireFreshWrapperPrice && _isStale(priceTs, vmgr.maxMarkAge())) {
             revert StaleWrapperPrice(wrapperTicker);
         }
+
+        // Refresh the mark so both ratio legs read same-block (keeper lag must never skew the
+        // ratio). Best-effort by design: off-hours/dead feeds revert inside pullAssetPrice, and
+        // redeem exits must stay open on the cached mark + ratio-jump guard. See psm-design §4.3.
+        try vmgr.pullAssetPrice(asset) {} catch {}
 
         uint256 mark = vmgr.assetMark(asset);
         if (mark == 0) revert AssetMarkUnavailable(asset);

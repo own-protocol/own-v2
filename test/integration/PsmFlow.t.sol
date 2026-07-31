@@ -208,6 +208,53 @@ contract PsmFlowTest is PsmFlowBase {
         assertEq(vaultManager.globalUtilizationBps(), utilBefore, "util-neutral");
     }
 
+    function test_psmMint_priceMovedSinceKeeperPull_refreshesMarkOneToOne() public {
+        // Incident repro (TSLA mint, block 17337821): the market moves after the keeper's last
+        // pull and BOTH same-source legs show the new price. Pre-fix the ratio compared the live
+        // wrapper leg against the stale mark (245/250) and under-issued, stranding unbacked
+        // wrapper in the reserve. The in-tx mark refresh keeps same-source legs exactly 1:1.
+        uint256 moved = (TSLA_PRICE * 98) / 100;
+        skip(235); // keeper lag from the incident
+        _setOraclePrice(TSLA, moved);
+        _setOraclePrice(ONDO_TSLA, moved);
+
+        uint256 out = _psmMintOndo(Actors.MINTER1, 10e18);
+
+        assertEq(out, 10e18, "same-source legs stay 1:1 regardless of keeper lag");
+        assertEq(vaultManager.assetMark(TSLA), moved, "mark refreshed in-tx");
+    }
+
+    function test_psmRedeem_priceMovedSinceKeeperPull_refreshesMarkOneToOne() public {
+        _psmMintOndo(Actors.MINTER1, 10e18);
+
+        // Rising market + stale mark is the under-backed direction pre-fix (ratio > 1 pays out
+        // more wrapper than the eTokens ever backed). The refresh pins same-source legs to 1:1.
+        uint256 moved = (TSLA_PRICE * 102) / 100;
+        skip(235);
+        _setOraclePrice(TSLA, moved);
+        _setOraclePrice(ONDO_TSLA, moved);
+
+        vm.prank(Actors.MINTER1);
+        uint256 out = market.psmRedeem(TSLA, address(ondo), 5e18);
+
+        assertEq(out, 5e18, "1:1 payout regardless of keeper lag");
+        assertEq(vaultManager.assetMark(TSLA), moved, "mark refreshed in-tx");
+    }
+
+    function test_psmRedeem_assetOracleUnavailable_fallsBackToCachedMark() public {
+        _psmMintOndo(Actors.MINTER1, 10e18);
+
+        // The asset leg becomes unpriceable (oracle down): the best-effort refresh must swallow
+        // the failure and price off the cached mark — redeem exits stay unblockable.
+        _setOraclePrice(TSLA, 0);
+
+        vm.prank(Actors.MINTER1);
+        uint256 out = market.psmRedeem(TSLA, address(ondo), 5e18);
+
+        assertEq(out, 5e18, "cached-mark fallback keeps the exit open");
+        assertEq(vaultManager.assetMark(TSLA), TSLA_PRICE, "failed pull leaves the mark untouched");
+    }
+
     function test_psmMint_sValueDrift_mintsMoreETokens() public {
         // Dividend reinvestment: wrapper token price drifts to 1.05× the share price.
         _setOraclePrice(ONDO_TSLA, (TSLA_PRICE * 105) / 100);
