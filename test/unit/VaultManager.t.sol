@@ -369,7 +369,7 @@ contract VaultManagerTest is Test {
         assertEq(manager.collateralMark(address(vaultB)), 1_000_000e18);
 
         // The uncapped base drains to $1k; routine keeper pulls re-mark both vaults.
-        vault.setTotalAssets(1_000e6);
+        vault.setTotalAssets(1000e6);
         manager.pullCollateralPrice(address(vault));
         manager.pullCollateralPrice(address(vaultB));
 
