@@ -244,12 +244,14 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     /// @inheritdoc IOwnVault
     function acceptDeposit(
         uint256 requestId
-    ) external onlyManager nonReentrant {
+    ) external whenDepositsAllowed onlyManager nonReentrant {
         DepositRequest storage req = _depositRequests[requestId];
         if (req.depositor == address(0)) revert DepositRequestNotFound(requestId);
         if (req.status != DepositStatus.Pending) revert DepositRequestNotPending(requestId);
 
         _syncLending();
+        // Saturated totalAssets() with live supply would price the mint off the +1 virtual asset.
+        if (totalAssets() == 0 && totalSupply() > 0) revert VaultInsolvent();
         uint256 shares = previewDeposit(req.assets);
         if (shares < req.minSharesOut) revert InsufficientSharesOut(shares, req.minSharesOut);
         _pendingDepositAssets -= req.assets;

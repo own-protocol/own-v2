@@ -122,6 +122,8 @@ interface IOwnVault is IERC4626 {
     error ZeroAddress();
     /// @notice No shares exist to distribute yield to (totalSupply == 0).
     error NoSharesToReward();
+    /// @notice totalAssets() is zero while shares are outstanding; share pricing is undefined.
+    error VaultInsolvent();
     /// @notice Minted shares fell below the caller's slippage floor.
     /// @param sharesOut    Shares that would be minted.
     /// @param minSharesOut Caller's minimum acceptable shares.

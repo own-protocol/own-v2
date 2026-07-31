@@ -1,6 +1,6 @@
 # Own Protocol v2 — Audit Report & Remediation Status (Pass 3)
 
-**Branch:** `upgrade-borrow-manager` · **Last updated:** 2026-07-31 · **Test suite:** 1,201 passing
+**Branch:** `upgrade-borrow-manager` · **Last updated:** 2026-07-31 · **Test suite:** 1,203 passing
 
 Consolidated from the 2026-07-19 `ChainlinkOracleVerifier` implementation review and the 2026-07-31
 full multi-agent re-audit (solidity-auditor, 12-agent pipeline — 9 specialty attackers + 3
@@ -46,7 +46,7 @@ Excluded as non-source: `out/`, `cache/`, `broadcast/` (Foundry artifacts), `scr
 | -------- | ----- | ----- | ---- | --------- |
 | Critical | 0     | 0     | 0    | —         |
 | High     | 3     | 3     | 0    | —         |
-| Medium   | 9     | 3     | 5    | 1         |
+| Medium   | 9     | 4     | 0    | 5         |
 | Low      | 8     | 0     | 5    | 3         |
 | Info     | 4     | 0     | 0    | 4         |
 
@@ -59,11 +59,11 @@ Excluded as non-source: `out/`, `cache/`, `broadcast/` (Foundry artifacts), `scr
 | A3-M-02   | Medium   | Concentration cap derived only from *other* vaults collapses a capped vault's counted collateral to zero          | **Fixed** (2026-07-31)                    |
 | A3-M-03   | Medium   | Borrower `_drawFromAave` skips the Aave health floor that every collateral-decreasing path enforces               | **Fixed** (2026-07-31)                    |
 | A3-M-04   | Medium   | `migrateToken` desyncs every PSM wrapper's ratio-jump baseline → all PSM paths brick on a split                   | **By design** — ops runbook (§6)          |
-| A3-M-05   | Medium   | `releaseCollateral` ignores `Paused` → paused vault pays redeemers while its LPs are frozen                       | **Open**                                  |
-| A3-M-06   | Medium   | `placeOrder`/`executeOrder` gate redeem on `isActiveAsset` → deactivated asset traps holders                      | **Open** (sequel to L-17)                 |
-| A3-M-07   | Medium   | `depositRewards` has no ex-dividend snapshot; fee-free PSM round-trip front-runs it                               | **Open** (reachability unconfirmed)       |
-| A3-M-08   | Medium   | Saturated `totalAssets()` makes `previewDeposit` mint a near-unbounded share count                               | **Open** (venue-dependent)                |
-| A3-M-09   | Medium   | `ReserveVault._releaseCollateral` omits the PSM ratio-jump guard it shares a ratio with                           | **Open**                                  |
+| A3-M-05   | Medium   | `releaseCollateral` ignores `Paused` → paused vault pays redeemers while its LPs are frozen                       | **By design** — pause is an LP pause (§3) |
+| A3-M-06   | Medium   | `placeOrder`/`executeOrder` gate redeem on `isActiveAsset` → deactivated asset traps holders                      | **By design** — intentional freeze (§3)   |
+| A3-M-07   | Medium   | `depositRewards` has no ex-dividend snapshot; fee-free PSM round-trip front-runs it                               | **Dormant** — channel not live (§3)       |
+| A3-M-08   | Medium   | Saturated `totalAssets()` makes `previewDeposit` mint a near-unbounded share count                               | **Fixed** (2026-07-31)                    |
+| A3-M-09   | Medium   | `ReserveVault._releaseCollateral` omits the PSM ratio-jump guard it shares a ratio with                           | **Acknowledged** — live reserves (§3)     |
 | A3-L-01   | Low      | `utilizationBps` returns 0 for a zero cap with live debt → premium collapses to floor during a halt               | **Open**                                  |
 | A3-L-02   | Low      | `claimEarnedInterest` and `requireVaultHealthy` share one threshold → revenue crank consumes the exit floor       | **Open** (more reachable after A3-M-01)   |
 | A3-L-03   | Low      | `forceExecuteOrder` is the only settle path with no price band                                                    | **Open** (downgraded, §3)                 |
@@ -370,124 +370,37 @@ confirming deployed `targetLtvBps` vs the pool's `liquidationThresholdBps` stays
 defence-in-depth.
 **Detected by** 1 of 12 agents (trust-gap).
 
+### A3-M-08 (Medium) — Saturated `totalAssets()` mints a near-unbounded share count
+
+> **Status: ✅ Fixed (2026-07-31)** — `acceptDeposit` now refuses to price a mint against a
+> saturated vault and respects the vault status.
+
+**Problem.** `totalAssets()` saturates to 0 when the aToken balance drops to or below the
+pending-deposit escrow (the H-06 underflow fix's own consequence). With shares outstanding and
+`totalAssets()` at 0, OZ's `previewDeposit` denominates against the virtual `+1`: a 500,000-unit
+`acceptDeposit` against a 1e18 share supply mints ~5e29 shares, diluting prior LPs to ~2e-12 of the
+vault. The `_decimalsOffset() = 6` defence covers the *empty*-vault case, not
+zero-assets-with-live-supply. Second mechanism: `acceptDeposit` was the only share-minting path that
+never read `_vaultStatus`, minting into a `Paused` vault whose withdrawals revert.
+
+**Fix.** Two guards in `acceptDeposit`: the `whenDepositsAllowed` modifier (same one `deposit`,
+`mint` and `requestDeposit` already carry) blocks Paused/Halted vaults, and a
+`totalAssets() == 0 && totalSupply() > 0` check reverts `VaultInsolvent` before `previewDeposit` —
+the deposit-side mirror of the **A3-H-03** zero-settlement guard on the withdrawal side.
+
+**Residual.** Reachability of the zero state is venue-dependent as before: inert against
+`OwnLendingPool`, live against canonical Aave V3 — fixed while inert, same rationale as A3-H-03. The
+structural note (un-accepted escrow shares the aToken balance the venue treats as seizable
+collateral) stands unchanged.
+**Overlaps.** Root cause shared with **A3-H-03**; downstream of **H-06**'s saturation.
+**Tests.** `OwnVault.t.sol::test_acceptDeposit_zeroAssets_reverts` (saturated state → accept must
+revert `VaultInsolvent`) and `::test_acceptDeposit_paused_reverts`. Both verified to **fail**
+against the pre-fix code.
+**Detected by** 2 of 12 agents (flow-gap = finding, math-precision = lead).
+
 ---
 
 ## 2. Open Findings
-
-### A3-M-05 (Medium) — Paused vaults keep paying redeemers while their LPs are frozen
-
-**Problem.** Every LP-facing entry point reads `_vaultStatus`, but `releaseCollateral` and
-`releaseCollateralForBadDebt` never do, and `OwnMarket.forceExecuteOrder` filters only on
-`isVaultExcluded` — set by `haltVault`, never by `pause`. A vault in `Paused` is not excluded, is
-registered, and passes every force-execute check, so collateral keeps leaving while every queued LP's
-`fulfillWithdrawal` reverts `VaultIsPaused`. The loss the pause exists to contain lands entirely on
-the LPs the pause froze.
-
-**Suggested fix.**
-```diff
-+ if (_vaultStatus == VaultStatus.Paused) revert VaultIsPaused();
-```
-Decide explicitly whether `releaseCollateralForBadDebt` should stay exempt, and document the exemption
-if so.
-
-**Overlaps.** Complements **H-01** (which excluded *halted* vaults from force-execution) — the
-`Paused` state was never given the same treatment. Note **M-13**'s acceptance depends on proactive
-pause being effective; this finding weakens that mitigation and should be reviewed alongside it.
-**Detected by** 2 of 12 agents (asymmetry = finding, economic-security = lead).
-
-### A3-M-06 (Medium) — Deactivating an asset traps holders with no redemption route
-
-**Problem.** `fillOrder` (`:169`) and `psmFillOrder` (`:364`) apply `_validateAsset` only on the Mint
-branch; `placeOrder` (`:114`) and `executeOrder` (`:84`) apply it unconditionally. After
-`setAssetActive(ticker, false)` a holder with no pre-existing resting order cannot create one, and
-every exempted redeem path requires an order id that can no longer be minted. `redeemHalted` reverts
-`AssetNotHalted` (deactivated ≠ halted), and `psmRedeem` works only for tickers with a configured,
-unpaused wrapper and a funded reserve. `setAssetActive` is `onlyOperator` with no timelock, so one key
-freezes redemption for every holder of that ticker.
-
-**Suggested fix.**
-```diff
-- _validateAsset(asset);
-+ if (orderType == OrderType.Mint) _validateAsset(asset);
-```
-
-**Overlaps.** **Direct sequel to L-17**, which fixed `fillOrder` to gate Mint-only precisely so
-"existing positions wind down" — the same reasoning was never applied to the order-*entry* functions,
-leaving the wind-down path reachable only for holders who already had a resting order.
-**Detected by** 1 of 12 agents (asymmetry).
-
-### A3-M-07 (Medium) — Dividends are front-runnable through a fee-free PSM round-trip
-
-**Problem.** `EToken.depositRewards` raises `_rewardsPerShare` by `amount·PRECISION/supply` with no
-ex-dividend snapshot and no holding period, and `_settleRewards` on mint stamps the new holder at the
-pre-drop accumulator, so freshly minted units earn the full drop. `psmMint`/`psmRedeem` reverse at the
-identical `lastUsedRatio` in the same block with no fee (`psmFillSpreadShareBps` applies only to
-`psmFillOrder`) and both legs floor, so the round trip costs ≤1 wrapper unit. A market maker holding
-900,000 wrapper units against a 100,000 eToken float takes 90% of a $50,000 distribution and redeems
-out; honest holders who held all quarter receive $5,000.
-
-**Suggested fix.** Pay against a balance snapshot taken strictly before `depositRewards` executes, or
-make freshly minted units ineligible until the next distribution.
-
-**Residual / open question.** Reachability is unconfirmed: `depositRewards` appears only in
-`test/unit/EToken.t.sol` and in no deploy or ops script. **Confirm whether the dividend channel is
-live before rating** — this is Medium only because it may be dormant; it is High if live.
-**Overlaps.** Same JIT family as **A3-M-01**. The **M-09**-pattern `RewardTooSmall` guard (from the
-round-1 leads) addresses truncation, not snapshot timing.
-**Detected by** 2 of 12 agents (economic-security = finding, first-principles = lead).
-
-### A3-M-08 (Medium) — Saturated `totalAssets()` mints a near-unbounded share count
-
-**Problem.** `totalAssets()` returns `raw > _pendingDepositAssets ? raw - _pendingDepositAssets : 0` —
-a saturating subtraction whose own comment names the trigger ("an external Aave liquidation can pull
-the aToken balance below pending deposits"). The consequence of returning `0` was not followed
-through: OZ's `previewDeposit` computes `assets · (totalSupply + 10**6) / (totalAssets + 1)`, so with
-shares outstanding and `totalAssets()` at 0 the denominator becomes the virtual `+1`. A 500,000-unit
-`acceptDeposit` against a 1e18 share supply mints ~5e29 shares, leaving prior LPs with ~2e-12 of the
-vault. The `_decimalsOffset() = 6` defence protects the *empty*-vault case, not the
-zero-assets-with-live-supply case.
-
-A second mechanism at the same function: `acceptDeposit` is the only share-minting path that never
-reads `_vaultStatus`, so it mints into a `Paused` vault whose `requestWithdrawal` reverts — while
-`maxDeposit`/`maxMint` already report 0 for a non-Active vault.
-
-A third, structural: un-accepted deposit escrow sits in the same aToken balance the venue uses as
-collateral for the vault's debt, so a liquidation consumes depositors' escrow even though
-`totalAssets()` excludes it from share math.
-
-**Suggested fix.**
-```diff
-+ if (totalAssets() == 0 && totalSupply() > 0) revert VaultInsolvent();
-+ if (_vaultStatus != VaultStatus.Active) revert DepositsNotAllowed();
-  uint256 shares = previewDeposit(req.assets);
-```
-
-**Residual.** Impact is Critical but reachability is venue-dependent: inert against `OwnLendingPool`
-(no external liquidation path can reduce the raw balance), live against canonical Aave V3. Worth
-fixing while inert, since the precondition is a deployment choice someone could make without recalling
-this constraint.
-**Overlaps.** Root cause shared with **A3-H-03**. **H-06** previously fixed a `totalAssets` *underflow*
-by introducing this saturation; this finding is the saturation's own downstream consequence.
-**Detected by** 2 of 12 agents (flow-gap = finding, math-precision = lead).
-
-### A3-M-09 (Medium) — Reserve surplus release omits the PSM ratio-jump guard
-
-**Problem.** `ReserveVault._releaseCollateral`'s surplus clamp
-(`assetRwaCollateralUSD(backed) >= assetExposureUSD(backed)`) rearranges to
-`x <= bal − units/ratio`, where `ratio = wrapperPrice·PRECISION/mark` is byte-for-byte the quantity
-`OwnMarket._psmContext` bounds with `ratioJumpBoundBps`. `_releaseCollateral` never reads that bound
-and never touches `lastUsedRatio` (`notePsmRatio` is `onlyMarket`). A reserve holding 1,000 wrapper
-units backing 1,000 eTokens has zero skimmable surplus at a true ratio of 1.0; a wrapper feed printing
-10% high makes 90.9 units skimmable — $36,364 of real backing — leaving 1,000 eTokens against 909
-units. The identical ratio move reverts `RatioJumpExceeded` on every `OwnMarket` PSM path.
-
-**Suggested fix.** Derive the same ratio in `_releaseCollateral` and apply
-`IAssetRegistry.ratioJumpBoundBps()` against the wrapper's `lastUsedRatio`, failing closed when the
-bound is unset — mirroring `_psmContext`.
-
-**Residual.** Trigger is an allowlisted maker (`withdraw`) or the manager/operator (`skimExcess`), so
-this is a guard-parity gap on a semi-trusted path rather than an open drain.
-**Detected by** 2 of 12 agents (trust-gap = finding, economic-security = lead).
 
 ---
 
@@ -504,6 +417,50 @@ this is a guard-parity gap on a semi-trusted path rather than an open drain.
   the jump guard disarmed; the runbook keeps wrappers PSM-paused across the migration and performs a
   controlled first operation before unpausing. The second mechanism (legacy-ratio zero-decay after
   ~19 successive 1-for-10 reverse splits) stays noted-no-action in §5 — not credible standalone.
+- **A3-M-09 — Reserve surplus release omits the PSM ratio-jump guard (acknowledged 2026-07-31,
+  no code change).** `_releaseCollateral`'s surplus clamp values the reserve at the raw
+  `wrapperPrice/mark` ratio with no `ratioJumpBoundBps` check, so a wrapper feed printing 10% high
+  makes phantom surplus skimmable — the identical print reverts `RatioJumpExceeded` on every
+  `OwnMarket` PSM path. **Decision: acknowledged, not fixed** — the reserve vaults are live on
+  Robinhood and not upgradable, so a code guard could only ever reach future deployments; the
+  trigger requires a semi-trusted caller (allowlisted maker `withdraw` / manager-operator
+  `skimExcess`) **and** a simultaneous oracle misprint, and post-Chainlink-migration the wrapper
+  feed is CL-primary with in-house proofs anchor-band bounded (§3 downgrade note), so the reachable
+  misprint is small. Ops mitigation: sanity-check the wrapper feed against the PSM's `lastUsedRatio`
+  before skims/maker withdrawals (§6). Include the `_psmContext`-mirror guard if a `ReserveVault` is
+  ever redeployed.
+- **A3-M-07 — `depositRewards` JIT dividend capture (dormant, guarded; closed 2026-07-31).**
+  Verified: the dividend channel is **not live**. Robinhood Gen-2 stock tokens pay no on-chain cash
+  dividends — dividends auto-reinvest into the wrapper's `uiMultiplier`, so they surface in this
+  system as PSM-ratio drift → reserve surplus, skimmed by the MM/operator through the existing
+  surplus machinery. `depositRewards` appears in no deploy or ops script; with no distribution pot,
+  there is nothing to front-run. **Precondition recorded:** if surplus-to-eToken-holder distribution
+  ever goes live, the JIT capture becomes real (≈High) and a mitigation must ship first — a
+  pre-announcement balance snapshot, a streamed/dripped payout, or the mint-below-wrapper-value
+  design (entrants receive eTokens priced at the bare share mark while paying multiplier-inclusive
+  wrapper, pre-funding the pending dividends they could later collect — direction chosen 2026-07-31
+  if this is ever built).
+- **A3-M-06 — Deactivating an asset blocks new order entry in both directions (by design, closed
+  2026-07-31).** `placeOrder`/`executeOrder` applying `_validateAsset` unconditionally is
+  intentional: `setAssetActive(ticker, false)` is meant to freeze new order flow for the ticker
+  entirely, not to open a self-serve wind-down. The Mint-only gate on the *fill* paths (L-17) exists
+  so already-resting orders can complete, not as a template for order entry. Holder exits during a
+  deactivation are operator-managed: reactivate the asset, run the halt path (`redeemHalted`), or
+  keep a PSM wrapper redeemable — all instant operator actions. Residual noted: for a ticker with no
+  funded PSM wrapper, holders' exit timing during a deactivation depends on operator action;
+  accepted, consistent with `setAssetActive` being a trusted-operator lever.
+- **A3-M-05 — Paused vaults keep paying redeemers while their LPs are frozen (by design, closed
+  2026-07-31).** The finding read vault `pause()` as a full freeze; it is an **LP pause**: its
+  purpose is to stop LP entry/exit (e.g. exit-ahead-of-bad-debt, the M-13 window) while eToken
+  redemption — the protocol's unblockable-exit guarantee — keeps flowing. Redemption at a correct
+  mark is ~value-neutral for the vault (collateral leaves as matching exposure closes), so it is not
+  the drain the pause exists to contain. The finding's force-execute premise was also wrong:
+  `forceExecuteOrder` has its own independent levers — it reverts `AssetPaused` under the global or
+  per-asset trading pause (`setTradingPaused` / `setAssetTradingPaused`, both instant operator
+  actions), and the per-asset force-execute vault allowlist can drop any vault as a collateral
+  source. `releaseCollateralForBadDebt` is reachable only through the trusted operator
+  `absorbBadDebt` flow. M-13's acceptance is unaffected: pause still freezes the LP exits M-13
+  cares about.
 - **CL-L01 — Reverting aggregator bricks both legs (acknowledged, won't fix, 2026-07-19).**
   `_chainlink()` lets `latestRoundData()` reverts bubble up. A *stale* feed correctly fails over to
   the in-house leg, but a *reverting* one (unset/bricked proxy) DoSes `getPrice` and blocks
@@ -727,11 +684,17 @@ authority (§3).
       `migrateToken` → `resetRatioGuard(ticker, wrapper)` per wrapper → perform one controlled PSM
       operation per wrapper (the reset leaves the jump guard disarmed for exactly that operation) →
       unpause. Codify as a script before the first live migration.
-- [ ] Confirm whether the `EToken.depositRewards` dividend channel is live (**A3-M-07**).
+- [x] Confirm whether the `EToken.depositRewards` dividend channel is live (**A3-M-07**) — verified
+      2026-07-31: not live; Robinhood wrappers auto-reinvest dividends via `uiMultiplier` (no
+      on-chain cash leg), surplus is skimmed by MM/operator. See the §3 precondition before ever
+      activating it.
 - [ ] Increase `distribute()` crank frequency as the interim **A3-M-01** mitigation.
 - [ ] Per-wrapper mint monitoring: alert when a reserve vault's minted backing crosses the agreed
       threshold and manually `setPsmPaused` that wrapper — this monitored-threshold pause is the
       chosen replacement for the rejected on-chain PSM mint cap (no share cap exists per reserve).
+- [ ] Skim/withdraw runbook (**A3-M-09**, acknowledged): before `skimExcess` or a maker `withdraw`,
+      sanity-check the wrapper feed against the PSM's `lastUsedRatio` (the guard the deployed
+      reserves lack); include the `_psmContext`-mirror guard in any future `ReserveVault` deploy.
 - [ ] Remove the dead `PYTH_ORACLE` constant and `pythOracle()` getter from `ProtocolRegistry`
       (`src/core/ProtocolRegistry.sol:70`) now that `PythOracleVerifier` has left `src/`.
 

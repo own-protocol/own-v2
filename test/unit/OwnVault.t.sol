@@ -263,6 +263,51 @@ contract OwnVaultTest is BaseTest {
         assertEq(vault.totalAssets(), 20 ether); // initial + async deposit
     }
 
+    /// @dev A3-M-08: with totalAssets() saturated to 0 and live supply, previewDeposit prices off
+    ///      the +1 virtual asset and would mint a near-unbounded share count — acceptDeposit must
+    ///      revert instead of handing the vault to the new depositor.
+    function test_acceptDeposit_zeroAssets_reverts() public {
+        _enableDepositApproval();
+        _depositAs(Actors.LP2, 5 ether);
+
+        uint256 pending = 10 ether;
+        weth.mint(Actors.LP1, pending);
+        vm.startPrank(Actors.LP1);
+        weth.approve(address(vault), pending);
+        uint256 requestId = vault.requestDeposit(pending, Actors.LP1, 0);
+        vm.stopPrank();
+
+        // Simulate an external Aave liquidation seizing collateral below the pending total.
+        vm.prank(address(vault));
+        weth.transfer(address(0xdead), 13 ether); // balance 15 -> 2, below 10 pending
+        assertEq(vault.totalAssets(), 0, "totalAssets saturated");
+
+        vm.prank(Actors.VM1);
+        vm.expectRevert(IOwnVault.VaultInsolvent.selector);
+        vault.acceptDeposit(requestId);
+    }
+
+    /// @dev A3-M-08 (second mechanism): acceptDeposit was the only share-minting path that never
+    ///      read the vault status — it must not mint into a Paused vault whose withdrawals revert.
+    function test_acceptDeposit_paused_reverts() public {
+        _enableDepositApproval();
+        _depositAs(Actors.LP2, 10 ether);
+
+        uint256 depositAmount = 10 ether;
+        weth.mint(Actors.LP1, depositAmount);
+        vm.startPrank(Actors.LP1);
+        weth.approve(address(vault), depositAmount);
+        uint256 requestId = vault.requestDeposit(depositAmount, Actors.LP1, 0);
+        vm.stopPrank();
+
+        vm.prank(Actors.VM1);
+        vault.pause(bytes32("emergency"));
+
+        vm.prank(Actors.VM1);
+        vm.expectRevert(IOwnVault.VaultIsPaused.selector);
+        vault.acceptDeposit(requestId);
+    }
+
     function test_rejectDeposit_returnsAssets() public {
         _enableDepositApproval();
         uint256 depositAmount = 10 ether;
