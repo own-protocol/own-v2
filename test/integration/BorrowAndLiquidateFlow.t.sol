@@ -150,6 +150,25 @@ contract BorrowAndLiquidateFlowTest is BaseTest {
         assertGt(borrowManager.totalDebtUSD(), bookedBefore, "deposit did not accrue first");
     }
 
+    /// @dev A3-M-03: the debt-increasing path must enforce the same Aave health floor every
+    ///      collateral-decreasing path checks (H-07) — a borrow landing the vault below
+    ///      minClaimHealthFactor must revert instead of entering the band where LP exits are
+    ///      frozen while borrowing keeps succeeding. Fails without the _executeBorrow HF check.
+    function test_borrow_belowAaveHealthFloor_reverts() public {
+        eTSLA.mint(Actors.MINTER1, 200e18);
+        aavePool.setHealthFactor(1.05e18); // below the 1.1e18 default floor
+
+        vm.startPrank(Actors.MINTER1);
+        eTSLA.approve(address(borrowManager), 200e18);
+        vm.expectRevert(abi.encodeWithSelector(IBorrowManager.VaultUnsafeHealthFactor.selector, 1.05e18));
+        borrowManager.borrow(ASSET, 100e18, 10_000e6, _priceData(TSLA_PX));
+
+        // At the floor exactly, borrowing stays open.
+        aavePool.setHealthFactor(1.1e18);
+        borrowManager.borrow(ASSET, 100e18, 10_000e6, _priceData(TSLA_PX));
+        vm.stopPrank();
+    }
+
     /// @dev End-to-end: borrow → dividend deposit while collateral in custody →
     ///      price crashes → liquidate. Verifies position close, Aave debt
     ///      cleared, liquidator gets the eTokens but NOT the dividends — those

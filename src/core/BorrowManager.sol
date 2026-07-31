@@ -354,6 +354,12 @@ contract BorrowManager is IBorrowManager, Initializable, UUPSUpgradeable, Reentr
 
         // Borrow stablecoin from Aave on the vault's behalf via credit delegation and forward it.
         _drawFromAave(stablecoinAmount);
+        {
+            // Aave blocks HF < 1.0 on the draw itself; enforce the same configured margin every
+            // collateral-decreasing path checks, so borrows can't enter the band where LP exits revert.
+            uint256 hf = _vaultAaveHealthFactor();
+            if (hf < minClaimHealthFactor) revert VaultUnsafeHealthFactor(hf);
+        }
         IERC20(stablecoin).safeTransfer(msg.sender, stablecoinAmount);
 
         // principal is scaled debt: actual debt grows via index. A zero scaled

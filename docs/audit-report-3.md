@@ -1,6 +1,6 @@
 # Own Protocol v2 — Audit Report & Remediation Status (Pass 3)
 
-**Branch:** `upgrade-borrow-manager` · **Last updated:** 2026-07-31 · **Test suite:** 1,198 passing
+**Branch:** `upgrade-borrow-manager` · **Last updated:** 2026-07-31 · **Test suite:** 1,201 passing
 
 Consolidated from the 2026-07-19 `ChainlinkOracleVerifier` implementation review and the 2026-07-31
 full multi-agent re-audit (solidity-auditor, 12-agent pipeline — 9 specialty attackers + 3
@@ -46,7 +46,7 @@ Excluded as non-source: `out/`, `cache/`, `broadcast/` (Foundry artifacts), `scr
 | -------- | ----- | ----- | ---- | --------- |
 | Critical | 0     | 0     | 0    | —         |
 | High     | 3     | 3     | 0    | —         |
-| Medium   | 9     | 1     | 8    | —         |
+| Medium   | 9     | 3     | 5    | 1         |
 | Low      | 8     | 0     | 5    | 3         |
 | Info     | 4     | 0     | 0    | 4         |
 
@@ -56,9 +56,9 @@ Excluded as non-source: `out/`, `cache/`, `broadcast/` (Foundry artifacts), `scr
 | A3-H-02   | High     | `_accrue` billed the whole elapsed window at an attacker-timed rate; no denominator change accrued first          | **Fixed** (2026-07-31)                    |
 | A3-H-03   | High     | `fulfillWithdrawal` is permissionless with no zero-check and no `minAssetsOut` → LP shares settled at a chosen trough | **Resolved** (2026-07-31) — zero-guard fixed; rest by design |
 | A3-M-01   | Medium   | JIT capture of accrued LP yield via permissionless `distribute` / `claimEarnedInterest`                          | **Fixed** (2026-07-31)                    |
-| A3-M-02   | Medium   | Concentration cap derived only from *other* vaults collapses a capped vault's counted collateral to zero          | **Open**                                  |
-| A3-M-03   | Medium   | Borrower `_drawFromAave` skips the Aave health floor that every collateral-decreasing path enforces               | **Open** (sequel to H-07)                 |
-| A3-M-04   | Medium   | `migrateToken` desyncs every PSM wrapper's ratio-jump baseline → all PSM paths brick on a split                   | **Open**                                  |
+| A3-M-02   | Medium   | Concentration cap derived only from *other* vaults collapses a capped vault's counted collateral to zero          | **Fixed** (2026-07-31)                    |
+| A3-M-03   | Medium   | Borrower `_drawFromAave` skips the Aave health floor that every collateral-decreasing path enforces               | **Fixed** (2026-07-31)                    |
+| A3-M-04   | Medium   | `migrateToken` desyncs every PSM wrapper's ratio-jump baseline → all PSM paths brick on a split                   | **By design** — ops runbook (§6)          |
 | A3-M-05   | Medium   | `releaseCollateral` ignores `Paused` → paused vault pays redeemers while its LPs are frozen                       | **Open**                                  |
 | A3-M-06   | Medium   | `placeOrder`/`executeOrder` gate redeem on `isActiveAsset` → deactivated asset traps holders                      | **Open** (sequel to L-17)                 |
 | A3-M-07   | Medium   | `depositRewards` has no ex-dividend snapshot; fee-free PSM round-trip front-runs it                               | **Open** (reachability unconfirmed)       |
@@ -312,98 +312,67 @@ share price exactly as `shareYield` did. Full suite green (1,197 passing / 0 fai
 
 **Detected by** 2 of 12 agents (periphery = finding; economic-security, first-principles = leads).
 
----
-
-## 2. Open Findings
-
 ### A3-M-02 (Medium) — Concentration cap collapses a capped vault's counted collateral to zero
 
-**Problem.** `VaultManager._cappedContribution` computes `maxCounted = others·cap/(BPS−cap)`, deriving
-a capped vault's allowance purely from *other* vaults' counted collateral. It floors to zero when the
-capped vault is the only counted vault, and collapses super-linearly — a `cap/(BPS−cap)` multiplier on
-someone else's balance change — as the rest of the pool shrinks. The permissionless
-`pullCollateralPrice` then zeroes `_globalCollateralUSD`, reverting all `openExposure` with
-`CollateralNotInitialized` and all `fulfillWithdrawal` with `MaxUtilizationExceeded`.
-`onVaultUnhalted` has the identical defect (it passes `_globalCollateralUSD` as `others`).
+> **Status: ✅ Fixed (2026-07-31)** — self-referential floor added. Fix reaches **future
+> deployments only**: the live `VaultManager` is not redeployable. Live exposure is nil — no
+> `setCollateralCapBps` call exists in `broadcast/`, so every deployed cap is 0 (disabled). If a
+> cap is ever set on the live instance the collapse remains reachable there; recovery is
+> `setCollateralCapBps(vault, 0)`.
 
-Worked case at cap 3000 bps: vault A raw $9,000,000, vault B uncapped $1,000,000 → A counts $428,571
-(30%, as intended). B is then drained to $1,000; the next routine keeper `pullCollateralPrice(A)` sees
-`others` = $1,000 → A counts **$428**. $9,001,000 of real collateral counts as $1,428.
+**Problem.** `_cappedContribution` computed `maxCounted = others·cap/(BPS−cap)`, deriving a capped
+vault's allowance purely from *other* vaults' counted collateral. It floored to zero when the capped
+vault was the only counted vault and collapsed super-linearly as the rest of the pool shrank. Worked
+case at cap 3000 bps: vault A raw $9M counts $428,571 while uncapped vault B holds $1M; B drains to
+$1,000 → the next keeper pull counts A at **$428**. The zeroed global mark then reverts all
+`openExposure` (`CollateralNotInitialized`) and all `fulfillWithdrawal` (`MaxUtilizationExceeded`).
+Availability only — no fund loss. `onVaultUnhalted` shared the defect (passes `_globalCollateralUSD`
+as `others`).
 
-**Suggested fix (Option A — handle the degenerate case):**
-```diff
-+ if (others == 0) return rawMark;
-```
-**Suggested fix (Option B — make the cap self-referential):**
-```diff
-- uint256 maxCounted = others.mulDiv(cap, BPS - cap);
-+ uint256 maxCounted = Math.max(others.mulDiv(cap, BPS - cap), rawMark.mulDiv(cap, BPS));
-```
-Option B also fixes the gradual-shrinkage case, not just `others == 0`.
+**Fix.** Option B (self-referential): `maxCounted` is floored at `rawMark·cap/BPS`, so a capped vault
+always counts at least `cap` bps of its own raw mark regardless of the rest of the pool. Both call
+sites route through `_cappedContribution`, so `pullCollateralPrice` and `onVaultUnhalted` are covered
+together. Under-cap and over-cap behaviour with a healthy pool is unchanged (existing cap tests all
+pass untouched).
 
-**Residual.** Availability only — no fund loss, and admin-recoverable via
-`setCollateralCapBps(vault, 0)`. Chains into **A3-L-01**.
-**Open question:** does any vault carry a non-zero concentration cap in the deployed config? Must be
-checked against `broadcast/`, not `script/` — see §8.
+**Tests.** `VaultManager.t.sol::test_collateralCap_othersDrain_floorsAtOwnShare` (pool drains
+$3M → $1k; capped vault must count $750k, pre-fix counted $333) and
+`::test_collateralCap_soleVault_countsFloorShare` (others == 0; pre-fix counted 0). Both verified to
+**fail** against the pre-fix formula. Chains into **A3-L-01** remain as recorded there.
 **Detected by** 3 of 12 agents (math-precision, numerical-gap = findings; flow-gap = lead).
 
 ### A3-M-03 (Medium) — Borrower draws skip the Aave health floor every exit path enforces
 
-**Problem.** `_drawFromAave` has two call sites. `claimEarnedInterest` draws then reverts below
-`minClaimHealthFactor`; `_executeBorrow` draws with no such check. Nothing ties `targetLtvBps` to the
-venue's liquidation threshold — `initialize` and `setTargetLtvBps` validate only `0 < ltvBps < BPS` —
-so any `targetLtvBps > LT/1.1` reaches HF ∈ [1.0, `minClaimHealthFactor`) at the protocol's own debt
-cap. In that band every `fulfillWithdrawal` and every `releaseCollateral` reverts on
-`requireVaultHealthy()` while `borrow` keeps succeeding. With `OwnLendingPool` at ltv 7500 / LT 8000,
-the cap itself yields HF = 8000/7500 = 1.0667, below the 1.1 default.
+> **Status: ✅ Fixed (2026-07-31)** — `_executeBorrow` now enforces `minClaimHealthFactor` after the
+> Aave draw. Ships with the `BorrowManager` redeploy on this branch.
 
-The cap is checked only at borrow time, so **ordinary Aave interest accrual walks the vault into the
-band even from a conservative config** — this is the one finding in the report that fires without an
-attacker.
+**Problem.** `_drawFromAave` had two call sites: `claimEarnedInterest` drew then reverted below
+`minClaimHealthFactor`; `_executeBorrow` drew with no check, while every collateral-decreasing path
+(`fulfillWithdrawal`, `releaseCollateral`) enforces the same floor via `requireVaultHealthy()`. Any
+`targetLtvBps > LT/1.1` therefore reached HF ∈ [1.0, floor) at the protocol's own debt cap — a band
+where LP exits revert while borrowing keeps succeeding — and ordinary Aave interest accrual could walk
+the vault into that band with no attacker.
 
-**Suggested fix.**
-```diff
-  _drawFromAave(stablecoinAmount);
-+ requireVaultHealthy();
-```
+**Fix.** After `_drawFromAave(stablecoinAmount)` in `_executeBorrow`, the vault's Aave HF is read and
+the call reverts `VaultUnsafeHealthFactor` below `minClaimHealthFactor` — the same post-draw pattern
+`claimEarnedInterest` uses. A borrow can now never create the frozen-exit band; at worst it reverts at
+the floor, which is the correct side to block. Set-time validation of `targetLtvBps` against the
+venue's liquidation threshold was **not** added: the runtime check subsumes it, and the venue LT is
+not uniformly exposed at set time.
 
-**Overlaps.** **Direct sequel to H-07** (round 2), which added `requireVaultHealthy()` to the
-collateral-*decreasing* paths; the debt-*increasing* path never got it. Consider additionally
-validating `targetLtvBps` against the venue's liquidation threshold at set time.
-**Open question:** deployed `targetLtvBps` (7000) vs the pool's `liquidationThresholdBps` — confirm
-against `broadcast/`.
+**Tests.** `BorrowAndLiquidateFlow.t.sol::test_borrow_belowAaveHealthFloor_reverts` — borrow at mock
+HF 1.05 reverts `VaultUnsafeHealthFactor(1.05e18)`; at exactly the 1.1 floor it succeeds. Verified to
+**fail** (borrow sailed through) against the pre-fix code.
+
+**Overlaps.** Direct sequel to **H-07** (round 2), which added `requireVaultHealthy()` to the
+collateral-*decreasing* paths; the debt-*increasing* path never got it. The §6 checklist item
+confirming deployed `targetLtvBps` vs the pool's `liquidationThresholdBps` stays open as
+defence-in-depth.
 **Detected by** 1 of 12 agents (trust-gap).
 
-### A3-M-04 (Medium) — `migrateToken` desyncs every PSM wrapper's ratio-jump baseline
+---
 
-**Problem.** `AssetRegistry.migrateToken` rescales `_legacyRatio` for every legacy token
-(`:143-148`) but leaves `_psmConfigs[ticker][*].lastUsedRatio` untouched, while the atomically-called
-`VaultManager.applySplit` divides `_assetMark` by `ratio`. The derived PSM ratio
-(`wrapperPrice·PRECISION/mark`) therefore shifts by exactly `ratio` — a 2-for-1 split doubles it — and
-`_psmContext`'s jump guard sees `diff == last`, so `last·BPS > last·bound` holds for every bound below
-`BPS`. Every PSM path for that ticker (`psmMint`, `psmRedeem` including the halted in-kind exit,
-`psmFillOrder`) reverts `RatioJumpExceeded` until an operator calls `resetRatioGuard` for each entry
-of `_psmWrappers[ticker]` — and that reset sets `lastUsedRatio = 0` (`:240`), disarming the jump guard
-entirely for the following operation. Splits are routine for equities, so likelihood is high.
-
-A second mechanism at the same function: the `_legacyRatio` rebase floors with no zero-guard, so ~19
-successive 1-for-10 reverse splits drive the oldest ratio to 0, bricking `convertLegacy` (the holder's
-last exit) and defeating the `_legacyRatio[newToken] != 0` address-reuse guard.
-
-**Suggested fix.**
-```diff
-+ address[] memory ws = _psmWrappers[ticker];
-+ for (uint256 i; i < ws.length; ++i) {
-+     PsmConfig storage c = _psmConfigs[ticker][ws[i]];
-+     if (c.lastUsedRatio != 0) c.lastUsedRatio = Math.mulDiv(c.lastUsedRatio, ratio, PRECISION);
-+ }
-```
-Add a zero-guard on the `_legacyRatio` rebase separately.
-
-**Overlaps.** Same function and same class as **M-12** (`migrateToken` desynced a halted asset's
-frozen price) and **L-07** (atomic `applySplit`) — a third value that a split invalidates.
-**Detected by** 4 of 12 agents (execution-trace = finding; math-precision, invariant, numerical-gap =
-leads).
+## 2. Open Findings
 
 ### A3-M-05 (Medium) — Paused vaults keep paying redeemers while their LPs are frozen
 
@@ -524,6 +493,17 @@ this is a guard-parity gap on a semi-trusted path rather than an open drain.
 
 ## 3. By-Design / Withdrawn
 
+- **A3-M-04 — `migrateToken` desyncs every PSM wrapper's ratio-jump baseline (ops-mitigated,
+  accepted 2026-07-31).** `migrateToken` rescales `_legacyRatio` and the mark (via `applySplit`) but
+  not `_psmConfigs[ticker][*].lastUsedRatio`, so after a split the derived PSM ratio
+  (`wrapperPrice·PRECISION/mark`) shifts by exactly the split ratio and every PSM path for the ticker
+  reverts `RatioJumpExceeded` until the guard is reset. **Decision: no code change.** A token
+  migration is an operator-scheduled event, so the baseline update belongs in the migration runbook,
+  not in the contract — see the §6 checklist entry. Residual, accepted knowingly: `resetRatioGuard`
+  re-arms by zeroing the baseline, so the first PSM operation per wrapper after each reset runs with
+  the jump guard disarmed; the runbook keeps wrappers PSM-paused across the migration and performs a
+  controlled first operation before unpausing. The second mechanism (legacy-ratio zero-decay after
+  ~19 successive 1-for-10 reverse splits) stays noted-no-action in §5 — not credible standalone.
 - **CL-L01 — Reverting aggregator bricks both legs (acknowledged, won't fix, 2026-07-19).**
   `_chainlink()` lets `latestRoundData()` reverts bubble up. A *stale* feed correctly fails over to
   the in-house leg, but a *reverting* one (unset/bricked proxy) DoSes `getPrice` and blocks
@@ -736,10 +716,22 @@ authority (§3).
       10% (**A3-M-01** decision). Redeployed managers pick it up from the constructor default.
 - [ ] `OwnVault.setWithdrawalWaitPeriod(0)` — instant withdrawal (**A3-M-01** decision); confirm the
       M-13 pause trigger is automated and fast enough to act without the queue behind it.
-- [ ] Confirm deployed `targetLtvBps` against the pool's `liquidationThresholdBps` (**A3-M-03**).
-- [ ] Confirm whether any vault carries a non-zero concentration cap (**A3-M-02**).
+- [ ] Confirm deployed `targetLtvBps` against the pool's `liquidationThresholdBps` (**A3-M-03** —
+      defence-in-depth; the runtime HF floor now enforces this at borrow time on redeploy).
+- [x] Confirm whether any vault carries a non-zero concentration cap (**A3-M-02**) — verified
+      2026-07-31: no `setCollateralCapBps` call anywhere in `broadcast/`; all deployed caps are 0
+      (disabled). Do not set a non-zero cap on the live (non-redeployable) `VaultManager` — it lacks
+      the self-referential floor fix.
+- [ ] **Token-split migration runbook (A3-M-04, accepted ops-mitigated):** announce the migration
+      and PSM hold → `setPsmPaused(ticker, wrapper, true)` for every wrapper of the ticker →
+      `migrateToken` → `resetRatioGuard(ticker, wrapper)` per wrapper → perform one controlled PSM
+      operation per wrapper (the reset leaves the jump guard disarmed for exactly that operation) →
+      unpause. Codify as a script before the first live migration.
 - [ ] Confirm whether the `EToken.depositRewards` dividend channel is live (**A3-M-07**).
 - [ ] Increase `distribute()` crank frequency as the interim **A3-M-01** mitigation.
+- [ ] Per-wrapper mint monitoring: alert when a reserve vault's minted backing crosses the agreed
+      threshold and manually `setPsmPaused` that wrapper — this monitored-threshold pause is the
+      chosen replacement for the rejected on-chain PSM mint cap (no share cap exists per reserve).
 - [ ] Remove the dead `PYTH_ORACLE` constant and `pythOracle()` getter from `ProtocolRegistry`
       (`src/core/ProtocolRegistry.sol:70`) now that `PythOracleVerifier` has left `src/`.
 

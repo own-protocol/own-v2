@@ -797,11 +797,15 @@ contract VaultManager is IVaultManager {
     /// @dev Cap a vault's counted collateral contribution to its concentration share. `others` is
     ///      the global counted collateral excluding this vault. Solving `counted <= cap/BPS ·
     ///      (others + counted)` gives `counted <= cap · others / (BPS − cap)`, so the vault counts at
-    ///      most `cap` bps of the total. A `0` (or `>= BPS`) cap is disabled and returns `rawMark`.
+    ///      most `cap` bps of the total. Floored at `cap` bps of the vault's own raw mark, so counted
+    ///      collateral cannot collapse toward zero as the rest of the pool shrinks (A3-M-02). A `0`
+    ///      (or `>= BPS`) cap is disabled and returns `rawMark`.
     function _cappedContribution(address vault, uint256 rawMark, uint256 others) private view returns (uint256) {
         uint256 cap = _collateralCapBps[vault];
         if (cap == 0 || cap >= BPS) return rawMark;
         uint256 maxCounted = others.mulDiv(cap, BPS - cap);
+        uint256 selfFloor = rawMark.mulDiv(cap, BPS);
+        if (maxCounted < selfFloor) maxCounted = selfFloor;
         return rawMark < maxCounted ? rawMark : maxCounted;
     }
 

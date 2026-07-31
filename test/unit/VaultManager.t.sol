@@ -358,6 +358,38 @@ contract VaultManagerTest is Test {
         assertEq(manager.globalCollateralUSD(), 4_000_000e18);
     }
 
+    /// @dev A3-M-02: the cap's allowance derives from *other* vaults, so when the rest of the pool
+    ///      drains, a capped vault's counted collateral collapsed super-linearly toward zero —
+    ///      freezing openExposure and withdrawals against $millions of real collateral. The
+    ///      self-referential floor keeps it at ≥ cap% of the vault's own raw mark.
+    function test_collateralCap_othersDrain_floorsAtOwnShare() public {
+        _registerAndPull(vault, 3_000_000e6); // base $3M, uncapped
+        StubVault vaultB = new StubVault(address(usdc));
+        _registerCappedAndPull(vaultB, 3_000_000e6, 2500); // $3M raw, 25% cap → counted $1M
+        assertEq(manager.collateralMark(address(vaultB)), 1_000_000e18);
+
+        // The uncapped base drains to $1k; routine keeper pulls re-mark both vaults.
+        vault.setTotalAssets(1_000e6);
+        manager.pullCollateralPrice(address(vault));
+        manager.pullCollateralPrice(address(vaultB));
+
+        // Pre-fix: maxCounted = 1k × 2500/7500 ≈ $333 — $3M of real collateral counted as dust.
+        // Post-fix: floor = 3M × 25% = $750k.
+        assertEq(manager.collateralMark(address(vaultB)), 750_000e18, "floored at 25% of own mark");
+        assertEq(manager.globalCollateralUSD(), 751_000e18);
+    }
+
+    /// @dev A3-M-02 degenerate case: capped vault alone in the pool (others == 0) must still count
+    ///      its floor share, not zero — a zero global mark reverts every openExposure with
+    ///      CollateralNotInitialized.
+    function test_collateralCap_soleVault_countsFloorShare() public {
+        StubVault vaultB = new StubVault(address(usdc));
+        _registerCappedAndPull(vaultB, 4_000_000e6, 2500); // others == 0
+
+        assertEq(manager.collateralMark(address(vaultB)), 1_000_000e18, "25% of own mark");
+        assertEq(manager.globalCollateralUSD(), 1_000_000e18);
+    }
+
     function test_collateralCap_clearedOnDeregister() public {
         vm.startPrank(admin);
         manager.registerVault(address(vault), USDC_TICKER);
