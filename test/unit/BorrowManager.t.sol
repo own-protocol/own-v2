@@ -418,6 +418,320 @@ contract BorrowManagerTest is BaseTest {
         vm.stopPrank();
     }
 
+    // ──────────────────────────────────────────────────────────
+    //  borrowMore — increase an existing position
+    // ──────────────────────────────────────────────────────────
+
+    function test_borrowMore_increasesPosition() public {
+        (uint256 eAmt, uint256 stable) = _openTypical(Actors.MINTER1);
+
+        // Same borrower, same asset → merges into the open position.
+        _giveTSLA(Actors.MINTER1, 50e18);
+        vm.startPrank(Actors.MINTER1);
+        eTSLA.approve(address(borrowManager), 50e18);
+        vm.expectEmit(true, true, false, true);
+        emit IBorrowManager.Borrowed(Actors.MINTER1, ASSET, 50e18, 1000e6, TSLA_PX);
+        borrowManager.borrowMore(ASSET, 50e18, 1000e6, _priceData(TSLA_PX));
+        vm.stopPrank();
+
+        IBorrowManager.Position memory pos = borrowManager.positionOf(Actors.MINTER1, ASSET);
+        assertEq(pos.eTokenCollateral, eAmt + 50e18);
+        assertEq(pos.principal, stable + 1000e6); // index still 1.0
+        assertEq(borrowManager.debtOf(Actors.MINTER1, ASSET), stable + 1000e6);
+        assertEq(usdc.balanceOf(Actors.MINTER1), stable + 1000e6);
+    }
+
+    function test_borrowMore_zeroCollateral_borrowsAgainstHeadroom() public {
+        // 100 eTSLA at $250 = $25k collateral; 70% LTV allows $17.5k total. Open at $10k.
+        (, uint256 stable) = _openTypical(Actors.MINTER1);
+
+        vm.prank(Actors.MINTER1);
+        borrowManager.borrowMore(ASSET, 0, 7000e6, _priceData(TSLA_PX));
+
+        assertEq(borrowManager.debtOf(Actors.MINTER1, ASSET), stable + 7000e6);
+    }
+
+    function test_borrowMore_noPosition_reverts() public {
+        vm.prank(Actors.MINTER1);
+        vm.expectRevert(abi.encodeWithSelector(IBorrowManager.NoPosition.selector, Actors.MINTER1, ASSET));
+        borrowManager.borrowMore(ASSET, 0, 1000e6, _priceData(TSLA_PX));
+    }
+
+    function test_borrowMore_zeroStablecoin_reverts() public {
+        _openTypical(Actors.MINTER1);
+        vm.prank(Actors.MINTER1);
+        vm.expectRevert(IBorrowManager.ZeroAmount.selector);
+        borrowManager.borrowMore(ASSET, 1e18, 0, _priceData(TSLA_PX));
+    }
+
+    function test_borrowMore_totalLtvExceeded_reverts() public {
+        // Headroom is $7.5k (see above); asking for more must value the WHOLE position.
+        _openTypical(Actors.MINTER1);
+
+        vm.prank(Actors.MINTER1);
+        vm.expectRevert(abi.encodeWithSelector(IBorrowManager.InsufficientCollateral.selector, 17_501e18, 17_500e18));
+        borrowManager.borrowMore(ASSET, 0, 7501e6, _priceData(TSLA_PX));
+    }
+
+    function test_borrowMore_includesAccruedInterestInLtv() public {
+        _openTypical(Actors.MINTER1);
+        skip(365 days);
+        _pullAssetPrice(ASSET); // refresh the band-check mark after the warp
+
+        // After a year of interest the debt is over $10k, so the $7.5k top-up that fit at
+        // index 1.0 no longer fits under the $17.5k total cap.
+        vm.prank(Actors.MINTER1);
+        vm.expectRevert(); // InsufficientCollateral with accrued totals
+        borrowManager.borrowMore(ASSET, 0, 7500e6, _priceData(TSLA_PX));
+
+        // A smaller top-up that leaves room for the accrued interest still succeeds.
+        uint256 debtBefore = borrowManager.debtOf(Actors.MINTER1, ASSET);
+        assertGt(debtBefore, 10_000e6);
+        vm.prank(Actors.MINTER1);
+        borrowManager.borrowMore(ASSET, 0, 5000e6, _priceData(TSLA_PX));
+        // Sub-unit rounding of the scaled-debt conversion is protocol-favorable (floor).
+        assertApproxEqAbs(borrowManager.debtOf(Actors.MINTER1, ASSET), debtBefore + 5000e6, 2);
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  addCollateral
+    // ──────────────────────────────────────────────────────────
+
+    function test_addCollateral_succeeds_topsUpPosition() public {
+        (uint256 eAmt,) = _openTypical(Actors.MINTER1);
+        uint256 managerBalBefore = eTSLA.balanceOf(address(borrowManager));
+
+        _giveTSLA(Actors.MINTER1, 25e18);
+        vm.startPrank(Actors.MINTER1);
+        eTSLA.approve(address(borrowManager), 25e18);
+        vm.expectEmit(true, true, false, true);
+        emit IBorrowManager.CollateralAdded(Actors.MINTER1, ASSET, 25e18, eAmt + 25e18);
+        borrowManager.addCollateral(ASSET, 25e18);
+        vm.stopPrank();
+
+        assertEq(borrowManager.positionOf(Actors.MINTER1, ASSET).eTokenCollateral, eAmt + 25e18);
+        assertEq(eTSLA.balanceOf(address(borrowManager)), managerBalBefore + 25e18);
+    }
+
+    function test_addCollateral_improvesHealthFactor() public {
+        _openTypical(Actors.MINTER1);
+        uint256 hfBefore = borrowManager.healthFactor(Actors.MINTER1, ASSET, TSLA_PX);
+
+        _giveTSLA(Actors.MINTER1, 100e18);
+        vm.startPrank(Actors.MINTER1);
+        eTSLA.approve(address(borrowManager), 100e18);
+        borrowManager.addCollateral(ASSET, 100e18);
+        vm.stopPrank();
+
+        assertGt(borrowManager.healthFactor(Actors.MINTER1, ASSET, TSLA_PX), hfBefore);
+    }
+
+    function test_addCollateral_worksWhileTradingPaused() public {
+        _openTypical(Actors.MINTER1);
+        _setAssetTradingPaused(ASSET, true);
+
+        _giveTSLA(Actors.MINTER1, 10e18);
+        vm.startPrank(Actors.MINTER1);
+        eTSLA.approve(address(borrowManager), 10e18);
+        borrowManager.addCollateral(ASSET, 10e18); // no eligibility gate — defending stays open
+        vm.stopPrank();
+    }
+
+    function test_addCollateral_zeroAmount_reverts() public {
+        _openTypical(Actors.MINTER1);
+        vm.prank(Actors.MINTER1);
+        vm.expectRevert(IBorrowManager.ZeroAmount.selector);
+        borrowManager.addCollateral(ASSET, 0);
+    }
+
+    function test_addCollateral_noPosition_reverts() public {
+        vm.prank(Actors.MINTER1);
+        vm.expectRevert(abi.encodeWithSelector(IBorrowManager.NoPosition.selector, Actors.MINTER1, ASSET));
+        borrowManager.addCollateral(ASSET, 1e18);
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Debt clearing
+    // ──────────────────────────────────────────────────────────
+
+    function test_setDebtClearingPermission_setsAndRevokes() public {
+        _openTypical(Actors.MINTER1);
+
+        vm.prank(Actors.MINTER1);
+        vm.expectEmit(true, true, true, true);
+        emit IBorrowManager.DebtClearingPermissionSet(Actors.MINTER1, ASSET, Actors.LP1, 500);
+        borrowManager.setDebtClearingPermission(ASSET, Actors.LP1, 500);
+
+        (address clearer, uint96 feeBps) = borrowManager.debtClearingPermission(Actors.MINTER1, ASSET);
+        assertEq(clearer, Actors.LP1);
+        assertEq(feeBps, 500);
+
+        // feeBps 0 revokes.
+        vm.prank(Actors.MINTER1);
+        borrowManager.setDebtClearingPermission(ASSET, address(0), 0);
+        (, feeBps) = borrowManager.debtClearingPermission(Actors.MINTER1, ASSET);
+        assertEq(feeBps, 0);
+    }
+
+    function test_setDebtClearingPermission_noPosition_reverts() public {
+        vm.prank(Actors.MINTER1);
+        vm.expectRevert(abi.encodeWithSelector(IBorrowManager.NoPosition.selector, Actors.MINTER1, ASSET));
+        borrowManager.setDebtClearingPermission(ASSET, Actors.LP1, 500);
+    }
+
+    function test_setDebtClearingPermission_feeAboveBps_reverts() public {
+        _openTypical(Actors.MINTER1);
+        vm.prank(Actors.MINTER1);
+        vm.expectRevert(IBorrowManager.InvalidClearingFee.selector);
+        borrowManager.setDebtClearingPermission(ASSET, Actors.LP1, BPS + 1);
+    }
+
+    /// @dev Fund `clearer` with `amount` USDC approved to the manager.
+    function _fundClearer(address clearer, uint256 amount) internal {
+        usdc.mint(clearer, amount);
+        vm.prank(clearer);
+        usdc.approve(address(borrowManager), amount);
+    }
+
+    function test_clearDebt_designatedClearer_succeeds() public {
+        (uint256 eAmt, uint256 stable) = _openTypical(Actors.MINTER1);
+        vm.prank(Actors.MINTER1);
+        borrowManager.setDebtClearingPermission(ASSET, Actors.LP1, 500); // 5% of collateral
+
+        _fundClearer(Actors.LP1, stable);
+        uint256 fee = eAmt * 500 / 10_000;
+        vm.prank(Actors.LP1);
+        vm.expectEmit(true, true, true, true);
+        emit IBorrowManager.DebtCleared(Actors.MINTER1, ASSET, Actors.LP1, stable, fee, eAmt - fee);
+        uint256 debtRepaid = borrowManager.clearDebt(Actors.MINTER1, ASSET, type(uint256).max);
+
+        assertEq(debtRepaid, stable);
+        // Clearer earned the fee slice; borrower got the rest of the collateral back.
+        assertEq(eTSLA.balanceOf(Actors.LP1), fee);
+        assertEq(eTSLA.balanceOf(Actors.MINTER1), eAmt - fee);
+        // Position and permission are gone; the vault's Aave debt is repaid.
+        assertEq(borrowManager.positionOf(Actors.MINTER1, ASSET).principal, 0);
+        (, uint96 feeBps) = borrowManager.debtClearingPermission(Actors.MINTER1, ASSET);
+        assertEq(feeBps, 0);
+        assertEq(usdcDebt.balanceOf(address(vault)), 0);
+    }
+
+    function test_clearDebt_openPermission_anyoneCanClear() public {
+        (, uint256 stable) = _openTypical(Actors.MINTER1);
+        vm.prank(Actors.MINTER1);
+        borrowManager.setDebtClearingPermission(ASSET, address(0), 100);
+
+        _fundClearer(Actors.MINTER2, stable);
+        vm.prank(Actors.MINTER2);
+        borrowManager.clearDebt(Actors.MINTER1, ASSET, type(uint256).max);
+        assertEq(borrowManager.positionOf(Actors.MINTER1, ASSET).principal, 0);
+    }
+
+    function test_clearDebt_repaysAccruedInterest() public {
+        (, uint256 stable) = _openTypical(Actors.MINTER1);
+        vm.prank(Actors.MINTER1);
+        borrowManager.setDebtClearingPermission(ASSET, Actors.LP1, 500);
+
+        skip(180 days);
+        uint256 debt = borrowManager.debtOf(Actors.MINTER1, ASSET);
+        assertGt(debt, stable);
+
+        _fundClearer(Actors.LP1, debt);
+        vm.prank(Actors.LP1);
+        assertEq(borrowManager.clearDebt(Actors.MINTER1, ASSET, type(uint256).max), debt);
+    }
+
+    function test_clearDebt_partial_releasesProRataAndKeepsPermission() public {
+        (uint256 eAmt, uint256 stable) = _openTypical(Actors.MINTER1); // 100e18 collat, 10_000e6 debt
+        vm.prank(Actors.MINTER1);
+        borrowManager.setDebtClearingPermission(ASSET, Actors.LP1, 1000); // 10% of released slice
+
+        // Clear half the debt: half the collateral is released, split 10/90 clearer/borrower.
+        _fundClearer(Actors.LP1, stable / 2);
+        uint256 released = eAmt / 2;
+        uint256 fee = released * 1000 / 10_000;
+        vm.prank(Actors.LP1);
+        vm.expectEmit(true, true, true, true);
+        emit IBorrowManager.DebtCleared(Actors.MINTER1, ASSET, Actors.LP1, stable / 2, fee, released - fee);
+        assertEq(borrowManager.clearDebt(Actors.MINTER1, ASSET, stable / 2), stable / 2);
+
+        // Position halved, LTV preserved; permission still standing for the next clear.
+        IBorrowManager.Position memory pos = borrowManager.positionOf(Actors.MINTER1, ASSET);
+        assertEq(pos.eTokenCollateral, eAmt - released);
+        assertEq(pos.principal, stable / 2);
+        assertEq(eTSLA.balanceOf(Actors.LP1), fee);
+        assertEq(eTSLA.balanceOf(Actors.MINTER1), released - fee);
+        (address clearer, uint96 feeBps) = borrowManager.debtClearingPermission(Actors.MINTER1, ASSET);
+        assertEq(clearer, Actors.LP1);
+        assertEq(feeBps, 1000);
+
+        // Second clear takes the position to zero and retires the permission.
+        _fundClearer(Actors.LP1, stable);
+        vm.prank(Actors.LP1);
+        borrowManager.clearDebt(Actors.MINTER1, ASSET, type(uint256).max);
+        assertEq(borrowManager.positionOf(Actors.MINTER1, ASSET).principal, 0);
+        (, feeBps) = borrowManager.debtClearingPermission(Actors.MINTER1, ASSET);
+        assertEq(feeBps, 0);
+    }
+
+    function test_clearDebt_zeroAmount_reverts() public {
+        _openTypical(Actors.MINTER1);
+        vm.prank(Actors.MINTER1);
+        borrowManager.setDebtClearingPermission(ASSET, address(0), 500);
+
+        vm.prank(Actors.LP1);
+        vm.expectRevert(IBorrowManager.ZeroAmount.selector);
+        borrowManager.clearDebt(Actors.MINTER1, ASSET, 0);
+    }
+
+    function test_clearDebt_wrongCaller_reverts() public {
+        (, uint256 stable) = _openTypical(Actors.MINTER1);
+        vm.prank(Actors.MINTER1);
+        borrowManager.setDebtClearingPermission(ASSET, Actors.LP1, 500);
+
+        _fundClearer(Actors.MINTER2, stable);
+        vm.prank(Actors.MINTER2);
+        vm.expectRevert(abi.encodeWithSelector(IBorrowManager.NotAuthorizedToClear.selector, Actors.MINTER2));
+        borrowManager.clearDebt(Actors.MINTER1, ASSET, type(uint256).max);
+    }
+
+    function test_clearDebt_noPermission_reverts() public {
+        (, uint256 stable) = _openTypical(Actors.MINTER1);
+        _fundClearer(Actors.LP1, stable);
+        vm.prank(Actors.LP1);
+        vm.expectRevert(abi.encodeWithSelector(IBorrowManager.NotAuthorizedToClear.selector, Actors.LP1));
+        borrowManager.clearDebt(Actors.MINTER1, ASSET, type(uint256).max);
+    }
+
+    function test_clearDebt_noPosition_reverts() public {
+        vm.prank(Actors.LP1);
+        vm.expectRevert(abi.encodeWithSelector(IBorrowManager.NoPosition.selector, Actors.MINTER1, ASSET));
+        borrowManager.clearDebt(Actors.MINTER1, ASSET, type(uint256).max);
+    }
+
+    function test_clearDebt_permissionDoesNotSurviveToNewPosition() public {
+        (, uint256 stable) = _openTypical(Actors.MINTER1);
+        vm.prank(Actors.MINTER1);
+        borrowManager.setDebtClearingPermission(ASSET, address(0), 500);
+
+        // Borrower closes the position themselves…
+        usdc.mint(Actors.MINTER1, stable);
+        vm.startPrank(Actors.MINTER1);
+        usdc.approve(address(borrowManager), stable);
+        borrowManager.repay(ASSET, type(uint256).max);
+        vm.stopPrank();
+
+        // …and opens a fresh one: the old permission must not apply to it.
+        _openTypical(Actors.MINTER1);
+        (, uint96 feeBps) = borrowManager.debtClearingPermission(Actors.MINTER1, ASSET);
+        assertEq(feeBps, 0);
+
+        _fundClearer(Actors.LP1, stable);
+        vm.prank(Actors.LP1);
+        vm.expectRevert(abi.encodeWithSelector(IBorrowManager.NotAuthorizedToClear.selector, Actors.LP1));
+        borrowManager.clearDebt(Actors.MINTER1, ASSET, type(uint256).max);
+    }
+
     function test_borrow_assetNotActive_reverts() public {
         bytes32 newAsset = bytes32("GOLD");
 

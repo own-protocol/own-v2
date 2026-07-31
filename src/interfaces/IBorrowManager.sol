@@ -38,15 +38,23 @@ interface IBorrowManager {
         address collateralToken;
     }
 
+    /// @notice A borrower's standing permission for third-party debt clearing on one position.
+    /// @param clearer Address allowed to clear the debt; address(0) allows anyone.
+    /// @param feeBps  Share (BPS) of each released collateral slice the clearer earns; 0 = no permission.
+    struct ClearingPermission {
+        address clearer;
+        uint96 feeBps;
+    }
+
     // ──────────────────────────────────────────────────────────
     //  Events
     // ──────────────────────────────────────────────────────────
 
-    /// @notice Emitted when a borrow position is opened.
+    /// @notice Emitted when a borrow position is opened or increased.
     /// @param borrower         Position owner.
     /// @param asset            Asset ticker borrowed against.
-    /// @param eTokenCollateral eToken collateral deposited (18 dec).
-    /// @param stablecoinAmount Stablecoin handed to the borrower.
+    /// @param eTokenCollateral eToken collateral deposited in this call (18 dec).
+    /// @param stablecoinAmount Stablecoin handed to the borrower in this call.
     /// @param oraclePrice      Signed asset price at borrow time.
     event Borrowed(
         address indexed borrower,
@@ -54,6 +62,41 @@ interface IBorrowManager {
         uint256 eTokenCollateral,
         uint256 stablecoinAmount,
         uint256 oraclePrice
+    );
+
+    /// @notice Emitted when collateral is added to an open position.
+    /// @param borrower        Position owner.
+    /// @param asset           Asset ticker.
+    /// @param eTokenAmount    Collateral added, in the position's collateral token (18 dec).
+    /// @param totalCollateral Position collateral after the top-up.
+    event CollateralAdded(
+        address indexed borrower, bytes32 indexed asset, uint256 eTokenAmount, uint256 totalCollateral
+    );
+
+    /// @notice Emitted when a borrower sets or revokes a debt-clearing permission.
+    /// @param borrower Position owner granting the permission.
+    /// @param asset    Asset ticker of the position.
+    /// @param clearer  Authorized clearer; address(0) allows anyone.
+    /// @param feeBps   Collateral share (BPS) the clearer will earn; 0 = revoked.
+    event DebtClearingPermissionSet(
+        address indexed borrower, bytes32 indexed asset, address indexed clearer, uint256 feeBps
+    );
+
+    /// @notice Emitted when a third party clears a position's debt (partially or in full) under a
+    ///         standing permission.
+    /// @param borrower           Position owner whose debt was cleared.
+    /// @param asset              Asset ticker.
+    /// @param clearer            Caller who repaid the debt.
+    /// @param debtRepaid         Stablecoin repaid in this clearing.
+    /// @param feeCollateral      eToken fee paid to the clearer from the released slice.
+    /// @param collateralReturned eToken returned to the borrower from the released slice.
+    event DebtCleared(
+        address indexed borrower,
+        bytes32 indexed asset,
+        address indexed clearer,
+        uint256 debtRepaid,
+        uint256 feeCollateral,
+        uint256 collateralReturned
     );
 
     /// @notice Emitted when debt is repaid on a position (partial or full).
@@ -203,6 +246,13 @@ interface IBorrowManager {
     error InsufficientCollateral(uint256 requested, uint256 maxAllowed);
     /// @notice A position is already open for this (borrower, asset).
     error PositionAlreadyOpen(address borrower, bytes32 asset);
+    /// @notice The position's collateral token no longer matches the asset's active eToken
+    ///         (post-migration legacy collateral); the position must be repaid, not increased.
+    error CollateralTokenMismatch();
+    /// @notice The clearing fee exceeds 100% (BPS).
+    error InvalidClearingFee();
+    /// @notice Caller holds no debt-clearing permission for this position.
+    error NotAuthorizedToClear(address caller);
     /// @notice No open position for this (borrower, asset).
     error NoPosition(address borrower, bytes32 asset);
     /// @notice Position is healthy and cannot be liquidated.
@@ -262,7 +312,8 @@ interface IBorrowManager {
     // ──────────────────────────────────────────────────────────
 
     /// @notice Open a borrow position by depositing eTokens and borrowing stablecoins.
-    /// @dev    Requires `(borrower, asset)` to have no open position.
+    /// @dev    Requires `(borrower, asset)` to have no open position; use {borrowMore} to
+    ///         increase an existing one.
     /// @param asset            Asset ticker (e.g. bytes32("TSLA")).
     /// @param eTokenAmount     eToken collateral to deposit (18 decimals).
     /// @param stablecoinAmount Stablecoin to borrow (in stablecoin decimals).
@@ -273,6 +324,56 @@ interface IBorrowManager {
         uint256 stablecoinAmount,
         bytes calldata priceData
     ) external payable;
+
+    /// @notice Borrow more against an existing `(msg.sender, asset)` position, optionally adding
+    ///         collateral in the same call. The borrow LTV is checked against the whole position:
+    ///         prior collateral + top-up vs prior debt (incl. accrued interest) + new borrow.
+    /// @dev    Same eligibility and price gating as {borrow}. Requires the position's collateral to
+    ///         be the asset's active eToken (legacy collateral after a migration is repay-only).
+    /// @param asset            Asset ticker of the open position.
+    /// @param eTokenAmount     Additional eToken collateral to deposit (18 decimals); may be 0.
+    /// @param stablecoinAmount Additional stablecoin to borrow (in stablecoin decimals).
+    /// @param priceData        Signed price proof verified via the asset's primary oracle.
+    function borrowMore(
+        bytes32 asset,
+        uint256 eTokenAmount,
+        uint256 stablecoinAmount,
+        bytes calldata priceData
+    ) external payable;
+
+    /// @notice Add collateral to the caller's open `(msg.sender, asset)` position, e.g. to defend
+    ///         its health factor. Pulls more of the exact token the position already holds.
+    /// @dev    No oracle or eligibility gate — a top-up only ever improves the position, so it
+    ///         stays available while the asset is paused (when defending matters most).
+    /// @param asset        Asset ticker of the position.
+    /// @param eTokenAmount Collateral to add, in the position's collateral token (18 decimals).
+    function addCollateral(bytes32 asset, uint256 eTokenAmount) external;
+
+    /// @notice Set or revoke a standing permission for a third party to clear the caller's
+    ///         `(msg.sender, asset)` debt — partially or in full — in exchange for a share of the
+    ///         collateral released by each clearing.
+    /// @dev    Bound to the current position: it survives partial clears, and is deleted when the
+    ///         position fully closes via {clearDebt} or when a fresh position is opened, so a
+    ///         permission never carries over to a later position.
+    /// @param asset   Asset ticker of the caller's open position.
+    /// @param clearer Address allowed to clear; address(0) allows anyone.
+    /// @param feeBps  Share (BPS, ≤ 10_000) of each released collateral slice the clearer earns;
+    ///                0 revokes the permission.
+    function setDebtClearingPermission(bytes32 asset, address clearer, uint256 feeBps) external;
+
+    /// @notice Clear `(borrower, asset)` debt under the borrower's standing permission, partially
+    ///         or in full (mirrors {repay}): the caller repays up to `repayAmount` (clamped to the
+    ///         current debt; pass `type(uint256).max` to clear in full), collateral is released
+    ///         pro-rata, and the released slice is split — the permitted fee share to the caller,
+    ///         the remainder to the borrower. A full clear closes the position.
+    /// @dev    Needs no oracle price — debt is only ever exchanged at par for its pro-rata
+    ///         collateral (the protocol is made whole) and the fee terms were consented to by the
+    ///         borrower. A partial clear leaves the position and the permission open.
+    /// @param borrower    Position owner who granted the permission.
+    /// @param asset       Asset ticker.
+    /// @param repayAmount Stablecoin the caller wants to repay (clamped to the current debt).
+    /// @return debtRepaid Stablecoin actually pulled from the caller.
+    function clearDebt(address borrower, bytes32 asset, uint256 repayAmount) external returns (uint256 debtRepaid);
 
     /// @notice Repay outstanding debt for `(msg.sender, asset)`. Pass
     ///         `type(uint256).max` to fully close. Releases proportional
@@ -405,6 +506,12 @@ interface IBorrowManager {
 
     /// @notice Per-position view. Returns zero for unopened positions.
     function positionOf(address borrower, bytes32 asset) external view returns (Position memory);
+
+    /// @notice The standing debt-clearing permission for `(borrower, asset)`; `feeBps == 0` means none.
+    function debtClearingPermission(
+        address borrower,
+        bytes32 asset
+    ) external view returns (address clearer, uint96 feeBps);
 
     /// @notice Current debt (principal + accrued interest) for a position.
     function debtOf(address borrower, bytes32 asset) external view returns (uint256);

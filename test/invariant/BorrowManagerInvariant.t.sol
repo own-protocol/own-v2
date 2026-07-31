@@ -119,12 +119,15 @@ contract BorrowManagerInvariant is BaseTest {
         protocolRegistry.setAddress(marketKey, address(handler));
 
         targetContract(address(handler));
-        bytes4[] memory selectors = new bytes4[](5);
+        bytes4[] memory selectors = new bytes4[](8);
         selectors[0] = BorrowManagerHandler.borrow.selector;
         selectors[1] = BorrowManagerHandler.repay.selector;
         selectors[2] = BorrowManagerHandler.accrue.selector;
         selectors[3] = BorrowManagerHandler.aaveAccrue.selector;
         selectors[4] = BorrowManagerHandler.warp.selector;
+        selectors[5] = BorrowManagerHandler.borrowMore.selector;
+        selectors[6] = BorrowManagerHandler.addCollateral.selector;
+        selectors[7] = BorrowManagerHandler.clearDebt.selector;
         targetSelector(FuzzSelector({addr: address(handler), selectors: selectors}));
     }
 

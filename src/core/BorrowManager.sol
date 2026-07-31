@@ -145,6 +145,11 @@ contract BorrowManager is IBorrowManager, Initializable, UUPSUpgradeable, Reentr
     ///      `LendingMath.scaledToActual(principal, _index)`.
     mapping(address => mapping(bytes32 => Position)) internal _positions;
 
+    /// @inheritdoc IBorrowManager
+    /// @dev Deleted on {clearDebt} and when a fresh position is opened, so a permission never
+    ///      carries over to a later position. Appended storage (UUPS layout is append-only).
+    mapping(address => mapping(bytes32 => ClearingPermission)) public override debtClearingPermission;
+
     // ──────────────────────────────────────────────────────────
     //  Access control
     // ──────────────────────────────────────────────────────────
@@ -253,42 +258,11 @@ contract BorrowManager is IBorrowManager, Initializable, UUPSUpgradeable, Reentr
         if (_positions[msg.sender][asset].principal != 0) revert PositionAlreadyOpen(msg.sender, asset);
 
         address eToken = _resolveActiveEToken(asset);
-        _validateEligibility(asset);
+        (uint256 scaledDebt, uint256 oraclePrice, uint256 idx) =
+            _executeBorrow(asset, eToken, eTokenAmount, stablecoinAmount, eTokenAmount, 0, priceData);
 
-        uint256 oraclePrice = _verifyPrice(asset, priceData);
-        _checkPriceBand(asset, oraclePrice);
-
-        // LTV check at borrow time.
-        uint256 collateralValueUSD = LendingMath.collateralUSD(eTokenAmount, oraclePrice);
-        uint256 maxBorrowUSD = collateralValueUSD.mulDiv(borrowLtvBps, BPS);
-        uint256 borrowValueUSD = LendingMath.stableToUSD(stablecoinAmount, _stableDecimals);
-        if (borrowValueUSD > maxBorrowUSD) revert InsufficientCollateral(borrowValueUSD, maxBorrowUSD);
-
-        _accrue();
-        uint256 idx = _index;
-
-        // Protocol-level hard cap: total debt must stay within the vault's
-        // collateral-backed target LTV. Scoped so the locals free before the
-        // rest of the borrow flow (avoids stack-too-deep without via-ir).
-        {
-            uint256 cap = maxDebtUSD();
-            uint256 projected = totalDebtUSD() + borrowValueUSD;
-            if (projected > cap) revert BorrowExceedsCap(projected, cap);
-        }
-
-        // Pull eToken collateral into the manager's pooled custody.
-        IERC20(eToken).safeTransferFrom(msg.sender, address(this), eTokenAmount);
-
-        // Borrow stablecoin from Aave on the vault's behalf via credit delegation.
-        _drawFromAave(stablecoinAmount);
-
-        // Forward the borrowed stablecoin to the borrower.
-        IERC20(stablecoin).safeTransfer(msg.sender, stablecoinAmount);
-
-        // Record position. principal is scaled debt: actual debt grows via index.
-        // A zero scaled debt would collide with the "no position" sentinel.
-        uint256 scaledDebt = LendingMath.actualToScaled(stablecoinAmount, idx);
-        if (scaledDebt == 0) revert AmountTooSmall();
+        // A fresh position must not inherit a clearing permission granted on an earlier one.
+        delete debtClearingPermission[msg.sender][asset];
         _positions[msg.sender][asset] = Position({
             eTokenCollateral: eTokenAmount,
             principal: scaledDebt,
@@ -302,23 +276,144 @@ contract BorrowManager is IBorrowManager, Initializable, UUPSUpgradeable, Reentr
         _refundExcessEth();
     }
 
+    /// @inheritdoc IBorrowManager
+    function borrowMore(
+        bytes32 asset,
+        uint256 eTokenAmount,
+        uint256 stablecoinAmount,
+        bytes calldata priceData
+    ) external payable nonReentrant {
+        if (stablecoinAmount == 0) revert ZeroAmount();
+        Position storage p = _positions[msg.sender][asset];
+        if (p.principal == 0) revert NoPosition(msg.sender, asset);
+
+        address eToken = _resolveActiveEToken(asset);
+        // Never mix tokens: legacy collateral (post-migration) is repay-only.
+        if (p.collateralToken != eToken) revert CollateralTokenMismatch();
+
+        (uint256 scaledDebt, uint256 oraclePrice, uint256 idx) = _executeBorrow(
+            asset, eToken, eTokenAmount, stablecoinAmount, p.eTokenCollateral + eTokenAmount, p.principal, priceData
+        );
+
+        p.eTokenCollateral += eTokenAmount;
+        p.principal += scaledDebt;
+        p.interestIndex = idx;
+        _totalScaledDebt += scaledDebt;
+
+        emit Borrowed(msg.sender, asset, eTokenAmount, stablecoinAmount, oraclePrice);
+
+        _refundExcessEth();
+    }
+
+    /// @dev Shared borrow engine for {borrow} and {borrowMore}: gates eligibility, verifies the
+    ///      signed price against the band, accrues, checks the whole-position LTV
+    ///      (`priorScaledDebt` + new borrow vs `totalCollateral`) and the vault-wide debt cap,
+    ///      pulls the top-up collateral, and draws the stablecoin from Aave to the borrower.
+    ///      A fresh borrow passes `priorScaledDebt = 0`, collapsing the LTV check to the
+    ///      new amounts alone. The caller records the position delta and emits {Borrowed}.
+    /// @return scaledDebt  Scaled-debt delta to add to the position (non-zero).
+    /// @return oraclePrice Verified asset price (18-dec USD).
+    /// @return idx         Post-accrual interest index the delta was scaled at.
+    function _executeBorrow(
+        bytes32 asset,
+        address eToken,
+        uint256 eTokenAmount,
+        uint256 stablecoinAmount,
+        uint256 totalCollateral,
+        uint256 priorScaledDebt,
+        bytes calldata priceData
+    ) internal returns (uint256 scaledDebt, uint256 oraclePrice, uint256 idx) {
+        _validateEligibility(asset);
+
+        oraclePrice = _verifyPrice(asset, priceData);
+        _checkPriceBand(asset, oraclePrice);
+
+        _accrue();
+        idx = _index;
+
+        // LTV check on the whole position: prior debt (accrued) + new borrow vs total collateral.
+        {
+            uint256 debtValueUSD = LendingMath.stableToUSD(
+                LendingMath.scaledToActual(priorScaledDebt, idx) + stablecoinAmount, _stableDecimals
+            );
+            uint256 maxBorrowUSD = LendingMath.collateralUSD(totalCollateral, oraclePrice).mulDiv(borrowLtvBps, BPS);
+            if (debtValueUSD > maxBorrowUSD) revert InsufficientCollateral(debtValueUSD, maxBorrowUSD);
+        }
+
+        // Protocol-level hard cap: total debt must stay within the vault's
+        // collateral-backed target LTV. Scoped so the locals free before the
+        // rest of the borrow flow (avoids stack-too-deep without via-ir).
+        {
+            uint256 cap = maxDebtUSD();
+            uint256 projected = totalDebtUSD() + LendingMath.stableToUSD(stablecoinAmount, _stableDecimals);
+            if (projected > cap) revert BorrowExceedsCap(projected, cap);
+        }
+
+        // Pull eToken collateral into the manager's pooled custody.
+        if (eTokenAmount > 0) IERC20(eToken).safeTransferFrom(msg.sender, address(this), eTokenAmount);
+
+        // Borrow stablecoin from Aave on the vault's behalf via credit delegation and forward it.
+        _drawFromAave(stablecoinAmount);
+        IERC20(stablecoin).safeTransfer(msg.sender, stablecoinAmount);
+
+        // principal is scaled debt: actual debt grows via index. A zero scaled
+        // debt would collide with the "no position" sentinel.
+        scaledDebt = LendingMath.actualToScaled(stablecoinAmount, idx);
+        if (scaledDebt == 0) revert AmountTooSmall();
+    }
+
+    /// @inheritdoc IBorrowManager
+    function addCollateral(bytes32 asset, uint256 eTokenAmount) external nonReentrant {
+        if (eTokenAmount == 0) revert ZeroAmount();
+        Position storage p = _positions[msg.sender][asset];
+        if (p.principal == 0) revert NoPosition(msg.sender, asset);
+
+        p.eTokenCollateral += eTokenAmount;
+        // Pull more of the exact token the position holds (never mixes active/legacy collateral).
+        IERC20(p.collateralToken).safeTransferFrom(msg.sender, address(this), eTokenAmount);
+
+        emit CollateralAdded(msg.sender, asset, eTokenAmount, p.eTokenCollateral);
+    }
+
     // ──────────────────────────────────────────────────────────
     //  Repay
     // ──────────────────────────────────────────────────────────
 
     /// @inheritdoc IBorrowManager
     function repay(bytes32 asset, uint256 amount) external nonReentrant returns (uint256 collateralReleased) {
-        Position storage p = _positions[msg.sender][asset];
-        if (p.principal == 0) revert NoPosition(msg.sender, asset);
+        uint256 repayAmount;
+        address collateralToken;
+        (repayAmount, collateralReleased, collateralToken) = _repayPosition(msg.sender, asset, amount);
+
+        // Return the exact token posted (may be a legacy token after a migration; borrower converts).
+        if (collateralReleased > 0) {
+            IERC20(collateralToken).safeTransfer(msg.sender, collateralReleased);
+        }
+
+        emit Repaid(msg.sender, asset, repayAmount, collateralReleased, _positions[msg.sender][asset].principal);
+    }
+
+    /// @dev Shared repay engine for {repay} and {clearDebt}: pulls up to `amount` stablecoin from
+    ///      `msg.sender` (clamped to the position's current debt), forwards it to Aave, and shrinks
+    ///      `(borrower, asset)` — a full repay closes the position and releases all collateral, a
+    ///      partial one releases pro-rata (preserves LTV at constant price). The caller routes the
+    ///      released collateral and emits its own event.
+    function _repayPosition(
+        address borrower,
+        bytes32 asset,
+        uint256 amount
+    ) internal returns (uint256 repayAmount, uint256 collateralReleased, address collateralToken) {
+        Position storage p = _positions[borrower][asset];
+        if (p.principal == 0) revert NoPosition(borrower, asset);
 
         _accrue();
         uint256 idx = _index;
 
         uint256 currentDebt = LendingMath.scaledToActual(p.principal, idx);
-        uint256 repayAmount = amount > currentDebt ? currentDebt : amount;
+        repayAmount = amount > currentDebt ? currentDebt : amount;
         if (repayAmount == 0) revert ZeroAmount();
 
-        address collateralToken = p.collateralToken;
+        collateralToken = p.collateralToken;
 
         // Pull stablecoin from caller.
         IERC20(stablecoin).safeTransferFrom(msg.sender, address(this), repayAmount);
@@ -330,7 +425,7 @@ contract BorrowManager is IBorrowManager, Initializable, UUPSUpgradeable, Reentr
             // Full close — release all collateral.
             collateralReleased = p.eTokenCollateral;
             _totalScaledDebt -= p.principal;
-            delete _positions[msg.sender][asset];
+            delete _positions[borrower][asset];
         } else {
             // Partial — release pro-rata; preserves LTV at constant price.
             collateralReleased = p.eTokenCollateral.mulDiv(repayAmount, currentDebt);
@@ -346,13 +441,49 @@ contract BorrowManager is IBorrowManager, Initializable, UUPSUpgradeable, Reentr
             p.interestIndex = idx;
             _totalScaledDebt -= scaledRepay;
         }
+    }
 
-        // Return the exact token posted (may be a legacy token after a migration; borrower converts).
-        if (collateralReleased > 0) {
-            IERC20(collateralToken).safeTransfer(msg.sender, collateralReleased);
+    // ──────────────────────────────────────────────────────────
+    //  Debt clearing (borrower-permissioned third-party close)
+    // ──────────────────────────────────────────────────────────
+
+    /// @inheritdoc IBorrowManager
+    function setDebtClearingPermission(bytes32 asset, address clearer, uint256 feeBps) external {
+        if (_positions[msg.sender][asset].principal == 0) revert NoPosition(msg.sender, asset);
+        if (feeBps > BPS) revert InvalidClearingFee();
+
+        if (feeBps == 0) delete debtClearingPermission[msg.sender][asset];
+        else debtClearingPermission[msg.sender][asset] = ClearingPermission({clearer: clearer, feeBps: uint96(feeBps)});
+
+        emit DebtClearingPermissionSet(msg.sender, asset, clearer, feeBps);
+    }
+
+    /// @inheritdoc IBorrowManager
+    function clearDebt(
+        address borrower,
+        bytes32 asset,
+        uint256 repayAmount
+    ) external nonReentrant returns (uint256 debtRepaid) {
+        if (_positions[borrower][asset].principal == 0) revert NoPosition(borrower, asset);
+        ClearingPermission memory perm = debtClearingPermission[borrower][asset];
+        if (perm.feeBps == 0 || (perm.clearer != address(0) && perm.clearer != msg.sender)) {
+            revert NotAuthorizedToClear(msg.sender);
         }
 
-        emit Repaid(msg.sender, asset, repayAmount, collateralReleased, _positions[msg.sender][asset].principal);
+        (uint256 repaid, uint256 collateralReleased, address collateralToken) =
+            _repayPosition(borrower, asset, repayAmount);
+        debtRepaid = repaid;
+
+        // The permission outlives partial clears; a full close retires it with the position.
+        if (_positions[borrower][asset].principal == 0) delete debtClearingPermission[borrower][asset];
+
+        // Split the released slice. Fee rounds down — the borrower keeps the crumb.
+        uint256 fee = collateralReleased.mulDiv(perm.feeBps, BPS);
+        if (fee > 0) IERC20(collateralToken).safeTransfer(msg.sender, fee);
+        uint256 returned = collateralReleased - fee;
+        if (returned > 0) IERC20(collateralToken).safeTransfer(borrower, returned);
+
+        emit DebtCleared(borrower, asset, msg.sender, repaid, fee, returned);
     }
 
     // ──────────────────────────────────────────────────────────
