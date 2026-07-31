@@ -3,7 +3,9 @@ pragma solidity 0.8.28;
 
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {BorrowManager} from "../../src/core/BorrowManager.sol";
+
 import {OwnVault} from "../../src/core/OwnVault.sol";
+import {deployBorrowManager} from "../helpers/DeployBorrowManager.sol";
 
 import {IBorrowManager} from "../../src/interfaces/IBorrowManager.sol";
 import {AssetConfig, BPS, PRECISION} from "../../src/interfaces/types/Types.sol";
@@ -84,7 +86,7 @@ contract BorrowBrickPoCTest is BaseTest {
 
         _seedVaultCollateral(1_000_000e18);
 
-        borrowManager = new BorrowManager(
+        borrowManager = deployBorrowManager(
             address(vault),
             address(usdc),
             address(usdcDebt),

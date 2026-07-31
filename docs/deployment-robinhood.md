@@ -110,7 +110,9 @@ forge script script/robinhood/EnableLendingRobinhood.s.sol --rpc-url robinhood -
   --verify --verifier blockscout --verifier-url https://robinhoodchain.blockscout.com/api/
 ```
 
-Deploys the vault's permanent BorrowManager (target LTV 70%; premium curve base 6%, optimal util
+Deploys the vault's permanent BorrowManager as a UUPS proxy — one implementation + one ERC-1967
+proxy per vault, initialized atomically; the vault binds the proxy address, and ADMIN can later
+upgrade the implementation per vault (target LTV 70%; premium curve base 6%, optimal util
 80%, slope1 2% (→8% at optimal), slope2 72% — the pool rate is 0, so this is the entire lending
 rate), binds it, grants credit delegation, sets the collateral flag, then deploys the
 **VaultYieldManager** (10% treasury cut), installs it as `vault.manager`, and allowlists it as a

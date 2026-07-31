@@ -3,6 +3,7 @@ pragma solidity 0.8.28;
 
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {BorrowManager} from "../../src/core/BorrowManager.sol";
+
 import {OwnVault} from "../../src/core/OwnVault.sol";
 import {ProtocolRegistry} from "../../src/core/ProtocolRegistry.sol";
 import {VaultManager} from "../../src/core/VaultManager.sol";
@@ -13,6 +14,7 @@ import {AssetConfig, BPS} from "../../src/interfaces/types/Types.sol";
 import {InterestRateModel} from "../../src/libraries/InterestRateModel.sol";
 import {LendingRouter} from "../../src/periphery/LendingRouter.sol";
 import {EToken} from "../../src/tokens/EToken.sol";
+import {deployBorrowManager} from "../helpers/DeployBorrowManager.sol";
 
 import {MockOracleVerifier} from "../helpers/MockOracleVerifier.sol";
 import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
@@ -173,7 +175,7 @@ contract BorrowManagerAaveForkTest is Test {
         vaultManager.pullCollateralPrice(address(vault));
 
         vm.startPrank(admin);
-        bm = new BorrowManager(
+        bm = deployBorrowManager(
             address(vault), USDC, usdcDebt, AAVE_V3_POOL, address(registry), TARGET_LTV_BPS, _params()
         );
         vault.setBorrowManager(address(bm));

@@ -15,33 +15,30 @@ import {InterestRateModel} from "../libraries/InterestRateModel.sol";
 import {LendingMath} from "../libraries/LendingMath.sol";
 
 import {BPS, PRECISION, VaultStatus} from "../interfaces/types/Types.sol";
+import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
+import {UUPSUpgradeable} from "@openzeppelin/contracts/proxy/utils/UUPSUpgradeable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
-/// @title BorrowManager — eToken-collateralised borrowing (Aave-funded)
-/// @notice One-per-vault stateful borrow manager implementing the venue-neutral {IBorrowManager}.
-///         Borrowers deposit eTokens as collateral; the manager borrows the protocol's stablecoin
-///         (USDC) and forwards it to the borrower. Each (borrower, asset) carries its own position.
-///         Interest accrues on a single global cumulative index using a two-slope utilization curve
-///         (the borrow rate is vault-wide, so one index prices every position). Liquidation is
-///         signed-price gated and partial: the liquidator names a repay amount, capped by an
-///         HF-gated close factor, and the bonus-based seize is capped at the position's remaining
-///         collateral (a deeply underwater position seizes all of it, leaving no dust crumb).
-///
-///         **Funding source (Aave V3):** this implementation sources the loaned stablecoin from
-///         Aave V3 via the vault's credit delegation — `pool.borrow(onBehalf=vault)` /
-///         `pool.repay(onBehalf=vault)` — and reads the live Aave variable borrow rate as its base
-///         rate. A future Morpho or in-house manager can implement {IBorrowManager} with a different
-///         funding source for its own vault. **Each vault binds exactly one borrow manager for its
-///         lifetime** (`OwnVault.setBorrowManager` is one-shot) — the interest-index floor
-///         attributes the vault's entire Aave debt to this manager's book and relies on it.
-///
-///         The manager is self-contained: it tracks its own outstanding debt, enforces a vault-wide
-///         hard cap (`targetLtvBps` × vault collateral), and derives utilization for the rate curve.
-contract BorrowManager is IBorrowManager, ReentrancyGuard {
+/// @title BorrowManager — eToken-collateralised borrowing
+/// @notice One-per-vault borrow manager implementing the venue-neutral {IBorrowManager}. Borrowers
+///         post eTokens as collateral and receive the manager's stablecoin, sourced from an
+///         Aave-V3-compatible lending pool via the vault's credit delegation. Each
+///         (borrower, asset) pair carries its own position. Interest accrues on a single vault-wide
+///         index: the pool's live variable rate (with an admin floor) plus a two-slope utilization
+///         premium. Liquidation is signed-price gated and partial — an HF-gated close factor caps
+///         the repay, and the bonus-based seize is capped at the position's remaining collateral.
+///         The manager tracks its own book debt and enforces a vault-wide cap
+///         (`targetLtvBps` × vault collateral mark).
+/// @dev    Each vault binds exactly one manager for its lifetime (`OwnVault.setBorrowManager` is
+///         one-shot); the interest-index floor attributes the vault's entire pool debt to this book
+///         and relies on that. Runs behind a per-vault ERC-1967 proxy (UUPS): upgrades are
+///         ADMIN-gated ({_authorizeUpgrade}) and independent per vault, the bound proxy address
+///         never changes, and storage layout is append-only across implementations.
+contract BorrowManager is IBorrowManager, Initializable, UUPSUpgradeable, ReentrancyGuard {
     using SafeERC20 for IERC20;
     using Math for uint256;
 
@@ -49,6 +46,7 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
     //  Constants
     // ──────────────────────────────────────────────────────────
 
+    /// @dev Aave V3 interest-rate mode for variable-rate borrows.
     uint256 internal constant AAVE_VARIABLE_RATE_MODE = 2;
 
     /// @dev Aave V3 uses RAY (1e27) for rate scaling.
@@ -62,22 +60,30 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
     uint256 internal constant CLOSE_FACTOR_HF_THRESHOLD = 0.95e18;
 
     // ──────────────────────────────────────────────────────────
-    //  Immutables
+    //  Bound configuration (initializer-set, fixed thereafter)
     // ──────────────────────────────────────────────────────────
+    // Effectively immutable: set once in {initialize}, never mutated. Held in
+    // proxy storage (not immutables) so each per-vault proxy carries its own
+    // binding over the shared implementation.
 
-    address public immutable override vault;
-    address public immutable override stablecoin;
-    address public immutable debtToken;
-    address public immutable aavePool;
-    IProtocolRegistry public immutable registry;
-
-    /// @dev Decimals of the borrow stablecoin (cached for USD conversion).
-    uint8 internal immutable _stableDecimals;
+    /// @inheritdoc IBorrowManager
+    address public override vault;
+    /// @inheritdoc IBorrowManager
+    address public override stablecoin;
+    /// @dev Decimals of the borrow stablecoin (cached for USD conversion). Packs with `stablecoin`.
+    uint8 internal _stableDecimals;
+    /// @notice Variable debt token tracking the vault's live pool-side debt in `stablecoin`.
+    address public debtToken;
+    /// @notice Aave-V3-compatible lending pool funding the loans via the vault's credit delegation.
+    address public aavePool;
+    /// @notice Protocol registry (roles + protocol contract lookups).
+    IProtocolRegistry public registry;
 
     // ──────────────────────────────────────────────────────────
     //  Configuration (admin-mutable)
     // ──────────────────────────────────────────────────────────
 
+    /// @dev Two-slope interest-rate curve parameters; exposed via {rateParams}.
     InterestRateModel.Params internal _rateParams;
 
     /// @dev Floor for the Aave-side rate (BPS, annualized). The accrual loop
@@ -140,19 +146,23 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
     mapping(address => mapping(bytes32 => Position)) internal _positions;
 
     // ──────────────────────────────────────────────────────────
-    //  Modifiers
+    //  Access control
     // ──────────────────────────────────────────────────────────
 
+    /// @dev Role ids in the registry's AccessControl.
     bytes32 private constant ADMIN = keccak256("ADMIN");
     bytes32 private constant OPERATOR = keccak256("OPERATOR");
 
     // Modifier bodies inline at every use site; delegating to a shared internal
     // check keeps one copy of the role-read + revert in the bytecode.
+
+    /// @dev Restrict to the protocol ADMIN role.
     modifier onlyAdmin() {
         _checkAdmin();
         _;
     }
 
+    /// @dev Restrict to the protocol OPERATOR role.
     modifier onlyOperator() {
         _checkOperator();
         _;
@@ -169,18 +179,32 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
     }
 
     // ──────────────────────────────────────────────────────────
-    //  Constructor
+    //  Construction / initialization (UUPS)
     // ──────────────────────────────────────────────────────────
 
-    constructor(
+    /// @dev The implementation is only ever used behind per-vault ERC-1967 proxies; lock its own
+    ///      initializers so the bare implementation can never be initialized or taken over.
+    constructor() {
+        _disableInitializers();
+    }
+
+    /// @notice Initialize a per-vault manager proxy (runs once, in the proxy's constructor call).
+    /// @param vault_        The vault this manager is bound to (1:1, permanent).
+    /// @param stablecoin_   Stablecoin lent out by this manager.
+    /// @param debtToken_    The pool's variable debt token for `stablecoin_` (reads the vault's live debt).
+    /// @param aavePool_     Aave-V3-compatible lending pool funding the loans.
+    /// @param registry_     Protocol registry (roles + contract lookups).
+    /// @param targetLtvBps_ Vault-wide target pool LTV (BPS) backing the protocol debt cap.
+    /// @param rateParams_   Interest-rate curve parameters.
+    function initialize(
         address vault_,
         address stablecoin_,
         address debtToken_,
         address aavePool_,
         address registry_,
         uint256 targetLtvBps_,
-        InterestRateModel.Params memory rateParams_
-    ) {
+        InterestRateModel.Params calldata rateParams_
+    ) external initializer {
         if (
             vault_ == address(0) || stablecoin_ == address(0) || debtToken_ == address(0) || aavePool_ == address(0)
                 || registry_ == address(0)
@@ -674,7 +698,8 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
         emit LiquidationConfigUpdated(liquidationThresholdBps_, liquidationBonusBps_);
     }
 
-    /// @notice Set the borrow LTV (BPS). Must be lower than `liquidationThresholdBps`.
+    /// @notice Set the per-position borrow LTV. Admin-only.
+    /// @param ltvBps New borrow LTV (BPS); must be in `(0, liquidationThresholdBps)`.
     function setBorrowLtvBps(
         uint256 ltvBps
     ) external onlyAdmin {
@@ -682,8 +707,9 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
         borrowLtvBps = ltvBps;
     }
 
-    /// @notice Set the minimum Aave-side rate floor (BPS, annualized). The
-    ///         actual rate used at accrual is `max(floor, liveAaveRate)`. 0 disables the floor.
+    /// @notice Set the minimum Aave-side rate floor; the rate used at accrual is
+    ///         `max(floor, liveAaveRate)`. Admin-only.
+    /// @param rateBps New floor (BPS, annualized); 0 disables the floor.
     function setMinAaveBorrowRateBps(
         uint256 rateBps
     ) external onlyAdmin {
@@ -693,9 +719,10 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
         minAaveBorrowRateBps = rateBps;
     }
 
-    /// @notice Set the liquidation close factor (BPS): the max fraction of a
-    ///         position's debt one liquidation may repay while its health factor
-    ///         is above {CLOSE_FACTOR_HF_THRESHOLD}. Must be in `(0, BPS]`.
+    /// @notice Set the liquidation close factor — the max fraction of a position's debt one
+    ///         liquidation may repay while its health factor is above
+    ///         {CLOSE_FACTOR_HF_THRESHOLD}. Admin-only.
+    /// @param closeFactorBps New close factor (BPS); must be in `(0, BPS]`.
     function setLiquidationCloseFactorBps(
         uint256 closeFactorBps
     ) external onlyAdmin {
@@ -740,6 +767,12 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
         minClaimHealthFactor = hf;
         emit MinClaimHealthFactorUpdated(old, hf);
     }
+
+    /// @dev UUPS upgrade gate: only the protocol ADMIN role may upgrade this proxy's
+    ///      implementation. Each vault's manager is its own proxy, so upgrades are per-vault.
+    function _authorizeUpgrade(
+        address
+    ) internal view override onlyAdmin {}
 
     // ──────────────────────────────────────────────────────────
     //  Debt / cap / utilization / rate
@@ -892,10 +925,12 @@ contract BorrowManager is IBorrowManager, ReentrancyGuard {
     //  Internal — shared reads (single bytecode copy per external-call pattern)
     // ──────────────────────────────────────────────────────────
 
+    /// @dev The global VaultManager (risk accounting + control hub), resolved via the registry.
     function _vaultManager() internal view returns (IVaultManager) {
         return IVaultManager(registry.vaultManager());
     }
 
+    /// @dev The AssetRegistry (tickers, active/legacy tokens, oracle config), resolved via the registry.
     function _assetRegistry() internal view returns (IAssetRegistry) {
         return IAssetRegistry(registry.assetRegistry());
     }

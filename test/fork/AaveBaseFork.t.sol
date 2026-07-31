@@ -2,9 +2,11 @@
 pragma solidity 0.8.28;
 
 import {BorrowManager} from "../../src/core/BorrowManager.sol";
+
 import {OwnVault} from "../../src/core/OwnVault.sol";
 import {ProtocolRegistry} from "../../src/core/ProtocolRegistry.sol";
 import {VaultManager} from "../../src/core/VaultManager.sol";
+import {deployBorrowManager} from "../helpers/DeployBorrowManager.sol";
 
 import {IBorrowManager} from "../../src/interfaces/IBorrowManager.sol";
 import {ILendingRouter} from "../../src/interfaces/ILendingRouter.sol";
@@ -138,7 +140,7 @@ contract AaveBaseForkTest is Test {
     function test_fork_borrowManager_readsLiveAaveRate() public requiresFork {
         // Wire a borrow manager on the existing fork vault.
         vm.startPrank(admin);
-        borrowManager = new BorrowManager(
+        borrowManager = deployBorrowManager(
             address(vault),
             USDC_BASE,
             usdcVariableDebt,
@@ -175,7 +177,7 @@ contract AaveBaseForkTest is Test {
         vaultManager.registerVault(address(vault), bytes32("WSTETH"));
 
         // Enable lending so the vault gates collateral exits on its Aave health factor.
-        borrowManager = new BorrowManager(
+        borrowManager = deployBorrowManager(
             address(vault),
             USDC_BASE,
             usdcVariableDebt,

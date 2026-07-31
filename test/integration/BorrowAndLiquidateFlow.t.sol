@@ -4,11 +4,13 @@ pragma solidity 0.8.28;
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 
 import {BorrowManager} from "../../src/core/BorrowManager.sol";
+
 import {OwnVault} from "../../src/core/OwnVault.sol";
 import {IBorrowManager} from "../../src/interfaces/IBorrowManager.sol";
 import {AssetConfig, BPS, PRECISION} from "../../src/interfaces/types/Types.sol";
 import {InterestRateModel} from "../../src/libraries/InterestRateModel.sol";
 import {EToken} from "../../src/tokens/EToken.sol";
+import {deployBorrowManager} from "../helpers/DeployBorrowManager.sol";
 
 import {Actors} from "../helpers/Actors.sol";
 import {BaseTest} from "../helpers/BaseTest.sol";
@@ -74,7 +76,7 @@ contract BorrowAndLiquidateFlowTest is BaseTest {
         vault = new OwnVault(address(awstETH), "Own awstETH", "owawstETH", address(protocolRegistry), address(this));
         vaultManager.registerVault(address(vault), bytes32("WSTETH"));
 
-        borrowManager = new BorrowManager(
+        borrowManager = deployBorrowManager(
             address(vault),
             address(usdc),
             address(usdcDebt),

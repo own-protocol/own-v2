@@ -311,7 +311,7 @@ The protocol charges **no on-chain mint or redeem fee**. Revenue accrues through
 
 ### Lending revenue (routed to the VM)
 
-- **One borrow manager per vault (protocol invariant)**: each vault binds exactly one `BorrowManager` for its lifetime (`OwnVault.setBorrowManager` is one-shot, no rotation). The manager's interest-index floor attributes the vault's entire Aave debt to its own book and relies on this.
+- **One borrow manager per vault (protocol invariant)**: each vault binds exactly one `BorrowManager` for its lifetime (`OwnVault.setBorrowManager` is one-shot, no rotation). The manager's interest-index floor attributes the vault's entire Aave debt to its own book and relies on this. The manager is deployed as a per-vault UUPS/ERC-1967 proxy: the bound proxy address never changes (invariant intact), but ADMIN can upgrade each vault's implementation independently.
 - **Interest premium**: borrowers pay `max(liveAaveRate, floor) + premium(utilisation)`. On repay, the premium above Aave's rate is swept to the vault manager (`LendingFeeAccrued`); the VM redistributes off-chain and/or via `OwnVault.shareYield` (lifts LP share price).
 - **Collateral dividends**: dividends earned on eToken collateral held during a borrow accrue to the VM as lending revenue (not to the borrower) and are swept via `sweepDividends` (`DividendsSwept`). They resume accruing to the borrower once the collateral is returned.
 

@@ -4,6 +4,7 @@ pragma solidity 0.8.28;
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 
 import {BorrowManager} from "../../src/core/BorrowManager.sol";
+
 import {OwnMarket} from "../../src/core/OwnMarket.sol";
 import {OwnVault} from "../../src/core/OwnVault.sol";
 import {IBorrowManager} from "../../src/interfaces/IBorrowManager.sol";
@@ -14,6 +15,7 @@ import {InterestRateModel} from "../../src/libraries/InterestRateModel.sol";
 import {EToken} from "../../src/tokens/EToken.sol";
 import {Actors} from "../helpers/Actors.sol";
 import {BaseTest} from "../helpers/BaseTest.sol";
+import {deployBorrowManager} from "../helpers/DeployBorrowManager.sol";
 import {MockAToken, MockAaveDebtToken, MockAaveV3Pool} from "../helpers/MockAaveV3Pool.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
@@ -92,7 +94,7 @@ contract RFQAusdcFlowsTest is BaseTest {
         vault.setRequireDepositApproval(true);
 
         // ── Lending: borrow manager over USDC debt against the vault's aUSDC credit ──
-        borrowManager = new BorrowManager(
+        borrowManager = deployBorrowManager(
             address(vault),
             address(usdc),
             address(usdcDebt),

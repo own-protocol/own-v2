@@ -4,7 +4,9 @@ pragma solidity 0.8.28;
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 
 import {BorrowManager} from "../../src/core/BorrowManager.sol";
+
 import {OwnVault} from "../../src/core/OwnVault.sol";
+import {deployBorrowManager} from "../helpers/DeployBorrowManager.sol";
 
 import {IBorrowManager} from "../../src/interfaces/IBorrowManager.sol";
 import {IEToken} from "../../src/interfaces/IEToken.sol";
@@ -17,6 +19,9 @@ import {Actors} from "../helpers/Actors.sol";
 import {BaseTest} from "../helpers/BaseTest.sol";
 import {MockAToken, MockAaveDebtToken, MockAaveV3Pool} from "../helpers/MockAaveV3Pool.sol";
 import {MockERC20} from "../helpers/MockERC20.sol";
+import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
+import {ERC1967Utils} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Utils.sol";
+import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 /// @dev A borrower contract with no `receive`/`fallback`, so the manager's surplus-ETH refund
@@ -32,6 +37,13 @@ contract EthRejecter {
     ) external payable {
         e.approve(address(bm), eAmt);
         bm.borrow{value: msg.value}(asset, eAmt, stable, pd);
+    }
+}
+
+/// @dev Upgrade-target mock: same storage layout (inherits everything), one new function.
+contract BorrowManagerV2 is BorrowManager {
+    function version() external pure returns (uint256) {
+        return 2;
     }
 }
 
@@ -112,7 +124,7 @@ contract BorrowManagerTest is BaseTest {
         // LPs deposit awstETH; here we mint awstETH to the vault and refresh.
         _seedVaultCollateral(1_000_000e18); // $1M USD-denominated collateral.
 
-        borrowManager = new BorrowManager(
+        borrowManager = deployBorrowManager(
             address(vault),
             address(usdc),
             address(usdcDebt),
@@ -199,10 +211,23 @@ contract BorrowManagerTest is BaseTest {
     }
 
     // ──────────────────────────────────────────────────────────
-    //  Constructor
+    //  Initialization & upgrades (UUPS)
     // ──────────────────────────────────────────────────────────
 
-    function test_constructor_setsImmutables() public view {
+    /// @dev ABI-encode an initialize() call for proxy-creation revert tests.
+    function _initData(
+        address vault_,
+        address stablecoin_,
+        uint256 targetLtvBps_,
+        InterestRateModel.Params memory p
+    ) internal view returns (bytes memory) {
+        return abi.encodeCall(
+            BorrowManager.initialize,
+            (vault_, stablecoin_, address(usdcDebt), address(aavePool), address(protocolRegistry), targetLtvBps_, p)
+        );
+    }
+
+    function test_initialize_setsBoundConfig() public view {
         assertEq(borrowManager.vault(), address(vault));
         assertEq(borrowManager.stablecoin(), address(usdc));
         assertEq(borrowManager.debtToken(), address(usdcDebt));
@@ -212,66 +237,110 @@ contract BorrowManagerTest is BaseTest {
         assertEq(usdc.allowance(address(borrowManager), address(aavePool)), type(uint256).max);
     }
 
-    function test_constructor_zeroAddresses_revert() public {
+    function test_initialize_zeroAddresses_revert() public {
         InterestRateModel.Params memory p = _params();
+        BorrowManager impl = new BorrowManager();
         vm.expectRevert(IBorrowManager.ZeroAddress.selector);
-        new BorrowManager(
-            address(0),
-            address(usdc),
-            address(usdcDebt),
-            address(aavePool),
-            address(protocolRegistry),
-            TARGET_LTV_BPS,
-            p
-        );
+        new ERC1967Proxy(address(impl), _initData(address(0), address(usdc), TARGET_LTV_BPS, p));
         vm.expectRevert(IBorrowManager.ZeroAddress.selector);
-        new BorrowManager(
-            address(vault),
-            address(0),
-            address(usdcDebt),
-            address(aavePool),
-            address(protocolRegistry),
-            TARGET_LTV_BPS,
-            p
-        );
+        new ERC1967Proxy(address(impl), _initData(address(vault), address(0), TARGET_LTV_BPS, p));
     }
 
-    function test_constructor_invalidLtv_revert() public {
+    function test_initialize_invalidLtv_revert() public {
         InterestRateModel.Params memory p = _params();
+        BorrowManager impl = new BorrowManager();
         vm.expectRevert(IBorrowManager.InvalidLtv.selector);
-        new BorrowManager(
-            address(vault), address(usdc), address(usdcDebt), address(aavePool), address(protocolRegistry), 0, p
-        );
+        new ERC1967Proxy(address(impl), _initData(address(vault), address(usdc), 0, p));
         vm.expectRevert(IBorrowManager.InvalidLtv.selector);
-        new BorrowManager(
-            address(vault), address(usdc), address(usdcDebt), address(aavePool), address(protocolRegistry), BPS, p
-        );
+        new ERC1967Proxy(address(impl), _initData(address(vault), address(usdc), BPS, p));
     }
 
-    function test_constructor_invalidRateParams_revert() public {
+    function test_initialize_invalidRateParams_revert() public {
         InterestRateModel.Params memory p = _params();
+        BorrowManager impl = new BorrowManager();
         p.optimalUtilBps = 0;
         vm.expectRevert(IBorrowManager.InvalidRateParams.selector);
-        new BorrowManager(
-            address(vault),
-            address(usdc),
-            address(usdcDebt),
-            address(aavePool),
-            address(protocolRegistry),
-            TARGET_LTV_BPS,
-            p
-        );
+        new ERC1967Proxy(address(impl), _initData(address(vault), address(usdc), TARGET_LTV_BPS, p));
         p.optimalUtilBps = uint64(BPS);
         vm.expectRevert(IBorrowManager.InvalidRateParams.selector);
-        new BorrowManager(
+        new ERC1967Proxy(address(impl), _initData(address(vault), address(usdc), TARGET_LTV_BPS, p));
+    }
+
+    function test_initialize_secondCall_reverts() public {
+        vm.expectRevert(Initializable.InvalidInitialization.selector);
+        borrowManager.initialize(
             address(vault),
             address(usdc),
             address(usdcDebt),
             address(aavePool),
             address(protocolRegistry),
             TARGET_LTV_BPS,
-            p
+            _params()
         );
+    }
+
+    function test_implementation_initializersDisabled() public {
+        BorrowManager implementation = new BorrowManager();
+        vm.expectRevert(Initializable.InvalidInitialization.selector);
+        implementation.initialize(
+            address(vault),
+            address(usdc),
+            address(usdcDebt),
+            address(aavePool),
+            address(protocolRegistry),
+            TARGET_LTV_BPS,
+            _params()
+        );
+    }
+
+    function test_upgrade_notAdmin_reverts() public {
+        address newImpl = address(new BorrowManagerV2());
+        vm.prank(Actors.MINTER1);
+        vm.expectRevert(IBorrowManager.OnlyAdmin.selector);
+        borrowManager.upgradeToAndCall(newImpl, "");
+    }
+
+    function test_upgrade_preservesStateAndSwapsLogic() public {
+        // Open a live position so the upgrade demonstrably preserves storage.
+        (uint256 eAmt, uint256 stable) = _openTypical(Actors.MINTER1);
+
+        address newImpl = address(new BorrowManagerV2());
+        vm.prank(Actors.ADMIN);
+        borrowManager.upgradeToAndCall(newImpl, "");
+
+        // New logic is live…
+        assertEq(BorrowManagerV2(address(borrowManager)).version(), 2);
+        // …and the bound config + position storage carried over untouched.
+        assertEq(borrowManager.vault(), address(vault));
+        assertEq(borrowManager.stablecoin(), address(usdc));
+        IBorrowManager.Position memory pos = borrowManager.positionOf(Actors.MINTER1, ASSET);
+        assertEq(pos.eTokenCollateral, eAmt);
+        assertEq(pos.principal, stable);
+    }
+
+    function test_upgrade_isIndependentPerVault() public {
+        // A second manager proxy (as another vault would have) sharing the ecosystem.
+        BorrowManager other = deployBorrowManager(
+            address(vault),
+            address(usdc),
+            address(usdcDebt),
+            address(aavePool),
+            address(protocolRegistry),
+            TARGET_LTV_BPS,
+            _params()
+        );
+
+        address newImpl = address(new BorrowManagerV2());
+        vm.prank(Actors.ADMIN);
+        borrowManager.upgradeToAndCall(newImpl, "");
+
+        // Upgraded proxy runs V2; the other proxy's implementation is unchanged.
+        assertEq(BorrowManagerV2(address(borrowManager)).version(), 2);
+        bytes32 slot = ERC1967Utils.IMPLEMENTATION_SLOT;
+        assertEq(address(uint160(uint256(vm.load(address(borrowManager), slot)))), newImpl);
+        assertTrue(address(uint160(uint256(vm.load(address(other), slot)))) != newImpl);
+        vm.expectRevert();
+        BorrowManagerV2(address(other)).version();
     }
 
     // ──────────────────────────────────────────────────────────
@@ -1608,7 +1677,7 @@ contract BorrowManagerBadDebt6DecTest is BaseTest {
         assetRegistry.addAsset(COLLAT, address(collToken), ccfg);
         vaultManager.pullCollateralPrice(address(vault));
 
-        borrowManager = new BorrowManager(
+        borrowManager = deployBorrowManager(
             address(vault),
             address(usdc),
             address(usdcDebt),
