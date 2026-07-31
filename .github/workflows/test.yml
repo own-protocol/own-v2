@@ -40,3 +40,11 @@ jobs:
         run: |
           forge test -vvv
         id: test
+
+      # Per-vault UUPS proxies are upgraded independently, so a layout change that looks harmless
+      # in one deployment can corrupt another. Fails on any reorder/retype/removal; append-only
+      # changes are accepted by re-running with --update and reviewing the diff in the PR.
+      - name: Check storage layout (upgradeable contracts)
+        run: |
+          tools/storage-layout.sh
+        id: storage-layout
