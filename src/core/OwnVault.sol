@@ -583,13 +583,11 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
 
     /// @dev Accrue, then realize and distribute earned yield, so an LP entry or exit is priced on a
     ///      current share price and cannot capture yield earned before it. Best-effort on the yield
-    ///      leg: an EOA manager, or one without the hook, must not block LP flow.
+    ///      leg: a breaching claim or paused venue must not block LP flow. `manager` must be a
+    ///      contract — a call to an EOA reverts uncatchably.
     function _syncLending() private {
         _accrueLending();
-        address mgr = manager;
-        if (mgr.code.length != 0) {
-            try IVaultYieldManager(mgr).syncYield() {} catch {}
-        }
+        try IVaultYieldManager(manager).syncYield() {} catch {}
     }
 
     /// @inheritdoc IOwnVault
