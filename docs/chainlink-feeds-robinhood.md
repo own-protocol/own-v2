@@ -9,16 +9,21 @@ Source of truth for the full list (55 feeds): Chainlink reference data directory
 
 ## Feeds we use
 
-| Asset | Description            | Proxy                                        |
-| ----- | ---------------------- | -------------------------------------------- |
-| MU    | RHMU / USD             | `0x425EEFdCf05ed6526C3cE61Af99429A228a6d596` |
-| SPCX  | Robinhood SPCX / USD   | `0xB265810950ba6c5C0Ff821c9963014a56fD8Bffb` |
-| MSFT  | RHMSFT / USD           | `0x45C3C877C15E6BA2EBB19eA114Ea508d14C1Af2E` |
-| GOOGL | Robinhood GOOGL / USD  | `0xF6f373a037c30F0e5010d854385cA89185AE638b` |
-| TSLA  | RHTSLA / USD           | `0x4A1166a659A55625345e9515b32adECea5547C38` |
-| SPY   | RHSPY / USD            | `0x319724394D3A0e3669269846abE664Cd621f9f6A` |
-| QQQ   | Robinhood QQQ / USD    | `0x80901d846d5D7B030F26B480776EE3b29374C2ae` |
-| USDG  | USDG / USD             | `0x61B7e5650328764B076A108EFF5fa7282a1B9aD2` |
+| Asset | Description           | Proxy                                        |
+| ----- | --------------------- | -------------------------------------------- |
+| MU    | RHMU / USD            | `0x425EEFdCf05ed6526C3cE61Af99429A228a6d596` |
+| SPCX  | Robinhood SPCX / USD  | `0xB265810950ba6c5C0Ff821c9963014a56fD8Bffb` |
+| MSFT  | RHMSFT / USD          | `0x45C3C877C15E6BA2EBB19eA114Ea508d14C1Af2E` |
+| GOOGL | Robinhood GOOGL / USD | `0xF6f373a037c30F0e5010d854385cA89185AE638b` |
+| TSLA  | RHTSLA / USD          | `0x4A1166a659A55625345e9515b32adECea5547C38` |
+| SPY   | RHSPY / USD           | `0x319724394D3A0e3669269846abE664Cd621f9f6A` |
+| QQQ   | Robinhood QQQ / USD   | `0x80901d846d5D7B030F26B480776EE3b29374C2ae` |
+| USDG  | USDG / USD            | `0x61B7e5650328764B076A108EFF5fa7282a1B9aD2` |
+| NVDA  | RHNVDA / USD          | `0x379EC4f7C378F34a1B47E4F3cbeBCbAC3E8E9F15` |
+| AAPL  | Robinhood AAPL / USD  | `0x6B22A786bAa607d76728168703a39Ea9C99f2cD0` |
+| AMZN  | Robinhood AMZN / USD  | `0xD5a1508ceD74c084eBf3cBe853e2C968fB2a651C` |
+| AMD   | RHAMD / USD           | `0x943A29E7ae51A4798823ca9eEd2ed533B2A22C72` |
+| META  | Robinhood META / USD  | `0x7C38C00C30BEe9378381E7B6135d7283356D71b1` |
 
 Descriptions are not uniform (`RH<SYM>` vs `Robinhood <SYM>`) — pin the exact string when
 asserting. No L2 sequencer uptime feed exists on this chain as of 2026-07-19.
@@ -61,7 +66,7 @@ No market calendar. The security boundary is the **band**, not the schedule:
 
 1. **Silence gate (per-asset, admin-set `clSilence`, e.g. 15 min):** the in-house signer's
    quotes are accepted only while the asset's Chainlink feed has been silent longer than
-   `clSilence`. Since intraweek quiet stretches exceed this routinely, the signer *can*
+   `clSilence`. Since intraweek quiet stretches exceed this routinely, the signer _can_
    quote mid-session — accepted deliberately, because every accepted quote is capped by:
 2. **Anchor band (per-asset `bandBps`):** a signed price must sit within `bandBps` of the
    last Chainlink answer (the anchor). Anchor validity is capped by `maxAnchorAge`
