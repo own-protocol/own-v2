@@ -231,9 +231,8 @@ contract ChainlinkOracleVerifier is IOracleVerifier, Multicall, EIP712 {
     /// @inheritdoc IOracleVerifier
     /// @dev Chainlink-first: while the feed is fresh (<= clSilence) the proof is ignored and the
     ///      Chainlink price is returned as current. When the feed is silent a signed proof is
-    ///      verified against the anchor band. An empty proof then takes the cached in-house price if
-    ///      it is fresher, and only otherwise falls back to Chainlink within `clFreshWindow`. Leg
-    ///      selection matches {getPrice}: the caller picks whether to prove, never which leg wins.
+    ///      verified against the anchor band; an empty proof takes the cached in-house price if it
+    ///      is fresher, else Chainlink within `clFreshWindow`. Leg selection matches {getPrice}.
     ///      No ETH required. payable to satisfy the interface.
     function verifyPrice(
         bytes32 asset,
@@ -249,9 +248,8 @@ contract ChainlinkOracleVerifier is IOracleVerifier, Multicall, EIP712 {
 
         if (priceData.length > 0) return _verifyInhouseProof(asset, cfg, priceData);
 
-        // Same leg selection as {getPrice}. Without this an empty proof reaches past a fresher
-        // cached quote to a stale anchor stamped `block.timestamp`, letting the caller settle
-        // against a price the vault's own mark has already moved off.
+        // Prefer the fresher leg, as {getPrice} does — else an empty proof selects the stale
+        // anchor over a newer cached quote.
         PriceEntry storage ih = _prices[asset];
         if (
             ih.price > 0 && block.timestamp - ih.timestamp <= cfg.inhouseMaxStaleness

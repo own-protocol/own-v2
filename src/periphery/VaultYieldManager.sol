@@ -22,7 +22,7 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 ///         `OwnVault.shareYield`.
 ///
 ///         Holds no state between transactions except undistributed revenue.
-///         Installation is reversible: `setManager` back to an EOA removes it.
+///         Installation is reversible: `setManager` to a no-op shell contract removes it.
 contract VaultYieldManager is IVaultYieldManager, ReentrancyGuard {
     using SafeERC20 for IERC20;
 

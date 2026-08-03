@@ -1,6 +1,6 @@
 # Own Protocol v2 — Audit Report & Remediation Status (Pass 3)
 
-**Branch:** `upgrade-borrow-manager` · **Last updated:** 2026-08-03 · **Test suite:** 1,226 passing
+**Branch:** `upgrade-borrow-manager` · **Last updated:** 2026-08-03 · **Test suite:** 1,229 passing
 
 Consolidated from the 2026-07-19 `ChainlinkOracleVerifier` implementation review and the 2026-07-31
 full multi-agent re-audit (solidity-auditor, 12-agent pipeline — 9 specialty attackers + 3
@@ -75,6 +75,7 @@ Excluded as non-source: `out/`, `cache/`, `broadcast/` (Foundry artifacts), `scr
 | A3-L-02   | Low      | `claimEarnedInterest` and `requireVaultHealthy` share one threshold → revenue crank consumes the exit floor       | **Accepted** — claim size immaterial (§4) |
 | A3-L-03   | Medium   | `forceExecuteOrder` is the only settle path with no price band                                                    | **Fixed** (2026-08-03) — reopened; acceptance premise refuted |
 | A3-L-06   | Low      | `unwrapWstETH` forwards the amount Lido reports, not the amount received — exit-leg DoS            | **Fixed** (2026-08-03) — net-new, extends **M-10** |
+| A3-M-10   | Medium   | `manager` documented contract-only but unenforced; an EOA manager bricks every LP path             | **Fixed** (2026-08-03) — net-new |
 | A3-L-04   | Low      | `BorrowManager._convertToCollateral` divides by an unbanded signed price                                          | **Accepted** — operator input, fixed dest (§4) |
 | A3-L-05   | Low      | ETH refund helpers pay out `address(this).balance`, not this call's surplus                                       | **Accepted** — comment corrected (§4)     |
 | CL-L01    | Low      | Reverting aggregator bricks both legs, including a fresh in-house price                                           | **By design** — fail-closed accepted      |
@@ -493,6 +494,47 @@ attack tests verified to **fail** with the guard removed from `deposit`/`mint`, 
 `::test_acceptDeposit_zeroAssets_reverts` kept passing throughout, confirming the refactor preserved
 existing behaviour. Full suite green (1,223 passing / 0 failed).
 **Detected by** 3 of 12 agents (asymmetry, first-principles, periphery — all as findings).
+
+---
+
+### A3-M-10 (Medium) — An EOA manager bricks every LP path, and nothing prevented one
+
+> **Status: ✅ Fixed (2026-08-03)** — enforced at both write sites, so the call site stays bare.
+
+**Problem.** `_syncLending` calls `try IVaultYieldManager(manager).syncYield() {} catch {}`. For a
+void-returning external call solc emits an extcodesize check, which reverts in **`OwnVault`'s own
+frame — outside the try** — so it cannot be caught. An EOA manager therefore reverts `deposit`,
+`mint`, `acceptDeposit` and `fulfillWithdrawal`. `fulfillWithdrawal` is the only exit
+(`withdraw`/`redeem` hard-revert, `maxWithdraw`/`maxRedeem` return 0), and `requestWithdrawal` does
+*not* call `_syncLending` — so shares could still be escrowed into a queue that can never drain.
+
+Neither write site checked: the constructor and `setManager` validated only zero-address, while
+`manager`'s own NatSpec asserted "Always a contract, never an EOA" and `VaultYieldManager`'s contract
+docs actively instructed operators into the failure — *"Installation is reversible: `setManager` back
+to an EOA removes it."* The invariant was asserted in three places and enforced in none.
+
+**Fix.** `ManagerNotContract` reverts on `code.length == 0` in both the constructor and `setManager`.
+Enforcing at the boundary is what lets `_syncLending` keep calling the manager bare rather than
+re-checking on every LP action. `VaultYieldManager`'s uninstall note now names a no-op shell contract
+instead of an EOA.
+
+**Not a guarantee the manager is *correct*** — only that it has code. A contract without `syncYield`
+still reverts, which the `try`/`catch` absorbs by design; that path is pinned by test.
+
+**Deployment consequence.** Three scripts pass an address straight to the constructor:
+`CreateVault.s.sol` (`VM_ADDRESS`), `DeployRobinhood.s.sol` and `DeployMainnet.s.sol` (`vm_`).
+Historically "the VM" was an operator EOA, so these now revert unless pointed at a contract — in
+practice the `VaultYieldManager` (which already carries `acceptDeposit`/`rejectDeposit` passthroughs)
+or a no-op shell. **The live vault is unaffected**: `EnableLendingRobinhood` already set its manager
+to the VYM. **Ops rule: `VM_ADDRESS` / `vm_` must be a contract from this change onward.**
+
+**Tests.** `OwnVault.t.sol::test_setManager_eoa_reverts` (asserts the manager is left unchanged) and
+`::test_constructor_eoaManager_reverts`; both verified to **fail** with their guards removed.
+`::test_deposit_revertingManager_stillSucceeds` pins that a *reverting* contract manager is still
+absorbed by the catch leg, so the fix does not convert a caught failure into a hard one. Three
+placeholder `Actors.ADMIN` managers in `VaultYieldManager.t.sol` became `address(this)`; the rest of
+the suite already used contract managers. Full suite green (1,229 passing / 0 failed).
+**Detected by** 2 of 12 agents (boundary, flow-gap).
 
 ---
 

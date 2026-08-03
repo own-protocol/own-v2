@@ -162,6 +162,8 @@ interface IOwnVault is IERC4626 {
     error AmountExceedsBackedCollateral();
     /// @notice The vault's asset token cannot be swept.
     error CannotSweepAsset();
+    /// @notice The supplied manager has no code; the vault requires a contract.
+    error ManagerNotContract();
 
     // ──────────────────────────────────────────────────────────
     //  Manager binding

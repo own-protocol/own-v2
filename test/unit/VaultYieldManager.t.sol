@@ -49,7 +49,7 @@ contract VaultYieldManagerTest is BaseTest {
         aUSDG = OwnAToken(pool.aToken());
 
         vm.startPrank(Actors.ADMIN);
-        vault = new OwnVault(pool.aToken(), "Own aUSDG Vault", "owaUSDG", address(protocolRegistry), Actors.ADMIN);
+        vault = new OwnVault(pool.aToken(), "Own aUSDG Vault", "owaUSDG", address(protocolRegistry), address(this));
         yieldManager = new VaultYieldManager(address(protocolRegistry), address(vault), address(pool), vmManager, CUT);
         vault.setManager(address(yieldManager));
         pool.setSupplierAllowed(address(yieldManager), true);
@@ -107,7 +107,7 @@ contract VaultYieldManagerTest is BaseTest {
         // A vault whose asset is the raw stablecoin, not the pool's aToken.
         vm.prank(Actors.ADMIN);
         OwnVault wrongVault =
-            new OwnVault(address(usdg), "Wrong Vault", "wUSDG", address(protocolRegistry), Actors.ADMIN);
+            new OwnVault(address(usdg), "Wrong Vault", "wUSDG", address(protocolRegistry), address(this));
         vm.expectRevert(
             abi.encodeWithSelector(IVaultYieldManager.AssetMismatch.selector, address(usdg), address(aUSDG))
         );
@@ -211,7 +211,7 @@ contract VaultYieldManagerTest is BaseTest {
         // Fresh vault with no LPs — yield must wait, not accrue to the first depositor.
         vm.startPrank(Actors.ADMIN);
         OwnVault emptyVault =
-            new OwnVault(pool.aToken(), "Empty Vault", "owEmpty", address(protocolRegistry), Actors.ADMIN);
+            new OwnVault(pool.aToken(), "Empty Vault", "owEmpty", address(protocolRegistry), address(this));
         VaultYieldManager freshShell =
             new VaultYieldManager(address(protocolRegistry), address(emptyVault), address(pool), vmManager, CUT);
         pool.setSupplierAllowed(address(freshShell), true);

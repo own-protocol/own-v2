@@ -74,8 +74,8 @@ contract WstETHRouter is IWstETHRouter, ReentrancyGuard {
         // Pull wstETH from caller
         IERC20(address(wstETH)).safeTransferFrom(msg.sender, address(this), amount);
 
-        // Unwrap wstETH → stETH. Lido reports the requested figure but share-rounding can credit
-        // 1-2 wei less, so forward the measured balance-diff (mirrors _depositStETHInternal).
+        // Unwrap wstETH → stETH; share-rounding can credit 1-2 wei less than
+        // reported, so forward the measured balance-diff.
         IERC20(address(wstETH)).forceApprove(address(wstETH), amount);
         uint256 balBefore = stETH.balanceOf(address(this));
         wstETH.unwrap(amount);

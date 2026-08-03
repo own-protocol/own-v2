@@ -153,6 +153,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     ) ERC4626(IERC20(asset_)) ERC20(name_, symbol_) {
         uint8 collatDecimals = IERC20Metadata(asset_).decimals();
         if (collatDecimals > 18) revert DecimalsTooHigh(collatDecimals);
+        if (manager_.code.length == 0) revert ManagerNotContract();
         registry = IProtocolRegistry(registry_);
         manager = manager_;
         _vaultStatus = VaultStatus.Active;
@@ -513,6 +514,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
         address newManager
     ) external onlyAdmin {
         if (newManager == address(0)) revert ZeroAddress();
+        if (newManager.code.length == 0) revert ManagerNotContract();
         address oldManager = manager;
         manager = newManager;
         emit ManagerUpdated(oldManager, newManager);

@@ -17,6 +17,16 @@ import {
 import {Actors} from "../helpers/Actors.sol";
 import {BaseTest} from "../helpers/BaseTest.sol";
 import {MockERC20} from "../helpers/MockERC20.sol";
+import {MockYieldManager} from "../helpers/MockYieldManager.sol";
+
+/// @dev Manager whose syncYield always reverts — pins that the best-effort catch leg holds.
+contract RevertingManager {
+    error Nope();
+
+    function syncYield() external pure {
+        revert Nope();
+    }
+}
 
 /// @dev Minimal borrow-manager stub: lets a test toggle the Aave health-factor gate result.
 contract MockHealthBorrowManager {
@@ -985,7 +995,7 @@ contract OwnVaultTest is BaseTest {
     }
 
     function test_setManager_byAdmin_succeeds() public {
-        address newManager = makeAddr("newManager");
+        address newManager = address(new MockYieldManager());
 
         vm.expectEmit(true, true, false, false);
         emit IOwnVault.ManagerUpdated(address(vm1Manager), newManager);
@@ -1005,6 +1015,35 @@ contract OwnVaultTest is BaseTest {
         vm.prank(Actors.ADMIN);
         vm.expectRevert(IOwnVault.ZeroAddress.selector);
         vault.setManager(address(0));
+    }
+
+    /// @dev `_syncLending` calls the manager bare on every LP entry and exit. A call to an EOA
+    ///      reverts via solc's extcodesize guard in the vault's own frame — outside the try — so it
+    ///      is uncatchable and would brick deposits and `fulfillWithdrawal`, the only exit. The
+    ///      invariant is enforced at the write sites so the call site can stay bare.
+    function test_setManager_eoa_reverts() public {
+        vm.prank(Actors.ADMIN);
+        vm.expectRevert(IOwnVault.ManagerNotContract.selector);
+        vault.setManager(makeAddr("eoaManager"));
+
+        assertEq(vault.manager(), address(vm1Manager), "manager unchanged");
+    }
+
+    /// @dev Same invariant at the other write site — a vault can never be born with an EOA manager.
+    function test_constructor_eoaManager_reverts() public {
+        vm.expectRevert(IOwnVault.ManagerNotContract.selector);
+        new OwnVault(address(weth), "Bad", "BAD", address(protocolRegistry), makeAddr("eoaManager"));
+    }
+
+    /// @dev With the invariant enforced at both write sites the LP paths call the manager bare, so
+    ///      a manager that reverts must still not block LP flow — the catch leg has to hold.
+    function test_deposit_revertingManager_stillSucceeds() public {
+        address badManager = address(new RevertingManager());
+        vm.prank(Actors.ADMIN);
+        vault.setManager(badManager);
+
+        uint256 shares = _depositAs(Actors.LP1, 1 ether);
+        assertGt(shares, 0, "a reverting syncYield must not block the deposit");
     }
 
     // ──────────────────────────────────────────────────────────
