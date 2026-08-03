@@ -39,7 +39,8 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
 
     IProtocolRegistry public immutable registry;
 
-    /// @notice Operational / fund-custody manager bound to this vault.
+    /// @notice Operational / fund-custody manager bound to this vault. Always a contract,
+    ///         never an EOA.
     address public manager;
 
     // ──────────────────────────────────────────────────────────
@@ -142,7 +143,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     /// @param name_       Vault share name.
     /// @param symbol_     Vault share symbol.
     /// @param registry_   ProtocolRegistry contract address.
-    /// @param manager_    Vault manager (operator) address bound to this vault.
+    /// @param manager_    Vault manager bound to this vault; must be a contract.
     constructor(
         address asset_,
         string memory name_,

@@ -42,7 +42,7 @@ contract PsmInvariantTest is BaseTest {
         _deployVaultManager();
 
         vm.startPrank(Actors.ADMIN);
-        vault = new OwnVault(address(weth), "Own ETH Vault", "oETH", address(protocolRegistry), vm1Signer);
+        vault = new OwnVault(address(weth), "Own ETH Vault", "oETH", address(protocolRegistry), address(vm1Manager));
         vaultManager.registerVault(address(vault), ETH_ASSET);
 
         market = new OwnMarket(address(protocolRegistry));

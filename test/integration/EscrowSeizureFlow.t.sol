@@ -42,7 +42,7 @@ contract EscrowSeizureFlowTest is BaseTest {
         _deployVaultManager();
 
         vm.startPrank(Actors.ADMIN);
-        vault = new OwnVault(address(weth), "Own WETH Vault", "oWETH", address(protocolRegistry), Actors.VM1);
+        vault = new OwnVault(address(weth), "Own WETH Vault", "oWETH", address(protocolRegistry), address(vm1Manager));
         vaultManager.registerVault(address(vault), ETH);
         vault.setRequireDepositApproval(true);
         vm.stopPrank();
@@ -81,7 +81,7 @@ contract EscrowSeizureFlowTest is BaseTest {
         // Accept one backing deposit so the vault has live shares and a non-zero collateral mark.
         uint256 backing = 5 ether;
         uint256 id0 = _requestDeposit(Actors.LP3, backing);
-        vm.prank(Actors.VM1);
+        vm.prank(address(vm1Manager));
         vault.acceptDeposit(id0);
         _pullCollateralPrice(address(vault));
 
@@ -129,7 +129,7 @@ contract EscrowSeizureFlowTest is BaseTest {
         vault.cancelDeposit(id2);
 
         // The manager's reject path is equally stuck — same underlying shortfall.
-        vm.prank(Actors.VM1);
+        vm.prank(address(vm1Manager));
         vm.expectRevert();
         vault.rejectDeposit(id2);
 

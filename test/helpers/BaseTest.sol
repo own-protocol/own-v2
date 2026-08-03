@@ -11,7 +11,9 @@ import {MockAUSDC} from "./MockAUSDC.sol";
 import {MockDEX} from "./MockDEX.sol";
 import {MockERC20} from "./MockERC20.sol";
 import {MockOracleVerifier} from "./MockOracleVerifier.sol";
+
 import {MockWstETH} from "./MockWstETH.sol";
+import {MockYieldManager} from "./MockYieldManager.sol";
 import {Test} from "forge-std/Test.sol";
 
 /// @title BaseTest — Common setup for all Own Protocol tests
@@ -113,9 +115,19 @@ contract BaseTest is Test {
     address public vm2Signer;
     uint256 public vm2SignerPk;
 
+    /// @notice Mock vault managers (contracts implementing syncYield) bound as `vault.manager`
+    ///         in suites, mirroring the production VaultYieldManager binding. Manager-gated
+    ///         calls are pranked from these addresses.
+    MockYieldManager public vm1Manager;
+    MockYieldManager public vm2Manager;
+
     function setUp() public virtual {
         (vm1Signer, vm1SignerPk) = makeAddrAndKey("vm1Signer");
         (vm2Signer, vm2SignerPk) = makeAddrAndKey("vm2Signer");
+        vm1Manager = new MockYieldManager();
+        vm2Manager = new MockYieldManager();
+        vm.label(address(vm1Manager), "vm1Manager");
+        vm.label(address(vm2Manager), "vm2Manager");
         _deployMockTokens();
         _deployMockInfrastructure();
         _labelActors();

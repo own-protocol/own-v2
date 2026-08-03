@@ -50,6 +50,13 @@ Order settlement no longer flows through the per-vault `manager`. Quotes are aut
 **global signer registry** and funds flow to/from each signer's linked address (see below). A maker
 that signs quotes need not be the same entity as any vault's `manager`.
 
+**`vault.manager` must be a contract, never an EOA.** The vault calls
+`IVaultYieldManager.syncYield()` on `manager` when pricing every LP entry/exit
+(`OwnVault._syncLending`), and a call to a codeless address reverts *outside* the `try/catch`,
+blocking deposits and withdrawals. In production `manager` is the **VaultYieldManager** shell (§3);
+the VM entity drives the deposit queue through its passthroughs. A contract without `syncYield` is
+tolerated — the call is swallowed by the `try/catch`.
+
 ### Quote Signers (global registry)
 
 Authorized signers live in a single **global registry on the `VaultManager`** (admin-managed via
@@ -104,6 +111,7 @@ The protocol is organized into three layers (vaults are deployed directly and re
 | Contract         | File                             | Purpose                                                                                                                                                                      |
 | ---------------- | -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **EToken**       | `src/tokens/EToken.sol`          | Synthetic asset token (ERC-20 + ERC-2612 Permit). Mint/burn restricted to OwnMarket. Supports admin-updatable metadata (for stock splits) and a dividend reward accumulator. |
+| **VaultYieldManager** | `src/periphery/VaultYieldManager.sol` | Automated LP yield distribution shell, installed as an OwnVault's `manager` (`setManager`). All BorrowManager revenue (premium sweeps, dividend sweeps, interest claims) lands here as stablecoin; a permissionless `distribute` splits it treasury-cut / LP-yield (converted 1:1 to the vault's aToken via `OwnLendingPool.supply` and pushed with `shareYield`). The vault calls its `syncYield` before pricing LP entry/exit. The VM entity drives the deposit queue through `acceptDeposit`/`rejectDeposit` passthroughs. |
 | **WETHRouter**   | `src/periphery/WETHRouter.sol`   | Wraps native ETH to WETH for vault deposits and unwraps on redemption.                                                                                                       |
 | **WstETHRouter** | `src/periphery/WstETHRouter.sol` | Wraps stETH to wstETH for alternative collateral vaults. Supports ERC-2612 permit.                                                                                           |
 

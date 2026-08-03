@@ -74,8 +74,8 @@ contract OwnProtocolInvariant is BaseTest {
         _deployVaultManager();
         vm.startPrank(Actors.ADMIN);
 
-        // Create vault: WETH collateral, vm1Signer (keyed VM for quote signing). ETH = collateral ticker.
-        vault = new OwnVault(address(weth), "Own ETH Vault", "oETH", address(protocolRegistry), vm1Signer);
+        // Create vault: WETH collateral, mock contract manager (vm1Signer stays the quote signer). ETH = collateral ticker.
+        vault = new OwnVault(address(weth), "Own ETH Vault", "oETH", address(protocolRegistry), address(vm1Manager));
         vaultManager.registerVault(address(vault), ETH);
 
         // Market

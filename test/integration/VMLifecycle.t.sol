@@ -46,9 +46,10 @@ contract VMLifecycleTest is BaseTest {
         _deployVaultManager();
         vm.startPrank(Actors.ADMIN);
 
-        vault = new OwnVault(address(weth), "Own WETH Vault", "oWETH", address(protocolRegistry), vm1Signer);
+        vault = new OwnVault(address(weth), "Own WETH Vault", "oWETH", address(protocolRegistry), address(vm1Manager));
         vaultManager.registerVault(address(vault), ETH);
-        vault2 = new OwnVault(address(weth), "Own WETH Vault 2", "oWETH2", address(protocolRegistry), vm2Signer);
+        vault2 =
+            new OwnVault(address(weth), "Own WETH Vault 2", "oWETH2", address(protocolRegistry), address(vm2Manager));
         vaultManager.registerVault(address(vault2), ETH);
 
         eTSLA = new EToken("Own Tesla", "eTSLA", TSLA, address(protocolRegistry), address(usdc));
@@ -109,8 +110,8 @@ contract VMLifecycleTest is BaseTest {
     // ══════════════════════════════════════════════════════════
 
     function test_vmBinding() public view {
-        assertEq(vault.manager(), vm1Signer);
-        assertEq(vault2.manager(), vm2Signer);
+        assertEq(vault.manager(), address(vm1Manager));
+        assertEq(vault2.manager(), address(vm2Manager));
     }
 
     // ══════════════════════════════════════════════════════════

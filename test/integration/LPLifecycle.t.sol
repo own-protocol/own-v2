@@ -41,7 +41,7 @@ contract LPLifecycleTest is BaseTest {
         _deployVaultManager();
         vm.startPrank(Actors.ADMIN);
 
-        vault = new OwnVault(address(weth), "Own WETH Vault", "oWETH", address(protocolRegistry), Actors.VM1);
+        vault = new OwnVault(address(weth), "Own WETH Vault", "oWETH", address(protocolRegistry), address(vm1Manager));
         vaultManager.registerVault(address(vault), ETH);
 
         market = new OwnMarket(address(protocolRegistry));
@@ -70,8 +70,8 @@ contract LPLifecycleTest is BaseTest {
     // ──────────────────────────────────────────────────────────
 
     function _lpDeposit(address lp, uint256 amount) internal returns (uint256 shares) {
-        _fundWETH(Actors.VM1, amount);
-        vm.startPrank(Actors.VM1);
+        _fundWETH(address(vm1Manager), amount);
+        vm.startPrank(address(vm1Manager));
         weth.approve(address(vault), amount);
         shares = vault.deposit(amount, lp);
         vm.stopPrank();

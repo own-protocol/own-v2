@@ -53,7 +53,7 @@ contract UtilizationLimitTest is BaseTest {
         _setGlobalMaxUtil(MAX_UTIL_BPS);
         vm.startPrank(Actors.ADMIN);
 
-        vault = new OwnVault(address(weth), "Own ETH Vault", "oETH", address(protocolRegistry), vm1Signer);
+        vault = new OwnVault(address(weth), "Own ETH Vault", "oETH", address(protocolRegistry), address(vm1Manager));
         vaultManager.registerVault(address(vault), ETH);
 
         market = new OwnMarket(address(protocolRegistry));

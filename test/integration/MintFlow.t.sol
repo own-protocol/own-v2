@@ -51,7 +51,7 @@ contract MintFlowTest is BaseTest {
         _deployVaultManager();
         vm.startPrank(Actors.ADMIN);
 
-        vault = new OwnVault(address(weth), "Own WETH Vault", "oWETH", address(protocolRegistry), vm1Signer);
+        vault = new OwnVault(address(weth), "Own WETH Vault", "oWETH", address(protocolRegistry), address(vm1Manager));
         vaultManager.registerVault(address(vault), ETH);
 
         market = new OwnMarket(address(protocolRegistry));

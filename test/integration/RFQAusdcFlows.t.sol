@@ -86,7 +86,8 @@ contract RFQAusdcFlowsTest is BaseTest {
         _deployVaultManager();
         vm.startPrank(Actors.ADMIN);
 
-        vault = new OwnVault(address(ausdcAToken), "Own aUSDC", "oaUSDC", address(protocolRegistry), vm1Signer);
+        vault =
+            new OwnVault(address(ausdcAToken), "Own aUSDC", "oaUSDC", address(protocolRegistry), address(vm1Manager));
         vaultManager.registerVault(address(vault), AUSDC);
 
         market = new OwnMarket(address(protocolRegistry));
@@ -129,7 +130,7 @@ contract RFQAusdcFlowsTest is BaseTest {
         ausdcAToken.approve(address(vault), LP_DEPOSIT);
         uint256 reqId = vault.requestDeposit(LP_DEPOSIT, Actors.LP1, 0);
         vm.stopPrank();
-        vm.prank(vm1Signer);
+        vm.prank(address(vm1Manager));
         vault.acceptDeposit(reqId);
         _pullCollateralPrice(address(vault));
         _pullAssetPrice(TSLA);

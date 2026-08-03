@@ -42,8 +42,8 @@ contract MultiVaultUtilizationTest is BaseTest {
         _setGlobalMaxUtil(MAX_UTIL_BPS);
 
         vm.startPrank(Actors.ADMIN);
-        vaultA = new OwnVault(address(weth), "Vault A", "vA", address(protocolRegistry), vm1Signer);
-        vaultB = new OwnVault(address(weth), "Vault B", "vB", address(protocolRegistry), vm2Signer);
+        vaultA = new OwnVault(address(weth), "Vault A", "vA", address(protocolRegistry), address(vm1Manager));
+        vaultB = new OwnVault(address(weth), "Vault B", "vB", address(protocolRegistry), address(vm2Manager));
         vaultManager.registerVault(address(vaultA), ETH);
         vaultManager.registerVault(address(vaultB), ETH);
 
