@@ -1,27 +1,29 @@
 # Own Protocol v2 — Robinhood Chain Deployment
 
 **Network:** Robinhood Chain (chainId `4663`)
-**Deployed:** 2026-07-14 via `script/robinhood/` suite (branch `robinhood`, commit `12b8467`)
+**Deployed:** 2026-07-14 via `script/robinhood/` suite (branch `robinhood`, commit `12b8467`);
+gen-2 market/vault stack redeployed 2026-08-03 (branch `upgrade-borrow-manager`).
 **Status:** Core + assets + lending + yield automation + PSM live. All contracts verified on
 [Blockscout](https://robinhoodchain.blockscout.com).
 
 ## Core contracts
 
-| Contract                           | Address                                      |
-| ---------------------------------- | -------------------------------------------- |
-| ProtocolRegistry                   | `0x93E08Ca467046737f75aAd4C936356c196AAa36f` |
-| AssetRegistry                      | `0xDfEFfe8C385A28351Cc07a249A3B2C15Fe7b928A` |
-| OwnMarket                          | `0xF17Ce62F389B5bAA9C24f448D329E898c8f8dEf7` |
-| VaultManager                       | `0xfA2981bA6F5E955f3FF4c9DBd9a79Ff29015d352` |
-| ETokenFactory                      | `0x21C8Ab24844101eE7A2625a7f281F7cED679782a` |
-| ChainlinkOracleVerifier (in-house) | `0x72158ca9C5Dab08f3c470188a34c6e609fa6af9b` |
-| OwnLendingPool                     | `0xADa84DAeBD59053CDbC49740E1F06F039Bb4FbbA` |
-| — oUSDG (aToken)                   | `0x8673efc9f9a561625b9B560a28127bCa42290143` |
-| — odUSDG (debt token)              | `0xB722B898897e3221eE09C51f03935D437FfbC85e` |
-| LendingRouter                      | `0xF3f1f274bFe61544d3045321E2c0c84Aa40274f1` |
-| OwnVault (oUSDG, shares `ovUSDG`)  | `0x246705F13bF56e3A572ae1407c065126230557FC` |
-| BorrowManager                      | `0xa58738135ce8D44E746B04967590A831C7E01bF1` |
-| VaultYieldManager                  | `0x2efb4f919302f9548d7E497503Fa92E5dd93f841` |
+| Contract                            | Address                                      |
+| ----------------------------------- | -------------------------------------------- |
+| ProtocolRegistry                    | `0x93E08Ca467046737f75aAd4C936356c196AAa36f` |
+| AssetRegistry                       | `0xDfEFfe8C385A28351Cc07a249A3B2C15Fe7b928A` |
+| OwnMarket                           | `0x448e0Abd706C84Fe2897DdDd597BA2b043F53178` |
+| VaultManager                        | `0xfA2981bA6F5E955f3FF4c9DBd9a79Ff29015d352` |
+| ETokenFactory                       | `0x21C8Ab24844101eE7A2625a7f281F7cED679782a` |
+| ChainlinkOracleVerifier (in-house)  | `0x72158ca9C5Dab08f3c470188a34c6e609fa6af9b` |
+| OwnLendingPool                      | `0xADa84DAeBD59053CDbC49740E1F06F039Bb4FbbA` |
+| — oUSDG (aToken)                    | `0x8673efc9f9a561625b9B560a28127bCa42290143` |
+| — odUSDG (debt token)               | `0xB722B898897e3221eE09C51f03935D437FfbC85e` |
+| LendingRouter (`withdrawFromVault`) | `0xDB0156762acB807C84B15130b94caCd8B17C888c` |
+| OwnVault (oUSDG, shares `ovUSDG`)   | `0x61f4a9008B3EF2f11993b7F969E72593Edfc8196` |
+| BorrowManager (ERC-1967/UUPS proxy) | `0xfb6b4dcEe64963CB9D5dD0762504eFAd06C19860` |
+| — implementation                    | `0x13De29530958A38f9b543E2DAdDC34A5EFdD03d6` |
+| VaultYieldManager                   | `0xc2b96848d288d7497edcF04AA70779F9a2Ac06Ee` |
 
 ## PSM ReserveVaults (batch 2026-07-14, `DeployPsmAssetsRobinhood.s.sol`)
 
@@ -147,3 +149,20 @@ and `setMakerAllowed(TSLA, operator, false)` executed during the signer/maker ro
 - [x] Remove operator from oracle signers (`removeSigner`) — done 2026-07-16; sole signer now `0xa7C8…FeBF`
 - [ ] Small psmMint/psmRedeem round-trip before announcing
 - [ ] Migrate PROTOCOL_ADMIN to Safe multisig
+
+## Superseded contracts (gen-1, 2026-07-14 deploy — reference only)
+
+Replaced by the gen-2 stack on 2026-08-03. The gen-1 market remains the live `registry.market()`
+until the Safe cutover executes; the gen-1 vault is in wind-down (withdrawal wait 0, deposits
+gated, lending grants revoked) and will be deregistered once fully drained (halt first if dust
+holders remain). ~927 USDG of borrower debt on the gen-1 BorrowManager must be repaid there —
+positions do not migrate.
+
+| Contract                                  | Address                                      |
+| ----------------------------------------- | -------------------------------------------- |
+| OwnMarket v1 (live until Safe cutover)    | `0xF17Ce62F389B5bAA9C24f448D329E898c8f8dEf7` |
+| OwnVault v1 (oUSDG, wind-down)            | `0x246705F13bF56e3A572ae1407c065126230557FC` |
+| BorrowManager v1 (non-proxy, repay-only)  | `0xa58738135ce8D44E746B04967590A831C7E01bF1` |
+| VaultYieldManager v1                      | `0x2efb4f919302f9548d7E497503Fa92E5dd93f841` |
+| LendingRouter v1                          | `0xF3f1f274bFe61544d3045321E2c0c84Aa40274f1` |
+| OracleVerifier v1 (pre-Chainlink cutover) | `0x654CFb0f871A6a22F184B9a3960BaA4fE3dAe055` |
