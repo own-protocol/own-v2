@@ -10,15 +10,15 @@ gen-2 market/vault stack redeployed 2026-08-03 (branch `upgrade-borrow-manager`)
 
 | Contract                            | Address                                      |
 | ----------------------------------- | -------------------------------------------- |
-| ProtocolRegistry                    | `0x93E08Ca467046737f75aAd4C936356c196AAa36f` |
+| ProtocolRegistry                    | `0x93e08ca467046737F75AAD4C936356c196AaA36F` |
 | AssetRegistry                       | `0xDfEFfe8C385A28351Cc07a249A3B2C15Fe7b928A` |
 | OwnMarket                           | `0x448e0Abd706C84Fe2897DdDd597BA2b043F53178` |
 | VaultManager                        | `0xfA2981bA6F5E955f3FF4c9DBd9a79Ff29015d352` |
-| ETokenFactory                       | `0x21C8Ab24844101eE7A2625a7f281F7cED679782a` |
+| ETokenFactory                       | `0x21C8Ab24844101EE7A2625A7f281f7ceD679782A` |
 | ChainlinkOracleVerifier (in-house)  | `0x72158ca9C5Dab08f3c470188a34c6e609fa6af9b` |
-| OwnLendingPool                      | `0xADa84DAeBD59053CDbC49740E1F06F039Bb4FbbA` |
-| — oUSDG (aToken)                    | `0x8673efc9f9a561625b9B560a28127bCa42290143` |
-| — odUSDG (debt token)               | `0xB722B898897e3221eE09C51f03935D437FfbC85e` |
+| OwnLendingPool                      | `0xaDa84daebD59053Cdbc49740E1f06F039BB4FbBa` |
+| — oUSDG (aToken)                    | `0x8673efc9f9a561625b9b560a28127bCa42290143` |
+| — odUSDG (debt token)               | `0xB722B898897e3221eE09C51F03935d437FfBc85e` |
 | LendingRouter (`withdrawFromVault`) | `0xDB0156762acB807C84B15130b94caCd8B17C888c` |
 | OwnVault (oUSDG, shares `ovUSDG`)   | `0x61f4a9008B3EF2f11993b7F969E72593Edfc8196` |
 | BorrowManager (ERC-1967/UUPS proxy) | `0xfb6b4dcEe64963CB9D5dD0762504eFAd06C19860` |
@@ -164,5 +164,5 @@ positions do not migrate.
 | OwnVault v1 (oUSDG, wind-down)            | `0x246705F13bF56e3A572ae1407c065126230557FC` |
 | BorrowManager v1 (non-proxy, repay-only)  | `0xa58738135ce8D44E746B04967590A831C7E01bF1` |
 | VaultYieldManager v1                      | `0x2efb4f919302f9548d7E497503Fa92E5dd93f841` |
-| LendingRouter v1                          | `0xF3f1f274bFe61544d3045321E2c0c84Aa40274f1` |
+| LendingRouter v1                          | `0xf3f1f274bFe61544d3045321E2c0c84Aa40274f1` |
 | OracleVerifier v1 (pre-Chainlink cutover) | `0x654CFb0f871A6a22F184B9a3960BaA4fE3dAe055` |
