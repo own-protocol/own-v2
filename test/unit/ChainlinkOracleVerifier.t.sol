@@ -304,6 +304,41 @@ contract ChainlinkOracleVerifierTest is BaseTest {
         assertEq(ts, block.timestamp);
     }
 
+    /// @dev A3-L-03 (reopened): with the feed silent and a fresher quote cached, an empty proof must
+    ///      not reach past it to the stale anchor. {getPrice} always preferred the fresher leg, so
+    ///      the two reads disagreed on the same asset in the same block — and a force-executor could
+    ///      pick the higher of the two, settling above the vault's own mark.
+    function test_verifyPrice_emptyProof_prefersFresherInhouseQuote() public {
+        // Feed goes silent, signer posts a lower price inside the anchor band.
+        _ageChainlink(CL_SILENCE + 1);
+        uint256 pushPrice = 364e18; // -4.2% from $380, inside BAND_BPS
+        verifier.updatePrice(ASSET, _signPrice(ASSET, pushPrice, block.timestamp));
+
+        // Still well inside clFreshWindow, so the stale-anchor fallback is reachable.
+        _ageChainlink(30 minutes);
+
+        (uint256 price, uint256 ts) = verifier.verifyPrice(ASSET, "");
+        assertEq(price, pushPrice, "empty proof took the stale anchor over a fresher quote");
+        assertLt(ts, block.timestamp, "must report the quote's own timestamp, not a synthetic one");
+
+        // Both read paths must agree on the same asset in the same block.
+        (uint256 gPrice, uint256 gTs) = verifier.getPrice(ASSET);
+        assertEq(price, gPrice, "verifyPrice and getPrice disagree on price");
+        assertEq(ts, gTs, "verifyPrice and getPrice disagree on timestamp");
+    }
+
+    /// @dev The preference is by freshness, not by leg — a quote past `inhouseMaxStaleness` still
+    ///      yields to the anchor, so this cannot become a way to pin a stale in-house price.
+    function test_verifyPrice_emptyProof_staleInhouseYieldsToAnchor() public {
+        _ageChainlink(CL_SILENCE + 1);
+        verifier.updatePrice(ASSET, _signPrice(ASSET, 364e18, block.timestamp));
+
+        _ageChainlink(uint256(INHOUSE_MAX_STALENESS) + 1);
+
+        (uint256 price,) = verifier.verifyPrice(ASSET, "");
+        assertEq(price, CL_PRICE_18, "stale in-house quote must not win over the anchor");
+    }
+
     function test_verifyPrice_emptyProof_clBeyondFreshWindow_reverts() public {
         _ageChainlink(uint256(CL_FRESH_WINDOW) + 1);
         vm.expectRevert(abi.encodeWithSelector(IOracleVerifier.PriceNotAvailable.selector, ASSET));

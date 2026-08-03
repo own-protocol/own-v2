@@ -1,6 +1,6 @@
 # Own Protocol v2 — Audit Report & Remediation Status (Pass 3)
 
-**Branch:** `upgrade-borrow-manager` · **Last updated:** 2026-08-03 · **Test suite:** 1,223 passing
+**Branch:** `upgrade-borrow-manager` · **Last updated:** 2026-08-03 · **Test suite:** 1,225 passing
 
 Consolidated from the 2026-07-19 `ChainlinkOracleVerifier` implementation review and the 2026-07-31
 full multi-agent re-audit (solidity-auditor, 12-agent pipeline — 9 specialty attackers + 3
@@ -73,7 +73,7 @@ Excluded as non-source: `out/`, `cache/`, `broadcast/` (Foundry artifacts), `scr
 | A3-M-09   | Medium   | `ReserveVault._releaseCollateral` omits the PSM ratio-jump guard it shares a ratio with                           | **Acknowledged** — live reserves (§3)     |
 | A3-L-01   | Low      | `utilizationBps` returns 0 for a zero cap with live debt → premium collapses to floor during a halt               | **Fixed** (2026-07-31)                    |
 | A3-L-02   | Low      | `claimEarnedInterest` and `requireVaultHealthy` share one threshold → revenue crank consumes the exit floor       | **Accepted** — claim size immaterial (§4) |
-| A3-L-03   | Low      | `forceExecuteOrder` is the only settle path with no price band                                                    | **Accepted** — anchor-band contained (§4) |
+| A3-L-03   | Medium   | `forceExecuteOrder` is the only settle path with no price band                                                    | **Fixed** (2026-08-03) — reopened; acceptance premise refuted |
 | A3-L-04   | Low      | `BorrowManager._convertToCollateral` divides by an unbanded signed price                                          | **Accepted** — operator input, fixed dest (§4) |
 | A3-L-05   | Low      | ETH refund helpers pay out `address(this).balance`, not this call's surplus                                       | **Accepted** — comment corrected (§4)     |
 | CL-L01    | Low      | Reverting aggregator bricks both legs, including a fresh in-house price                                           | **By design** — fail-closed accepted      |
@@ -688,6 +688,33 @@ existing behaviour. Full suite green (1,223 passing / 0 failed).
   `currentPrice >= limitPrice` gate caps the payout at market under an honest oracle, and a leaked
   signer is now anchor-band contained, so the band would add no reachable protection. Detected by 3 of
   12 agents.
+  **Reopened and fixed 2026-08-03 — Medium.** The acceptance rests on "`currentPrice >= limitPrice`
+  caps the payout at market." That holds only if `currentPrice` *is* the market. It is not: in
+  `ChainlinkOracleVerifier.verifyPrice` the in-house branch sits behind `if (priceData.length > 0)`,
+  so an **empty proof** skips a fresher cached quote and falls through to the stale anchor, returned
+  stamped `block.timestamp`. `getPrice` — and therefore the VaultManager mark — always preferred the
+  fresher leg, so the two reads disagreed on the same asset in the same block and the caller chose
+  which one the gate saw. Reachable in the ordinary `(clSilence, clFreshWindow]` window (15 min – 4h
+  on the deployed config), no key compromise: at mark $368 against a $400 stale anchor, a 2,500-unit
+  force-execute releases $1,000,000 of collateral to close $920,000 of exposure — $80,000 per
+  execution, repeatable while the legs diverge.
+  **Fix.** `verifyPrice` now takes the cached in-house price when it is fresher than the anchor,
+  mirroring `getPrice`'s selection, before the `clFreshWindow` fallback. The caller still chooses
+  whether to prove, never which leg wins. Deployed by swapping `INHOUSE_ORACLE` in the registry
+  (atomic, documented rollback) — no other contract changes.
+  **Not done — the band itself.** Adding `_checkSettleBand` here would be wrong twice: it is
+  symmetric, so it would reject a limit price far *below* the mark (a cheap exit that favours LPs),
+  and it reverts `StaleSettleMark`, which would break the unblockable-exit guarantee that
+  `closeExposure`'s stale-tolerance exists to preserve. If belt-and-braces is wanted at that layer it
+  must be a one-sided **clamp** (`min(limitPrice, mark × (1 + band))`), which changes settle
+  semantics and is a product decision. **The `order.expiry` mechanism also remains open** — now
+  genuinely benign, since the payout can no longer exceed the protocol's own valuation.
+  **Tests.** `ChainlinkOracleVerifier.t.sol::test_verifyPrice_emptyProof_prefersFresherInhouseQuote`
+  asserts the fresher quote wins and that `verifyPrice` and `getPrice` agree on price *and*
+  timestamp; verified to **fail** with the preference removed ($380 vs $364).
+  `::test_verifyPrice_emptyProof_staleInhouseYieldsToAnchor` pins that the preference is by freshness,
+  not by leg, so this cannot become a way to pin a stale in-house price. Full suite green
+  (1,225 passing / 0 failed).
 - **A3-L-04 — Bad-debt collateral conversion uses an unbanded signed price.**
   `BorrowManager._convertToCollateral` verifies the collateral price for staleness only and uses it
   directly as a divisor, skipping the `_checkPriceBand` that guards `_executeBorrow` and `liquidate`;
