@@ -527,4 +527,61 @@ contract LendingRouterTest is BaseTest {
         );
         router.withdrawFromVault(address(wethU), IOwnVault(address(wstETHVault)), 1, Actors.LP1, 0);
     }
+
+    // ──────────────────────────────────────────────────────────
+    //  A3-L-07 — scaled-balance rounding on the exit legs
+    // ──────────────────────────────────────────────────────────
+
+    /// @dev Under a real Aave pool an aToken transfer is a scaled-balance round trip
+    ///      (rayDiv in, rayMul out) and can credit a wei less than the figure the sender
+    ///      reports. Both exit legs must withdraw what they actually hold, not the
+    ///      reported amount, or the whole exit reverts. Fails pre-fix with
+    ///      "MockAToken: burn exceeds balance".
+    function test_withdrawFromVault_scaledBalanceShortfall_succeeds() public {
+        uint256 shares = _depositAndApproveShares(Actors.LP1, 10 ether);
+
+        awstETH.setTransferShortfall(1);
+
+        vm.prank(Actors.LP1);
+        uint256 out = router.withdrawFromVault(address(wstETHU), IOwnVault(address(wstETHVault)), shares, Actors.LP1, 0);
+
+        assertEq(out, 10 ether - 1, "exit clears, short by the rounding wei");
+        assertEq(wstETHU.balanceOf(Actors.LP1), 10 ether - 1);
+        assertEq(wstETHVault.balanceOf(Actors.LP1), 0, "shares burned");
+        assertEq(awstETH.balanceOf(address(router)), 0, "router strands no aToken");
+    }
+
+    /// @dev Same defect on the plain withdraw leg — the caller-supplied `aTokenAmount`
+    ///      is likewise a reported figure, not a measured receipt.
+    function test_withdraw_scaledBalanceShortfall_succeeds() public {
+        uint256 amount = 10 ether;
+        _fundAndApproveAToken(wstETHU, awstETH, Actors.LP1, amount);
+
+        awstETH.setTransferShortfall(1);
+
+        vm.prank(Actors.LP1);
+        uint256 out = router.withdraw(address(wstETHU), amount, Actors.LP1);
+
+        assertEq(out, amount - 1, "exit clears, short by the rounding wei");
+        assertEq(wstETHU.balanceOf(Actors.LP1), amount - 1);
+        assertEq(awstETH.balanceOf(address(router)), 0, "router strands no aToken");
+    }
+
+    /// @dev The exit legs withdraw the measured receipt, not the router's whole balance,
+    ///      so aToken donated to the router is never swept into an unrelated caller's exit.
+    function test_withdraw_donatedATokenNotSwept() public {
+        uint256 amount = 10 ether;
+        _fundAndApproveAToken(wstETHU, awstETH, Actors.LP1, amount);
+
+        _fundAndApproveAToken(wstETHU, awstETH, Actors.LP2, 1 ether);
+        vm.prank(Actors.LP2);
+        IERC20(address(awstETH)).transfer(address(router), 1 ether);
+
+        vm.prank(Actors.LP1);
+        uint256 out = router.withdraw(address(wstETHU), amount, Actors.LP1);
+
+        assertEq(out, amount, "caller withdraws exactly their own amount");
+        assertEq(wstETHU.balanceOf(Actors.LP1), amount);
+        assertEq(awstETH.balanceOf(address(router)), 1 ether, "donated aToken untouched");
+    }
 }

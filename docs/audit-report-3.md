@@ -54,7 +54,7 @@ Excluded as non-source: `out/`, `cache/`, `broadcast/` (Foundry artifacts), `scr
 | Critical | 0     | 0     | 0    | —         |
 | High     | 3     | 3     | 0    | —         |
 | Medium   | 9     | 3     | 0    | 6         |
-| Low      | 8     | 1     | 0    | 7         |
+| Low      | 9     | 3     | 0    | 6         |
 | Info     | 4     | 0     | 0    | 4         |
 
 | ID        | Severity | Finding                                                                                                          | Status                                    |
@@ -75,6 +75,7 @@ Excluded as non-source: `out/`, `cache/`, `broadcast/` (Foundry artifacts), `scr
 | A3-L-02   | Low      | `claimEarnedInterest` and `requireVaultHealthy` share one threshold → revenue crank consumes the exit floor       | **Accepted** — claim size immaterial (§4) |
 | A3-L-03   | Medium   | `forceExecuteOrder` is the only settle path with no price band                                                    | **Fixed** (2026-08-03) — reopened; acceptance premise refuted |
 | A3-L-06   | Low      | `unwrapWstETH` forwards the amount Lido reports, not the amount received — exit-leg DoS            | **Fixed** (2026-08-03) — net-new, extends **M-10** |
+| A3-L-07   | Low      | `LendingRouter` exit legs forward the reported aToken amount, not the amount received — exit DoS   | **Fixed** (2026-08-03) — net-new, third sibling of **M-10** / **A3-L-06** |
 | A3-M-10   | Medium   | `manager` documented contract-only but unenforced; an EOA manager bricks every LP path             | **Fixed** (2026-08-03) — net-new |
 | A3-L-04   | Low      | `BorrowManager._convertToCollateral` divides by an unbanded signed price                                          | **Accepted** — operator input, fixed dest (§4) |
 | A3-L-05   | Low      | ETH refund helpers pay out `address(this).balance`, not this call's surplus                                       | **Accepted** — comment corrected (§4)     |
@@ -566,6 +567,55 @@ exit path at all, which is why M-10's regression test never covered this half. V
 against the pre-fix code with `ERC20InsufficientBalance(router, 9.999e18, 1e19)` — the exact
 production failure. Full suite green (1,226 passing / 0 failed).
 **Detected by** 1 of 12 agents (periphery).
+
+---
+
+### A3-L-07 (Low) — `LendingRouter` exit legs forward the reported amount, not the received amount
+
+> **Status: ✅ Fixed (2026-08-03)** — net-new this pass; the third sibling of **M-10** / **A3-L-06**.
+
+**Problem.** Both `LendingRouter` exit legs passed a *reported* figure to `IAaveV3Pool.withdraw`
+rather than the amount the router actually held. `withdrawFromVault` forwarded the `assets` that
+`vault.fulfillWithdrawal` returns; `withdraw` forwarded the caller-supplied `aTokenAmount`. Under a
+canonical Aave pool an aToken transfer is a scaled-balance round trip (`rayDiv` in, `rayMul` out) and
+can credit the recipient a wei less than the figure the sender reports, so `withdraw(underlying,
+assets, receiver)` asks the pool to burn more than the router owns and the entire exit reverts. The
+caller has no workaround on the vault leg: `assets` is derived internally from
+`convertToAssets(shares)`, so there is no parameter to nudge down.
+
+**The same file already knew better.** `deposit` measures the receipt with a balance-diff around
+`pool.supply` and carries a comment noting the aToken "lands here 1:1" — the two halves of one file
+disagreed about whether a reported aToken figure can be trusted. This is the identical defect class
+as **M-10** (WstETHRouter deposit leg) and **A3-L-06** (`unwrapWstETH` exit leg); `5457dbb` swept only
+`WstETHRouter.sol`, so `LendingRouter` was missed rather than excluded. Third occurrence, third file.
+
+**Fix.** Both legs now snapshot `IERC20(aToken).balanceOf(address(this))` around the inbound transfer
+and withdraw the measured delta, mirroring `deposit` exactly — all three legs of the file now use one
+pattern. `pool.withdraw` returns the amount actually moved, so `underlyingAmount` and the emitted
+events stay truthful. The `minAssetsOut` slippage guard is still evaluated against the vault's
+reported `assets` before the withdraw, and is unaffected.
+
+Passing `type(uint256).max` (which both `OwnLendingPool.withdraw` and canonical Aave resolve to the
+caller's full balance) was considered and rejected: it is correct only under the global invariant
+that the router holds nothing between transactions, and it would sweep any donated aToken into the
+next caller's exit. The balance-diff is provable at the call site and leaves donated dust alone.
+Partial withdrawals are unaffected either way — the partial selection happens at the pull step,
+before the measurement.
+
+**Live exposure: none.** The deployed venue is `OwnLendingPool`, whose `OwnAToken` is a plain ERC-20
+— 1:1, no liquidity index, no scaled math — so the shortfall cannot occur on Robinhood Chain.
+Canonical Aave is wired only on Base, which is wound down. This matters for a future EVM deployment
+that reuses the periphery.
+
+**Tests.** `LendingRouter.t.sol::test_withdrawFromVault_scaledBalanceShortfall_succeeds` and
+`::test_withdraw_scaledBalanceShortfall_succeeds`. `MockAToken` gained a `setTransferShortfall`
+helper — the mock was strictly 1:1 with no way to express Aave's double-floor, which is precisely why
+no existing test could reach this path (the mirror of A3-L-06's `MockRoundingStETH` gap). Both
+verified to **fail** against the pre-fix code with `MockAToken: burn exceeds balance` — the exact
+production failure mode. `::test_withdraw_donatedATokenNotSwept` pins the balance-diff choice: aToken
+donated to the router stays put rather than being swept into an unrelated caller's exit.
+Full suite green (1,232 passing / 0 failed / 6 skipped).
+**Detected by** 2 of 12 agents (boundary, numerical-gap).
 
 ---
 

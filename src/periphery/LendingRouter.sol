@@ -138,11 +138,13 @@ contract LendingRouter is ILendingRouter, ReentrancyGuard {
 
         address aToken = _requireEnabled(underlying);
 
-        // Pull aToken from caller.
+        // Pull aToken from caller — measure the receipt; a scaled-balance transfer can credit less.
+        uint256 aTokenBefore = IERC20(aToken).balanceOf(address(this));
         IERC20(aToken).safeTransferFrom(msg.sender, address(this), aTokenAmount);
+        uint256 aTokenReceived = IERC20(aToken).balanceOf(address(this)) - aTokenBefore;
 
         // Aave burns the aToken and sends the underlying directly to `receiver`.
-        underlyingAmount = IAaveV3Pool(pool).withdraw(underlying, aTokenAmount, receiver);
+        underlyingAmount = IAaveV3Pool(pool).withdraw(underlying, aTokenReceived, receiver);
 
         emit Withdraw(msg.sender, receiver, underlying, aTokenAmount, underlyingAmount);
     }
@@ -166,12 +168,15 @@ contract LendingRouter is ILendingRouter, ReentrancyGuard {
 
         // Same-transaction exit through the vault's own queue: with a zero wait period the
         // fulfill gate passes immediately, and the aToken lands on the router (request owner).
+        // Measure the receipt; a scaled-balance transfer can credit less than `assets` reports.
+        uint256 aTokenBefore = IERC20(aToken).balanceOf(address(this));
         uint256 requestId = vault.requestWithdrawal(shares);
         uint256 assets = vault.fulfillWithdrawal(requestId);
         if (assets < minAssetsOut) revert MinAssetsError(assets, minAssetsOut);
+        uint256 aTokenReceived = IERC20(aToken).balanceOf(address(this)) - aTokenBefore;
 
         // Aave burns the aToken and sends the underlying directly to `receiver`.
-        underlyingAmount = IAaveV3Pool(pool).withdraw(underlying, assets, receiver);
+        underlyingAmount = IAaveV3Pool(pool).withdraw(underlying, aTokenReceived, receiver);
 
         emit WithdrawFromVault(address(vault), msg.sender, receiver, shares, underlyingAmount);
     }

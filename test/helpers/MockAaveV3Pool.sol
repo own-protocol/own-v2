@@ -19,6 +19,10 @@ contract MockAToken is IERC20 {
     mapping(address => uint256) private _balances;
     mapping(address => mapping(address => uint256)) private _allowances;
 
+    /// @dev Wei the recipient is shorted on every transfer, mimicking real Aave's
+    ///      scaled-balance rayDiv/rayMul double-floor. Zero by default (mock is 1:1).
+    uint256 public transferShortfall;
+
     error OnlyPool();
 
     modifier onlyPool() {
@@ -81,11 +85,20 @@ contract MockAToken is IERC20 {
         emit Transfer(from, address(0), amount);
     }
 
+    /// @notice Test-helper: short every subsequent transfer's recipient by `shortfall` wei.
+    function setTransferShortfall(
+        uint256 shortfall
+    ) external {
+        transferShortfall = shortfall;
+    }
+
     function _transfer(address from, address to, uint256 amount) internal {
         require(_balances[from] >= amount, "MockAToken: transfer exceeds balance");
+        uint256 credited = amount > transferShortfall ? amount - transferShortfall : 0;
         _balances[from] -= amount;
-        _balances[to] += amount;
-        emit Transfer(from, to, amount);
+        _balances[to] += credited;
+        _totalSupply -= (amount - credited);
+        emit Transfer(from, to, credited);
     }
 }
 
