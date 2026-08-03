@@ -1,6 +1,6 @@
 # Own Protocol v2 — Audit Report & Remediation Status (Pass 3)
 
-**Branch:** `upgrade-borrow-manager` · **Last updated:** 2026-08-03 · **Test suite:** 1,225 passing
+**Branch:** `upgrade-borrow-manager` · **Last updated:** 2026-08-03 · **Test suite:** 1,226 passing
 
 Consolidated from the 2026-07-19 `ChainlinkOracleVerifier` implementation review and the 2026-07-31
 full multi-agent re-audit (solidity-auditor, 12-agent pipeline — 9 specialty attackers + 3
@@ -74,6 +74,7 @@ Excluded as non-source: `out/`, `cache/`, `broadcast/` (Foundry artifacts), `scr
 | A3-L-01   | Low      | `utilizationBps` returns 0 for a zero cap with live debt → premium collapses to floor during a halt               | **Fixed** (2026-07-31)                    |
 | A3-L-02   | Low      | `claimEarnedInterest` and `requireVaultHealthy` share one threshold → revenue crank consumes the exit floor       | **Accepted** — claim size immaterial (§4) |
 | A3-L-03   | Medium   | `forceExecuteOrder` is the only settle path with no price band                                                    | **Fixed** (2026-08-03) — reopened; acceptance premise refuted |
+| A3-L-06   | Low      | `unwrapWstETH` forwards the amount Lido reports, not the amount received — exit-leg DoS            | **Fixed** (2026-08-03) — net-new, extends **M-10** |
 | A3-L-04   | Low      | `BorrowManager._convertToCollateral` divides by an unbanded signed price                                          | **Accepted** — operator input, fixed dest (§4) |
 | A3-L-05   | Low      | ETH refund helpers pay out `address(this).balance`, not this call's surplus                                       | **Accepted** — comment corrected (§4)     |
 | CL-L01    | Low      | Reverting aggregator bricks both legs, including a fresh in-house price                                           | **By design** — fail-closed accepted      |
@@ -492,6 +493,37 @@ attack tests verified to **fail** with the guard removed from `deposit`/`mint`, 
 `::test_acceptDeposit_zeroAssets_reverts` kept passing throughout, confirming the refactor preserved
 existing behaviour. Full suite green (1,223 passing / 0 failed).
 **Detected by** 3 of 12 agents (asymmetry, first-principles, periphery — all as findings).
+
+---
+
+### A3-L-06 (Low) — `unwrapWstETH` forwards the reported amount, not the received amount
+
+> **Status: ✅ Fixed (2026-08-03)** — net-new this pass; the exit-leg twin of **M-10**.
+
+**Problem.** `unwrapWstETH` transferred the `stETHAmount` that `wstETH.unwrap` *returns*. Lido's
+`unwrap` computes `getPooledEthByShares(w)` and then transfers `getSharesByPooledEth(stETHAmount)`
+shares — a second floor — so the router is credited up to 2 wei less than the figure it was handed.
+The router is stateless with no stETH buffer, no rescue function, and `unwrapWstETH` is the only
+stETH exit, so `safeTransfer(receiver, stETHAmount)` reverts `ERC20InsufficientBalance` whenever the
+double-floor loses a wei. Only stray dust left by the deposit path's own rounding masked it, making
+the failure intermittent rather than clean.
+
+**M-10 fixed the same defect on the deposit leg** — `_depositStETHInternal` measures the balance-diff
+and carries a comment saying Lido delivers 1–2 wei short — but the exit leg kept the naive form. The
+two halves of one file disagreed about whether Lido's reported figure can be trusted.
+
+**Fix.** Snapshot `stETH.balanceOf(address(this))` around `wstETH.unwrap` and forward the measured
+delta, mirroring `_depositStETHInternal` exactly.
+
+**Live exposure: none.** `WstETHRouter` is not deployed on Robinhood Chain (no Lido). This matters
+for a future EVM deployment that reuses the periphery.
+
+**Tests.** `WstETHRouter.t.sol::test_unwrapWstETH_lidoRounding_succeeds`. `MockRoundingStETH` gained a
+`transfer` override — it previously shorted only `transferFrom`, so the mock could not reach the
+exit path at all, which is why M-10's regression test never covered this half. Verified to **fail**
+against the pre-fix code with `ERC20InsufficientBalance(router, 9.999e18, 1e19)` — the exact
+production failure. Full suite green (1,226 passing / 0 failed).
+**Detected by** 1 of 12 agents (periphery).
 
 ---
 
