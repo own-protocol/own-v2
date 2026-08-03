@@ -448,6 +448,8 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     /// @inheritdoc IOwnVault
     function haltVault() external onlyAdmin {
         if (_vaultStatus != VaultStatus.Active) revert InvalidStatusTransition();
+        // Book interest while the collateral mark is still the real one — the hook below zeroes it.
+        _accrueLending();
         _vaultStatus = VaultStatus.Halted;
         // Drop this vault's collateral from the global risk pool.
         IVaultManager(registry.vaultManager()).onVaultHalted();
@@ -457,6 +459,8 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     /// @inheritdoc IOwnVault
     function unhalt() external onlyAdmin {
         if (_vaultStatus != VaultStatus.Halted) revert InvalidStatusTransition();
+        // Book the halted window before the mark is restored, so it bills at the halted rate.
+        _accrueLending();
         _vaultStatus = VaultStatus.Active;
         // Re-include this vault's collateral in the global risk pool.
         IVaultManager(registry.vaultManager()).onVaultUnhalted();
@@ -592,8 +596,9 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
         try IVaultYieldManager(manager).syncYield() {} catch {}
     }
 
-    /// @dev Saturated totalAssets() with live supply would price a mint off the +1 virtual asset.
-    ///      Must run after _syncLending() — realizing yield can lift a transiently saturated balance.
+    /// @dev Reverts while `totalAssets()` is saturated to 0 with shares outstanding, the state in
+    ///      which {previewDeposit} and {previewMint} price against the virtual offset alone. Call
+    ///      after {_syncLending}: realized yield can lift a transiently saturated balance.
     function _requireSolvent() private view {
         if (totalAssets() == 0 && totalSupply() > 0) revert VaultInsolvent();
     }

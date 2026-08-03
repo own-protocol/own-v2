@@ -150,6 +150,11 @@ contract BorrowManager is IBorrowManager, Initializable, UUPSUpgradeable, Reentr
     ///      carries over to a later position. Appended storage (UUPS layout is append-only).
     mapping(address => mapping(bytes32 => ClearingPermission)) public override debtClearingPermission;
 
+    /// @dev Utilization premium observed at the last accrual, billed over the window that follows —
+    ///      sampling at a window's close would let a `collateralMark` move reprice elapsed time. The
+    ///      Aave leg is not stored; it reads live. Appended storage (UUPS layout is append-only).
+    uint256 internal _lastPremiumBps;
+
     // ──────────────────────────────────────────────────────────
     //  Access control
     // ──────────────────────────────────────────────────────────
@@ -988,12 +993,17 @@ contract BorrowManager is IBorrowManager, Initializable, UUPSUpgradeable, Reentr
 
         if (_totalScaledDebt == 0) {
             if (dt != 0) _lastAccrual = block.timestamp;
+            // Nothing to bill, but `borrow` accrues before opening a position, so this observation
+            // is what prices that position's first window.
+            _lastPremiumBps = _currentPremiumBps();
             return;
         }
 
         if (dt != 0) {
-            _index = LendingMath.accrueIndex(_index, _currentRateBps(), dt);
+            // Bill at the premium observed when this window opened, then observe for the next.
+            _index = LendingMath.accrueIndex(_index, _windowRateBps(), dt);
             _lastAccrual = block.timestamp;
+            _lastPremiumBps = _currentPremiumBps();
         }
         // Never let book debt fall below the vault's real Aave debt (see {_flooredIndex}).
         _index = _flooredIndex(_index);
@@ -1008,7 +1018,8 @@ contract BorrowManager is IBorrowManager, Initializable, UUPSUpgradeable, Reentr
         uint256 idx = _index == 0 ? PRECISION : _index;
         if (_totalScaledDebt == 0) return idx;
         uint256 dt = block.timestamp - _lastAccrual;
-        if (dt != 0) idx = LendingMath.accrueIndex(idx, _currentRateBps(), dt);
+        // Same rate selection as {_accrue}, or views diverge from the transition they preview.
+        if (dt != 0) idx = LendingMath.accrueIndex(idx, _windowRateBps(), dt);
         return _flooredIndex(idx);
     }
 
@@ -1050,7 +1061,20 @@ contract BorrowManager is IBorrowManager, Initializable, UUPSUpgradeable, Reentr
     ///      `aaveRateWithFloor + premium(utilization)`. Global — driven by the
     ///      manager's vault-wide utilization, not by any individual asset.
     function _currentRateBps() internal view returns (uint256) {
-        return _aaveRateWithFloor() + InterestRateModel.premium(utilizationBps(), _rateParams);
+        return _aaveRateWithFloor() + _currentPremiumBps();
+    }
+
+    /// @dev The utilization-driven rate component. Split out from {_currentRateBps} because only
+    ///      this half is held fixed for the duration of an accrual window.
+    function _currentPremiumBps() internal view returns (uint256) {
+        return InterestRateModel.premium(utilizationBps(), _rateParams);
+    }
+
+    /// @dev Rate charged over an elapsed window: the live Aave leg plus the premium observed when
+    ///      the window opened. A zero premium means no observation yet — a fresh proxy, or the
+    ///      first accrual after the upgrade that appended `_lastPremiumBps` — and reads live.
+    function _windowRateBps() internal view returns (uint256) {
+        return _aaveRateWithFloor() + (_lastPremiumBps == 0 ? _currentPremiumBps() : _lastPremiumBps);
     }
 
     /// @dev The Aave-side rate component: `max(baseRateBps, minAaveBorrowRateBps)`.

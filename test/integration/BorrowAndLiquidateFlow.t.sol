@@ -150,6 +150,77 @@ contract BorrowAndLiquidateFlowTest is BaseTest {
         assertGt(borrowManager.totalDebtUSD(), bookedBefore, "deposit did not accrue first");
     }
 
+    /// @dev A3-H-02 (reopened) — root fix. The rate is now observed at the START of a window, so no
+    ///      denominator move can reprice time that has already elapsed. `setTargetLtvBps` moves
+    ///      `maxDebtUSD` directly and carries no accrual hook of its own, which isolates the
+    ///      rate-sampling semantics from the per-entry-point hooks.
+    function test_accrue_denominatorMoveDoesNotRepriceElapsedWindow() public {
+        eTSLA.mint(Actors.MINTER1, 100e18);
+        vm.startPrank(Actors.MINTER1);
+        eTSLA.approve(address(borrowManager), 100e18);
+        borrowManager.borrow(ASSET, 100e18, 10_000e6, _priceData(TSLA_PX));
+        vm.stopPrank();
+
+        skip(180 days);
+        uint256 snap = vm.snapshotState();
+
+        // Branch A: accrue with the denominator untouched.
+        borrowManager.accrue();
+        uint256 debtUntouched = borrowManager.totalDebtUSD();
+
+        vm.revertToState(snap);
+
+        // Branch B: collapse the debt cap first (utilisation → 100%, premium → ceiling), then
+        // accrue the very same elapsed window.
+        vm.prank(Actors.ADMIN);
+        borrowManager.setTargetLtvBps(1);
+        borrowManager.accrue();
+
+        assertEq(borrowManager.totalDebtUSD(), debtUntouched, "elapsed window repriced by a denominator move");
+    }
+
+    /// @dev A3-H-02 (reopened) — `haltVault` zeroes the collateral mark through `onVaultHalted`, a
+    ///      denominator move outside the six `totalAssets()` paths the original fix hooked. It must
+    ///      book interest while the mark is still real.
+    function test_haltVault_accruesBeforeZeroingTheMark() public {
+        eTSLA.mint(Actors.MINTER1, 100e18);
+        vm.startPrank(Actors.MINTER1);
+        eTSLA.approve(address(borrowManager), 100e18);
+        borrowManager.borrow(ASSET, 100e18, 10_000e6, _priceData(TSLA_PX));
+        vm.stopPrank();
+
+        uint256 bookedBefore = borrowManager.totalDebtUSD();
+        skip(180 days);
+        assertEq(borrowManager.totalDebtUSD(), bookedBefore, "stored index moved without a touch");
+
+        vm.prank(Actors.ADMIN);
+        vault.haltVault();
+
+        assertGt(borrowManager.totalDebtUSD(), bookedBefore, "haltVault did not accrue first");
+    }
+
+    /// @dev Mirror direction: `unhalt` restores the mark, so the halted window must be booked before
+    ///      it — otherwise that window bills at the restored (low) rate, undoing A3-L-01.
+    function test_unhalt_accruesBeforeRestoringTheMark() public {
+        eTSLA.mint(Actors.MINTER1, 100e18);
+        vm.startPrank(Actors.MINTER1);
+        eTSLA.approve(address(borrowManager), 100e18);
+        borrowManager.borrow(ASSET, 100e18, 10_000e6, _priceData(TSLA_PX));
+        vm.stopPrank();
+
+        vm.prank(Actors.ADMIN);
+        vault.haltVault();
+
+        uint256 bookedAtHalt = borrowManager.totalDebtUSD();
+        skip(180 days);
+        assertEq(borrowManager.totalDebtUSD(), bookedAtHalt, "stored index moved without a touch");
+
+        vm.prank(Actors.ADMIN);
+        vault.unhalt();
+
+        assertGt(borrowManager.totalDebtUSD(), bookedAtHalt, "unhalt did not accrue first");
+    }
+
     /// @dev A3-M-03: the debt-increasing path must enforce the same Aave health floor every
     ///      collateral-decreasing path checks (H-07) — a borrow landing the vault below
     ///      minClaimHealthFactor must revert instead of entering the band where LP exits are

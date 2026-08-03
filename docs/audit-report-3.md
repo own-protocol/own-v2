@@ -1,6 +1,6 @@
 # Own Protocol v2 — Audit Report & Remediation Status (Pass 3)
 
-**Branch:** `upgrade-borrow-manager` · **Last updated:** 2026-07-31 · **Test suite:** 1,203 passing
+**Branch:** `upgrade-borrow-manager` · **Last updated:** 2026-08-03 · **Test suite:** 1,223 passing
 
 Consolidated from the 2026-07-19 `ChainlinkOracleVerifier` implementation review and the 2026-07-31
 full multi-agent re-audit (solidity-auditor, 12-agent pipeline — 9 specialty attackers + 3
@@ -18,6 +18,13 @@ against a value the same call then changes), **asymmetric guards** (a floor enfo
 paired operation but not the other), and **permissionless cranks** whose timing an attacker chooses.
 Two findings — **A3-H-01** and **A3-M-03** — are direct sequels to earlier fixes that closed one half
 of a symmetry.
+
+**Follow-up pass, 2026-08-03.** A re-audit on the same 12-agent pipeline reopened two of this pass's
+own fixes, both for the same reason the pass identified in others: the remedy was applied at the
+reported call site rather than at the defect. **A3-M-08**'s guard reached `acceptDeposit` but not the
+permissionless `deposit()`/`mint()`; **A3-H-02**'s accrual hooks rested on a sufficiency argument
+that does not hold, leaving three denominator movers unhooked. Both are now fixed at the shared
+mechanism rather than per entry point, with mutation-checked tests. Details in their sections below.
 
 **Scope change made during this pass.** `OracleVerifier.sol` and `PythOracleVerifier.sol` were retired
 from use and moved from `src/core/` to `archive/` (sources preserved, imports rebased, suite green).
@@ -53,7 +60,7 @@ Excluded as non-source: `out/`, `cache/`, `broadcast/` (Foundry artifacts), `scr
 | ID        | Severity | Finding                                                                                                          | Status                                    |
 | --------- | -------- | ---------------------------------------------------------------------------------------------------------------- | ----------------------------------------- |
 | A3-H-01   | High     | `psmFillOrder` validates the settle band against a mark it then refreshes → filler edge = band + intra-`maxMarkAge` drift | **Fixed** (2026-07-31)              |
-| A3-H-02   | High     | `_accrue` billed the whole elapsed window at an attacker-timed rate; no denominator change accrued first          | **Fixed** (2026-07-31)                    |
+| A3-H-02   | High     | `_accrue` billed the whole elapsed window at an attacker-timed rate; no denominator change accrued first          | **Fixed** (2026-08-03) — reopened 2026-08-03, rate now non-retroactive |
 | A3-H-03   | High     | `fulfillWithdrawal` is permissionless with no zero-check and no `minAssetsOut` → LP shares settled at a chosen trough | **Resolved** (2026-07-31) — zero-guard fixed; rest by design |
 | A3-M-01   | Medium   | JIT capture of accrued LP yield via permissionless `distribute` / `claimEarnedInterest`                          | **Fixed** (2026-07-31)                    |
 | A3-M-02   | Medium   | Concentration cap derived only from *other* vaults collapses a capped vault's counted collateral to zero          | **Acknowledged** — VaultManager immutable (§3) |
@@ -62,7 +69,7 @@ Excluded as non-source: `out/`, `cache/`, `broadcast/` (Foundry artifacts), `scr
 | A3-M-05   | Medium   | `releaseCollateral` ignores `Paused` → paused vault pays redeemers while its LPs are frozen                       | **By design** — pause is an LP pause (§3) |
 | A3-M-06   | Medium   | `placeOrder`/`executeOrder` gate redeem on `isActiveAsset` → deactivated asset traps holders                      | **By design** — intentional freeze (§3)   |
 | A3-M-07   | Medium   | `depositRewards` has no ex-dividend snapshot; fee-free PSM round-trip front-runs it                               | **Dormant** — channel not live (§3)       |
-| A3-M-08   | Medium   | Saturated `totalAssets()` makes `previewDeposit` mint a near-unbounded share count                               | **Fixed** (2026-07-31)                    |
+| A3-M-08   | Medium   | Saturated `totalAssets()` makes `previewDeposit` mint a near-unbounded share count                               | **Fixed** (2026-08-03) — reopened 2026-08-03, guard extended to `deposit`/`mint` |
 | A3-M-09   | Medium   | `ReserveVault._releaseCollateral` omits the PSM ratio-jump guard it shares a ratio with                           | **Acknowledged** — live reserves (§3)     |
 | A3-L-01   | Low      | `utilizationBps` returns 0 for a zero cap with live debt → premium collapses to floor during a halt               | **Fixed** (2026-07-31)                    |
 | A3-L-02   | Low      | `claimEarnedInterest` and `requireVaultHealthy` share one threshold → revenue crank consumes the exit floor       | **Accepted** — claim size immaterial (§4) |
@@ -184,6 +191,67 @@ the only test double affected.
 **Overlaps.** Net-new. Adjacent to **M-06** (debt cap checked before `_accrue`), which fixed ordering
 within `borrow` but not the rate-sampling semantics.
 **Detected by** 1 of 12 agents (economic-security).
+
+#### Reopened 2026-08-03 — the sufficiency argument was false; rate is now non-retroactive
+
+The 2026-07-31 fix hooked `OwnVault` only, justified by: "`pullCollateralPrice` recomputes the mark as
+`totalAssets() × price`; it cannot move the mark independently, only *reflect* `totalAssets()`."
+**Both halves are false**, and a re-audit found three denominator movers outside the six hooked paths:
+
+1. **`OwnVault.haltVault` / `unhalt`** — `onVaultHalted` assigns `_collateralMark[msg.sender] = 0`
+   directly, with no `totalAssets()` movement at all. Combined with the **A3-L-01** fix
+   (`utilizationBps` returns `BPS` for a zero cap with live debt), halting sets the premium to its
+   *ceiling*, and the permissionless `accrue()` then bills the whole unaccrued window at it. The
+   mirror direction is worse: if nothing accrues during the halt, `unhalt` restores the mark and the
+   halted window bills at the restored low rate — silently undoing A3-L-01's stated purpose.
+2. **`VaultManager.pullCollateralPrice`** — `rawMark = totalAssets() × _collateralScale × price`,
+   where `price` is a live `_resolvePrice` oracle read. The price factor is independent of
+   `totalAssets()`, so the mark moves without any vault entry point executing.
+3. **`VaultYieldManager._distribute`** — the **A3-M-01** fix replaced the `shareYield` callback with a
+   bare `IERC20(_aToken).safeTransfer(vault, lpYield)`, which raises `totalAssets()` with no vault
+   code running. A3-H-02's residual tolerated unhooked aToken transfers because "the attacker funds
+   the subsidy"; after A3-M-01 the transfer is the protocol's own revenue and `distribute()` is
+   permissionless and free, so that reasoning no longer holds.
+
+**Fix (root).** `BorrowManager` gains `_lastPremiumBps` (appended, slot 20). `_accrue` bills each
+elapsed window at the premium observed when that window *opened*, then observes for the next. No
+denominator move can reprice elapsed time, independently of *how* the mark moved — this closes all
+three sites at once rather than chasing entry points.
+
+**Only the premium is frozen.** The Aave leg reads live. This is deliberate and matches this
+finding's own residual ("the Aave base-rate component… is inherent and matches Aave's own model"):
+its rate is external and unsteerable, while the premium's denominator (`collateralMark`) is
+caller-movable. Freezing both was implemented first and reverted — it made a live Aave rate change
+invisible for a whole window, which `BorrowManager.t.sol::test_accrual_grewDebtOverTime` caught as a
+~10% revenue leak to LPs.
+
+**View/state consistency.** `_projectedIndex` and `_accrue` both route through `_windowRateBps()`.
+An earlier revision changed only `_accrue`, so `debtOf` / `healthFactor` / liquidation previews
+disagreed with the transition they preview; caught by
+`BorrowAndLiquidateFlow.t.sol::test_endToEnd_borrowDividendCrashLiquidate`.
+
+**Belt and braces.** `haltVault` and `unhalt` also gained `_accrueLending()` before their
+VaultManager hook, so the accrual *timestamp* stays current across a status change. Independent of
+the root fix and correct on its own.
+
+**Residual — first accrual after upgrade.** `_lastPremiumBps` reads 0 on an existing proxy, and the
+sentinel falls back to a live read for that one window. A reinitializer was rejected: seeding in
+`initialize` reverts when `VaultManager` is not yet wired. Exploiting it requires anticipating the
+exact upgrade block.
+
+**Residual — `setTargetLtvBps` has no accrual hook.** It moves `maxDebtUSD` directly. Harmless under
+the root fix (elapsed time cannot be repriced) and ADMIN-only; noted because it is now the only
+denominator mover that does not book first, and it is the lever the regression test uses.
+
+**Tests.** `BorrowAndLiquidateFlow.t.sol::test_accrue_denominatorMoveDoesNotRepriceElapsedWindow`
+snapshots an elapsed window, accrues it with and without a `setTargetLtvBps` collapse, and asserts
+both bill identically — verified to **fail** without the freeze (13,945 vs 10,050 USD).
+`::test_haltVault_accruesBeforeZeroingTheMark` and `::test_unhalt_accruesBeforeRestoringTheMark`
+verified to **fail** with their respective hooks removed. Each mutation fails only its own test, so
+the two fixes are covered independently. Storage layout re-snapshotted and verified append-only
+(`tools/storage-layout.sh`). Full suite green (1,223 passing / 0 failed).
+**Detected by** 3 of 12 agents (economic-security, periphery = findings; asymmetry = the
+`pullCollateralPrice` half).
 
 ### A3-H-03 (High) — `fulfillWithdrawal` settles another LP's shares at a caller-chosen price
 
@@ -368,6 +436,62 @@ collateral) stands unchanged.
 revert `VaultInsolvent`) and `::test_acceptDeposit_paused_reverts`. Both verified to **fail**
 against the pre-fix code.
 **Detected by** 2 of 12 agents (flow-gap = finding, math-precision = lead).
+
+#### Reopened 2026-08-03 — the guard covered `acceptDeposit` only
+
+The 2026-07-31 fix was applied at the reported call site rather than at the defect. `acceptDeposit`
+is the **manager-gated** minting path; `deposit()` (both overloads, via `_depositWithMin`) and
+`mint()` price through the same `previewDeposit` / `previewMint` against the same saturating
+`totalAssets()` and had no guard. `deposit()` is the *permissionless* one — `_requireDepositApproval`
+is `false` by default and appears in no deploy script or broadcast record, so on the live oUSDG vault
+it is open to anyone.
+
+**Impact is permanent, unlike the state.** The zero is an accounting artifact that heals as soon as
+the balance returns (yield sync, aToken interest, a repayment sweep). The dilution does not:
+`_mint` records no cost basis, `OwnVault` has no admin burn — the only `_burn` is a holder's own
+escrowed shares in `fulfillWithdrawal` — so shares bought for dust keep their proportion of every
+later inflow. On the oUSDG vault (6-dec asset, offset 6), one `deposit(1000)` costing 0.001 USDG
+against a 1e18 supply mints ~1e21 shares ≈ 99.9% of the vault.
+
+**Reachability of the zero state, re-examined.** Both release paths bound with
+`if (amount > totalAssets()) revert` — an *inclusive* bound, so a release of exactly `totalAssets()`
+lands on zero in one call. `releaseCollateral` (via `forceExecuteOrder`) and
+`releaseCollateralForBadDebt` (via the operator-gated `absorbBadDebt`) both do this. The escrow
+variant is sharper: with a pending deposit outstanding, releasing exactly the backing leaves the
+escrow as the entire raw balance, so `requireVaultHealthy()` — which reads the venue's raw
+`balanceOf(vault)`, not `totalAssets()` — still passes.
+
+**Live exposure (chain 4663, vault `0x246705f13bf56e3a572ae1407c065126230557fc`).** Deployed
+2026-07-14, so the on-chain bytecode carries *no* guard on any of the three paths, `acceptDeposit`
+included. Rated Medium rather than High only because the precondition is not attacker-reachable as
+configured: the venue is the in-house `OwnLendingPool` (no liquidation function, no supplier-side
+burn, `OwnAToken` is flat 1:1 — verified), and `forceExecuteOrder` reverts `ForceNotEnabled` while
+`claimThreshold == 0`, which no broadcast on 4663 ever sets. **This is a configuration property, not
+a code property.** `setForceExecuteVaultAllowed` is already armed on 4663 (via `AddAssetsRobinhood`
+and `MigrateGoogToGooglRobinhood`), so a single `setClaimThreshold` call — described in
+`DeployRobinhood.s.sol:50` as "set it later… if needed" — makes this permissionlessly reachable and
+High. **Ops rule: ship this fix before enabling force-execution, and before pointing any vault at
+canonical Aave V3.**
+
+**Fix.** The check moves into a private `_requireSolvent()` invoked by `_depositWithMin` (covering
+both `deposit` overloads), `mint`, and `acceptDeposit` — one definition, three call sites. Placed
+after `_syncLending()` in each, matching the original placement: realized yield can lift a
+transiently saturated balance, so checking earlier would reject a vault the sync would have rescued.
+
+**Considered and not done.** Tightening the two release bounds from `>` to `>=` would block the
+*state* rather than its exploitation, and is arguably the better long-term shape. Not bundled: it
+would make a force-execution against the vault's full backing start reverting, which is a product
+decision about last-resort exits rather than a security one.
+
+**Tests.** Five added to `OwnVault.t.sol`: `::test_deposit_zeroAssets_reverts` (asserts the attacker
+mints nothing *and* incumbent supply is unchanged), `::test_depositWithMinSharesOut_zeroAssets_reverts`,
+`::test_mint_zeroAssets_reverts`, `::test_deposit_zeroAssetsViaPendingEscrow_reverts` (the escrow
+route, asserting the raw balance still holds the escrow), and two over-blocking guards —
+`::test_deposit_emptyVault_unaffected` and `::test_deposit_afterBalanceRecovers_succeeds`. The four
+attack tests verified to **fail** with the guard removed from `deposit`/`mint`, while
+`::test_acceptDeposit_zeroAssets_reverts` kept passing throughout, confirming the refactor preserved
+existing behaviour. Full suite green (1,223 passing / 0 failed).
+**Detected by** 3 of 12 agents (asymmetry, first-principles, periphery — all as findings).
 
 ---
 

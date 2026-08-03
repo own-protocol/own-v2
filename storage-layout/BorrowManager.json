@@ -125,6 +125,12 @@
       "offset": 0,
       "slot": "19",
       "type": "t_mapping(t_address,t_mapping(t_bytes32,t_struct(ClearingPermission)_storage))"
+    },
+    {
+      "label": "_lastPremiumBps",
+      "offset": 0,
+      "slot": "20",
+      "type": "t_uint256"
     }
   ],
   "types": {
