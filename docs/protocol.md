@@ -295,6 +295,13 @@ withdrawals; a **halted** vault (emergency wind-down) blocks deposits but makes 
 **instant** — the wait period and the utilization check are both bypassed, since a halted vault's
 collateral is already excluded from the global risk pool (§9).
 
+**Single-transaction exit via the LendingRouter:** while the vault's withdrawal wait period is
+zero, `LendingRouter.withdrawFromVault` exits in one call — it pulls the LP's shares, runs the
+vault's own queue (request + fulfill, so the utilization gate, mark sync, and Aave health check all
+apply), and redeems the received aToken through the pool so the LP gets the raw underlying. With a
+delay set, the same-transaction fulfill reverts; the direct vault queue is used instead and the
+fulfilled aToken can be unwrapped later via the router's plain `withdraw`.
+
 ### ETH Routing
 
 LPs can deposit native ETH using the **WETHRouter**, which wraps ETH to WETH before depositing into WETH-collateral vaults. Similarly, **WstETHRouter** handles stETH wrapping for wstETH-collateral vaults.

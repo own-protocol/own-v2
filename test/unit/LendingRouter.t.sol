@@ -3,6 +3,7 @@ pragma solidity 0.8.28;
 
 import {OwnVault} from "../../src/core/OwnVault.sol";
 import {ILendingRouter} from "../../src/interfaces/ILendingRouter.sol";
+import {IOwnVault} from "../../src/interfaces/IOwnVault.sol";
 import {LendingRouter} from "../../src/periphery/LendingRouter.sol";
 
 import {Actors} from "../helpers/Actors.sol";
@@ -66,6 +67,12 @@ contract LendingRouterTest is BaseTest {
         wethVault = new OwnVault(address(aweth), "Own aWETH", "owaWETH", address(protocolRegistry), address(router));
         wbtcVault = new OwnVault(address(awbtc), "Own awBTC", "owawBTC", address(protocolRegistry), address(router));
         ausdcVault = new OwnVault(address(ausdc), "Own aUSDC", "owaUSDC", address(protocolRegistry), address(router));
+        vm.stopPrank();
+
+        // Withdrawal-path scaffolding: fulfillWithdrawal consults the VaultManager.
+        _deployVaultManager();
+        vm.startPrank(Actors.ADMIN);
+        vaultManager.registerVault(address(wstETHVault), bytes32("WSTETH"));
         vm.stopPrank();
 
         vm.label(address(router), "LendingRouter");
@@ -388,5 +395,136 @@ contract LendingRouterTest is BaseTest {
         vm.prank(Actors.LP1);
         vm.expectRevert(abi.encodeWithSelector(ILendingRouter.ReserveDisabled.selector, address(wstETHU)));
         router.withdraw(address(wstETHU), 1, Actors.LP1);
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  withdrawFromVault — single-transaction exit (zero wait period)
+    // ──────────────────────────────────────────────────────────
+
+    /// @dev Deposit underlying via the router and approve the router to spend the shares.
+    function _depositAndApproveShares(address lp, uint256 amount) internal returns (uint256 shares) {
+        _fundAndApprove(wstETHU, lp, amount);
+        vm.startPrank(lp);
+        shares = router.deposit(address(wstETHU), IERC4626(address(wstETHVault)), amount, lp, 0);
+        wstETHVault.approve(address(router), type(uint256).max);
+        vm.stopPrank();
+    }
+
+    function test_withdrawFromVault_zeroDelay_succeeds() public {
+        uint256 shares = _depositAndApproveShares(Actors.LP1, 10 ether);
+
+        vm.prank(Actors.LP1);
+        uint256 out = router.withdrawFromVault(address(wstETHU), IOwnVault(address(wstETHVault)), shares, Actors.LP1, 0);
+
+        assertEq(out, 10 ether, "full underlying returned");
+        assertEq(wstETHU.balanceOf(Actors.LP1), 10 ether);
+        assertEq(wstETHVault.balanceOf(Actors.LP1), 0, "shares burned");
+        assertEq(wstETHVault.totalSupply(), 0);
+        assertEq(awstETH.balanceOf(address(router)), 0, "router holds no aToken");
+        assertEq(wstETHVault.balanceOf(address(router)), 0, "router holds no shares");
+    }
+
+    function test_withdrawFromVault_partial_differentReceiver() public {
+        uint256 shares = _depositAndApproveShares(Actors.LP1, 10 ether);
+        uint256 half = shares / 2;
+
+        vm.prank(Actors.LP1);
+        uint256 out = router.withdrawFromVault(address(wstETHU), IOwnVault(address(wstETHVault)), half, Actors.LP2, 0);
+
+        assertEq(out, 5 ether);
+        assertEq(wstETHU.balanceOf(Actors.LP2), 5 ether, "receiver got the underlying");
+        assertEq(wstETHVault.balanceOf(Actors.LP1), shares - half, "remaining shares intact");
+    }
+
+    function test_withdrawFromVault_emitsEvent() public {
+        uint256 shares = _depositAndApproveShares(Actors.LP1, 10 ether);
+
+        vm.prank(Actors.LP1);
+        vm.expectEmit(true, true, true, true);
+        emit ILendingRouter.WithdrawFromVault(address(wstETHVault), Actors.LP1, Actors.LP1, shares, 10 ether);
+        router.withdrawFromVault(address(wstETHU), IOwnVault(address(wstETHVault)), shares, Actors.LP1, 0);
+    }
+
+    /// @dev With a wait period set, the same-transaction fulfill reverts and the whole
+    ///      router call unwinds — no request is left behind.
+    function test_withdrawFromVault_delaySet_reverts() public {
+        uint256 shares = _depositAndApproveShares(Actors.LP1, 10 ether);
+
+        vm.prank(Actors.ADMIN);
+        wstETHVault.setWithdrawalWaitPeriod(1 days);
+
+        vm.prank(Actors.LP1);
+        vm.expectRevert(
+            abi.encodeWithSelector(IOwnVault.WithdrawalWaitPeriodNotElapsed.selector, 1, block.timestamp + 1 days)
+        );
+        router.withdrawFromVault(address(wstETHU), IOwnVault(address(wstETHVault)), shares, Actors.LP1, 0);
+
+        assertEq(wstETHVault.balanceOf(Actors.LP1), shares, "shares returned on revert");
+        assertEq(wstETHVault.getPendingWithdrawals().length, 0, "no stranded request");
+    }
+
+    /// @dev With a delay set, the direct vault queue still works; the router's plain
+    ///      withdraw() unwraps the fulfilled aToken afterwards.
+    function test_withdrawFromVault_delaySet_directFlowWorks() public {
+        uint256 shares = _depositAndApproveShares(Actors.LP1, 10 ether);
+
+        vm.prank(Actors.ADMIN);
+        wstETHVault.setWithdrawalWaitPeriod(1 days);
+
+        vm.prank(Actors.LP1);
+        uint256 requestId = wstETHVault.requestWithdrawal(shares);
+        vm.warp(block.timestamp + 1 days);
+        wstETHVault.fulfillWithdrawal(requestId);
+
+        vm.startPrank(Actors.LP1);
+        IERC20(address(awstETH)).approve(address(router), 10 ether);
+        router.withdraw(address(wstETHU), 10 ether, Actors.LP1);
+        vm.stopPrank();
+
+        assertEq(wstETHU.balanceOf(Actors.LP1), 10 ether);
+    }
+
+    function test_withdrawFromVault_minAssetsOut_reverts() public {
+        uint256 shares = _depositAndApproveShares(Actors.LP1, 10 ether);
+
+        vm.prank(Actors.LP1);
+        vm.expectRevert(abi.encodeWithSelector(ILendingRouter.MinAssetsError.selector, 10 ether, 10 ether + 1));
+        router.withdrawFromVault(address(wstETHU), IOwnVault(address(wstETHVault)), shares, Actors.LP1, 10 ether + 1);
+    }
+
+    function test_withdrawFromVault_zeroShares_reverts() public {
+        vm.prank(Actors.LP1);
+        vm.expectRevert(ILendingRouter.ZeroAmount.selector);
+        router.withdrawFromVault(address(wstETHU), IOwnVault(address(wstETHVault)), 0, Actors.LP1, 0);
+    }
+
+    function test_withdrawFromVault_zeroReceiver_reverts() public {
+        vm.prank(Actors.LP1);
+        vm.expectRevert(ILendingRouter.ZeroAddress.selector);
+        router.withdrawFromVault(address(wstETHU), IOwnVault(address(wstETHVault)), 1, address(0), 0);
+    }
+
+    function test_withdrawFromVault_unregistered_reverts() public {
+        address bogus = makeAddr("bogus");
+        vm.prank(Actors.LP1);
+        vm.expectRevert(abi.encodeWithSelector(ILendingRouter.ReserveNotRegistered.selector, bogus));
+        router.withdrawFromVault(bogus, IOwnVault(address(wstETHVault)), 1, Actors.LP1, 0);
+    }
+
+    function test_withdrawFromVault_disabled_reverts() public {
+        vm.prank(Actors.ADMIN);
+        router.setReserveEnabled(address(wstETHU), false);
+
+        vm.prank(Actors.LP1);
+        vm.expectRevert(abi.encodeWithSelector(ILendingRouter.ReserveDisabled.selector, address(wstETHU)));
+        router.withdrawFromVault(address(wstETHU), IOwnVault(address(wstETHVault)), 1, Actors.LP1, 0);
+    }
+
+    function test_withdrawFromVault_vaultAssetMismatch_reverts() public {
+        vm.prank(Actors.LP1);
+        vm.expectRevert(
+            abi.encodeWithSelector(ILendingRouter.VaultAssetMismatch.selector, address(aweth), address(awstETH))
+        );
+        router.withdrawFromVault(address(wethU), IOwnVault(address(wstETHVault)), 1, Actors.LP1, 0);
     }
 }
