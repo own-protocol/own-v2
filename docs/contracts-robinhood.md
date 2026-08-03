@@ -25,9 +25,9 @@ gen-2 market/vault stack redeployed 2026-08-03 (branch `upgrade-borrow-manager`)
 | — implementation                    | `0x13De29530958A38f9b543E2DAdDC34A5EFdD03d6` |
 | VaultYieldManager                   | `0xc2b96848d288d7497edcF04AA70779F9a2Ac06Ee` |
 
-## PSM ReserveVaults (batch 2026-07-14, `DeployPsmAssetsRobinhood.s.sol`)
+## PSM ReserveVaults
 
-All 7 launch assets are PSM-backed by Gen-2 tokens. Every wrapper address was validated on-chain
+All 12 assets are PSM-backed by Gen-2 tokens. Every wrapper address was validated on-chain
 (symbol/decimals/uiMultiplier) and passed the WrapperRobinhoodFork custody suite before deploy;
 the script re-asserts symbol+decimals on-chain before broadcasting.
 
@@ -40,8 +40,13 @@ the script re-asserts symbol+decimals on-chain before broadcasting.
 | GOOGL | `R.GOOGL`      | `0x2e0847E8910a9732eB3fb1bb4b70a580ADAD4FE3` | `0x568c614A703a5B9A53fA08Fc805e7b8aDc496E19` |
 | SPY   | `R.SPY`        | `0x117cc2133c37B721F49dE2A7a74833232B3B4C0C` | `0x2c47516319B56519ada1433701F2673877f168Ea` |
 | QQQ   | `R.QQQ`        | `0xD5f3879160bc7c32ebb4dC785F8a4F505888de68` | `0x9a1c1E979B9D58824a5162f320533860f4A8A2BE` |
+| NVDA  | `R.NVDA`       | `0xd0601CE157Db5bdC3162BbaC2a2C8aF5320D9EEC` | `0x601C3C82d07079Dd3cD36727DcF46D9502a344E1` |
+| AAPL  | `R.AAPL`       | `0xaF3D76f1834A1d425780943C99Ea8A608f8a93f9` | `0x6C1Be50aeB4Dd0f7291579423802158da9CF4B3E` |
+| AMZN  | `R.AMZN`       | `0x12f190a9F9d7D37a250758b26824B97CE941bF54` | `0xf74E57Ca6D72D282ce61649ee378eec780Eb0bD0` |
+| AMD   | `R.AMD`        | `0x86923f96303D656E4aa86D9d42D1e57ad2023fdC` | `0x9aD08012f3bA1a2E3E71384A2235d9320c811B2D` |
+| META  | `R.META`       | `0xc0D6457C16Cc70d6790Dd43521C899C87ce02f35` | `0x059ED684C4895A67aF8f3B7f665fC3B2B8A567Ac` |
 
-## eTokens (7 launch assets, $1M cap each, all grants armed)
+## eTokens (12 assets, $1M cap each, all grants armed)
 
 | Asset | eToken | Address                                      |
 | ----- | ------ | -------------------------------------------- |
@@ -52,6 +57,11 @@ the script re-asserts symbol+decimals on-chain before broadcasting.
 | TSLA  | eTSLA  | `0x82D2F4e0649Fc77C2dF7fcF3b6c7e50a1F2F50f4` |
 | SPY   | eSPY   | `0xb9D2F8A79F59b84269Adf7d82Fe44ad41139FcF5` |
 | QQQ   | eQQQ   | `0xA49938669141fEb6FD55D240bED06cCb1784Bbd4` |
+| NVDA  | eNVDA  | `0x6d3eC34E847b51D719CE2fcE35D132d2e1b83E10` |
+| AAPL  | eAAPL  | `0x0b198f155Ad9b440D9c934db2a987c505882670F` |
+| AMZN  | eAMZN  | `0x40cba880C193BC98b958428C0F40F9fB0a9b7721` |
+| AMD   | eAMD   | `0x4b7d2EF63C7B811bE100ef27adad29440883069B` |
+| META  | eMETA  | `0x9a7413E4935EEc250d76D3D249aa182C608727e1` |
 
 ## Configuration (verified on-chain post-deploy)
 
