@@ -53,7 +53,7 @@ abstract contract PsmFlowBase is BaseTest {
         _deployVaultManager();
 
         vm.startPrank(Actors.ADMIN);
-        vault = new OwnVault(address(weth), "Own ETH Vault", "oETH", address(protocolRegistry), vm1Signer);
+        vault = new OwnVault(address(weth), "Own ETH Vault", "oETH", address(protocolRegistry), address(vm1Manager));
         vaultManager.registerVault(address(vault), ETH_ASSET);
 
         market = new OwnMarket(address(protocolRegistry));
@@ -206,6 +206,53 @@ contract PsmFlowTest is PsmFlowBase {
         assertEq(vaultManager.assetRwaCollateralUSD(TSLA), Math.mulDiv(10e18, TSLA_PRICE, PRECISION));
         assertEq(vaultManager.globalNetExposureUSD(), 0, "fully reserve-covered");
         assertEq(vaultManager.globalUtilizationBps(), utilBefore, "util-neutral");
+    }
+
+    function test_psmMint_priceMovedSinceKeeperPull_refreshesMarkOneToOne() public {
+        // Incident repro (TSLA mint, block 17337821): the market moves after the keeper's last
+        // pull and BOTH same-source legs show the new price. Pre-fix the ratio compared the live
+        // wrapper leg against the stale mark (245/250) and under-issued, stranding unbacked
+        // wrapper in the reserve. The in-tx mark refresh keeps same-source legs exactly 1:1.
+        uint256 moved = (TSLA_PRICE * 98) / 100;
+        skip(235); // keeper lag from the incident
+        _setOraclePrice(TSLA, moved);
+        _setOraclePrice(ONDO_TSLA, moved);
+
+        uint256 out = _psmMintOndo(Actors.MINTER1, 10e18);
+
+        assertEq(out, 10e18, "same-source legs stay 1:1 regardless of keeper lag");
+        assertEq(vaultManager.assetMark(TSLA), moved, "mark refreshed in-tx");
+    }
+
+    function test_psmRedeem_priceMovedSinceKeeperPull_refreshesMarkOneToOne() public {
+        _psmMintOndo(Actors.MINTER1, 10e18);
+
+        // Rising market + stale mark is the under-backed direction pre-fix (ratio > 1 pays out
+        // more wrapper than the eTokens ever backed). The refresh pins same-source legs to 1:1.
+        uint256 moved = (TSLA_PRICE * 102) / 100;
+        skip(235);
+        _setOraclePrice(TSLA, moved);
+        _setOraclePrice(ONDO_TSLA, moved);
+
+        vm.prank(Actors.MINTER1);
+        uint256 out = market.psmRedeem(TSLA, address(ondo), 5e18);
+
+        assertEq(out, 5e18, "1:1 payout regardless of keeper lag");
+        assertEq(vaultManager.assetMark(TSLA), moved, "mark refreshed in-tx");
+    }
+
+    function test_psmRedeem_assetOracleUnavailable_fallsBackToCachedMark() public {
+        _psmMintOndo(Actors.MINTER1, 10e18);
+
+        // The asset leg becomes unpriceable (oracle down): the best-effort refresh must swallow
+        // the failure and price off the cached mark — redeem exits stay unblockable.
+        _setOraclePrice(TSLA, 0);
+
+        vm.prank(Actors.MINTER1);
+        uint256 out = market.psmRedeem(TSLA, address(ondo), 5e18);
+
+        assertEq(out, 5e18, "cached-mark fallback keeps the exit open");
+        assertEq(vaultManager.assetMark(TSLA), TSLA_PRICE, "failed pull leaves the mark untouched");
     }
 
     function test_psmMint_sValueDrift_mintsMoreETokens() public {
@@ -464,6 +511,25 @@ contract PsmFlowTest is PsmFlowBase {
         ondo.approve(address(market), 2e18);
         vm.expectRevert(abi.encodeWithSelector(IOwnMarket.PriceOutOfBand.selector, TSLA, 300e18, TSLA_PRICE, 500));
         market.psmFillOrder(orderId, address(ondo), 300e6);
+        vm.stopPrank();
+    }
+
+    /// @dev Pins the band/refresh ordering: the band must bound the mark the fill settles against,
+    ///      not the pre-refresh one. Fails if _checkSettleBand is moved back above _psmContext.
+    function test_psmFillOrder_bandChecksRefreshedMark_reverts() public {
+        address arb = makeAddr("arb");
+        // Limit sits exactly on the +5% edge of the $250 mark, so it clears the band pre-refresh.
+        uint256 orderId = _placeMintOrder(Actors.MINTER1, 262.5e6, 262.5e18);
+        _setSettleBandBps(500);
+
+        // Market drops 8%; the mark still reads $250 until _psmContext pulls it inside the fill.
+        _setOraclePrice(TSLA, 230e18);
+
+        ondo.mint(arb, 2e18);
+        vm.startPrank(arb);
+        ondo.approve(address(market), 2e18);
+        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.PriceOutOfBand.selector, TSLA, 262.5e18, 230e18, 500));
+        market.psmFillOrder(orderId, address(ondo), 262.5e6);
         vm.stopPrank();
     }
 

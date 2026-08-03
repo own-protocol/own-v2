@@ -84,8 +84,14 @@ interface IVaultYieldManager {
 
     /// @notice Split this contract's full stablecoin balance: `treasuryCutBps` to the
     ///         protocol treasury, remainder converted 1:1 to the vault's aToken and
-    ///         distributed to LPs via `shareYield`. Permissionless crank.
+    ///         transferred to the vault, raising the share price. Permissionless crank.
     function distribute() external;
+
+    /// @notice Best-effort claim-then-distribute, called by the vault before it prices an LP
+    ///         entry or exit so the share price already reflects earned yield. Never reverts on
+    ///         "nothing to do", and skips the claim when the vault's Aave health floor would block
+    ///         it. Permissionless.
+    function syncYield() external;
 
     /// @notice Realize earned-but-uncollected lending premium mid-term (forwards
     ///         `BorrowManager.claimEarnedInterest`). Permissionless like {distribute}:

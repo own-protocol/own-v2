@@ -3,7 +3,7 @@ pragma solidity 0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
 
-import {OracleVerifier} from "../src/core/OracleVerifier.sol";
+import {OracleVerifier} from "../archive/OracleVerifier.sol";
 import {IProtocolRegistry} from "../src/interfaces/IProtocolRegistry.sol";
 
 /// @title SetOracleConfigs — Set per-asset oracle config on the in-house OracleVerifier

@@ -74,7 +74,7 @@ No market calendar. The security boundary is the **band**, not the schedule:
    Note: mid-week quiet stretches of 5–21h are routine (p90 gap ~3.4h on TSLA), so with a
    4h window the signer service actively fills in-session gaps — it must run 24/7. The
    short window also caps the dead-feed exposure (see audit CL-L03 in
-   chainlink-audit-report.md).
+   audit-report-3.md).
 4. **verifyPrice precedence:** feed fresh (≤ `clSilence`) → Chainlink, proof ignored;
    feed silent + proof supplied → verified in-house leg (band-checked); empty proof →
    Chainlink up to `clFreshWindow`.

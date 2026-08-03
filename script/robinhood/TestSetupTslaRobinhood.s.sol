@@ -3,8 +3,8 @@ pragma solidity 0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
 
+import {OracleVerifier} from "../../archive/OracleVerifier.sol";
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
-import {OracleVerifier} from "../../src/core/OracleVerifier.sol";
 import {VaultManager} from "../../src/core/VaultManager.sol";
 
 /// @title TestSetupTslaRobinhood — Prep for the TSLA mint/borrow E2E test (admin, deployer key)

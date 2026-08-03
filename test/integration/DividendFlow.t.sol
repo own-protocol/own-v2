@@ -47,7 +47,7 @@ contract DividendFlowTest is BaseTest {
         _deployVaultManager();
         vm.startPrank(Actors.ADMIN);
 
-        vault = new OwnVault(address(weth), "Own WETH Vault", "oWETH", address(protocolRegistry), Actors.VM1);
+        vault = new OwnVault(address(weth), "Own WETH Vault", "oWETH", address(protocolRegistry), address(vm1Manager));
         vaultManager.registerVault(address(vault), ETH);
 
         market = new OwnMarket(address(protocolRegistry));
@@ -79,8 +79,8 @@ contract DividendFlowTest is BaseTest {
     }
 
     function test_dividendFlow_depositAndClaim() public {
-        _fundUSDC(Actors.VM1, REWARD_AMOUNT);
-        vm.startPrank(Actors.VM1);
+        _fundUSDC(address(vm1Manager), REWARD_AMOUNT);
+        vm.startPrank(address(vm1Manager));
         usdc.approve(address(eTSLA), REWARD_AMOUNT);
         eTSLA.depositRewards(REWARD_AMOUNT);
         vm.stopPrank();
@@ -114,8 +114,8 @@ contract DividendFlowTest is BaseTest {
     }
 
     function test_dividendFlow_transferSettlement() public {
-        _fundUSDC(Actors.VM1, REWARD_AMOUNT);
-        vm.startPrank(Actors.VM1);
+        _fundUSDC(address(vm1Manager), REWARD_AMOUNT);
+        vm.startPrank(address(vm1Manager));
         usdc.approve(address(eTSLA), REWARD_AMOUNT);
         eTSLA.depositRewards(REWARD_AMOUNT);
         vm.stopPrank();
@@ -135,8 +135,8 @@ contract DividendFlowTest is BaseTest {
     }
 
     function test_dividendFlow_newHolderClaimsSubsequentRewards() public {
-        _fundUSDC(Actors.VM1, REWARD_AMOUNT);
-        vm.startPrank(Actors.VM1);
+        _fundUSDC(address(vm1Manager), REWARD_AMOUNT);
+        vm.startPrank(address(vm1Manager));
         usdc.approve(address(eTSLA), REWARD_AMOUNT);
         eTSLA.depositRewards(REWARD_AMOUNT);
         vm.stopPrank();
@@ -147,8 +147,8 @@ contract DividendFlowTest is BaseTest {
         uint256 lp1Claimable = eTSLA.claimableRewards(Actors.LP1);
         assertEq(lp1Claimable, 0, "new holder has no rewards from before transfer");
 
-        _fundUSDC(Actors.VM1, REWARD_AMOUNT);
-        vm.startPrank(Actors.VM1);
+        _fundUSDC(address(vm1Manager), REWARD_AMOUNT);
+        vm.startPrank(address(vm1Manager));
         usdc.approve(address(eTSLA), REWARD_AMOUNT);
         eTSLA.depositRewards(REWARD_AMOUNT);
         vm.stopPrank();
@@ -166,8 +166,8 @@ contract DividendFlowTest is BaseTest {
     }
 
     function test_dividendFlow_noDoubleClaim() public {
-        _fundUSDC(Actors.VM1, REWARD_AMOUNT);
-        vm.startPrank(Actors.VM1);
+        _fundUSDC(address(vm1Manager), REWARD_AMOUNT);
+        vm.startPrank(address(vm1Manager));
         usdc.approve(address(eTSLA), REWARD_AMOUNT);
         eTSLA.depositRewards(REWARD_AMOUNT);
         vm.stopPrank();
@@ -184,8 +184,8 @@ contract DividendFlowTest is BaseTest {
         uint256 totalSupply = eTSLA.totalSupply();
         assertEq(eTSLA.rewardsPerShare(), 0);
 
-        _fundUSDC(Actors.VM1, REWARD_AMOUNT);
-        vm.startPrank(Actors.VM1);
+        _fundUSDC(address(vm1Manager), REWARD_AMOUNT);
+        vm.startPrank(address(vm1Manager));
         usdc.approve(address(eTSLA), REWARD_AMOUNT);
         eTSLA.depositRewards(REWARD_AMOUNT);
         vm.stopPrank();
@@ -193,8 +193,8 @@ contract DividendFlowTest is BaseTest {
         uint256 expectedRPS = REWARD_AMOUNT * PRECISION / totalSupply;
         assertEq(eTSLA.rewardsPerShare(), expectedRPS, "RPS after first deposit");
 
-        _fundUSDC(Actors.VM1, REWARD_AMOUNT);
-        vm.startPrank(Actors.VM1);
+        _fundUSDC(address(vm1Manager), REWARD_AMOUNT);
+        vm.startPrank(address(vm1Manager));
         usdc.approve(address(eTSLA), REWARD_AMOUNT);
         eTSLA.depositRewards(REWARD_AMOUNT);
         vm.stopPrank();
@@ -206,8 +206,8 @@ contract DividendFlowTest is BaseTest {
         vm.prank(Actors.ADMIN);
         EToken freshToken = new EToken("Fresh", "eFRESH", bytes32("FRESH"), address(protocolRegistry), address(usdc));
 
-        _fundUSDC(Actors.VM1, 100e6);
-        vm.startPrank(Actors.VM1);
+        _fundUSDC(address(vm1Manager), 100e6);
+        vm.startPrank(address(vm1Manager));
         usdc.approve(address(freshToken), 100e6);
         vm.expectRevert("EToken: no supply");
         freshToken.depositRewards(100e6);
@@ -223,8 +223,8 @@ contract DividendFlowTest is BaseTest {
         uint256 totalSupply = eTSLA.totalSupply();
 
         for (uint256 i; i < 3; i++) {
-            _fundUSDC(Actors.VM1, 500e6);
-            vm.startPrank(Actors.VM1);
+            _fundUSDC(address(vm1Manager), 500e6);
+            vm.startPrank(address(vm1Manager));
             usdc.approve(address(eTSLA), 500e6);
             eTSLA.depositRewards(500e6);
             vm.stopPrank();

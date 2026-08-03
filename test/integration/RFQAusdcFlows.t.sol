@@ -4,6 +4,7 @@ pragma solidity 0.8.28;
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 
 import {BorrowManager} from "../../src/core/BorrowManager.sol";
+
 import {OwnMarket} from "../../src/core/OwnMarket.sol";
 import {OwnVault} from "../../src/core/OwnVault.sol";
 import {IBorrowManager} from "../../src/interfaces/IBorrowManager.sol";
@@ -14,6 +15,7 @@ import {InterestRateModel} from "../../src/libraries/InterestRateModel.sol";
 import {EToken} from "../../src/tokens/EToken.sol";
 import {Actors} from "../helpers/Actors.sol";
 import {BaseTest} from "../helpers/BaseTest.sol";
+import {deployBorrowManager} from "../helpers/DeployBorrowManager.sol";
 import {MockAToken, MockAaveDebtToken, MockAaveV3Pool} from "../helpers/MockAaveV3Pool.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
@@ -84,7 +86,8 @@ contract RFQAusdcFlowsTest is BaseTest {
         _deployVaultManager();
         vm.startPrank(Actors.ADMIN);
 
-        vault = new OwnVault(address(ausdcAToken), "Own aUSDC", "oaUSDC", address(protocolRegistry), vm1Signer);
+        vault =
+            new OwnVault(address(ausdcAToken), "Own aUSDC", "oaUSDC", address(protocolRegistry), address(vm1Manager));
         vaultManager.registerVault(address(vault), AUSDC);
 
         market = new OwnMarket(address(protocolRegistry));
@@ -92,7 +95,7 @@ contract RFQAusdcFlowsTest is BaseTest {
         vault.setRequireDepositApproval(true);
 
         // ── Lending: borrow manager over USDC debt against the vault's aUSDC credit ──
-        borrowManager = new BorrowManager(
+        borrowManager = deployBorrowManager(
             address(vault),
             address(usdc),
             address(usdcDebt),
@@ -127,7 +130,7 @@ contract RFQAusdcFlowsTest is BaseTest {
         ausdcAToken.approve(address(vault), LP_DEPOSIT);
         uint256 reqId = vault.requestDeposit(LP_DEPOSIT, Actors.LP1, 0);
         vm.stopPrank();
-        vm.prank(vm1Signer);
+        vm.prank(address(vm1Manager));
         vault.acceptDeposit(reqId);
         _pullCollateralPrice(address(vault));
         _pullAssetPrice(TSLA);

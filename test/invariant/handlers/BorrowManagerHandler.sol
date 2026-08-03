@@ -31,6 +31,9 @@ contract BorrowManagerHandler is CommonBase, StdCheats, StdUtils {
     uint256 public ghost_borrows;
     uint256 public ghost_repays;
     uint256 public ghost_aaveAccruals;
+    uint256 public ghost_borrowMores;
+    uint256 public ghost_collateralAdds;
+    uint256 public ghost_clears;
 
     constructor(address _bm, address _vmgr, address _eTSLA, address _usdc, address _pool, address _vault) {
         bm = BorrowManager(_bm);
@@ -68,6 +71,62 @@ contract BorrowManagerHandler is CommonBase, StdCheats, StdUtils {
         eTSLA.approve(address(bm), eAmt);
         try bm.borrow(TSLA, eAmt, stable, abi.encode(TSLA_PX, block.timestamp)) {
             ghost_borrows++;
+        } catch {}
+        vm.stopPrank();
+    }
+
+    /// @dev Increase an existing position, bounded by the 70% per-position LTV on the whole
+    ///      position (same 60% comfort margin as {borrow}).
+    function borrowMore(uint256 seed, uint256 eAmt, uint256 stable) external {
+        address b = _pick(seed);
+        if (bm.positionOf(b, TSLA).principal == 0) return;
+        eAmt = bound(eAmt, 0, 50e18);
+        uint256 debt = bm.debtOf(b, TSLA); // 6-dec stablecoin units
+        uint256 collatUsd = (bm.positionOf(b, TSLA).eTokenCollateral + eAmt) * TSLA_PX / 1e18;
+        uint256 maxTotal = (collatUsd * 6000 / 10_000) / 1e12;
+        if (maxTotal <= debt + 1e6) return;
+        stable = bound(stable, 1e6, maxTotal - debt);
+
+        vmgr.pullAssetPrice(TSLA);
+        if (eAmt > 0) eTSLA.mint(b, eAmt);
+        vm.startPrank(b);
+        eTSLA.approve(address(bm), eAmt);
+        try bm.borrowMore(TSLA, eAmt, stable, abi.encode(TSLA_PX, block.timestamp)) {
+            ghost_borrowMores++;
+        } catch {}
+        vm.stopPrank();
+    }
+
+    function addCollateral(uint256 seed, uint256 eAmt) external {
+        address b = _pick(seed);
+        if (bm.positionOf(b, TSLA).principal == 0) return;
+        eAmt = bound(eAmt, 1e18, 50e18);
+        eTSLA.mint(b, eAmt);
+        vm.startPrank(b);
+        eTSLA.approve(address(bm), eAmt);
+        try bm.addCollateral(TSLA, eAmt) {
+            ghost_collateralAdds++;
+        } catch {}
+        vm.stopPrank();
+    }
+
+    /// @dev Borrower grants an open 5% clearing permission; a (possibly different) actor clears a
+    ///      random partial-to-full slice — exercising the permissioned close path alongside repays.
+    function clearDebt(uint256 seed, uint256 clearerSeed, uint256 amount) external {
+        address b = _pick(seed);
+        address c = _pick(clearerSeed);
+        uint256 debt = bm.debtOf(b, TSLA);
+        if (debt == 0) return;
+        amount = bound(amount, 1, debt);
+
+        vm.prank(b);
+        bm.setDebtClearingPermission(TSLA, address(0), 500);
+
+        usdc.mint(c, amount);
+        vm.startPrank(c);
+        usdc.approve(address(bm), amount);
+        try bm.clearDebt(b, TSLA, amount) {
+            ghost_clears++;
         } catch {}
         vm.stopPrank();
     }

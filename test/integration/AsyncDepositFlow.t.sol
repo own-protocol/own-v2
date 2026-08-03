@@ -39,7 +39,7 @@ contract AsyncDepositFlowTest is BaseTest {
         _deployVaultManager();
         vm.startPrank(Actors.ADMIN);
 
-        vault = new OwnVault(address(weth), "Own WETH Vault", "oWETH", address(protocolRegistry), Actors.VM1);
+        vault = new OwnVault(address(weth), "Own WETH Vault", "oWETH", address(protocolRegistry), address(vm1Manager));
         vaultManager.registerVault(address(vault), ETH);
 
         market = new OwnMarket(address(protocolRegistry));
@@ -95,7 +95,7 @@ contract AsyncDepositFlowTest is BaseTest {
         assertEq(pending[0], requestId);
 
         // VM accepts
-        vm.prank(Actors.VM1);
+        vm.prank(address(vm1Manager));
         vault.acceptDeposit(requestId);
 
         // Shares minted to LP
@@ -127,7 +127,7 @@ contract AsyncDepositFlowTest is BaseTest {
         assertEq(weth.balanceOf(Actors.LP1), 0, "LP collateral escrowed");
 
         // VM rejects
-        vm.prank(Actors.VM1);
+        vm.prank(address(vm1Manager));
         vault.rejectDeposit(requestId);
 
         // Collateral returned
@@ -205,7 +205,7 @@ contract AsyncDepositFlowTest is BaseTest {
         assertEq(pending.length, 2);
 
         // VM accepts first request
-        vm.prank(Actors.VM1);
+        vm.prank(address(vm1Manager));
         vault.acceptDeposit(reqId1);
 
         pending = vault.getPendingDeposits();
@@ -215,7 +215,7 @@ contract AsyncDepositFlowTest is BaseTest {
         assertGt(lp1Shares, 0, "LP1 received shares");
 
         // VM accepts second request
-        vm.prank(Actors.VM1);
+        vm.prank(address(vm1Manager));
         vault.acceptDeposit(reqId2);
 
         uint256 lp2Shares = vault.balanceOf(Actors.LP2);
@@ -305,10 +305,10 @@ contract AsyncDepositFlowTest is BaseTest {
         uint256 requestId = vault.requestDeposit(LP_DEPOSIT, Actors.LP1, 0);
         vm.stopPrank();
 
-        vm.prank(Actors.VM1);
+        vm.prank(address(vm1Manager));
         vault.acceptDeposit(requestId);
 
-        vm.prank(Actors.VM1);
+        vm.prank(address(vm1Manager));
         vm.expectRevert(abi.encodeWithSelector(IOwnVault.DepositRequestNotPending.selector, requestId));
         vault.acceptDeposit(requestId);
     }
@@ -335,7 +335,7 @@ contract AsyncDepositFlowTest is BaseTest {
         uint256 requestId = vault.requestDeposit(LP_DEPOSIT, Actors.LP2, 0);
         vm.stopPrank();
 
-        vm.prank(Actors.VM1);
+        vm.prank(address(vm1Manager));
         vault.acceptDeposit(requestId);
 
         assertEq(vault.balanceOf(Actors.LP1), 0, "depositor has no shares");

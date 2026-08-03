@@ -17,6 +17,16 @@ import {
 import {Actors} from "../helpers/Actors.sol";
 import {BaseTest} from "../helpers/BaseTest.sol";
 import {MockERC20} from "../helpers/MockERC20.sol";
+import {MockYieldManager} from "../helpers/MockYieldManager.sol";
+
+/// @dev Manager whose syncYield always reverts — pins that the best-effort catch leg holds.
+contract RevertingManager {
+    error Nope();
+
+    function syncYield() external pure {
+        revert Nope();
+    }
+}
 
 /// @dev Minimal borrow-manager stub: lets a test toggle the Aave health-factor gate result.
 contract MockHealthBorrowManager {
@@ -33,6 +43,9 @@ contract MockHealthBorrowManager {
     function requireVaultHealthy() external view {
         if (unsafe) revert VaultUnsafeHealthFactor(0.5e18);
     }
+
+    /// @dev The vault books interest before totalAssets() moves; no-op for the health stub.
+    function accrue() external {}
 }
 
 /// @title OwnVault Unit Tests
@@ -52,7 +65,7 @@ contract OwnVaultTest is BaseTest {
         protocolRegistry.setAddress(protocolRegistry.MARKET(), mockMarket);
         // Minimal asset registry so VaultManager price resolution (onVaultUnhalted) works.
         protocolRegistry.setAddress(protocolRegistry.ASSET_REGISTRY(), address(new StubAssetRegistryForVault()));
-        vault = new OwnVault(address(weth), "Own WETH Vault", "oWETH", address(protocolRegistry), Actors.VM1);
+        vault = new OwnVault(address(weth), "Own WETH Vault", "oWETH", address(protocolRegistry), address(vm1Manager));
         vm.stopPrank();
         vm.label(address(vault), "OwnVault-WETH");
 
@@ -71,8 +84,8 @@ contract OwnVaultTest is BaseTest {
 
     /// @dev Deposit as the bound VM.
     function _depositAs(address lp, uint256 amount) internal returns (uint256 shares) {
-        weth.mint(Actors.VM1, amount);
-        vm.startPrank(Actors.VM1);
+        weth.mint(address(vm1Manager), amount);
+        vm.startPrank(address(vm1Manager));
         weth.approve(address(vault), amount);
         shares = vault.deposit(amount, lp);
         vm.stopPrank();
@@ -96,7 +109,7 @@ contract OwnVaultTest is BaseTest {
 
     /// @dev The bound manager can mint to any receiver, so it reports unlimited.
     function test_maxMint_maxForManager() public {
-        vm.prank(Actors.VM1);
+        vm.prank(address(vm1Manager));
         assertEq(vault.maxMint(Actors.LP1), type(uint256).max, "manager can mint");
     }
 
@@ -116,7 +129,7 @@ contract OwnVaultTest is BaseTest {
     /// @dev The manager can still deposit (for any receiver) under the approval gate.
     function test_maxDeposit_approvalMode_maxForManager() public {
         _enableDepositApproval();
-        vm.prank(Actors.VM1);
+        vm.prank(address(vm1Manager));
         assertEq(vault.maxDeposit(Actors.LP1), type(uint256).max, "gated: manager ok");
     }
 
@@ -158,8 +171,8 @@ contract OwnVaultTest is BaseTest {
         vm.prank(Actors.ADMIN);
         vault.haltVault();
 
-        weth.mint(Actors.VM1, 10 ether);
-        vm.startPrank(Actors.VM1);
+        weth.mint(address(vm1Manager), 10 ether);
+        vm.startPrank(address(vm1Manager));
         weth.approve(address(vault), 10 ether);
         vm.expectRevert(IOwnVault.VaultIsHalted.selector);
         vault.deposit(10 ether, Actors.LP1);
@@ -170,8 +183,8 @@ contract OwnVaultTest is BaseTest {
         vm.prank(Actors.ADMIN);
         vault.pause(bytes32("emergency"));
 
-        weth.mint(Actors.VM1, 10 ether);
-        vm.startPrank(Actors.VM1);
+        weth.mint(address(vm1Manager), 10 ether);
+        vm.startPrank(address(vm1Manager));
         weth.approve(address(vault), 10 ether);
         vm.expectRevert(IOwnVault.VaultIsPaused.selector);
         vault.deposit(10 ether, Actors.LP1);
@@ -249,7 +262,7 @@ contract OwnVaultTest is BaseTest {
         vm.expectEmit(true, true, false, true);
         emit IOwnVault.DepositAccepted(requestId, Actors.LP1, expectedShares);
 
-        vm.prank(Actors.VM1);
+        vm.prank(address(vm1Manager));
         vault.acceptDeposit(requestId);
 
         DepositRequest memory req = vault.getDepositRequest(requestId);
@@ -258,6 +271,168 @@ contract OwnVaultTest is BaseTest {
         // Shares should be minted to receiver
         assertGt(vault.balanceOf(Actors.LP1), 0);
         assertEq(vault.totalAssets(), 20 ether); // initial + async deposit
+    }
+
+    /// @dev A3-M-08: with totalAssets() saturated to 0 and live supply, previewDeposit prices off
+    ///      the +1 virtual asset and would mint a near-unbounded share count — acceptDeposit must
+    ///      revert instead of handing the vault to the new depositor.
+    function test_acceptDeposit_zeroAssets_reverts() public {
+        _enableDepositApproval();
+        _depositAs(Actors.LP2, 5 ether);
+
+        uint256 pending = 10 ether;
+        weth.mint(Actors.LP1, pending);
+        vm.startPrank(Actors.LP1);
+        weth.approve(address(vault), pending);
+        uint256 requestId = vault.requestDeposit(pending, Actors.LP1, 0);
+        vm.stopPrank();
+
+        // Simulate an external Aave liquidation seizing collateral below the pending total.
+        vm.prank(address(vault));
+        weth.transfer(address(0xdead), 13 ether); // balance 15 -> 2, below 10 pending
+        assertEq(vault.totalAssets(), 0, "totalAssets saturated");
+
+        vm.prank(address(vm1Manager));
+        vm.expectRevert(IOwnVault.VaultInsolvent.selector);
+        vault.acceptDeposit(requestId);
+    }
+
+    /// @dev A3-M-08 (reopened): the guard was applied to `acceptDeposit` only, but `deposit()` is
+    ///      the permissionless leg and prices through the same `previewDeposit`. With totalAssets()
+    ///      saturated, OZ denominates against the virtual +1, so a dust deposit mints ~totalSupply
+    ///      shares and permanently takes the incumbent LPs' claim — shares carry no cost basis and
+    ///      there is no burn path, so recovery of the balance does not undo the dilution.
+    function test_deposit_zeroAssets_reverts() public {
+        _depositAs(Actors.LP2, 5 ether);
+        uint256 incumbentSupply = vault.totalSupply();
+
+        // Collateral leaves (force-execution / bad-debt release) while shares stay outstanding.
+        vm.prank(address(vault));
+        weth.transfer(address(0xdead), 5 ether);
+        assertEq(vault.totalAssets(), 0, "totalAssets saturated");
+        assertGt(vault.totalSupply(), 0, "supply still live");
+
+        weth.mint(Actors.ATTACKER, 1);
+        vm.startPrank(Actors.ATTACKER);
+        weth.approve(address(vault), 1);
+        vm.expectRevert(IOwnVault.VaultInsolvent.selector);
+        vault.deposit(1, Actors.ATTACKER);
+        vm.stopPrank();
+
+        assertEq(vault.balanceOf(Actors.ATTACKER), 0, "attacker minted nothing");
+        assertEq(vault.totalSupply(), incumbentSupply, "incumbent claim intact");
+    }
+
+    /// @dev A3-M-08 (reopened): the `minSharesOut` overload shares `_depositWithMin`, and the
+    ///      frontend default of 0 gives the floor no protective value here.
+    function test_depositWithMinSharesOut_zeroAssets_reverts() public {
+        _depositAs(Actors.LP2, 5 ether);
+
+        vm.prank(address(vault));
+        weth.transfer(address(0xdead), 5 ether);
+        assertEq(vault.totalAssets(), 0, "totalAssets saturated");
+
+        weth.mint(Actors.ATTACKER, 1);
+        vm.startPrank(Actors.ATTACKER);
+        weth.approve(address(vault), 1);
+        vm.expectRevert(IOwnVault.VaultInsolvent.selector);
+        vault.deposit(1, Actors.ATTACKER, 0);
+        vm.stopPrank();
+    }
+
+    /// @dev A3-M-08 (reopened): `previewMint` prices off the same virtual asset, so the manager-only
+    ///      mint leg buys a near-unbounded share count for ~nothing.
+    function test_mint_zeroAssets_reverts() public {
+        _depositAs(Actors.LP2, 5 ether);
+
+        vm.prank(address(vault));
+        weth.transfer(address(0xdead), 5 ether);
+        assertEq(vault.totalAssets(), 0, "totalAssets saturated");
+
+        weth.mint(address(vm1Manager), 1 ether);
+        vm.startPrank(address(vm1Manager));
+        weth.approve(address(vault), 1 ether);
+        vm.expectRevert(IOwnVault.VaultInsolvent.selector);
+        vault.mint(1e24, address(vm1Manager));
+        vm.stopPrank();
+    }
+
+    /// @dev A3-M-08 (reopened): the saturated state needs no external seizure. `releaseCollateral`
+    ///      bounds with `amount > totalAssets()`, so releasing *exactly* the backing leaves the
+    ///      pending-deposit escrow as the entire raw balance — and because the venue's health check
+    ///      reads that raw balance, `requireVaultHealthy()` still passes.
+    function test_deposit_zeroAssetsViaPendingEscrow_reverts() public {
+        _enableDepositApproval();
+        _depositAs(Actors.LP2, 5 ether);
+
+        uint256 pending = 10 ether;
+        weth.mint(Actors.LP1, pending);
+        vm.startPrank(Actors.LP1);
+        weth.approve(address(vault), pending);
+        vault.requestDeposit(pending, Actors.LP1, 0);
+        vm.stopPrank();
+
+        vm.prank(mockMarket);
+        vault.releaseCollateral(address(0xdead), 5 ether);
+        assertEq(vault.totalAssets(), 0, "totalAssets saturated by escrow");
+        assertEq(weth.balanceOf(address(vault)), pending, "raw balance still holds escrow");
+
+        weth.mint(address(vm1Manager), 1);
+        vm.startPrank(address(vm1Manager));
+        weth.approve(address(vault), 1);
+        vm.expectRevert(IOwnVault.VaultInsolvent.selector);
+        vault.deposit(1, address(vm1Manager));
+        vm.stopPrank();
+    }
+
+    /// @dev The guard keys on *live supply*, so a genuinely empty vault still bootstraps — the
+    ///      first depositor has no incumbent to dilute.
+    function test_deposit_emptyVault_unaffected() public {
+        assertEq(vault.totalAssets(), 0, "empty");
+        assertEq(vault.totalSupply(), 0, "no supply");
+
+        uint256 shares = _depositAs(Actors.LP1, 1 ether);
+        assertGt(shares, 0, "first deposit still works");
+    }
+
+    /// @dev The zero is an accounting artifact that heals when the balance returns. Deposits must
+    ///      work again once it does, so the guard cannot leave the vault permanently closed.
+    function test_deposit_afterBalanceRecovers_succeeds() public {
+        _depositAs(Actors.LP2, 5 ether);
+
+        vm.prank(address(vault));
+        weth.transfer(address(0xdead), 5 ether);
+        assertEq(vault.totalAssets(), 0, "saturated");
+
+        // Balance returns (repayment sweep / yield distribution / aToken interest).
+        weth.mint(address(vault), 5 ether);
+        assertGt(vault.totalAssets(), 0, "recovered");
+
+        uint256 shares = _depositAs(Actors.LP1, 1 ether);
+        assertGt(shares, 0, "deposits resume after recovery");
+        // Priced on the recovered balance, not the artifact: no windfall share count.
+        assertLt(shares, vault.totalSupply(), "minted at a sane ratio");
+    }
+
+    /// @dev A3-M-08 (second mechanism): acceptDeposit was the only share-minting path that never
+    ///      read the vault status — it must not mint into a Paused vault whose withdrawals revert.
+    function test_acceptDeposit_paused_reverts() public {
+        _enableDepositApproval();
+        _depositAs(Actors.LP2, 10 ether);
+
+        uint256 depositAmount = 10 ether;
+        weth.mint(Actors.LP1, depositAmount);
+        vm.startPrank(Actors.LP1);
+        weth.approve(address(vault), depositAmount);
+        uint256 requestId = vault.requestDeposit(depositAmount, Actors.LP1, 0);
+        vm.stopPrank();
+
+        vm.prank(address(vm1Manager));
+        vault.pause(bytes32("emergency"));
+
+        vm.prank(address(vm1Manager));
+        vm.expectRevert(IOwnVault.VaultIsPaused.selector);
+        vault.acceptDeposit(requestId);
     }
 
     function test_rejectDeposit_returnsAssets() public {
@@ -273,7 +448,7 @@ contract OwnVaultTest is BaseTest {
         vm.expectEmit(true, true, false, false);
         emit IOwnVault.DepositRejected(requestId, Actors.LP1);
 
-        vm.prank(Actors.VM1);
+        vm.prank(address(vm1Manager));
         vault.rejectDeposit(requestId);
 
         DepositRequest memory req = vault.getDepositRequest(requestId);
@@ -444,6 +619,43 @@ contract OwnVaultTest is BaseTest {
     function test_fulfillWithdrawal_nonExistent_reverts() public {
         vm.expectRevert(abi.encodeWithSelector(IOwnVault.WithdrawalRequestNotFound.selector, 999));
         vault.fulfillWithdrawal(999);
+    }
+
+    /// @dev A3-H-03: when totalAssets() saturates to 0 (balance below pending-deposit escrow),
+    ///      fulfillWithdrawal must revert rather than burn the owner's shares for a 0 transfer —
+    ///      the zero is an accounting artifact, not a price, and fulfilment is permissionless.
+    function test_fulfillWithdrawal_zeroAssets_reverts() public {
+        _enableDepositApproval();
+
+        uint256 shares = _depositAs(Actors.LP2, 5 ether);
+        vm.prank(Actors.LP2);
+        uint256 requestId = vault.requestWithdrawal(shares);
+
+        uint256 pending = 10 ether;
+        weth.mint(Actors.LP1, pending);
+        vm.startPrank(Actors.LP1);
+        weth.approve(address(vault), pending);
+        vault.requestDeposit(pending, Actors.LP1, 0);
+        vm.stopPrank();
+
+        // Simulate an external Aave liquidation seizing collateral below the pending total.
+        vm.prank(address(vault));
+        weth.transfer(address(0xdead), 13 ether); // balance 15 -> 2, below 10 pending
+        assertEq(vault.totalAssets(), 0, "totalAssets saturated");
+
+        // Halt: the emergency-exit branch skips the wait period and util gate, so pre-fix
+        // this settled silently at 0.
+        vm.prank(Actors.ADMIN);
+        vault.haltVault();
+
+        vm.prank(Actors.ATTACKER);
+        vm.expectRevert(IOwnVault.ZeroAmount.selector);
+        vault.fulfillWithdrawal(requestId);
+
+        // The claim survives: request still pending, shares still escrowed.
+        WithdrawalRequest memory req = vault.getWithdrawalRequest(requestId);
+        assertEq(uint256(req.status), uint256(WithdrawalStatus.Pending));
+        assertEq(vault.balanceOf(address(vault)), shares);
     }
 
     function test_getPendingWithdrawals_fifoOrder() public {
@@ -779,14 +991,14 @@ contract OwnVaultTest is BaseTest {
     // Quote signers moved to the global signer registry on VaultManager; see VaultManager.t.sol.
 
     function test_constructor_bindsManager() public view {
-        assertEq(vault.manager(), Actors.VM1, "manager bound at construction");
+        assertEq(vault.manager(), address(vm1Manager), "manager bound at construction");
     }
 
     function test_setManager_byAdmin_succeeds() public {
-        address newManager = makeAddr("newManager");
+        address newManager = address(new MockYieldManager());
 
         vm.expectEmit(true, true, false, false);
-        emit IOwnVault.ManagerUpdated(Actors.VM1, newManager);
+        emit IOwnVault.ManagerUpdated(address(vm1Manager), newManager);
         vm.prank(Actors.ADMIN);
         vault.setManager(newManager);
 
@@ -805,6 +1017,35 @@ contract OwnVaultTest is BaseTest {
         vault.setManager(address(0));
     }
 
+    /// @dev `_syncLending` calls the manager bare on every LP entry and exit. A call to an EOA
+    ///      reverts via solc's extcodesize guard in the vault's own frame — outside the try — so it
+    ///      is uncatchable and would brick deposits and `fulfillWithdrawal`, the only exit. The
+    ///      invariant is enforced at the write sites so the call site can stay bare.
+    function test_setManager_eoa_reverts() public {
+        vm.prank(Actors.ADMIN);
+        vm.expectRevert(IOwnVault.ManagerNotContract.selector);
+        vault.setManager(makeAddr("eoaManager"));
+
+        assertEq(vault.manager(), address(vm1Manager), "manager unchanged");
+    }
+
+    /// @dev Same invariant at the other write site — a vault can never be born with an EOA manager.
+    function test_constructor_eoaManager_reverts() public {
+        vm.expectRevert(IOwnVault.ManagerNotContract.selector);
+        new OwnVault(address(weth), "Bad", "BAD", address(protocolRegistry), makeAddr("eoaManager"));
+    }
+
+    /// @dev With the invariant enforced at both write sites the LP paths call the manager bare, so
+    ///      a manager that reverts must still not block LP flow — the catch leg has to hold.
+    function test_deposit_revertingManager_stillSucceeds() public {
+        address badManager = address(new RevertingManager());
+        vm.prank(Actors.ADMIN);
+        vault.setManager(badManager);
+
+        uint256 shares = _depositAs(Actors.LP1, 1 ether);
+        assertGt(shares, 0, "a reverting syncYield must not block the deposit");
+    }
+
     // ──────────────────────────────────────────────────────────
     //  Deposit slippage (minSharesOut)
     // ──────────────────────────────────────────────────────────
@@ -813,8 +1054,8 @@ contract OwnVaultTest is BaseTest {
         uint256 amount = 10 ether;
         uint256 expected = vault.previewDeposit(amount);
 
-        weth.mint(Actors.VM1, amount);
-        vm.startPrank(Actors.VM1);
+        weth.mint(address(vm1Manager), amount);
+        vm.startPrank(address(vm1Manager));
         weth.approve(address(vault), amount);
         uint256 shares = vault.deposit(amount, Actors.LP1, expected);
         vm.stopPrank();
@@ -827,8 +1068,8 @@ contract OwnVaultTest is BaseTest {
         uint256 amount = 10 ether;
         uint256 expected = vault.previewDeposit(amount);
 
-        weth.mint(Actors.VM1, amount);
-        vm.startPrank(Actors.VM1);
+        weth.mint(address(vm1Manager), amount);
+        vm.startPrank(address(vm1Manager));
         weth.approve(address(vault), amount);
         // Demand one more share than achievable.
         vm.expectRevert(abi.encodeWithSelector(IOwnVault.InsufficientSharesOut.selector, expected, expected + 1));
@@ -848,7 +1089,7 @@ contract OwnVaultTest is BaseTest {
         uint256 requestId = vault.requestDeposit(amount, Actors.LP1, fair + 1);
         vm.stopPrank();
 
-        vm.prank(Actors.VM1);
+        vm.prank(address(vm1Manager));
         vm.expectRevert(abi.encodeWithSelector(IOwnVault.InsufficientSharesOut.selector, fair, fair + 1));
         vault.acceptDeposit(requestId);
     }
@@ -864,7 +1105,7 @@ contract OwnVaultTest is BaseTest {
         uint256 requestId = vault.requestDeposit(amount, Actors.LP1, fair);
         vm.stopPrank();
 
-        vm.prank(Actors.VM1);
+        vm.prank(address(vm1Manager));
         vault.acceptDeposit(requestId);
 
         assertEq(vault.balanceOf(Actors.LP1), fair);
@@ -880,8 +1121,8 @@ contract OwnVaultTest is BaseTest {
         uint256 assetsBefore = vault.convertToAssets(sharesBefore);
 
         uint256 yield = 2 ether;
-        weth.mint(Actors.VM1, yield);
-        vm.startPrank(Actors.VM1);
+        weth.mint(address(vm1Manager), yield);
+        vm.startPrank(address(vm1Manager));
         weth.approve(address(vault), yield);
         vault.shareYield(yield);
         vm.stopPrank();
@@ -896,11 +1137,11 @@ contract OwnVaultTest is BaseTest {
         _depositAs(Actors.LP1, 10 ether);
 
         uint256 yield = 1 ether;
-        weth.mint(Actors.VM1, yield);
-        vm.startPrank(Actors.VM1);
+        weth.mint(address(vm1Manager), yield);
+        vm.startPrank(address(vm1Manager));
         weth.approve(address(vault), yield);
         vm.expectEmit(true, false, false, true);
-        emit IOwnVault.ShareYieldAdded(Actors.VM1, yield);
+        emit IOwnVault.ShareYieldAdded(address(vm1Manager), yield);
         vault.shareYield(yield);
         vm.stopPrank();
     }
@@ -918,15 +1159,15 @@ contract OwnVaultTest is BaseTest {
 
     function test_shareYield_zeroAmount_reverts() public {
         _depositAs(Actors.LP1, 10 ether);
-        vm.prank(Actors.VM1);
+        vm.prank(address(vm1Manager));
         vm.expectRevert(IOwnVault.ZeroAmount.selector);
         vault.shareYield(0);
     }
 
     function test_shareYield_noShares_reverts() public {
         // Empty vault: nothing to distribute to.
-        weth.mint(Actors.VM1, 1 ether);
-        vm.startPrank(Actors.VM1);
+        weth.mint(address(vm1Manager), 1 ether);
+        vm.startPrank(address(vm1Manager));
         weth.approve(address(vault), 1 ether);
         vm.expectRevert(IOwnVault.NoSharesToReward.selector);
         vault.shareYield(1 ether);
@@ -1047,15 +1288,15 @@ contract OwnVaultTest is BaseTest {
     function test_constructor_decimalsTooHigh_reverts() public {
         MockERC20 weird = new MockERC20("Weird", "WRD", 19);
         vm.expectRevert(abi.encodeWithSelector(IOwnVault.DecimalsTooHigh.selector, uint8(19)));
-        new OwnVault(address(weird), "Bad", "BAD", address(protocolRegistry), Actors.VM1);
+        new OwnVault(address(weird), "Bad", "BAD", address(protocolRegistry), address(vm1Manager));
     }
 
     /// @dev mint() is manager-only and otherwise untested; the bound manager mints shares to an LP.
     function test_mint_byManager_succeeds() public {
         uint256 shares = 1e24;
         uint256 assetsNeeded = vault.previewMint(shares);
-        weth.mint(Actors.VM1, assetsNeeded);
-        vm.startPrank(Actors.VM1);
+        weth.mint(address(vm1Manager), assetsNeeded);
+        vm.startPrank(address(vm1Manager));
         weth.approve(address(vault), assetsNeeded);
         uint256 assets = vault.mint(shares, Actors.LP1);
         vm.stopPrank();
@@ -1083,13 +1324,13 @@ contract OwnVaultTest is BaseTest {
     }
 
     function test_acceptDeposit_notFound_reverts() public {
-        vm.prank(Actors.VM1);
+        vm.prank(address(vm1Manager));
         vm.expectRevert(abi.encodeWithSelector(IOwnVault.DepositRequestNotFound.selector, uint256(999)));
         vault.acceptDeposit(999);
     }
 
     function test_rejectDeposit_notFound_reverts() public {
-        vm.prank(Actors.VM1);
+        vm.prank(address(vm1Manager));
         vm.expectRevert(abi.encodeWithSelector(IOwnVault.DepositRequestNotFound.selector, uint256(999)));
         vault.rejectDeposit(999);
     }
@@ -1097,7 +1338,7 @@ contract OwnVaultTest is BaseTest {
     function test_rejectDeposit_notPending_reverts() public {
         _enableDepositApproval();
         uint256 id = _requestDeposit(Actors.LP1, 10 ether);
-        vm.startPrank(Actors.VM1);
+        vm.startPrank(address(vm1Manager));
         vault.acceptDeposit(id); // now Accepted
         vm.expectRevert(abi.encodeWithSelector(IOwnVault.DepositRequestNotPending.selector, id));
         vault.rejectDeposit(id);
@@ -1112,7 +1353,7 @@ contract OwnVaultTest is BaseTest {
     function test_cancelDeposit_notPending_reverts() public {
         _enableDepositApproval();
         uint256 id = _requestDeposit(Actors.LP1, 10 ether);
-        vm.prank(Actors.VM1);
+        vm.prank(address(vm1Manager));
         vault.acceptDeposit(id); // Accepted
         vm.prank(Actors.LP1);
         vm.expectRevert(abi.encodeWithSelector(IOwnVault.DepositRequestNotPending.selector, id));
@@ -1237,11 +1478,11 @@ contract OwnVaultTest is BaseTest {
         usdc.mint(address(vault), 123e6);
 
         vm.expectEmit(true, true, false, true);
-        emit IOwnVault.TokenSwept(address(usdc), Actors.VM1, 123e6);
-        vm.prank(Actors.VM1);
+        emit IOwnVault.TokenSwept(address(usdc), address(vm1Manager), 123e6);
+        vm.prank(address(vm1Manager));
         vault.sweepToken(address(usdc));
 
-        assertEq(usdc.balanceOf(Actors.VM1), 123e6, "stranded balance paid to the calling manager");
+        assertEq(usdc.balanceOf(address(vm1Manager)), 123e6, "stranded balance paid to the calling manager");
         assertEq(usdc.balanceOf(address(vault)), 0);
         assertEq(vault.totalAssets(), 10 ether, "LP backing untouched");
     }
@@ -1256,7 +1497,7 @@ contract OwnVaultTest is BaseTest {
 
     function test_sweepToken_asset_reverts() public {
         _depositAs(Actors.LP1, 10 ether);
-        vm.prank(Actors.VM1);
+        vm.prank(address(vm1Manager));
         vm.expectRevert(IOwnVault.CannotSweepAsset.selector);
         vault.sweepToken(address(weth));
     }
@@ -1268,9 +1509,9 @@ contract OwnVaultTest is BaseTest {
         vm.prank(Actors.LP1);
         vault.transfer(address(vault), shares);
 
-        vm.prank(Actors.VM1);
+        vm.prank(address(vm1Manager));
         vault.sweepToken(address(vault));
-        assertEq(vault.balanceOf(Actors.VM1), shares, "lost shares recovered by the manager");
+        assertEq(vault.balanceOf(address(vm1Manager)), shares, "lost shares recovered by the manager");
     }
 
     function test_sweepToken_cannotDrainWithdrawalEscrow() public {
@@ -1282,7 +1523,7 @@ contract OwnVaultTest is BaseTest {
         assertEq(vault.balanceOf(address(vault)), shares, "shares escrowed on the vault");
 
         // Nothing but escrow is held → no stray surplus → sweep reverts instead of taking the escrow.
-        vm.prank(Actors.VM1);
+        vm.prank(address(vm1Manager));
         vm.expectRevert(IOwnVault.ZeroAmount.selector);
         vault.sweepToken(address(vault));
         assertEq(vault.balanceOf(address(vault)), shares, "escrow untouched by the sweep attempt");
@@ -1305,10 +1546,10 @@ contract OwnVaultTest is BaseTest {
         vm.prank(Actors.LP1);
         vault.transfer(address(vault), stray); // fat-fingered shares land on top of the escrow
 
-        vm.prank(Actors.VM1);
+        vm.prank(address(vm1Manager));
         vault.sweepToken(address(vault));
 
-        assertEq(vault.balanceOf(Actors.VM1), stray, "only the stray surplus is recovered");
+        assertEq(vault.balanceOf(address(vm1Manager)), stray, "only the stray surplus is recovered");
         assertEq(vault.balanceOf(address(vault)), escrowed, "escrow slice preserved");
     }
 
@@ -1321,7 +1562,7 @@ contract OwnVaultTest is BaseTest {
         vault.sweepToken(address(usdc));
 
         // Nothing to sweep (manager caller).
-        vm.prank(Actors.VM1);
+        vm.prank(address(vm1Manager));
         vm.expectRevert(IOwnVault.ZeroAmount.selector);
         vault.sweepToken(address(usdc));
     }

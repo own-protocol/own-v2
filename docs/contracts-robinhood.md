@@ -97,7 +97,7 @@ the script re-asserts symbol+decimals on-chain before broadcasting.
       multiplierToken yet (all uiMultipliers 1.0 — set on underlying tickers before first
       dividend/split). USDG Chainlink-only (band 0, 25h fresh, 48h anchor). Parity vs old oracle
       at deploy: all 15 within ~1.7%. Design: docs/chainlink-feeds-robinhood.md; findings:
-      docs/chainlink-audit-report.md.
+      docs/audit-report-3.md.
 - [x] `SwitchOracleChainlinkRobinhood.s.sol` — CUTOVER LIVE 2026-07-20, tx `0x79dd1ce2…3eec4`.
       INHOUSE_ORACLE slot → `0x7215…af9b`; all 15 tickers preflighted and serving; mark-pull
       route simulated OK post-switch (TSLA / R.TSLA / USDG). Rollback:

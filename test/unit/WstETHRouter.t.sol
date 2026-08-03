@@ -24,6 +24,13 @@ contract MockRoundingStETH is MockERC20 {
         ok = super.transferFrom(from, to, value);
         _burn(to, 2);
     }
+
+    /// @dev Lido's rounding applies to any transfer, not just `transferFrom` — the unwrap payout
+    ///      reaches the router through a plain `transfer`.
+    function transfer(address to, uint256 value) public override returns (bool ok) {
+        ok = super.transfer(to, value);
+        _burn(to, 2);
+    }
 }
 
 /// @dev ERC-2612 permit-capable stETH, used to drive the depositStETHWithPermit happy path.
@@ -184,6 +191,31 @@ contract WstETHRouterTest is BaseTest {
 
         assertGt(shares, 0);
         assertEq(v.balanceOf(Actors.LP1), shares);
+        assertEq(roundingStETH.balanceOf(address(r)), 0, "Router should hold no stETH");
+    }
+
+    /// @dev M-10 on the exit leg: `unwrap` reports the requested figure but share-rounding credits
+    ///      1-2 wei less, so the router must forward what arrived. Forwarding the reported figure
+    ///      reverts — the router is stateless and holds no stETH buffer to cover the shortfall.
+    function test_unwrapWstETH_lidoRounding_succeeds() public {
+        MockRoundingStETH roundingStETH = new MockRoundingStETH();
+        MockWstETH roundingWstETH = new MockWstETH(address(roundingStETH));
+        WstETHRouter r = new WstETHRouter(address(roundingWstETH), address(roundingStETH));
+
+        // Reserve on the wrapper so it can always pay out, isolating the rounding to the exit hop.
+        roundingStETH.mint(address(roundingWstETH), 1 ether);
+
+        uint256 amount = 10 ether;
+        roundingStETH.mint(Actors.LP1, amount);
+        vm.startPrank(Actors.LP1);
+        roundingStETH.approve(address(roundingWstETH), amount);
+        uint256 wst = roundingWstETH.wrap(amount);
+
+        IERC20(address(roundingWstETH)).approve(address(r), wst);
+        uint256 out = r.unwrapWstETH(wst, Actors.LP1);
+        vm.stopPrank();
+
+        assertEq(out, wst - 2, "must report what arrived, not what Lido claimed");
         assertEq(roundingStETH.balanceOf(address(r)), 0, "Router should hold no stETH");
     }
 

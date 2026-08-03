@@ -3,7 +3,7 @@ pragma solidity 0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
 
-import {OracleVerifier} from "../../src/core/OracleVerifier.sol";
+import {OracleVerifier} from "../../archive/OracleVerifier.sol";
 import {VaultManager} from "../../src/core/VaultManager.sol";
 
 /// @title BootstrapUsdcPriceMainnet — Add the operator as an oracle signer and attest the USDC mark

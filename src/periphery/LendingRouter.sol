@@ -2,6 +2,7 @@
 pragma solidity 0.8.28;
 
 import {ILendingRouter} from "../interfaces/ILendingRouter.sol";
+import {IOwnVault} from "../interfaces/IOwnVault.sol";
 import {IProtocolRegistry} from "../interfaces/IProtocolRegistry.sol";
 import {IAaveV3Pool} from "../interfaces/external/IAaveV3Pool.sol";
 import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
@@ -137,13 +138,47 @@ contract LendingRouter is ILendingRouter, ReentrancyGuard {
 
         address aToken = _requireEnabled(underlying);
 
-        // Pull aToken from caller.
+        // Pull aToken from caller — measure the receipt; a scaled-balance transfer can credit less.
+        uint256 aTokenBefore = IERC20(aToken).balanceOf(address(this));
         IERC20(aToken).safeTransferFrom(msg.sender, address(this), aTokenAmount);
+        uint256 aTokenReceived = IERC20(aToken).balanceOf(address(this)) - aTokenBefore;
 
         // Aave burns the aToken and sends the underlying directly to `receiver`.
-        underlyingAmount = IAaveV3Pool(pool).withdraw(underlying, aTokenAmount, receiver);
+        underlyingAmount = IAaveV3Pool(pool).withdraw(underlying, aTokenReceived, receiver);
 
         emit Withdraw(msg.sender, receiver, underlying, aTokenAmount, underlyingAmount);
+    }
+
+    /// @inheritdoc ILendingRouter
+    function withdrawFromVault(
+        address underlying,
+        IOwnVault vault,
+        uint256 shares,
+        address receiver,
+        uint256 minAssetsOut
+    ) external nonReentrant returns (uint256 underlyingAmount) {
+        if (shares == 0) revert ZeroAmount();
+        if (receiver == address(0)) revert ZeroAddress();
+
+        address aToken = _requireEnabled(underlying);
+        if (vault.asset() != aToken) revert VaultAssetMismatch(aToken, vault.asset());
+
+        // Pull shares from caller; the router owns the request for this transaction.
+        IERC20(address(vault)).safeTransferFrom(msg.sender, address(this), shares);
+
+        // Same-transaction exit through the vault's own queue: with a zero wait period the
+        // fulfill gate passes immediately, and the aToken lands on the router (request owner).
+        // Measure the receipt; a scaled-balance transfer can credit less than `assets` reports.
+        uint256 aTokenBefore = IERC20(aToken).balanceOf(address(this));
+        uint256 requestId = vault.requestWithdrawal(shares);
+        uint256 assets = vault.fulfillWithdrawal(requestId);
+        if (assets < minAssetsOut) revert MinAssetsError(assets, minAssetsOut);
+        uint256 aTokenReceived = IERC20(aToken).balanceOf(address(this)) - aTokenBefore;
+
+        // Aave burns the aToken and sends the underlying directly to `receiver`.
+        underlyingAmount = IAaveV3Pool(pool).withdraw(underlying, aTokenReceived, receiver);
+
+        emit WithdrawFromVault(address(vault), msg.sender, receiver, shares, underlyingAmount);
     }
 
     // ──────────────────────────────────────────────────────────

@@ -4,11 +4,13 @@ pragma solidity 0.8.28;
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 
 import {BorrowManager} from "../../src/core/BorrowManager.sol";
+
 import {OwnVault} from "../../src/core/OwnVault.sol";
 import {IBorrowManager} from "../../src/interfaces/IBorrowManager.sol";
 import {AssetConfig, BPS, PRECISION} from "../../src/interfaces/types/Types.sol";
 import {InterestRateModel} from "../../src/libraries/InterestRateModel.sol";
 import {EToken} from "../../src/tokens/EToken.sol";
+import {deployBorrowManager} from "../helpers/DeployBorrowManager.sol";
 
 import {Actors} from "../helpers/Actors.sol";
 import {BaseTest} from "../helpers/BaseTest.sol";
@@ -74,7 +76,7 @@ contract BorrowAndLiquidateFlowTest is BaseTest {
         vault = new OwnVault(address(awstETH), "Own awstETH", "owawstETH", address(protocolRegistry), address(this));
         vaultManager.registerVault(address(vault), bytes32("WSTETH"));
 
-        borrowManager = new BorrowManager(
+        borrowManager = deployBorrowManager(
             address(vault),
             address(usdc),
             address(usdcDebt),
@@ -120,6 +122,122 @@ contract BorrowAndLiquidateFlowTest is BaseTest {
         uint256 px
     ) internal view returns (bytes memory) {
         return abi.encode(px, block.timestamp);
+    }
+
+    /// @dev Pins accrue-before-totalAssets-moves. The collateral mark tracks totalAssets() and is the
+    ///      rate's utilisation denominator, so an LP deposit must book the elapsed window first —
+    ///      otherwise the caller can move the mark and accrue in one bundle, billing the past at the
+    ///      rate their own action produced. Fails if the `_accrueLending` hook is removed.
+    function test_deposit_accruesBeforeTotalAssetsMoves() public {
+        eTSLA.mint(Actors.MINTER1, 100e18);
+        vm.startPrank(Actors.MINTER1);
+        eTSLA.approve(address(borrowManager), 100e18);
+        borrowManager.borrow(ASSET, 100e18, 10_000e6, _priceData(TSLA_PX));
+        vm.stopPrank();
+
+        uint256 bookedBefore = borrowManager.totalDebtUSD();
+
+        // The stored index only moves on a touch, so the warp alone changes nothing.
+        skip(180 days);
+        assertEq(borrowManager.totalDebtUSD(), bookedBefore, "stored index moved without a touch");
+
+        // An LP deposit raises totalAssets(); it must book the elapsed window before it does.
+        vm.prank(address(aavePool));
+        awstETH.mint(address(this), 1e18);
+        awstETH.approve(address(vault), 1e18);
+        vault.deposit(1e18, Actors.LP1);
+
+        assertGt(borrowManager.totalDebtUSD(), bookedBefore, "deposit did not accrue first");
+    }
+
+    /// @dev A3-H-02 (reopened) — root fix. The rate is now observed at the START of a window, so no
+    ///      denominator move can reprice time that has already elapsed. `setTargetLtvBps` moves
+    ///      `maxDebtUSD` directly and carries no accrual hook of its own, which isolates the
+    ///      rate-sampling semantics from the per-entry-point hooks.
+    function test_accrue_denominatorMoveDoesNotRepriceElapsedWindow() public {
+        eTSLA.mint(Actors.MINTER1, 100e18);
+        vm.startPrank(Actors.MINTER1);
+        eTSLA.approve(address(borrowManager), 100e18);
+        borrowManager.borrow(ASSET, 100e18, 10_000e6, _priceData(TSLA_PX));
+        vm.stopPrank();
+
+        skip(180 days);
+        uint256 snap = vm.snapshotState();
+
+        // Branch A: accrue with the denominator untouched.
+        borrowManager.accrue();
+        uint256 debtUntouched = borrowManager.totalDebtUSD();
+
+        vm.revertToState(snap);
+
+        // Branch B: collapse the debt cap first (utilisation → 100%, premium → ceiling), then
+        // accrue the very same elapsed window.
+        vm.prank(Actors.ADMIN);
+        borrowManager.setTargetLtvBps(1);
+        borrowManager.accrue();
+
+        assertEq(borrowManager.totalDebtUSD(), debtUntouched, "elapsed window repriced by a denominator move");
+    }
+
+    /// @dev A3-H-02 (reopened) — `haltVault` zeroes the collateral mark through `onVaultHalted`, a
+    ///      denominator move outside the six `totalAssets()` paths the original fix hooked. It must
+    ///      book interest while the mark is still real.
+    function test_haltVault_accruesBeforeZeroingTheMark() public {
+        eTSLA.mint(Actors.MINTER1, 100e18);
+        vm.startPrank(Actors.MINTER1);
+        eTSLA.approve(address(borrowManager), 100e18);
+        borrowManager.borrow(ASSET, 100e18, 10_000e6, _priceData(TSLA_PX));
+        vm.stopPrank();
+
+        uint256 bookedBefore = borrowManager.totalDebtUSD();
+        skip(180 days);
+        assertEq(borrowManager.totalDebtUSD(), bookedBefore, "stored index moved without a touch");
+
+        vm.prank(Actors.ADMIN);
+        vault.haltVault();
+
+        assertGt(borrowManager.totalDebtUSD(), bookedBefore, "haltVault did not accrue first");
+    }
+
+    /// @dev Mirror direction: `unhalt` restores the mark, so the halted window must be booked before
+    ///      it — otherwise that window bills at the restored (low) rate, undoing A3-L-01.
+    function test_unhalt_accruesBeforeRestoringTheMark() public {
+        eTSLA.mint(Actors.MINTER1, 100e18);
+        vm.startPrank(Actors.MINTER1);
+        eTSLA.approve(address(borrowManager), 100e18);
+        borrowManager.borrow(ASSET, 100e18, 10_000e6, _priceData(TSLA_PX));
+        vm.stopPrank();
+
+        vm.prank(Actors.ADMIN);
+        vault.haltVault();
+
+        uint256 bookedAtHalt = borrowManager.totalDebtUSD();
+        skip(180 days);
+        assertEq(borrowManager.totalDebtUSD(), bookedAtHalt, "stored index moved without a touch");
+
+        vm.prank(Actors.ADMIN);
+        vault.unhalt();
+
+        assertGt(borrowManager.totalDebtUSD(), bookedAtHalt, "unhalt did not accrue first");
+    }
+
+    /// @dev A3-M-03: the debt-increasing path must enforce the same Aave health floor every
+    ///      collateral-decreasing path checks (H-07) — a borrow landing the vault below
+    ///      minClaimHealthFactor must revert instead of entering the band where LP exits are
+    ///      frozen while borrowing keeps succeeding. Fails without the _executeBorrow HF check.
+    function test_borrow_belowAaveHealthFloor_reverts() public {
+        eTSLA.mint(Actors.MINTER1, 200e18);
+        aavePool.setHealthFactor(1.05e18); // below the 1.1e18 default floor
+
+        vm.startPrank(Actors.MINTER1);
+        eTSLA.approve(address(borrowManager), 200e18);
+        vm.expectRevert(abi.encodeWithSelector(IBorrowManager.VaultUnsafeHealthFactor.selector, 1.05e18));
+        borrowManager.borrow(ASSET, 100e18, 10_000e6, _priceData(TSLA_PX));
+
+        // At the floor exactly, borrowing stays open.
+        aavePool.setHealthFactor(1.1e18);
+        borrowManager.borrow(ASSET, 100e18, 10_000e6, _priceData(TSLA_PX));
+        vm.stopPrank();
     }
 
     /// @dev End-to-end: borrow → dividend deposit while collateral in custody →

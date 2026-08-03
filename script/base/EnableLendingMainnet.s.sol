@@ -7,6 +7,7 @@ import {BorrowManager} from "../../src/core/BorrowManager.sol";
 import {OwnVault} from "../../src/core/OwnVault.sol";
 import {IProtocolRegistry} from "../../src/interfaces/IProtocolRegistry.sol";
 import {InterestRateModel} from "../../src/libraries/InterestRateModel.sol";
+import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
 /// @title EnableLendingMainnet — Deploy + wire the BorrowManager for the aUSDC vault (Base mainnet)
 /// @notice Deploys the vault's one-and-only BorrowManager (1:1, permanent), binds it via
@@ -38,16 +39,35 @@ contract EnableLendingMainnet is Script {
         vm.startBroadcast(vm.envUint("DEPLOYER_PRIVATE_KEY_MAINNET"));
 
         // Interest-rate curve premium: base 3%, optimal util 80%, slope1 1% (→4% at 80%), slope2 72%.
-        BorrowManager borrowManager = new BorrowManager(
-            vaultAddr,
-            USDC,
-            USDC_VARIABLE_DEBT,
-            AAVE_V3_POOL,
-            registryAddr,
-            TARGET_LTV_BPS,
-            InterestRateModel.Params({basePremiumBps: 300, optimalUtilBps: 8000, slope1Bps: 100, slope2Bps: 7200})
+        // UUPS: this vault's manager is its own ERC-1967 proxy (independently upgradeable by ADMIN);
+        // the vault binds the proxy address permanently.
+        BorrowManager implementation = new BorrowManager();
+        BorrowManager borrowManager = BorrowManager(
+            address(
+                new ERC1967Proxy(
+                    address(implementation),
+                    abi.encodeCall(
+                        BorrowManager.initialize,
+                        (
+                            vaultAddr,
+                            USDC,
+                            USDC_VARIABLE_DEBT,
+                            AAVE_V3_POOL,
+                            registryAddr,
+                            TARGET_LTV_BPS,
+                            InterestRateModel.Params({
+                                basePremiumBps: 300,
+                                optimalUtilBps: 8000,
+                                slope1Bps: 100,
+                                slope2Bps: 7200
+                            })
+                        )
+                    )
+                )
+            )
         );
-        console.log("BorrowManager:", address(borrowManager));
+        console.log("BorrowManager implementation:", address(implementation));
+        console.log("BorrowManager (proxy):", address(borrowManager));
 
         OwnVault vault = OwnVault(vaultAddr);
         // 1:1 permanent bind (one-shot — no rotation).

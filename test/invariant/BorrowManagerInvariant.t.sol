@@ -3,11 +3,13 @@ pragma solidity 0.8.28;
 
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {BorrowManager} from "../../src/core/BorrowManager.sol";
+
 import {OwnVault} from "../../src/core/OwnVault.sol";
 import {IBorrowManager} from "../../src/interfaces/IBorrowManager.sol";
 import {AssetConfig, BPS, PRECISION} from "../../src/interfaces/types/Types.sol";
 import {InterestRateModel} from "../../src/libraries/InterestRateModel.sol";
 import {EToken} from "../../src/tokens/EToken.sol";
+import {deployBorrowManager} from "../helpers/DeployBorrowManager.sol";
 
 import {Actors} from "../helpers/Actors.sol";
 import {BaseTest} from "../helpers/BaseTest.sol";
@@ -86,7 +88,7 @@ contract BorrowManagerInvariant is BaseTest {
         assetRegistry.addAsset(bytes32("WSTETH"), address(awstETH), wcfg);
         vaultManager.pullCollateralPrice(address(vault));
 
-        borrowManager = new BorrowManager(
+        borrowManager = deployBorrowManager(
             address(vault),
             address(usdc),
             address(usdcDebt),
@@ -117,12 +119,15 @@ contract BorrowManagerInvariant is BaseTest {
         protocolRegistry.setAddress(marketKey, address(handler));
 
         targetContract(address(handler));
-        bytes4[] memory selectors = new bytes4[](5);
+        bytes4[] memory selectors = new bytes4[](8);
         selectors[0] = BorrowManagerHandler.borrow.selector;
         selectors[1] = BorrowManagerHandler.repay.selector;
         selectors[2] = BorrowManagerHandler.accrue.selector;
         selectors[3] = BorrowManagerHandler.aaveAccrue.selector;
         selectors[4] = BorrowManagerHandler.warp.selector;
+        selectors[5] = BorrowManagerHandler.borrowMore.selector;
+        selectors[6] = BorrowManagerHandler.addCollateral.selector;
+        selectors[7] = BorrowManagerHandler.clearDebt.selector;
         targetSelector(FuzzSelector({addr: address(handler), selectors: selectors}));
     }
 

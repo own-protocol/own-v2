@@ -4,7 +4,9 @@ pragma solidity 0.8.28;
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 
 import {BorrowManager} from "../../src/core/BorrowManager.sol";
+
 import {OwnVault} from "../../src/core/OwnVault.sol";
+import {deployBorrowManager} from "../helpers/DeployBorrowManager.sol";
 
 import {IBorrowManager} from "../../src/interfaces/IBorrowManager.sol";
 import {IEToken} from "../../src/interfaces/IEToken.sol";
@@ -17,6 +19,9 @@ import {Actors} from "../helpers/Actors.sol";
 import {BaseTest} from "../helpers/BaseTest.sol";
 import {MockAToken, MockAaveDebtToken, MockAaveV3Pool} from "../helpers/MockAaveV3Pool.sol";
 import {MockERC20} from "../helpers/MockERC20.sol";
+import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
+import {ERC1967Utils} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Utils.sol";
+import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 /// @dev A borrower contract with no `receive`/`fallback`, so the manager's surplus-ETH refund
@@ -32,6 +37,13 @@ contract EthRejecter {
     ) external payable {
         e.approve(address(bm), eAmt);
         bm.borrow{value: msg.value}(asset, eAmt, stable, pd);
+    }
+}
+
+/// @dev Upgrade-target mock: same storage layout (inherits everything), one new function.
+contract BorrowManagerV2 is BorrowManager {
+    function version() external pure returns (uint256) {
+        return 2;
     }
 }
 
@@ -112,7 +124,7 @@ contract BorrowManagerTest is BaseTest {
         // LPs deposit awstETH; here we mint awstETH to the vault and refresh.
         _seedVaultCollateral(1_000_000e18); // $1M USD-denominated collateral.
 
-        borrowManager = new BorrowManager(
+        borrowManager = deployBorrowManager(
             address(vault),
             address(usdc),
             address(usdcDebt),
@@ -199,10 +211,23 @@ contract BorrowManagerTest is BaseTest {
     }
 
     // ──────────────────────────────────────────────────────────
-    //  Constructor
+    //  Initialization & upgrades (UUPS)
     // ──────────────────────────────────────────────────────────
 
-    function test_constructor_setsImmutables() public view {
+    /// @dev ABI-encode an initialize() call for proxy-creation revert tests.
+    function _initData(
+        address vault_,
+        address stablecoin_,
+        uint256 targetLtvBps_,
+        InterestRateModel.Params memory p
+    ) internal view returns (bytes memory) {
+        return abi.encodeCall(
+            BorrowManager.initialize,
+            (vault_, stablecoin_, address(usdcDebt), address(aavePool), address(protocolRegistry), targetLtvBps_, p)
+        );
+    }
+
+    function test_initialize_setsBoundConfig() public view {
         assertEq(borrowManager.vault(), address(vault));
         assertEq(borrowManager.stablecoin(), address(usdc));
         assertEq(borrowManager.debtToken(), address(usdcDebt));
@@ -212,66 +237,110 @@ contract BorrowManagerTest is BaseTest {
         assertEq(usdc.allowance(address(borrowManager), address(aavePool)), type(uint256).max);
     }
 
-    function test_constructor_zeroAddresses_revert() public {
+    function test_initialize_zeroAddresses_revert() public {
         InterestRateModel.Params memory p = _params();
+        BorrowManager impl = new BorrowManager();
         vm.expectRevert(IBorrowManager.ZeroAddress.selector);
-        new BorrowManager(
-            address(0),
-            address(usdc),
-            address(usdcDebt),
-            address(aavePool),
-            address(protocolRegistry),
-            TARGET_LTV_BPS,
-            p
-        );
+        new ERC1967Proxy(address(impl), _initData(address(0), address(usdc), TARGET_LTV_BPS, p));
         vm.expectRevert(IBorrowManager.ZeroAddress.selector);
-        new BorrowManager(
-            address(vault),
-            address(0),
-            address(usdcDebt),
-            address(aavePool),
-            address(protocolRegistry),
-            TARGET_LTV_BPS,
-            p
-        );
+        new ERC1967Proxy(address(impl), _initData(address(vault), address(0), TARGET_LTV_BPS, p));
     }
 
-    function test_constructor_invalidLtv_revert() public {
+    function test_initialize_invalidLtv_revert() public {
         InterestRateModel.Params memory p = _params();
+        BorrowManager impl = new BorrowManager();
         vm.expectRevert(IBorrowManager.InvalidLtv.selector);
-        new BorrowManager(
-            address(vault), address(usdc), address(usdcDebt), address(aavePool), address(protocolRegistry), 0, p
-        );
+        new ERC1967Proxy(address(impl), _initData(address(vault), address(usdc), 0, p));
         vm.expectRevert(IBorrowManager.InvalidLtv.selector);
-        new BorrowManager(
-            address(vault), address(usdc), address(usdcDebt), address(aavePool), address(protocolRegistry), BPS, p
-        );
+        new ERC1967Proxy(address(impl), _initData(address(vault), address(usdc), BPS, p));
     }
 
-    function test_constructor_invalidRateParams_revert() public {
+    function test_initialize_invalidRateParams_revert() public {
         InterestRateModel.Params memory p = _params();
+        BorrowManager impl = new BorrowManager();
         p.optimalUtilBps = 0;
         vm.expectRevert(IBorrowManager.InvalidRateParams.selector);
-        new BorrowManager(
-            address(vault),
-            address(usdc),
-            address(usdcDebt),
-            address(aavePool),
-            address(protocolRegistry),
-            TARGET_LTV_BPS,
-            p
-        );
+        new ERC1967Proxy(address(impl), _initData(address(vault), address(usdc), TARGET_LTV_BPS, p));
         p.optimalUtilBps = uint64(BPS);
         vm.expectRevert(IBorrowManager.InvalidRateParams.selector);
-        new BorrowManager(
+        new ERC1967Proxy(address(impl), _initData(address(vault), address(usdc), TARGET_LTV_BPS, p));
+    }
+
+    function test_initialize_secondCall_reverts() public {
+        vm.expectRevert(Initializable.InvalidInitialization.selector);
+        borrowManager.initialize(
             address(vault),
             address(usdc),
             address(usdcDebt),
             address(aavePool),
             address(protocolRegistry),
             TARGET_LTV_BPS,
-            p
+            _params()
         );
+    }
+
+    function test_implementation_initializersDisabled() public {
+        BorrowManager implementation = new BorrowManager();
+        vm.expectRevert(Initializable.InvalidInitialization.selector);
+        implementation.initialize(
+            address(vault),
+            address(usdc),
+            address(usdcDebt),
+            address(aavePool),
+            address(protocolRegistry),
+            TARGET_LTV_BPS,
+            _params()
+        );
+    }
+
+    function test_upgrade_notAdmin_reverts() public {
+        address newImpl = address(new BorrowManagerV2());
+        vm.prank(Actors.MINTER1);
+        vm.expectRevert(IBorrowManager.OnlyAdmin.selector);
+        borrowManager.upgradeToAndCall(newImpl, "");
+    }
+
+    function test_upgrade_preservesStateAndSwapsLogic() public {
+        // Open a live position so the upgrade demonstrably preserves storage.
+        (uint256 eAmt, uint256 stable) = _openTypical(Actors.MINTER1);
+
+        address newImpl = address(new BorrowManagerV2());
+        vm.prank(Actors.ADMIN);
+        borrowManager.upgradeToAndCall(newImpl, "");
+
+        // New logic is live…
+        assertEq(BorrowManagerV2(address(borrowManager)).version(), 2);
+        // …and the bound config + position storage carried over untouched.
+        assertEq(borrowManager.vault(), address(vault));
+        assertEq(borrowManager.stablecoin(), address(usdc));
+        IBorrowManager.Position memory pos = borrowManager.positionOf(Actors.MINTER1, ASSET);
+        assertEq(pos.eTokenCollateral, eAmt);
+        assertEq(pos.principal, stable);
+    }
+
+    function test_upgrade_isIndependentPerVault() public {
+        // A second manager proxy (as another vault would have) sharing the ecosystem.
+        BorrowManager other = deployBorrowManager(
+            address(vault),
+            address(usdc),
+            address(usdcDebt),
+            address(aavePool),
+            address(protocolRegistry),
+            TARGET_LTV_BPS,
+            _params()
+        );
+
+        address newImpl = address(new BorrowManagerV2());
+        vm.prank(Actors.ADMIN);
+        borrowManager.upgradeToAndCall(newImpl, "");
+
+        // Upgraded proxy runs V2; the other proxy's implementation is unchanged.
+        assertEq(BorrowManagerV2(address(borrowManager)).version(), 2);
+        bytes32 slot = ERC1967Utils.IMPLEMENTATION_SLOT;
+        assertEq(address(uint160(uint256(vm.load(address(borrowManager), slot)))), newImpl);
+        assertTrue(address(uint160(uint256(vm.load(address(other), slot)))) != newImpl);
+        vm.expectRevert();
+        BorrowManagerV2(address(other)).version();
     }
 
     // ──────────────────────────────────────────────────────────
@@ -347,6 +416,320 @@ contract BorrowManagerTest is BaseTest {
         vm.expectRevert(abi.encodeWithSelector(IBorrowManager.PositionAlreadyOpen.selector, Actors.MINTER1, ASSET));
         borrowManager.borrow(ASSET, 50e18, 1000e6, _priceData(TSLA_PX));
         vm.stopPrank();
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  borrowMore — increase an existing position
+    // ──────────────────────────────────────────────────────────
+
+    function test_borrowMore_increasesPosition() public {
+        (uint256 eAmt, uint256 stable) = _openTypical(Actors.MINTER1);
+
+        // Same borrower, same asset → merges into the open position.
+        _giveTSLA(Actors.MINTER1, 50e18);
+        vm.startPrank(Actors.MINTER1);
+        eTSLA.approve(address(borrowManager), 50e18);
+        vm.expectEmit(true, true, false, true);
+        emit IBorrowManager.Borrowed(Actors.MINTER1, ASSET, 50e18, 1000e6, TSLA_PX);
+        borrowManager.borrowMore(ASSET, 50e18, 1000e6, _priceData(TSLA_PX));
+        vm.stopPrank();
+
+        IBorrowManager.Position memory pos = borrowManager.positionOf(Actors.MINTER1, ASSET);
+        assertEq(pos.eTokenCollateral, eAmt + 50e18);
+        assertEq(pos.principal, stable + 1000e6); // index still 1.0
+        assertEq(borrowManager.debtOf(Actors.MINTER1, ASSET), stable + 1000e6);
+        assertEq(usdc.balanceOf(Actors.MINTER1), stable + 1000e6);
+    }
+
+    function test_borrowMore_zeroCollateral_borrowsAgainstHeadroom() public {
+        // 100 eTSLA at $250 = $25k collateral; 70% LTV allows $17.5k total. Open at $10k.
+        (, uint256 stable) = _openTypical(Actors.MINTER1);
+
+        vm.prank(Actors.MINTER1);
+        borrowManager.borrowMore(ASSET, 0, 7000e6, _priceData(TSLA_PX));
+
+        assertEq(borrowManager.debtOf(Actors.MINTER1, ASSET), stable + 7000e6);
+    }
+
+    function test_borrowMore_noPosition_reverts() public {
+        vm.prank(Actors.MINTER1);
+        vm.expectRevert(abi.encodeWithSelector(IBorrowManager.NoPosition.selector, Actors.MINTER1, ASSET));
+        borrowManager.borrowMore(ASSET, 0, 1000e6, _priceData(TSLA_PX));
+    }
+
+    function test_borrowMore_zeroStablecoin_reverts() public {
+        _openTypical(Actors.MINTER1);
+        vm.prank(Actors.MINTER1);
+        vm.expectRevert(IBorrowManager.ZeroAmount.selector);
+        borrowManager.borrowMore(ASSET, 1e18, 0, _priceData(TSLA_PX));
+    }
+
+    function test_borrowMore_totalLtvExceeded_reverts() public {
+        // Headroom is $7.5k (see above); asking for more must value the WHOLE position.
+        _openTypical(Actors.MINTER1);
+
+        vm.prank(Actors.MINTER1);
+        vm.expectRevert(abi.encodeWithSelector(IBorrowManager.InsufficientCollateral.selector, 17_501e18, 17_500e18));
+        borrowManager.borrowMore(ASSET, 0, 7501e6, _priceData(TSLA_PX));
+    }
+
+    function test_borrowMore_includesAccruedInterestInLtv() public {
+        _openTypical(Actors.MINTER1);
+        skip(365 days);
+        _pullAssetPrice(ASSET); // refresh the band-check mark after the warp
+
+        // After a year of interest the debt is over $10k, so the $7.5k top-up that fit at
+        // index 1.0 no longer fits under the $17.5k total cap.
+        vm.prank(Actors.MINTER1);
+        vm.expectRevert(); // InsufficientCollateral with accrued totals
+        borrowManager.borrowMore(ASSET, 0, 7500e6, _priceData(TSLA_PX));
+
+        // A smaller top-up that leaves room for the accrued interest still succeeds.
+        uint256 debtBefore = borrowManager.debtOf(Actors.MINTER1, ASSET);
+        assertGt(debtBefore, 10_000e6);
+        vm.prank(Actors.MINTER1);
+        borrowManager.borrowMore(ASSET, 0, 5000e6, _priceData(TSLA_PX));
+        // Sub-unit rounding of the scaled-debt conversion is protocol-favorable (floor).
+        assertApproxEqAbs(borrowManager.debtOf(Actors.MINTER1, ASSET), debtBefore + 5000e6, 2);
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  addCollateral
+    // ──────────────────────────────────────────────────────────
+
+    function test_addCollateral_succeeds_topsUpPosition() public {
+        (uint256 eAmt,) = _openTypical(Actors.MINTER1);
+        uint256 managerBalBefore = eTSLA.balanceOf(address(borrowManager));
+
+        _giveTSLA(Actors.MINTER1, 25e18);
+        vm.startPrank(Actors.MINTER1);
+        eTSLA.approve(address(borrowManager), 25e18);
+        vm.expectEmit(true, true, false, true);
+        emit IBorrowManager.CollateralAdded(Actors.MINTER1, ASSET, 25e18, eAmt + 25e18);
+        borrowManager.addCollateral(ASSET, 25e18);
+        vm.stopPrank();
+
+        assertEq(borrowManager.positionOf(Actors.MINTER1, ASSET).eTokenCollateral, eAmt + 25e18);
+        assertEq(eTSLA.balanceOf(address(borrowManager)), managerBalBefore + 25e18);
+    }
+
+    function test_addCollateral_improvesHealthFactor() public {
+        _openTypical(Actors.MINTER1);
+        uint256 hfBefore = borrowManager.healthFactor(Actors.MINTER1, ASSET, TSLA_PX);
+
+        _giveTSLA(Actors.MINTER1, 100e18);
+        vm.startPrank(Actors.MINTER1);
+        eTSLA.approve(address(borrowManager), 100e18);
+        borrowManager.addCollateral(ASSET, 100e18);
+        vm.stopPrank();
+
+        assertGt(borrowManager.healthFactor(Actors.MINTER1, ASSET, TSLA_PX), hfBefore);
+    }
+
+    function test_addCollateral_worksWhileTradingPaused() public {
+        _openTypical(Actors.MINTER1);
+        _setAssetTradingPaused(ASSET, true);
+
+        _giveTSLA(Actors.MINTER1, 10e18);
+        vm.startPrank(Actors.MINTER1);
+        eTSLA.approve(address(borrowManager), 10e18);
+        borrowManager.addCollateral(ASSET, 10e18); // no eligibility gate — defending stays open
+        vm.stopPrank();
+    }
+
+    function test_addCollateral_zeroAmount_reverts() public {
+        _openTypical(Actors.MINTER1);
+        vm.prank(Actors.MINTER1);
+        vm.expectRevert(IBorrowManager.ZeroAmount.selector);
+        borrowManager.addCollateral(ASSET, 0);
+    }
+
+    function test_addCollateral_noPosition_reverts() public {
+        vm.prank(Actors.MINTER1);
+        vm.expectRevert(abi.encodeWithSelector(IBorrowManager.NoPosition.selector, Actors.MINTER1, ASSET));
+        borrowManager.addCollateral(ASSET, 1e18);
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Debt clearing
+    // ──────────────────────────────────────────────────────────
+
+    function test_setDebtClearingPermission_setsAndRevokes() public {
+        _openTypical(Actors.MINTER1);
+
+        vm.prank(Actors.MINTER1);
+        vm.expectEmit(true, true, true, true);
+        emit IBorrowManager.DebtClearingPermissionSet(Actors.MINTER1, ASSET, Actors.LP1, 500);
+        borrowManager.setDebtClearingPermission(ASSET, Actors.LP1, 500);
+
+        (address clearer, uint96 feeBps) = borrowManager.debtClearingPermission(Actors.MINTER1, ASSET);
+        assertEq(clearer, Actors.LP1);
+        assertEq(feeBps, 500);
+
+        // feeBps 0 revokes.
+        vm.prank(Actors.MINTER1);
+        borrowManager.setDebtClearingPermission(ASSET, address(0), 0);
+        (, feeBps) = borrowManager.debtClearingPermission(Actors.MINTER1, ASSET);
+        assertEq(feeBps, 0);
+    }
+
+    function test_setDebtClearingPermission_noPosition_reverts() public {
+        vm.prank(Actors.MINTER1);
+        vm.expectRevert(abi.encodeWithSelector(IBorrowManager.NoPosition.selector, Actors.MINTER1, ASSET));
+        borrowManager.setDebtClearingPermission(ASSET, Actors.LP1, 500);
+    }
+
+    function test_setDebtClearingPermission_feeAboveBps_reverts() public {
+        _openTypical(Actors.MINTER1);
+        vm.prank(Actors.MINTER1);
+        vm.expectRevert(IBorrowManager.InvalidClearingFee.selector);
+        borrowManager.setDebtClearingPermission(ASSET, Actors.LP1, BPS + 1);
+    }
+
+    /// @dev Fund `clearer` with `amount` USDC approved to the manager.
+    function _fundClearer(address clearer, uint256 amount) internal {
+        usdc.mint(clearer, amount);
+        vm.prank(clearer);
+        usdc.approve(address(borrowManager), amount);
+    }
+
+    function test_clearDebt_designatedClearer_succeeds() public {
+        (uint256 eAmt, uint256 stable) = _openTypical(Actors.MINTER1);
+        vm.prank(Actors.MINTER1);
+        borrowManager.setDebtClearingPermission(ASSET, Actors.LP1, 500); // 5% of collateral
+
+        _fundClearer(Actors.LP1, stable);
+        uint256 fee = eAmt * 500 / 10_000;
+        vm.prank(Actors.LP1);
+        vm.expectEmit(true, true, true, true);
+        emit IBorrowManager.DebtCleared(Actors.MINTER1, ASSET, Actors.LP1, stable, fee, eAmt - fee);
+        uint256 debtRepaid = borrowManager.clearDebt(Actors.MINTER1, ASSET, type(uint256).max);
+
+        assertEq(debtRepaid, stable);
+        // Clearer earned the fee slice; borrower got the rest of the collateral back.
+        assertEq(eTSLA.balanceOf(Actors.LP1), fee);
+        assertEq(eTSLA.balanceOf(Actors.MINTER1), eAmt - fee);
+        // Position and permission are gone; the vault's Aave debt is repaid.
+        assertEq(borrowManager.positionOf(Actors.MINTER1, ASSET).principal, 0);
+        (, uint96 feeBps) = borrowManager.debtClearingPermission(Actors.MINTER1, ASSET);
+        assertEq(feeBps, 0);
+        assertEq(usdcDebt.balanceOf(address(vault)), 0);
+    }
+
+    function test_clearDebt_openPermission_anyoneCanClear() public {
+        (, uint256 stable) = _openTypical(Actors.MINTER1);
+        vm.prank(Actors.MINTER1);
+        borrowManager.setDebtClearingPermission(ASSET, address(0), 100);
+
+        _fundClearer(Actors.MINTER2, stable);
+        vm.prank(Actors.MINTER2);
+        borrowManager.clearDebt(Actors.MINTER1, ASSET, type(uint256).max);
+        assertEq(borrowManager.positionOf(Actors.MINTER1, ASSET).principal, 0);
+    }
+
+    function test_clearDebt_repaysAccruedInterest() public {
+        (, uint256 stable) = _openTypical(Actors.MINTER1);
+        vm.prank(Actors.MINTER1);
+        borrowManager.setDebtClearingPermission(ASSET, Actors.LP1, 500);
+
+        skip(180 days);
+        uint256 debt = borrowManager.debtOf(Actors.MINTER1, ASSET);
+        assertGt(debt, stable);
+
+        _fundClearer(Actors.LP1, debt);
+        vm.prank(Actors.LP1);
+        assertEq(borrowManager.clearDebt(Actors.MINTER1, ASSET, type(uint256).max), debt);
+    }
+
+    function test_clearDebt_partial_releasesProRataAndKeepsPermission() public {
+        (uint256 eAmt, uint256 stable) = _openTypical(Actors.MINTER1); // 100e18 collat, 10_000e6 debt
+        vm.prank(Actors.MINTER1);
+        borrowManager.setDebtClearingPermission(ASSET, Actors.LP1, 1000); // 10% of released slice
+
+        // Clear half the debt: half the collateral is released, split 10/90 clearer/borrower.
+        _fundClearer(Actors.LP1, stable / 2);
+        uint256 released = eAmt / 2;
+        uint256 fee = released * 1000 / 10_000;
+        vm.prank(Actors.LP1);
+        vm.expectEmit(true, true, true, true);
+        emit IBorrowManager.DebtCleared(Actors.MINTER1, ASSET, Actors.LP1, stable / 2, fee, released - fee);
+        assertEq(borrowManager.clearDebt(Actors.MINTER1, ASSET, stable / 2), stable / 2);
+
+        // Position halved, LTV preserved; permission still standing for the next clear.
+        IBorrowManager.Position memory pos = borrowManager.positionOf(Actors.MINTER1, ASSET);
+        assertEq(pos.eTokenCollateral, eAmt - released);
+        assertEq(pos.principal, stable / 2);
+        assertEq(eTSLA.balanceOf(Actors.LP1), fee);
+        assertEq(eTSLA.balanceOf(Actors.MINTER1), released - fee);
+        (address clearer, uint96 feeBps) = borrowManager.debtClearingPermission(Actors.MINTER1, ASSET);
+        assertEq(clearer, Actors.LP1);
+        assertEq(feeBps, 1000);
+
+        // Second clear takes the position to zero and retires the permission.
+        _fundClearer(Actors.LP1, stable);
+        vm.prank(Actors.LP1);
+        borrowManager.clearDebt(Actors.MINTER1, ASSET, type(uint256).max);
+        assertEq(borrowManager.positionOf(Actors.MINTER1, ASSET).principal, 0);
+        (, feeBps) = borrowManager.debtClearingPermission(Actors.MINTER1, ASSET);
+        assertEq(feeBps, 0);
+    }
+
+    function test_clearDebt_zeroAmount_reverts() public {
+        _openTypical(Actors.MINTER1);
+        vm.prank(Actors.MINTER1);
+        borrowManager.setDebtClearingPermission(ASSET, address(0), 500);
+
+        vm.prank(Actors.LP1);
+        vm.expectRevert(IBorrowManager.ZeroAmount.selector);
+        borrowManager.clearDebt(Actors.MINTER1, ASSET, 0);
+    }
+
+    function test_clearDebt_wrongCaller_reverts() public {
+        (, uint256 stable) = _openTypical(Actors.MINTER1);
+        vm.prank(Actors.MINTER1);
+        borrowManager.setDebtClearingPermission(ASSET, Actors.LP1, 500);
+
+        _fundClearer(Actors.MINTER2, stable);
+        vm.prank(Actors.MINTER2);
+        vm.expectRevert(abi.encodeWithSelector(IBorrowManager.NotAuthorizedToClear.selector, Actors.MINTER2));
+        borrowManager.clearDebt(Actors.MINTER1, ASSET, type(uint256).max);
+    }
+
+    function test_clearDebt_noPermission_reverts() public {
+        (, uint256 stable) = _openTypical(Actors.MINTER1);
+        _fundClearer(Actors.LP1, stable);
+        vm.prank(Actors.LP1);
+        vm.expectRevert(abi.encodeWithSelector(IBorrowManager.NotAuthorizedToClear.selector, Actors.LP1));
+        borrowManager.clearDebt(Actors.MINTER1, ASSET, type(uint256).max);
+    }
+
+    function test_clearDebt_noPosition_reverts() public {
+        vm.prank(Actors.LP1);
+        vm.expectRevert(abi.encodeWithSelector(IBorrowManager.NoPosition.selector, Actors.MINTER1, ASSET));
+        borrowManager.clearDebt(Actors.MINTER1, ASSET, type(uint256).max);
+    }
+
+    function test_clearDebt_permissionDoesNotSurviveToNewPosition() public {
+        (, uint256 stable) = _openTypical(Actors.MINTER1);
+        vm.prank(Actors.MINTER1);
+        borrowManager.setDebtClearingPermission(ASSET, address(0), 500);
+
+        // Borrower closes the position themselves…
+        usdc.mint(Actors.MINTER1, stable);
+        vm.startPrank(Actors.MINTER1);
+        usdc.approve(address(borrowManager), stable);
+        borrowManager.repay(ASSET, type(uint256).max);
+        vm.stopPrank();
+
+        // …and opens a fresh one: the old permission must not apply to it.
+        _openTypical(Actors.MINTER1);
+        (, uint96 feeBps) = borrowManager.debtClearingPermission(Actors.MINTER1, ASSET);
+        assertEq(feeBps, 0);
+
+        _fundClearer(Actors.LP1, stable);
+        vm.prank(Actors.LP1);
+        vm.expectRevert(abi.encodeWithSelector(IBorrowManager.NotAuthorizedToClear.selector, Actors.LP1));
+        borrowManager.clearDebt(Actors.MINTER1, ASSET, type(uint256).max);
     }
 
     function test_borrow_assetNotActive_reverts() public {
@@ -1261,6 +1644,30 @@ contract BorrowManagerTest is BaseTest {
         vm.stopPrank();
     }
 
+    /// @dev A3-L-01: `onVaultHalted` zeroes the collateral mark (→ cap 0) but leaves debt standing.
+    ///      Reporting that as 0% utilisation collapsed the premium to its floor at the exact moment
+    ///      LPs exit unconditionally, and rewarded borrowers for not repaying during a halt.
+    function test_utilizationBps_zeroCapWithLiveDebt_isFull() public {
+        _openTypical(Actors.MINTER1);
+        assertGt(borrowManager.utilizationBps(), 0, "utilised while healthy");
+
+        // Halting the vault zeroes the mark → maxDebtUSD() == 0 with debt outstanding.
+        vm.prank(Actors.ADMIN);
+        vault.haltVault();
+        assertEq(borrowManager.maxDebtUSD(), 0, "cap zeroed by halt");
+
+        assertEq(borrowManager.utilizationBps(), BPS, "zero cap + live debt reads fully utilised");
+    }
+
+    /// @dev The zero-cap branch must still report idle when there is genuinely no debt (genesis,
+    ///      pre-first-price-pull), which is what the original `return 0` was written for.
+    function test_utilizationBps_zeroCapNoDebt_isZero() public {
+        vm.prank(Actors.ADMIN);
+        vault.haltVault();
+        assertEq(borrowManager.maxDebtUSD(), 0, "cap zeroed");
+        assertEq(borrowManager.utilizationBps(), 0, "no debt is genuinely idle");
+    }
+
     // ──────────────────────────────────────────────────────────
     //  claimEarnedInterest
     // ──────────────────────────────────────────────────────────
@@ -1274,7 +1681,7 @@ contract BorrowManagerTest is BaseTest {
     }
 
     function test_claimEarnedInterest_defaults() public view {
-        assertEq(borrowManager.interestBufferBps(), 1000, "10% buffer default");
+        assertEq(borrowManager.interestBufferBps(), 100, "1% buffer default");
         assertEq(borrowManager.minClaimHealthFactor(), 1.1e18, "1.1 HF default");
     }
 
@@ -1282,7 +1689,7 @@ contract BorrowManagerTest is BaseTest {
         uint256 earned = _openAndAccrue();
         assertGt(earned, 0, "interest accrued");
         uint256 claimable = borrowManager.claimableInterest();
-        assertEq(claimable, earned * 9000 / BPS, "90% claimable (10% buffer)");
+        assertEq(claimable, earned * 9900 / BPS, "99% claimable (1% buffer)");
 
         uint256 vmBefore = usdc.balanceOf(address(this)); // this contract is the bound VM
         uint256 aaveBefore = aavePool.debtOf(address(vault), address(usdc));
@@ -1348,7 +1755,7 @@ contract BorrowManagerTest is BaseTest {
 
     function test_setInterestBufferBps_emitsAndApplies() public {
         vm.expectEmit(false, false, false, true);
-        emit IBorrowManager.InterestBufferUpdated(1000, 2000);
+        emit IBorrowManager.InterestBufferUpdated(100, 2000);
         vm.prank(Actors.ADMIN);
         borrowManager.setInterestBufferBps(2000);
         assertEq(borrowManager.interestBufferBps(), 2000);
@@ -1608,7 +2015,7 @@ contract BorrowManagerBadDebt6DecTest is BaseTest {
         assetRegistry.addAsset(COLLAT, address(collToken), ccfg);
         vaultManager.pullCollateralPrice(address(vault));
 
-        borrowManager = new BorrowManager(
+        borrowManager = deployBorrowManager(
             address(vault),
             address(usdc),
             address(usdcDebt),

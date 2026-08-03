@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
+import {IOwnVault} from "./IOwnVault.sol";
 import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
 
 /// @title ILendingRouter — Multi-reserve deposit/withdraw router for aToken vaults
@@ -73,6 +74,20 @@ interface ILendingRouter {
         uint256 underlyingAmount
     );
 
+    /// @notice Emitted when vault shares are redeemed and the aToken unwrapped to underlying.
+    /// @param vault            OwnVault whose shares were redeemed.
+    /// @param sender           Caller that supplied the shares.
+    /// @param receiver         Recipient of the underlying.
+    /// @param shares           Vault shares redeemed.
+    /// @param underlyingAmount Underlying returned by the pool.
+    event WithdrawFromVault(
+        address indexed vault,
+        address indexed sender,
+        address indexed receiver,
+        uint256 shares,
+        uint256 underlyingAmount
+    );
+
     // ──────────────────────────────────────────────────────────
     //  Errors
     // ──────────────────────────────────────────────────────────
@@ -102,6 +117,11 @@ interface ILendingRouter {
     /// @param shares       Shares that would be minted.
     /// @param minSharesOut Minimum acceptable shares.
     error MinSharesError(uint256 shares, uint256 minSharesOut);
+
+    /// @notice Slippage check failed: redeemed assets fell below the caller's minimum.
+    /// @param assets       Assets the shares redeemed for.
+    /// @param minAssetsOut Minimum acceptable assets.
+    error MinAssetsError(uint256 assets, uint256 minAssetsOut);
 
     /// @notice The vault's underlying asset does not match the reserve's aToken.
     /// @param expected Reserve aToken.
@@ -160,6 +180,26 @@ interface ILendingRouter {
         address underlying,
         uint256 aTokenAmount,
         address receiver
+    ) external returns (uint256 underlyingAmount);
+
+    /// @notice Exit `vault` and return the reserve underlying to `receiver` in one
+    ///         transaction: pull `shares` from the caller, run the vault's withdrawal
+    ///         queue (request + fulfill), and redeem the received aToken through the pool.
+    /// @dev    Requires the vault's withdrawal wait period to be zero — with a delay set,
+    ///         the same-transaction fulfill reverts and the direct vault queue must be
+    ///         used instead (unwrap the received aToken later via {withdraw}).
+    /// @param underlying   Registered reserve underlying.
+    /// @param vault        OwnVault whose asset is the matching aToken.
+    /// @param shares       Vault shares to redeem (caller must approve the router).
+    /// @param receiver     Address to receive the underlying.
+    /// @param minAssetsOut Minimum acceptable assets from the share redemption.
+    /// @return underlyingAmount Amount of underlying returned by the pool.
+    function withdrawFromVault(
+        address underlying,
+        IOwnVault vault,
+        uint256 shares,
+        address receiver,
+        uint256 minAssetsOut
     ) external returns (uint256 underlyingAmount);
 
     // ──────────────────────────────────────────────────────────

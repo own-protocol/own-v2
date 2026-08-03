@@ -41,7 +41,7 @@ contract HaltFlowTest is BaseTest {
         _deployVaultManager();
         vm.startPrank(Actors.ADMIN);
 
-        vault = new OwnVault(address(weth), "Own WETH Vault", "oWETH", address(protocolRegistry), Actors.VM1);
+        vault = new OwnVault(address(weth), "Own WETH Vault", "oWETH", address(protocolRegistry), address(vm1Manager));
         vaultManager.registerVault(address(vault), ETH);
 
         market = new OwnMarket(address(protocolRegistry));
@@ -75,8 +75,8 @@ contract HaltFlowTest is BaseTest {
         _setPaymentToken(address(usdc));
 
         // LP deposits (via VM1)
-        _fundWETH(Actors.VM1, LP_DEPOSIT);
-        vm.startPrank(Actors.VM1);
+        _fundWETH(address(vm1Manager), LP_DEPOSIT);
+        vm.startPrank(address(vm1Manager));
         weth.approve(address(vault), LP_DEPOSIT);
         vault.deposit(LP_DEPOSIT, Actors.LP1);
         vm.stopPrank();
@@ -103,8 +103,8 @@ contract HaltFlowTest is BaseTest {
 
         assertEq(uint8(vault.vaultStatus()), uint8(VaultStatus.Paused));
 
-        _fundWETH(Actors.VM1, 10 ether);
-        vm.startPrank(Actors.VM1);
+        _fundWETH(address(vm1Manager), 10 ether);
+        vm.startPrank(address(vm1Manager));
         weth.approve(address(vault), 10 ether);
         vm.expectRevert(IOwnVault.VaultIsPaused.selector);
         vault.deposit(1000e6, Actors.LP2);
@@ -128,8 +128,8 @@ contract HaltFlowTest is BaseTest {
         assertEq(uint8(vault.vaultStatus()), uint8(VaultStatus.Active));
         vm.stopPrank();
 
-        _fundWETH(Actors.VM1, 10 ether);
-        vm.startPrank(Actors.VM1);
+        _fundWETH(address(vm1Manager), 10 ether);
+        vm.startPrank(address(vm1Manager));
         weth.approve(address(vault), 10 ether);
         vault.deposit(1000e6, Actors.LP2);
         vm.stopPrank();
@@ -169,8 +169,8 @@ contract HaltFlowTest is BaseTest {
 
         assertEq(uint8(vault.vaultStatus()), uint8(VaultStatus.Halted));
 
-        _fundWETH(Actors.VM1, 10 ether);
-        vm.startPrank(Actors.VM1);
+        _fundWETH(address(vm1Manager), 10 ether);
+        vm.startPrank(address(vm1Manager));
         weth.approve(address(vault), 10 ether);
         vm.expectRevert(IOwnVault.VaultIsHalted.selector);
         vault.deposit(1000e6, Actors.LP2);
@@ -208,8 +208,8 @@ contract HaltFlowTest is BaseTest {
         vault.unhalt();
         assertEq(uint8(vault.vaultStatus()), uint8(VaultStatus.Active));
 
-        _fundWETH(Actors.VM1, 10 ether);
-        vm.startPrank(Actors.VM1);
+        _fundWETH(address(vm1Manager), 10 ether);
+        vm.startPrank(address(vm1Manager));
         weth.approve(address(vault), 10 ether);
         vault.deposit(1000e6, Actors.LP2);
         vm.stopPrank();
@@ -362,8 +362,8 @@ contract HaltFlowTest is BaseTest {
 
         vm.stopPrank();
 
-        _fundWETH(Actors.VM1, 10 ether);
-        vm.startPrank(Actors.VM1);
+        _fundWETH(address(vm1Manager), 10 ether);
+        vm.startPrank(address(vm1Manager));
         weth.approve(address(vault), 10 ether);
         vault.deposit(1000e6, Actors.LP2);
         vm.stopPrank();

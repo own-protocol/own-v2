@@ -3,6 +3,7 @@ pragma solidity 0.8.28;
 
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {BorrowManager} from "../../src/core/BorrowManager.sol";
+
 import {OwnLendingPool} from "../../src/core/OwnLendingPool.sol";
 import {OwnVault} from "../../src/core/OwnVault.sol";
 import {AssetConfig, BPS} from "../../src/interfaces/types/Types.sol";
@@ -11,6 +12,7 @@ import {LendingRouter} from "../../src/periphery/LendingRouter.sol";
 import {VaultYieldManager} from "../../src/periphery/VaultYieldManager.sol";
 import {EToken} from "../../src/tokens/EToken.sol";
 import {OwnAToken} from "../../src/tokens/OwnAToken.sol";
+import {deployBorrowManager} from "../helpers/DeployBorrowManager.sol";
 
 import {Actors} from "../helpers/Actors.sol";
 import {BaseTest} from "../helpers/BaseTest.sol";
@@ -88,7 +90,7 @@ contract OwnLendingPoolFlowTest is BaseTest {
         vault = new OwnVault(pool.aToken(), "Own aUSDC Vault", "owaUSDC", address(protocolRegistry), address(this));
         vaultManager.registerVault(address(vault), COLLAT);
 
-        borrowManager = new BorrowManager(
+        borrowManager = deployBorrowManager(
             address(vault),
             address(usdc),
             pool.variableDebtToken(),

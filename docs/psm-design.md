@@ -184,6 +184,23 @@ mapping(bytes32 => mapping(address => bool)) forceExecuteVaultAllowed;
   `E_a`/`R_a` netting in lockstep (a fixed ratio snapshot would desync both as the wrapper price
   moved).
 
+- **Same-block mark refresh (`_psmContext`)**: the ratio's two legs must be read at the same
+  instant, or the ratio measures keeper lag instead of the wrapper↔asset spread — a market that
+  moved since the last keeper pull mis-issues vs 1:1 (falling price under-issues the minter;
+  rising price under-backs the reserve; observed live: TSLA mint at Robinhood block 17337821
+  stranded ~$0.42 of R.TSLA against a 235-second-old mark). `_psmContext` therefore calls
+  `pullAssetPrice(asset)` before reading the mark, so on same-feed deployments (Robinhood) the
+  ratio pins to exactly 1e18. The call is wrapped in `try/catch` **by design, not defensively**:
+  stock feeds go silent every weekend, `getPrice` then reverts inside `pullAssetPrice`, and
+  redeem must keep working off the frozen same-close pair (the unblockable-exit rule). A failed
+  pull degrades to the pre-refresh behavior — cached mark bounded by the ratio-jump guard — and
+  can never be exploited: `pullAssetPrice` is permissionless, so suppressing the refresh (e.g.
+  by gas-starving the inner call) merely reproduces the guarded status quo. Halted assets need
+  no branch: `pullAssetPrice` re-marks them at the frozen halt price internally. With the
+  refresh in place, same-feed deployments can set `ratioJumpBoundBps` as low as 1 bps as a pure
+  feed-miswiring backstop — the used ratio is constantly 1e18, so the guard never binds in
+  normal operation.
+
 ### 4.4 VaultManager — vault classes and per-asset forceExecute
 
 - `registerVault(address vault, bytes32 collateralAsset, bytes32 backedAsset)`:

@@ -3,7 +3,7 @@ pragma solidity 0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
 
-import {OracleVerifier} from "../../src/core/OracleVerifier.sol";
+import {OracleVerifier} from "../../archive/OracleVerifier.sol";
 import {OwnMarket} from "../../src/core/OwnMarket.sol";
 import {IBorrowManager} from "../../src/interfaces/IBorrowManager.sol";
 import {OrderType, Quote} from "../../src/interfaces/types/Types.sol";

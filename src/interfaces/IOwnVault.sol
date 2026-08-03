@@ -62,7 +62,7 @@ interface IOwnVault is IERC4626 {
     /// @param amount  Collateral added (asset() units).
     event ShareYieldAdded(address indexed manager, uint256 amount);
 
-    /// @notice Emitted when the vault's bound manager (operator) is changed.
+    /// @notice Emitted when the vault's bound manager is changed.
     /// @param oldManager Previous manager address.
     /// @param newManager New manager address.
     event ManagerUpdated(address indexed oldManager, address indexed newManager);
@@ -122,6 +122,8 @@ interface IOwnVault is IERC4626 {
     error ZeroAddress();
     /// @notice No shares exist to distribute yield to (totalSupply == 0).
     error NoSharesToReward();
+    /// @notice totalAssets() is zero while shares are outstanding; share pricing is undefined.
+    error VaultInsolvent();
     /// @notice Minted shares fell below the caller's slippage floor.
     /// @param sharesOut    Shares that would be minted.
     /// @param minSharesOut Caller's minimum acceptable shares.
@@ -160,20 +162,20 @@ interface IOwnVault is IERC4626 {
     error AmountExceedsBackedCollateral();
     /// @notice The vault's asset token cannot be swept.
     error CannotSweepAsset();
+    /// @notice The supplied manager has no code; the vault requires a contract.
+    error ManagerNotContract();
 
     // ──────────────────────────────────────────────────────────
     //  Manager binding
     // ──────────────────────────────────────────────────────────
 
-    /// @notice Return the address of the vault's bound manager (operator).
+    /// @notice Return the vault's bound manager. Always a contract, never an EOA.
     function manager() external view returns (address);
 
-    /// @notice Update the vault's manager (operator) address. Only callable by admin.
-    /// @dev    The manager runs the vault: accepts/rejects LP deposits, distributes share yield,
-    ///         and can pause the vault. Order settlement no longer flows through it — quotes are
-    ///         authorised by the global signer registry on VaultManager and funds flow to/from
-    ///         each signer's linked address.
-    /// @param newManager New manager address.
+    /// @notice Update the vault's manager. Only callable by admin.
+    /// @dev    The manager accepts/rejects LP deposits, distributes share yield, and can pause
+    ///         the vault. It must be a contract.
+    /// @param newManager New manager address (must be a contract).
     function setManager(
         address newManager
     ) external;
