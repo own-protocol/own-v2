@@ -287,6 +287,123 @@ contract OwnVaultTest is BaseTest {
         vault.acceptDeposit(requestId);
     }
 
+    /// @dev A3-M-08 (reopened): the guard was applied to `acceptDeposit` only, but `deposit()` is
+    ///      the permissionless leg and prices through the same `previewDeposit`. With totalAssets()
+    ///      saturated, OZ denominates against the virtual +1, so a dust deposit mints ~totalSupply
+    ///      shares and permanently takes the incumbent LPs' claim — shares carry no cost basis and
+    ///      there is no burn path, so recovery of the balance does not undo the dilution.
+    function test_deposit_zeroAssets_reverts() public {
+        _depositAs(Actors.LP2, 5 ether);
+        uint256 incumbentSupply = vault.totalSupply();
+
+        // Collateral leaves (force-execution / bad-debt release) while shares stay outstanding.
+        vm.prank(address(vault));
+        weth.transfer(address(0xdead), 5 ether);
+        assertEq(vault.totalAssets(), 0, "totalAssets saturated");
+        assertGt(vault.totalSupply(), 0, "supply still live");
+
+        weth.mint(Actors.ATTACKER, 1);
+        vm.startPrank(Actors.ATTACKER);
+        weth.approve(address(vault), 1);
+        vm.expectRevert(IOwnVault.VaultInsolvent.selector);
+        vault.deposit(1, Actors.ATTACKER);
+        vm.stopPrank();
+
+        assertEq(vault.balanceOf(Actors.ATTACKER), 0, "attacker minted nothing");
+        assertEq(vault.totalSupply(), incumbentSupply, "incumbent claim intact");
+    }
+
+    /// @dev A3-M-08 (reopened): the `minSharesOut` overload shares `_depositWithMin`, and the
+    ///      frontend default of 0 gives the floor no protective value here.
+    function test_depositWithMinSharesOut_zeroAssets_reverts() public {
+        _depositAs(Actors.LP2, 5 ether);
+
+        vm.prank(address(vault));
+        weth.transfer(address(0xdead), 5 ether);
+        assertEq(vault.totalAssets(), 0, "totalAssets saturated");
+
+        weth.mint(Actors.ATTACKER, 1);
+        vm.startPrank(Actors.ATTACKER);
+        weth.approve(address(vault), 1);
+        vm.expectRevert(IOwnVault.VaultInsolvent.selector);
+        vault.deposit(1, Actors.ATTACKER, 0);
+        vm.stopPrank();
+    }
+
+    /// @dev A3-M-08 (reopened): `previewMint` prices off the same virtual asset, so the manager-only
+    ///      mint leg buys a near-unbounded share count for ~nothing.
+    function test_mint_zeroAssets_reverts() public {
+        _depositAs(Actors.LP2, 5 ether);
+
+        vm.prank(address(vault));
+        weth.transfer(address(0xdead), 5 ether);
+        assertEq(vault.totalAssets(), 0, "totalAssets saturated");
+
+        weth.mint(address(vm1Manager), 1 ether);
+        vm.startPrank(address(vm1Manager));
+        weth.approve(address(vault), 1 ether);
+        vm.expectRevert(IOwnVault.VaultInsolvent.selector);
+        vault.mint(1e24, address(vm1Manager));
+        vm.stopPrank();
+    }
+
+    /// @dev A3-M-08 (reopened): the saturated state needs no external seizure. `releaseCollateral`
+    ///      bounds with `amount > totalAssets()`, so releasing *exactly* the backing leaves the
+    ///      pending-deposit escrow as the entire raw balance — and because the venue's health check
+    ///      reads that raw balance, `requireVaultHealthy()` still passes.
+    function test_deposit_zeroAssetsViaPendingEscrow_reverts() public {
+        _enableDepositApproval();
+        _depositAs(Actors.LP2, 5 ether);
+
+        uint256 pending = 10 ether;
+        weth.mint(Actors.LP1, pending);
+        vm.startPrank(Actors.LP1);
+        weth.approve(address(vault), pending);
+        vault.requestDeposit(pending, Actors.LP1, 0);
+        vm.stopPrank();
+
+        vm.prank(mockMarket);
+        vault.releaseCollateral(address(0xdead), 5 ether);
+        assertEq(vault.totalAssets(), 0, "totalAssets saturated by escrow");
+        assertEq(weth.balanceOf(address(vault)), pending, "raw balance still holds escrow");
+
+        weth.mint(address(vm1Manager), 1);
+        vm.startPrank(address(vm1Manager));
+        weth.approve(address(vault), 1);
+        vm.expectRevert(IOwnVault.VaultInsolvent.selector);
+        vault.deposit(1, address(vm1Manager));
+        vm.stopPrank();
+    }
+
+    /// @dev The guard keys on *live supply*, so a genuinely empty vault still bootstraps — the
+    ///      first depositor has no incumbent to dilute.
+    function test_deposit_emptyVault_unaffected() public {
+        assertEq(vault.totalAssets(), 0, "empty");
+        assertEq(vault.totalSupply(), 0, "no supply");
+
+        uint256 shares = _depositAs(Actors.LP1, 1 ether);
+        assertGt(shares, 0, "first deposit still works");
+    }
+
+    /// @dev The zero is an accounting artifact that heals when the balance returns. Deposits must
+    ///      work again once it does, so the guard cannot leave the vault permanently closed.
+    function test_deposit_afterBalanceRecovers_succeeds() public {
+        _depositAs(Actors.LP2, 5 ether);
+
+        vm.prank(address(vault));
+        weth.transfer(address(0xdead), 5 ether);
+        assertEq(vault.totalAssets(), 0, "saturated");
+
+        // Balance returns (repayment sweep / yield distribution / aToken interest).
+        weth.mint(address(vault), 5 ether);
+        assertGt(vault.totalAssets(), 0, "recovered");
+
+        uint256 shares = _depositAs(Actors.LP1, 1 ether);
+        assertGt(shares, 0, "deposits resume after recovery");
+        // Priced on the recovered balance, not the artifact: no windfall share count.
+        assertLt(shares, vault.totalSupply(), "minted at a sane ratio");
+    }
+
     /// @dev A3-M-08 (second mechanism): acceptDeposit was the only share-minting path that never
     ///      read the vault status — it must not mint into a Paused vault whose withdrawals revert.
     function test_acceptDeposit_paused_reverts() public {

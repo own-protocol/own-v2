@@ -183,6 +183,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     function _depositWithMin(uint256 assets, address receiver, uint256 minSharesOut) private returns (uint256 shares) {
         if (_requireDepositApproval && msg.sender != manager) revert DepositApprovalRequired();
         _syncLending();
+        _requireSolvent();
         shares = super.deposit(assets, receiver);
         if (shares < minSharesOut) revert InsufficientSharesOut(shares, minSharesOut);
     }
@@ -192,6 +193,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
         address receiver
     ) public override(ERC4626, IERC4626) whenDepositsAllowed onlyManager nonReentrant returns (uint256) {
         _syncLending();
+        _requireSolvent();
         return super.mint(shares, receiver);
     }
 
@@ -251,8 +253,7 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
         if (req.status != DepositStatus.Pending) revert DepositRequestNotPending(requestId);
 
         _syncLending();
-        // Saturated totalAssets() with live supply would price the mint off the +1 virtual asset.
-        if (totalAssets() == 0 && totalSupply() > 0) revert VaultInsolvent();
+        _requireSolvent();
         uint256 shares = previewDeposit(req.assets);
         if (shares < req.minSharesOut) revert InsufficientSharesOut(shares, req.minSharesOut);
         _pendingDepositAssets -= req.assets;
@@ -589,6 +590,12 @@ contract OwnVault is ERC4626, IOwnVault, ReentrancyGuard {
     function _syncLending() private {
         _accrueLending();
         try IVaultYieldManager(manager).syncYield() {} catch {}
+    }
+
+    /// @dev Saturated totalAssets() with live supply would price a mint off the +1 virtual asset.
+    ///      Must run after _syncLending() — realizing yield can lift a transiently saturated balance.
+    function _requireSolvent() private view {
+        if (totalAssets() == 0 && totalSupply() > 0) revert VaultInsolvent();
     }
 
     /// @inheritdoc IOwnVault
