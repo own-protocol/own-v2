@@ -160,6 +160,7 @@ script/
 - Order within a contract: type declarations → state variables → events → errors → modifiers → constructor → external functions → public functions → internal functions → private functions → view/pure functions
 - Use named return values only when it improves readability; prefer explicit `return` statements
 - Prefer `uint256` over `uint` — always explicit
+- Inline comments: default to none. Comment only when the code cannot express a constraint (invariant, rounding direction, external quirk) — one crisp line. NatSpec requirements above are unaffected.
 
 ### Naming Conventions
 
