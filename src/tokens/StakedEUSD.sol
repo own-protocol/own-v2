@@ -25,15 +25,17 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 ///        with no per-user claim.
 ///      - No unstake cooldown: `redeem`/`withdraw` are immediate, so leverage can be unwound
 ///        atomically.
-///      Only the just-streamed batch vests; a new stream is rejected until the previous one has
-///      fully vested (mirrors sUSDe), keeping the drip rate well-defined. Deploy note: seed a small
-///      first deposit (dead shares) to harden the first-depositor inflation vector — the OZ v5
-///      virtual-shares defense is active but a seed is belt-and-suspenders for a money vault.
+///      Rewards can be topped up mid-vest: a new stream folds any still-unvested remainder into the
+///      new batch and re-vests the combined amount over a fresh window, so `totalAssets` is
+///      continuous across the top-up (no jump, no gap) — the lever to hold APY as TVL changes.
+///      Deploy note: seed a small first deposit (dead shares) to harden the first-depositor
+///      inflation vector — the OZ v5 virtual-shares defense is active but a seed is
+///      belt-and-suspenders for a money vault.
 contract StakedEUSD is ERC4626, ERC20Permit, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
-    /// @notice Linear vesting window applied to each streamed reward batch.
-    uint256 public immutable VESTING_PERIOD;
+    /// @notice Linear vesting window applied to each streamed reward batch (ADMIN-updatable).
+    uint256 public vestingPeriod;
 
     bytes32 private constant ADMIN = keccak256("ADMIN");
     bytes32 private constant OPERATOR = keccak256("OPERATOR");
@@ -60,9 +62,13 @@ contract StakedEUSD is ERC4626, ERC20Permit, ReentrancyGuard {
     /// @param controller New controller (address(0) disables the hook).
     event IncentivesControllerSet(address indexed controller);
 
+    /// @notice Emitted when the vesting window is updated.
+    /// @param oldPeriod Previous window (seconds).
+    /// @param newPeriod New window (seconds).
+    event VestingPeriodSet(uint256 oldPeriod, uint256 newPeriod);
+
     error ZeroAddress();
     error ZeroAmount();
-    error StillVesting(uint256 unvested);
     error OnlyOperator();
     error OnlyAdmin();
 
@@ -78,7 +84,7 @@ contract StakedEUSD is ERC4626, ERC20Permit, ReentrancyGuard {
         if (registry_ == address(0) || eusd_ == address(0)) revert ZeroAddress();
         if (vestingPeriod_ == 0) revert ZeroAmount();
         registry = IProtocolRegistry(registry_);
-        VESTING_PERIOD = vestingPeriod_;
+        vestingPeriod = vestingPeriod_;
         lastDistributionTimestamp = block.timestamp;
     }
 
@@ -86,18 +92,21 @@ contract StakedEUSD is ERC4626, ERC20Permit, ReentrancyGuard {
     //  Rewards streaming
     // ──────────────────────────────────────────────────────────
 
-    /// @notice Stream a reward batch into the vault to accrue into the share price over
-    ///         `VESTING_PERIOD`. Rejected until the previous batch has fully vested. OPERATOR only.
+    /// @notice Stream eUSD yield into the vault to accrue into the share price over `vestingPeriod`.
+    ///         Callable any time, including mid-vest as a top-up: any still-unvested remainder is
+    ///         folded into the new batch and the combined amount re-vests over a fresh window.
+    ///         OPERATOR only.
     /// @param amount eUSD to stream in.
     function transferInRewards(
         uint256 amount
     ) external nonReentrant {
         if (!registry.hasRole(OPERATOR, msg.sender)) revert OnlyOperator();
         if (amount == 0) revert ZeroAmount();
-        uint256 unvested = getUnvestedAmount();
-        if (unvested != 0) revert StillVesting(unvested);
 
-        vestingAmount = amount;
+        // Roll the unvested remainder into the new batch and re-vest from now. The freshly
+        // transferred `amount` exactly matches the increase in `vestingAmount`, so `totalAssets`
+        // (and the share price) is unchanged at this instant — no jump, no sandwich surface, no gap.
+        vestingAmount = getUnvestedAmount() + amount;
         lastDistributionTimestamp = block.timestamp;
         IERC20(asset()).safeTransferFrom(msg.sender, address(this), amount);
         emit RewardsStreamed(msg.sender, amount);
@@ -113,12 +122,28 @@ contract StakedEUSD is ERC4626, ERC20Permit, ReentrancyGuard {
         emit IncentivesControllerSet(controller);
     }
 
+    /// @notice Update the vesting window. ADMIN only. Re-anchors any in-flight batch so `totalAssets`
+    ///         is continuous across the change (no share-price jump): the still-unvested remainder
+    ///         becomes a fresh batch vesting over `newPeriod` from now.
+    /// @param newPeriod New linear vesting window in seconds (non-zero).
+    function setVestingPeriod(
+        uint256 newPeriod
+    ) external {
+        if (!registry.hasRole(ADMIN, msg.sender)) revert OnlyAdmin();
+        if (newPeriod == 0) revert ZeroAmount();
+        // Crystallize progress under the old window, then re-vest the remainder over the new one.
+        vestingAmount = getUnvestedAmount();
+        lastDistributionTimestamp = block.timestamp;
+        emit VestingPeriodSet(vestingPeriod, newPeriod);
+        vestingPeriod = newPeriod;
+    }
+
     /// @notice Portion of the current reward batch not yet vested into `totalAssets`.
     function getUnvestedAmount() public view returns (uint256) {
         uint256 elapsed = block.timestamp - lastDistributionTimestamp;
-        if (elapsed >= VESTING_PERIOD) return 0;
-        // Linear: full batch at t=0, zero at t=VESTING_PERIOD.
-        return vestingAmount - (vestingAmount * elapsed / VESTING_PERIOD);
+        if (elapsed >= vestingPeriod) return 0;
+        // Linear: full batch at t=0, zero at t=vestingPeriod.
+        return vestingAmount - (vestingAmount * elapsed / vestingPeriod);
     }
 
     // ──────────────────────────────────────────────────────────

@@ -36,6 +36,9 @@ contract OwnIncentives is IOwnIncentives, ReentrancyGuard {
     mapping(address => uint256) private _userIndex;
     mapping(address => uint256) private _accrued;
 
+    /// @dev Partner account => destination for swept OWN (address(0) = not a partner).
+    mapping(address => address) private _partnerDestination;
+
     modifier onlyAdmin() {
         if (!registry.hasRole(ADMIN, msg.sender)) revert OnlyAdmin();
         _;
@@ -72,16 +75,21 @@ contract OwnIncentives is IOwnIncentives, ReentrancyGuard {
         // and every supply change was checkpointed by the hook, so this segment is well-defined.
         _updateGlobal(_sEusd.totalSupply());
         _accrue(msg.sender, _sEusd.balanceOf(msg.sender));
-
-        uint256 owed = _accrued[msg.sender];
-        paid = Math.min(owed, rewardReserve);
-        _accrued[msg.sender] = owed - paid;
-        if (paid > 0) {
-            rewardReserve -= paid;
-            _own.safeTransfer(to, paid);
-        }
-        if (paid < owed) emit RewardShortfall(msg.sender, owed, paid);
+        paid = _pay(msg.sender, to);
         emit RewardsClaimed(msg.sender, to, paid);
+    }
+
+    /// @inheritdoc IOwnIncentives
+    function sweepPartner(
+        address account
+    ) external override nonReentrant returns (uint256 paid) {
+        address dest = _partnerDestination[account];
+        if (dest == address(0)) revert NotPartner();
+        // Settle the partner's pooled balance to now, then push its share to the fixed destination.
+        _updateGlobal(_sEusd.totalSupply());
+        _accrue(account, _sEusd.balanceOf(account));
+        paid = _pay(account, dest);
+        emit PartnerSwept(account, dest, paid);
     }
 
     // ── Funding & governance ──────────────────────────────────
@@ -116,6 +124,13 @@ contract OwnIncentives is IOwnIncentives, ReentrancyGuard {
         emit ReserveRecovered(to, amount);
     }
 
+    /// @inheritdoc IOwnIncentives
+    function setPartner(address account, address destination) external override onlyAdmin {
+        if (account == address(0)) revert ZeroAddress();
+        _partnerDestination[account] = destination;
+        emit PartnerSet(account, destination);
+    }
+
     // ── Internal ──────────────────────────────────────────────
 
     /// @dev Advance the global index over the elapsed, in-campaign period. Always moves `_lastUpdate`
@@ -129,6 +144,18 @@ contract OwnIncentives is IOwnIncentives, ReentrancyGuard {
             _index += Math.mulDiv(emissionPerSecond * (capNow - last), PRECISION, totalSupply);
         }
         _lastUpdate = block.timestamp;
+    }
+
+    /// @dev Pay `account`'s accrued OWN to `to`, capped at the reserve. Assumes accrual is settled.
+    function _pay(address account, address to) private returns (uint256 paid) {
+        uint256 owed = _accrued[account];
+        paid = Math.min(owed, rewardReserve);
+        _accrued[account] = owed - paid;
+        if (paid > 0) {
+            rewardReserve -= paid;
+            _own.safeTransfer(to, paid);
+        }
+        if (paid < owed) emit RewardShortfall(account, owed, paid);
     }
 
     /// @dev Fold a holder's balance over the latest index delta into their accrued OWN.
@@ -152,6 +179,13 @@ contract OwnIncentives is IOwnIncentives, ReentrancyGuard {
     /// @inheritdoc IOwnIncentives
     function own() external view override returns (address) {
         return address(_own);
+    }
+
+    /// @inheritdoc IOwnIncentives
+    function partnerDestination(
+        address account
+    ) external view override returns (address) {
+        return _partnerDestination[account];
     }
 
     /// @inheritdoc IOwnIncentives

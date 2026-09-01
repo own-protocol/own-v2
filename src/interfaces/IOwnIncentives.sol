@@ -17,12 +17,15 @@ interface IOwnIncentives {
     event ReserveFunded(address indexed funder, uint256 amount);
     event ReserveRecovered(address indexed to, uint256 amount);
     event RewardShortfall(address indexed user, uint256 owed, uint256 paid);
+    event PartnerSet(address indexed account, address indexed destination);
+    event PartnerSwept(address indexed account, address indexed destination, uint256 amount);
 
     error ZeroAddress();
     error ZeroAmount();
     error OnlyStakedToken();
     error OnlyAdmin();
     error InsufficientReserve(uint256 requested, uint256 available);
+    error NotPartner();
 
     // ── Hook (called by sEUSD only) ───────────────────────────
 
@@ -54,6 +57,12 @@ interface IOwnIncentives {
         address user
     ) external view returns (uint256);
 
+    /// @notice Destination for a registered partner's swept OWN (address(0) = not a partner).
+    /// @param account The pooled partner address (e.g. a money-market contract holding sEUSD).
+    function partnerDestination(
+        address account
+    ) external view returns (address);
+
     // ── Claim ─────────────────────────────────────────────────
 
     /// @notice Claim accrued OWN to `to`. Pays `min(owed, reserve)`; any remainder stays owed.
@@ -61,6 +70,16 @@ interface IOwnIncentives {
     /// @return paid OWN transferred this call.
     function claim(
         address to
+    ) external returns (uint256 paid);
+
+    /// @notice Push a registered partner's accrued OWN to its destination for onward distribution.
+    ///         Permissionless: the destination is fixed by ADMIN via {setPartner}, so the caller
+    ///         cannot redirect it. Use for pooled addresses (e.g. Morpho) that hold sEUSD on behalf
+    ///         of many users and cannot self-claim; the destination distributes to those users.
+    /// @param account The registered partner address.
+    /// @return paid OWN transferred to the partner's destination this call.
+    function sweepPartner(
+        address account
     ) external returns (uint256 paid);
 
     // ── Funding & governance ──────────────────────────────────
@@ -77,4 +96,12 @@ interface IOwnIncentives {
 
     /// @notice Recover unused OWN budget. ADMIN.
     function recoverReserve(uint256 amount, address to) external;
+
+    /// @notice Register (or clear) a pooled partner address and where its swept OWN should go.
+    ///         ADMIN only. Only addresses registered here can be swept via {sweepPartner}; set
+    ///         `destination` to address(0) to de-register. Intended for money-market/pool contracts
+    ///         that custody sEUSD for many users and cannot self-claim — never individual wallets.
+    /// @param account     The pooled partner address.
+    /// @param destination Where swept OWN is sent (the partner's own distributor), or address(0).
+    function setPartner(address account, address destination) external;
 }

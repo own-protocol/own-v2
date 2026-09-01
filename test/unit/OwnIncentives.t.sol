@@ -154,6 +154,49 @@ contract OwnIncentivesTest is Test {
         incentives.setDistribution(1, block.timestamp + 1 days);
     }
 
+    // ── Partner sweep (pooled holders like Morpho) ────────────
+
+    // A pooled holder (Morpho-like) accrues OWN on-chain; the admin registers it as a partner and
+    // anyone can sweep its accrued OWN to Morpho's distributor for onward distribution.
+    function test_partnerSweepForwardsPooledAccrual() public {
+        address morpho = address(uint160(uint256(keccak256("morpho")))); // pooled sEUSD holder
+        address morphoDistributor = address(uint160(uint256(keccak256("merkl"))));
+
+        // Simulate loopers: sEUSD ends up held by the Morpho contract (deposit then transfer in).
+        vm.startPrank(alice);
+        sEusd.deposit(1000e18, alice);
+        sEusd.transfer(morpho, 1000e18); // now Morpho is the holder of record
+        vm.stopPrank();
+
+        vm.warp(block.timestamp + 100);
+        assertApproxEqAbs(incentives.earned(morpho), RATE * 100, 1e6, "pooled address accrues");
+
+        // Morpho cannot self-claim; admin registers it as a partner pointing at its distributor.
+        vm.prank(admin);
+        incentives.setPartner(morpho, morphoDistributor);
+        assertEq(incentives.partnerDestination(morpho), morphoDistributor);
+
+        // Permissionless sweep pushes the pooled OWN to the fixed destination.
+        uint256 before = own.balanceOf(morphoDistributor);
+        vm.prank(bob); // anyone can call; destination is fixed by admin
+        uint256 paid = incentives.sweepPartner(morpho);
+        assertApproxEqAbs(paid, RATE * 100, 1e6);
+        assertEq(own.balanceOf(morphoDistributor) - before, paid, "OWN forwarded to distributor");
+        assertApproxEqAbs(incentives.earned(morpho), 0, 1e6, "partner accrual cleared");
+    }
+
+    function test_sweepUnregisteredReverts() public {
+        vm.prank(bob);
+        vm.expectRevert(IOwnIncentives.NotPartner.selector);
+        incentives.sweepPartner(address(0xBEEF));
+    }
+
+    function test_setPartnerOnlyAdmin() public {
+        vm.prank(alice);
+        vm.expectRevert(IOwnIncentives.OnlyAdmin.selector);
+        incentives.setPartner(address(0xBEEF), address(0xCAFE));
+    }
+
     // A reverting controller must never brick sEUSD transfers (hook is wrapped in try/catch).
     function test_transfersSurviveBrokenController() public {
         RevertingController broken = new RevertingController();

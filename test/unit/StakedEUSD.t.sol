@@ -140,7 +140,7 @@ contract StakedEUSDTest is Test {
         assertGt(sEusd.convertToAssets(sEusd.balanceOf(alice)), 1000e18, "alice earned the reward");
     }
 
-    // ── Access & vesting guards ───────────────────────────────
+    // ── Access & top-up ───────────────────────────────────────
 
     function test_onlyOperatorStreams() public {
         vm.prank(alice);
@@ -148,25 +148,70 @@ contract StakedEUSDTest is Test {
         sEusd.transferInRewards(1e18);
     }
 
-    function test_rejectStreamWhileVesting() public {
+    // Mid-vest top-up: allowed, continuous (no share-price jump), and rolls the remainder forward.
+    function test_topUpMidVestRollsForward() public {
+        uint256 taStart = sEusd.totalAssets();
+
         vm.prank(rewarder);
         sEusd.transferInRewards(100e18);
 
-        vm.warp(block.timestamp + VEST / 2);
-        uint256 unvested = sEusd.getUnvestedAmount();
-        vm.prank(rewarder);
-        vm.expectRevert(abi.encodeWithSelector(StakedEUSD.StillVesting.selector, unvested));
-        sEusd.transferInRewards(100e18);
+        vm.warp(block.timestamp + VEST / 2); // ~50e18 of the first batch has vested
+        uint256 taMid = sEusd.totalAssets();
+        uint256 unvestedMid = sEusd.getUnvestedAmount(); // ~50e18
 
-        // Allowed once fully vested.
-        vm.warp(block.timestamp + VEST / 2);
+        // Top up mid-vest — no revert, and totalAssets does not jump at the call.
         vm.prank(rewarder);
         sEusd.transferInRewards(100e18);
-        assertApproxEqAbs(sEusd.getUnvestedAmount(), 100e18, 1);
+        assertApproxEqAbs(sEusd.totalAssets(), taMid, 1, "no jump on top-up");
+        // Combined batch = leftover + new, re-vesting from now.
+        assertApproxEqAbs(sEusd.getUnvestedAmount(), unvestedMid + 100e18, 1e6, "rolled forward");
+        _solvent();
+
+        // After a full fresh window, both batches are fully accrued.
+        vm.warp(block.timestamp + VEST);
+        assertEq(sEusd.getUnvestedAmount(), 0);
+        assertApproxEqAbs(sEusd.totalAssets(), taStart + 200e18, 1e6, "both batches accrued");
+        _solvent();
     }
 
     function test_vaultHoldsNoMinterRole() public view {
         // Solvency guarantee rests on the vault being unable to mint eUSD.
         assertFalse(eusd.hasRole(eusd.MINTER_ROLE(), address(sEusd)));
+    }
+
+    // ── Settable vesting period ───────────────────────────────
+
+    // Changing the window mid-vest must not jump totalAssets, and the remainder re-vests over the
+    // new window from now.
+    function test_setVestingPeriodMidVestIsContinuous() public {
+        vm.prank(rewarder);
+        sEusd.transferInRewards(800e18);
+
+        vm.warp(block.timestamp + VEST / 2); // ~400e18 vested, ~400e18 unvested
+        uint256 taMid = sEusd.totalAssets();
+        uint256 unvestedMid = sEusd.getUnvestedAmount();
+
+        vm.prank(admin);
+        sEusd.setVestingPeriod(7 days);
+        assertEq(sEusd.vestingPeriod(), 7 days);
+        assertApproxEqAbs(sEusd.totalAssets(), taMid, 1, "no jump on period change");
+        assertApproxEqAbs(sEusd.getUnvestedAmount(), unvestedMid, 1, "remainder re-anchored");
+
+        // Remainder now vests over the NEW 7-day window: half-remaining after 3.5 days.
+        vm.warp(block.timestamp + 3.5 days);
+        assertApproxEqAbs(sEusd.getUnvestedAmount(), unvestedMid / 2, 1e6, "re-vests over new window");
+        vm.warp(block.timestamp + 3.5 days);
+        assertEq(sEusd.getUnvestedAmount(), 0, "fully vested over new window");
+        _solvent();
+    }
+
+    function test_setVestingPeriodOnlyAdmin() public {
+        vm.prank(alice);
+        vm.expectRevert(StakedEUSD.OnlyAdmin.selector);
+        sEusd.setVestingPeriod(1 days);
+
+        vm.prank(admin);
+        vm.expectRevert(StakedEUSD.ZeroAmount.selector);
+        sEusd.setVestingPeriod(0);
     }
 }
