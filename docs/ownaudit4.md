@@ -7,11 +7,15 @@ This pass is **scoped to the new eUSD CDP module** (EUSDManager + EUSD token) in
 whose findings and IDs remain canonical for the rest of the codebase. IDs are stable across
 passes: `A4-` items below are never renumbered or reused, and any later pass that re-surfaces one
 reopens the existing ID. Headline shape of the findings: the module's accounting, access control,
-list integrity, and rounding all held under a 12-agent adversarial review; every substantive
-issue clusters around **one asymmetry in the redemption path** — `liquidate` fully clears a
-position when the collateral cap fires, `_redeemFrom` does not — plus a set of configuration /
-semantics checks at the oracle and governance seams. No changes to existing contracts were in
-scope or required.
+list integrity, and rounding all held under a 12-agent adversarial review; the substantive issues
+fall into two clusters — **(1) an asymmetry in the redemption path** (`liquidate` fully clears a
+position when the collateral cap fires, `_redeemFrom` does not) and **(2) a collateral-valuation
+gap at the corporate-action seam** (`A4-H-02`, added in the re-review below): the module prices
+collateral by ticker while custodying a fixed token address and has no split/migration hook, so a
+routine stock split silently mis-values every position — plus a set of configuration / semantics
+checks at the oracle and governance seams. The `A4-H-02` fix touches `EUSDManager` (in scope); its
+alternative coordination option touches `AssetRegistry.migrateToken` (out of the original 2-file
+scope), so the split seam is now treated as in-scope for this module.
 
 ```
 Scope (2 files, ~560 LOC)
@@ -30,14 +34,15 @@ out-of-scope context for seam verification.
 | Severity | Total | Fixed | Open | By design |
 | -------- | ----- | ----- | ---- | --------- |
 | Critical | 0     | —     | —    | —         |
-| High     | 1     | 0     | 1    | 0         |
+| High     | 2     | 0     | 2    | 0         |
 | Medium   | 1     | 0     | 1    | 0         |
-| Low      | 7     | 0     | 6    | 1         |
-| Info     | 4     | 0     | 0    | 4 (noted) |
+| Low      | 8     | 0     | 7    | 1         |
+| Info     | 5     | 0     | 0    | 5 (noted) |
 
 | ID      | Severity | Finding                                                                  | Status                       |
 | ------- | -------- | ------------------------------------------------------------------------ | ---------------------------- |
 | A4-H-01 | High     | Partial redemption of underwater position strands unbacked debt at head  | **Open**                     |
+| A4-H-02 | High     | Stock split re-denomination silently mis-values all eUSD collateral      | **Open**                     |
 | A4-M-01 | Medium   | Redemption cannot skip an underwater head — peg anchor stalls            | **Open**                     |
 | A4-L-01 | Low      | `mintPriceMaxAge` is a no-op inside the oracle's `clFreshWindow`         | **Open**                     |
 | A4-L-02 | Low      | Sorted-list ordering drifts under lazy stability-fee accrual             | **Open**                     |
@@ -46,10 +51,12 @@ out-of-scope context for seam verification.
 | A4-L-05 | Low      | `setRiskParams` threshold raise assumes ADMIN sits behind the timelock   | **Open** (ops check)         |
 | A4-L-06 | Low      | ADMIN/OPERATOR role namespace is protocol-global, not per-contract       | **Open** (confirm intent)    |
 | A4-L-07 | Low      | `MINTER_ROLE` exclusivity not structurally enforced on EUSD              | **Open** (deploy-time assert)|
+| A4-L-08 | Low      | eToken collateral dividends stranded in the manager (no claim path)      | **Open** (confirm reward model)|
 | A4-I-01 | Info     | `_freshPrice` tolerates future-dated timestamps                          | **By design** — noted        |
 | A4-I-02 | Info     | Fee rounds to zero but `feeIndexSnapshot` still advances                 | **By design** — noted        |
 | A4-I-03 | Info     | Zero-fee redemption (no Liquity-style base rate)                         | **By design** — noted        |
 | A4-I-04 | Info     | `debt * (BPS + bonus)` computed outside `mulDiv`'s 512-bit space         | **By design** — noted        |
+| A4-I-05 | Info     | `EUSD.crosschainBurn` burns from an arbitrary `from` (trusted-bridge)    | **By design** — noted        |
 
 ---
 
@@ -144,6 +151,95 @@ need for a floor on this path. A4-M-01 is the non-degenerate sibling.
 **Detected by** 8 of 12 agents (math-precision, execution-trace, periphery, asymmetry, boundary,
 numerical-gap as findings; trust-gap, first-principles as leads).
 
+### A4-H-02 (High) — A routine stock split silently mis-values every eUSD position by the split ratio
+
+**Problem.** `EUSDManager` custodies collateral as a fixed **token address** balance
+(`_positions[collateral][owner].collateral`, keyed by address; `_collateralConfigs[collateral]`
+stores only `{ticker, enabled, exists}`) but values it by **ticker**: every ratio and seizure
+computation runs `_ratioBps(coll, debt, price)` where `price = _oracle(cfg.ticker).getPrice(ticker)`
+(`EUSDManager.sol:535–537`, call sites at `153`, `177`, `243/244`, `277`, `581/582`). It multiplies
+the raw stored unit count by the **per-active-unit** ticker price and applies **no** legacy-ratio
+factor. The module references none of `legacyRatioToActive` / `applySplit` / `getActiveToken` /
+`convertLegacy` (verified: grep returns nothing) and has no split/migration hook.
+
+When the admin performs a supported corporate action —
+`AssetRegistry.migrateToken(ticker, newToken, ratio)` (`AssetRegistry.sol:127`) — the deposited
+token becomes **legacy** (`_legacyRatio[oldToken] = ratio`, `:148`; `legacyRatioToActive(oldToken)`
+now returns `ratio`), a new active token is installed, and `VaultManager.applySplit` atomically
+re-denominates the internal mark (`_assetMark = mark·PRECISION/ratio`, `VaultManager.sol:432`). The
+external price feed for the instrument (real split-adjusted SPY) reports the new per-active-unit
+price. `migrateToken` is blocked only while the asset is **halted** (`:131`), *not* while open eUSD
+positions reference the ticker, and `isValidToken(ticker, oldToken)` keeps returning `true` for the
+legacy token (`:368–374`), so every existing position keeps operating — silently mispriced by
+`ratio`. The position cannot self-heal: the legacy eToken is locked in the manager, and the manager
+exposes no ratio-adjust / migrate / convert entry point.
+
+Worked case (deployed-style params: MCR 150%, threshold 130%, bonus 5%). Position `coll = 2 eSPY`
+(token `T0`), `debt = 800 eUSD`, minted at $600/share → value $1200, CR 150%. Admin runs a **2:1**
+forward split: `migrateToken("SPY", T1, 2e18)`; the feed now reports $300 per new share; the
+borrower still holds `2 T0` = `4 T1` = **$1200 true value**. `_ratioBps(2e18, 800e18, 300e18) =
+mulDiv(mulDiv(2e18, 300e18, 1e18), 10000, 800e18) = mulDiv(600e18, 10000, 800e18) = 7500 bps` →
+**75%** < 130% threshold, so a genuinely 150%-collateralized position is now liquidatable. Any
+keeper `liquidate`s: `seized = mulDiv(800e18·10500, 1e18, 300e18·10000) = 2.8e18`, capped to
+`p.collateral = 2e18` → burns 800 eUSD, receives `2 T0` (= `4 T1` = **$1200**) for **$800**, a
+**+$400 (50%)** profit; the borrower loses their entire collateral including the full MCR buffer. A
+**reverse** split inverts it: `_ratioBps` *over*-values the position by `ratio`, so the owner can
+withdraw collateral or mint fresh eUSD against phantom backing → uncollateralized supply / bad debt.
+
+The admin action is legitimate (a real corporate action the protocol explicitly supports); the
+harm is realized by an **unprivileged amplifier** — any keeper (forward split) or the position
+owner (reverse split) — the moment the split lands, so it clears the admin-action gate.
+
+**Suggested fix (Option A — value legacy collateral through its active ratio):**
+
+```diff
+-        uint256 ratio = _ratioBps(p.collateral, p.debt, _freshPrice(cfg.ticker));
++        uint256 ratio = _ratioBps(_activeUnits(collateral, p.collateral), p.debt, _freshPrice(cfg.ticker));
+```
+
+```diff
++    /// @dev Rescale a stored (possibly legacy) collateral balance to active-token units so
++    ///      ticker-priced valuation stays correct across splits. Active token → legacyRatio 0 → identity.
++    function _activeUnits(address collateral, uint256 amount) private view returns (uint256) {
++        uint256 r = IAssetRegistry(registry.assetRegistry()).legacyRatioToActive(collateral);
++        return r == 0 ? amount : Math.mulDiv(amount, r, PRECISION);
++    }
+```
+
+Apply `_activeUnits` at every valuation/seizure site (`mint`, `withdrawCollateral`, `liquidate`,
+`redeem`/`_redeemFrom`, `collateralRatioBps`). Note the seizure/transfer amount must stay in
+**legacy-token** units for the `safeTransfer` while only the **value** math uses active units — so
+scale the value inputs, not the transferred `seized` amount.
+
+**Suggested fix (Option B — coordinate the split with the module):**
+
+```diff
+     // AssetRegistry.migrateToken, for any ticker with open eUSD positions:
++    // block migration while positions exist, OR notify the manager to atomically
++    // convertLegacy its held balance and rescale _positions[].collateral + totalCollateral by `ratio`,
++    // re-keying the config to the new active token.
++    if (address(eusdManager) != address(0) && eusdManager.hasOpenPositions(ticker)) {
++        eusdManager.onSplit(ticker, oldToken, newToken, ratio);
++    }
+```
+
+Option A is the smaller, self-contained change (no cross-contract callback, keeps the held balance
+as legacy tokens and just values them correctly) and is preferred; Option B keeps stored collateral
+in active-token units but requires an `onSplit` hook and re-keying, and touches `AssetRegistry`
+(outside the original module scope).
+
+**Tests.** No current test exercises a `migrateToken`/`applySplit` while an eUSD position is open.
+Add: (a) forward-split → previously-healthy position must **not** become liquidatable; (b)
+reverse-split → `withdrawCollateral`/`mint` must not admit phantom collateral; (c) an invariant
+that a position's computed USD collateral value is split-invariant across a `migrateToken`.
+
+**Overlaps.** Independent of the redemption cluster (A4-H-01 / A4-M-01 / A4-L-03); shares no code
+path. The original Pass-4 scope (2 files, `AssetRegistry`/`VaultManager` read-only) is why this seam
+was not covered — the defect nonetheless lives in `EUSDManager`'s valuation.
+
+**Detected by** 3 of 12 agents (invariant, first-principles, flow-gap) — all as findings, with
+matching numeric traces; re-review verified the mechanism directly against source.
+
 ### A4-M-01 (Medium) — Redemption cannot skip an underwater head, so the peg anchor stalls exactly when liquidation is unprofitable
 
 **Problem.** `redeem` consumes strictly from `listHead` with no skip mechanism. Any head with
@@ -220,6 +316,27 @@ flow-gap) — all as leads; no fund-loss path completed.
   `MINTER_ROLE` holder; the token cannot structurally enforce it. Add a deploy-time assertion
   (exactly one role member = the manager) to `DeployEusdRobinhood.s.sol` and to monitoring.
 
+### A4-L-08 (Low) — eToken collateral dividends accrue to the manager with no claim path
+
+**Problem.** Collateral is protocol eTokens, which are dividend/reward-bearing (they expose
+`claimableRewards` / `claimRewards` / `rewardToken`, and `OwnMarket.sweepDividends` claims them on
+escrowed eTokens). While an eToken sits as CDP collateral, its dividends accrue to the
+`EUSDManager` address (the current holder), but the manager has **no** claim, forward, or admin
+sweep path — so that yield is stranded in the manager for the life of every loan, with no recovery
+route. Depositors silently forfeit the dividend stream they would earn holding the eToken directly
+(an asymmetry vs. the analogous `OwnMarket` escrow path, which *does* implement `sweepDividends`).
+Value leak to depositors, no theft vector. If the reward model turns out to be **rebasing** rather
+than claim-based, the impact is different and worse: `totalCollateral[c]` (updated only on
+deposit/withdraw) would desync from the manager's real token balance — worth confirming.
+
+**Suggested fix.** Add a permissioned `claimCollateralRewards(collateral)` that calls the eToken's
+`claimRewards` and forwards the `rewardToken` to a fair destination (per-position accounting, or a
+treasury/insurance sink by policy), mirroring `OwnMarket.sweepDividends`. First confirm the eSPY
+reward mechanism (claimable vs. rebasing) — the reward-token source is out of this module's scope.
+
+**Detected by** 4 of 12 agents (periphery, first-principles, invariant, trust-gap) — all as leads;
+depends on the eToken reward model, which was not in the review bundle.
+
 ---
 
 ## 3. By-Design / Withdrawn
@@ -238,6 +355,16 @@ flow-gap) — all as leads; no fund-loss path completed.
   base rate) can be added later if redemption volume warrants it.
 - **A4-I-04 — `debt * (BPS + bonus)` outside `mulDiv`'s 512-bit space.** Overflow requires
   debt ≈ 1.77e72 (1.77e54 eUSD). Not reachable; accepted.
+- **A4-I-05 — `EUSD.crosschainBurn(from, amount)` burns from an arbitrary `from`.** The call is
+  allowance-free and consent-free: authorization is solely the caller's per-bridge burn rate limit
+  (`_consumeLimit(false, amount)`), so any admin-authorized bridge can destroy any holder's eUSD up
+  to its per-window `burnMaxLimit`. This is the standard xERC20 / ERC-7802 trusted-bridge model —
+  admin-gated `setBridgeLimits`, rate-limited, and launch-disabled (`maxNetBridgedIn = 0`, no bridge
+  limits set) — so it is accepted as-is; flagged so the bridge-trust assumption is explicit and
+  re-reviewed whenever a transport is authorized. **Note:** the NatSpec claim that "a bridge only
+  burns from the user who asked it to bridge" is an off-chain trust assumption, *not* an on-chain
+  guarantee — correct the wording or move to a user-signed / allowance-gated burn if third-party
+  burn is not intended. Distinct from the plain `EUSD.burn`, which is `msg.sender`-only (see §7).
 
 ---
 
@@ -269,6 +396,10 @@ module scope; statuses in the master index are authoritative).
 
 - [ ] A4-H-01 — implement Option A (or decide Option B accounting), add partial-underwater
       regression test + "no listed node with zero collateral" invariant, re-run full suite.
+- [ ] A4-H-02 — implement Option A (`_activeUnits` scaling at all valuation/seizure sites) or
+      decide Option B (`onSplit` hook / block-migration-with-open-positions); add forward- and
+      reverse-split regression tests + a split-invariant-value invariant; re-run full suite.
+      **Treat as a launch blocker for using any split-eligible eToken as eUSD collateral.**
 - [ ] A4-M-01 — decide accept/skip-hint/backstop for underwater heads; document the decision in
       the interface NatSpec either way.
 - [ ] A4-L-01 — confirm intended freshness semantics; document effective bound on
@@ -278,6 +409,9 @@ module scope; statuses in the master index are authoritative).
 - [ ] A4-L-06 — confirm global-role scoping is intended for this module.
 - [ ] A4-L-07 — add deploy-time sole-minter assertion to `DeployEusdRobinhood.s.sol`; assert
       registry `TREASURY` is non-zero before first mint (fee accrual mints there).
+- [ ] A4-L-08 — confirm the eSPY eToken reward model (claimable vs. rebasing); if claimable, add a
+      permissioned `claimCollateralRewards` mirroring `OwnMarket.sweepDividends`; if rebasing,
+      additionally reconcile `totalCollateral` against real balance.
 
 ---
 
@@ -292,8 +426,10 @@ Attacked and held, across 12 independent adversarial agents:
   always re-validated by the forward walk; stale/self/unlisted hints are ignored);
   `debt > 0 ⟺ listed` holds across all mutators; `listSize`/link consistency verified.
 - **Access control:** every state-changer correctly gated; no storage written by both guarded and
-  unguarded paths; no initializer surface (non-upgradeable); `EUSD.burn` is allowance-free but
-  every call site burns only from `msg.sender` — no confused-deputy path.
+  unguarded paths; no initializer surface (non-upgradeable). The plain `EUSD.burn` is allowance-free
+  but burns only from `msg.sender` — no confused-deputy path. (The separate
+  `EUSD.crosschainBurn(from, …)` *does* burn from an arbitrary account under the trusted-bridge
+  model — see A4-I-05; not covered by this line.)
 - **Rounding:** all floors favor the protocol/counterparty (`_ratioBps`, redemption `seized`,
   liquidation `seized`, fee accrual); no attacker-favorable rounding, no zero-rounding extraction.
 - **Reentrancy/CEI:** `nonReentrant` on all token-moving entry points; only trusted no-hook
@@ -316,6 +452,13 @@ Attacked and held, across 12 independent adversarial agents:
   boundary + 3 cross-lens gap-hunters) over the 2-file scope, followed by dedup and a four-gate
   validation pass (execution / reachability / trigger / impact). A4-H-01 had 8-agent
   convergence; A4-L-02 had 6; single-agent items were gate-checked individually.
+- Re-review addendum (same date): A4-H-02, A4-L-08, and A4-I-05 were added after a follow-up
+  12-agent pass over the full branch diff (including the `OwnMarket` UUPS conversion and
+  `ForceExecuteLib`, both cleared). A4-H-02 had 3-agent convergence with matching numeric traces
+  and was additionally verified directly against `EUSDManager`/`AssetRegistry`/`VaultManager`
+  source (the `migrateToken`/`applySplit` seam sits outside the original 2-file scope, which is why
+  the initial pass did not reach it). The `OwnMarket` UUPS/EIP-712/`ReentrancyGuard`-behind-proxy
+  setup and the `ForceExecuteLib` delegatecall extraction were traced and found sound.
 - Trap for future passes: the interface NatSpec documents the *short-change* on underwater
   redemption but not the *persistence* of the drained node — do not mistake the documented
   trade-off for coverage of A4-H-01.
