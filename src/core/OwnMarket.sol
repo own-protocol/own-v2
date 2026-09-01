@@ -10,6 +10,8 @@ import {IProtocolRegistry} from "../interfaces/IProtocolRegistry.sol";
 import {IReserveVault} from "../interfaces/IReserveVault.sol";
 import {IVaultManager} from "../interfaces/IVaultManager.sol";
 import {BPS, Order, OrderStatus, OrderType, PRECISION, PsmConfig, Quote} from "../interfaces/types/Types.sol";
+import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
+import {UUPSUpgradeable} from "@openzeppelin/contracts/proxy/utils/UUPSUpgradeable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
@@ -29,7 +31,12 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 ///         global claim threshold, releasing the order's bound vault collateral as recourse against
 ///         an unresponsive maker. Trading pause blocks execution and force-execute; a permanently
 ///         halted asset blocks both and is redeemed via {redeemHalted} from the halt redeem address.
-contract OwnMarket is IOwnMarket, ReentrancyGuard, EIP712 {
+/// @dev Runs behind an ERC-1967 proxy (UUPS) so the market address survives upgrades (e.g. the
+///      planned crosschain eToken bridging paths). Upgrades are ADMIN-gated ({_authorizeUpgrade});
+///      storage is append-only from this baseline. EIP712's immutables are set in the
+///      implementation constructor and are proxy-safe (OZ v5 rebuilds the domain separator when
+///      address(this) differs from the cached implementation address).
+contract OwnMarket is IOwnMarket, Initializable, UUPSUpgradeable, ReentrancyGuard, EIP712 {
     using SafeERC20 for IERC20;
     using ECDSA for bytes32;
 
@@ -43,16 +50,15 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard, EIP712 {
     );
 
     // ──────────────────────────────────────────────────────────
-    //  Immutables
-    // ──────────────────────────────────────────────────────────
-
-    IProtocolRegistry public immutable registry;
-
-    // ──────────────────────────────────────────────────────────
     //  State
     // ──────────────────────────────────────────────────────────
 
-    uint256 private _nextOrderId = 1;
+    /// @dev Initializer-set, fixed thereafter (storage, not immutable, so an upgraded
+    ///      implementation can never silently rebind it).
+    IProtocolRegistry public registry;
+
+    /// @dev Set to 1 in {initialize} — inline initializers do not run behind a proxy.
+    uint256 private _nextOrderId;
 
     mapping(uint256 => Order) private _orders;
     mapping(address => uint256[]) private _userOrders;
@@ -61,15 +67,41 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard, EIP712 {
     mapping(bytes32 => bool) private _usedQuotes;
 
     // ──────────────────────────────────────────────────────────
-    //  Constructor
+    //  Modifiers
     // ──────────────────────────────────────────────────────────
 
-    /// @param registry_ ProtocolRegistry contract address.
-    constructor(
-        address registry_
-    ) EIP712("Own Protocol", "1") {
-        registry = IProtocolRegistry(registry_);
+    bytes32 private constant ADMIN = keccak256("ADMIN");
+
+    modifier onlyAdmin() {
+        if (!registry.hasRole(ADMIN, msg.sender)) revert OnlyAdmin();
+        _;
     }
+
+    // ──────────────────────────────────────────────────────────
+    //  Construction / initialization (UUPS)
+    // ──────────────────────────────────────────────────────────
+
+    /// @dev The implementation is only ever used behind an ERC-1967 proxy; lock its own
+    ///      initializers so the bare implementation can never be initialized or taken over.
+    constructor() EIP712("Own Protocol", "1") {
+        _disableInitializers();
+    }
+
+    /// @notice Initialize the market proxy (runs once, in the proxy's constructor call).
+    /// @param registry_ ProtocolRegistry contract address.
+    function initialize(
+        address registry_
+    ) external initializer {
+        if (registry_ == address(0)) revert ZeroAddress();
+        registry = IProtocolRegistry(registry_);
+        _nextOrderId = 1;
+    }
+
+    /// @dev UUPS upgrade gate: only the protocol ADMIN role may upgrade this proxy's
+    ///      implementation.
+    function _authorizeUpgrade(
+        address
+    ) internal view override onlyAdmin {}
 
     // ──────────────────────────────────────────────────────────
     //  Market orders (atomic)

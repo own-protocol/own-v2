@@ -3,6 +3,8 @@ pragma solidity 0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
 
+import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
+
 import {OracleVerifier} from "../../archive/OracleVerifier.sol";
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {OwnMarket} from "../../src/core/OwnMarket.sol";
@@ -97,7 +99,8 @@ contract DeployMainnet is Script {
     function _deployCore(address deployer, address treasury) internal returns (Deployed memory d) {
         d.registry = address(new ProtocolRegistry(deployer, ADMIN_TRANSFER_DELAY, PRICE_MAX_AGE));
         d.assetRegistry = address(new AssetRegistry(d.registry));
-        d.market = address(new OwnMarket(d.registry));
+        d.market =
+            address(new ERC1967Proxy(address(new OwnMarket()), abi.encodeCall(OwnMarket.initialize, (d.registry))));
         d.vaultManager = address(new VaultManager(IProtocolRegistry(d.registry)));
         d.etokenFactory = address(new ETokenFactory(d.registry));
 

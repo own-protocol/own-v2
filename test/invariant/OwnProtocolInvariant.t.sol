@@ -6,8 +6,10 @@ import {BaseTest} from "../helpers/BaseTest.sol";
 
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {OwnMarket} from "../../src/core/OwnMarket.sol";
+
 import {OwnVault} from "../../src/core/OwnVault.sol";
 import {ReserveVault} from "../../src/core/ReserveVault.sol";
+import {deployOwnMarket} from "../helpers/DeployOwnMarket.sol";
 
 import {AssetConfig, PRECISION} from "../../src/interfaces/types/Types.sol";
 import {EToken} from "../../src/tokens/EToken.sol";
@@ -79,7 +81,7 @@ contract OwnProtocolInvariant is BaseTest {
         vaultManager.registerVault(address(vault), ETH);
 
         // Market
-        market = new OwnMarket(address(protocolRegistry));
+        market = deployOwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
 
         // Vault parameters

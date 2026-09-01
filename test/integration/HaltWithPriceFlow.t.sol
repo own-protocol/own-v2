@@ -20,8 +20,10 @@ import {
 
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {OwnMarket} from "../../src/core/OwnMarket.sol";
+
 import {OwnVault} from "../../src/core/OwnVault.sol";
 import {EToken} from "../../src/tokens/EToken.sol";
+import {deployOwnMarket} from "../helpers/DeployOwnMarket.sol";
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
@@ -68,7 +70,7 @@ contract HaltWithPriceFlowTest is BaseTest {
         vault = new OwnVault(address(weth), "Own ETH Vault", "oETH", address(protocolRegistry), address(vm1Manager));
         vaultManager.registerVault(address(vault), ETH);
 
-        market = new OwnMarket(address(protocolRegistry));
+        market = deployOwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
 
         vm.stopPrank();

@@ -211,6 +211,12 @@ interface IOwnMarket {
     /// @notice A zero amount was provided.
     error ZeroAmount();
 
+    /// @notice A required address was the zero address.
+    error ZeroAddress();
+
+    /// @notice Caller is not the admin.
+    error OnlyAdmin();
+
     /// @notice The escrow received less than the requested amount (fee-on-transfer token).
     error FeeOnTransferNotSupported(address token);
 

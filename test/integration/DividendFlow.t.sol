@@ -8,8 +8,10 @@ import {AssetConfig, PRECISION} from "../../src/interfaces/types/Types.sol";
 
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {OwnMarket} from "../../src/core/OwnMarket.sol";
+
 import {OwnVault} from "../../src/core/OwnVault.sol";
 import {EToken} from "../../src/tokens/EToken.sol";
+import {deployOwnMarket} from "../helpers/DeployOwnMarket.sol";
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
@@ -50,7 +52,7 @@ contract DividendFlowTest is BaseTest {
         vault = new OwnVault(address(weth), "Own WETH Vault", "oWETH", address(protocolRegistry), address(vm1Manager));
         vaultManager.registerVault(address(vault), ETH);
 
-        market = new OwnMarket(address(protocolRegistry));
+        market = deployOwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
 
         eTSLA = new EToken("Own Tesla", "eTSLA", TSLA, address(protocolRegistry), address(usdc));

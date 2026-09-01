@@ -22,6 +22,11 @@ import {EUSD} from "../../src/tokens/EUSD.sol";
 ///           registrations are skipped here — schedule them through the timelock instead.
 ///        3. Smoke-test in session: deposit eSPY, mint ≥ MIN_DEBT eUSD, repay, close.
 ///        4. Off-hours check: mint must revert StaleMintPrice; closePosition must succeed.
+///        5. Bridging launches disabled by construction: no bridge has limits, and
+///           maxNetBridgedIn defaults to 0 (fail-closed). Enabling a lane is a later Safe action —
+///           setBridgeLimits(pool, mint, burn) AND setMaxNetBridgedIn(cap) — once a transport is
+///           chosen. The home/CDP chain can keep maxNetBridgedIn at 0 (stays fully locally backed;
+///           re-importing exported eUSD is still allowed); destination chains set a positive cap.
 ///
 /// Env: DEPLOYER_PRIVATE_KEY_ROBINHOOD (deployer must hold ADMIN for addCollateral),
 ///      PROTOCOL_REGISTRY_ROBINHOOD, EUSD_ADMIN_ROBINHOOD (final token admin, e.g. the Safe)

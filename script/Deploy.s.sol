@@ -3,6 +3,8 @@ pragma solidity 0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
 
+import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
+
 import {AssetRegistry} from "../src/core/AssetRegistry.sol";
 
 import {OwnMarket} from "../src/core/OwnMarket.sol";
@@ -114,7 +116,8 @@ contract Deploy is Script {
         console.log("AssetRegistry:", d.assetRegistry);
 
         // ── 5. OwnMarket ──────────────────────────────────────
-        d.market = address(new OwnMarket(d.registry));
+        d.market =
+            address(new ERC1967Proxy(address(new OwnMarket()), abi.encodeCall(OwnMarket.initialize, (d.registry))));
         console.log("OwnMarket:", d.market);
 
         // ── 6. VaultManager ───────────────────────────────────

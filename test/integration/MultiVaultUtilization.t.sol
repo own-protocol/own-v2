@@ -9,8 +9,10 @@ import {AssetConfig, OrderStatus, OrderType, Quote} from "../../src/interfaces/t
 
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {OwnMarket} from "../../src/core/OwnMarket.sol";
+
 import {OwnVault} from "../../src/core/OwnVault.sol";
 import {EToken} from "../../src/tokens/EToken.sol";
+import {deployOwnMarket} from "../helpers/DeployOwnMarket.sol";
 
 /// @title MultiVaultUtilization Integration Test
 /// @notice Two vaults registered with one VaultManager share a single global risk pool: collateral
@@ -47,7 +49,7 @@ contract MultiVaultUtilizationTest is BaseTest {
         vaultManager.registerVault(address(vaultA), ETH);
         vaultManager.registerVault(address(vaultB), ETH);
 
-        market = new OwnMarket(address(protocolRegistry));
+        market = deployOwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
 
         // Minted asset (exposure side).

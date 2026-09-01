@@ -3,6 +3,7 @@ pragma solidity 0.8.28;
 
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {OwnMarket} from "../../src/core/OwnMarket.sol";
+import {deployOwnMarket} from "../helpers/DeployOwnMarket.sol";
 
 import {IOwnMarket} from "../../src/interfaces/IOwnMarket.sol";
 import {EToken} from "../../src/tokens/EToken.sol";
@@ -14,6 +15,9 @@ import {AssetConfig, BPS, Order, OrderStatus, OrderType, PRECISION, Quote} from 
 import {Actors} from "../helpers/Actors.sol";
 import {BaseTest} from "../helpers/BaseTest.sol";
 import {MockERC20} from "../helpers/MockERC20.sol";
+import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
+import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
+import {UUPSUpgradeable} from "@openzeppelin/contracts/proxy/utils/UUPSUpgradeable.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 /// @dev Payment token whose transfers deliver 1 wei less than requested (L-12 regression).
@@ -105,7 +109,7 @@ contract OwnMarketTest is BaseTest {
         protocolRegistry.setAddress(protocolRegistry.ASSET_REGISTRY(), address(assetReg));
 
         protocolRegistry.setAddress(protocolRegistry.VAULT_MANAGER(), mockVaultManager);
-        market = new OwnMarket(address(protocolRegistry));
+        market = deployOwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
 
         // Configure ETH oracle for force execution collateral conversion
@@ -1609,5 +1613,69 @@ contract OwnMarketTest is BaseTest {
         vm.prank(Actors.MINTER1);
         vm.expectRevert(IOwnMarket.PaymentTokenNotSet.selector);
         market.placeOrder(TSLA, OrderType.Mint, 1000e6, TSLA_PRICE, _defaultExpiry());
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  UUPS lifecycle
+    // ──────────────────────────────────────────────────────────
+
+    function test_initialize_bareImplementation_reverts() public {
+        OwnMarket impl = new OwnMarket();
+        vm.expectRevert(Initializable.InvalidInitialization.selector);
+        impl.initialize(address(protocolRegistry));
+    }
+
+    function test_initialize_secondCall_reverts() public {
+        vm.expectRevert(Initializable.InvalidInitialization.selector);
+        market.initialize(address(protocolRegistry));
+    }
+
+    function test_initialize_zeroRegistry_reverts() public {
+        OwnMarket impl = new OwnMarket();
+        bytes memory initData = abi.encodeCall(OwnMarket.initialize, (address(0)));
+        vm.expectRevert(IOwnMarket.ZeroAddress.selector);
+        new ERC1967Proxy(address(impl), initData);
+    }
+
+    function test_upgrade_byAdmin_succeeds() public {
+        vm.prank(Actors.ADMIN);
+        protocolRegistry.grantRole(keccak256("ADMIN"), Actors.ADMIN);
+
+        OwnMarketV2 newImpl = new OwnMarketV2();
+        vm.prank(Actors.ADMIN);
+        UUPSUpgradeable(address(market)).upgradeToAndCall(address(newImpl), "");
+
+        // State (order counter, registry) survives; new behavior is live.
+        assertEq(OwnMarketV2(address(market)).version(), 2);
+        assertEq(address(market.registry()), address(protocolRegistry));
+    }
+
+    function test_upgrade_byNonAdmin_reverts() public {
+        OwnMarketV2 newImpl = new OwnMarketV2();
+        vm.expectRevert(IOwnMarket.OnlyAdmin.selector);
+        vm.prank(Actors.ATTACKER);
+        UUPSUpgradeable(address(market)).upgradeToAndCall(address(newImpl), "");
+    }
+
+    function test_upgrade_preservesOrderState() public {
+        // Place a resting order, then upgrade, then confirm it still reads back.
+        uint256 orderId = _placeMint(Actors.MINTER1, 1000e6, TSLA_PRICE);
+
+        vm.prank(Actors.ADMIN);
+        protocolRegistry.grantRole(keccak256("ADMIN"), Actors.ADMIN);
+        OwnMarketV2 newImpl = new OwnMarketV2();
+        vm.prank(Actors.ADMIN);
+        UUPSUpgradeable(address(market)).upgradeToAndCall(address(newImpl), "");
+
+        assertEq(market.getOrder(orderId).user, Actors.MINTER1);
+        assertEq(market.getOrder(orderId).amount, 1000e6);
+    }
+}
+
+/// @dev Minimal upgraded implementation used only to prove UUPS upgrade wiring works and storage
+///      is preserved. Appends no storage; adds one pure function.
+contract OwnMarketV2 is OwnMarket {
+    function version() external pure returns (uint256) {
+        return 2;
     }
 }
