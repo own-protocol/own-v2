@@ -115,9 +115,12 @@ contract Deploy is Script {
         d.assetRegistry = address(new AssetRegistry(d.registry));
         console.log("AssetRegistry:", d.assetRegistry);
 
-        // ── 5. OwnMarket ──────────────────────────────────────
-        d.market =
-            address(new ERC1967Proxy(address(new OwnMarket()), abi.encodeCall(OwnMarket.initialize, (d.registry))));
+        // ── 5. OwnMarket (UUPS proxy; ForceExecuteLib is auto-deployed and linked into the
+        //       implementation by forge in this broadcast — the impl address is needed for
+        //       explorer verification with the library link) ──
+        address marketImpl = address(new OwnMarket());
+        d.market = address(new ERC1967Proxy(marketImpl, abi.encodeCall(OwnMarket.initialize, (d.registry))));
+        console.log("OwnMarket impl:", marketImpl);
         console.log("OwnMarket:", d.market);
 
         // ── 6. VaultManager ───────────────────────────────────
