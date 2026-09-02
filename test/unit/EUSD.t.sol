@@ -264,6 +264,61 @@ contract EUSDTest is Test {
         assertEq(eusd.bridgeMintAvailable(bridge), MINT_LIMIT); // capped at max
     }
 
+    /// @dev A4-I-09: zero-amount bridge calls must not emit spoofable bridge events.
+    function test_crosschain_zeroAmount_reverts() public {
+        _configureBridge();
+        vm.prank(attacker); // any EOA, not even an authorized bridge
+        vm.expectRevert(IEUSD.ZeroAmount.selector);
+        eusd.crosschainMint(user, 0);
+        vm.prank(attacker);
+        vm.expectRevert(IEUSD.ZeroAmount.selector);
+        eusd.crosschainBurn(user, 0);
+        vm.prank(bridge);
+        vm.expectRevert(IEUSD.ZeroAmount.selector);
+        eusd.crosschainMint(user, 0);
+    }
+
+    /// @dev A4-I-10: lowering limits mid-window clamps what the bridge has, never refills it.
+    function test_setBridgeLimits_lowerMidWindow_clampsNoRefill() public {
+        _configureBridge();
+        vm.prank(bridge);
+        eusd.crosschainMint(user, MINT_LIMIT); // window drained
+        vm.warp(block.timestamp + eusd.LIMIT_DURATION() / 4); // 250 refilled
+
+        vm.prank(admin);
+        eusd.setBridgeLimits(bridge, 100e18, BURN_LIMIT); // incident: cut to 100
+        assertEq(eusd.bridgeMintAvailable(bridge), 100e18); // min(250, 100), not a fresh 100 on top
+        assertEq(eusd.bridgeBurnAvailable(bridge), BURN_LIMIT); // untouched burn side stays full
+        vm.prank(bridge);
+        vm.expectRevert(abi.encodeWithSelector(IEUSD.BridgeLimitExceeded.selector, 100e18 + 1, 100e18));
+        eusd.crosschainMint(user, 100e18 + 1);
+    }
+
+    function test_setBridgeLimits_raiseMidWindow_noRefill() public {
+        _configureBridge();
+        vm.prank(bridge);
+        eusd.crosschainMint(user, MINT_LIMIT);
+        vm.warp(block.timestamp + eusd.LIMIT_DURATION() / 4); // 250 available
+
+        vm.prank(admin);
+        eusd.setBridgeLimits(bridge, 2 * MINT_LIMIT, BURN_LIMIT);
+        assertEq(eusd.bridgeMintAvailable(bridge), MINT_LIMIT / 4); // settled, not reset to 2000
+        vm.warp(block.timestamp + eusd.LIMIT_DURATION() / 4); // refills at the new rate: +500
+        assertEq(eusd.bridgeMintAvailable(bridge), MINT_LIMIT / 4 + MINT_LIMIT / 2);
+    }
+
+    function test_setBridgeLimits_reauthorizeAfterZero_fullWindow() public {
+        _configureBridge();
+        vm.prank(bridge);
+        eusd.crosschainMint(user, MINT_LIMIT);
+        vm.startPrank(admin);
+        eusd.setBridgeLimits(bridge, 0, 0); // emergency de-authorize
+        assertEq(eusd.bridgeMintAvailable(bridge), 0);
+        eusd.setBridgeLimits(bridge, MINT_LIMIT, BURN_LIMIT); // fresh authorization: full window
+        vm.stopPrank();
+        assertEq(eusd.bridgeMintAvailable(bridge), MINT_LIMIT);
+    }
+
     function test_crosschainBurn_succeeds() public {
         _configureBridge();
         vm.prank(manager);
@@ -307,12 +362,15 @@ contract EUSDTest is Test {
         eusd.crosschainMint(user, 1e18);
     }
 
-    function test_setBridgeLimits_resetsRemainingToNewMax() public {
+    /// @dev A4-I-10: re-setting limits on a drained bridge is not a refill.
+    function test_setBridgeLimits_drainedBridge_noRefill() public {
         _configureBridge();
         vm.prank(bridge);
         eusd.crosschainMint(user, MINT_LIMIT); // drained
         vm.prank(admin);
         eusd.setBridgeLimits(bridge, 200e18, BURN_LIMIT);
+        assertEq(eusd.bridgeMintAvailable(bridge), 0); // settled 0, clamped — refills at 200/window
+        vm.warp(block.timestamp + eusd.LIMIT_DURATION());
         assertEq(eusd.bridgeMintAvailable(bridge), 200e18);
     }
 

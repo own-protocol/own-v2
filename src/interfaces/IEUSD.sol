@@ -60,6 +60,8 @@ interface IEUSD is IERC20, IERC20Permit, IERC7802 {
 
     /// @notice A required address was the zero address.
     error ZeroAddress();
+    /// @notice Zero-amount bridge calls are rejected (no spoofed bridge events).
+    error ZeroAmount();
 
     /// @notice The caller's remaining bridge capacity cannot cover the request. Also raised for
     ///         callers with no limits configured (available == 0), i.e. non-bridges.
@@ -134,9 +136,11 @@ interface IEUSD is IERC20, IERC20Permit, IERC7802 {
     //  Bridge administration (DEFAULT_ADMIN_ROLE)
     // ──────────────────────────────────────────────────────────
 
-    /// @notice Set a bridge's per-window mint and burn limits. Setting limits (re)authorizes the
-    ///         bridge and resets its remaining capacity to the new maxima; setting both to zero
-    ///         de-authorizes it immediately (the emergency lever for a compromised transport).
+    /// @notice Set a bridge's per-window mint and burn limits. A fresh authorization (bridge
+    ///         currently has zero limits) starts with a full window; updating a live bridge settles
+    ///         its accrued capacity and clamps it to the new maxima (never a refill). Setting both
+    ///         to zero de-authorizes it immediately (the emergency lever for a compromised
+    ///         transport).
     /// @param bridge       Bridge / token-pool address.
     /// @param mintMaxLimit Max mint per {LIMIT_DURATION} window (18 decimals).
     /// @param burnMaxLimit Max burn per {LIMIT_DURATION} window (18 decimals).

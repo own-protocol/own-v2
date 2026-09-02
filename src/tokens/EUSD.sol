@@ -63,6 +63,7 @@ contract EUSD is IEUSD, ERC20Permit, AccessControl {
 
     /// @inheritdoc IERC7802
     function crosschainMint(address to, uint256 amount) external override {
+        if (amount == 0) revert ZeroAmount();
         _consumeLimit(true, amount);
         int256 newNet = netBridgedIn + SafeCast.toInt256(amount);
         // Global ceiling: bounds total bridged-in eUSD beyond local CDP backing, no matter which
@@ -75,6 +76,7 @@ contract EUSD is IEUSD, ERC20Permit, AccessControl {
 
     /// @inheritdoc IERC7802
     function crosschainBurn(address from, uint256 amount) external override {
+        if (amount == 0) revert ZeroAmount();
         _consumeLimit(false, amount);
         netBridgedIn -= SafeCast.toInt256(amount);
         _burn(from, amount);
@@ -88,11 +90,24 @@ contract EUSD is IEUSD, ERC20Permit, AccessControl {
         uint256 burnMaxLimit
     ) external override onlyRole(DEFAULT_ADMIN_ROLE) {
         if (bridge == address(0)) revert ZeroAddress();
+        BridgeConfig storage cfg = _bridges[bridge];
+        // A fresh authorization starts with a full window. An update to a live bridge settles what
+        // it has accrued and clamps to the new maxima — never a refill, so lowering limits during
+        // an incident takes effect immediately instead of handing out a second window.
+        bool live = cfg.mintMaxLimit != 0 || cfg.burnMaxLimit != 0;
+        uint256 mintRemaining = mintMaxLimit;
+        uint256 burnRemaining = burnMaxLimit;
+        if (live) {
+            uint256 mintAvail = _available(cfg.mintRemaining, cfg.mintMaxLimit, cfg.lastUpdate);
+            uint256 burnAvail = _available(cfg.burnRemaining, cfg.burnMaxLimit, cfg.lastUpdate);
+            mintRemaining = mintAvail > mintMaxLimit ? mintMaxLimit : mintAvail;
+            burnRemaining = burnAvail > burnMaxLimit ? burnMaxLimit : burnAvail;
+        }
         _bridges[bridge] = BridgeConfig({
             mintMaxLimit: mintMaxLimit,
             burnMaxLimit: burnMaxLimit,
-            mintRemaining: mintMaxLimit,
-            burnRemaining: burnMaxLimit,
+            mintRemaining: mintRemaining,
+            burnRemaining: burnRemaining,
             lastUpdate: block.timestamp
         });
         emit BridgeLimitsSet(bridge, mintMaxLimit, burnMaxLimit);

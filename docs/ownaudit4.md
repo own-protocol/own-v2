@@ -1,6 +1,6 @@
 # Own Protocol v2 — Audit Report & Remediation Status (Pass 4 — eUSD CDP Module)
 
-**Branch:** `stablecoin` · **Last updated:** 2026-09-02 · **Test suite:** 1424 passing excl. fork suites (+38 across the H-01 / H-02 / M-02 / M-03 / M-04 and L-08 / L-10 / L-11 / L-12 / L-13 / L-14 fixes)
+**Branch:** `stablecoin` · **Last updated:** 2026-09-02 · **Test suite:** 1428 passing excl. fork suites (+42 across the H-01 / H-02 / M-02 / M-03 / M-04, L-08 / L-10 / L-11 / L-12 / L-13 / L-14 and I-09 / I-10 fixes)
 
 This pass is **scoped to the new eUSD CDP module** (EUSDManager + EUSD token) introduced on the
 `stablecoin` branch; it does not re-tread the protocol-wide ground covered by `audit-report-3.md`,
@@ -41,7 +41,7 @@ out-of-scope context for seam verification.
 | High     | 2     | 2     | 0    | 0         |
 | Medium   | 5     | 4     | 0    | 1         |
 | Low      | 18    | 9     | 0    | 9         |
-| Info     | 17    | 0     | 9    | 8 (noted) |
+| Info     | 17    | 2     | 0    | 15 (noted)|
 
 | ID      | Severity | Finding                                                                  | Status                       |
 | ------- | -------- | ------------------------------------------------------------------------ | ---------------------------- |
@@ -78,15 +78,15 @@ out-of-scope context for seam verification.
 | A4-I-06 | Info     | Bridge burn+mint pairing evades the `netBridgedIn` global cap            | **By design** — noted        |
 | A4-I-07 | Info     | OWN sent directly to OwnIncentives (not via `fund`) is unrecoverable     | **By design** — noted        |
 | A4-I-08 | Info     | `recoverReserve` can pull reserve backing accrued-but-unclaimed OWN      | **By design** — noted        |
-| A4-I-09 | Info     | Zero-amount `crosschainMint/Burn` lets any EOA emit spoofed bridge events| **Open** (one-line guard)    |
-| A4-I-10 | Info     | `setBridgeLimits` resets remaining to max — instant window refill        | **Open** (settle-then-clamp) |
-| A4-I-11 | Info     | Stability-fee accrual bypasses `debtCeiling`                             | **Open** (confirm intent)    |
-| A4-I-12 | Info     | `_verifyInhouseProof` lacks the per-asset staleness bound of `updatePrice`| **Open** (defense-in-depth)  |
-| A4-I-13 | Info     | `ReserveVault.skimExcess` pays surplus to `msg.sender` (hot key)         | **Open** (ops)               |
-| A4-I-14 | Info     | `LendingRouter.deposit` bypasses the pool supplier allowlist (shim vault)| **Open** (confirm policy)    |
-| A4-I-15 | Info     | `EToken.updateName` breaks the cached ERC-2612 permit domain             | **Open** (docs/integrators)  |
-| A4-I-16 | Info     | `_lastPremiumBps` zero-sentinel collides with a real 0 observation       | **Open** (config guard)      |
-| A4-I-17 | Info     | `setChainlinkConfig` keeps the old in-house `_prices` cache              | **Open** (one-line delete)   |
+| A4-I-09 | Info     | Zero-amount `crosschainMint/Burn` lets any EOA emit spoofed bridge events| **Fixed** (2026-09-02)       |
+| A4-I-10 | Info     | `setBridgeLimits` resets remaining to max — instant window refill        | **Fixed** (2026-09-02)       |
+| A4-I-11 | Info     | Stability-fee accrual bypasses `debtCeiling`                             | **Acknowledged**             |
+| A4-I-12 | Info     | `_verifyInhouseProof` lacks the per-asset staleness bound of `updatePrice`| **Acknowledged**             |
+| A4-I-13 | Info     | `ReserveVault.skimExcess` pays surplus to `msg.sender` (hot key)         | **Acknowledged**             |
+| A4-I-14 | Info     | `LendingRouter.deposit` bypasses the pool supplier allowlist (shim vault)| **Acknowledged**             |
+| A4-I-15 | Info     | `EToken.updateName` breaks the cached ERC-2612 permit domain             | **Acknowledged**             |
+| A4-I-16 | Info     | `_lastPremiumBps` zero-sentinel collides with a real 0 observation       | **Acknowledged**             |
+| A4-I-17 | Info     | `setChainlinkConfig` keeps the old in-house `_prices` cache              | **Acknowledged**             |
 
 ---
 
@@ -701,7 +701,21 @@ today). Test: `test_externalBurnBelowUnvested_vaultStaysLive` (burn to 301 with 
 
 ## 2. Open Findings
 
-### A4-I-11 … A4-I-17 (Info, round-2 protocol-wide pass)
+None — every finding in this pass is either fixed (§1) or accepted with rationale (§3) as of 2026-09-02.
+
+---
+
+## 3. By-Design / Withdrawn
+
+**A4-I-11 … A4-I-17 — acknowledged 2026-09-02** (original notes retained below; disposition per item):
+I-11 intended, Maker-style (the ceiling gates new minting, not interest) — documented here.
+I-12 oracle is deployed and non-upgradeable; consumers backstop with the global `priceMaxAge` —
+noted as defense-in-depth for any future oracle redeploy. I-13 `ReserveVault` non-upgradeable —
+ops rule: prefer `withdraw`, monitor skims. I-14 aTokens stay 1:1 backed and nothing relies on
+supplier identity — accepted. I-15 integrator doc: the canonical ERC-2612 domain is the
+constructor-time name — accepted. I-16 cannot occur with the live config (`basePremiumBps =
+600` on Robinhood); config rule: keep it non-zero. I-17 oracle is deployed — the one-line
+`delete _prices[asset]` mirror is noted for any future redeploy.
 
 - **A4-I-11.** Stability-fee accrual (`_accrue`) increments `totalDebt` past `debtCeiling`
   with no check (ceiling gates only `mint`). Maker-style and probably intended — confirm and
@@ -728,10 +742,6 @@ today). Test: `test_externalBurnBelowUnvested_vaultStaysLive` (burn to 301 with 
 - **A4-I-17.** `setChainlinkConfig` overwrites config but keeps the previously pushed in-house
   price cached (`disableAsset` deletes both) — after a reconfig with new price semantics the
   old-unit price can serve until it ages out. One-line `delete _prices[asset]` mirror.
-
----
-
-## 3. By-Design / Withdrawn
 
 - **A4-L-18 — Borrow-rate setters reprice the elapsed accrual window.** Mechanism confirmed
   (`setMinAaveBorrowRateBps` / `setRateParams` do not `_accrue()` first; on Robinhood the floor
@@ -831,12 +841,12 @@ today). Test: `test_externalBurnBelowUnvested_vaultStaysLive` (burn to 301 with 
   the index model); shortfalls become first-come-first-served, surfaced via `RewardShortfall`.
   Consistent with the documented capped-budget design — noted; recommend a keeper-side
   invariant check (reserve ≥ Σ accrued) before any admin recovery.
-- **A4-I-09 — Zero-amount `crosschainMint`/`crosschainBurn` succeed for any caller.**
+- **A4-I-09 — Zero-amount `crosschainMint`/`crosschainBurn` succeed for any caller. — FIXED (2026-09-02: `ZeroAmount` revert on both ERC-7802 entry points; test `test_crosschain_zeroAmount_reverts`).**
   `_consumeLimit(_, 0)` passes even with a zeroed config (`0 > 0` is false), so any EOA can
   emit genuine `CrosschainMint`/`CrosschainBurn` events with itself as the "bridge" — polluting
   exactly the event surface bridge monitoring and indexers watch. No fund impact; fix is a
   one-line `amount == 0` revert on both ERC-7802 entry points.
-- **A4-I-10 — `setBridgeLimits` resets `remaining` to the new maxima.** Any limit update —
+- **A4-I-10 — `setBridgeLimits` resets `remaining` to the new maxima. — FIXED (2026-09-02: a fresh authorization starts with a full window; an update to a live bridge settles accrued capacity via `_available` and clamps to the new maxima, never refilling; tests `test_setBridgeLimits_lowerMidWindow_clampsNoRefill`, `test_setBridgeLimits_raiseMidWindow_noRefill`, `test_setBridgeLimits_reauthorizeAfterZero_fullWindow`).** Any limit update —
   including a *lowering* — hands the bridge an instant full window on top of what it just
   spent (momentary 2× per-window throughput), worst exactly during an incident when limits are
   being tweaked. Settle-then-clamp the remaining values instead of resetting.
@@ -959,7 +969,7 @@ module scope; statuses in the master index are authoritative).
       runbook: throwing the mint pause must actually stop value extraction.
 - [x] A4-L-15 — add the `code.length` guard to `setIncentivesController` + extcodesize unit
       test.
-- [ ] A4-I-09 / A4-I-10 — zero-amount revert on the ERC-7802 pair; settle-then-clamp in
+- [x] A4-I-09 / A4-I-10 — zero-amount revert on the ERC-7802 pair; settle-then-clamp in
       `setBridgeLimits`. Bound `emissionPerSecond` in `OwnIncentives.setDistribution` (an
       absurd value overflows `emissionPerSecond·Δt` in `_updateGlobal`, bricking `claim` AND
       `setDistribution` itself — unrecoverable without an upgrade).
