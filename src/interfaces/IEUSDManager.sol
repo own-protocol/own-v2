@@ -49,7 +49,12 @@ interface IEUSDManager {
     /// @param stabilityFeeBps   Fixed annual stability fee on outstanding debt (BPS, simple interest).
     /// @param debtCeiling       Global cap on total eUSD debt (18 decimals).
     /// @param minDebt           Minimum debt per position after mint/repay (18 decimals).
-    /// @param mintPriceMaxAge   Max oracle price age accepted for mint / withdraw (seconds).
+    /// @param mintPriceMaxAge   Max oracle price age accepted for mint / withdraw (seconds). Bounds
+    ///                          the timestamp the oracle *reports*: the Chainlink leg reports
+    ///                          `block.timestamp` for any answer younger than its `clFreshWindow`
+    ///                          (deviation-bounded while live), so the effective bound on that leg is
+    ///                          `max(mintPriceMaxAge, clFreshWindow)`; the knob bites on the in-house
+    ///                          leg and on Chainlink answers older than the window.
     struct RiskParams {
         uint16 mcrBps;
         uint16 liquidationThresholdBps;
@@ -158,6 +163,12 @@ interface IEUSDManager {
         address indexed collateral, address indexed owner, uint256 collateralReturned, uint256 debtRepaid
     );
 
+    /// @notice Emitted when collateral eToken dividends held by the manager are swept to the treasury.
+    /// @param collateral  Collateral eToken whose rewards were claimed.
+    /// @param rewardToken Reward token forwarded.
+    /// @param amount      Amount forwarded (reward-token decimals).
+    event CollateralRewardsSwept(address indexed collateral, address indexed rewardToken, uint256 amount);
+
     /// @notice Emitted when a position is liquidated.
     /// @param collateral         Collateral eToken.
     /// @param owner              Position owner.
@@ -258,6 +269,8 @@ interface IEUSDManager {
     /// @param ratioBps     Current ratio (BPS).
     /// @param thresholdBps Liquidation threshold (BPS).
     error PositionNotLiquidatable(uint256 ratioBps, uint256 thresholdBps);
+    /// @notice The collateral eToken has no claimable rewards for the manager.
+    error NoRewardsToSweep(address collateral);
     /// @notice No debt exists to redeem against for this collateral.
     error NothingToRedeem(address collateral);
     /// @notice Redemption returned less collateral than the caller's floor.
@@ -353,6 +366,16 @@ interface IEUSDManager {
         address hint
     ) external returns (uint256 collateralOut, uint256 debtRepaid);
 
+    /// @notice Claim the dividends a collateral eToken has accrued to the manager (the holder of
+    ///         record while eTokens sit as CDP collateral) and forward them to the protocol
+    ///         treasury — the same rule as `OwnMarket.sweepDividends` and the borrow manager's
+    ///         collateral-dividend sweep. Permissionless. Reverts if nothing is claimable.
+    /// @param collateral Collateral eToken to sweep.
+    /// @return amount Reward tokens forwarded.
+    function sweepCollateralRewards(
+        address collateral
+    ) external returns (uint256 amount);
+
     // ──────────────────────────────────────────────────────────
     //  Admin (ADMIN role via ProtocolRegistry)
     // ──────────────────────────────────────────────────────────
@@ -394,7 +417,9 @@ interface IEUSDManager {
         uint256 minDebt
     ) external;
 
-    /// @notice Set the price freshness bound for mint / withdraw. Must be non-zero.
+    /// @notice Set the price freshness bound for mint / withdraw. Must be non-zero. See the
+    ///         `RiskParams.mintPriceMaxAge` note: on the Chainlink leg the effective bound is
+    ///         `max(mintPriceMaxAge, oracle clFreshWindow)`.
     /// @param mintPriceMaxAge New max age (seconds).
     function setMintPriceMaxAge(
         uint256 mintPriceMaxAge

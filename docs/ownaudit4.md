@@ -1,6 +1,6 @@
 # Own Protocol v2 — Audit Report & Remediation Status (Pass 4 — eUSD CDP Module)
 
-**Branch:** `stablecoin` · **Last updated:** 2026-09-02 · **Test suite:** 1417 passing excl. fork suites (+31 across the A4-H-01 / H-02 / M-02 / M-03 / M-04 fixes)
+**Branch:** `stablecoin` · **Last updated:** 2026-09-02 · **Test suite:** 1419 passing excl. fork suites (+33 across the H-01 / H-02 / M-02 / M-03 / M-04 / L-08 fixes)
 
 This pass is **scoped to the new eUSD CDP module** (EUSDManager + EUSD token) introduced on the
 `stablecoin` branch; it does not re-tread the protocol-wide ground covered by `audit-report-3.md`,
@@ -39,8 +39,8 @@ out-of-scope context for seam verification.
 | -------- | ----- | ----- | ---- | --------- |
 | Critical | 0     | —     | —    | —         |
 | High     | 2     | 2     | 0    | 0         |
-| Medium   | 5     | 4     | 1    | 0         |
-| Low      | 18    | 1     | 16   | 1         |
+| Medium   | 5     | 4     | 0    | 1         |
+| Low      | 18    | 4     | 6    | 8         |
 | Info     | 17    | 0     | 9    | 8 (noted) |
 
 | ID      | Severity | Finding                                                                  | Status                       |
@@ -51,24 +51,24 @@ out-of-scope context for seam verification.
 | A4-M-02 | Medium   | OwnIncentives pays retroactive OWN on balances from unhooked windows     | **Fixed** (2026-09-02)       |
 | A4-M-03 | Medium   | Full-debt-only liquidation can be starved of eUSD liquidity (no partial) | **Fixed** (2026-09-02)       |
 | A4-M-04 | Medium   | Halted collateral valued at live feed — unbacked mint above halt price   | **Fixed** (2026-09-02)       |
-| A4-M-05 | Medium   | Force-execute on PSM-backed asset: vault LPs pay, maker collects surplus | **Open** (ops-gated)         |
-| A4-L-01 | Low      | `mintPriceMaxAge` is a no-op inside the oracle's `clFreshWindow`         | **Open**                     |
-| A4-L-02 | Low      | Sorted-list ordering drifts under lazy stability-fee accrual             | **Open**                     |
+| A4-M-05 | Medium   | Force-execute on PSM-backed asset: vault LPs pay, maker collects surplus | **By design** — trusted maker|
+| A4-L-01 | Low      | `mintPriceMaxAge` is a no-op inside the oracle's `clFreshWindow`         | **Fixed** (docs, 2026-09-02) |
+| A4-L-02 | Low      | Sorted-list ordering drifts under lazy stability-fee accrual             | **By design** — documented   |
 | A4-L-03 | Low      | No `minDebt` floor on the redemption path                                | **By design** — documented   |
-| A4-L-04 | Low      | Oracle `maxAnchorAge` width vs liquidation bonus unverified              | **Open** (ops check)         |
-| A4-L-05 | Low      | `setRiskParams` threshold raise assumes ADMIN sits behind the timelock   | **Open** (ops check)         |
-| A4-L-06 | Low      | ADMIN/OPERATOR role namespace is protocol-global, not per-contract       | **Open** (confirm intent)    |
-| A4-L-07 | Low      | `MINTER_ROLE` exclusivity not structurally enforced on EUSD              | **Open** (deploy-time assert)|
-| A4-L-08 | Low      | eToken collateral dividends stranded in the manager (no claim path)      | **Open** (confirm reward model)|
-| A4-L-09 | Low      | `setPartner` + permissionless sweep can redirect any holder's accrued OWN| **Open** (hardening)         |
+| A4-L-04 | Low      | Oracle `maxAnchorAge` width vs liquidation bonus unverified              | **By design** — stale-anchor exits |
+| A4-L-05 | Low      | `setRiskParams` threshold raise assumes ADMIN sits behind the timelock   | **Acknowledged** — launch checklist |
+| A4-L-06 | Low      | ADMIN/OPERATOR role namespace is protocol-global, not per-contract       | **By design** — protocol-wide |
+| A4-L-07 | Low      | `MINTER_ROLE` exclusivity not structurally enforced on EUSD              | **Fixed** (script assert)    |
+| A4-L-08 | Low      | eToken collateral dividends stranded in the manager (no claim path)      | **Fixed** (2026-09-02)       |
+| A4-L-09 | Low      | `setPartner` + permissionless sweep can redirect any holder's accrued OWN| **Acknowledged** — ADMIN trust |
 | A4-L-10 | Low      | Disabled collateral blocks defensive top-ups while liquidation stays live| **Open**                     |
 | A4-L-11 | Low      | sEUSD seed / `totalSupply > 0` before streaming unenforced — 0-share trap| **Open** (deploy-time guard) |
 | A4-L-12 | Low      | Bridge `crosschainBurn` vs sEUSD vault: socialized loss + vault DoS      | **Open** (ops check)         |
 | A4-L-13 | Low      | Force-execution ignores `order.expiry` (reopens A3-L-03's expiry half)   | **Open**                     |
 | A4-L-14 | Low      | `withdrawCollateral` with debt escapes `mintPaused`/`enabled` levers     | **Open**                     |
 | A4-L-15 | Low      | Code-less incentivesController bricks sEUSD (try/catch ≠ extcodesize)    | **Fixed** with A4-M-02       |
-| A4-L-16 | Low      | `haltAsset` price is operator-set, unbounded, and permanent              | **Open** (ops; VM immutable) |
-| A4-L-17 | Low      | Pending-deposit escrow counted as vault collateral by pool health gates  | **Open**                     |
+| A4-L-16 | Low      | `haltAsset` price is operator-set, unbounded, and permanent              | **Acknowledged** — ops; VM immutable |
+| A4-L-17 | Low      | Pending-deposit escrow counted as vault collateral by pool health gates  | **By design** — dup, accepted tail risk |
 | A4-L-18 | Low      | Rate setters reprice the elapsed accrual window (no accrue-first)        | **Open**                     |
 | A4-I-01 | Info     | `_freshPrice` tolerates future-dated timestamps                          | **By design** — noted        |
 | A4-I-02 | Info     | Fee rounds to zero but `feeIndexSnapshot` still advances                 | **By design** — noted        |
@@ -533,63 +533,64 @@ halted/delisted asset's feeds die past `maxAnchorAge`, `_anchorPrice` reverts an
 outstanding (only `closePosition` works), so undercollateralized positions become permanently
 unliquidatable. The halt gate fix should pair with a wind-down path for existing positions.
 
+### A4-L-01 (Low) — `mintPriceMaxAge` is silently a no-op while a Chainlink answer is inside `clFreshWindow` — **Fixed** (docs)
+
+**Problem.** `ChainlinkOracleVerifier.getPrice` reports `block.timestamp` as the price timestamp
+whenever the feed answer is younger than `clFreshWindow` (4h in the documented config), so
+`_freshPrice`'s `block.timestamp > ts + maxAge` bound can never fire in that window: a 5-minute
+`mintPriceMaxAge` actually admits prices up to `clFreshWindow` old. Exposure is bounded — the
+feed's 0.5% deviation trigger while live, and the 150%/130% closed-market buffer for the first
+`clFreshWindow` hours after close — and the semantics are protocol-wide (PSM and BorrowManager
+consume the same reads). The defect is that the admin-facing knob does not mean what it appears
+to mean.
+
+**Resolution (2026-09-02).** Semantics confirmed as intended (Chainlink hybrid: an answer
+younger than `clFreshWindow` is deviation-bounded while the feed is live, so reporting it as
+current is sound; bounding on the raw timestamp would push mints onto the in-house leg during
+normal hours). Documented on `RiskParams.mintPriceMaxAge` and `setMintPriceMaxAge`: effective
+bound on the Chainlink leg is `max(mintPriceMaxAge, clFreshWindow)`; the knob bites on the
+in-house leg and on older Chainlink answers. No code change.
+
+**Detected by** 1 of 12 agents (first-principles).
+
+### A4-L-07 (Low, ops) — `MINTER_ROLE` exclusivity not structurally enforced on EUSD — **Fixed** (script)
+
+The `totalSupply == totalDebt` invariant assumes EUSDManager is the *sole* `MINTER_ROLE`
+holder; the token cannot structurally enforce it (plain `AccessControl`, no enumeration).
+**Fix (2026-09-02):** `DeployEusdRobinhood.s.sol` now asserts, on the freshly deployed token,
+that the manager holds `MINTER_ROLE` and that neither the deployer nor the token admin does, and
+that the deployer no longer holds `DEFAULT_ADMIN_ROLE`. Monitoring on `RoleGranted(MINTER_ROLE)`
+remains an ops item.
+
+### A4-L-08 (Low) — eToken collateral dividends accrue to the manager with no claim path — **Fixed**
+
+**Problem.** Collateral is protocol eTokens, which are dividend/reward-bearing (they expose
+`claimableRewards` / `claimRewards` / `rewardToken`, and `OwnMarket.sweepDividends` claims them on
+escrowed eTokens). While an eToken sits as CDP collateral, its dividends accrue to the
+`EUSDManager` address (the current holder), but the manager has **no** claim, forward, or admin
+sweep path — so that yield is stranded in the manager for the life of every loan, with no recovery
+route. Depositors silently forfeit the dividend stream they would earn holding the eToken directly
+(an asymmetry vs. the analogous `OwnMarket` escrow path, which *does* implement `sweepDividends`).
+Value leak to depositors, no theft vector. If the reward model turns out to be **rebasing** rather
+than claim-based, the impact is different and worse: `totalCollateral[c]` (updated only on
+deposit/withdraw) would desync from the manager's real token balance — worth confirming.
+
+**Fix (2026-09-02).** Reward model confirmed claim-based (`EToken.depositRewards` /
+`claimRewards`, rewards-per-share accumulator, non-rebasing — `totalCollateral` cannot desync),
+and live-relevant: eSPY on Robinhood has `rewardToken` set. New permissionless
+`sweepCollateralRewards(collateral)` claims the manager's accrued rewards and forwards them to
+the protocol treasury — the same destination rule as `OwnMarket.sweepDividends` and the borrow
+manager's collateral-dividend sweep (collateral dividends are protocol revenue while custodied).
+Reverts `NoRewardsToSweep` when nothing is claimable. Tests:
+`test_sweepCollateralRewards_forwardsToTreasury` (real `EToken`, 40% of a $1000 dividend lands
+in treasury, collateral accounting untouched), `test_sweepCollateralRewards_nothingToSweep_reverts`.
+
+**Detected by** 4 of 12 agents (periphery, first-principles, invariant, trust-gap) — all as leads;
+depends on the eToken reward model, which was not in the review bundle.
+
 ---
 
 ## 2. Open Findings
-
-### A4-M-05 (Medium, ops-gated) — Force-executing a PSM-backed asset makes generic-vault LPs pay while the maker collects the freed reserve surplus
-
-**Problem.** In the normal redeem flow the party that funds the user's payout (the maker) is
-also the party entitled to withdraw the RWA reserve surplus freed when exposure closes
-(`ReserveVault.withdraw`, guard `rwaCollateralUSD ≥ exposureUSD`). Force-execution breaks that
-pairing: the payout comes from an admin-allowlisted **generic** vault's LP collateral, but
-`closeExposure` still frees the matching reserve slice into the maker-withdrawable surplus.
-A maker can therefore monetize its own non-performance: ignore redeem orders on a PSM-backed
-asset, let users force-execute against the allowlisted generic vault (LPs pay ~$100k per $100k
-forced), then withdraw the freed $100k surplus — repeatable until the vault's util/HF gates
-bind. Preconditions: the asset has a funded PSM reserve AND the admin has allowlisted ≥1
-generic vault for force-execution on it (the pool is empty by default, which disables force).
-
-**Suggested fix.** Don't allowlist generic force-execution vaults for assets with a configured
-PSM reserve (ops rule, effective immediately), and/or in `ForceExecuteLib._validateForce`
-revert when the asset carries RWA reserve backing — or route the freed reserve slice to the
-paying vault instead of the maker surplus (larger change).
-
-**Detected by** 1 of 12 agents (asymmetry), with a complete numeric trace across
-ForceExecuteLib → VaultManager → ReserveVault.
-
-### A4-L-16 (Low, ops) — `haltAsset` accepts an arbitrary, permanent, operator-set settlement price
-
-**Problem.** `haltAsset` is gated by the instant OPERATOR role, checks only `haltPrice != 0`
-(no band against the live mark, unlike every other price ingress), and halting is one-way —
-no un-halt exists. The price is immediately monetizable by permissionless paths: `haltPrice = 1
-wei` lets anyone `settleHaltedPosition` every borrower (all collateral seized for ~0 proceeds,
-debt residual kept — irreversible); an inflated price drains the halt fund via `redeemHalted`
-up to its allowance. This contradicts the leaked-key damage-cap philosophy applied everywhere
-else (settle band, price band, ratio-jump guard). **VaultManager is immutable, so there is no
-code fix** — containment is operational: operator-key hygiene, monitoring on `haltAsset`
-params, and funding `haltRedeemAddress`/approvals only after halt-price review.
-
-**Detected by** 2 of 12 agents (trust-gap as finding, access-control as lead).
-
-### A4-L-17 (Low) — Pending-deposit escrow is counted as vault collateral by every pool health gate
-
-**Problem.** In approval mode, `requestDeposit` pulls aTokens to the vault address
-(`OwnVault.sol:231`) and `totalAssets()` excludes them (`:680`) — but
-`OwnLendingPool._requireHealthy` (`OwnLendingPool.sol:344`) and the vault-health gates read raw
-`aToken.balanceOf(vault)`, which includes the escrow. A large pending deposit therefore pads
-every health check: LP exits via `fulfillWithdrawal` can drain real backing below the intended
-floor while the gates pass; once drained, `cancelDeposit`/`rejectDeposit` revert in the aToken
-transfer health hook (`validateTransfer`), freezing every pending depositor's escrow until debt
-is repaid or deposits are accepted. On the Robinhood venue (OwnLendingPool: no liquidations)
-the harm is floor dilution + escrow freeze; on any real-Aave venue the unpadded vault can end
-below HF 1.0 and be externally liquidated.
-
-**Suggested fix.** Hold pending-deposit escrow outside the vault address (dedicated escrow
-holder, or pull assets only on `acceptDeposit`) so venue-side balance equals real backing.
-
-**Detected by** 1 of 12 agents (numerical-gap); escrow pull and raw-balance health read
-verified directly against source.
 
 ### A4-L-18 (Low) — Rate setters reprice the elapsed accrual window instead of applying prospectively
 
@@ -635,101 +636,6 @@ stored-`_lastPremiumBps` design's own stated invariant (no repricing of elapsed 
 - **A4-I-17.** `setChainlinkConfig` overwrites config but keeps the previously pushed in-house
   price cached (`disableAsset` deletes both) — after a reconfig with new price semantics the
   old-unit price can serve until it ages out. One-line `delete _prices[asset]` mirror.
-
-### A4-L-01 (Low) — `mintPriceMaxAge` is silently a no-op while a Chainlink answer is inside `clFreshWindow`
-
-**Problem.** `ChainlinkOracleVerifier.getPrice` reports `block.timestamp` as the price timestamp
-whenever the feed answer is younger than `clFreshWindow` (4h in the documented config), so
-`_freshPrice`'s `block.timestamp > ts + maxAge` bound can never fire in that window: a 5-minute
-`mintPriceMaxAge` actually admits prices up to `clFreshWindow` old. Exposure is bounded — the
-feed's 0.5% deviation trigger while live, and the 150%/130% closed-market buffer for the first
-`clFreshWindow` hours after close — and the semantics are protocol-wide (PSM and BorrowManager
-consume the same reads). The defect is that the admin-facing knob does not mean what it appears
-to mean.
-
-**Suggested fix.** Either document on `setMintPriceMaxAge` that the effective bound is
-`max(mintPriceMaxAge, oracle clFreshWindow)` for the Chainlink leg, or expose the raw observation
-timestamp from the oracle and bound against that. No change if the current semantics are
-confirmed as intended.
-
-**Detected by** 1 of 12 agents (first-principles).
-
-### A4-L-02 (Low) — Sorted-list ordering drifts from true risk under lazy fee accrual
-
-**Problem.** The list is keyed on *stored* `collateral/debt`; `_accrue` folds pending stability
-fees into a position's debt only when that position is touched and never re-sorts neighbors, so
-`_insertNode` compares fee-inclusive against fee-stale debts. A borrower who never touches their
-position keeps its debt understated, drifts tailward, and preferentially dodges redemption onto
-freshly-touched equal-risk positions. Drift is bounded by `stabilityFeeBps × elapsed` (≈2%/yr at
-launch params); redemption still pays par, so this is fairness/ordering only. Acknowledged in the
-interface NatSpec ("bounded by the stability fee rate"). Grooming variant (2026-09-02 pass):
-`repay` is permissionless, so a third party can force-crystallize a victim's pending fees with a
-1-wei repay, deliberately re-sorting near-tied positions toward the redemption head — same drift
-envelope, same accept/fix decision.
-
-**Suggested fix.** Sort on fee-invariant principal (exclude accrued fees from the ordering key),
-or accept and keep the fee low. Revisit before ever raising `stabilityFeeBps` materially.
-
-**Detected by** 6 of 12 agents (invariant, first-principles, asymmetry, boundary, numerical-gap,
-flow-gap) — all as leads; no fund-loss path completed.
-
-### A4-L-04 / A4-L-05 / A4-L-06 / A4-L-07 (Low, ops) — configuration & wiring checks
-
-- **A4-L-04.** Verify on the deployed oracle config that `maxAnchorAge` (anchor usability window
-  used by the stale-tolerant exit paths) cannot span a price move larger than
-  `liquidationBonusBps` in normal regimes, or a keeper can over-seize on a stale-low tick. Also
-  noted: a *total* oracle outage freezes liquidation and redemption together (repay/close still
-  work) — standard dependency, monitor it.
-- **A4-L-05.** `setRiskParams` can raise `liquidationThresholdBps` and instantly expose the
-  reclassified band to permissionless bonus-paying liquidation. Benign iff the registry ADMIN
-  role actually sits behind the timelock — verify the wiring on-chain before launch.
-- **A4-L-06.** `onlyAdmin`/`onlyOperator` resolve protocol-global `keccak256("ADMIN")`/
-  `keccak256("OPERATOR")` (consistent with ChainlinkOracleVerifier et al.). Confirm this matches
-  the intended access-control scoping for the module.
-- **A4-L-07.** The `totalSupply == totalDebt` invariant assumes EUSDManager is the *sole*
-  `MINTER_ROLE` holder; the token cannot structurally enforce it. Add a deploy-time assertion
-  (exactly one role member = the manager) to `DeployEusdRobinhood.s.sol` and to monitoring.
-
-### A4-L-08 (Low) — eToken collateral dividends accrue to the manager with no claim path
-
-**Problem.** Collateral is protocol eTokens, which are dividend/reward-bearing (they expose
-`claimableRewards` / `claimRewards` / `rewardToken`, and `OwnMarket.sweepDividends` claims them on
-escrowed eTokens). While an eToken sits as CDP collateral, its dividends accrue to the
-`EUSDManager` address (the current holder), but the manager has **no** claim, forward, or admin
-sweep path — so that yield is stranded in the manager for the life of every loan, with no recovery
-route. Depositors silently forfeit the dividend stream they would earn holding the eToken directly
-(an asymmetry vs. the analogous `OwnMarket` escrow path, which *does* implement `sweepDividends`).
-Value leak to depositors, no theft vector. If the reward model turns out to be **rebasing** rather
-than claim-based, the impact is different and worse: `totalCollateral[c]` (updated only on
-deposit/withdraw) would desync from the manager's real token balance — worth confirming.
-
-**Suggested fix.** Add a permissioned `claimCollateralRewards(collateral)` that calls the eToken's
-`claimRewards` and forwards the `rewardToken` to a fair destination (per-position accounting, or a
-treasury/insurance sink by policy), mirroring `OwnMarket.sweepDividends`. First confirm the eSPY
-reward mechanism (claimable vs. rebasing) — the reward-token source is out of this module's scope.
-
-**Detected by** 4 of 12 agents (periphery, first-principles, invariant, trust-gap) — all as leads;
-depends on the eToken reward model, which was not in the review bundle.
-
-### A4-L-09 (Low) — `setPartner` plus permissionless `sweepPartner` can redirect any holder's accrued OWN
-
-**Problem.** `setPartner(account, destination)` accepts **any** account (EOAs included) with no
-consent step and no contract-only check, and does not settle the account's accrued rewards to
-the account first; `sweepPartner(account)` is then permissionless and pays the account's entire
-accrued OWN to the admin-fixed destination. The interface documents partners as pool contracts
-that cannot claim for themselves, but the code does not enforce it — a compromised or malicious
-ADMIN key gets a one-transaction confiscation lever over any holder's earned-but-unclaimed OWN
-(retroactive-sweep amplifier), on-chain indistinguishable from the intended partner flow.
-ADMIN-trust item, hence Low.
-
-**Suggested fix.** Require `account.code.length > 0`, and/or settle-and-pay the account's
-already-accrued OWN to the account itself at the moment its partner destination is first set
-(or require an opt-in from the account). Also note (round-1 re-review): the destination pinning
-is advisory in the other direction too — a partner contract able to make arbitrary calls can
-`claim(to)` around its pinned destination; if pinning is meant as a guarantee, `claim` should
-revert for accounts with a partner destination set.
-
-**Detected by** 2 of 12 agents (trust-gap as finding, boundary as lead).
 
 ### A4-L-10 (Low) — Disabled collateral blocks defensive top-ups while liquidation stays live
 
@@ -834,6 +740,47 @@ source.
 
 ## 3. By-Design / Withdrawn
 
+- **A4-L-02 — Sorted-list ordering drifts under lazy fee accrual.** Documented in the
+  interface ("bounded by the stability fee rate"); drift ≤ `stabilityFeeBps × elapsed` (≈2%/yr
+  at launch params), redemption still pays par, so ordering fairness only. The permissionless
+  1-wei-repay grooming variant lives in the same envelope. Decision (2026-09-02): accepted;
+  revisit before raising `stabilityFeeBps` materially.
+- **A4-L-04 — `maxAnchorAge` vs liquidation bonus.** This is the protocol-wide stale-anchor
+  exit rule (exits work off-hours against the last anchor, no age bound) already adjudicated
+  for the PSM and BorrowManager (see audit-report-3 / `psm-design.md` §2). A keeper can only
+  liquidate a position that is unsafe *at the anchor*; the anchor is the only price the
+  protocol has while the market is closed, and the 130%→105% band is the buffer. Accepted;
+  total-outage monitoring is an ops item.
+- **A4-L-05 — Threshold raise assumes ADMIN behind the timelock.** Verification item, already
+  on the launch checklist (ProtocolRegistryAdmin under timelock from launch). Acknowledged.
+- **A4-L-06 — Protocol-global ADMIN/OPERATOR namespace.** All 15 role-gated contracts resolve
+  the same `keccak256("ADMIN")` / `keccak256("OPERATOR")`; this is the protocol's access-control
+  model, not a module deviation. Accepted.
+- **A4-L-09 — `setPartner` + permissionless `sweepPartner`.** Requires a malicious or
+  compromised ADMIN key, which already controls `recoverReserve` and the controller wiring;
+  no new trust is introduced. Decision (2026-09-02): acknowledged, no hardening — partner
+  registration is an announced governance action for pooled contracts only.
+- **A4-L-16 — `haltAsset` price unbounded, operator-set, permanent.** `VaultManager` is
+  immutable; containment is operational (operator-key hygiene, `haltAsset` parameter
+  monitoring, fund `haltRedeemAddress` approvals only after halt-price review). Acknowledged.
+- **A4-L-17 — Pending-deposit escrow counted by pool health gates.** Duplicate of the tail risk
+  adjudicated in the second GPT-5 batch (2026-07-10): the escrow is refund-senior via
+  `totalAssets()` saturation, it is only insolvent after a total LP wipeout, and holding the
+  escrow outside the vault would *lower* the vault's health factor and worsen the outcome.
+  Accepted; cross-ref `audit-report.md` H-07/M-13 note.
+- **A4-M-05 — Force-execute on a PSM-backed asset lets the maker collect the freed reserve
+  surplus while generic-vault LPs pay.** Mechanism confirmed (2026-09-02): `closeExposure` on a
+  force-executed redeem frees a reserve slice into the maker-withdrawable surplus
+  (`ReserveVault.withdraw`, guard `rwaCollateralUSD ≥ exposureUSD`) while the payout came from
+  an allowlisted generic vault. Live state at review: TSLA has a PSM wrapper, one generic vault
+  (`0x2467…57FC`) is allowlisted as its force source, and `claimThreshold == 0` (force disabled
+  globally). **Decision: accepted.** Makers are trusted, admin-allowlisted counterparties with
+  exclusive per-asset quoting (`setMakerAllowed`); non-performance on redeem orders by a maker
+  is a trust-model breach handled by de-allowlisting, not a permissionless exploit, and the
+  same trust already underwrites the RFQ channel and reserve custody. No code change; the
+  exit-ladder documentation stands. Ops note (not pushed): if force-execution is ever armed
+  (`setClaimThreshold > 0`) on an asset that also has a PSM reserve, the allowlisted generic
+  vault's LPs are the counterparty to any maker non-performance — keep that pairing deliberate.
 - **A4-L-03 — No `minDebt` floor on redemption.** Explicitly documented in `IEUSDManager`
   ("a partial redemption may leave the last position below minDebt"); Liquity-class behavior.
   Impact is dust-position list bloat only. A4-H-01 Option A removes the only harmful instance
@@ -979,14 +926,14 @@ module scope; statuses in the master index are authoritative).
       **Treat as a launch blocker for using any split-eligible eToken as eUSD collateral.**
 - [ ] A4-M-01 — decide accept/skip-hint/backstop for underwater heads; document the decision in
       the interface NatSpec either way.
-- [ ] A4-L-01 — confirm intended freshness semantics; document effective bound on
+- [x] A4-L-01 — confirm intended freshness semantics; document effective bound on
       `setMintPriceMaxAge` or add a strict-timestamp oracle read.
 - [ ] A4-L-04 — check deployed `maxAnchorAge` vs `liquidationBonusBps` on Robinhood config.
 - [ ] A4-L-05 — verify registry ADMIN grant for EUSDManager is timelock-gated before launch.
 - [ ] A4-L-06 — confirm global-role scoping is intended for this module.
-- [ ] A4-L-07 — add deploy-time sole-minter assertion to `DeployEusdRobinhood.s.sol`; assert
+- [x] A4-L-07 — add deploy-time sole-minter assertion to `DeployEusdRobinhood.s.sol`; assert
       registry `TREASURY` is non-zero before first mint (fee accrual mints there).
-- [ ] A4-L-08 — confirm the eSPY eToken reward model (claimable vs. rebasing); if claimable, add a
+- [x] A4-L-08 — confirm the eSPY eToken reward model (claimable vs. rebasing); if claimable, add a
       permissioned `claimCollateralRewards` mirroring `OwnMarket.sweepDividends`; if rebasing,
       additionally reconcile `totalCollateral` against real balance.
 - [x] A4-M-02 — implement Option A (freeze accrual while detached) and/or Option B (wiring-seam
@@ -1018,9 +965,8 @@ module scope; statuses in the master index are authoritative).
       `setBridgeLimits`. Bound `emissionPerSecond` in `OwnIncentives.setDistribution` (an
       absurd value overflows `emissionPerSecond·Δt` in `_updateGlobal`, bricking `claim` AND
       `setDistribution` itself — unrecoverable without an upgrade).
-- [ ] A4-M-05 — ops rule NOW: no generic force-execution vaults allowlisted for PSM-backed
-      assets; decide the code-side guard (`_validateForce` RWA-reserve check vs reserve-slice
-      routing) for the next OwnMarket/ForceExecuteLib relink.
+- [x] A4-M-05 — accepted (trusted, allowlisted maker; see §3). No code guard; keep the
+      force-source pairing for PSM-backed assets deliberate when `claimThreshold` is armed.
 - [ ] A4-L-16 — operator-key runbook + monitoring on `haltAsset` params (VM immutable, no code
       fix); fund `haltRedeemAddress` approvals only after halt-price review.
 - [ ] A4-L-17 — move pending-deposit escrow out of the vault address (or accept with a

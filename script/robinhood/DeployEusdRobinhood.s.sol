@@ -97,6 +97,12 @@ contract DeployEusdRobinhood is Script {
         eusd.grantRole(eusd.MINTER_ROLE(), address(manager));
         eusd.grantRole(eusd.DEFAULT_ADMIN_ROLE(), eusdAdmin);
         eusd.renounceRole(eusd.DEFAULT_ADMIN_ROLE(), deployer);
+        // A4-L-07: the supply == totalDebt invariant needs the manager to be the only minter. The
+        // token is fresh, so the only addresses that could have been granted here are checked.
+        require(eusd.hasRole(eusd.MINTER_ROLE(), address(manager)), "manager not minter");
+        require(!eusd.hasRole(eusd.MINTER_ROLE(), deployer), "deployer is minter");
+        require(!eusd.hasRole(eusd.MINTER_ROLE(), eusdAdmin), "admin is minter");
+        require(!eusd.hasRole(eusd.DEFAULT_ADMIN_ROLE(), deployer), "deployer still token admin");
 
         // 4. Launch collateral (deployer must hold the protocol ADMIN role).
         manager.addCollateral(eSpy, COLLATERAL_TICKER);

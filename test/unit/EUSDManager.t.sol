@@ -5,6 +5,7 @@ import {EUSDManager} from "../../src/core/EUSDManager.sol";
 import {ProtocolRegistry} from "../../src/core/ProtocolRegistry.sol";
 import {IEUSDManager} from "../../src/interfaces/IEUSDManager.sol";
 import {BPS} from "../../src/interfaces/types/Types.sol";
+import {EToken} from "../../src/tokens/EToken.sol";
 import {EUSD} from "../../src/tokens/EUSD.sol";
 import {Actors} from "../helpers/Actors.sol";
 import {deployEUSDManager} from "../helpers/DeployEusdModule.sol";
@@ -1113,6 +1114,56 @@ contract EUSDManagerTest is Test {
         assertEq(manager.listHead(address(eSPY)), carol);
         _assertListSorted(address(eSPY));
         assertEq(eusd.totalSupply(), manager.totalDebt());
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Collateral dividends (A4-L-08): swept to the treasury, never stranded
+    // ──────────────────────────────────────────────────────────
+
+    /// @dev Real EToken (dividend-bearing) as collateral; this contract acts as MARKET to mint it.
+    function _dividendCollateral() internal returns (EToken token, MockERC20 reward) {
+        reward = new MockERC20("USDG", "USDG", 6);
+        token = new EToken("Own TLT", "eTLT", bytes32("TLT"), address(registry), address(reward));
+        vm.startPrank(admin);
+        registry.setAddress(keccak256("MARKET"), address(this));
+        vm.stopPrank();
+        assetRegistry.setOracleType(bytes32("TLT"), 1);
+        assetRegistry.setValidToken(bytes32("TLT"), address(token), true);
+        oracle.setPrice(bytes32("TLT"), 100e18);
+        vm.prank(admin);
+        manager.addCollateral(address(token), bytes32("TLT"));
+        token.mint(alice, 100e18);
+        vm.prank(alice);
+        token.approve(address(manager), type(uint256).max);
+        reward.mint(address(this), 1_000_000e6);
+        reward.approve(address(token), type(uint256).max);
+    }
+
+    function test_sweepCollateralRewards_forwardsToTreasury() public {
+        (EToken token, MockERC20 reward) = _dividendCollateral();
+        vm.prank(alice);
+        manager.deposit(address(token), 40e18, address(0)); // manager holds 40 of 100 supply
+        token.depositRewards(1000e6); // $1000 dividend → 40% accrues to the manager
+
+        assertEq(token.claimableRewards(address(manager)), 400e6);
+        vm.prank(attacker); // permissionless
+        uint256 swept = manager.sweepCollateralRewards(address(token));
+        assertEq(swept, 400e6);
+        assertEq(reward.balanceOf(treasury), 400e6);
+        assertEq(reward.balanceOf(address(manager)), 0);
+        assertEq(token.claimableRewards(address(manager)), 0);
+
+        // Collateral accounting is untouched by the sweep.
+        assertEq(manager.getPosition(address(token), alice).collateral, 40e18);
+        assertEq(token.balanceOf(address(manager)), 40e18);
+    }
+
+    function test_sweepCollateralRewards_nothingToSweep_reverts() public {
+        (EToken token,) = _dividendCollateral();
+        vm.expectRevert(abi.encodeWithSelector(IEUSDManager.NoRewardsToSweep.selector, address(token)));
+        manager.sweepCollateralRewards(address(token));
+        vm.expectRevert(abi.encodeWithSelector(IEUSDManager.CollateralNotSupported.selector, address(eQQQ)));
+        manager.sweepCollateralRewards(address(eQQQ));
     }
 
     // ──────────────────────────────────────────────────────────

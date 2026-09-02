@@ -2,6 +2,8 @@
 pragma solidity 0.8.28;
 
 import {IAssetRegistry} from "../interfaces/IAssetRegistry.sol";
+
+import {IEToken} from "../interfaces/IEToken.sol";
 import {IEUSD} from "../interfaces/IEUSD.sol";
 import {IEUSDManager} from "../interfaces/IEUSDManager.sol";
 import {IOracleVerifier} from "../interfaces/IOracleVerifier.sol";
@@ -321,6 +323,19 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
         _eusd.burn(msg.sender, debtRepaid);
         IERC20(collateral).safeTransfer(msg.sender, collateralOut);
         emit Redeemed(collateral, msg.sender, debtRepaid, collateralOut);
+    }
+
+    /// @inheritdoc IEUSDManager
+    function sweepCollateralRewards(
+        address collateral
+    ) external override nonReentrant returns (uint256 amount) {
+        _requireCollateral(collateral);
+        amount = IEToken(collateral).claimableRewards(address(this));
+        if (amount == 0) revert NoRewardsToSweep(collateral);
+        IEToken(collateral).claimRewards();
+        address rewardToken = IEToken(collateral).rewardToken();
+        IERC20(rewardToken).safeTransfer(registry.treasury(), amount);
+        emit CollateralRewardsSwept(collateral, rewardToken, amount);
     }
 
     // ──────────────────────────────────────────────────────────

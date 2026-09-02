@@ -101,6 +101,14 @@ debt residual stays on the owner's books off the sorted list (clearable by repay
 liquidation, or a collateral top-up, which re-lists it) and the redemption walks on to the next
 position. A redeemer is therefore never charged for collateral they do not receive.
 
+**Q: Who gets the dividends on eSPY while it sits as eUSD collateral?**
+The protocol treasury. eTokens are dividend-bearing (claim-based rewards-per-share; eSPY on
+Robinhood has a reward token configured), and while your eSPY is custodied by the manager the
+manager is the holder of record. Anyone can call `sweepCollateralRewards(collateral)` to claim
+the accrued rewards and forward them to the treasury — the same rule as escrowed eTokens in
+OwnMarket and borrowed collateral in the lending module. Your collateral balance is untouched;
+dividends resume accruing to you once you withdraw.
+
 **Q: What happens to eUSD positions if the collateral's asset is halted?**
 A halt (`VaultManager.haltAsset`, permanent, operator-set price) fixes the eToken's only
 redeemable value at the halt price (`OwnMarket.redeemHalted`). The eUSD manager follows it:
