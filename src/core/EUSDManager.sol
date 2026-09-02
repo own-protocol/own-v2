@@ -148,10 +148,12 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
     /// @inheritdoc IEUSDManager
     function deposit(address collateral, uint256 amount, address hint) external override nonReentrant {
         CollateralConfig storage cfg = _requireCollateral(collateral);
-        if (!cfg.enabled) revert CollateralDisabled(collateral);
         if (amount == 0) revert ZeroAmount();
 
         Position storage p = _accrue(collateral, msg.sender);
+        // Disabled = no new exposure. An existing debtor may still top up (defensive lever —
+        // liquidation is never gated); minting stays blocked regardless.
+        if (!cfg.enabled && p.debt == 0) revert CollateralDisabled(collateral);
         p.collateral += amount;
         totalCollateral[collateral] += amount;
         _reindex(collateral, msg.sender, hint);
@@ -170,8 +172,9 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
         p.collateral -= amount;
         totalCollateral[collateral] -= amount;
 
-        // Risk-increasing while debt exists: fresh in-session price + MCR, same gate as minting.
+        // Risk-increasing while debt exists: same gates as minting — pause, fresh price, MCR.
         if (p.debt > 0) {
+            if (mintPaused) revert MintingPaused();
             uint256 ratio = _ratioBps(p.collateral, p.debt, _freshPrice(collateral, cfg.ticker));
             if (ratio < _riskParams.mcrBps) revert CollateralRatioTooLow(ratio, _riskParams.mcrBps);
         }

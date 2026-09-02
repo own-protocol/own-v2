@@ -1,6 +1,6 @@
 # Own Protocol v2 — Audit Report & Remediation Status (Pass 4 — eUSD CDP Module)
 
-**Branch:** `stablecoin` · **Last updated:** 2026-09-02 · **Test suite:** 1419 passing excl. fork suites (+33 across the H-01 / H-02 / M-02 / M-03 / M-04 / L-08 fixes)
+**Branch:** `stablecoin` · **Last updated:** 2026-09-02 · **Test suite:** 1424 passing excl. fork suites (+38 across the H-01 / H-02 / M-02 / M-03 / M-04 and L-08 / L-10 / L-11 / L-12 / L-13 / L-14 fixes)
 
 This pass is **scoped to the new eUSD CDP module** (EUSDManager + EUSD token) introduced on the
 `stablecoin` branch; it does not re-tread the protocol-wide ground covered by `audit-report-3.md`,
@@ -40,7 +40,7 @@ out-of-scope context for seam verification.
 | Critical | 0     | —     | —    | —         |
 | High     | 2     | 2     | 0    | 0         |
 | Medium   | 5     | 4     | 0    | 1         |
-| Low      | 18    | 4     | 6    | 8         |
+| Low      | 18    | 9     | 0    | 9         |
 | Info     | 17    | 0     | 9    | 8 (noted) |
 
 | ID      | Severity | Finding                                                                  | Status                       |
@@ -61,15 +61,15 @@ out-of-scope context for seam verification.
 | A4-L-07 | Low      | `MINTER_ROLE` exclusivity not structurally enforced on EUSD              | **Fixed** (script assert)    |
 | A4-L-08 | Low      | eToken collateral dividends stranded in the manager (no claim path)      | **Fixed** (2026-09-02)       |
 | A4-L-09 | Low      | `setPartner` + permissionless sweep can redirect any holder's accrued OWN| **Acknowledged** — ADMIN trust |
-| A4-L-10 | Low      | Disabled collateral blocks defensive top-ups while liquidation stays live| **Open**                     |
-| A4-L-11 | Low      | sEUSD seed / `totalSupply > 0` before streaming unenforced — 0-share trap| **Open** (deploy-time guard) |
-| A4-L-12 | Low      | Bridge `crosschainBurn` vs sEUSD vault: socialized loss + vault DoS      | **Open** (ops check)         |
-| A4-L-13 | Low      | Force-execution ignores `order.expiry` (reopens A3-L-03's expiry half)   | **Open**                     |
-| A4-L-14 | Low      | `withdrawCollateral` with debt escapes `mintPaused`/`enabled` levers     | **Open**                     |
+| A4-L-10 | Low      | Disabled collateral blocks defensive top-ups while liquidation stays live| **Fixed** (2026-09-02)       |
+| A4-L-11 | Low      | sEUSD seed / `totalSupply > 0` before streaming unenforced — 0-share trap| **Fixed** (2026-09-02)       |
+| A4-L-12 | Low      | Bridge `crosschainBurn` vs sEUSD vault: socialized loss + vault DoS      | **Fixed** (DoS leg) + ops    |
+| A4-L-13 | Low      | Force-execution ignores `order.expiry` (reopens A3-L-03's expiry half)   | **Fixed** (2026-09-02)       |
+| A4-L-14 | Low      | `withdrawCollateral` with debt escapes `mintPaused`/`enabled` levers     | **Fixed** (2026-09-02)       |
 | A4-L-15 | Low      | Code-less incentivesController bricks sEUSD (try/catch ≠ extcodesize)    | **Fixed** with A4-M-02       |
 | A4-L-16 | Low      | `haltAsset` price is operator-set, unbounded, and permanent              | **Acknowledged** — ops; VM immutable |
 | A4-L-17 | Low      | Pending-deposit escrow counted as vault collateral by pool health gates  | **By design** — dup, accepted tail risk |
-| A4-L-18 | Low      | Rate setters reprice the elapsed accrual window (no accrue-first)        | **Open**                     |
+| A4-L-18 | Low      | Rate setters reprice the elapsed accrual window (no accrue-first)        | **Acknowledged** — no fix    |
 | A4-I-01 | Info     | `_freshPrice` tolerates future-dated timestamps                          | **By design** — noted        |
 | A4-I-02 | Info     | Fee rounds to zero but `feeIndexSnapshot` still advances                 | **By design** — noted        |
 | A4-I-03 | Info     | Zero-fee redemption (no Liquity-style base rate)                         | **By design** — noted        |
@@ -588,26 +588,118 @@ in treasury, collateral accounting untouched), `test_sweepCollateralRewards_noth
 **Detected by** 4 of 12 agents (periphery, first-principles, invariant, trust-gap) — all as leads;
 depends on the eToken reward model, which was not in the review bundle.
 
+### A4-L-10 (Low) — Disabled collateral blocks defensive top-ups while liquidation stays live — **Fixed**
+
+**Problem.** `deposit` applies the `cfg.enabled` gate unconditionally, but `liquidate` has no
+enabled gate. After `setCollateralEnabled(c, false)` (a legitimate de-listing/migration lever),
+an indebted borrower cannot top up collateral — their only risk-*decreasing* lever other than
+sourcing eUSD to repay — while keepers can still liquidate at the bonus. In a drawdown during a
+de-listing window, a borrower holding spare eTokens is forced into an avoidable liquidation and
+pays `liquidationBonusBps` to the keeper (the unprivileged amplifier). Pre-existing pass-4-scope
+code; surfaced by the staking-pass re-review.
+
+**Fix (2026-09-02).** As suggested: `deposit` now reverts `CollateralDisabled` only when the
+caller has no debt on that collateral, so an existing debtor may always top up. `mint` keeps its
+unconditional `enabled` gate, so a disabled collateral admits no new debt from anyone. NatSpec
+on `deposit`, `setCollateralEnabled` and the error updated. Test:
+`test_setCollateralEnabled_debtorCanTopUp_noNewExposure` (liquidatable debtor tops up and
+becomes safe; the same debtor cannot mint; a debt-free holder cannot deposit).
+
+**Detected by** 2 of 12 agents (trust-gap as finding, asymmetry as lead).
+
+### A4-L-14 (Low) — `withdrawCollateral` with debt outstanding escapes both emergency levers — **Fixed**
+
+**Problem.** For an indebted position, withdrawing collateral is risk-increasing with exactly a
+mint's shape (same `_freshPrice` + MCR gate), yet it checks neither `mintPaused` nor
+`cfg.enabled`. During a bad-oracle-price incident (leaked signer / erroneous print — the threat
+the protocol's settle bands exist for), ops can throw `setMintPaused(true)` and
+`setCollateralEnabled(false)` and debtors can still extract collateral against the inflated
+price down to MCR, leaving undercollateralized debt behind; the identical extraction via `mint`
+is blocked. Worked case: price pushed 2×, position 100 eTokens/$50 debt at MCR 150% withdraws
+62.5 tokens at the fake price, leaving $37.5 real backing $50 debt. Complements A4-L-10 (the
+inverse asymmetry on `deposit`).
+
+**Fix (2026-09-02).** `withdrawCollateral` with `p.debt > 0` now reverts `MintingPaused`
+when the mint pause is set — the same operator lever, same scope as `mint`. Not gated on
+`enabled`: per the A4-L-10 resolution that switch means "no new exposure" and must keep letting
+debtors reduce risk. Pure exits (repay, close, debt-free withdrawal) stay ungated. Together with
+the halt and trading-pause gates in `_freshPrice`, every risk-increasing action on the manager
+now answers to the same switches. Test: `test_setMintPaused_blocksWithdrawWithDebt_exitsOpen`.
+
+**Detected by** 1 of 12 agents (asymmetry), with a complete numeric trace; gate-checked against
+source.
+
+### A4-L-11 (Low) — sEUSD dead-shares seed and `totalSupply > 0` before streaming are unenforced — **Fixed**
+
+**Problem.** The OZ v5 virtual-shares defense does not cover the protocol's own reward stream:
+if `transferInRewards` runs while `totalSupply == 0` (stream before the seed deposit, or after
+a full exit including the seed), vested rewards make `totalAssets ≫ totalSupply`, and OZ
+ERC-4626 `deposit` then mints `floor(a·1/(A+1)) = 0` shares **without reverting** — the deposit
+is silently donated (e.g. residual `A = 1000e18`: a 1000e18 deposit mints 0 shares; a 2000e18
+deposit mints 1 share and loses ~500e18 on exit). The seed is a deploy *note*, not code, and no
+production deploy script exists yet for StakedEUSD/OwnIncentives to enforce it.
+
+**Fix (2026-09-02).** `transferInRewards` reverts `NoSharesOutstanding` when `totalSupply() == 0`
+(one line), so rewards can never land in an empty vault and the OZ virtual-share defense is
+never asked to cover the protocol's own stream. The dead-shares seed remains a deploy step:
+no production deploy script exists yet for StakedEUSD / OwnIncentives — add the seed deposit
+and a `totalSupply() > 0` assertion when it is written (checklist §6). Tests:
+`test_transferInRewards_emptyVault_reverts` (before any deposit, and again after a full exit).
+
+**Detected by** 5 of 12 agents (math-precision, economic-security, execution-trace,
+first-principles, boundary) — all as leads with matching arithmetic.
+
+### A4-L-13 (Low) — Force-execution never checks `order.expiry` (reopens the unimplemented half of external A3-L-03) — **Fixed**
+
+**Problem.** Both fill paths revert on expired orders (`OwnMarket.sol:179`, `:349`), and
+`expireOrder` exists to retire them — but neither the `forceExecuteOrder` wrapper (which checks
+only `status == Open` via `_openOrder`) nor `ForceExecuteLib._validateForce` reads
+`order.expiry`. External audit Report 3's A3-L-03 explicitly noted "no order.expiry check" on
+this path and is marked Fixed; git history shows the price-freshness half of that fix landed
+(fresh proof + `currentPrice ≥ limitPrice`) but an expiry check never existed on the force path
+in any commit — the expiry half was not implemented. Consequences: an expired-but-unretired
+redeem order remains a standing, pre-aged force-execution right against the approved vault pool
+indefinitely (a fresh order would restart `claimThreshold`); inversely, permissionless
+`expireOrder` can front-run the owner's force-execution and restart their window (bounded
+grief). Economic damage is capped — payout settles at `limitPrice` and requires a fresh price ≥
+limit — so this is a lifecycle/state-machine hole, not a drain.
+
+**Fix (2026-09-02).** As suggested — `_validateForce` reverts `OrderExpiredError` when
+`block.timestamp > order.expiry`, matching both fill paths. The pre-existing
+`test_forceExecute_expiredOrder_reverts` only covered an order already retired by `expireOrder`
+(status check); new `test_forceExecute_expiredUnretiredOrder_reverts` covers the un-retired
+case that was the actual hole. Closes A3-L-03's expiry half for good. Ships with the next
+OwnMarket / ForceExecuteLib upgrade.
+
+**Detected by** 3 of 12 agents (access-control, periphery as findings; execution-trace as the
+expire-frontrun inversion lead). Verified directly against source and full git history.
+
+### A4-L-12 (Low, ops) — Bridge `crosschainBurn` aimed at the sEUSD vault: socialized loss plus vault-wide DoS — **Fixed** (DoS leg)
+
+**Problem.** `EUSD.crosschainBurn` is allowance-free from any `from` — accepted under A4-I-05
+as "griefing within one window" against the user who asked to bridge. StakedEUSD invalidates
+that bound: the vault concentrates all stakers' eUSD at one address, so a compromised bridge
+aiming its per-window `burnMaxLimit` at the vault (a) socializes the loss across every sEUSD
+holder, and (b) if the burn pushes `eusd.balanceOf(vault)` below `getUnvestedAmount()`,
+`totalAssets()` underflow-reverts and **every** vault entry/exit bricks until vesting decays or
+someone tops the balance up — a DoS amplification the A4-I-05 analysis (which predates sEUSD)
+did not consider. Latent today (no bridge limits set, `maxNetBridgedIn = 0`).
+
+**Fix (2026-09-02).** DoS leg closed in code: `totalAssets()` is now
+`balance − min(balance, unvested)`, so an external burn below the unvested slice reports zero
+assets instead of underflow-reverting on every deposit and withdrawal — the vault degrades to a
+visible loss and keeps working while value vests back. The loss leg stays bridge-trust
+territory, handled operationally: keep every per-bridge `burnMaxLimit` well below the sEUSD
+vault's balance and re-run the sizing whenever a transport is authorized (no bridge has limits
+today). Test: `test_externalBurnBelowUnvested_vaultStaysLive` (burn to 301 with 500 unvested →
+`totalAssets == 0`, deposit succeeds, redemption after vesting returns a reduced amount).
+
+**Detected by** 4 of 12 agents (flow-gap, access-control, trust-gap, boundary) — all as leads
+(compromised-bridge precondition).
+
 ---
 
 ## 2. Open Findings
-
-### A4-L-18 (Low) — Rate setters reprice the elapsed accrual window instead of applying prospectively
-
-**Problem.** `EUSDManager.setStabilityFee` settles the fee index before changing the rate ("so
-the new rate applies only prospectively") — but `BorrowManager.setMinAaveBorrowRateBps` and
-`setRateParams` mutate rate inputs without calling `_accrue()` first, and `_windowRateBps`
-reads the floored base leg live at the next accrual. A floor change therefore re-bills the
-entire elapsed window at the new rate (both directions: raise → borrowers retro-charged, lower
-→ LP-side under-billing). On Robinhood the pool's variable rate is hard-zero, so the floor IS
-the whole base rate — fully retroactive. Worked case: $1M debt, 10 quiet days, floor raised
-0→2000 bps → next `accrue()` charges ~$5,480 for a window advertised at 0%. Violates the
-stored-`_lastPremiumBps` design's own stated invariant (no repricing of elapsed time).
-
-**Suggested fix.** Call `_accrue()` at the top of `setMinAaveBorrowRateBps` and
-`setRateParams`, mirroring `setStabilityFee`.
-
-**Detected by** 1 of 12 agents (asymmetry), via the protocol-internal setter-pair contrast.
 
 ### A4-I-11 … A4-I-17 (Info, round-2 protocol-wide pass)
 
@@ -637,109 +729,15 @@ stored-`_lastPremiumBps` design's own stated invariant (no repricing of elapsed 
   price cached (`disableAsset` deletes both) — after a reconfig with new price semantics the
   old-unit price can serve until it ages out. One-line `delete _prices[asset]` mirror.
 
-### A4-L-10 (Low) — Disabled collateral blocks defensive top-ups while liquidation stays live
-
-**Problem.** `deposit` applies the `cfg.enabled` gate unconditionally, but `liquidate` has no
-enabled gate. After `setCollateralEnabled(c, false)` (a legitimate de-listing/migration lever),
-an indebted borrower cannot top up collateral — their only risk-*decreasing* lever other than
-sourcing eUSD to repay — while keepers can still liquidate at the bonus. In a drawdown during a
-de-listing window, a borrower holding spare eTokens is forced into an avoidable liquidation and
-pays `liquidationBonusBps` to the keeper (the unprivileged amplifier). Pre-existing pass-4-scope
-code; surfaced by the staking-pass re-review.
-
-**Suggested fix.**
-
-```diff
--        if (!cfg.enabled) revert CollateralDisabled(collateral);
-+        if (!cfg.enabled && _positions[collateral][msg.sender].debt == 0) {
-+            revert CollateralDisabled(collateral);
-+        }
-```
-
-(top-up-only exemption: `enabled` keeps gating new exposure — first deposits and all minting —
-while existing debtors may always defend.)
-
-**Detected by** 2 of 12 agents (trust-gap as finding, asymmetry as lead).
-
-### A4-L-11 (Low) — sEUSD dead-shares seed and `totalSupply > 0` before streaming are unenforced
-
-**Problem.** The OZ v5 virtual-shares defense does not cover the protocol's own reward stream:
-if `transferInRewards` runs while `totalSupply == 0` (stream before the seed deposit, or after
-a full exit including the seed), vested rewards make `totalAssets ≫ totalSupply`, and OZ
-ERC-4626 `deposit` then mints `floor(a·1/(A+1)) = 0` shares **without reverting** — the deposit
-is silently donated (e.g. residual `A = 1000e18`: a 1000e18 deposit mints 0 shares; a 2000e18
-deposit mints 1 share and loses ~500e18 on exit). The seed is a deploy *note*, not code, and no
-production deploy script exists yet for StakedEUSD/OwnIncentives to enforce it.
-
-**Suggested fix.** `require(totalSupply() > 0)` in `transferInRewards` (one line), and/or
-revert on zero-share deposits; alternatively mint the dead-shares seed inside `initialize`.
-Add the assertion to the production deploy script when it is written.
-
-**Detected by** 5 of 12 agents (math-precision, economic-security, execution-trace,
-first-principles, boundary) — all as leads with matching arithmetic.
-
-### A4-L-12 (Low, ops) — Bridge `crosschainBurn` aimed at the sEUSD vault: socialized loss plus vault-wide DoS
-
-**Problem.** `EUSD.crosschainBurn` is allowance-free from any `from` — accepted under A4-I-05
-as "griefing within one window" against the user who asked to bridge. StakedEUSD invalidates
-that bound: the vault concentrates all stakers' eUSD at one address, so a compromised bridge
-aiming its per-window `burnMaxLimit` at the vault (a) socializes the loss across every sEUSD
-holder, and (b) if the burn pushes `eusd.balanceOf(vault)` below `getUnvestedAmount()`,
-`totalAssets()` underflow-reverts and **every** vault entry/exit bricks until vesting decays or
-someone tops the balance up — a DoS amplification the A4-I-05 analysis (which predates sEUSD)
-did not consider. Latent today (no bridge limits set, `maxNetBridgedIn = 0`).
-
-**Suggested fix (ops).** Keep every per-bridge `burnMaxLimit` well below the sEUSD vault's
-vested TVL (or exempt/monitor the vault address), and re-run this sizing whenever a transport
-is authorized. Optionally clamp the DoS leg in code: `totalAssets = balance −
-min(balance, getUnvestedAmount())` (the loss leg remains bridge-trust territory).
-
-**Detected by** 4 of 12 agents (flow-gap, access-control, trust-gap, boundary) — all as leads
-(compromised-bridge precondition).
-
-### A4-L-13 (Low) — Force-execution never checks `order.expiry` (reopens the unimplemented half of external A3-L-03)
-
-**Problem.** Both fill paths revert on expired orders (`OwnMarket.sol:179`, `:349`), and
-`expireOrder` exists to retire them — but neither the `forceExecuteOrder` wrapper (which checks
-only `status == Open` via `_openOrder`) nor `ForceExecuteLib._validateForce` reads
-`order.expiry`. External audit Report 3's A3-L-03 explicitly noted "no order.expiry check" on
-this path and is marked Fixed; git history shows the price-freshness half of that fix landed
-(fresh proof + `currentPrice ≥ limitPrice`) but an expiry check never existed on the force path
-in any commit — the expiry half was not implemented. Consequences: an expired-but-unretired
-redeem order remains a standing, pre-aged force-execution right against the approved vault pool
-indefinitely (a fresh order would restart `claimThreshold`); inversely, permissionless
-`expireOrder` can front-run the owner's force-execution and restart their window (bounded
-grief). Economic damage is capped — payout settles at `limitPrice` and requires a fresh price ≥
-limit — so this is a lifecycle/state-machine hole, not a drain.
-
-**Suggested fix.** In `_validateForce`:
-`if (block.timestamp > order.expiry) revert IOwnMarket.OrderExpiredError(orderId);`
-
-**Detected by** 3 of 12 agents (access-control, periphery as findings; execution-trace as the
-expire-frontrun inversion lead). Verified directly against source and full git history.
-
-### A4-L-14 (Low) — `withdrawCollateral` with debt outstanding escapes both emergency levers
-
-**Problem.** For an indebted position, withdrawing collateral is risk-increasing with exactly a
-mint's shape (same `_freshPrice` + MCR gate), yet it checks neither `mintPaused` nor
-`cfg.enabled`. During a bad-oracle-price incident (leaked signer / erroneous print — the threat
-the protocol's settle bands exist for), ops can throw `setMintPaused(true)` and
-`setCollateralEnabled(false)` and debtors can still extract collateral against the inflated
-price down to MCR, leaving undercollateralized debt behind; the identical extraction via `mint`
-is blocked. Worked case: price pushed 2×, position 100 eTokens/$50 debt at MCR 150% withdraws
-62.5 tokens at the fake price, leaving $37.5 real backing $50 debt. Complements A4-L-10 (the
-inverse asymmetry on `deposit`).
-
-**Suggested fix.** In `withdrawCollateral`, when `p.debt > 0`, also revert if `mintPaused`
-(pure exits — full close, repay, zero-debt withdrawal — stay ungated).
-
-**Detected by** 1 of 12 agents (asymmetry), with a complete numeric trace; gate-checked against
-source.
-
 ---
 
 ## 3. By-Design / Withdrawn
 
+- **A4-L-18 — Borrow-rate setters reprice the elapsed accrual window.** Mechanism confirmed
+  (`setMinAaveBorrowRateBps` / `setRateParams` do not `_accrue()` first; on Robinhood the floor
+  is the whole base rate). Decision (2026-09-02): acknowledged, no fix — rate changes are rare,
+  timelocked ADMIN actions; ops runs `accrue()` (permissionless) in the same batch before the
+  setter, which settles the window exactly. Revisit if rate changes become frequent.
 - **A4-L-02 — Sorted-list ordering drifts under lazy fee accrual.** Documented in the
   interface ("bounded by the stability fee rate"); drift ≤ `stabilityFeeBps × elapsed` (≈2%/yr
   at launch params), redemption still pays par, so ordering fairness only. The permissionless
@@ -941,23 +939,23 @@ module scope; statuses in the master index are authoritative).
       Σ-claimed ≤ emission×time invariant.
 - [ ] A4-L-09 — enforce contract-only partners or settle-first on `setPartner`; confirm the
       partner reward model.
-- [ ] A4-L-10 — exempt indebted top-ups from the `enabled` gate in `deposit` (or record as
+- [x] A4-L-10 — exempt indebted top-ups from the `enabled` gate in `deposit` (or record as
       accepted with a de-listing runbook that repays/closes before disabling).
-- [ ] A4-L-11 — add the `totalSupply() > 0` guard to `transferInRewards` (or seed in
+- [x] A4-L-11 — add the `totalSupply() > 0` guard to `transferInRewards` (or seed in
       `initialize`); write the production deploy script for StakedEUSD/OwnIncentives with
       atomic proxy init + seed deposit + wiring order (attach controller **before**
       `setDistribution`; decommission order `setDistribution(0,·)` → settle → `recoverReserve`
       → detach).
-- [ ] A4-L-12 — size every per-bridge `burnMaxLimit` ≪ sEUSD vested TVL before authorizing any
+- [x] A4-L-12 (DoS clamp landed; burn-limit sizing stays ops) — size every per-bridge `burnMaxLimit` ≪ sEUSD vested TVL before authorizing any
       transport; decide on the `totalAssets` clamp; fold A4-I-06's paired burn+mint budget into
       bridge monitoring.
 - [x] A4-M-03 — decide partial liquidation (`liquidate` with an `amount`) vs a per-position
       size cap; add a whale-starvation regression test (ceiling filled, circulating < debt).
 - [x] A4-M-04 — add the halt gate to `mint`/`withdrawCollateral` and decide halted-collateral
       valuation on exits (`min(oracle, haltPrice)`); add a halted-asset mint regression test.
-- [ ] A4-L-13 — add the `order.expiry` check to `ForceExecuteLib._validateForce` (completes the
+- [x] A4-L-13 — add the `order.expiry` check to `ForceExecuteLib._validateForce` (completes the
       A3-L-03 remediation); regression test: expired order unfillable AND unforceable.
-- [ ] A4-L-14 — gate the `p.debt > 0` branch of `withdrawCollateral` on `mintPaused`; incident
+- [x] A4-L-14 — gate the `p.debt > 0` branch of `withdrawCollateral` on `mintPaused`; incident
       runbook: throwing the mint pause must actually stop value extraction.
 - [x] A4-L-15 — add the `code.length` guard to `setIncentivesController` + extcodesize unit
       test.
@@ -972,7 +970,7 @@ module scope; statuses in the master index are authoritative).
 - [ ] A4-L-17 — move pending-deposit escrow out of the vault address (or accept with a
       documented approval-mode sizing rule); regression test: padded health gate + frozen
       cancel.
-- [ ] A4-L-18 — `_accrue()` at the top of `setMinAaveBorrowRateBps`/`setRateParams` on the
+- [x] A4-L-18 (acknowledged — accrue() before rate setters, ops) — `_accrue()` at the top of `setMinAaveBorrowRateBps`/`setRateParams` on the
       next BorrowManager deploy; until then, rate-change runbook: crank `accrue()` in the same
       block before the setter.
 - [ ] A4-I-11…I-17 — batch of small guards/doc items (see write-ups): confirm fee-accrual

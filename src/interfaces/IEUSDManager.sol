@@ -221,7 +221,8 @@ interface IEUSDManager {
     error OnlyOperator();
     /// @notice The collateral token has not been added.
     error CollateralNotSupported(address collateral);
-    /// @notice The collateral token is disabled for new deposits/mints.
+    /// @notice The collateral token is disabled for new positions and minting. Existing debtors
+    ///         may still top up collateral.
     error CollateralDisabled(address collateral);
     /// @notice The collateral token was already added.
     error CollateralAlreadySupported(address collateral);
@@ -237,7 +238,7 @@ interface IEUSDManager {
     error LegacyCollateral(address collateral);
     /// @notice Risk parameter bounds are inconsistent (see setters for the exact constraints).
     error InvalidRiskParams();
-    /// @notice Minting is paused.
+    /// @notice Minting (and collateral withdrawal against debt) is paused by the operator.
     error MintingPaused();
     /// @notice Oracle price is too old for a risk-increasing action (mint / withdraw).
     /// @param priceTimestamp Oracle price observation timestamp (unix seconds).
@@ -282,8 +283,9 @@ interface IEUSDManager {
     //  Position management
     // ──────────────────────────────────────────────────────────
 
-    /// @notice Deposit collateral into the caller's position. Always allowed while the collateral
-    ///         is enabled; needs no oracle price (health only improves).
+    /// @notice Deposit collateral into the caller's position. Needs no oracle price (health only
+    ///         improves). While the collateral is disabled only existing debtors may deposit (a
+    ///         defensive top-up); a debt-free caller cannot open new exposure.
     /// @param collateral Collateral eToken to deposit.
     /// @param amount     Amount to deposit (18 decimals).
     /// @param hint       Sorted-list insert hint: the position owner expected to precede the
@@ -291,9 +293,9 @@ interface IEUSDManager {
     function deposit(address collateral, uint256 amount, address hint) external;
 
     /// @notice Withdraw collateral from the caller's position. If the position has debt, requires
-    ///         a fresh oracle price (≤ mintPriceMaxAge) and the resulting ratio ≥ MCR — the same
-    ///         gate as minting, since withdrawal is risk-increasing. Debt-free withdrawals need no
-    ///         price and work off-hours.
+    ///         minting not to be paused, a fresh oracle price (≤ mintPriceMaxAge) and the resulting
+    ///         ratio ≥ MCR — the same gates as minting, since withdrawal is risk-increasing.
+    ///         Debt-free withdrawals need no price and work off-hours.
     /// @param collateral Collateral eToken to withdraw.
     /// @param amount     Amount to withdraw (18 decimals).
     /// @param hint       Sorted-list insert hint (see {deposit}).
@@ -386,7 +388,8 @@ interface IEUSDManager {
     /// @param ticker     Oracle ticker for valuations.
     function addCollateral(address collateral, bytes32 ticker) external;
 
-    /// @notice Enable or disable new deposits/mints for a collateral. Exits are unaffected.
+    /// @notice Enable or disable new exposure for a collateral: first deposits and all minting.
+    ///         Existing debtors may still top up, and exits are unaffected.
     /// @param collateral Collateral eToken address.
     /// @param enabled    New enabled state.
     function setCollateralEnabled(address collateral, bool enabled) external;

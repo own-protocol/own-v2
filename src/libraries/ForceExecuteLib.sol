@@ -74,6 +74,8 @@ library ForceExecuteLib {
     ) private view {
         if (order.user != msg.sender) revert IOwnMarket.OnlyOrderOwner(orderId);
         if (order.orderType != OrderType.Redeem) revert IOwnMarket.ForceMintNotAllowed(orderId);
+        // An expired order is not a standing force-execution right (same rule as both fill paths).
+        if (block.timestamp > order.expiry) revert IOwnMarket.OrderExpiredError(orderId);
 
         IAssetRegistry ar = IAssetRegistry(registry.assetRegistry());
         // A redeem order escrowed in a now-legacy token cannot be force-executed; cancel to recover.

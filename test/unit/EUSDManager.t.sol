@@ -299,6 +299,51 @@ contract EUSDManagerTest is Test {
         manager.deposit(address(eSPY), 1e18, address(0));
     }
 
+    /// @dev A4-L-14: the mint pause also stops collateral withdrawal against debt; pure exits stay open.
+    function test_setMintPaused_blocksWithdrawWithDebt_exitsOpen() public {
+        _open(alice, 4e18, 1000e18); // $2000 / 1000
+        _open(bob, 3e18, 0);
+        vm.prank(operator);
+        manager.setMintPaused(true);
+
+        vm.startPrank(alice);
+        vm.expectRevert(IEUSDManager.MintingPaused.selector);
+        manager.withdrawCollateral(address(eSPY), 1e18, address(0)); // would still be 150%
+        manager.repay(address(eSPY), alice, 1000e18, address(0));
+        manager.withdrawCollateral(address(eSPY), 4e18, address(0)); // debt-free: allowed
+        vm.stopPrank();
+        vm.prank(bob);
+        manager.withdrawCollateral(address(eSPY), 3e18, address(0));
+
+        vm.prank(operator);
+        manager.setMintPaused(false);
+        _open(carol, 4e18, 1000e18);
+        vm.prank(carol);
+        manager.withdrawCollateral(address(eSPY), 1e18, address(0)); // resumed
+    }
+
+    /// @dev A4-L-10: an existing debtor can top up a disabled collateral; new exposure stays blocked.
+    function test_setCollateralEnabled_debtorCanTopUp_noNewExposure() public {
+        _open(alice, 3e18, 1000e18);
+        _open(bob, 3e18, 0); // collateral only, no debt
+        vm.prank(admin);
+        manager.setCollateralEnabled(address(eSPY), false);
+
+        oracle.setPrice(SPY, 425e18); // alice 127.5% → liquidatable
+        assertTrue(manager.isLiquidatable(address(eSPY), alice));
+        vm.prank(alice);
+        manager.deposit(address(eSPY), 2e18, address(0)); // defensive top-up allowed
+        assertFalse(manager.isLiquidatable(address(eSPY), alice));
+        _assertListSorted(address(eSPY));
+
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(IEUSDManager.CollateralDisabled.selector, address(eSPY)));
+        manager.mint(address(eSPY), 100e18, address(0)); // no new debt, even for a debtor
+        vm.prank(bob);
+        vm.expectRevert(abi.encodeWithSelector(IEUSDManager.CollateralDisabled.selector, address(eSPY)));
+        manager.deposit(address(eSPY), 1e18, address(0)); // debt-free: no new exposure
+    }
+
     function test_setCollateralEnabled_unknown_reverts() public {
         vm.expectRevert(abi.encodeWithSelector(IEUSDManager.CollateralNotSupported.selector, address(eQQQ)));
         vm.prank(admin);

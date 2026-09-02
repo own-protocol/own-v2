@@ -88,6 +88,8 @@ contract StakedEUSD is Initializable, UUPSUpgradeable, ERC4626, ERC20Permit, Ree
     error OnlyOperator();
     error OnlyAdmin();
     error UpgradeAssetMismatch();
+    /// @notice Rewards cannot be streamed while no shares exist (seed the vault first).
+    error NoSharesOutstanding();
     /// @notice The hook is a high-level call; a code-less target reverts outside the try/catch.
     error ControllerNotContract(address controller);
     /// @notice A controller that was wired before can never be wired again.
@@ -146,6 +148,8 @@ contract StakedEUSD is Initializable, UUPSUpgradeable, ERC4626, ERC20Permit, Ree
     ) external nonReentrant {
         if (!registry.hasRole(OPERATOR, msg.sender)) revert OnlyOperator();
         if (amount == 0) revert ZeroAmount();
+        // Rewards on an empty vault would make later deposits mint zero shares (silent donation).
+        if (totalSupply() == 0) revert NoSharesOutstanding();
 
         // Roll the unvested remainder into the new batch and re-vest from now. The freshly
         // transferred `amount` exactly matches the increase in `vestingAmount`, so `totalAssets`
@@ -205,9 +209,13 @@ contract StakedEUSD is Initializable, UUPSUpgradeable, ERC4626, ERC20Permit, Ree
 
     /// @inheritdoc ERC4626
     /// @dev Excludes the unvested reward batch, so the share price rises smoothly as it vests and
-    ///      redemptions never exceed the vault's eUSD balance.
+    ///      redemptions never exceed the vault's eUSD balance. Clamped at zero: an external burn
+    ///      (bridge `crosschainBurn`) can pull the balance below the unvested slice, and the vault
+    ///      must degrade to a visible loss rather than revert on every entry and exit.
     function totalAssets() public view override returns (uint256) {
-        return IERC20(asset()).balanceOf(address(this)) - getUnvestedAmount();
+        uint256 balance = IERC20(asset()).balanceOf(address(this));
+        uint256 unvested = getUnvestedAmount();
+        return balance > unvested ? balance - unvested : 0;
     }
 
     /// @inheritdoc ERC4626

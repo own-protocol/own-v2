@@ -441,6 +441,22 @@ contract OrderLifecycleTest is BaseTest {
         market.forceExecuteOrder(orderId, address(vault), assetPriceData, collateralPriceData);
     }
 
+    /// @dev A4-L-13: an expired order that nobody retired is not a standing force-execution right.
+    function test_forceExecute_expiredUnretiredOrder_reverts() public {
+        _mintETokensViaFlow(Actors.MINTER1, MINT_AMOUNT);
+        uint256 eTokenBal = eTSLA.balanceOf(Actors.MINTER1);
+        uint256 expiry = block.timestamp + CLAIM_THRESHOLD + 1 days;
+        uint256 orderId = _placeRedeem(Actors.MINTER1, eTokenBal, expiry);
+
+        vm.warp(expiry + 1); // past the claim window AND past expiry; order still Open
+        bytes memory assetPriceData = abi.encode(uint256(TSLA_PRICE), uint256(block.timestamp));
+        bytes memory collateralPriceData = abi.encode(uint256(ETH_PRICE), uint256(block.timestamp));
+
+        vm.prank(Actors.MINTER1);
+        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.OrderExpiredError.selector, orderId));
+        market.forceExecuteOrder(orderId, address(vault), assetPriceData, collateralPriceData);
+    }
+
     // ══════════════════════════════════════════════════════════
     //  Partial fill — mint order filled in two chunks
     // ══════════════════════════════════════════════════════════

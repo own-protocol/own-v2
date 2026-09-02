@@ -178,6 +178,54 @@ contract StakedEUSDTest is Test {
         _solvent();
     }
 
+    /// @dev A4-L-11: rewards can never be streamed into a share-less vault (zero-share trap).
+    function test_transferInRewards_emptyVault_reverts() public {
+        StakedEUSD fresh = deployStakedEUSD(address(registry), address(eusd), VEST);
+        vm.prank(rewarder);
+        eusd.approve(address(fresh), type(uint256).max);
+        vm.prank(rewarder);
+        vm.expectRevert(StakedEUSD.NoSharesOutstanding.selector);
+        fresh.transferInRewards(100e18);
+
+        // Seed, stream, then a full exit re-arms the guard.
+        vm.prank(alice);
+        eusd.approve(address(fresh), type(uint256).max);
+        vm.prank(alice);
+        uint256 shares = fresh.deposit(1000e18, alice);
+        vm.prank(rewarder);
+        fresh.transferInRewards(100e18);
+        vm.warp(block.timestamp + VEST);
+        vm.prank(alice);
+        fresh.redeem(shares, alice, alice);
+        assertEq(fresh.totalSupply(), 0);
+        vm.prank(rewarder);
+        vm.expectRevert(StakedEUSD.NoSharesOutstanding.selector);
+        fresh.transferInRewards(100e18);
+    }
+
+    /// @dev A4-L-12: an external burn below the unvested slice degrades to a visible loss, never
+    ///      a revert that bricks every entry and exit.
+    function test_externalBurnBelowUnvested_vaultStaysLive() public {
+        vm.prank(alice);
+        uint256 shares = sEusd.deposit(1000e18, alice);
+        vm.prank(rewarder);
+        sEusd.transferInRewards(500e18); // unvested 500 at t=0
+        // A compromised bridge burns 1200 of the vault's 1501 eUSD: balance 301 < unvested 500.
+        deal(address(eusd), address(sEusd), 301e18);
+
+        assertEq(sEusd.totalAssets(), 0, "clamped, not reverted");
+        _solvent();
+        // Still live: deposits and (once value vests back) redemptions work.
+        vm.prank(bob);
+        sEusd.deposit(100e18, bob);
+        vm.warp(block.timestamp + VEST);
+        assertEq(sEusd.totalAssets(), 401e18);
+        vm.prank(alice);
+        uint256 out = sEusd.redeem(shares, alice, alice);
+        assertGt(out, 0);
+        assertLt(out, 1000e18, "loss is visible, not hidden");
+    }
+
     function test_vaultHoldsNoMinterRole() public view {
         // Solvency guarantee rests on the vault being unable to mint eUSD.
         assertFalse(eusd.hasRole(eusd.MINTER_ROLE(), address(sEusd)));
