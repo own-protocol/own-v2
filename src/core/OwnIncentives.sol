@@ -3,6 +3,7 @@ pragma solidity 0.8.28;
 
 import {IOwnIncentives} from "../interfaces/IOwnIncentives.sol";
 import {IProtocolRegistry} from "../interfaces/IProtocolRegistry.sol";
+import {IStakedEUSD} from "../interfaces/IStakedEUSD.sol";
 import {PRECISION} from "../interfaces/types/Types.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
@@ -15,6 +16,10 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 /// @dev One global `index` over sEUSD total supply (`index += emissionPerSecond · Δt / totalSupply`,
 ///      capped at `distributionEnd`), plus per-holder index snapshots. Funded from an OWN budget;
 ///      no mint rights, so claims are capped at the budget and never insolvent.
+///      Accrual trusts live balances only while this contract is the wired controller (every
+///      balance change is then checkpointed by the hook). A campaign cannot start unattached, and
+///      once detached (controller migration) the contract freezes: it pays only already-accrued
+///      OWN, never re-reading balances it no longer sees.
 contract OwnIncentives is IOwnIncentives, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
@@ -71,10 +76,12 @@ contract OwnIncentives is IOwnIncentives, ReentrancyGuard {
         address to
     ) external override nonReentrant returns (uint256 paid) {
         if (to == address(0)) revert ZeroAddress();
-        // Read live balance/supply: the holder's balance is unchanged since their last checkpoint,
-        // and every supply change was checkpointed by the hook, so this segment is well-defined.
-        _updateGlobal(_sEusd.totalSupply());
-        _accrue(msg.sender, _sEusd.balanceOf(msg.sender));
+        // Read live balance/supply only while attached: the holder's balance is then unchanged
+        // since their last checkpoint and every supply change was checkpointed by the hook.
+        if (_attached()) {
+            _updateGlobal(_sEusd.totalSupply());
+            _accrue(msg.sender, _sEusd.balanceOf(msg.sender));
+        }
         paid = _pay(msg.sender, to);
         emit RewardsClaimed(msg.sender, to, paid);
     }
@@ -86,8 +93,10 @@ contract OwnIncentives is IOwnIncentives, ReentrancyGuard {
         address dest = _partnerDestination[account];
         if (dest == address(0)) revert NotPartner();
         // Settle the partner's pooled balance to now, then push its share to the fixed destination.
-        _updateGlobal(_sEusd.totalSupply());
-        _accrue(account, _sEusd.balanceOf(account));
+        if (_attached()) {
+            _updateGlobal(_sEusd.totalSupply());
+            _accrue(account, _sEusd.balanceOf(account));
+        }
         paid = _pay(account, dest);
         emit PartnerSwept(account, dest, paid);
     }
@@ -109,6 +118,7 @@ contract OwnIncentives is IOwnIncentives, ReentrancyGuard {
 
     /// @inheritdoc IOwnIncentives
     function setDistribution(uint256 emissionPerSecond_, uint256 distributionEnd_) external override onlyAdmin {
+        if (emissionPerSecond_ > 0 && !_attached()) revert NotAttached();
         _updateGlobal(_sEusd.totalSupply()); // settle at the old rate; sets _lastUpdate = now
         emissionPerSecond = emissionPerSecond_;
         distributionEnd = distributionEnd_;
@@ -132,6 +142,11 @@ contract OwnIncentives is IOwnIncentives, ReentrancyGuard {
     }
 
     // ── Internal ──────────────────────────────────────────────
+
+    /// @dev True while sEUSD routes its balance-change hook here.
+    function _attached() private view returns (bool) {
+        return IStakedEUSD(address(_sEusd)).incentivesController() == address(this);
+    }
 
     /// @dev Advance the global index over the elapsed, in-campaign period. Always moves `_lastUpdate`
     ///      to now so a paused/ended gap is never accrued retroactively when a new campaign is set.
@@ -192,6 +207,7 @@ contract OwnIncentives is IOwnIncentives, ReentrancyGuard {
     function earned(
         address user
     ) external view override returns (uint256) {
+        if (!_attached()) return _accrued[user];
         uint256 supply = _sEusd.totalSupply();
         uint256 idx = _index;
         uint256 capNow = Math.min(block.timestamp, distributionEnd);

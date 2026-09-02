@@ -185,6 +185,37 @@ pre-split):**
    new token. `addCollateral` rejects legacy tokens, so the old address cannot be re-enabled by
    mistake.
 
+## OWN incentives controller — wiring & migration runbook
+
+`StakedEUSD` notifies one `OwnIncentives` controller on every balance change; the controller
+trusts live balances **only while it is the wired controller**, and a campaign can only be
+started on the wired controller (`NotAttached`). Detaching retires a controller permanently: it
+freezes to paying already-accrued OWN and can never be re-wired (`ControllerRetired`). The setter
+also rejects code-less addresses (`ControllerNotContract`), which would otherwise brick every
+sEUSD transfer.
+
+**Launch order:** OWN → sEUSD → `OwnIncentives(registry, sEUSD, OWN)` →
+`sEUSD.setIncentivesController(ctrl)` → `fund` → `setDistribution`. Deposits made before the
+wiring are fine (they earn nothing retroactively); a campaign cannot be started before it.
+
+**Migrating to a new OWN token (or a new controller):**
+
+1. `old.setDistribution(0, 0)` — ends the campaign and freezes the index.
+2. Announce a **claim window** (≥ 7 days). While the old controller is still wired, any claim,
+   transfer, deposit or withdrawal settles a holder's unsettled tail exactly. Partners: run
+   `sweepPartner` for each registered pooled account.
+3. Deploy `new = OwnIncentives(registry, sEUSD, NEW_OWN)`; `sEUSD.setIncentivesController(new)`.
+   From this point the old controller pays only what was checkpointed before the swap — a holder
+   who never settled during the window forfeits only the tail since their last checkpoint; that
+   OWN stays in the old reserve.
+4. `old.recoverReserve(remaining, treasury)` (ADMIN) once claims have quietened; use it to make
+   good any documented unsettled tails off-chain if desired.
+5. `new.fund(...)` → `new.setDistribution(rate, end)`. Every holder starts synced at index 0.
+
+Never wire a controller that was wired before, and never start a campaign on a controller that
+is not wired — both are enforced on-chain, but the ordering above is what keeps the migration
+loss-free for holders.
+
 ## Off-chain services checklist
 
 - **Price signer (KMS):** publish marks for `USDG` ($1), the 7 launch tickers, and each wrapper

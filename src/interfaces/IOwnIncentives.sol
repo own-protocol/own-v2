@@ -26,6 +26,8 @@ interface IOwnIncentives {
     error OnlyAdmin();
     error InsufficientReserve(uint256 requested, uint256 available);
     error NotPartner();
+    /// @notice A campaign can only run on the controller sEUSD is currently wired to.
+    error NotAttached();
 
     // ── Hook (called by sEUSD only) ───────────────────────────
 

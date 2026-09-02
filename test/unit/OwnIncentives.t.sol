@@ -200,16 +200,145 @@ contract OwnIncentivesTest is Test {
 
     // A reverting controller must never brick sEUSD transfers (hook is wrapped in try/catch).
     function test_transfersSurviveBrokenController() public {
+        StakedEUSD fresh = deployStakedEUSD(address(registry), address(eusd), VEST);
         RevertingController broken = new RevertingController();
         vm.prank(admin);
-        sEusd.setIncentivesController(address(broken));
+        fresh.setIncentivesController(address(broken));
+        vm.prank(alice);
+        eusd.approve(address(fresh), type(uint256).max);
 
         vm.prank(alice);
-        sEusd.deposit(1000e18, alice); // must still succeed despite the hook reverting
-        assertEq(sEusd.balanceOf(alice), 1000e18);
+        fresh.deposit(1000e18, alice); // must still succeed despite the hook reverting
+        assertEq(fresh.balanceOf(alice), 1000e18);
 
         vm.prank(alice);
-        sEusd.transfer(bob, 400e18); // transfers too
-        assertEq(sEusd.balanceOf(bob), 400e18);
+        fresh.transfer(bob, 400e18); // transfers too
+        assertEq(fresh.balanceOf(bob), 400e18);
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Wiring seams (A4-M-02 / A4-L-15)
+    // ──────────────────────────────────────────────────────────
+
+    function _freshPair() internal returns (StakedEUSD token, OwnIncentives ctrl) {
+        token = deployStakedEUSD(address(registry), address(eusd), VEST);
+        ctrl = new OwnIncentives(address(registry), address(token), address(own));
+        vm.prank(funder);
+        own.approve(address(ctrl), type(uint256).max);
+        vm.prank(funder);
+        ctrl.fund(10_000_000e18);
+        for (uint256 i; i < 2; i++) {
+            vm.prank(i == 0 ? alice : bob);
+            eusd.approve(address(token), type(uint256).max);
+        }
+    }
+
+    function test_setDistribution_unattached_reverts() public {
+        (, OwnIncentives ctrl) = _freshPair();
+        vm.prank(admin);
+        vm.expectRevert(IOwnIncentives.NotAttached.selector);
+        ctrl.setDistribution(RATE, block.timestamp + 30 days);
+        // Ending a campaign (zero emission) is always allowed.
+        vm.prank(admin);
+        ctrl.setDistribution(0, 0);
+    }
+
+    // Deposits made before the controller is wired earn nothing retroactively.
+    function test_depositBeforeAttach_noRetroactiveAccrual() public {
+        (StakedEUSD token, OwnIncentives ctrl) = _freshPair();
+        vm.prank(alice);
+        token.deposit(1000e18, alice);
+        vm.warp(block.timestamp + 1 days);
+
+        vm.startPrank(admin);
+        token.setIncentivesController(address(ctrl));
+        ctrl.setDistribution(RATE, block.timestamp + 30 days);
+        vm.stopPrank();
+        assertEq(ctrl.earned(alice), 0);
+
+        vm.warp(block.timestamp + 100);
+        assertApproxEqAbs(ctrl.earned(alice), RATE * 100, 1e6);
+    }
+
+    // After migration the old controller pays only what was already checkpointed.
+    function test_migration_oldControllerFreezes_newStartsClean() public {
+        vm.prank(alice);
+        sEusd.deposit(1000e18, alice);
+        vm.warp(block.timestamp + 100);
+        vm.prank(alice);
+        incentives.claim(alice); // checkpoint at t+100
+        vm.warp(block.timestamp + 100); // unsettled tail: 100 OWN
+
+        // Decommission order: end campaign, holders may claim during the window, then swap.
+        vm.prank(admin);
+        incentives.setDistribution(0, 0);
+        vm.warp(block.timestamp + 1 days);
+        assertApproxEqAbs(incentives.earned(alice), RATE * 100, 1e6, "tail settles by claim while attached");
+
+        OwnIncentives v2 = new OwnIncentives(address(registry), address(sEusd), address(own));
+        vm.prank(admin);
+        sEusd.setIncentivesController(address(v2));
+
+        // Old controller: frozen. Bob buys 10x alice's balance after the swap and gets nothing.
+        assertEq(incentives.earned(alice), 0, "unclaimed tail not paid by live balance");
+        vm.prank(bob);
+        sEusd.deposit(10_000e18, bob);
+        assertEq(incentives.earned(bob), 0);
+        vm.prank(bob);
+        assertEq(incentives.claim(bob), 0);
+        vm.prank(alice);
+        assertEq(incentives.claim(alice), 0);
+
+        // New controller: index starts at zero, everyone synced; accrues only from its campaign.
+        vm.prank(funder);
+        own.approve(address(v2), type(uint256).max);
+        vm.prank(funder);
+        v2.fund(1_000_000e18);
+        vm.prank(admin);
+        v2.setDistribution(RATE, block.timestamp + 30 days);
+        assertEq(v2.earned(alice), 0);
+        assertEq(v2.earned(bob), 0);
+        vm.warp(block.timestamp + 110);
+        assertApproxEqAbs(v2.earned(alice), RATE * 10, 1e6, "alice 1/11");
+        assertApproxEqAbs(v2.earned(bob), RATE * 100, 1e6, "bob 10/11");
+    }
+
+    // The PoC from A4-M-02: shuttle-claiming through a detached window is unreachable.
+    function test_detachedWindow_shuttleClaim_paysNothing() public {
+        vm.prank(bob);
+        sEusd.deposit(1000e18, bob);
+        vm.prank(admin);
+        sEusd.setIncentivesController(address(0));
+        vm.warp(block.timestamp + 1 days);
+
+        vm.prank(alice);
+        sEusd.deposit(1000e18, alice);
+        vm.prank(alice);
+        assertEq(incentives.claim(alice), 0);
+        address fresh = address(0xBEEF);
+        vm.prank(alice);
+        sEusd.transfer(fresh, 1000e18);
+        vm.prank(fresh);
+        assertEq(incentives.claim(fresh), 0);
+        // The retired controller cannot be re-wired to replay its index.
+        vm.prank(admin);
+        vm.expectRevert(abi.encodeWithSelector(StakedEUSD.ControllerRetired.selector, address(incentives)));
+        sEusd.setIncentivesController(address(incentives));
+    }
+
+    function test_setIncentivesController_guards() public {
+        vm.startPrank(admin);
+        vm.expectRevert(abi.encodeWithSelector(StakedEUSD.ControllerNotContract.selector, address(0xBAD)));
+        sEusd.setIncentivesController(address(0xBAD)); // EOA: extcodesize revert would brick transfers
+        // Replace, then the outgoing controller is retired for good.
+        OwnIncentives v2 = new OwnIncentives(address(registry), address(sEusd), address(own));
+        sEusd.setIncentivesController(address(v2));
+        vm.expectRevert(abi.encodeWithSelector(StakedEUSD.ControllerRetired.selector, address(incentives)));
+        sEusd.setIncentivesController(address(incentives));
+        // Clearing is allowed (emergency lever); v2 is retired by it.
+        sEusd.setIncentivesController(address(0));
+        vm.expectRevert(abi.encodeWithSelector(StakedEUSD.ControllerRetired.selector, address(v2)));
+        sEusd.setIncentivesController(address(v2));
+        vm.stopPrank();
     }
 }

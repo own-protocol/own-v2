@@ -1,6 +1,6 @@
 # Own Protocol v2 — Audit Report & Remediation Status (Pass 4 — eUSD CDP Module)
 
-**Branch:** `stablecoin` · **Last updated:** 2026-09-02 · **Test suite:** 1400 passing excl. fork suites (+14 for the A4-H-01 / A4-H-02 fixes)
+**Branch:** `stablecoin` · **Last updated:** 2026-09-02 · **Test suite:** 1405 passing excl. fork suites (+19 across the A4-H-01 / H-02 / M-02 fixes)
 
 This pass is **scoped to the new eUSD CDP module** (EUSDManager + EUSD token) introduced on the
 `stablecoin` branch; it does not re-tread the protocol-wide ground covered by `audit-report-3.md`,
@@ -39,16 +39,16 @@ out-of-scope context for seam verification.
 | -------- | ----- | ----- | ---- | --------- |
 | Critical | 0     | —     | —    | —         |
 | High     | 2     | 2     | 0    | 0         |
-| Medium   | 5     | 0     | 5    | 0         |
-| Low      | 18    | 0     | 17   | 1         |
+| Medium   | 5     | 2     | 3    | 0         |
+| Low      | 18    | 1     | 16   | 1         |
 | Info     | 17    | 0     | 9    | 8 (noted) |
 
 | ID      | Severity | Finding                                                                  | Status                       |
 | ------- | -------- | ------------------------------------------------------------------------ | ---------------------------- |
 | A4-H-01 | High     | Partial redemption of underwater position strands unbacked debt at head  | **Fixed** (2026-09-02)       |
 | A4-H-02 | High     | Stock split re-denomination silently mis-values all eUSD collateral      | **Fixed** (2026-09-02)       |
-| A4-M-01 | Medium   | Redemption cannot skip an underwater head — peg anchor stalls            | **Open**                     |
-| A4-M-02 | Medium   | OwnIncentives pays retroactive OWN on balances from unhooked windows     | **Open**                     |
+| A4-M-01 | Medium   | Redemption cannot skip an underwater head — peg anchor stalls            | **Fixed** via A4-H-01        |
+| A4-M-02 | Medium   | OwnIncentives pays retroactive OWN on balances from unhooked windows     | **Fixed** (2026-09-02)       |
 | A4-M-03 | Medium   | Full-debt-only liquidation can be starved of eUSD liquidity (no partial) | **Open**                     |
 | A4-M-04 | Medium   | Halted collateral valued at live feed — unbacked mint above halt price   | **Open**                     |
 | A4-M-05 | Medium   | Force-execute on PSM-backed asset: vault LPs pay, maker collects surplus | **Open** (ops-gated)         |
@@ -66,7 +66,7 @@ out-of-scope context for seam verification.
 | A4-L-12 | Low      | Bridge `crosschainBurn` vs sEUSD vault: socialized loss + vault DoS      | **Open** (ops check)         |
 | A4-L-13 | Low      | Force-execution ignores `order.expiry` (reopens A3-L-03's expiry half)   | **Open**                     |
 | A4-L-14 | Low      | `withdrawCollateral` with debt escapes `mintPaused`/`enabled` levers     | **Open**                     |
-| A4-L-15 | Low      | Code-less incentivesController bricks sEUSD (try/catch ≠ extcodesize)    | **Open** (guard + unit test) |
+| A4-L-15 | Low      | Code-less incentivesController bricks sEUSD (try/catch ≠ extcodesize)    | **Fixed** with A4-M-02       |
 | A4-L-16 | Low      | `haltAsset` price is operator-set, unbounded, and permanent              | **Open** (ops; VM immutable) |
 | A4-L-17 | Low      | Pending-deposit escrow counted as vault collateral by pool health gates  | **Open**                     |
 | A4-L-18 | Low      | Rate setters reprice the elapsed accrual window (no accrue-first)        | **Open**                     |
@@ -91,6 +91,110 @@ out-of-scope context for seam verification.
 ---
 
 ## 1. Fixed Findings
+
+### A4-H-01 (High) — Redemption retires more debt than the collateral it seizes, stranding an unbacked zero-collateral position at the list head — **Fixed**
+
+**Problem.** `EUSDManager._redeemFrom` caps `seized` at `p.collateral` but subtracts the full
+`repaid` from `p.debt`. Partially redeeming an underwater position therefore leaves
+`debt > 0, collateral == 0`. The surviving node is re-sorted via `_reindex → _insertNode`, whose
+key is `mulDiv(p.collateral, PRECISION, p.debt) = 0` — the minimum — so it is pinned permanently
+at `listHead`. Every subsequent `redeem` must consume the head first: `seized` caps at `0`, so the
+redeemer burns eUSD for zero collateral, and any redeemer with a non-zero `minCollateralOut`
+reverts `SlippageExceeded` and cannot redeem at all. `liquidate` cannot clear it either (burn full
+debt for zero collateral — a pure loss no keeper takes), and the owner has no incentive to
+`closePosition` (burn debt to recover nothing). The residual is unbacked eUSD counted in
+`totalDebt`. Contrast `liquidate`, which handles the same collateral cap by clearing the **full**
+debt — that asymmetry is the root cause. Note also that `minCollateralOut` is token-denominated,
+not value-denominated, so the creating redeemer's slippage guard does not fire on the value loss.
+
+Worked case (deployed-style params, MCR 150%, threshold 130%): position `coll = 2 eSPY`,
+`debt = 1000 eUSD`, minted at $750 (CR 150%). Price gaps to $400 → collateral worth $800 < debt
+(underwater; liquidation already unprofitable). Redeemer burns 600 eUSD:
+`repaid = 600e18`, `seized = 600e18·1e18/400e18 = 1.5e18` — fine; but a second redeemer burning
+600 eUSD against the remaining `coll = 0.5e18, debt = 400e18`… `repaid = 400e18`,
+`seized = 1e18 → capped to 0.5e18`; position ends `debt = 0? no — with repaid = 400e18 the debt
+clears`. The zombie arises when `repaid < p.debt` at the cap: first redeemer burns **500** eUSD
+instead → `seized = 1.25e18 → capped to 2e18? no, 1.25 < 2` … the general reachable case:
+`amount ∈ [collValue, debt)`. E.g. redeem `800 eUSD`: `seized = 2e18` (capped exactly),
+`p.debt = 200e18`, `p.collateral = 0` → reinserted at head with ratio 0. The next 200 eUSD of
+*every* future redemption is a pure toll, or a hard revert under slippage protection. An attacker
+can manufacture this deliberately at fair-value cost (they redeem at par; the toll lands on
+everyone after them).
+
+**Suggested fix (Option A — cap `repaid` to the collateral-backed value and retire the node):**
+
+```diff
+         repaid = maxAmount > p.debt ? p.debt : maxAmount;
+         seized = Math.mulDiv(repaid, PRECISION, price);
+-        if (seized > p.collateral) seized = p.collateral;
++        if (seized > p.collateral) {
++            // Underwater: redeem only the collateral-backed portion; the
++            // unbacked residual is liquidation/backstop territory and the
++            // exhausted node must not re-enter the list.
++            seized = p.collateral;
++            repaid = Math.mulDiv(seized, price, PRECISION);
++        }
+         ...
+-        if (p.debt == 0) {
++        if (p.debt == 0 || p.collateral == 0) {
+             _removeNode(collateral, owner);
+```
+
+Preserves `eusd.totalSupply() == totalDebt` exactly; the unbacked residual stays on the books,
+off-list, attributable, and clearable by repay/close/liquidation-at-a-loss or a future backstop.
+The redeemer is never over-charged, so `minCollateralOut` regains its meaning.
+
+**Suggested fix (Option B — realize the residual as bad debt):**
+
+```diff
+         if (p.debt == 0) {
+             _removeNode(collateral, owner);
+             if (p.collateral == 0) delete _positions[collateral][owner];
++        } else if (p.collateral == 0) {
++            badDebt += p.debt;
++            totalDebt -= p.debt;
++            _removeNode(collateral, owner);
++            delete _positions[collateral][owner];
+         } else {
+```
+
+Requires redefining the supply invariant to `totalSupply == totalDebt + badDebt` (or a
+treasury-funded burn) — a conscious accounting decision, not a drop-in.
+
+**Fix (Option A, 2026-09-02).** `_redeemFrom` now caps `repaid` to the seized collateral's value
+at the redemption price whenever the collateral cap fires, so a redeemer is never charged for
+collateral they do not receive; the unbacked residual stays on the owner's books, off-list,
+still counted in `totalDebt` (supply invariant untouched) and clearable by repay / close /
+liquidation / top-up. List membership is now **link-derived** (`_isListed`: head or has a
+predecessor) instead of inferred from `debt > 0`, since the fix introduces a legitimate
+debt-only off-list state: `_reindex` drops the `wasListed` parameter and inserts only when
+`debt > 0 && collateral > 0`; `repay`, `closePosition` and `liquidate` no longer assume
+membership; and the `_insertNode` hint check uses `_isListed(hint)` (a stale hint pointing at an
+off-list residual previously would have linked the new node behind a detached predecessor —
+attacker-reachable, since `hint` is caller-supplied). The redemption walk continues past the
+drained head in the same call.
+
+**Tests.** `test_redeem_underwaterHead_capsSeizure` (updated: burn capped at $800, 200 residual
+off-list), `test_redeem_underwaterHead_partial_residualOffList_noToll` (the zombie path plus a
+second redemption at fair value), `test_redeem_underwaterHead_walkContinues_fairValue` (an
+accurate `minCollateralOut` holds across an underwater head into healthy positions),
+`test_redeem_residual_repayClosesLiquidatesAndRelists` (stale hint at the residual ignored;
+partial repay stays off-list; top-up re-lists; liquidate unlinks), and
+`test_redeem_residual_liquidateAndClose_offList`. Invariant `invariant_listSortedAndComplete`
+now asserts no listed node has `collateral == 0` and that the list holds exactly the
+`debt > 0 && collateral > 0` positions.
+
+**Residual.** The unbacked debt residual itself (Option B's bad-debt question) remains an
+accounting/backstop decision, not a liveness issue. Note for A4-M-01: with the walk continuing
+past a drained head at fair value, the "accurate `minCollateralOut` always reverts" stall no
+longer reproduces (see `test_redeem_underwaterHead_walkContinues_fairValue`); A4-M-01 should be
+re-validated against the fixed code before any further change.
+
+**Overlaps.** A4-L-03 (missing `minDebt` floor) is the enabling half; Option A supersedes the
+need for a floor on this path. A4-M-01 is the non-degenerate sibling.
+
+**Detected by** 8 of 12 agents (math-precision, execution-trace, periphery, asymmetry, boundary,
+numerical-gap as findings; trust-gap, first-principles as leads).
 
 ### A4-H-02 (High) — A routine stock split silently mis-values every eUSD position by the split ratio — **Fixed**
 
@@ -211,115 +315,7 @@ same wrong price. Fix Option A should also reject legacy tokens in `addCollatera
 **Detected by** 3 of 12 agents (invariant, first-principles, flow-gap) — all as findings, with
 matching numeric traces; re-review verified the mechanism directly against source.
 
-### A4-H-01 (High) — Redemption retires more debt than the collateral it seizes, stranding an unbacked zero-collateral position at the list head — **Fixed**
-
-**Problem.** `EUSDManager._redeemFrom` caps `seized` at `p.collateral` but subtracts the full
-`repaid` from `p.debt`. Partially redeeming an underwater position therefore leaves
-`debt > 0, collateral == 0`. The surviving node is re-sorted via `_reindex → _insertNode`, whose
-key is `mulDiv(p.collateral, PRECISION, p.debt) = 0` — the minimum — so it is pinned permanently
-at `listHead`. Every subsequent `redeem` must consume the head first: `seized` caps at `0`, so the
-redeemer burns eUSD for zero collateral, and any redeemer with a non-zero `minCollateralOut`
-reverts `SlippageExceeded` and cannot redeem at all. `liquidate` cannot clear it either (burn full
-debt for zero collateral — a pure loss no keeper takes), and the owner has no incentive to
-`closePosition` (burn debt to recover nothing). The residual is unbacked eUSD counted in
-`totalDebt`. Contrast `liquidate`, which handles the same collateral cap by clearing the **full**
-debt — that asymmetry is the root cause. Note also that `minCollateralOut` is token-denominated,
-not value-denominated, so the creating redeemer's slippage guard does not fire on the value loss.
-
-Worked case (deployed-style params, MCR 150%, threshold 130%): position `coll = 2 eSPY`,
-`debt = 1000 eUSD`, minted at $750 (CR 150%). Price gaps to $400 → collateral worth $800 < debt
-(underwater; liquidation already unprofitable). Redeemer burns 600 eUSD:
-`repaid = 600e18`, `seized = 600e18·1e18/400e18 = 1.5e18` — fine; but a second redeemer burning
-600 eUSD against the remaining `coll = 0.5e18, debt = 400e18`… `repaid = 400e18`,
-`seized = 1e18 → capped to 0.5e18`; position ends `debt = 0? no — with repaid = 400e18 the debt
-clears`. The zombie arises when `repaid < p.debt` at the cap: first redeemer burns **500** eUSD
-instead → `seized = 1.25e18 → capped to 2e18? no, 1.25 < 2` … the general reachable case:
-`amount ∈ [collValue, debt)`. E.g. redeem `800 eUSD`: `seized = 2e18` (capped exactly),
-`p.debt = 200e18`, `p.collateral = 0` → reinserted at head with ratio 0. The next 200 eUSD of
-*every* future redemption is a pure toll, or a hard revert under slippage protection. An attacker
-can manufacture this deliberately at fair-value cost (they redeem at par; the toll lands on
-everyone after them).
-
-**Suggested fix (Option A — cap `repaid` to the collateral-backed value and retire the node):**
-
-```diff
-         repaid = maxAmount > p.debt ? p.debt : maxAmount;
-         seized = Math.mulDiv(repaid, PRECISION, price);
--        if (seized > p.collateral) seized = p.collateral;
-+        if (seized > p.collateral) {
-+            // Underwater: redeem only the collateral-backed portion; the
-+            // unbacked residual is liquidation/backstop territory and the
-+            // exhausted node must not re-enter the list.
-+            seized = p.collateral;
-+            repaid = Math.mulDiv(seized, price, PRECISION);
-+        }
-         ...
--        if (p.debt == 0) {
-+        if (p.debt == 0 || p.collateral == 0) {
-             _removeNode(collateral, owner);
-```
-
-Preserves `eusd.totalSupply() == totalDebt` exactly; the unbacked residual stays on the books,
-off-list, attributable, and clearable by repay/close/liquidation-at-a-loss or a future backstop.
-The redeemer is never over-charged, so `minCollateralOut` regains its meaning.
-
-**Suggested fix (Option B — realize the residual as bad debt):**
-
-```diff
-         if (p.debt == 0) {
-             _removeNode(collateral, owner);
-             if (p.collateral == 0) delete _positions[collateral][owner];
-+        } else if (p.collateral == 0) {
-+            badDebt += p.debt;
-+            totalDebt -= p.debt;
-+            _removeNode(collateral, owner);
-+            delete _positions[collateral][owner];
-         } else {
-```
-
-Requires redefining the supply invariant to `totalSupply == totalDebt + badDebt` (or a
-treasury-funded burn) — a conscious accounting decision, not a drop-in.
-
-**Fix (Option A, 2026-09-02).** `_redeemFrom` now caps `repaid` to the seized collateral's value
-at the redemption price whenever the collateral cap fires, so a redeemer is never charged for
-collateral they do not receive; the unbacked residual stays on the owner's books, off-list,
-still counted in `totalDebt` (supply invariant untouched) and clearable by repay / close /
-liquidation / top-up. List membership is now **link-derived** (`_isListed`: head or has a
-predecessor) instead of inferred from `debt > 0`, since the fix introduces a legitimate
-debt-only off-list state: `_reindex` drops the `wasListed` parameter and inserts only when
-`debt > 0 && collateral > 0`; `repay`, `closePosition` and `liquidate` no longer assume
-membership; and the `_insertNode` hint check uses `_isListed(hint)` (a stale hint pointing at an
-off-list residual previously would have linked the new node behind a detached predecessor —
-attacker-reachable, since `hint` is caller-supplied). The redemption walk continues past the
-drained head in the same call.
-
-**Tests.** `test_redeem_underwaterHead_capsSeizure` (updated: burn capped at $800, 200 residual
-off-list), `test_redeem_underwaterHead_partial_residualOffList_noToll` (the zombie path plus a
-second redemption at fair value), `test_redeem_underwaterHead_walkContinues_fairValue` (an
-accurate `minCollateralOut` holds across an underwater head into healthy positions),
-`test_redeem_residual_repayClosesLiquidatesAndRelists` (stale hint at the residual ignored;
-partial repay stays off-list; top-up re-lists; liquidate unlinks), and
-`test_redeem_residual_liquidateAndClose_offList`. Invariant `invariant_listSortedAndComplete`
-now asserts no listed node has `collateral == 0` and that the list holds exactly the
-`debt > 0 && collateral > 0` positions.
-
-**Residual.** The unbacked debt residual itself (Option B's bad-debt question) remains an
-accounting/backstop decision, not a liveness issue. Note for A4-M-01: with the walk continuing
-past a drained head at fair value, the "accurate `minCollateralOut` always reverts" stall no
-longer reproduces (see `test_redeem_underwaterHead_walkContinues_fairValue`); A4-M-01 should be
-re-validated against the fixed code before any further change.
-
-**Overlaps.** A4-L-03 (missing `minDebt` floor) is the enabling half; Option A supersedes the
-need for a floor on this path. A4-M-01 is the non-degenerate sibling.
-
-**Detected by** 8 of 12 agents (math-precision, execution-trace, periphery, asymmetry, boundary,
-numerical-gap as findings; trust-gap, first-principles as leads).
-
----
-
-## 2. Open Findings
-
-### A4-M-01 (Medium) — Redemption cannot skip an underwater head, so the peg anchor stalls exactly when liquidation is unprofitable
+### A4-M-01 (Medium) — Redemption cannot skip an underwater head, so the peg anchor stalls exactly when liquidation is unprofitable — **Fixed** (via A4-H-01)
 
 **Problem.** `redeem` consumes strictly from `listHead` with no skip mechanism. Any head with
 CR < 100% short-changes redeemers; a redeemer protecting themselves with an accurate
@@ -337,17 +333,25 @@ CR < 100% (skipped heads remain liquidation targets); (c) add a backstop/insuran
 clears sub-100% heads. Option (b) is small and keeps riskiest-first semantics for all solvent
 positions.
 
-**Tests.** None currently assert redemption behavior with an underwater head *ahead of* healthy
-positions under a non-zero `minCollateralOut`.
+**Resolution (2026-09-02).** Re-validated against the A4-H-01 fix and closed without a
+separate change. The stall depended on an underwater head short-changing the redeemer while
+staying in the list. Under the fixed `_redeemFrom`, an underwater head is redeemed value for
+value (the burn is capped at its collateral's worth), it leaves the list in the same call, and
+the walk continues to the next position at full value — so a redeemer receives exactly $1 of
+collateral per eUSD across the walk and an accurate `minCollateralOut` holds. None of options
+(a)/(b)/(c) is needed; redemption itself now absorbs underwater heads rather than being blocked
+by them. Residual: the unbacked debt left on the drained owner's books is a backstop/accounting
+decision, tracked under A4-H-01's residual (Option B question), not a liveness issue.
 
-**Overlaps.** Worst case (CR = 0) was A4-H-01. *Post-fix note (2026-09-02):* the A4-H-01 fix
-makes the walk continue past a drained head at fair value, so the "accurate `minCollateralOut`
-always reverts" stall described above no longer reproduces — re-validate this finding against
-the fixed code before choosing an option.
+**Tests.** `test_redeem_underwaterHead_walkContinues_fairValue` — underwater head ahead of a
+healthy position, redeemed with an exact non-zero `minCollateralOut` (`amount / price`), asserts
+full fair-value payout and that the walk reached the healthy position.
+
+**Overlaps.** Worst case (CR = 0) was A4-H-01; the same fix closes both.
 
 **Detected by** 4 of 12 agents (economic-security, execution-trace, periphery, trust-gap).
 
-### A4-M-02 (Medium) — OwnIncentives pays retroactive OWN on sEUSD balances acquired while the hook is detached
+### A4-M-02 (Medium) — OwnIncentives pays retroactive OWN on sEUSD balances acquired while the hook is detached — **Fixed**
 
 **Problem.** `OwnIncentives.claim` / `sweepPartner` / `earned` read the holder's **live**
 `balanceOf` and apply the full index delta since the holder's `_userIndex` snapshot, on the
@@ -397,12 +401,55 @@ distributionEnd > block.timestamp`); document the decommission order (`setDistri
 settle → `recoverReserve` → detach). Options compose: A alone closes the theft, B alone closes
 the window.
 
-**Tests.** None currently exercise a detach/re-attach or distribute-before-attach sequence; add
-both, plus an invariant that Σ claimed ≤ emission × campaign time.
+**Fix (2026-09-02).** Reproduced first (PoC: campaign live, controller detached for a day,
+attacker deposits and claims 43,200 OWN for zero seconds held, shuttles to a fresh address and
+claims 43,200 again — more than the day's emission). Option A alone was judged insufficient:
+freezing while detached only defers the replay to re-attach, when the first hook advances the
+index over the whole gap against unseen balances. Fix closes every seam so no window exists:
+(1) `OwnIncentives` freezes when not the wired controller — `claim` / `sweepPartner` / `earned`
+skip `_updateGlobal` + `_accrue` unless `IStakedEUSD(sEusd).incentivesController() == this`,
+paying only already-accrued OWN (Option A); (2) `setDistribution` with non-zero emission reverts
+`NotAttached` unless wired (closes distribute-before-attach); (3) `StakedEUSD.setIncentivesController`
+retires the outgoing controller permanently (`_retiredControllers`, `ControllerRetired`) so a
+detached controller's index can never be replayed, and rejects code-less targets
+(`ControllerNotContract`, = A4-L-15). Replacement (the planned OWN-token migration lever) and
+clearing to zero (emergency lever for a broken controller) both remain available. Cost to
+holders on migration: a holder who never settles during the announced claim window forfeits only
+the tail since their last checkpoint; it stays in the old reserve, recoverable. Runbook: "OWN
+incentives controller — wiring & migration" in `docs/deployment-robinhood.md`. New minimal
+`IStakedEUSD` interface (one getter). sEUSD gains one mapping (not deployed; no layout concern).
+
+**Tests.** `test_setDistribution_unattached_reverts`, `test_depositBeforeAttach_noRetroactiveAccrual`,
+`test_migration_oldControllerFreezes_newStartsClean` (decommission order; old pays nothing on
+post-swap balances, new starts synced), `test_detachedWindow_shuttleClaim_paysNothing` (the PoC,
+now zero), `test_setIncentivesController_guards` (EOA rejected, retired rejected after replace and
+after clear). `test_transfersSurviveBrokenController` moved to a fresh sEUSD.
 
 **Detected by** 11 of 12 agents (economic-security, execution-trace, trust-gap, flow-gap as
 findings with matching traces; math-precision, access-control, invariant, first-principles,
 asymmetry, boundary, numerical-gap as leads).
+
+
+
+### A4-L-15 (Low) — A code-less incentives controller bricks every sEUSD transfer despite the try/catch — **Fixed** (with A4-M-02)
+
+**Problem.** `StakedEUSD._update` wraps `handleAction` in `try/catch` precisely so "a controller
+fault can never block sEUSD transfers" — but for a high-level call to an address with no code,
+solc's extcodesize check reverts in the **caller's** frame, outside what `try/catch` can catch.
+`setIncentivesController` accepts any address, so an EOA / typo / not-yet-deployed CREATE
+address bricks every transfer, mint, and burn (deposits, withdrawals, money-market liquidations
+of sEUSD) until admin resets it. Admin-misconfig trigger, admin-recoverable — hardening grade,
+but it directly falsifies the wrapper's stated guarantee.
+
+**Fix (2026-09-02).** `setIncentivesController` reverts `ControllerNotContract` for any non-zero
+target with no code (landed with the A4-M-02 wiring guards). Test:
+`test_setIncentivesController_guards` sets an EOA and asserts the revert.
+
+**Detected by** 1 of 12 agents (boundary).
+
+---
+
+## 2. Open Findings
 
 ### A4-M-03 (Medium) — Full-debt-only liquidation can be starved of eUSD liquidity
 
@@ -745,22 +792,6 @@ inverse asymmetry on `deposit`).
 **Detected by** 1 of 12 agents (asymmetry), with a complete numeric trace; gate-checked against
 source.
 
-### A4-L-15 (Low) — A code-less incentives controller bricks every sEUSD transfer despite the try/catch
-
-**Problem.** `StakedEUSD._update` wraps `handleAction` in `try/catch` precisely so "a controller
-fault can never block sEUSD transfers" — but for a high-level call to an address with no code,
-solc's extcodesize check reverts in the **caller's** frame, outside what `try/catch` can catch.
-`setIncentivesController` accepts any address, so an EOA / typo / not-yet-deployed CREATE
-address bricks every transfer, mint, and burn (deposits, withdrawals, money-market liquidations
-of sEUSD) until admin resets it. Admin-misconfig trigger, admin-recoverable — hardening grade,
-but it directly falsifies the wrapper's stated guarantee.
-
-**Suggested fix.** `require(controller == address(0) || controller.code.length > 0)` in
-`setIncentivesController`, plus one unit test pinning the extcodesize-revert semantics on
-solc 0.8.28.
-
-**Detected by** 1 of 12 agents (boundary).
-
 ---
 
 ## 3. By-Design / Withdrawn
@@ -920,7 +951,7 @@ module scope; statuses in the master index are authoritative).
 - [ ] A4-L-08 — confirm the eSPY eToken reward model (claimable vs. rebasing); if claimable, add a
       permissioned `claimCollateralRewards` mirroring `OwnMarket.sweepDividends`; if rebasing,
       additionally reconcile `totalCollateral` against real balance.
-- [ ] A4-M-02 — implement Option A (freeze accrual while detached) and/or Option B (wiring-seam
+- [x] A4-M-02 — implement Option A (freeze accrual while detached) and/or Option B (wiring-seam
       guards); add detach/re-attach and distribute-before-attach regression tests plus a
       Σ-claimed ≤ emission×time invariant.
 - [ ] A4-L-09 — enforce contract-only partners or settle-first on `setPartner`; confirm the
@@ -943,7 +974,7 @@ module scope; statuses in the master index are authoritative).
       A3-L-03 remediation); regression test: expired order unfillable AND unforceable.
 - [ ] A4-L-14 — gate the `p.debt > 0` branch of `withdrawCollateral` on `mintPaused`; incident
       runbook: throwing the mint pause must actually stop value extraction.
-- [ ] A4-L-15 — add the `code.length` guard to `setIncentivesController` + extcodesize unit
+- [x] A4-L-15 — add the `code.length` guard to `setIncentivesController` + extcodesize unit
       test.
 - [ ] A4-I-09 / A4-I-10 — zero-amount revert on the ERC-7802 pair; settle-then-clamp in
       `setBridgeLimits`. Bound `emissionPerSecond` in `OwnIncentives.setDistribution` (an

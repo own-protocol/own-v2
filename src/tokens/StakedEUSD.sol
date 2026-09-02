@@ -65,6 +65,10 @@ contract StakedEUSD is Initializable, UUPSUpgradeable, ERC4626, ERC20Permit, Ree
     /// @dev Distributes the OWN "boosted yield" to sEUSD holders without staking (Aave-style hook).
     IOwnIncentives public incentivesController;
 
+    /// @dev Controllers previously wired here. A detached controller has un-checkpointed balance
+    ///      history, so re-attaching it would replay its whole index onto unseen balances.
+    mapping(address => bool) private _retiredControllers;
+
     /// @notice Emitted when a reward batch is streamed in.
     /// @param streamer Address that supplied the eUSD (an OPERATOR).
     /// @param amount   eUSD added and now vesting.
@@ -84,6 +88,10 @@ contract StakedEUSD is Initializable, UUPSUpgradeable, ERC4626, ERC20Permit, Ree
     error OnlyOperator();
     error OnlyAdmin();
     error UpgradeAssetMismatch();
+    /// @notice The hook is a high-level call; a code-less target reverts outside the try/catch.
+    error ControllerNotContract(address controller);
+    /// @notice A controller that was wired before can never be wired again.
+    error ControllerRetired(address controller);
 
     // ──────────────────────────────────────────────────────────
     //  Construction / initialization (UUPS)
@@ -148,12 +156,21 @@ contract StakedEUSD is Initializable, UUPSUpgradeable, ERC4626, ERC20Permit, Ree
         emit RewardsStreamed(msg.sender, amount);
     }
 
-    /// @notice Set (or clear) the OWN incentives controller. ADMIN only.
-    /// @param controller New controller, or address(0) to disable the hook.
+    /// @notice Set, replace, or clear the OWN incentives controller. ADMIN only. The outgoing
+    ///         controller is retired permanently (it freezes to paying already-accrued OWN and can
+    ///         never be re-wired). Migration order: end the old campaign, give holders a claim
+    ///         window, recover its reserve, then wire the new controller.
+    /// @param controller New controller (must have code), or address(0) to disable the hook.
     function setIncentivesController(
         address controller
     ) external {
         if (!registry.hasRole(ADMIN, msg.sender)) revert OnlyAdmin();
+        if (controller != address(0)) {
+            if (controller.code.length == 0) revert ControllerNotContract(controller);
+            if (_retiredControllers[controller]) revert ControllerRetired(controller);
+        }
+        address current = address(incentivesController);
+        if (current != address(0)) _retiredControllers[current] = true;
         incentivesController = IOwnIncentives(controller);
         emit IncentivesControllerSet(controller);
     }
