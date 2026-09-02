@@ -4,8 +4,11 @@ pragma solidity 0.8.28;
 import {IOwnIncentives} from "../interfaces/IOwnIncentives.sol";
 import {IProtocolRegistry} from "../interfaces/IProtocolRegistry.sol";
 
+import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
+import {UUPSUpgradeable} from "@openzeppelin/contracts/proxy/utils/UUPSUpgradeable.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 
 import {ERC20Permit} from "@openzeppelin/contracts/token/ERC20/extensions/ERC20Permit.sol";
 import {ERC4626} from "@openzeppelin/contracts/token/ERC20/extensions/ERC4626.sol";
@@ -31,17 +34,26 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 ///      Deploy note: seed a small first deposit (dead shares) to harden the first-depositor
 ///      inflation vector — the OZ v5 virtual-shares defense is active but a seed is
 ///      belt-and-suspenders for a money vault.
-contract StakedEUSD is ERC4626, ERC20Permit, ReentrancyGuard {
+///      Runs behind an ERC-1967 proxy (UUPS) so the sEUSD address — and every downstream
+///      integration holding its shares — survives upgrades to the vesting/yield mechanics.
+///      Upgrades are ADMIN-gated ({_authorizeUpgrade}); ossification is a final upgrade to an
+///      implementation whose {_authorizeUpgrade} always reverts. The eUSD asset is an
+///      implementation immutable (baked in each build; {_authorizeUpgrade} pins it), while the
+///      ERC-20 name/symbol are hard-coded overrides — constructor-set token metadata lives in
+///      implementation storage a proxy never sees.
+contract StakedEUSD is Initializable, UUPSUpgradeable, ERC4626, ERC20Permit, ReentrancyGuard {
     using SafeERC20 for IERC20;
-
-    /// @notice Linear vesting window applied to each streamed reward batch (ADMIN-updatable).
-    uint256 public vestingPeriod;
 
     bytes32 private constant ADMIN = keccak256("ADMIN");
     bytes32 private constant OPERATOR = keccak256("OPERATOR");
 
     /// @notice ProtocolRegistry used to resolve the ADMIN/OPERATOR roles.
-    IProtocolRegistry public immutable registry;
+    /// @dev Initializer-set, fixed thereafter (storage, not immutable, so an upgraded
+    ///      implementation can never silently rebind it).
+    IProtocolRegistry public registry;
+
+    /// @notice Linear vesting window applied to each streamed reward batch (ADMIN-updatable).
+    uint256 public vestingPeriod;
 
     /// @notice Size of the currently-vesting reward batch.
     uint256 public vestingAmount;
@@ -71,21 +83,45 @@ contract StakedEUSD is ERC4626, ERC20Permit, ReentrancyGuard {
     error ZeroAmount();
     error OnlyOperator();
     error OnlyAdmin();
+    error UpgradeAssetMismatch();
 
+    // ──────────────────────────────────────────────────────────
+    //  Construction / initialization (UUPS)
+    // ──────────────────────────────────────────────────────────
+
+    /// @dev The implementation is only ever used behind an ERC-1967 proxy; lock its own
+    ///      initializers so the bare implementation can never be initialized or taken over.
+    ///      `eusd_` is baked into the implementation as the ERC-4626 asset and the ERC-2612
+    ///      domain — every upgrade implementation must be built with the same token
+    ///      ({_authorizeUpgrade} enforces this).
+    /// @param eusd_ eUSD token — the vault asset.
+    constructor(
+        address eusd_
+    ) ERC20("Staked eUSD", "sEUSD") ERC4626(IERC20(eusd_)) ERC20Permit("Staked eUSD") {
+        if (eusd_ == address(0)) revert ZeroAddress();
+        _disableInitializers();
+    }
+
+    /// @notice Initialize the vault proxy (runs once, in the proxy's constructor call).
     /// @param registry_       ProtocolRegistry address (role authority).
-    /// @param eusd_           eUSD token — the vault asset.
     /// @param vestingPeriod_  Linear vesting window per reward batch (e.g. 8 hours). Keep the
     ///                        streaming cadence ≤ this for continuous accrual.
-    constructor(
-        address registry_,
-        address eusd_,
-        uint256 vestingPeriod_
-    ) ERC20("Staked eUSD", "sEUSD") ERC4626(IERC20(eusd_)) ERC20Permit("Staked eUSD") {
-        if (registry_ == address(0) || eusd_ == address(0)) revert ZeroAddress();
+    function initialize(address registry_, uint256 vestingPeriod_) external initializer {
+        if (registry_ == address(0)) revert ZeroAddress();
         if (vestingPeriod_ == 0) revert ZeroAmount();
         registry = IProtocolRegistry(registry_);
         vestingPeriod = vestingPeriod_;
         lastDistributionTimestamp = block.timestamp;
+    }
+
+    /// @dev UUPS upgrade gate: ADMIN only, and the new implementation must be built with the same
+    ///      eUSD asset — it is an implementation immutable, so a mismatched build would silently
+    ///      corrupt the vault's accounting.
+    function _authorizeUpgrade(
+        address newImplementation
+    ) internal view override {
+        if (!registry.hasRole(ADMIN, msg.sender)) revert OnlyAdmin();
+        if (StakedEUSD(newImplementation).asset() != asset()) revert UpgradeAssetMismatch();
     }
 
     // ──────────────────────────────────────────────────────────
@@ -160,6 +196,17 @@ contract StakedEUSD is ERC4626, ERC20Permit, ReentrancyGuard {
     /// @inheritdoc ERC4626
     function decimals() public view override(ERC4626, ERC20) returns (uint8) {
         return ERC4626.decimals();
+    }
+
+    /// @dev Constructor-set ERC-20 metadata lives in implementation storage, which a proxy never
+    ///      sees — pin it here instead.
+    function name() public pure override(ERC20, IERC20Metadata) returns (string memory) {
+        return "Staked eUSD";
+    }
+
+    /// @dev See {name}.
+    function symbol() public pure override(ERC20, IERC20Metadata) returns (string memory) {
+        return "sEUSD";
     }
 
     /// @dev Notify the OWN incentives controller of each affected holder's *pre-change* balance and

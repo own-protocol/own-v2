@@ -7,9 +7,13 @@ import {IEUSDManager} from "../../src/interfaces/IEUSDManager.sol";
 import {BPS} from "../../src/interfaces/types/Types.sol";
 import {EUSD} from "../../src/tokens/EUSD.sol";
 import {Actors} from "../helpers/Actors.sol";
+import {deployEUSDManager} from "../helpers/DeployEusdModule.sol";
 import {MockAssetRegistry} from "../helpers/MockAssetRegistry.sol";
 import {MockERC20} from "../helpers/MockERC20.sol";
 import {MockOracleVerifier} from "../helpers/MockOracleVerifier.sol";
+import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
+import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
+import {UUPSUpgradeable} from "@openzeppelin/contracts/proxy/utils/UUPSUpgradeable.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {Test} from "forge-std/Test.sol";
 
@@ -66,7 +70,7 @@ contract EUSDManagerTest is Test {
         assetRegistry.setValidToken(QQQ, address(eQQQ), true);
 
         eusd = new EUSD(admin);
-        manager = new EUSDManager(address(registry), address(eusd), _defaultParams());
+        manager = deployEUSDManager(address(registry), address(eusd), _defaultParams());
         vm.startPrank(admin);
         eusd.grantRole(eusd.MINTER_ROLE(), address(manager));
         manager.addCollateral(address(eSPY), SPY);
@@ -131,49 +135,88 @@ contract EUSDManagerTest is Test {
     }
 
     // ──────────────────────────────────────────────────────────
-    //  Constructor
+    //  Initialization (UUPS)
     // ──────────────────────────────────────────────────────────
 
-    function test_constructor_zeroRegistry_reverts() public {
-        vm.expectRevert(IEUSDManager.ZeroAddress.selector);
-        new EUSDManager(address(0), address(eusd), _defaultParams());
+    /// @dev Deploy a proxy over a fresh implementation expecting `err` from initialize.
+    function _expectInitRevert(
+        address registry_,
+        address eusd_,
+        IEUSDManager.RiskParams memory p,
+        bytes4 err
+    ) internal {
+        EUSDManager impl = new EUSDManager();
+        bytes memory initData = abi.encodeCall(EUSDManager.initialize, (registry_, eusd_, p));
+        vm.expectRevert(err);
+        new ERC1967Proxy(address(impl), initData);
     }
 
-    function test_constructor_zeroEusd_reverts() public {
-        vm.expectRevert(IEUSDManager.ZeroAddress.selector);
-        new EUSDManager(address(registry), address(0), _defaultParams());
+    function test_initialize_zeroRegistry_reverts() public {
+        _expectInitRevert(address(0), address(eusd), _defaultParams(), IEUSDManager.ZeroAddress.selector);
     }
 
-    function test_constructor_mcrBelowThreshold_reverts() public {
+    function test_initialize_zeroEusd_reverts() public {
+        _expectInitRevert(address(registry), address(0), _defaultParams(), IEUSDManager.ZeroAddress.selector);
+    }
+
+    function test_initialize_mcrBelowThreshold_reverts() public {
         IEUSDManager.RiskParams memory p = _defaultParams();
         p.mcrBps = 12_000;
-        vm.expectRevert(IEUSDManager.InvalidRiskParams.selector);
-        new EUSDManager(address(registry), address(eusd), p);
+        _expectInitRevert(address(registry), address(eusd), p, IEUSDManager.InvalidRiskParams.selector);
     }
 
-    function test_constructor_thresholdBelowBonus_reverts() public {
+    function test_initialize_thresholdBelowBonus_reverts() public {
         IEUSDManager.RiskParams memory p = _defaultParams();
         p.liquidationThresholdBps = 10_400; // < BPS + 500
         p.mcrBps = 10_500;
-        vm.expectRevert(IEUSDManager.InvalidRiskParams.selector);
-        new EUSDManager(address(registry), address(eusd), p);
+        _expectInitRevert(address(registry), address(eusd), p, IEUSDManager.InvalidRiskParams.selector);
     }
 
-    function test_constructor_feeAboveBps_reverts() public {
+    function test_initialize_feeAboveBps_reverts() public {
         IEUSDManager.RiskParams memory p = _defaultParams();
         p.stabilityFeeBps = uint16(BPS) + 1;
-        vm.expectRevert(IEUSDManager.InvalidRiskParams.selector);
-        new EUSDManager(address(registry), address(eusd), p);
+        _expectInitRevert(address(registry), address(eusd), p, IEUSDManager.InvalidRiskParams.selector);
     }
 
-    function test_constructor_zeroMintPriceMaxAge_reverts() public {
+    function test_initialize_zeroMintPriceMaxAge_reverts() public {
         IEUSDManager.RiskParams memory p = _defaultParams();
         p.mintPriceMaxAge = 0;
-        vm.expectRevert(IEUSDManager.InvalidRiskParams.selector);
-        new EUSDManager(address(registry), address(eusd), p);
+        _expectInitRevert(address(registry), address(eusd), p, IEUSDManager.InvalidRiskParams.selector);
     }
 
-    function test_constructor_storesParams() public view {
+    function test_initialize_bareImplementation_reverts() public {
+        EUSDManager impl = new EUSDManager();
+        vm.expectRevert(Initializable.InvalidInitialization.selector);
+        impl.initialize(address(registry), address(eusd), _defaultParams());
+    }
+
+    function test_initialize_secondCall_reverts() public {
+        vm.expectRevert(Initializable.InvalidInitialization.selector);
+        manager.initialize(address(registry), address(eusd), _defaultParams());
+    }
+
+    function test_upgrade_byAdmin_preservesState() public {
+        _open(alice, 10e18, 2000e18);
+
+        EUSDManagerV2 newImpl = new EUSDManagerV2();
+        vm.prank(admin);
+        UUPSUpgradeable(address(manager)).upgradeToAndCall(address(newImpl), "");
+
+        // State (position, registry binding) survives; new behavior is live.
+        assertEq(EUSDManagerV2(address(manager)).version(), 2);
+        assertEq(address(manager.registry()), address(registry));
+        assertEq(manager.getPosition(address(eSPY), alice).debt, 2000e18);
+        assertEq(manager.totalDebt(), 2000e18);
+    }
+
+    function test_upgrade_byNonAdmin_reverts() public {
+        EUSDManagerV2 newImpl = new EUSDManagerV2();
+        vm.expectRevert(IEUSDManager.OnlyAdmin.selector);
+        vm.prank(attacker);
+        UUPSUpgradeable(address(manager)).upgradeToAndCall(address(newImpl), "");
+    }
+
+    function test_initialize_storesParams() public view {
         IEUSDManager.RiskParams memory p = manager.riskParams();
         assertEq(p.mcrBps, MCR);
         assertEq(p.liquidationThresholdBps, LIQ_THRESHOLD);
@@ -1050,5 +1093,13 @@ contract EUSDManagerTest is Test {
         _open(alice, 3e18, 0);
         vm.expectRevert(abi.encodeWithSelector(IEUSDManager.NoDebt.selector, address(eSPY), alice));
         manager.nominalRatio(address(eSPY), alice);
+    }
+}
+
+/// @dev Minimal upgraded implementation used only to prove UUPS upgrade wiring works and storage
+///      is preserved. Appends no storage; adds one pure function.
+contract EUSDManagerV2 is EUSDManager {
+    function version() external pure returns (uint256) {
+        return 2;
     }
 }

@@ -7,6 +7,8 @@ import {IEUSDManager} from "../interfaces/IEUSDManager.sol";
 import {IOracleVerifier} from "../interfaces/IOracleVerifier.sol";
 import {IProtocolRegistry} from "../interfaces/IProtocolRegistry.sol";
 import {BPS, PRECISION} from "../interfaces/types/Types.sol";
+import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
+import {UUPSUpgradeable} from "@openzeppelin/contracts/proxy/utils/UUPSUpgradeable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
@@ -24,7 +26,11 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 ///      so ordering only changes when a position is touched. Insertions take an O(1) hint (the
 ///      prospective predecessor) and fall back to a head walk. Collateral tokens are protocol
 ///      eTokens (18 decimals, no transfer fees), validated against the AssetRegistry at add time.
-contract EUSDManager is IEUSDManager, ReentrancyGuard {
+///      Runs behind an ERC-1967 proxy (UUPS) so the manager address — and the positions it
+///      custodies — survive upgrades (e.g. the planned per-collateral risk params). Upgrades are
+///      ADMIN-gated ({_authorizeUpgrade}); ossification is a final upgrade to an implementation
+///      whose {_authorizeUpgrade} always reverts.
+contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
     // ──────────────────────────────────────────────────────────
@@ -38,7 +44,7 @@ contract EUSDManager is IEUSDManager, ReentrancyGuard {
     }
 
     // ──────────────────────────────────────────────────────────
-    //  Constants & immutables
+    //  Constants
     // ──────────────────────────────────────────────────────────
 
     /// @dev Stability-fee year basis (simple interest).
@@ -47,15 +53,17 @@ contract EUSDManager is IEUSDManager, ReentrancyGuard {
     bytes32 private constant ADMIN = keccak256("ADMIN");
     bytes32 private constant OPERATOR = keccak256("OPERATOR");
 
-    /// @notice ProtocolRegistry used to resolve the oracle, AssetRegistry, treasury and roles.
-    IProtocolRegistry public immutable registry;
-
-    /// @dev The eUSD token minted and burned by this manager.
-    IEUSD private immutable _eusd;
-
     // ──────────────────────────────────────────────────────────
     //  State
     // ──────────────────────────────────────────────────────────
+
+    /// @notice ProtocolRegistry used to resolve the oracle, AssetRegistry, treasury and roles.
+    /// @dev Initializer-set, fixed thereafter (storage, not immutable, so an upgraded
+    ///      implementation can never silently rebind it).
+    IProtocolRegistry public registry;
+
+    /// @dev The eUSD token minted and burned by this manager. Initializer-set, fixed thereafter.
+    IEUSD private _eusd;
 
     RiskParams private _riskParams;
 
@@ -101,13 +109,20 @@ contract EUSDManager is IEUSDManager, ReentrancyGuard {
     }
 
     // ──────────────────────────────────────────────────────────
-    //  Constructor
+    //  Construction / initialization (UUPS)
     // ──────────────────────────────────────────────────────────
 
+    /// @dev The implementation is only ever used behind an ERC-1967 proxy; lock its own
+    ///      initializers so the bare implementation can never be initialized or taken over.
+    constructor() {
+        _disableInitializers();
+    }
+
+    /// @notice Initialize the manager proxy (runs once, in the proxy's constructor call).
     /// @param registry_ ProtocolRegistry contract address.
     /// @param eusd_     EUSD token address (this manager must hold its MINTER_ROLE).
     /// @param params    Initial risk parameters (validated as in the setters).
-    constructor(address registry_, address eusd_, RiskParams memory params) {
+    function initialize(address registry_, address eusd_, RiskParams calldata params) external initializer {
         if (registry_ == address(0) || eusd_ == address(0)) revert ZeroAddress();
         _validateRatios(params.mcrBps, params.liquidationThresholdBps, params.liquidationBonusBps);
         if (params.stabilityFeeBps > BPS || params.mintPriceMaxAge == 0) revert InvalidRiskParams();
@@ -116,6 +131,12 @@ contract EUSDManager is IEUSDManager, ReentrancyGuard {
         _riskParams = params;
         _feeIndexUpdated = block.timestamp;
     }
+
+    /// @dev UUPS upgrade gate: only the protocol ADMIN role may upgrade this proxy's
+    ///      implementation.
+    function _authorizeUpgrade(
+        address
+    ) internal view override onlyAdmin {}
 
     // ──────────────────────────────────────────────────────────
     //  External — position management

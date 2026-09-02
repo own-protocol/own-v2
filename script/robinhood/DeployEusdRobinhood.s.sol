@@ -8,6 +8,7 @@ import {EUSDManager} from "../../src/core/EUSDManager.sol";
 import {IEUSDManager} from "../../src/interfaces/IEUSDManager.sol";
 import {IProtocolRegistry} from "../../src/interfaces/IProtocolRegistry.sol";
 import {EUSD} from "../../src/tokens/EUSD.sol";
+import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
 /// @title DeployEusdRobinhood — eUSD CDP module for the Robinhood Chain launch
 /// @notice Standalone module: deploys the EUSD token and EUSDManager, wires eSPY as the launch
@@ -66,19 +67,30 @@ contract DeployEusdRobinhood is Script {
         // 1. Token — deployer is temporary admin so it can wire the minter role.
         EUSD eusd = new EUSD(deployer);
 
-        // 2. Manager.
-        EUSDManager manager = new EUSDManager(
-            address(registry),
-            address(eusd),
-            IEUSDManager.RiskParams({
-                mcrBps: MCR_BPS,
-                liquidationThresholdBps: LIQ_THRESHOLD_BPS,
-                liquidationBonusBps: LIQ_BONUS_BPS,
-                stabilityFeeBps: STABILITY_FEE_BPS,
-                debtCeiling: DEBT_CEILING,
-                minDebt: MIN_DEBT,
-                mintPriceMaxAge: MINT_PRICE_MAX_AGE
-            })
+        // 2. Manager — UUPS implementation behind an ERC-1967 proxy, initialized atomically.
+        EUSDManager managerImpl = new EUSDManager();
+        EUSDManager manager = EUSDManager(
+            address(
+                new ERC1967Proxy(
+                    address(managerImpl),
+                    abi.encodeCall(
+                        EUSDManager.initialize,
+                        (
+                            address(registry),
+                            address(eusd),
+                            IEUSDManager.RiskParams({
+                                mcrBps: MCR_BPS,
+                                liquidationThresholdBps: LIQ_THRESHOLD_BPS,
+                                liquidationBonusBps: LIQ_BONUS_BPS,
+                                stabilityFeeBps: STABILITY_FEE_BPS,
+                                debtCeiling: DEBT_CEILING,
+                                minDebt: MIN_DEBT,
+                                mintPriceMaxAge: MINT_PRICE_MAX_AGE
+                            })
+                        )
+                    )
+                )
+            )
         );
 
         // 3. Sole minter = the manager; hand token admin to the Safe and drop the deployer.

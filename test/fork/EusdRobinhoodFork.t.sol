@@ -9,6 +9,7 @@ import {IAssetRegistry} from "../../src/interfaces/IAssetRegistry.sol";
 import {IEUSDManager} from "../../src/interfaces/IEUSDManager.sol";
 import {IOwnMarket} from "../../src/interfaces/IOwnMarket.sol";
 import {EUSD} from "../../src/tokens/EUSD.sol";
+import {deployEUSDManager} from "../helpers/DeployEusdModule.sol";
 import {deployOwnMarket} from "../helpers/DeployOwnMarket.sol";
 import {UUPSUpgradeable} from "@openzeppelin/contracts/proxy/utils/UUPSUpgradeable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -75,7 +76,7 @@ contract EusdRobinhoodForkTest is Test {
 
         // Deploy the eUSD stack against the LIVE registry.
         eusd = new EUSD(admin);
-        manager = new EUSDManager(
+        manager = deployEUSDManager(
             address(REGISTRY),
             address(eusd),
             IEUSDManager.RiskParams({

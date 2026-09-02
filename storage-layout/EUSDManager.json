@@ -1,0 +1,292 @@
+{
+  "storage": [
+    {
+      "label": "registry",
+      "offset": 0,
+      "slot": "0",
+      "type": "t_contract(IProtocolRegistry)"
+    },
+    {
+      "label": "_eusd",
+      "offset": 0,
+      "slot": "1",
+      "type": "t_contract(IEUSD)"
+    },
+    {
+      "label": "_riskParams",
+      "offset": 0,
+      "slot": "2",
+      "type": "t_struct(RiskParams)_storage"
+    },
+    {
+      "label": "mintPaused",
+      "offset": 0,
+      "slot": "6",
+      "type": "t_bool"
+    },
+    {
+      "label": "totalDebt",
+      "offset": 0,
+      "slot": "7",
+      "type": "t_uint256"
+    },
+    {
+      "label": "totalCollateral",
+      "offset": 0,
+      "slot": "8",
+      "type": "t_mapping(t_address,t_uint256)"
+    },
+    {
+      "label": "_collateralConfigs",
+      "offset": 0,
+      "slot": "9",
+      "type": "t_mapping(t_address,t_struct(CollateralConfig)_storage)"
+    },
+    {
+      "label": "_positions",
+      "offset": 0,
+      "slot": "10",
+      "type": "t_mapping(t_address,t_mapping(t_address,t_struct(Position)_storage))"
+    },
+    {
+      "label": "_nodes",
+      "offset": 0,
+      "slot": "11",
+      "type": "t_mapping(t_address,t_mapping(t_address,t_struct(ListNode)_storage))"
+    },
+    {
+      "label": "listHead",
+      "offset": 0,
+      "slot": "12",
+      "type": "t_mapping(t_address,t_address)"
+    },
+    {
+      "label": "listTail",
+      "offset": 0,
+      "slot": "13",
+      "type": "t_mapping(t_address,t_address)"
+    },
+    {
+      "label": "listSize",
+      "offset": 0,
+      "slot": "14",
+      "type": "t_mapping(t_address,t_uint256)"
+    },
+    {
+      "label": "_feeIndex",
+      "offset": 0,
+      "slot": "15",
+      "type": "t_uint256"
+    },
+    {
+      "label": "_feeIndexUpdated",
+      "offset": 0,
+      "slot": "16",
+      "type": "t_uint256"
+    }
+  ],
+  "types": {
+    "t_address": {
+      "encoding": "inplace",
+      "label": "address",
+      "numberOfBytes": "20"
+    },
+    "t_bool": {
+      "encoding": "inplace",
+      "label": "bool",
+      "numberOfBytes": "1"
+    },
+    "t_bytes32": {
+      "encoding": "inplace",
+      "label": "bytes32",
+      "numberOfBytes": "32"
+    },
+    "t_contract(IEUSD)": {
+      "encoding": "inplace",
+      "label": "contract IEUSD",
+      "numberOfBytes": "20"
+    },
+    "t_contract(IProtocolRegistry)": {
+      "encoding": "inplace",
+      "label": "contract IProtocolRegistry",
+      "numberOfBytes": "20"
+    },
+    "t_mapping(t_address,t_address)": {
+      "encoding": "mapping",
+      "key": "t_address",
+      "label": "mapping(address => address)",
+      "numberOfBytes": "32",
+      "value": "t_address"
+    },
+    "t_mapping(t_address,t_mapping(t_address,t_struct(ListNode)_storage))": {
+      "encoding": "mapping",
+      "key": "t_address",
+      "label": "mapping(address => mapping(address => struct EUSDManager.ListNode))",
+      "numberOfBytes": "32",
+      "value": "t_mapping(t_address,t_struct(ListNode)_storage)"
+    },
+    "t_mapping(t_address,t_mapping(t_address,t_struct(Position)_storage))": {
+      "encoding": "mapping",
+      "key": "t_address",
+      "label": "mapping(address => mapping(address => struct IEUSDManager.Position))",
+      "numberOfBytes": "32",
+      "value": "t_mapping(t_address,t_struct(Position)_storage)"
+    },
+    "t_mapping(t_address,t_struct(CollateralConfig)_storage)": {
+      "encoding": "mapping",
+      "key": "t_address",
+      "label": "mapping(address => struct IEUSDManager.CollateralConfig)",
+      "numberOfBytes": "32",
+      "value": "t_struct(CollateralConfig)_storage"
+    },
+    "t_mapping(t_address,t_struct(ListNode)_storage)": {
+      "encoding": "mapping",
+      "key": "t_address",
+      "label": "mapping(address => struct EUSDManager.ListNode)",
+      "numberOfBytes": "32",
+      "value": "t_struct(ListNode)_storage"
+    },
+    "t_mapping(t_address,t_struct(Position)_storage)": {
+      "encoding": "mapping",
+      "key": "t_address",
+      "label": "mapping(address => struct IEUSDManager.Position)",
+      "numberOfBytes": "32",
+      "value": "t_struct(Position)_storage"
+    },
+    "t_mapping(t_address,t_uint256)": {
+      "encoding": "mapping",
+      "key": "t_address",
+      "label": "mapping(address => uint256)",
+      "numberOfBytes": "32",
+      "value": "t_uint256"
+    },
+    "t_struct(CollateralConfig)_storage": {
+      "encoding": "inplace",
+      "label": "struct IEUSDManager.CollateralConfig",
+      "members": [
+        {
+          "label": "ticker",
+          "offset": 0,
+          "slot": "0",
+          "type": "t_bytes32"
+        },
+        {
+          "label": "enabled",
+          "offset": 0,
+          "slot": "1",
+          "type": "t_bool"
+        },
+        {
+          "label": "exists",
+          "offset": 1,
+          "slot": "1",
+          "type": "t_bool"
+        }
+      ],
+      "numberOfBytes": "64"
+    },
+    "t_struct(ListNode)_storage": {
+      "encoding": "inplace",
+      "label": "struct EUSDManager.ListNode",
+      "members": [
+        {
+          "label": "prev",
+          "offset": 0,
+          "slot": "0",
+          "type": "t_address"
+        },
+        {
+          "label": "next",
+          "offset": 0,
+          "slot": "1",
+          "type": "t_address"
+        }
+      ],
+      "numberOfBytes": "64"
+    },
+    "t_struct(Position)_storage": {
+      "encoding": "inplace",
+      "label": "struct IEUSDManager.Position",
+      "members": [
+        {
+          "label": "collateral",
+          "offset": 0,
+          "slot": "0",
+          "type": "t_uint256"
+        },
+        {
+          "label": "debt",
+          "offset": 0,
+          "slot": "1",
+          "type": "t_uint256"
+        },
+        {
+          "label": "feeIndexSnapshot",
+          "offset": 0,
+          "slot": "2",
+          "type": "t_uint256"
+        }
+      ],
+      "numberOfBytes": "96"
+    },
+    "t_struct(RiskParams)_storage": {
+      "encoding": "inplace",
+      "label": "struct IEUSDManager.RiskParams",
+      "members": [
+        {
+          "label": "mcrBps",
+          "offset": 0,
+          "slot": "0",
+          "type": "t_uint16"
+        },
+        {
+          "label": "liquidationThresholdBps",
+          "offset": 2,
+          "slot": "0",
+          "type": "t_uint16"
+        },
+        {
+          "label": "liquidationBonusBps",
+          "offset": 4,
+          "slot": "0",
+          "type": "t_uint16"
+        },
+        {
+          "label": "stabilityFeeBps",
+          "offset": 6,
+          "slot": "0",
+          "type": "t_uint16"
+        },
+        {
+          "label": "debtCeiling",
+          "offset": 0,
+          "slot": "1",
+          "type": "t_uint256"
+        },
+        {
+          "label": "minDebt",
+          "offset": 0,
+          "slot": "2",
+          "type": "t_uint256"
+        },
+        {
+          "label": "mintPriceMaxAge",
+          "offset": 0,
+          "slot": "3",
+          "type": "t_uint256"
+        }
+      ],
+      "numberOfBytes": "128"
+    },
+    "t_uint16": {
+      "encoding": "inplace",
+      "label": "uint16",
+      "numberOfBytes": "2"
+    },
+    "t_uint256": {
+      "encoding": "inplace",
+      "label": "uint256",
+      "numberOfBytes": "32"
+    }
+  }
+}

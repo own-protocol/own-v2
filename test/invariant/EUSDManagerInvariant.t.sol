@@ -6,6 +6,7 @@ import {ProtocolRegistry} from "../../src/core/ProtocolRegistry.sol";
 import {IEUSDManager} from "../../src/interfaces/IEUSDManager.sol";
 import {EUSD} from "../../src/tokens/EUSD.sol";
 import {Actors} from "../helpers/Actors.sol";
+import {deployEUSDManager} from "../helpers/DeployEusdModule.sol";
 import {MockAssetRegistry} from "../helpers/MockAssetRegistry.sol";
 import {MockERC20} from "../helpers/MockERC20.sol";
 import {MockOracleVerifier} from "../helpers/MockOracleVerifier.sol";
@@ -57,7 +58,7 @@ contract EUSDManagerInvariantTest is Test {
         assetRegistry.setValidToken(QQQ, address(eQQQ), true);
 
         eusd = new EUSD(admin);
-        manager = new EUSDManager(
+        manager = deployEUSDManager(
             address(registry),
             address(eusd),
             IEUSDManager.RiskParams({

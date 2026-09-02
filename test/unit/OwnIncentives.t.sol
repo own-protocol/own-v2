@@ -9,6 +9,7 @@ import {EUSD} from "../../src/tokens/EUSD.sol";
 import {StakedEUSD} from "../../src/tokens/StakedEUSD.sol";
 
 import {Actors} from "../helpers/Actors.sol";
+import {deployStakedEUSD} from "../helpers/DeployEusdModule.sol";
 import {MockERC20} from "../helpers/MockERC20.sol";
 import {Test} from "forge-std/Test.sol";
 
@@ -42,7 +43,7 @@ contract OwnIncentivesTest is Test {
         registry.grantRole(keccak256("ADMIN"), admin);
 
         eusd = new EUSD(admin);
-        sEusd = new StakedEUSD(address(registry), address(eusd), VEST);
+        sEusd = deployStakedEUSD(address(registry), address(eusd), VEST);
         own = new MockERC20("Own", "OWN", 18);
         incentives = new OwnIncentives(address(registry), address(sEusd), address(own));
 

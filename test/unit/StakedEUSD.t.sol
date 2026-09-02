@@ -6,6 +6,10 @@ import {ProtocolRegistry} from "../../src/core/ProtocolRegistry.sol";
 import {EUSD} from "../../src/tokens/EUSD.sol";
 import {StakedEUSD} from "../../src/tokens/StakedEUSD.sol";
 import {Actors} from "../helpers/Actors.sol";
+import {deployStakedEUSD} from "../helpers/DeployEusdModule.sol";
+import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
+import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
+import {UUPSUpgradeable} from "@openzeppelin/contracts/proxy/utils/UUPSUpgradeable.sol";
 import {Test} from "forge-std/Test.sol";
 
 contract StakedEUSDTest is Test {
@@ -31,7 +35,7 @@ contract StakedEUSDTest is Test {
         vm.stopPrank();
 
         eusd = new EUSD(admin);
-        sEusd = new StakedEUSD(address(registry), address(eusd), VEST);
+        sEusd = deployStakedEUSD(address(registry), address(eusd), VEST);
 
         bytes32 minterRole = eusd.MINTER_ROLE();
         vm.prank(admin);
@@ -213,5 +217,93 @@ contract StakedEUSDTest is Test {
         vm.prank(admin);
         vm.expectRevert(StakedEUSD.ZeroAmount.selector);
         sEusd.setVestingPeriod(0);
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  UUPS lifecycle
+    // ──────────────────────────────────────────────────────────
+
+    function test_metadata_visibleThroughProxy() public view {
+        // name/symbol are pinned overrides — constructor-set metadata lives in implementation
+        // storage a proxy never sees.
+        assertEq(sEusd.name(), "Staked eUSD");
+        assertEq(sEusd.symbol(), "sEUSD");
+        assertEq(sEusd.asset(), address(eusd));
+        assertEq(sEusd.decimals(), 18);
+    }
+
+    function test_initialize_bareImplementation_reverts() public {
+        StakedEUSD impl = new StakedEUSD(address(eusd));
+        vm.expectRevert(Initializable.InvalidInitialization.selector);
+        impl.initialize(address(registry), VEST);
+    }
+
+    function test_initialize_secondCall_reverts() public {
+        vm.expectRevert(Initializable.InvalidInitialization.selector);
+        sEusd.initialize(address(registry), VEST);
+    }
+
+    function test_initialize_zeroRegistry_reverts() public {
+        StakedEUSD impl = new StakedEUSD(address(eusd));
+        bytes memory initData = abi.encodeCall(StakedEUSD.initialize, (address(0), VEST));
+        vm.expectRevert(StakedEUSD.ZeroAddress.selector);
+        new ERC1967Proxy(address(impl), initData);
+    }
+
+    function test_initialize_zeroVestingPeriod_reverts() public {
+        StakedEUSD impl = new StakedEUSD(address(eusd));
+        bytes memory initData = abi.encodeCall(StakedEUSD.initialize, (address(registry), 0));
+        vm.expectRevert(StakedEUSD.ZeroAmount.selector);
+        new ERC1967Proxy(address(impl), initData);
+    }
+
+    function test_constructor_zeroEusd_reverts() public {
+        vm.expectRevert(StakedEUSD.ZeroAddress.selector);
+        new StakedEUSD(address(0));
+    }
+
+    function test_upgrade_byAdmin_preservesState() public {
+        vm.prank(alice);
+        sEusd.deposit(1000e18, alice);
+        uint256 sharesBefore = sEusd.balanceOf(alice);
+        uint256 assetsBefore = sEusd.totalAssets();
+
+        StakedEUSDV2 newImpl = new StakedEUSDV2(address(eusd));
+        vm.prank(admin);
+        UUPSUpgradeable(address(sEusd)).upgradeToAndCall(address(newImpl), "");
+
+        assertEq(StakedEUSDV2(address(sEusd)).version(), 2);
+        assertEq(sEusd.balanceOf(alice), sharesBefore);
+        assertEq(sEusd.totalAssets(), assetsBefore);
+        assertEq(sEusd.vestingPeriod(), VEST);
+    }
+
+    function test_upgrade_byNonAdmin_reverts() public {
+        StakedEUSDV2 newImpl = new StakedEUSDV2(address(eusd));
+        vm.expectRevert(StakedEUSD.OnlyAdmin.selector);
+        vm.prank(attacker);
+        UUPSUpgradeable(address(sEusd)).upgradeToAndCall(address(newImpl), "");
+    }
+
+    function test_upgrade_assetMismatch_reverts() public {
+        // An implementation built with a different asset must be rejected — the asset is an
+        // implementation immutable, so a mismatched build would corrupt the vault's accounting.
+        EUSD otherAsset = new EUSD(admin);
+        StakedEUSDV2 newImpl = new StakedEUSDV2(address(otherAsset));
+        vm.expectRevert(StakedEUSD.UpgradeAssetMismatch.selector);
+        vm.prank(admin);
+        UUPSUpgradeable(address(sEusd)).upgradeToAndCall(address(newImpl), "");
+    }
+}
+
+/// @dev Minimal upgraded implementation used only to prove UUPS upgrade wiring works and storage
+///      is preserved. Appends no storage; adds one pure function.
+contract StakedEUSDV2 is StakedEUSD {
+    constructor(
+        address eusd_
+    ) StakedEUSD(eusd_) {}
+
+    function version() external pure returns (uint256) {
+        return 2;
     }
 }
