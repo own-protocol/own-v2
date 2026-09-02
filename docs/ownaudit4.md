@@ -1,6 +1,6 @@
 # Own Protocol v2 — Audit Report & Remediation Status (Pass 4 — eUSD CDP Module)
 
-**Branch:** `stablecoin` · **Last updated:** 2026-09-02 · **Test suite:** 1405 passing excl. fork suites (+19 across the A4-H-01 / H-02 / M-02 fixes)
+**Branch:** `stablecoin` · **Last updated:** 2026-09-02 · **Test suite:** 1409 passing excl. fork suites (+23 across the A4-H-01 / H-02 / M-02 / M-03 fixes)
 
 This pass is **scoped to the new eUSD CDP module** (EUSDManager + EUSD token) introduced on the
 `stablecoin` branch; it does not re-tread the protocol-wide ground covered by `audit-report-3.md`,
@@ -39,7 +39,7 @@ out-of-scope context for seam verification.
 | -------- | ----- | ----- | ---- | --------- |
 | Critical | 0     | —     | —    | —         |
 | High     | 2     | 2     | 0    | 0         |
-| Medium   | 5     | 2     | 3    | 0         |
+| Medium   | 5     | 3     | 2    | 0         |
 | Low      | 18    | 1     | 16   | 1         |
 | Info     | 17    | 0     | 9    | 8 (noted) |
 
@@ -49,7 +49,7 @@ out-of-scope context for seam verification.
 | A4-H-02 | High     | Stock split re-denomination silently mis-values all eUSD collateral      | **Fixed** (2026-09-02)       |
 | A4-M-01 | Medium   | Redemption cannot skip an underwater head — peg anchor stalls            | **Fixed** via A4-H-01        |
 | A4-M-02 | Medium   | OwnIncentives pays retroactive OWN on balances from unhooked windows     | **Fixed** (2026-09-02)       |
-| A4-M-03 | Medium   | Full-debt-only liquidation can be starved of eUSD liquidity (no partial) | **Open**                     |
+| A4-M-03 | Medium   | Full-debt-only liquidation can be starved of eUSD liquidity (no partial) | **Fixed** (2026-09-02)       |
 | A4-M-04 | Medium   | Halted collateral valued at live feed — unbacked mint above halt price   | **Open**                     |
 | A4-M-05 | Medium   | Force-execute on PSM-backed asset: vault LPs pay, maker collects surplus | **Open** (ops-gated)         |
 | A4-L-01 | Low      | `mintPriceMaxAge` is a no-op inside the oracle's `clFreshWindow`         | **Open**                     |
@@ -447,11 +447,7 @@ target with no code (landed with the A4-M-02 wiring guards). Test:
 
 **Detected by** 1 of 12 agents (boundary).
 
----
-
-## 2. Open Findings
-
-### A4-M-03 (Medium) — Full-debt-only liquidation can be starved of eUSD liquidity
+### A4-M-03 (Medium) — Full-debt-only liquidation can be starved of eUSD liquidity — **Fixed**
 
 **Problem.** `liquidate` burns the position's **entire** `p.debt` from the caller in one call;
 there is no partial liquidation. A large borrower can therefore make themselves structurally
@@ -466,12 +462,31 @@ the crash. Worked case: ceiling 1M, whale mints 800k against $1.2M collateral an
 200k circulates elsewhere; a 40% drop leaves $720k backing 800k debt and no path to burn 800k
 in one call.
 
-**Suggested fix.** Support partial liquidation — `liquidate(collateral, owner, amount)` with the
-same bonus math pro-rata, remainder re-listed (subject to the `minDebt` floor). Alternatively
-document a hard cap on any single position relative to expected circulating liquidity.
+**Fix (2026-09-02).** Partial liquidation: `liquidate(collateral, owner, amount, hint)` repays
+`min(amount, debt)` (`type(uint256).max` = full) with the same bonus math pro-rata, capped at
+the collateral. A partial that would leave `0 < remaining < minDebt` reverts
+`BelowMinimumDebt` (same rule as `repay`); the remainder is re-sorted via `_reindex` with the
+caller's hint (a collateral-exhausted underwater remainder goes off-list, per A4-H-01). Surplus
+collateral is refunded to the owner only on a full close. No close factor: a fixed 5% bonus
+under a 130% threshold does not need one. Seizure math moved to `_seizure` (stack depth).
+Impact note recorded at validation: after A4-H-01, redemption already shaves the whale's head
+position with any circulating eUSD, so the peg anchor was not starved — only the penalised
+keeper path was; partial liquidation removes the precondition entirely. Interface + QA doc
+updated; 13 call sites migrated (`type(uint256).max, address(0)`).
+
+**Tests.** `test_liquidate_partial_improvesRatioAndRelists` (0.7 eSPY seized for 400 eUSD at
+$600, no refund, head re-sorted at exactly 130%), `test_liquidate_partial_belowMinDebt_reverts`
+(and exactly-minDebt remainder allowed), `test_liquidate_zeroAmount_reverts`,
+`test_liquidate_whale_clearedInChunks` (10,000 debt cleared by a keeper who never holds more
+than 1,000 eUSD). Invariant handler now liquidates partially whenever a keeper cannot fund the
+full debt.
 
 **Detected by** 1 of 12 agents (economic-security); mechanics verified directly against source
 (full-debt burn in `liquidate`, ceiling check in `mint`).
+
+---
+
+## 2. Open Findings
 
 ### A4-M-04 (Medium) — Halted collateral is valued at the live feed, enabling unbacked minting above the halt price
 
@@ -966,7 +981,7 @@ module scope; statuses in the master index are authoritative).
 - [ ] A4-L-12 — size every per-bridge `burnMaxLimit` ≪ sEUSD vested TVL before authorizing any
       transport; decide on the `totalAssets` clamp; fold A4-I-06's paired burn+mint budget into
       bridge monitoring.
-- [ ] A4-M-03 — decide partial liquidation (`liquidate` with an `amount`) vs a per-position
+- [x] A4-M-03 — decide partial liquidation (`liquidate` with an `amount`) vs a per-position
       size cap; add a whale-starvation regression test (ceiling filled, circulating < debt).
 - [ ] A4-M-04 — add the halt gate to `mint`/`withdrawCollateral` and decide halted-collateral
       valuation on exits (`min(oracle, haltPrice)`); add a halted-asset mint regression test.

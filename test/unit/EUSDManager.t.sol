@@ -694,7 +694,7 @@ contract EUSDManagerTest is Test {
         vm.expectEmit(true, true, true, true);
         emit IEUSDManager.PositionLiquidated(address(eSPY), alice, keeper, 1000e18, 2.625e18, 0.375e18);
         vm.prank(keeper);
-        manager.liquidate(address(eSPY), alice);
+        manager.liquidate(address(eSPY), alice, type(uint256).max, address(0));
 
         assertEq(eusd.balanceOf(keeper), 0);
         assertEq(eSPY.balanceOf(keeper), 1_000_000e18 + 2.625e18);
@@ -710,7 +710,7 @@ contract EUSDManagerTest is Test {
         _open(alice, 3e18, 1000e18);
         vm.expectRevert(abi.encodeWithSelector(IEUSDManager.PositionNotLiquidatable.selector, 15_000, LIQ_THRESHOLD));
         vm.prank(keeper);
-        manager.liquidate(address(eSPY), alice);
+        manager.liquidate(address(eSPY), alice, type(uint256).max, address(0));
     }
 
     function test_liquidate_atExactThreshold_reverts() public {
@@ -719,7 +719,7 @@ contract EUSDManagerTest is Test {
         oracle.setPrice(SPY, 650e18); // CR exactly 130%
         vm.expectRevert(abi.encodeWithSelector(IEUSDManager.PositionNotLiquidatable.selector, 13_000, LIQ_THRESHOLD));
         vm.prank(keeper);
-        manager.liquidate(address(eSPY), alice);
+        manager.liquidate(address(eSPY), alice, type(uint256).max, address(0));
     }
 
     function test_liquidate_justBelowThreshold_succeeds() public {
@@ -731,7 +731,7 @@ contract EUSDManagerTest is Test {
         oracle.setPrice(SPY, 650e18 - 1);
         assertTrue(manager.isLiquidatable(address(eSPY), alice));
         vm.prank(keeper);
-        manager.liquidate(address(eSPY), alice);
+        manager.liquidate(address(eSPY), alice, type(uint256).max, address(0));
         assertEq(manager.getPosition(address(eSPY), alice).debt, 0);
     }
 
@@ -744,17 +744,88 @@ contract EUSDManagerTest is Test {
 
         oracle.setPrice(SPY, 400e18); // collateral worth $800 < 1000 debt
         vm.prank(keeper);
-        manager.liquidate(address(eSPY), alice);
+        manager.liquidate(address(eSPY), alice, type(uint256).max, address(0));
         assertEq(eSPY.balanceOf(keeper), 1_000_000e18 + 2e18); // all of it, no more
         assertEq(eSPY.balanceOf(alice), 1_000_000e18 - 2e18); // nothing back
         assertEq(manager.totalCollateral(address(eSPY)), 40e18);
+    }
+
+    /// @dev A4-M-03: partial liquidation — pro-rata bonus, remainder re-sorted, no refund.
+    function test_liquidate_partial_improvesRatioAndRelists() public {
+        oracle.setPrice(SPY, 750e18);
+        _open(alice, 2e18, 1000e18); // $1500 / 1000
+        _open(bob, 40e18, 1000e18);
+        _open(carol, 30e18, 1000e18);
+        vm.prank(bob);
+        eusd.transfer(keeper, 400e18); // keeper holds far less than alice's debt
+
+        oracle.setPrice(SPY, 600e18); // $1200 / 1000 = 120% < 130%
+        uint256 ownerBefore = eSPY.balanceOf(alice);
+        vm.prank(keeper);
+        manager.liquidate(address(eSPY), alice, 400e18, address(0));
+
+        // seized = 400 × 1.05 / 600 = 0.7 eSPY; no refund on a partial.
+        assertEq(eSPY.balanceOf(keeper), 1_000_000e18 + 0.7e18);
+        assertEq(eSPY.balanceOf(alice), ownerBefore);
+        IEUSDManager.Position memory p = manager.getPosition(address(eSPY), alice);
+        assertEq(p.debt, 600e18);
+        assertEq(p.collateral, 1.3e18);
+        // $780 / 600 = 130% → no longer liquidatable, still the riskiest (head).
+        assertEq(manager.collateralRatioBps(address(eSPY), alice), 13_000);
+        assertFalse(manager.isLiquidatable(address(eSPY), alice));
+        assertEq(manager.listHead(address(eSPY)), alice);
+        assertEq(manager.listSize(address(eSPY)), 3);
+        _assertListSorted(address(eSPY));
+        assertEq(eusd.totalSupply(), manager.totalDebt());
+    }
+
+    function test_liquidate_partial_belowMinDebt_reverts() public {
+        oracle.setPrice(SPY, 750e18);
+        _open(alice, 2e18, 1000e18);
+        _open(bob, 40e18, 1000e18);
+        vm.prank(bob);
+        eusd.transfer(keeper, 1000e18);
+        oracle.setPrice(SPY, 600e18);
+        vm.prank(keeper);
+        vm.expectRevert(abi.encodeWithSelector(IEUSDManager.BelowMinimumDebt.selector, 50e18, MIN_DEBT));
+        manager.liquidate(address(eSPY), alice, 950e18, address(0));
+        // Exactly minDebt remaining is fine.
+        vm.prank(keeper);
+        manager.liquidate(address(eSPY), alice, 900e18, address(0));
+        assertEq(manager.getPosition(address(eSPY), alice).debt, MIN_DEBT);
+    }
+
+    function test_liquidate_zeroAmount_reverts() public {
+        _open(alice, 3e18, 1000e18);
+        vm.expectRevert(IEUSDManager.ZeroAmount.selector);
+        vm.prank(keeper);
+        manager.liquidate(address(eSPY), alice, 0, address(0));
+    }
+
+    /// @dev The A4-M-03 whale: debt larger than any single keeper's eUSD, cleared in chunks.
+    function test_liquidate_whale_clearedInChunks() public {
+        oracle.setPrice(SPY, 750e18);
+        _open(alice, 20e18, 10_000e18); // whale, hoards its eUSD
+        _open(bob, 40e18, 10_000e18); // the rest of the circulating supply
+        oracle.setPrice(SPY, 500e18); // whale: $10,000 / 10,000 = 100% — deeply unsafe
+
+        // Keeper can only ever assemble 1000 eUSD at a time (sourced from bob each round).
+        for (uint256 i; i < 10; i++) {
+            vm.prank(bob);
+            eusd.transfer(keeper, 1000e18);
+            vm.prank(keeper);
+            manager.liquidate(address(eSPY), alice, 1000e18, address(0));
+        }
+        assertEq(manager.getPosition(address(eSPY), alice).debt, 0);
+        assertEq(manager.getPosition(address(eSPY), alice).collateral, 0);
+        assertEq(manager.listSize(address(eSPY)), 1);
     }
 
     function test_liquidate_noDebt_reverts() public {
         _open(alice, 3e18, 0);
         vm.expectRevert(abi.encodeWithSelector(IEUSDManager.NoDebt.selector, address(eSPY), alice));
         vm.prank(keeper);
-        manager.liquidate(address(eSPY), alice);
+        manager.liquidate(address(eSPY), alice, type(uint256).max, address(0));
     }
 
     function test_liquidate_stalePrice_stillWorks() public {
@@ -765,7 +836,7 @@ contract EUSDManagerTest is Test {
         oracle.setPrice(SPY, 400e18, block.timestamp);
         vm.warp(block.timestamp + 2 days); // markets closed all weekend
         vm.prank(keeper);
-        manager.liquidate(address(eSPY), alice);
+        manager.liquidate(address(eSPY), alice, type(uint256).max, address(0));
         assertEq(manager.getPosition(address(eSPY), alice).debt, 0);
     }
 
@@ -1003,7 +1074,7 @@ contract EUSDManagerTest is Test {
         // Liquidating a listed-again residual unlinks it cleanly.
         assertTrue(manager.isLiquidatable(address(eSPY), alice));
         vm.prank(keeper);
-        manager.liquidate(address(eSPY), alice);
+        manager.liquidate(address(eSPY), alice, type(uint256).max, address(0));
         assertEq(manager.listSize(address(eSPY)), 2);
         _assertListSorted(address(eSPY));
         assertEq(eusd.totalSupply(), manager.totalDebt());
@@ -1023,7 +1094,7 @@ contract EUSDManagerTest is Test {
         // Liquidate the off-list residual: burns 200 for nothing, list stays intact.
         uint256 snap = vm.snapshotState();
         vm.prank(keeper);
-        manager.liquidate(address(eSPY), alice);
+        manager.liquidate(address(eSPY), alice, type(uint256).max, address(0));
         assertEq(manager.getPosition(address(eSPY), alice).debt, 0);
         assertEq(manager.listSize(address(eSPY)), 2);
         assertEq(manager.listHead(address(eSPY)), carol);
@@ -1061,7 +1132,7 @@ contract EUSDManagerTest is Test {
         assertFalse(manager.isLiquidatable(address(eSPY), alice));
         vm.expectRevert();
         vm.prank(keeper);
-        manager.liquidate(address(eSPY), alice);
+        manager.liquidate(address(eSPY), alice, type(uint256).max, address(0));
     }
 
     function test_split_forward_redeemPaysLegacyUnitsAtFairValue() public {
@@ -1087,7 +1158,7 @@ contract EUSDManagerTest is Test {
         oracle.setPrice(SPY, 200e18);
         assertEq(manager.collateralRatioBps(address(eSPY), alice), 12_000);
         vm.prank(keeper);
-        manager.liquidate(address(eSPY), alice);
+        manager.liquidate(address(eSPY), alice, type(uint256).max, address(0));
         // seized = 1000 × 1.05 / 400 = 2.625 legacy units; 0.375 refunded.
         assertEq(eSPY.balanceOf(keeper), 1_000_000e18 + 2.625e18);
         assertEq(eSPY.balanceOf(alice), 1_000_000e18 - 3e18 + 0.375e18);

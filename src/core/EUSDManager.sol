@@ -251,32 +251,42 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
     // ──────────────────────────────────────────────────────────
 
     /// @inheritdoc IEUSDManager
-    function liquidate(address collateral, address owner) external override nonReentrant {
-        CollateralConfig storage cfg = _requireCollateral(collateral);
+    function liquidate(
+        address collateral,
+        address owner,
+        uint256 amount,
+        address hint
+    ) external override nonReentrant {
+        bytes32 ticker = _requireCollateral(collateral).ticker;
+        if (amount == 0) revert ZeroAmount();
         Position storage p = _accrue(collateral, owner);
         if (p.debt == 0) revert NoDebt(collateral, owner);
 
-        uint256 price = _anchorPrice(collateral, cfg.ticker);
-        uint256 ratio = _ratioBps(p.collateral, p.debt, price);
-        uint16 threshold = _riskParams.liquidationThresholdBps;
-        if (ratio >= threshold) revert PositionNotLiquidatable(ratio, threshold);
+        uint256 price = _anchorPrice(collateral, ticker);
+        {
+            uint256 ratio = _ratioBps(p.collateral, p.debt, price);
+            uint16 threshold = _riskParams.liquidationThresholdBps;
+            if (ratio >= threshold) revert PositionNotLiquidatable(ratio, threshold);
+        }
 
-        uint256 debt = p.debt;
-        uint256 coll = p.collateral;
-        // Collateral worth debt × (1 + bonus); floor rounding favours the position owner's refund.
-        uint256 seized = Math.mulDiv(debt * (BPS + _riskParams.liquidationBonusBps), PRECISION, price * BPS);
-        if (seized > coll) seized = coll;
-        uint256 refund = coll - seized;
+        uint256 repaid = amount > p.debt ? p.debt : amount;
+        uint256 remaining = p.debt - repaid;
+        if (remaining != 0 && remaining < _riskParams.minDebt) {
+            revert BelowMinimumDebt(remaining, _riskParams.minDebt);
+        }
+        (uint256 seized, uint256 refund) = _seizure(p.collateral, repaid, price, remaining == 0);
 
-        totalDebt -= debt;
-        totalCollateral[collateral] -= coll;
-        if (_isListed(collateral, owner)) _removeNode(collateral, owner);
-        delete _positions[collateral][owner];
+        totalDebt -= repaid;
+        totalCollateral[collateral] -= seized + refund;
+        p.debt = remaining;
+        p.collateral -= seized + refund;
+        _reindex(collateral, owner, hint);
+        if (remaining == 0) delete _positions[collateral][owner];
 
-        _eusd.burn(msg.sender, debt);
+        _eusd.burn(msg.sender, repaid);
         IERC20(collateral).safeTransfer(msg.sender, seized);
         if (refund > 0) IERC20(collateral).safeTransfer(owner, refund);
-        emit PositionLiquidated(collateral, owner, msg.sender, debt, seized, refund);
+        emit PositionLiquidated(collateral, owner, msg.sender, repaid, seized, refund);
     }
 
     /// @inheritdoc IEUSDManager
@@ -561,6 +571,20 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
     function _effectivePrice(address collateral, uint256 price) private view returns (uint256) {
         uint256 ratio = IAssetRegistry(registry.assetRegistry()).legacyRatioToActive(collateral);
         return ratio == 0 ? price : Math.mulDiv(price, ratio, PRECISION);
+    }
+
+    /// @dev Liquidation seizure: collateral worth repaid × (1 + bonus), capped at `coll`. Floor
+    ///      rounding favours the position owner. Surplus is refunded only on a full close; a
+    ///      partial leaves it in the position.
+    function _seizure(
+        uint256 coll,
+        uint256 repaid,
+        uint256 price,
+        bool fullClose
+    ) private view returns (uint256 seized, uint256 refund) {
+        seized = Math.mulDiv(repaid * (BPS + _riskParams.liquidationBonusBps), PRECISION, price * BPS);
+        if (seized > coll) seized = coll;
+        if (fullClose) refund = coll - seized;
     }
 
     /// @dev Collateral ratio in BPS. Floor rounding: measured ratios err against the debtor.

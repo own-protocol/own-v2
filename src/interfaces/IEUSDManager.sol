@@ -306,13 +306,19 @@ interface IEUSDManager {
     // ──────────────────────────────────────────────────────────
 
     /// @notice Liquidate a position whose ratio is below the liquidation threshold at the current
-    ///         oracle anchor (no freshness bound — works off-hours). The caller burns the full
-    ///         debt and receives collateral worth debt × (1 + liquidationBonus), capped at the
-    ///         position's collateral; any surplus collateral is returned to the owner and the
-    ///         position is deleted. If the position is underwater the caller absorbs the shortfall.
+    ///         oracle anchor (no freshness bound — works off-hours). The caller burns up to
+    ///         `amount` of the debt and receives collateral worth repaid × (1 + liquidationBonus),
+    ///         capped at the position's collateral. A full close (amount ≥ debt) refunds any
+    ///         surplus collateral to the owner and deletes the position; a partial leaves the
+    ///         remainder in place, re-sorted, and must not drop the debt below `minDebt`. Partial
+    ///         liquidation means a position can always be cleared in chunks, so no single debt
+    ///         can exceed the eUSD any one liquidator can assemble. If the position is underwater
+    ///         the caller absorbs the shortfall.
     /// @param collateral Collateral eToken of the position.
     /// @param owner      Position owner to liquidate.
-    function liquidate(address collateral, address owner) external;
+    /// @param amount     Max eUSD debt to repay (type(uint256).max = full).
+    /// @param hint       Sorted-list insert hint for the remainder (see {deposit}).
+    function liquidate(address collateral, address owner, uint256 amount, address hint) external;
 
     /// @notice Redeem eUSD for collateral at the oracle anchor price — burn X eUSD, receive X
     ///         dollars' worth of collateral (rounded down), sourced from the riskiest positions

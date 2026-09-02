@@ -97,7 +97,7 @@ contract EusdSplitFlowTest is BaseTest {
         assertEq(manager.collateralRatioBps(address(eTSLA), Actors.MINTER1), before);
         assertFalse(manager.isLiquidatable(address(eTSLA), Actors.MINTER1));
         vm.expectRevert();
-        manager.liquidate(address(eTSLA), Actors.MINTER1);
+        manager.liquidate(address(eTSLA), Actors.MINTER1, type(uint256).max, address(0));
     }
 
     function test_forwardSplit_redeemAndWithdraw_inLegacyUnitsAtFairValue() public {

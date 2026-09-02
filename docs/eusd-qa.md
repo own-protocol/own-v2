@@ -43,10 +43,18 @@ after the 2%/yr fee grows debt to ~$102). Debt is in eUSD, collateral in eSPY un
 repay ~$102 and receive the entire 1 eSPY at $200 — all appreciation is the owner's.
 
 **Q: Does liquidation surplus go back to the user automatically?**
-Yes, same transaction (`liquidate`, EUSDManager.sol:238): seized = debt × 1.05 capped at the
-position's collateral; remainder transfers straight to the owner. E.g. $150 coll / $100 debt,
-ratio hits 128% → liquidator burns 100 eUSD, takes $105 of eSPY, owner gets $23 back instantly.
-Underwater positions: no refund; liquidator absorbs the shortfall.
+Yes, same transaction (`liquidate`): seized = repaid × 1.05 capped at the position's
+collateral; on a full close the remainder transfers straight to the owner. E.g. $150 coll / $100
+debt, ratio hits 128% → liquidator burns 100 eUSD, takes $105 of eSPY, owner gets $23 back
+instantly. Underwater positions: no refund; liquidator absorbs the shortfall.
+
+**Q: Must a liquidator repay the whole debt at once?**
+No. `liquidate(collateral, owner, amount, hint)` repays up to `amount` (`type(uint256).max` =
+full). A partial takes collateral worth repaid × 1.05, leaves the rest of the position in place
+re-sorted, and may not drop the debt below `minDebt` (else it reverts, like `repay`). Surplus is
+refunded to the owner only on a full close. Why it matters: a whale who mints most of the supply
+and moves it out of reach can no longer make themselves unliquidatable — any keeper with any
+eUSD can clear the position in chunks.
 
 **Q: Is minDebt configurable?**
 Yes — `setMinDebt` (ADMIN via ProtocolRegistry). Gates new state changes only; existing smaller

@@ -163,15 +163,22 @@ contract EUSDHandler is CommonBase, StdCheats, StdUtils {
         if (!manager.isLiquidatable(address(token), target)) return;
 
         uint256 debt = manager.currentDebt(address(token), target);
-        // Find any actor able to fund the full repayment.
+        uint256 minDebt = manager.riskParams().minDebt;
+        // Any actor with eUSD liquidates: full if they can fund it, else the largest partial that
+        // leaves ≥ minDebt behind.
         for (uint256 i; i < _actors.length; i++) {
             address keeper = _actors[i];
-            if (keeper != target && eusd.balanceOf(keeper) >= debt) {
-                vm.prank(keeper);
-                manager.liquidate(address(token), target);
-                ghost_totalBurned += debt;
-                return;
+            uint256 bal = eusd.balanceOf(keeper);
+            if (keeper == target || bal == 0) continue;
+            uint256 amount = bal >= debt ? debt : bal;
+            if (amount < debt && debt - amount < minDebt) {
+                if (debt <= minDebt) continue;
+                amount = debt - minDebt;
             }
+            vm.prank(keeper);
+            manager.liquidate(address(token), target, amount, address(0));
+            ghost_totalBurned += amount;
+            return;
         }
     }
 
