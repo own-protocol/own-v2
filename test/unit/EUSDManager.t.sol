@@ -904,10 +904,140 @@ contract EUSDManagerTest is Test {
         oracle.setPrice(SPY, 400e18); // alice worth $800 < 1000 debt
         vm.prank(keeper);
         (uint256 out, uint256 repaid) = manager.redeem(address(eSPY), 1000e18, 0, 1, address(0));
-        assertEq(repaid, 1000e18);
         assertEq(out, 2e18); // capped at alice's collateral
+        assertEq(repaid, 800e18); // burn capped at the collateral's value
         assertEq(manager.getPosition(address(eSPY), alice).collateral, 0);
+        assertEq(manager.getPosition(address(eSPY), alice).debt, 200e18); // unbacked residual
+        assertEq(manager.listHead(address(eSPY)), bob); // residual is off-list
+        assertEq(manager.listSize(address(eSPY)), 1);
+        assertEq(eusd.totalSupply(), manager.totalDebt());
+    }
+
+    /// @dev A4-H-01: partial redemption of an underwater head must not strand a zero-collateral
+    ///      node at the list head that tolls every later redeemer.
+    function test_redeem_underwaterHead_partial_residualOffList_noToll() public {
+        oracle.setPrice(SPY, 750e18);
+        _open(alice, 2e18, 1000e18);
+        _open(bob, 40e18, 1000e18);
+        vm.prank(alice);
+        eusd.transfer(keeper, 1000e18);
+        vm.prank(bob);
+        eusd.transfer(keeper, 1000e18);
+
+        oracle.setPrice(SPY, 400e18); // alice worth $800 < 1000 debt
+        // amount strictly between collateral value and debt.
+        vm.prank(keeper);
+        (uint256 out, uint256 repaid) = manager.redeem(address(eSPY), 900e18, 0, 1, address(0));
+        assertEq(out, 2e18);
+        assertEq(repaid, 800e18);
+        assertEq(manager.getPosition(address(eSPY), alice).debt, 200e18);
+        assertEq(manager.getPosition(address(eSPY), alice).collateral, 0);
+        assertEq(manager.listHead(address(eSPY)), bob);
+        _assertListSorted(address(eSPY));
+
+        // Next redeemer is not tolled: 500 eUSD buys exactly $500 of bob's collateral.
+        vm.prank(keeper);
+        (out, repaid) = manager.redeem(address(eSPY), 500e18, 1.25e18, 0, address(0));
+        assertEq(repaid, 500e18);
+        assertEq(out, 1.25e18);
+        assertEq(manager.getPosition(address(eSPY), alice).debt, 200e18);
+        assertEq(eusd.totalSupply(), manager.totalDebt());
+    }
+
+    /// @dev An underwater head no longer blocks the walk: an accurate `minCollateralOut`
+    ///      (amount / price) holds because the redeemer pays fair value at every position.
+    function test_redeem_underwaterHead_walkContinues_fairValue() public {
+        oracle.setPrice(SPY, 750e18);
+        _open(alice, 2e18, 1000e18);
+        _open(bob, 40e18, 1000e18);
+        vm.prank(alice);
+        eusd.transfer(keeper, 1000e18);
+        vm.prank(bob);
+        eusd.transfer(keeper, 1000e18);
+        oracle.setPrice(SPY, 400e18);
+
+        uint256 amount = 1200e18;
+        vm.prank(keeper);
+        (uint256 out, uint256 repaid) = manager.redeem(address(eSPY), amount, amount * 1e18 / 400e18, 0, address(0));
+        assertEq(repaid, amount);
+        assertEq(out, 3e18); // 2 from alice ($800) + 1 from bob ($400)
+        assertEq(manager.getPosition(address(eSPY), alice).debt, 200e18);
+        assertEq(manager.getPosition(address(eSPY), bob).debt, 600e18);
+        assertEq(manager.listHead(address(eSPY)), bob);
+        assertEq(manager.listSize(address(eSPY)), 1);
+    }
+
+    /// @dev The off-list residual is still a normal position for every other path.
+    function test_redeem_residual_repayClosesLiquidatesAndRelists() public {
+        oracle.setPrice(SPY, 750e18);
+        _open(alice, 2e18, 1000e18);
+        _open(bob, 40e18, 1000e18);
+        _open(carol, 30e18, 1000e18);
+        vm.prank(bob);
+        eusd.transfer(keeper, 1000e18);
+        oracle.setPrice(SPY, 400e18);
+        vm.prank(keeper);
+        manager.redeem(address(eSPY), 800e18, 0, 1, address(0));
+        assertEq(manager.listSize(address(eSPY)), 2);
+
+        // A stale hint pointing at the off-list residual is ignored, not linked into the list.
+        vm.prank(carol);
+        manager.deposit(address(eSPY), 1e18, alice);
+        _assertListSorted(address(eSPY));
+        assertEq(manager.listSize(address(eSPY)), 2);
+
+        // Partial repay keeps it off-list; the list is untouched.
+        vm.prank(alice);
+        manager.repay(address(eSPY), alice, 50e18, address(0));
+        assertEq(manager.getPosition(address(eSPY), alice).debt, 150e18);
+        assertEq(manager.listSize(address(eSPY)), 2);
+        _assertListSorted(address(eSPY));
+
+        // Top-up re-lists it at the head ($40 backing 150 debt — riskiest).
+        vm.prank(alice);
+        manager.deposit(address(eSPY), 0.1e18, address(0));
+        assertEq(manager.listHead(address(eSPY)), alice);
+        assertEq(manager.listSize(address(eSPY)), 3);
+        _assertListSorted(address(eSPY));
+
+        // Liquidating a listed-again residual unlinks it cleanly.
+        assertTrue(manager.isLiquidatable(address(eSPY), alice));
+        vm.prank(keeper);
+        manager.liquidate(address(eSPY), alice);
+        assertEq(manager.listSize(address(eSPY)), 2);
+        _assertListSorted(address(eSPY));
+        assertEq(eusd.totalSupply(), manager.totalDebt());
+    }
+
+    function test_redeem_residual_liquidateAndClose_offList() public {
+        oracle.setPrice(SPY, 750e18);
+        _open(alice, 2e18, 1000e18);
+        _open(bob, 40e18, 1000e18);
+        _open(carol, 30e18, 1000e18);
+        vm.prank(bob);
+        eusd.transfer(keeper, 1000e18);
+        oracle.setPrice(SPY, 400e18);
+        vm.prank(keeper);
+        manager.redeem(address(eSPY), 800e18, 0, 1, address(0));
+
+        // Liquidate the off-list residual: burns 200 for nothing, list stays intact.
+        uint256 snap = vm.snapshotState();
+        vm.prank(keeper);
+        manager.liquidate(address(eSPY), alice);
         assertEq(manager.getPosition(address(eSPY), alice).debt, 0);
+        assertEq(manager.listSize(address(eSPY)), 2);
+        assertEq(manager.listHead(address(eSPY)), carol);
+        _assertListSorted(address(eSPY));
+        vm.revertToState(snap);
+
+        // Owner closes the off-list residual: same outcome.
+        vm.prank(alice);
+        manager.closePosition(address(eSPY));
+        assertEq(manager.getPosition(address(eSPY), alice).debt, 0);
+        assertEq(manager.listSize(address(eSPY)), 2);
+        assertEq(manager.listHead(address(eSPY)), carol);
+        _assertListSorted(address(eSPY));
+        assertEq(eusd.totalSupply(), manager.totalDebt());
     }
 
     // ──────────────────────────────────────────────────────────

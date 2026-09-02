@@ -13,9 +13,11 @@ pragma solidity 0.8.28;
 ///         market being closed. Collateral here is debtor collateral — never LP equity — so
 ///         redemptions transfer value only from the position owner whose debt they retire.
 ///
-///         Positions with debt are kept in a per-collateral sorted list ordered by nominal ratio
-///         (collateral units per debt unit — price-invariant within one collateral). The list head
-///         is the riskiest position; redemptions consume from the head. Ordering uses stored
+///         Positions with both debt and collateral are kept in a per-collateral sorted list ordered
+///         by nominal ratio (collateral units per debt unit — price-invariant within one
+///         collateral). The list head is the riskiest position; redemptions consume from the head.
+///         A debt-only residual (an underwater position whose collateral was fully redeemed) stays
+///         off-list until it is repaid, closed, liquidated or topped up. Ordering uses stored
 ///         (last-accrued) debt, so positions untouched for long periods are marginally riskier
 ///         than their list position implies — the drift is bounded by the stability fee rate.
 ///
@@ -308,9 +310,10 @@ interface IEUSDManager {
     ///         dollars' worth of collateral (rounded down), sourced from the riskiest positions
     ///         first (list head). The peg anchor: always available, no freshness bound, never
     ///         pausable. Each touched position's debt and collateral shrink at exactly 1:1 value,
-    ///         so its ratio improves (deleveraging). Seizure per position is capped at its
-    ///         collateral; underwater head positions can short-change the redeemer — protect with
-    ///         `minCollateralOut`. A partial redemption may leave the last position below minDebt.
+    ///         so its ratio improves (deleveraging). An underwater head only redeems its
+    ///         collateral-backed portion: the burn is capped at that collateral's value, the
+    ///         unbacked debt residual stays on the owner's books off-list, and the walk continues.
+    ///         A partial redemption may leave the last position below minDebt.
     /// @param collateral       Collateral eToken to redeem into.
     /// @param amount           Max eUSD to burn from the caller (18 decimals).
     /// @param minCollateralOut Min collateral acceptable for the burned amount (18 decimals).

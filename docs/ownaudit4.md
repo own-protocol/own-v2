@@ -1,6 +1,6 @@
 # Own Protocol v2 — Audit Report & Remediation Status (Pass 4 — eUSD CDP Module)
 
-**Branch:** `stablecoin` · **Last updated:** 2026-09-02 · **Test suite:** 1327 passing (105 new for this module)
+**Branch:** `stablecoin` · **Last updated:** 2026-09-02 · **Test suite:** 1403 passing (109 new for this module)
 
 This pass is **scoped to the new eUSD CDP module** (EUSDManager + EUSD token) introduced on the
 `stablecoin` branch; it does not re-tread the protocol-wide ground covered by `audit-report-3.md`,
@@ -38,14 +38,14 @@ out-of-scope context for seam verification.
 | Severity | Total | Fixed | Open | By design |
 | -------- | ----- | ----- | ---- | --------- |
 | Critical | 0     | —     | —    | —         |
-| High     | 2     | 0     | 2    | 0         |
+| High     | 2     | 1     | 1    | 0         |
 | Medium   | 5     | 0     | 5    | 0         |
 | Low      | 18    | 0     | 17   | 1         |
 | Info     | 17    | 0     | 9    | 8 (noted) |
 
 | ID      | Severity | Finding                                                                  | Status                       |
 | ------- | -------- | ------------------------------------------------------------------------ | ---------------------------- |
-| A4-H-01 | High     | Partial redemption of underwater position strands unbacked debt at head  | **Open**                     |
+| A4-H-01 | High     | Partial redemption of underwater position strands unbacked debt at head  | **Fixed** (2026-09-02)       |
 | A4-H-02 | High     | Stock split re-denomination silently mis-values all eUSD collateral      | **Open**                     |
 | A4-M-01 | Medium   | Redemption cannot skip an underwater head — peg anchor stalls            | **Open**                     |
 | A4-M-02 | Medium   | OwnIncentives pays retroactive OWN on balances from unhooked windows     | **Open**                     |
@@ -92,13 +92,7 @@ out-of-scope context for seam verification.
 
 ## 1. Fixed Findings
 
-None yet — this is the initial pass for the module.
-
----
-
-## 2. Open Findings
-
-### A4-H-01 (High) — Redemption retires more debt than the collateral it seizes, stranding an unbacked zero-collateral position at the list head
+### A4-H-01 (High) — Redemption retires more debt than the collateral it seizes, stranding an unbacked zero-collateral position at the list head — **Fixed**
 
 **Problem.** `EUSDManager._redeemFrom` caps `seized` at `p.collateral` but subtracts the full
 `repaid` from `p.debt`. Partially redeeming an underwater position therefore leaves
@@ -167,19 +161,44 @@ The redeemer is never over-charged, so `minCollateralOut` regains its meaning.
 Requires redefining the supply invariant to `totalSupply == totalDebt + badDebt` (or a
 treasury-funded burn) — a conscious accounting decision, not a drop-in.
 
-**Tests.** `test_redeem_underwaterHead_capsSeizure` covers the full-consumption case only; **no
-regression test yet exercises the partial-consumption zombie path** (`amount` strictly between
-collateral value and debt, then a second redemption). Add one alongside the fix, plus an
-invariant: no listed node with `collateral == 0`.
+**Fix (Option A, 2026-09-02).** `_redeemFrom` now caps `repaid` to the seized collateral's value
+at the redemption price whenever the collateral cap fires, so a redeemer is never charged for
+collateral they do not receive; the unbacked residual stays on the owner's books, off-list,
+still counted in `totalDebt` (supply invariant untouched) and clearable by repay / close /
+liquidation / top-up. List membership is now **link-derived** (`_isListed`: head or has a
+predecessor) instead of inferred from `debt > 0`, since the fix introduces a legitimate
+debt-only off-list state: `_reindex` drops the `wasListed` parameter and inserts only when
+`debt > 0 && collateral > 0`; `repay`, `closePosition` and `liquidate` no longer assume
+membership; and the `_insertNode` hint check uses `_isListed(hint)` (a stale hint pointing at an
+off-list residual previously would have linked the new node behind a detached predecessor —
+attacker-reachable, since `hint` is caller-supplied). The redemption walk continues past the
+drained head in the same call.
 
-**Residual.** Even after Option A, a *near*-zero-collateral underwater head still short-changes
-redeemers (see A4-M-01) — Option A removes the toll booth but not the stall.
+**Tests.** `test_redeem_underwaterHead_capsSeizure` (updated: burn capped at $800, 200 residual
+off-list), `test_redeem_underwaterHead_partial_residualOffList_noToll` (the zombie path plus a
+second redemption at fair value), `test_redeem_underwaterHead_walkContinues_fairValue` (an
+accurate `minCollateralOut` holds across an underwater head into healthy positions),
+`test_redeem_residual_repayClosesLiquidatesAndRelists` (stale hint at the residual ignored;
+partial repay stays off-list; top-up re-lists; liquidate unlinks), and
+`test_redeem_residual_liquidateAndClose_offList`. Invariant `invariant_listSortedAndComplete`
+now asserts no listed node has `collateral == 0` and that the list holds exactly the
+`debt > 0 && collateral > 0` positions.
+
+**Residual.** The unbacked debt residual itself (Option B's bad-debt question) remains an
+accounting/backstop decision, not a liveness issue. Note for A4-M-01: with the walk continuing
+past a drained head at fair value, the "accurate `minCollateralOut` always reverts" stall no
+longer reproduces (see `test_redeem_underwaterHead_walkContinues_fairValue`); A4-M-01 should be
+re-validated against the fixed code before any further change.
 
 **Overlaps.** A4-L-03 (missing `minDebt` floor) is the enabling half; Option A supersedes the
 need for a floor on this path. A4-M-01 is the non-degenerate sibling.
 
 **Detected by** 8 of 12 agents (math-precision, execution-trace, periphery, asymmetry, boundary,
 numerical-gap as findings; trust-gap, first-principles as leads).
+
+---
+
+## 2. Open Findings
 
 ### A4-H-02 (High) — A routine stock split silently mis-values every eUSD position by the split ratio
 
@@ -299,7 +318,10 @@ positions.
 **Tests.** None currently assert redemption behavior with an underwater head *ahead of* healthy
 positions under a non-zero `minCollateralOut`.
 
-**Overlaps.** Worst case (CR = 0) is A4-H-01; fixing H-01 does not resolve this.
+**Overlaps.** Worst case (CR = 0) was A4-H-01. *Post-fix note (2026-09-02):* the A4-H-01 fix
+makes the walk continue past a drained head at fair value, so the "accurate `minCollateralOut`
+always reverts" stall described above no longer reproduces — re-validate this finding against
+the fixed code before choosing an option.
 
 **Detected by** 4 of 12 agents (economic-security, execution-trace, periphery, trust-gap).
 
@@ -858,7 +880,7 @@ module scope; statuses in the master index are authoritative).
 
 ## 6. Migration / ops checklist (open)
 
-- [ ] A4-H-01 — implement Option A (or decide Option B accounting), add partial-underwater
+- [x] A4-H-01 — implement Option A (or decide Option B accounting), add partial-underwater
       regression test + "no listed node with zero collateral" invariant, re-run full suite.
 - [ ] A4-H-02 — implement Option A (`_activeUnits` scaling at all valuation/seizure sites) or
       decide Option B (`onSplit` hook / block-migration-with-open-positions); add forward- and
@@ -1026,9 +1048,9 @@ Staking module (2026-09-02 pass), attacked and held:
   this pass — A4-H-01 (2 agents), A4-L-03 (2 agents), and the A4-L-02 grooming variant — were
   folded into their existing IDs, not duplicated. The UUPS deltas themselves cleared every
   proxy-specific trap class checked (see §7).
-- Trap for future passes: the interface NatSpec documents the *short-change* on underwater
-  redemption but not the *persistence* of the drained node — do not mistake the documented
-  trade-off for coverage of A4-H-01.
+- Trap for future passes (historical): before the A4-H-01 fix the interface NatSpec documented
+  the *short-change* on underwater redemption but not the *persistence* of the drained node. The
+  NatSpec now states the collateral-backed cap and the off-list residual explicitly.
 - Severity here is impact × likelihood and is stated independently of the report's confidence
   scores; A4-L-04/L-05 escalate to Medium if the respective config checks fail.
 - Rate configuration-dependent items against the deployed Robinhood config

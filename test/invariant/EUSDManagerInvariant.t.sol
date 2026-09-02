@@ -17,7 +17,8 @@ import {Test} from "forge-std/Test.sol";
 /// @notice Core invariants after ANY operation sequence:
 ///         1. eusd.totalSupply() == manager.totalDebt() == Σ stored position debt
 ///         2. per collateral: manager token balance == totalCollateral == Σ position collateral
-///         3. sorted list: ascending nominal ratio, consistent links, exactly the debt>0 positions
+///         3. sorted list: ascending nominal ratio, consistent links, exactly the positions with
+///            debt > 0 and collateral > 0 (debt-only residuals stay off-list)
 ///         4. every position is healthy (ratio ≥ threshold) or flagged liquidatable — never both
 contract EUSDManagerInvariantTest is Test {
     ProtocolRegistry internal registry;
@@ -125,8 +126,8 @@ contract EUSDManagerInvariantTest is Test {
         }
     }
 
-    /// @dev The sorted list holds exactly the debt-bearing positions, in ascending nominal-ratio
-    ///      order with consistent prev/next links.
+    /// @dev The sorted list holds exactly the positions with debt and collateral, in ascending
+    ///      nominal-ratio order with consistent prev/next links; no listed node is collateral-free.
     function invariant_listSortedAndComplete() public view {
         address[] memory actorList = handler.actors();
         address[2] memory colls = handler.collaterals();
@@ -136,6 +137,7 @@ contract EUSDManagerInvariantTest is Test {
             address lastNode;
             address node = manager.listHead(colls[c]);
             while (node != address(0)) {
+                assertGt(manager.getPosition(colls[c], node).collateral, 0, "collateral-free node listed");
                 uint256 ratio = manager.nominalRatio(colls[c], node);
                 assertGe(ratio, lastRatio, "list not ascending");
                 assertEq(manager.listPrev(colls[c], node), lastNode, "prev link broken");
@@ -147,11 +149,12 @@ contract EUSDManagerInvariantTest is Test {
             assertEq(manager.listTail(colls[c]), lastNode, "tail mismatch");
             assertEq(manager.listSize(colls[c]), count, "size mismatch");
 
-            uint256 debtPositions;
+            uint256 listable;
             for (uint256 i; i < actorList.length; i++) {
-                if (manager.getPosition(colls[c], actorList[i]).debt > 0) debtPositions++;
+                IEUSDManager.Position memory p = manager.getPosition(colls[c], actorList[i]);
+                if (p.debt > 0 && p.collateral > 0) listable++;
             }
-            assertEq(debtPositions, count, "debt position not in list");
+            assertEq(listable, count, "listable position count mismatch");
         }
     }
 

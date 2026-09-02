@@ -149,10 +149,9 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
         if (amount == 0) revert ZeroAmount();
 
         Position storage p = _accrue(collateral, msg.sender);
-        bool wasListed = p.debt > 0;
         p.collateral += amount;
         totalCollateral[collateral] += amount;
-        _reindex(collateral, msg.sender, wasListed, hint);
+        _reindex(collateral, msg.sender, hint);
 
         IERC20(collateral).safeTransferFrom(msg.sender, address(this), amount);
         emit CollateralDeposited(collateral, msg.sender, amount);
@@ -164,7 +163,6 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
         if (amount == 0) revert ZeroAmount();
 
         Position storage p = _accrue(collateral, msg.sender);
-        bool wasListed = p.debt > 0;
         if (amount > p.collateral) revert InsufficientCollateral(amount, p.collateral);
         p.collateral -= amount;
         totalCollateral[collateral] -= amount;
@@ -174,7 +172,7 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
             uint256 ratio = _ratioBps(p.collateral, p.debt, _freshPrice(cfg.ticker));
             if (ratio < _riskParams.mcrBps) revert CollateralRatioTooLow(ratio, _riskParams.mcrBps);
         }
-        _reindex(collateral, msg.sender, wasListed, hint);
+        _reindex(collateral, msg.sender, hint);
 
         IERC20(collateral).safeTransfer(msg.sender, amount);
         emit CollateralWithdrawn(collateral, msg.sender, amount);
@@ -188,7 +186,6 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
         if (amount == 0) revert ZeroAmount();
 
         Position storage p = _accrue(collateral, msg.sender);
-        bool wasListed = p.debt > 0;
 
         uint256 newDebt = p.debt + amount;
         if (newDebt < _riskParams.minDebt) revert BelowMinimumDebt(newDebt, _riskParams.minDebt);
@@ -200,7 +197,7 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
 
         p.debt = newDebt;
         totalDebt = newTotal;
-        _reindex(collateral, msg.sender, wasListed, hint);
+        _reindex(collateral, msg.sender, hint);
 
         _eusd.mint(msg.sender, amount);
         emit EUSDMinted(collateral, msg.sender, amount, newDebt);
@@ -223,7 +220,7 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
 
         p.debt = remaining;
         totalDebt -= repaid;
-        _reindex(collateral, owner, true, hint);
+        _reindex(collateral, owner, hint);
 
         _eusd.burn(msg.sender, repaid);
         emit EUSDRepaid(collateral, owner, msg.sender, repaid, remaining);
@@ -239,10 +236,8 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
         uint256 coll = p.collateral;
         if (debt == 0 && coll == 0) revert EmptyPosition(collateral, msg.sender);
 
-        if (debt > 0) {
-            _removeNode(collateral, msg.sender);
-            totalDebt -= debt;
-        }
+        if (_isListed(collateral, msg.sender)) _removeNode(collateral, msg.sender);
+        totalDebt -= debt;
         totalCollateral[collateral] -= coll;
         delete _positions[collateral][msg.sender];
 
@@ -275,7 +270,7 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
 
         totalDebt -= debt;
         totalCollateral[collateral] -= coll;
-        _removeNode(collateral, owner);
+        if (_isListed(collateral, owner)) _removeNode(collateral, owner);
         delete _positions[collateral][owner];
 
         _eusd.burn(msg.sender, debt);
@@ -440,8 +435,9 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
     }
 
     /// @dev Redeem up to `maxAmount` of debt from `owner`'s position at `price`. Floor rounding:
-    ///      the redeemer receives at most $1 of collateral per eUSD burned, and seizure is capped
-    ///      at the position's collateral (underwater positions short-change the redeemer).
+    ///      the redeemer receives at most $1 of collateral per eUSD burned. An underwater position
+    ///      only redeems its collateral-backed portion; the unbacked residual stays on the books
+    ///      off-list (clearable by repay/close/liquidation) so it never pins the head at ratio 0.
     function _redeemFrom(
         address collateral,
         address owner,
@@ -452,27 +448,35 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
         Position storage p = _accrue(collateral, owner);
         repaid = maxAmount > p.debt ? p.debt : maxAmount;
         seized = Math.mulDiv(repaid, PRECISION, price);
-        if (seized > p.collateral) seized = p.collateral;
+        if (seized > p.collateral) {
+            seized = p.collateral;
+            repaid = Math.mulDiv(seized, price, PRECISION);
+        }
 
         p.debt -= repaid;
         p.collateral -= seized;
         totalDebt -= repaid;
         totalCollateral[collateral] -= seized;
 
-        if (p.debt == 0) {
-            _removeNode(collateral, owner);
-            if (p.collateral == 0) delete _positions[collateral][owner];
-        } else {
-            // Partial redemption improves the ratio — re-sort with the caller's hint.
-            _reindex(collateral, owner, true, hint);
-        }
+        // Partial redemption improves the ratio — re-sort with the caller's hint. An exhausted
+        // node (no debt, or no collateral) leaves the list; an empty position is deleted.
+        _reindex(collateral, owner, hint);
+        if (p.debt == 0 && p.collateral == 0) delete _positions[collateral][owner];
         emit RedeemedFromPosition(collateral, owner, repaid, seized);
     }
 
-    /// @dev Re-sort a position after any collateral/debt change.
-    function _reindex(address collateral, address owner, bool wasListed, address hint) private {
-        if (wasListed) _removeNode(collateral, owner);
-        if (_positions[collateral][owner].debt > 0) _insertNode(collateral, owner, hint);
+    /// @dev Re-sort a position after any collateral/debt change. Listed ⇔ debt > 0 and
+    ///      collateral > 0: a debt-only residual (underwater redemption) stays off-list.
+    function _reindex(address collateral, address owner, address hint) private {
+        if (_isListed(collateral, owner)) _removeNode(collateral, owner);
+        Position storage p = _positions[collateral][owner];
+        if (p.debt > 0 && p.collateral > 0) _insertNode(collateral, owner, hint);
+    }
+
+    /// @dev List membership from the links themselves (head, or has a predecessor) — never
+    ///      inferred from position state.
+    function _isListed(address collateral, address owner) private view returns (bool) {
+        return listHead[collateral] == owner || _nodes[collateral][owner].prev != address(0);
     }
 
     /// @dev Insert `owner` keeping ascending nominal-ratio order (head = riskiest). Equal ratios
@@ -483,7 +487,7 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
         uint256 ratio = Math.mulDiv(p.collateral, PRECISION, p.debt);
 
         address prev;
-        if (hint != address(0) && hint != owner && _positions[collateral][hint].debt > 0) {
+        if (hint != address(0) && hint != owner && _isListed(collateral, hint)) {
             if (
                 Math.mulDiv(_positions[collateral][hint].collateral, PRECISION, _positions[collateral][hint].debt)
                     <= ratio

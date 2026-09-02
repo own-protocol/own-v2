@@ -61,7 +61,7 @@ Fully-redeemed positions keep residual collateral; all minted eUSD remains valid
 (`totalSupply == Σ debt` holds at every step).
 
 **Q: How does the protocol know which position is "riskiest" for redemptions?**
-Each collateral keeps an on-chain doubly-linked list of all positions with debt, sorted
+Each collateral keeps an on-chain doubly-linked list of all positions with debt and collateral, sorted
 ascending by **nominal ratio** = collateral units × 1e18 / debt (`_insertNode`,
 EUSDManager.sol:460). Head = lowest ratio = riskiest; redemptions consume from the head and walk
 toward safer positions. Because every position in one collateral shares the same oracle price,
@@ -88,7 +88,10 @@ collateral from an overcollateralized position strictly *raises* its ratio:
 $1,400/$1,000 = 140% → after $500 redeemed → $900/$500 = 180% → full redemption → $400
 collateral, zero debt. Redemption is forced fair-price deleveraging; it can never push a healthy
 position toward liquidation. Only an already-underwater head position behaves differently — the
-cap then short-changes the *redeemer* (hence `minCollateralOut`).
+redeemer takes all of its collateral but burns only that collateral's value in eUSD; the unbacked
+debt residual stays on the owner's books off the sorted list (clearable by repay, close,
+liquidation, or a collateral top-up, which re-lists it) and the redemption walks on to the next
+position. A redeemer is therefore never charged for collateral they do not receive.
 
 ---
 
