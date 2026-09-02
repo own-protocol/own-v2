@@ -1,6 +1,6 @@
 # Own Protocol v2 — Audit Report & Remediation Status (Pass 4 — eUSD CDP Module)
 
-**Branch:** `stablecoin` · **Last updated:** 2026-09-02 · **Test suite:** 1409 passing excl. fork suites (+23 across the A4-H-01 / H-02 / M-02 / M-03 fixes)
+**Branch:** `stablecoin` · **Last updated:** 2026-09-02 · **Test suite:** 1417 passing excl. fork suites (+31 across the A4-H-01 / H-02 / M-02 / M-03 / M-04 fixes)
 
 This pass is **scoped to the new eUSD CDP module** (EUSDManager + EUSD token) introduced on the
 `stablecoin` branch; it does not re-tread the protocol-wide ground covered by `audit-report-3.md`,
@@ -39,7 +39,7 @@ out-of-scope context for seam verification.
 | -------- | ----- | ----- | ---- | --------- |
 | Critical | 0     | —     | —    | —         |
 | High     | 2     | 2     | 0    | 0         |
-| Medium   | 5     | 3     | 2    | 0         |
+| Medium   | 5     | 4     | 1    | 0         |
 | Low      | 18    | 1     | 16   | 1         |
 | Info     | 17    | 0     | 9    | 8 (noted) |
 
@@ -50,7 +50,7 @@ out-of-scope context for seam verification.
 | A4-M-01 | Medium   | Redemption cannot skip an underwater head — peg anchor stalls            | **Fixed** via A4-H-01        |
 | A4-M-02 | Medium   | OwnIncentives pays retroactive OWN on balances from unhooked windows     | **Fixed** (2026-09-02)       |
 | A4-M-03 | Medium   | Full-debt-only liquidation can be starved of eUSD liquidity (no partial) | **Fixed** (2026-09-02)       |
-| A4-M-04 | Medium   | Halted collateral valued at live feed — unbacked mint above halt price   | **Open**                     |
+| A4-M-04 | Medium   | Halted collateral valued at live feed — unbacked mint above halt price   | **Fixed** (2026-09-02)       |
 | A4-M-05 | Medium   | Force-execute on PSM-backed asset: vault LPs pay, maker collects surplus | **Open** (ops-gated)         |
 | A4-L-01 | Low      | `mintPriceMaxAge` is a no-op inside the oracle's `clFreshWindow`         | **Open**                     |
 | A4-L-02 | Low      | Sorted-list ordering drifts under lazy stability-fee accrual             | **Open**                     |
@@ -484,11 +484,7 @@ full debt.
 **Detected by** 1 of 12 agents (economic-security); mechanics verified directly against source
 (full-debt burn in `liquidate`, ceiling check in `mint`).
 
----
-
-## 2. Open Findings
-
-### A4-M-04 (Medium) — Halted collateral is valued at the live feed, enabling unbacked minting above the halt price
+### A4-M-04 (Medium) — Halted collateral is valued at the live feed, enabling unbacked minting above the halt price — **Fixed**
 
 **Problem.** `EUSDManager` contains no reference to VaultManager halt or pause state (verified
 by grep), while `ForceExecuteLib._validateForce` explicitly blocks both. When an asset is
@@ -503,9 +499,32 @@ rally. Softer variant: any live > halt overvalues existing positions. The instan
 `setMintPaused` lever is global and reactive; `setCollateralEnabled` is delayed ADMIN.
 Cross-ref A4-H-02: same valuation-binding root class, different seam (halt vs split).
 
-**Suggested fix.** In `mint`/`withdrawCollateral`, revert when
-`IVaultManager(registry.vaultManager()).isAssetHalted(cfg.ticker)`; value
-liquidations/redemptions of halted collateral at `min(oraclePrice, assetHaltPrice)`.
+**Fix (2026-09-02).** Both wings closed in the two price helpers. `_freshPrice` (mint,
+withdraw-with-debt) reverts `CollateralHalted` when `VaultManager.isAssetHalted(ticker)`.
+`_anchorPrice` (liquidate, redeem, ratio views) returns `assetHaltPrice` (legacy-ratio scaled)
+for a halted asset **without consulting the oracle** — the halt price is the eToken's only
+redeemable value (`OwnMarket.redeemHalted`), matching `BorrowManager.settleHaltedPosition`, and
+skipping the feed is what keeps exits alive once it dies (round-2 wing). Chose the halt price
+over `min(oracle, halt)`: the oracle carries no information about a halted eToken's value, and
+depending on it would re-open the feed-death brick. Deposits stay allowed (defensive top-up).
+No dedicated wind-down function: with correct pricing, repay / close / liquidate / redeem
+already unwind positions and holders route seized/returned eTokens to `redeemHalted`. Ops rule
+recorded (runbook + QA): delist an eUSD collateral only via `haltAsset`; a feed that dies
+without a halt bricks exits until one is set (unchanged, protocol-wide behavior).
+
+**Tests.** Unit (new `MockVaultManager` wired into the unit + invariant fixtures):
+`test_halt_mintAndWithdrawWithDebt_revert`, `test_halt_attackerCannotMintAgainstLiveValuation`
+(the worked case, live $160 vs halt $100 → mint refused),
+`test_halt_exitsValueAtHaltPrice_feedDead` (feed zeroed; redeem and liquidate settle exactly at
+the halt price), `test_halt_liveAboveHalt_doesNotOvervalue`, `test_halt_repayAndCloseStillWork`.
+Integration: `test_halt_realVaultManager_windDownOnly` against the real `VaultManager.haltAsset`.
+
+**Hardening addendum (same day, user-requested, not an audit finding).** `_freshPrice` also
+reverts `CollateralPaused` while `VaultManager.isTradingPaused(ticker)` — mint and
+withdraw-with-debt wait for resume, exits are never pause-gated (consistent with
+`BorrowManager`: no new borrows on a paused asset, liquidation ungated because nothing freezes
+the price). Tests: `test_pause_mintAndWithdrawWithDebt_revert_exitsOpen`,
+`test_pause_realVaultManager_blocksMintOnly`.
 
 **Detected by** 2 of 12 agents (economic-security as finding; execution-trace tied the variant
 to the A4-H-02 root cause). **Round-2 addendum:** the seam has a second wing — once a
@@ -513,6 +532,10 @@ halted/delisted asset's feeds die past `maxAnchorAge`, `_anchorPrice` reverts an
 `redeem`/`withdrawCollateral`-with-debt all brick for that collateral while debt remains
 outstanding (only `closePosition` works), so undercollateralized positions become permanently
 unliquidatable. The halt gate fix should pair with a wind-down path for existing positions.
+
+---
+
+## 2. Open Findings
 
 ### A4-M-05 (Medium, ops-gated) — Force-executing a PSM-backed asset makes generic-vault LPs pay while the maker collects the freed reserve surplus
 
@@ -983,7 +1006,7 @@ module scope; statuses in the master index are authoritative).
       bridge monitoring.
 - [x] A4-M-03 — decide partial liquidation (`liquidate` with an `amount`) vs a per-position
       size cap; add a whale-starvation regression test (ceiling filled, circulating < debt).
-- [ ] A4-M-04 — add the halt gate to `mint`/`withdrawCollateral` and decide halted-collateral
+- [x] A4-M-04 — add the halt gate to `mint`/`withdrawCollateral` and decide halted-collateral
       valuation on exits (`min(oracle, haltPrice)`); add a halted-asset mint regression test.
 - [ ] A4-L-13 — add the `order.expiry` check to `ForceExecuteLib._validateForce` (completes the
       A3-L-03 remediation); regression test: expired order unfillable AND unforceable.

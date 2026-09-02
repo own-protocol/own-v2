@@ -6,6 +6,7 @@ import {IEUSD} from "../interfaces/IEUSD.sol";
 import {IEUSDManager} from "../interfaces/IEUSDManager.sol";
 import {IOracleVerifier} from "../interfaces/IOracleVerifier.sol";
 import {IProtocolRegistry} from "../interfaces/IProtocolRegistry.sol";
+import {IVaultManager} from "../interfaces/IVaultManager.sol";
 import {BPS, PRECISION} from "../interfaces/types/Types.sol";
 import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
 import {UUPSUpgradeable} from "@openzeppelin/contracts/proxy/utils/UUPSUpgradeable.sol";
@@ -545,8 +546,14 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
     }
 
     /// @dev Live price for risk-increasing actions: must be in-session, no older than
-    ///      mintPriceMaxAge. Future-dated timestamps are treated as current.
+    ///      mintPriceMaxAge. Future-dated timestamps are treated as current. Leverage pauses with
+    ///      trading (as in BorrowManager): a halted asset has no live value to lever against and a
+    ///      paused one cannot be turned into cash — both are wind-down only (repay / close /
+    ///      liquidate / redeem stay open).
     function _freshPrice(address collateral, bytes32 ticker) private view returns (uint256 price) {
+        IVaultManager vm = _vaultManager();
+        if (vm.isAssetHalted(ticker)) revert CollateralHalted(ticker);
+        if (vm.isTradingPaused(ticker)) revert CollateralPaused(ticker);
         uint256 ts;
         (price, ts) = _oracle(ticker).getPrice(ticker);
         if (price == 0) revert ZeroOraclePrice(ticker);
@@ -557,11 +564,19 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
 
     /// @dev Last oracle anchor for exits (repay-side paths, liquidation, redemption): no age
     ///      bound, so closed markets never block an exit. The oracle itself rejects prices beyond
-    ///      its own hard usability window.
+    ///      its own hard usability window. A halted asset is worth exactly its fixed halt price
+    ///      (its only redeemable value, via OwnMarket.redeemHalted) — the feed is not consulted, so
+    ///      exits keep working after the feed dies.
     function _anchorPrice(address collateral, bytes32 ticker) private view returns (uint256 price) {
+        IVaultManager vm = _vaultManager();
+        if (vm.isAssetHalted(ticker)) return _effectivePrice(collateral, vm.assetHaltPrice(ticker));
         (price,) = _oracle(ticker).getPrice(ticker);
         if (price == 0) revert ZeroOraclePrice(ticker);
         price = _effectivePrice(collateral, price);
+    }
+
+    function _vaultManager() private view returns (IVaultManager) {
+        return IVaultManager(registry.vaultManager());
     }
 
     /// @dev Ticker prices are per ACTIVE eToken unit. A legacy (post-split) collateral is worth

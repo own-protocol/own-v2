@@ -165,6 +165,12 @@ pre-split USD value (A4-H-02 fix). That protection holds only once **both** the 
 the post-split feed are live; between the two, every valuation is off by the split ratio in one
 direction or the other. The window is the hazard, and the sequence below closes it.
 
+**Delisting an eUSD collateral.** Always via `VaultManager.haltAsset(ticker, price)` (review
+the price — it is permanent and unbanded, A4-L-16). From the halt, `EUSDManager` values the
+collateral at the halt price without the feed, refuses mint / withdraw-with-debt, and lets
+positions wind down through repay, close, liquidate and redeem. Never let a listed collateral's
+feed go dark without a halt: exits would revert on `PriceNotAvailable` until one is set.
+
 **If a split on an eUSD collateral is unavoidable — sequence (market closed, feed still
 pre-split):**
 

@@ -21,6 +21,12 @@ pragma solidity 0.8.28;
 ///         (last-accrued) debt, so positions untouched for long periods are marginally riskier
 ///         than their list position implies — the drift is bounded by the stability fee rate.
 ///
+///         A permanently halted asset (VaultManager.haltAsset) is valued at its fixed halt price
+///         — the only value its eToken can still be redeemed for — and the feed is not consulted,
+///         so exits never brick; mint and collateral withdrawal against debt are refused. The
+///         same two actions are refused while the asset's trading is paused (leverage pauses
+///         with trading, as in BorrowManager); exits are never gated on a pause.
+///
 ///         Collateral is custodied by token address but priced by ticker, and ticker prices are
 ///         per active eToken unit. After an `AssetRegistry.migrateToken` split the held token
 ///         becomes legacy; the manager scales its price by `legacyRatioToActive` so every open
@@ -212,6 +218,10 @@ interface IEUSDManager {
     error InvalidCollateralDecimals(uint8 decimals);
     /// @notice The token is not a valid eToken for the ticker in the AssetRegistry.
     error TickerTokenMismatch(bytes32 ticker, address collateral);
+    /// @notice The asset is permanently halted; only wind-down actions are allowed.
+    error CollateralHalted(bytes32 ticker);
+    /// @notice Trading in the asset is paused; mint and withdrawal against debt wait for resume.
+    error CollateralPaused(bytes32 ticker);
     /// @notice The token is already a legacy (post-split) eToken; onboard the active token instead.
     error LegacyCollateral(address collateral);
     /// @notice Risk parameter bounds are inconsistent (see setters for the exact constraints).

@@ -131,6 +131,39 @@ contract EusdSplitFlowTest is BaseTest {
         vm.stopPrank();
     }
 
+    /// @dev A4-M-04 against the real VaultManager: after haltAsset the position is valued at the
+    ///      halt price with the feed ignored; mint is refused; liquidation clears it at halt value.
+    function test_halt_realVaultManager_windDownOnly() public {
+        _haltAsset(ASSET, 400e18); // $800 / 800 = 100% — underwater at the halt price
+        _setOraclePrice(ASSET, 900e18); // live would read 225%
+        assertEq(manager.collateralRatioBps(address(eTSLA), Actors.MINTER1), 10_000);
+        vm.prank(Actors.MINTER1);
+        vm.expectRevert(abi.encodeWithSelector(IEUSDManager.CollateralHalted.selector, ASSET));
+        manager.mint(address(eTSLA), 1, address(0));
+
+        bytes32 minterRole = eusd.MINTER_ROLE();
+        vm.prank(Actors.ADMIN);
+        eusd.grantRole(minterRole, address(this));
+        eusd.mint(Actors.LIQUIDATOR, 800e18);
+        vm.prank(Actors.LIQUIDATOR);
+        manager.liquidate(address(eTSLA), Actors.MINTER1, type(uint256).max, address(0));
+        assertEq(eTSLA.balanceOf(Actors.LIQUIDATOR), 2e18); // capped at collateral
+        assertEq(manager.getPosition(address(eTSLA), Actors.MINTER1).debt, 0);
+    }
+
+    function test_pause_realVaultManager_blocksMintOnly() public {
+        _setAssetTradingPaused(ASSET, true);
+        vm.startPrank(Actors.MINTER1);
+        vm.expectRevert(abi.encodeWithSelector(IEUSDManager.CollateralPaused.selector, ASSET));
+        manager.mint(address(eTSLA), 100e18, address(0));
+        manager.repay(address(eTSLA), Actors.MINTER1, 100e18, address(0));
+        vm.stopPrank();
+        _setAssetTradingPaused(ASSET, false);
+        _setOraclePrice(ASSET, PX);
+        vm.prank(Actors.MINTER1);
+        manager.mint(address(eTSLA), 100e18, address(0));
+    }
+
     function test_addCollateral_afterSplit_rejectsLegacyAcceptsActive() public {
         // Two migrations: eTSLA → v2 → v3. v2 is legacy and never onboarded; v3 is active.
         _migrate(2e18);

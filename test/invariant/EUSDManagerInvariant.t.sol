@@ -10,6 +10,7 @@ import {deployEUSDManager} from "../helpers/DeployEusdModule.sol";
 import {MockAssetRegistry} from "../helpers/MockAssetRegistry.sol";
 import {MockERC20} from "../helpers/MockERC20.sol";
 import {MockOracleVerifier} from "../helpers/MockOracleVerifier.sol";
+import {MockVaultManager} from "../helpers/MockVaultManager.sol";
 import {EUSDHandler} from "./handlers/EUSDHandler.sol";
 import {Test} from "forge-std/Test.sol";
 
@@ -24,6 +25,7 @@ contract EUSDManagerInvariantTest is Test {
     ProtocolRegistry internal registry;
     MockOracleVerifier internal oracle;
     MockAssetRegistry internal assetRegistry;
+    MockVaultManager internal vaultManager;
     MockERC20 internal eSPY;
     MockERC20 internal eQQQ;
     EUSD internal eusd;
@@ -43,10 +45,12 @@ contract EUSDManagerInvariantTest is Test {
         registry = new ProtocolRegistry(admin, 2 days, 300);
         oracle = new MockOracleVerifier();
         assetRegistry = new MockAssetRegistry();
+        vaultManager = new MockVaultManager();
 
         vm.startPrank(admin);
         registry.setAddress(keccak256("INHOUSE_ORACLE"), address(oracle));
         registry.setAddress(keccak256("ASSET_REGISTRY"), address(assetRegistry));
+        registry.setAddress(keccak256("VAULT_MANAGER"), address(vaultManager));
         registry.setAddress(keccak256("TREASURY"), treasury);
         registry.grantRole(keccak256("ADMIN"), admin);
         vm.stopPrank();

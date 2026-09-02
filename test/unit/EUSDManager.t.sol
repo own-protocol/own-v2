@@ -11,6 +11,7 @@ import {deployEUSDManager} from "../helpers/DeployEusdModule.sol";
 import {MockAssetRegistry} from "../helpers/MockAssetRegistry.sol";
 import {MockERC20} from "../helpers/MockERC20.sol";
 import {MockOracleVerifier} from "../helpers/MockOracleVerifier.sol";
+import {MockVaultManager} from "../helpers/MockVaultManager.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
 import {UUPSUpgradeable} from "@openzeppelin/contracts/proxy/utils/UUPSUpgradeable.sol";
@@ -21,6 +22,7 @@ contract EUSDManagerTest is Test {
     ProtocolRegistry internal registry;
     MockOracleVerifier internal oracle;
     MockAssetRegistry internal assetRegistry;
+    MockVaultManager internal vaultManager;
     MockERC20 internal eSPY;
     MockERC20 internal eQQQ;
     EUSD internal eusd;
@@ -53,10 +55,12 @@ contract EUSDManagerTest is Test {
         registry = new ProtocolRegistry(admin, 2 days, 300);
         oracle = new MockOracleVerifier();
         assetRegistry = new MockAssetRegistry();
+        vaultManager = new MockVaultManager();
 
         vm.startPrank(admin);
         registry.setAddress(keccak256("INHOUSE_ORACLE"), address(oracle));
         registry.setAddress(keccak256("ASSET_REGISTRY"), address(assetRegistry));
+        registry.setAddress(keccak256("VAULT_MANAGER"), address(vaultManager));
         registry.setAddress(keccak256("TREASURY"), treasury);
         registry.grantRole(keccak256("ADMIN"), admin);
         registry.grantRole(keccak256("OPERATOR"), operator);
@@ -1109,6 +1113,110 @@ contract EUSDManagerTest is Test {
         assertEq(manager.listHead(address(eSPY)), carol);
         _assertListSorted(address(eSPY));
         assertEq(eusd.totalSupply(), manager.totalDebt());
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Halt (A4-M-04): halted collateral is worth its fixed halt price; wind-down only
+    // ──────────────────────────────────────────────────────────
+
+    function test_halt_mintAndWithdrawWithDebt_revert() public {
+        _open(alice, 3e18, 1000e18);
+        vaultManager.halt(SPY, 100e18);
+        oracle.setPrice(SPY, 160e18); // live rallies above halt
+        vm.startPrank(alice);
+        vm.expectRevert(abi.encodeWithSelector(IEUSDManager.CollateralHalted.selector, SPY));
+        manager.mint(address(eSPY), 100e18, address(0));
+        vm.expectRevert(abi.encodeWithSelector(IEUSDManager.CollateralHalted.selector, SPY));
+        manager.withdrawCollateral(address(eSPY), 1, address(0));
+        // Debt-free withdrawal and top-ups still work.
+        manager.deposit(address(eSPY), 1e18, address(0));
+        vm.stopPrank();
+        _open(bob, 1e18, 0);
+        vm.prank(bob);
+        manager.withdrawCollateral(address(eSPY), 1e18, address(0));
+    }
+
+    /// @dev Trading pause: leverage pauses with trading; exits stay open; resume restores.
+    function test_pause_mintAndWithdrawWithDebt_revert_exitsOpen() public {
+        _open(alice, 3e18, 1000e18);
+        _open(bob, 40e18, 1000e18);
+        vm.prank(bob);
+        eusd.transfer(keeper, 1000e18);
+        vaultManager.setTradingPaused(SPY, true);
+
+        vm.startPrank(alice);
+        vm.expectRevert(abi.encodeWithSelector(IEUSDManager.CollateralPaused.selector, SPY));
+        manager.mint(address(eSPY), 100e18, address(0));
+        vm.expectRevert(abi.encodeWithSelector(IEUSDManager.CollateralPaused.selector, SPY));
+        manager.withdrawCollateral(address(eSPY), 1, address(0));
+        manager.repay(address(eSPY), alice, 100e18, address(0));
+        vm.stopPrank();
+
+        oracle.setPrice(SPY, 380e18); // 3 × 380 / 900 = 126.7% → liquidatable during the pause
+        vm.prank(keeper);
+        manager.liquidate(address(eSPY), alice, type(uint256).max, address(0));
+        assertEq(manager.getPosition(address(eSPY), alice).debt, 0);
+        vm.prank(keeper);
+        manager.redeem(address(eSPY), 100e18, 0, 1, address(0)); // redemption open too
+
+        vaultManager.setTradingPaused(SPY, false);
+        oracle.setPrice(SPY, PRICE);
+        _open(carol, 3e18, 1000e18); // minting works again
+    }
+
+    /// @dev The A4-M-04 attack: buy halted eTokens at halt value, mint at the live valuation.
+    function test_halt_attackerCannotMintAgainstLiveValuation() public {
+        vaultManager.halt(SPY, 100e18);
+        oracle.setPrice(SPY, 160e18);
+        vm.startPrank(attacker);
+        manager.deposit(address(eSPY), 1000e18, address(0)); // ~$100k of halted eTokens
+        vm.expectRevert(abi.encodeWithSelector(IEUSDManager.CollateralHalted.selector, SPY));
+        manager.mint(address(eSPY), 100_000e18, address(0));
+        vm.stopPrank();
+    }
+
+    function test_halt_exitsValueAtHaltPrice_feedDead() public {
+        _open(alice, 3e18, 1000e18); // $1500 / 1000 at $500
+        _open(bob, 40e18, 1000e18);
+        vm.prank(bob);
+        eusd.transfer(keeper, 1000e18);
+        vaultManager.halt(SPY, 400e18); // $1200 / 1000 = 120% < 130%
+        oracle.setPrice(SPY, 0); // feed dead — must not matter
+        assertEq(manager.collateralRatioBps(address(eSPY), alice), 12_000);
+        assertTrue(manager.isLiquidatable(address(eSPY), alice));
+
+        // Partial liquidation at the halt price: seized = 400 × 1.05 / 400 = 1.05 eSPY.
+        vm.prank(keeper);
+        manager.liquidate(address(eSPY), alice, 400e18, address(0));
+        assertEq(eSPY.balanceOf(keeper), 1_000_000e18 + 1.05e18);
+        // 1.95 / 600 at $400 = 130% → no longer liquidatable; redeem the rest at $400.
+        assertFalse(manager.isLiquidatable(address(eSPY), alice));
+        vm.prank(keeper);
+        (uint256 out, uint256 repaid) = manager.redeem(address(eSPY), 600e18, 1.5e18, 1, address(0));
+        assertEq(repaid, 600e18);
+        assertEq(out, 1.5e18);
+        IEUSDManager.Position memory p = manager.getPosition(address(eSPY), alice);
+        assertEq(p.debt, 0);
+        assertEq(p.collateral, 0.45e18);
+    }
+
+    function test_halt_liveAboveHalt_doesNotOvervalue() public {
+        _open(alice, 3e18, 1000e18);
+        vaultManager.halt(SPY, 400e18);
+        oracle.setPrice(SPY, 700e18); // live would read 210%
+        assertEq(manager.collateralRatioBps(address(eSPY), alice), 12_000);
+        assertTrue(manager.isLiquidatable(address(eSPY), alice));
+    }
+
+    function test_halt_repayAndCloseStillWork() public {
+        _open(alice, 3e18, 1000e18);
+        vaultManager.halt(SPY, 100e18);
+        oracle.setPrice(SPY, 0);
+        vm.startPrank(alice);
+        manager.repay(address(eSPY), alice, 500e18, address(0));
+        manager.closePosition(address(eSPY));
+        vm.stopPrank();
+        assertEq(eSPY.balanceOf(alice), 1_000_000e18);
     }
 
     // ──────────────────────────────────────────────────────────

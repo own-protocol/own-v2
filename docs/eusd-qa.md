@@ -101,6 +101,23 @@ debt residual stays on the owner's books off the sorted list (clearable by repay
 liquidation, or a collateral top-up, which re-lists it) and the redemption walks on to the next
 position. A redeemer is therefore never charged for collateral they do not receive.
 
+**Q: What happens to eUSD positions if the collateral's asset is halted?**
+A halt (`VaultManager.haltAsset`, permanent, operator-set price) fixes the eToken's only
+redeemable value at the halt price (`OwnMarket.redeemHalted`). The eUSD manager follows it:
+every ratio, liquidation and redemption values the collateral at the **halt price** and stops
+reading the feed, so exits keep working even after the feed dies. `mint` and
+`withdrawCollateral` with debt revert `CollateralHalted` — there is no live value to lever
+against. Wind-down is the normal paths: owners repay/close and redeem their eTokens at the
+halt price; keepers liquidate (seized eTokens redeem at halt price + 5% bonus); redeemers take
+eTokens at halt value. Ops rule: delisting an eUSD collateral must go through `haltAsset` — an
+asset whose feed simply dies without a halt bricks its exits until one is set.
+
+A **trading pause** (global or per-asset, `VaultManager`) is different: nothing freezes the
+price, so valuation is unchanged, but `mint` and `withdrawCollateral` with debt revert
+`CollateralPaused` for its duration — leverage pauses with trading, as in the borrow manager —
+while every exit stays open. `setMintPaused` on the eUSD manager remains the independent lever
+for eUSD-specific incidents.
+
 **Q: With two collaterals (say eSPY and eQQQ), does a redeemer receive both tokens?**
 No. Redemption is per collateral: the caller passes the collateral address, each collateral keeps
 its own sorted list, and the redeemer receives only that token. "Riskiest-first" is ordered
