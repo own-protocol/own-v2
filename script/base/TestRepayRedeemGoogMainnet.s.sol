@@ -63,7 +63,10 @@ contract TestRepayRedeemGoogMainnet is Script {
     }
 
     /// @dev Build the market redeem quote (orderId 0, eGOOG in) and sign with the operator key.
-    function _redeemQuote(uint256 operatorPk, address vmAddr) internal returns (Quote memory q, bytes memory sig) {
+    function _redeemQuote(
+        uint256 operatorPk,
+        address vmAddr
+    ) internal view returns (Quote memory q, bytes memory sig) {
         q = Quote({
             orderId: 0,
             user: vmAddr,
@@ -81,7 +84,7 @@ contract TestRepayRedeemGoogMainnet is Script {
     /// @dev Fresh operator-signed GOOG price attestation for the mark refresh.
     function _priceProof(
         uint256 operatorPk
-    ) internal returns (bytes memory priceData) {
+    ) internal view returns (bytes memory priceData) {
         uint256 ts = block.timestamp;
         (uint8 v, bytes32 r, bytes32 s) =
             vm.sign(operatorPk, OracleVerifier(INHOUSE_ORACLE).priceDigest(GOOG, GOOG_PRICE, ts));

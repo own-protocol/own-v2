@@ -55,7 +55,7 @@ contract TestMintBorrowGoogMainnet is Script {
     }
 
     /// @dev Build the market mint quote (orderId 0) and sign it with the operator key.
-    function _mintQuote(uint256 operatorPk, address vmAddr) internal returns (Quote memory q, bytes memory sig) {
+    function _mintQuote(uint256 operatorPk, address vmAddr) internal view returns (Quote memory q, bytes memory sig) {
         q = Quote({
             orderId: 0,
             user: vmAddr,
@@ -73,7 +73,7 @@ contract TestMintBorrowGoogMainnet is Script {
     /// @dev Build the inline GOOG price proof (abi.encode(price, ts, v, r, s)) signed by the operator.
     function _priceProof(
         uint256 operatorPk
-    ) internal returns (bytes memory priceData) {
+    ) internal view returns (bytes memory priceData) {
         uint256 ts = block.timestamp;
         (uint8 v, bytes32 r, bytes32 s) =
             vm.sign(operatorPk, OracleVerifier(INHOUSE_ORACLE).priceDigest(GOOG, GOOG_PRICE, ts));

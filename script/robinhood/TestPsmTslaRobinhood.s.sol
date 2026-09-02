@@ -73,7 +73,7 @@ contract TestPsmTslaRobinhood is Script {
     }
 
     /// @dev Operator-signed price attestation for `ticker` at PRICE.
-    function _priceProof(uint256 operatorPk, bytes32 ticker) internal returns (bytes memory priceData) {
+    function _priceProof(uint256 operatorPk, bytes32 ticker) internal view returns (bytes memory priceData) {
         uint256 ts = block.timestamp;
         (uint8 v, bytes32 r, bytes32 s) =
             vm.sign(operatorPk, OracleVerifier(INHOUSE_ORACLE).priceDigest(ticker, PRICE, ts));
