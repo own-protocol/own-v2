@@ -226,7 +226,7 @@ contract StakedEUSDTest is Test {
     function test_metadata_visibleThroughProxy() public view {
         // name/symbol are pinned overrides — constructor-set metadata lives in implementation
         // storage a proxy never sees.
-        assertEq(sEusd.name(), "Staked eUSD");
+        assertEq(sEusd.name(), "Own Staked eUSD");
         assertEq(sEusd.symbol(), "sEUSD");
         assertEq(sEusd.asset(), address(eusd));
         assertEq(sEusd.decimals(), 18);

@@ -33,7 +33,7 @@ contract EUSDTest is Test {
     // ──────────────────────────────────────────────────────────
 
     function test_metadata() public view {
-        assertEq(eusd.name(), "eUSD");
+        assertEq(eusd.name(), "Own eUSD");
         assertEq(eusd.symbol(), "eUSD");
         assertEq(eusd.decimals(), 18);
     }

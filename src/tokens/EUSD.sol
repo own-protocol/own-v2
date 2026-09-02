@@ -38,7 +38,7 @@ contract EUSD is IEUSD, ERC20Permit, AccessControl {
     ///              bridge limits).
     constructor(
         address admin
-    ) ERC20("eUSD", "eUSD") ERC20Permit("eUSD") {
+    ) ERC20("Own eUSD", "eUSD") ERC20Permit("Own eUSD") {
         if (admin == address(0)) revert ZeroAddress();
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
     }

@@ -97,7 +97,7 @@ contract StakedEUSD is Initializable, UUPSUpgradeable, ERC4626, ERC20Permit, Ree
     /// @param eusd_ eUSD token — the vault asset.
     constructor(
         address eusd_
-    ) ERC20("Staked eUSD", "sEUSD") ERC4626(IERC20(eusd_)) ERC20Permit("Staked eUSD") {
+    ) ERC20("Own Staked eUSD", "sEUSD") ERC4626(IERC20(eusd_)) ERC20Permit("Own Staked eUSD") {
         if (eusd_ == address(0)) revert ZeroAddress();
         _disableInitializers();
     }
@@ -201,7 +201,7 @@ contract StakedEUSD is Initializable, UUPSUpgradeable, ERC4626, ERC20Permit, Ree
     /// @dev Constructor-set ERC-20 metadata lives in implementation storage, which a proxy never
     ///      sees — pin it here instead.
     function name() public pure override(ERC20, IERC20Metadata) returns (string memory) {
-        return "Staked eUSD";
+        return "Own Staked eUSD";
     }
 
     /// @dev See {name}.
