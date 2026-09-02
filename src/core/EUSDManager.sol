@@ -169,7 +169,7 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
 
         // Risk-increasing while debt exists: fresh in-session price + MCR, same gate as minting.
         if (p.debt > 0) {
-            uint256 ratio = _ratioBps(p.collateral, p.debt, _freshPrice(cfg.ticker));
+            uint256 ratio = _ratioBps(p.collateral, p.debt, _freshPrice(collateral, cfg.ticker));
             if (ratio < _riskParams.mcrBps) revert CollateralRatioTooLow(ratio, _riskParams.mcrBps);
         }
         _reindex(collateral, msg.sender, hint);
@@ -192,7 +192,7 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
         uint256 newTotal = totalDebt + amount;
         if (newTotal > _riskParams.debtCeiling) revert DebtCeilingExceeded(newTotal, _riskParams.debtCeiling);
 
-        uint256 ratio = _ratioBps(p.collateral, newDebt, _freshPrice(cfg.ticker));
+        uint256 ratio = _ratioBps(p.collateral, newDebt, _freshPrice(collateral, cfg.ticker));
         if (ratio < _riskParams.mcrBps) revert CollateralRatioTooLow(ratio, _riskParams.mcrBps);
 
         p.debt = newDebt;
@@ -256,7 +256,7 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
         Position storage p = _accrue(collateral, owner);
         if (p.debt == 0) revert NoDebt(collateral, owner);
 
-        uint256 price = _anchorPrice(cfg.ticker);
+        uint256 price = _anchorPrice(collateral, cfg.ticker);
         uint256 ratio = _ratioBps(p.collateral, p.debt, price);
         uint16 threshold = _riskParams.liquidationThresholdBps;
         if (ratio >= threshold) revert PositionNotLiquidatable(ratio, threshold);
@@ -290,7 +290,7 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
         CollateralConfig storage cfg = _requireCollateral(collateral);
         if (amount == 0) revert ZeroAmount();
 
-        uint256 price = _anchorPrice(cfg.ticker);
+        uint256 price = _anchorPrice(collateral, cfg.ticker);
         uint256 remaining = amount;
         uint256 touched;
 
@@ -322,9 +322,9 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
         if (_collateralConfigs[collateral].exists) revert CollateralAlreadySupported(collateral);
         uint8 dec = IERC20Metadata(collateral).decimals();
         if (dec != 18) revert InvalidCollateralDecimals(dec);
-        if (!IAssetRegistry(registry.assetRegistry()).isValidToken(ticker, collateral)) {
-            revert TickerTokenMismatch(ticker, collateral);
-        }
+        IAssetRegistry assetRegistry = IAssetRegistry(registry.assetRegistry());
+        if (!assetRegistry.isValidToken(ticker, collateral)) revert TickerTokenMismatch(ticker, collateral);
+        if (assetRegistry.legacyRatioToActive(collateral) != 0) revert LegacyCollateral(collateral);
         _collateralConfigs[collateral] = CollateralConfig({ticker: ticker, enabled: true, exists: true});
         emit CollateralAdded(collateral, ticker);
     }
@@ -536,24 +536,31 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
 
     /// @dev Live price for risk-increasing actions: must be in-session, no older than
     ///      mintPriceMaxAge. Future-dated timestamps are treated as current.
-    function _freshPrice(
-        bytes32 ticker
-    ) private view returns (uint256 price) {
+    function _freshPrice(address collateral, bytes32 ticker) private view returns (uint256 price) {
         uint256 ts;
         (price, ts) = _oracle(ticker).getPrice(ticker);
         if (price == 0) revert ZeroOraclePrice(ticker);
         uint256 maxAge = _riskParams.mintPriceMaxAge;
         if (block.timestamp > ts + maxAge) revert StaleMintPrice(ts, maxAge);
+        price = _effectivePrice(collateral, price);
     }
 
     /// @dev Last oracle anchor for exits (repay-side paths, liquidation, redemption): no age
     ///      bound, so closed markets never block an exit. The oracle itself rejects prices beyond
     ///      its own hard usability window.
-    function _anchorPrice(
-        bytes32 ticker
-    ) private view returns (uint256 price) {
+    function _anchorPrice(address collateral, bytes32 ticker) private view returns (uint256 price) {
         (price,) = _oracle(ticker).getPrice(ticker);
         if (price == 0) revert ZeroOraclePrice(ticker);
+        price = _effectivePrice(collateral, price);
+    }
+
+    /// @dev Ticker prices are per ACTIVE eToken unit. A legacy (post-split) collateral is worth
+    ///      `legacyRatioToActive` active units, so its price is scaled by that ratio (same rule as
+    ///      BorrowManager). Active tokens have ratio 0 → identity. Floor rounding errs against
+    ///      the debtor.
+    function _effectivePrice(address collateral, uint256 price) private view returns (uint256) {
+        uint256 ratio = IAssetRegistry(registry.assetRegistry()).legacyRatioToActive(collateral);
+        return ratio == 0 ? price : Math.mulDiv(price, ratio, PRECISION);
     }
 
     /// @dev Collateral ratio in BPS. Floor rounding: measured ratios err against the debtor.
@@ -604,7 +611,9 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
         uint256 debt = currentDebt(collateral, owner);
         if (debt == 0) return type(uint256).max;
         return _ratioBps(
-            _positions[collateral][owner].collateral, debt, _anchorPrice(_collateralConfigs[collateral].ticker)
+            _positions[collateral][owner].collateral,
+            debt,
+            _anchorPrice(collateral, _collateralConfigs[collateral].ticker)
         );
     }
 

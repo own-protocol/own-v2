@@ -1041,6 +1041,90 @@ contract EUSDManagerTest is Test {
     }
 
     // ──────────────────────────────────────────────────────────
+    //  Splits (A4-H-02): legacy collateral is priced through legacyRatioToActive
+    // ──────────────────────────────────────────────────────────
+
+    /// @dev Simulate `AssetRegistry.migrateToken(SPY, new, ratio)` landing together with the
+    ///      post-split feed: eSPY becomes legacy at `ratio`, the ticker price scales by 1/ratio.
+    function _split(
+        uint256 ratio
+    ) internal {
+        assetRegistry.setLegacyRatio(address(eSPY), ratio);
+        oracle.setPrice(SPY, PRICE * 1e18 / ratio);
+    }
+
+    function test_split_forward_positionValueAndRatioUnchanged() public {
+        _open(alice, 3e18, 1000e18); // $1500 / 1000 → 150%
+        uint256 before = manager.collateralRatioBps(address(eSPY), alice);
+        _split(2e18); // 2:1 — feed halves, 1 old = 2 new
+        assertEq(manager.collateralRatioBps(address(eSPY), alice), before);
+        assertFalse(manager.isLiquidatable(address(eSPY), alice));
+        vm.expectRevert();
+        vm.prank(keeper);
+        manager.liquidate(address(eSPY), alice);
+    }
+
+    function test_split_forward_redeemPaysLegacyUnitsAtFairValue() public {
+        _open(alice, 3e18, 1000e18);
+        vm.prank(alice);
+        eusd.transfer(keeper, 500e18);
+        _split(2e18);
+        // 500 eUSD buys $500 = 1 legacy eSPY (=2 new units at $250).
+        vm.prank(keeper);
+        (uint256 out, uint256 repaid) = manager.redeem(address(eSPY), 500e18, 1e18, 0, address(0));
+        assertEq(repaid, 500e18);
+        assertEq(out, 1e18);
+        assertEq(eSPY.balanceOf(keeper), 1_000_000e18 + 1e18);
+    }
+
+    function test_split_forward_liquidationSeizesLegacyUnitsAtEffectivePrice() public {
+        _open(alice, 3e18, 1000e18);
+        _open(bob, 40e18, 1000e18);
+        vm.prank(bob);
+        eusd.transfer(keeper, 1000e18);
+        _split(2e18);
+        // Active feed drops to $200 → effective $400/legacy unit → $1200/1000 = 120% < 130%.
+        oracle.setPrice(SPY, 200e18);
+        assertEq(manager.collateralRatioBps(address(eSPY), alice), 12_000);
+        vm.prank(keeper);
+        manager.liquidate(address(eSPY), alice);
+        // seized = 1000 × 1.05 / 400 = 2.625 legacy units; 0.375 refunded.
+        assertEq(eSPY.balanceOf(keeper), 1_000_000e18 + 2.625e18);
+        assertEq(eSPY.balanceOf(alice), 1_000_000e18 - 3e18 + 0.375e18);
+    }
+
+    function test_split_reverse_noPhantomWithdrawOrMint() public {
+        _open(alice, 3e18, 1000e18); // exactly at MCR
+        _split(0.5e18); // 1:2 reverse — feed doubles, 1 old = 0.5 new
+        assertEq(manager.collateralRatioBps(address(eSPY), alice), MCR);
+        vm.startPrank(alice);
+        vm.expectRevert();
+        manager.withdrawCollateral(address(eSPY), 1, address(0));
+        vm.expectRevert();
+        manager.mint(address(eSPY), 100e18, address(0));
+        vm.stopPrank();
+    }
+
+    function test_split_mintAgainstLegacy_usesEffectivePrice() public {
+        _open(alice, 3e18, 0);
+        _split(2e18);
+        // $1500 of legacy collateral supports at most 1000 eUSD at 150% MCR.
+        vm.startPrank(alice);
+        vm.expectRevert();
+        manager.mint(address(eSPY), 1000e18 + 1, address(0));
+        manager.mint(address(eSPY), 1000e18, address(0));
+        vm.stopPrank();
+        assertEq(manager.collateralRatioBps(address(eSPY), alice), MCR);
+    }
+
+    function test_addCollateral_legacyToken_reverts() public {
+        assetRegistry.setLegacyRatio(address(eQQQ), 2e18);
+        vm.expectRevert(abi.encodeWithSelector(IEUSDManager.LegacyCollateral.selector, address(eQQQ)));
+        vm.prank(admin);
+        manager.addCollateral(address(eQQQ), QQQ);
+    }
+
+    // ──────────────────────────────────────────────────────────
     //  Sorted list
     // ──────────────────────────────────────────────────────────
 

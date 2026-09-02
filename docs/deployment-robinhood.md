@@ -149,6 +149,42 @@ psmMint/psmRedeem round-trip.
 > **Split runbook:** a stock split jumps `uiMultiplier` far beyond the ratio-jump bound by design.
 > Halt, re-mark under the new multiplier, resume — do not widen the bound.
 
+## eUSD collateral policy & split runbook
+
+**Collateral selection (preferred).** Onboard only eTokens that are **low-volatility** and
+**unlikely to ever be re-denominated**: broad index ETFs (SPY has never split since 1993; QQQ
+split once, in 2000). Avoid single stocks and anything with a split history or a high share price
+that invites one, and avoid anything whose Robinhood-side token carries a non-1.0 `uiMultiplier`
+schedule (dividend reinvestors). Every `addCollateral` is a permanent commitment to price that
+token through any future corporate action.
+
+**Why it matters.** `EUSDManager` custodies collateral by token address and prices it by ticker.
+Ticker prices are per *active* eToken unit, so after `AssetRegistry.migrateToken` the manager
+scales the price of the (now legacy) held token by `legacyRatioToActive` — positions keep their
+pre-split USD value (A4-H-02 fix). That protection holds only once **both** the registry ratio and
+the post-split feed are live; between the two, every valuation is off by the split ratio in one
+direction or the other. The window is the hazard, and the sequence below closes it.
+
+**If a split on an eUSD collateral is unavoidable — sequence (market closed, feed still
+pre-split):**
+
+1. `EUSDManager.setMintPaused(true)` (OPERATOR, instant) and `setCollateralEnabled(legacy, false)`
+   (ADMIN) — freezes mint and deposit on the legacy token. `withdrawCollateral` with debt is
+   fresh-price gated (`mintPriceMaxAge`), so it self-blocks while the market is closed.
+2. Run `AssetRegistry.migrateToken(ticker, newToken, ratio)` **before** the feed moves. With the
+   anchor still pre-split, legacy positions read *over*-valued by `ratio` until the open — that
+   direction is safe: nothing becomes falsely liquidatable, and a redeemer is short-changed only
+   if they ignore `minCollateralOut`. Never let the feed move first: that direction under-values
+   every position by `ratio` and makes healthy positions liquidatable for the window.
+3. At the open, confirm the feed reflects the post-split price (in-house signer and Chainlink
+   both), then verify on a sample position that `collateralRatioBps` equals its pre-split value.
+4. `addCollateral(newToken, ticker)` so new positions open on the active token, then
+   `setMintPaused(false)`.
+5. Leave the legacy collateral **disabled** (exits only: repay / close / redeem / liquidate keep
+   working). Owners migrate at their own pace — close, `OwnMarket.convertLegacy`, reopen on the
+   new token. `addCollateral` rejects legacy tokens, so the old address cannot be re-enabled by
+   mistake.
+
 ## Off-chain services checklist
 
 - **Price signer (KMS):** publish marks for `USDG` ($1), the 7 launch tickers, and each wrapper

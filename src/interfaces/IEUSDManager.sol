@@ -21,6 +21,12 @@ pragma solidity 0.8.28;
 ///         (last-accrued) debt, so positions untouched for long periods are marginally riskier
 ///         than their list position implies — the drift is bounded by the stability fee rate.
 ///
+///         Collateral is custodied by token address but priced by ticker, and ticker prices are
+///         per active eToken unit. After an `AssetRegistry.migrateToken` split the held token
+///         becomes legacy; the manager scales its price by `legacyRatioToActive` so every open
+///         position keeps its pre-split USD value, and continues to hold and pay out the legacy
+///         token. New positions open on the new active token once it is added as collateral.
+///
 ///         The stability fee is a fixed annual rate, accrued lazily per position from a global
 ///         bps-seconds index (simple interest between touches). Accrued fees are added to position
 ///         debt and simultaneously minted as eUSD to the protocol treasury, preserving
@@ -206,6 +212,8 @@ interface IEUSDManager {
     error InvalidCollateralDecimals(uint8 decimals);
     /// @notice The token is not a valid eToken for the ticker in the AssetRegistry.
     error TickerTokenMismatch(bytes32 ticker, address collateral);
+    /// @notice The token is already a legacy (post-split) eToken; onboard the active token instead.
+    error LegacyCollateral(address collateral);
     /// @notice Risk parameter bounds are inconsistent (see setters for the exact constraints).
     error InvalidRiskParams();
     /// @notice Minting is paused.

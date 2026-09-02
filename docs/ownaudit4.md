@@ -1,6 +1,6 @@
 # Own Protocol v2 — Audit Report & Remediation Status (Pass 4 — eUSD CDP Module)
 
-**Branch:** `stablecoin` · **Last updated:** 2026-09-02 · **Test suite:** 1403 passing (109 new for this module)
+**Branch:** `stablecoin` · **Last updated:** 2026-09-02 · **Test suite:** 1400 passing excl. fork suites (+14 for the A4-H-01 / A4-H-02 fixes)
 
 This pass is **scoped to the new eUSD CDP module** (EUSDManager + EUSD token) introduced on the
 `stablecoin` branch; it does not re-tread the protocol-wide ground covered by `audit-report-3.md`,
@@ -38,7 +38,7 @@ out-of-scope context for seam verification.
 | Severity | Total | Fixed | Open | By design |
 | -------- | ----- | ----- | ---- | --------- |
 | Critical | 0     | —     | —    | —         |
-| High     | 2     | 1     | 1    | 0         |
+| High     | 2     | 2     | 0    | 0         |
 | Medium   | 5     | 0     | 5    | 0         |
 | Low      | 18    | 0     | 17   | 1         |
 | Info     | 17    | 0     | 9    | 8 (noted) |
@@ -46,7 +46,7 @@ out-of-scope context for seam verification.
 | ID      | Severity | Finding                                                                  | Status                       |
 | ------- | -------- | ------------------------------------------------------------------------ | ---------------------------- |
 | A4-H-01 | High     | Partial redemption of underwater position strands unbacked debt at head  | **Fixed** (2026-09-02)       |
-| A4-H-02 | High     | Stock split re-denomination silently mis-values all eUSD collateral      | **Open**                     |
+| A4-H-02 | High     | Stock split re-denomination silently mis-values all eUSD collateral      | **Fixed** (2026-09-02)       |
 | A4-M-01 | Medium   | Redemption cannot skip an underwater head — peg anchor stalls            | **Open**                     |
 | A4-M-02 | Medium   | OwnIncentives pays retroactive OWN on balances from unhooked windows     | **Open**                     |
 | A4-M-03 | Medium   | Full-debt-only liquidation can be starved of eUSD liquidity (no partial) | **Open**                     |
@@ -91,6 +91,125 @@ out-of-scope context for seam verification.
 ---
 
 ## 1. Fixed Findings
+
+### A4-H-02 (High) — A routine stock split silently mis-values every eUSD position by the split ratio — **Fixed**
+
+**Problem.** `EUSDManager` custodies collateral as a fixed **token address** balance
+(`_positions[collateral][owner].collateral`, keyed by address; `_collateralConfigs[collateral]`
+stores only `{ticker, enabled, exists}`) but values it by **ticker**: every ratio and seizure
+computation runs `_ratioBps(coll, debt, price)` where `price = _oracle(cfg.ticker).getPrice(ticker)`
+(`EUSDManager.sol:535–537`, call sites at `153`, `177`, `243/244`, `277`, `581/582`). It multiplies
+the raw stored unit count by the **per-active-unit** ticker price and applies **no** legacy-ratio
+factor. The module references none of `legacyRatioToActive` / `applySplit` / `getActiveToken` /
+`convertLegacy` (verified: grep returns nothing) and has no split/migration hook.
+
+When the admin performs a supported corporate action —
+`AssetRegistry.migrateToken(ticker, newToken, ratio)` (`AssetRegistry.sol:127`) — the deposited
+token becomes **legacy** (`_legacyRatio[oldToken] = ratio`, `:148`; `legacyRatioToActive(oldToken)`
+now returns `ratio`), a new active token is installed, and `VaultManager.applySplit` atomically
+re-denominates the internal mark (`_assetMark = mark·PRECISION/ratio`, `VaultManager.sol:432`). The
+external price feed for the instrument (real split-adjusted SPY) reports the new per-active-unit
+price. `migrateToken` is blocked only while the asset is **halted** (`:131`), *not* while open eUSD
+positions reference the ticker, and `isValidToken(ticker, oldToken)` keeps returning `true` for the
+legacy token (`:368–374`), so every existing position keeps operating — silently mispriced by
+`ratio`. The position cannot self-heal: the legacy eToken is locked in the manager, and the manager
+exposes no ratio-adjust / migrate / convert entry point.
+
+Worked case (deployed-style params: MCR 150%, threshold 130%, bonus 5%). Position `coll = 2 eSPY`
+(token `T0`), `debt = 800 eUSD`, minted at $600/share → value $1200, CR 150%. Admin runs a **2:1**
+forward split: `migrateToken("SPY", T1, 2e18)`; the feed now reports $300 per new share; the
+borrower still holds `2 T0` = `4 T1` = **$1200 true value**. `_ratioBps(2e18, 800e18, 300e18) =
+mulDiv(mulDiv(2e18, 300e18, 1e18), 10000, 800e18) = mulDiv(600e18, 10000, 800e18) = 7500 bps` →
+**75%** < 130% threshold, so a genuinely 150%-collateralized position is now liquidatable. Any
+keeper `liquidate`s: `seized = mulDiv(800e18·10500, 1e18, 300e18·10000) = 2.8e18`, capped to
+`p.collateral = 2e18` → burns 800 eUSD, receives `2 T0` (= `4 T1` = **$1200**) for **$800**, a
+**+$400 (50%)** profit; the borrower loses their entire collateral including the full MCR buffer. A
+**reverse** split inverts it: `_ratioBps` *over*-values the position by `ratio`, so the owner can
+withdraw collateral or mint fresh eUSD against phantom backing → uncollateralized supply / bad debt.
+
+The admin action is legitimate (a real corporate action the protocol explicitly supports); the
+harm is realized by an **unprivileged amplifier** — any keeper (forward split) or the position
+owner (reverse split) — the moment the split lands, so it clears the admin-action gate.
+
+**Suggested fix (Option A — value legacy collateral through its active ratio):**
+
+```diff
+-        uint256 ratio = _ratioBps(p.collateral, p.debt, _freshPrice(cfg.ticker));
++        uint256 ratio = _ratioBps(_activeUnits(collateral, p.collateral), p.debt, _freshPrice(cfg.ticker));
+```
+
+```diff
++    /// @dev Rescale a stored (possibly legacy) collateral balance to active-token units so
++    ///      ticker-priced valuation stays correct across splits. Active token → legacyRatio 0 → identity.
++    function _activeUnits(address collateral, uint256 amount) private view returns (uint256) {
++        uint256 r = IAssetRegistry(registry.assetRegistry()).legacyRatioToActive(collateral);
++        return r == 0 ? amount : Math.mulDiv(amount, r, PRECISION);
++    }
+```
+
+Apply `_activeUnits` at every valuation/seizure site (`mint`, `withdrawCollateral`, `liquidate`,
+`redeem`/`_redeemFrom`, `collateralRatioBps`). Note the seizure/transfer amount must stay in
+**legacy-token** units for the `safeTransfer` while only the **value** math uses active units — so
+scale the value inputs, not the transferred `seized` amount.
+
+**Suggested fix (Option B — coordinate the split with the module):**
+
+```diff
+     // AssetRegistry.migrateToken, for any ticker with open eUSD positions:
++    // block migration while positions exist, OR notify the manager to atomically
++    // convertLegacy its held balance and rescale _positions[].collateral + totalCollateral by `ratio`,
++    // re-keying the config to the new active token.
++    if (address(eusdManager) != address(0) && eusdManager.hasOpenPositions(ticker)) {
++        eusdManager.onSplit(ticker, oldToken, newToken, ratio);
++    }
+```
+
+Option A is the smaller, self-contained change (no cross-contract callback, keeps the held balance
+as legacy tokens and just values them correctly) and is preferred; Option B keeps stored collateral
+in active-token units but requires an `onSplit` hook and re-keying, and touches `AssetRegistry`
+(outside the original module scope).
+
+**Fix (Option A, 2026-09-02).** New private `_effectivePrice(collateral, price)` in
+`EUSDManager` scales the per-active-unit ticker price by `legacyRatioToActive(collateral)` (ratio
+0 → identity), mirroring `BorrowManager._effectivePrice`. It is applied inside the two price
+helpers `_freshPrice` / `_anchorPrice` (both now take `collateral`), so every valuation site —
+`withdrawCollateral`, `mint`, `liquidate`, `redeem`, `collateralRatioBps` — is covered by
+construction. The price is scaled rather than the unit count, so seizure/transfer amounts stay in
+the token actually held. `addCollateral` rejects already-legacy tokens (`LegacyCollateral`). No
+storage change; `AssetRegistry` / `VaultManager` untouched. Side effects considered and
+documented: the window between `migrateToken` landing and the feed moving is off by `ratio` in
+one direction — migrate-first over-values (safe: nothing falsely liquidatable, redeemers protected
+by `minCollateralOut`), feed-first under-values (unsafe). The ordering, mint/deposit freeze, and
+legacy-disable steps are now written up as the **eUSD collateral policy & split runbook** in
+`docs/deployment-robinhood.md`, which also states the collateral-selection preference
+(low-volatility index ETFs unlikely to be re-denominated). Floor rounding on non-integer ratios
+errs against the debtor, consistent with `_ratioBps`. The sorted-list key (units per debt unit)
+is per token address, so ordering is unaffected.
+
+**Tests.** Unit (mock registry gains `setLegacyRatio`): `test_split_forward_positionValueAndRatioUnchanged`,
+`test_split_forward_redeemPaysLegacyUnitsAtFairValue`,
+`test_split_forward_liquidationSeizesLegacyUnitsAtEffectivePrice`,
+`test_split_reverse_noPhantomWithdrawOrMint`, `test_split_mintAgainstLegacy_usesEffectivePrice`,
+`test_addCollateral_legacyToken_reverts`. Integration (`test/integration/EusdSplitFlow.t.sol`,
+real `AssetRegistry.migrateToken` + `VaultManager.applySplit`): runbook-order forward split with
+value invariance before/after the feed moves, redeem/withdraw in legacy units at fair value,
+reverse split admits no phantom backing, and a two-hop migration (re-based ratio) with
+`addCollateral` rejecting the legacy token and accepting the active one.
+
+**Overlaps.** Independent of the redemption cluster (A4-H-01 / A4-M-01 / A4-L-03); shares no code
+path. The original Pass-4 scope (2 files, `AssetRegistry`/`VaultManager` read-only) is why this seam
+was not covered — the defect nonetheless lives in `EUSDManager`'s valuation.
+
+**Round-1/2 re-review (2026-09-02).** Re-confirmed by 4 of 12 round-1 agents and 8 of 12
+round-2 agents — the most-converged open issue in the codebase. Sharpest additional facts:
+`BorrowManager._effectivePrice` already implements the exact `legacyRatioToActive` scaling
+(house pattern exists; EUSDManager is the sole eToken pricer without it), `addCollateral`
+accepts **already-legacy** tokens today (`isValidToken` passes them), so the mispricing is
+reachable without any migration; and the victim's `withdrawCollateral` rescue is blocked by the
+same wrong price. Fix Option A should also reject legacy tokens in `addCollateral`.
+
+**Detected by** 3 of 12 agents (invariant, first-principles, flow-gap) — all as findings, with
+matching numeric traces; re-review verified the mechanism directly against source.
 
 ### A4-H-01 (High) — Redemption retires more debt than the collateral it seizes, stranding an unbacked zero-collateral position at the list head — **Fixed**
 
@@ -199,103 +318,6 @@ numerical-gap as findings; trust-gap, first-principles as leads).
 ---
 
 ## 2. Open Findings
-
-### A4-H-02 (High) — A routine stock split silently mis-values every eUSD position by the split ratio
-
-**Problem.** `EUSDManager` custodies collateral as a fixed **token address** balance
-(`_positions[collateral][owner].collateral`, keyed by address; `_collateralConfigs[collateral]`
-stores only `{ticker, enabled, exists}`) but values it by **ticker**: every ratio and seizure
-computation runs `_ratioBps(coll, debt, price)` where `price = _oracle(cfg.ticker).getPrice(ticker)`
-(`EUSDManager.sol:535–537`, call sites at `153`, `177`, `243/244`, `277`, `581/582`). It multiplies
-the raw stored unit count by the **per-active-unit** ticker price and applies **no** legacy-ratio
-factor. The module references none of `legacyRatioToActive` / `applySplit` / `getActiveToken` /
-`convertLegacy` (verified: grep returns nothing) and has no split/migration hook.
-
-When the admin performs a supported corporate action —
-`AssetRegistry.migrateToken(ticker, newToken, ratio)` (`AssetRegistry.sol:127`) — the deposited
-token becomes **legacy** (`_legacyRatio[oldToken] = ratio`, `:148`; `legacyRatioToActive(oldToken)`
-now returns `ratio`), a new active token is installed, and `VaultManager.applySplit` atomically
-re-denominates the internal mark (`_assetMark = mark·PRECISION/ratio`, `VaultManager.sol:432`). The
-external price feed for the instrument (real split-adjusted SPY) reports the new per-active-unit
-price. `migrateToken` is blocked only while the asset is **halted** (`:131`), *not* while open eUSD
-positions reference the ticker, and `isValidToken(ticker, oldToken)` keeps returning `true` for the
-legacy token (`:368–374`), so every existing position keeps operating — silently mispriced by
-`ratio`. The position cannot self-heal: the legacy eToken is locked in the manager, and the manager
-exposes no ratio-adjust / migrate / convert entry point.
-
-Worked case (deployed-style params: MCR 150%, threshold 130%, bonus 5%). Position `coll = 2 eSPY`
-(token `T0`), `debt = 800 eUSD`, minted at $600/share → value $1200, CR 150%. Admin runs a **2:1**
-forward split: `migrateToken("SPY", T1, 2e18)`; the feed now reports $300 per new share; the
-borrower still holds `2 T0` = `4 T1` = **$1200 true value**. `_ratioBps(2e18, 800e18, 300e18) =
-mulDiv(mulDiv(2e18, 300e18, 1e18), 10000, 800e18) = mulDiv(600e18, 10000, 800e18) = 7500 bps` →
-**75%** < 130% threshold, so a genuinely 150%-collateralized position is now liquidatable. Any
-keeper `liquidate`s: `seized = mulDiv(800e18·10500, 1e18, 300e18·10000) = 2.8e18`, capped to
-`p.collateral = 2e18` → burns 800 eUSD, receives `2 T0` (= `4 T1` = **$1200**) for **$800**, a
-**+$400 (50%)** profit; the borrower loses their entire collateral including the full MCR buffer. A
-**reverse** split inverts it: `_ratioBps` *over*-values the position by `ratio`, so the owner can
-withdraw collateral or mint fresh eUSD against phantom backing → uncollateralized supply / bad debt.
-
-The admin action is legitimate (a real corporate action the protocol explicitly supports); the
-harm is realized by an **unprivileged amplifier** — any keeper (forward split) or the position
-owner (reverse split) — the moment the split lands, so it clears the admin-action gate.
-
-**Suggested fix (Option A — value legacy collateral through its active ratio):**
-
-```diff
--        uint256 ratio = _ratioBps(p.collateral, p.debt, _freshPrice(cfg.ticker));
-+        uint256 ratio = _ratioBps(_activeUnits(collateral, p.collateral), p.debt, _freshPrice(cfg.ticker));
-```
-
-```diff
-+    /// @dev Rescale a stored (possibly legacy) collateral balance to active-token units so
-+    ///      ticker-priced valuation stays correct across splits. Active token → legacyRatio 0 → identity.
-+    function _activeUnits(address collateral, uint256 amount) private view returns (uint256) {
-+        uint256 r = IAssetRegistry(registry.assetRegistry()).legacyRatioToActive(collateral);
-+        return r == 0 ? amount : Math.mulDiv(amount, r, PRECISION);
-+    }
-```
-
-Apply `_activeUnits` at every valuation/seizure site (`mint`, `withdrawCollateral`, `liquidate`,
-`redeem`/`_redeemFrom`, `collateralRatioBps`). Note the seizure/transfer amount must stay in
-**legacy-token** units for the `safeTransfer` while only the **value** math uses active units — so
-scale the value inputs, not the transferred `seized` amount.
-
-**Suggested fix (Option B — coordinate the split with the module):**
-
-```diff
-     // AssetRegistry.migrateToken, for any ticker with open eUSD positions:
-+    // block migration while positions exist, OR notify the manager to atomically
-+    // convertLegacy its held balance and rescale _positions[].collateral + totalCollateral by `ratio`,
-+    // re-keying the config to the new active token.
-+    if (address(eusdManager) != address(0) && eusdManager.hasOpenPositions(ticker)) {
-+        eusdManager.onSplit(ticker, oldToken, newToken, ratio);
-+    }
-```
-
-Option A is the smaller, self-contained change (no cross-contract callback, keeps the held balance
-as legacy tokens and just values them correctly) and is preferred; Option B keeps stored collateral
-in active-token units but requires an `onSplit` hook and re-keying, and touches `AssetRegistry`
-(outside the original module scope).
-
-**Tests.** No current test exercises a `migrateToken`/`applySplit` while an eUSD position is open.
-Add: (a) forward-split → previously-healthy position must **not** become liquidatable; (b)
-reverse-split → `withdrawCollateral`/`mint` must not admit phantom collateral; (c) an invariant
-that a position's computed USD collateral value is split-invariant across a `migrateToken`.
-
-**Overlaps.** Independent of the redemption cluster (A4-H-01 / A4-M-01 / A4-L-03); shares no code
-path. The original Pass-4 scope (2 files, `AssetRegistry`/`VaultManager` read-only) is why this seam
-was not covered — the defect nonetheless lives in `EUSDManager`'s valuation.
-
-**Round-1/2 re-review (2026-09-02).** Re-confirmed by 4 of 12 round-1 agents and 8 of 12
-round-2 agents — the most-converged open issue in the codebase. Sharpest additional facts:
-`BorrowManager._effectivePrice` already implements the exact `legacyRatioToActive` scaling
-(house pattern exists; EUSDManager is the sole eToken pricer without it), `addCollateral`
-accepts **already-legacy** tokens today (`isValidToken` passes them), so the mispricing is
-reachable without any migration; and the victim's `withdrawCollateral` rescue is blocked by the
-same wrong price. Fix Option A should also reject legacy tokens in `addCollateral`.
-
-**Detected by** 3 of 12 agents (invariant, first-principles, flow-gap) — all as findings, with
-matching numeric traces; re-review verified the mechanism directly against source.
 
 ### A4-M-01 (Medium) — Redemption cannot skip an underwater head, so the peg anchor stalls exactly when liquidation is unprofitable
 
@@ -882,7 +904,7 @@ module scope; statuses in the master index are authoritative).
 
 - [x] A4-H-01 — implement Option A (or decide Option B accounting), add partial-underwater
       regression test + "no listed node with zero collateral" invariant, re-run full suite.
-- [ ] A4-H-02 — implement Option A (`_activeUnits` scaling at all valuation/seizure sites) or
+- [x] A4-H-02 — implement Option A (`_activeUnits` scaling at all valuation/seizure sites) or
       decide Option B (`onSplit` hook / block-migration-with-open-positions); add forward- and
       reverse-split regression tests + a split-invariant-value invariant; re-run full suite.
       **Treat as a launch blocker for using any split-eligible eToken as eUSD collateral.**

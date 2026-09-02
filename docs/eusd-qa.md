@@ -93,6 +93,14 @@ debt residual stays on the owner's books off the sorted list (clearable by repay
 liquidation, or a collateral top-up, which re-lists it) and the redemption walks on to the next
 position. A redeemer is therefore never charged for collateral they do not receive.
 
+**Q: With two collaterals (say eSPY and eQQQ), does a redeemer receive both tokens?**
+No. Redemption is per collateral: the caller passes the collateral address, each collateral keeps
+its own sorted list, and the redeemer receives only that token. "Riskiest-first" is ordered
+within one collateral, never across collaterals — redeeming against both takes two calls.
+Consequences: an underwater eSPY list never blocks eQQQ redemptions (or the reverse); peg
+arbitrageurs gravitate to whichever collateral they can sell most easily, so the more liquid
+collateral absorbs most redemption pressure. Same branch model as Liquity v2.
+
 ---
 
 ## How this differs from Liquity
