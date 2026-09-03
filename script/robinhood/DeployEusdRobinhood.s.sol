@@ -61,6 +61,9 @@ contract DeployEusdRobinhood is Script {
 
         address eSpy = AssetRegistry(registry.assetRegistry()).getActiveToken(COLLATERAL_TICKER);
         require(eSpy != address(0), "SPY not registered");
+        // Stability-fee accrual mints eUSD to the treasury on every position touch; it must exist
+        // before the first mint, or every fee-bearing path (including exits) reverts.
+        require(registry.treasury() != address(0), "TREASURY not set");
 
         vm.startBroadcast(vm.envUint("DEPLOYER_PRIVATE_KEY_ROBINHOOD"));
 
@@ -97,7 +100,7 @@ contract DeployEusdRobinhood is Script {
         eusd.grantRole(eusd.MINTER_ROLE(), address(manager));
         eusd.grantRole(eusd.DEFAULT_ADMIN_ROLE(), eusdAdmin);
         eusd.renounceRole(eusd.DEFAULT_ADMIN_ROLE(), deployer);
-        // A4-L-07: the supply == totalDebt invariant needs the manager to be the only minter. The
+        // The supply == totalDebt invariant needs the manager to be the only minter. The
         // token is fresh, so the only addresses that could have been granted here are checked.
         require(eusd.hasRole(eusd.MINTER_ROLE(), address(manager)), "manager not minter");
         require(!eusd.hasRole(eusd.MINTER_ROLE(), deployer), "deployer is minter");
