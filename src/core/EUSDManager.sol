@@ -280,7 +280,7 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
         if (remaining != 0 && remaining < _riskParams.minDebt) {
             revert BelowMinimumDebt(remaining, _riskParams.minDebt);
         }
-        (uint256 seized, uint256 refund) = _seizure(p.collateral, repaid, price, remaining == 0);
+        (uint256 seized, uint256 refund) = _seizure(p.collateral, p.debt, repaid, price, remaining == 0);
 
         totalDebt -= repaid;
         totalCollateral[collateral] -= seized + refund;
@@ -608,16 +608,25 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
 
     /// @dev Liquidation seizure: collateral worth repaid × (1 + bonus), capped at `coll`. Floor
     ///      rounding favours the position owner. Surplus is refunded only on a full close; a
-    ///      partial leaves it in the position.
+    ///      partial leaves it in the position. A partial is additionally capped at the pro-rata
+    ///      share `coll × repaid / debt`, so the remainder's ratio never falls below the
+    ///      pre-liquidation ratio and the bonus cannot be extracted from collateral the remaining
+    ///      debt needs. The cap is inert while ratio >= 1 + bonus.
     function _seizure(
         uint256 coll,
+        uint256 debt,
         uint256 repaid,
         uint256 price,
         bool fullClose
     ) private view returns (uint256 seized, uint256 refund) {
         seized = Math.mulDiv(repaid * (BPS + _riskParams.liquidationBonusBps), PRECISION, price * BPS);
         if (seized > coll) seized = coll;
-        if (fullClose) refund = coll - seized;
+        if (fullClose) {
+            refund = coll - seized;
+        } else {
+            uint256 proRata = Math.mulDiv(coll, repaid, debt);
+            if (seized > proRata) seized = proRata;
+        }
     }
 
     /// @dev Collateral ratio in BPS. Floor rounding: measured ratios err against the debtor.

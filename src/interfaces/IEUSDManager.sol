@@ -335,10 +335,13 @@ interface IEUSDManager {
     ///         `amount` of the debt and receives collateral worth repaid × (1 + liquidationBonus),
     ///         capped at the position's collateral. A full close (amount ≥ debt) refunds any
     ///         surplus collateral to the owner and deletes the position; a partial leaves the
-    ///         remainder in place, re-sorted, and must not drop the debt below `minDebt`. Partial
+    ///         remainder in place, re-sorted, and must not drop the debt below `minDebt`. A
+    ///         partial is also capped at the pro-rata share of collateral (`collateral × repaid /
+    ///         debt`), so below 1 + bonus the liquidator's bonus shrinks to the position's cushion
+    ///         and the remainder's ratio never worsens — the shortfall on an under-bonus position
+    ///         is always absorbed by the liquidator, never left as unbacked debt. Partial
     ///         liquidation means a position can always be cleared in chunks, so no single debt
-    ///         can exceed the eUSD any one liquidator can assemble. If the position is underwater
-    ///         the caller absorbs the shortfall.
+    ///         can exceed the eUSD any one liquidator can assemble.
     /// @param collateral Collateral eToken of the position.
     /// @param owner      Position owner to liquidate.
     /// @param amount     Max eUSD debt to repay (type(uint256).max = full).

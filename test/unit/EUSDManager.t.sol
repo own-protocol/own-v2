@@ -871,6 +871,55 @@ contract EUSDManagerTest is Test {
         assertEq(manager.listSize(address(eSPY)), 1);
     }
 
+    /// @dev A4-M-06: below 1 + bonus a partial is capped pro-rata, so the remainder's ratio never
+    ///      worsens and no debt is stranded unbacked. Fails without the pro-rata cap (seized 1.871 eSPY,
+    ///      remainder at 65%).
+    function test_liquidate_partial_inBand_proRataCap_keepsRatio() public {
+        oracle.setPrice(SPY, 750e18);
+        _open(alice, 2e18, 1000e18);
+        _open(bob, 40e18, 1000e18);
+        vm.prank(bob);
+        eusd.transfer(keeper, 1000e18);
+
+        oracle.setPrice(SPY, 505e18); // $1010 / 1000 = 101%: solvent, below 1 + bonus
+        uint256 ratioBefore = manager.collateralRatioBps(address(eSPY), alice);
+        vm.prank(keeper);
+        manager.liquidate(address(eSPY), alice, 900e18, address(0));
+
+        // Pro-rata cap: 2 × 900 / 1000 = 1.8 eSPY (bonus formula would give 1.871).
+        assertEq(eSPY.balanceOf(keeper), 1_000_000e18 + 1.8e18);
+        IEUSDManager.Position memory p = manager.getPosition(address(eSPY), alice);
+        assertEq(p.debt, 100e18);
+        assertEq(p.collateral, 0.2e18);
+        assertGe(manager.collateralRatioBps(address(eSPY), alice), ratioBefore, "remainder ratio worsened");
+        // The remainder is still fully backed: redeeming it leaves no debt-only residual.
+        vm.prank(keeper);
+        manager.redeem(address(eSPY), 100e18, 0, 0, address(0));
+        assertEq(manager.getPosition(address(eSPY), alice).debt, 0);
+        assertEq(eusd.totalSupply(), manager.totalDebt());
+    }
+
+    /// @dev A4-M-06: an underwater partial leaves no more bad debt (pro-rata) than a full close
+    ///      would; the bonus is never paid out of the shortfall. Fails without the cap (bad debt 95).
+    function test_liquidate_partial_underwater_noExtraBadDebt() public {
+        oracle.setPrice(SPY, 750e18);
+        _open(alice, 2e18, 1000e18);
+        _open(bob, 40e18, 1000e18);
+        vm.prank(bob);
+        eusd.transfer(keeper, 1000e18);
+
+        oracle.setPrice(SPY, 475e18); // $950 / 1000 = 95%: underwater, shortfall 50
+        vm.prank(keeper);
+        manager.liquidate(address(eSPY), alice, 900e18, address(0));
+
+        IEUSDManager.Position memory p = manager.getPosition(address(eSPY), alice);
+        assertEq(p.debt, 100e18);
+        assertEq(p.collateral, 0.2e18); // pro-rata; worth $95 → residual shortfall 5 = 10% of 50
+        assertEq(manager.collateralRatioBps(address(eSPY), alice), 9500);
+        // Keeper received $855 for 900 eUSD: the shortfall is absorbed by the liquidator, not created.
+        assertEq(eSPY.balanceOf(keeper), 1_000_000e18 + 1.8e18);
+    }
+
     function test_liquidate_noDebt_reverts() public {
         _open(alice, 3e18, 0);
         vm.expectRevert(abi.encodeWithSelector(IEUSDManager.NoDebt.selector, address(eSPY), alice));

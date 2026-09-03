@@ -210,12 +210,30 @@ contract StakedEUSD is Initializable, UUPSUpgradeable, ERC4626, ERC20Permit, Ree
     /// @inheritdoc ERC4626
     /// @dev Excludes the unvested reward batch, so the share price rises smoothly as it vests and
     ///      redemptions never exceed the vault's eUSD balance. Clamped at zero: an external burn
-    ///      (bridge `crosschainBurn`) can pull the balance below the unvested slice, and the vault
-    ///      must degrade to a visible loss rather than revert on every entry and exit.
+    ///      (bridge `crosschainBurn`) can pull the balance below the unvested slice; the vault then
+    ///      reports zero rather than underflow-reverting, exits stay open, and {maxDeposit}/{maxMint}
+    ///      block new entries until the balance vests back above the unvested slice.
     function totalAssets() public view override returns (uint256) {
         uint256 balance = IERC20(asset()).balanceOf(address(this));
         uint256 unvested = getUnvestedAmount();
         return balance > unvested ? balance - unvested : 0;
+    }
+
+    /// @inheritdoc ERC4626
+    /// @dev Blocks entry while under-collateralised (`unvested > totalAssets`), where ERC-4626 prices
+    ///      shares against the virtual offset alone; exits stay open. Any future
+    ///      deposit/mint override must re-apply this check.
+    function maxDeposit(
+        address
+    ) public view override returns (uint256) {
+        return getUnvestedAmount() > totalAssets() ? 0 : type(uint256).max;
+    }
+
+    /// @inheritdoc ERC4626
+    function maxMint(
+        address
+    ) public view override returns (uint256) {
+        return getUnvestedAmount() > totalAssets() ? 0 : type(uint256).max;
     }
 
     /// @inheritdoc ERC4626

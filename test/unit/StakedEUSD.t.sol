@@ -8,8 +8,10 @@ import {StakedEUSD} from "../../src/tokens/StakedEUSD.sol";
 import {Actors} from "../helpers/Actors.sol";
 import {deployStakedEUSD} from "../helpers/DeployEusdModule.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
+
 import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
 import {UUPSUpgradeable} from "@openzeppelin/contracts/proxy/utils/UUPSUpgradeable.sol";
+import {ERC4626} from "@openzeppelin/contracts/token/ERC20/extensions/ERC4626.sol";
 import {Test} from "forge-std/Test.sol";
 
 contract StakedEUSDTest is Test {
@@ -203,9 +205,11 @@ contract StakedEUSDTest is Test {
         fresh.transferInRewards(100e18);
     }
 
-    /// @dev A4-L-12: an external burn below the unvested slice degrades to a visible loss, never
-    ///      a revert that bricks every entry and exit.
-    function test_externalBurnBelowUnvested_vaultStaysLive() public {
+    /// @dev A4-L-12: an external burn below the unvested slice must not brick exits (totalAssets
+    ///      clamps to 0 instead of underflow-reverting) AND must not let a newcomer capture the
+    ///      recovering balance — deposits are blocked while under-collateralised, redemptions stay
+    ///      open, and the incumbent keeps their pro-rata share as value vests back.
+    function test_externalBurnBelowUnvested_blocksEntryKeepsExit() public {
         vm.prank(alice);
         uint256 shares = sEusd.deposit(1000e18, alice);
         vm.prank(rewarder);
@@ -215,15 +219,27 @@ contract StakedEUSDTest is Test {
 
         assertEq(sEusd.totalAssets(), 0, "clamped, not reverted");
         _solvent();
-        // Still live: deposits and (once value vests back) redemptions work.
+
+        // Entry is blocked while under-collateralised: no 1-wei share-inflation capture.
+        assertEq(sEusd.maxDeposit(bob), 0);
+        assertEq(sEusd.maxMint(bob), 0);
         vm.prank(bob);
+        vm.expectRevert(abi.encodeWithSelector(ERC4626.ERC4626ExceededMaxDeposit.selector, bob, 100e18, 0));
         sEusd.deposit(100e18, bob);
-        vm.warp(block.timestamp + VEST);
-        assertEq(sEusd.totalAssets(), 401e18);
+
+        // Exit stays open even in the clamped state (redeem pays out of the surviving balance).
         vm.prank(alice);
-        uint256 out = sEusd.redeem(shares, alice, alice);
-        assertGt(out, 0);
-        assertLt(out, 1000e18, "loss is visible, not hidden");
+        uint256 outNow = sEusd.redeem(shares / 2, alice, alice);
+        assertEq(outNow, 0, "clamped-state exit pays 0 but does not revert");
+
+        // Once the batch vests back above the balance, deposits re-open and the incumbent keeps
+        // their pro-rata claim on the recovered value — no capture by a latecomer.
+        vm.warp(block.timestamp + VEST);
+        assertEq(sEusd.totalAssets(), 301e18);
+        assertGt(sEusd.maxDeposit(bob), 0, "entry re-opens after recovery");
+        vm.prank(alice);
+        uint256 out = sEusd.redeem(shares / 2, alice, alice);
+        assertGt(out, 0, "incumbent recovers pro-rata value");
     }
 
     function test_vaultHoldsNoMinterRole() public view {

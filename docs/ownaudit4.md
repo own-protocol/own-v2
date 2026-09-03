@@ -1,6 +1,6 @@
 # Own Protocol v2 — Audit Report & Remediation Status (Pass 4 — eUSD CDP Module)
 
-**Branch:** `stablecoin` · **Last updated:** 2026-09-02 · **Test suite:** 1428 passing excl. fork suites (+42 across the H-01 / H-02 / M-02 / M-03 / M-04, L-08 / L-10 / L-11 / L-12 / L-13 / L-14 and I-09 / I-10 fixes)
+**Branch:** `stablecoin` · **Last updated:** 2026-09-02 · **Test suite:** 1430 passing excl. fork suites (+2 for A4-M-06; +42 across the H-01 / H-02 / M-02 / M-03 / M-04, L-08 / L-10 / L-11 / L-12 / L-13 / L-14 and I-09 / I-10 fixes)
 
 This pass is **scoped to the new eUSD CDP module** (EUSDManager + EUSD token) introduced on the
 `stablecoin` branch; it does not re-tread the protocol-wide ground covered by `audit-report-3.md`,
@@ -13,7 +13,11 @@ position when the collateral cap fires, `_redeemFrom` does not) and **(2) a coll
 gap at the corporate-action seam** (`A4-H-02`, added in the re-review below): the module prices
 collateral by ticker while custodying a fixed token address and has no split/migration hook, so a
 routine stock split silently mis-values every position — plus a set of configuration / semantics
-checks at the oracle and governance seams. The `A4-H-02` fix touches `EUSDManager` (in scope); its
+checks at the oracle and governance seams. **Round 3 (2026-09-02, both scopes re-run) adds three
+Mediums:** `A4-M-06` (partial liquidation below 1 + bonus manufactures unbacked eUSD — **fixed** same day, Option A);
+`A4-M-07` and `A4-M-08` were raised as Mediums but **reassessed to Low and acknowledged** (M-07 self-corrects
+on the next `accrue`; M-08's unclaimed-premium backlog is realized continuously by ordinary LP activity, so
+nothing sizeable accumulates to capture). It also reopened `A4-L-12` (the clamp fix had opened a share-capture leg — **re-fixed** 2026-09-03 by gating entries while under-collateralised) and added `A4-L-19` (the PSM ratio's compromised-signer damage bound is ≈2× the band and the jump guard is walkable — **acknowledged**, fix folded into the next oracle/PSM deploy), and corrects three §6 ledger entries. The `A4-H-02` fix touches `EUSDManager` (in scope); its
 alternative coordination option touches `AssetRegistry.migrateToken` (out of the original 2-file
 scope), so the split seam is now treated as in-scope for this module.
 
@@ -39,9 +43,9 @@ out-of-scope context for seam verification.
 | -------- | ----- | ----- | ---- | --------- |
 | Critical | 0     | —     | —    | —         |
 | High     | 2     | 2     | 0    | 0         |
-| Medium   | 5     | 4     | 0    | 1         |
-| Low      | 18    | 9     | 0    | 9         |
-| Info     | 17    | 2     | 0    | 15 (noted)|
+| Medium   | 6     | 5     | 0    | 1         |
+| Low      | 21    | 9     | 0    | 12        |
+| Info     | 20    | 2     | 0    | 18 (noted)|
 
 | ID      | Severity | Finding                                                                  | Status                       |
 | ------- | -------- | ------------------------------------------------------------------------ | ---------------------------- |
@@ -51,7 +55,10 @@ out-of-scope context for seam verification.
 | A4-M-02 | Medium   | OwnIncentives pays retroactive OWN on balances from unhooked windows     | **Fixed** (2026-09-02)       |
 | A4-M-03 | Medium   | Full-debt-only liquidation can be starved of eUSD liquidity (no partial) | **Fixed** (2026-09-02)       |
 | A4-M-04 | Medium   | Halted collateral valued at live feed — unbacked mint above halt price   | **Fixed** (2026-09-02)       |
-| A4-M-05 | Medium   | Force-execute on PSM-backed asset: vault LPs pay, maker collects surplus | **By design** — trusted maker|
+| A4-M-05 | Medium   | Force-execute on PSM-backed asset: vault LPs pay, maker collects surplus | **By design** — trusted maker; widened round 3 (self-quote) |
+| A4-M-06 | Medium   | Partial liquidation below 1 + bonus seizes the full bonus — manufactures unbacked eUSD | **Fixed** (2026-09-02)       |
+| A4-M-07 | Medium→Low | Window-open premium is caller-timed, but self-corrects on the next `accrue` | **Acknowledged** (reassessed 2026-09-03) |
+| A4-M-08 | Medium→Low | JIT yield capture when the best-effort claim is blocked; backlog stays small under normal LP flow | **Acknowledged** (reassessed 2026-09-03) |
 | A4-L-01 | Low      | `mintPriceMaxAge` is a no-op inside the oracle's `clFreshWindow`         | **Fixed** (docs, 2026-09-02) |
 | A4-L-02 | Low      | Sorted-list ordering drifts under lazy stability-fee accrual             | **By design** — documented   |
 | A4-L-03 | Low      | No `minDebt` floor on the redemption path                                | **By design** — documented   |
@@ -63,13 +70,14 @@ out-of-scope context for seam verification.
 | A4-L-09 | Low      | `setPartner` + permissionless sweep can redirect any holder's accrued OWN| **Acknowledged** — ADMIN trust |
 | A4-L-10 | Low      | Disabled collateral blocks defensive top-ups while liquidation stays live| **Fixed** (2026-09-02)       |
 | A4-L-11 | Low      | sEUSD seed / `totalSupply > 0` before streaming unenforced — 0-share trap| **Fixed** (2026-09-02)       |
-| A4-L-12 | Low      | Bridge `crosschainBurn` vs sEUSD vault: socialized loss + vault DoS      | **Fixed** (DoS leg) + ops    |
+| A4-L-12 | Low      | Bridge `crosschainBurn` vs sEUSD vault: socialized loss + vault DoS; clamp then opened a share-capture leg | **Fixed** (2026-09-03) — entry gated while under-collateralised |
 | A4-L-13 | Low      | Force-execution ignores `order.expiry` (reopens A3-L-03's expiry half)   | **Fixed** (2026-09-02)       |
 | A4-L-14 | Low      | `withdrawCollateral` with debt escapes `mintPaused`/`enabled` levers     | **Fixed** (2026-09-02)       |
 | A4-L-15 | Low      | Code-less incentivesController bricks sEUSD (try/catch ≠ extcodesize)    | **Fixed** with A4-M-02       |
-| A4-L-16 | Low      | `haltAsset` price is operator-set, unbounded, and permanent              | **Acknowledged** — ops; VM immutable |
+| A4-L-16 | Low      | `haltAsset` price is operator-set, unbounded, and permanent              | **Acknowledged** — ops; VM immutable; widened round 3 (EUSDManager path) |
 | A4-L-17 | Low      | Pending-deposit escrow counted as vault collateral by pool health gates  | **By design** — dup, accepted tail risk |
 | A4-L-18 | Low      | Rate setters reprice the elapsed accrual window (no accrue-first)        | **Acknowledged** — no fix    |
+| A4-L-19 | Low      | PSM ratio under signer compromise: damage ≈ 2× `bandBps`, jump guard walkable | **Acknowledged** (2026-09-03) — fix at next oracle/PSM deploy |
 | A4-I-01 | Info     | `_freshPrice` tolerates future-dated timestamps                          | **By design** — noted        |
 | A4-I-02 | Info     | Fee rounds to zero but `feeIndexSnapshot` still advances                 | **By design** — noted        |
 | A4-I-03 | Info     | Zero-fee redemption (no Liquity-style base rate)                         | **By design** — noted        |
@@ -87,6 +95,9 @@ out-of-scope context for seam verification.
 | A4-I-15 | Info     | `EToken.updateName` breaks the cached ERC-2612 permit domain             | **Acknowledged**             |
 | A4-I-16 | Info     | `_lastPremiumBps` zero-sentinel collides with a real 0 observation       | **Acknowledged**             |
 | A4-I-17 | Info     | `setChainlinkConfig` keeps the old in-house `_prices` cache              | **Acknowledged**             |
+| A4-I-18 | Info     | `OwnIncentives.setDistribution` emission unbounded (ledger said bounded)  | **Acknowledged** — ledger corrected |
+| A4-I-19 | Info     | `setBridgeLimits` enabling a zero side of a live bridge starts it empty   | **Acknowledged** — fail-safe |
+| A4-I-20 | Info     | `setIncentivesController(current)` retires the live controller in place  | **Acknowledged** — footgun   |
 
 ---
 
@@ -691,21 +702,341 @@ assets instead of underflow-reverting on every deposit and withdrawal — the va
 visible loss and keeps working while value vests back. The loss leg stays bridge-trust
 territory, handled operationally: keep every per-bridge `burnMaxLimit` well below the sEUSD
 vault's balance and re-run the sizing whenever a transport is authorized (no bridge has limits
-today). Test: `test_externalBurnBelowUnvested_vaultStaysLive` (burn to 301 with 500 unvested →
-`totalAssets == 0`, deposit succeeds, redemption after vesting returns a reduced amount).
+today). Test (as of the round-3 re-fix): `test_externalBurnBelowUnvested_blocksEntryKeepsExit` (burn
+to 301 with 500 unvested → `totalAssets == 0`, deposit now reverts `ERC4626ExceededMaxDeposit`,
+redemption stays open; the earlier DoS-leg-only test that asserted "deposit succeeds" was superseded by
+the A4-L-12 entry gate).
 
 **Detected by** 4 of 12 agents (flow-gap, access-control, trust-gap, boundary) — all as leads
 (compromised-bridge precondition).
+
+### A4-M-06 (Medium) — Partial liquidation of a position below 1 + bonus seizes the full bonus and manufactures unbacked eUSD — **Fixed**
+
+**Problem.** `_seizure` computes `seized = repaid × (1 + bonus) / price` and caps it at the position's
+**whole** collateral; on a partial (`!fullClose`) `refund = 0` and `remaining = debt − repaid` stays
+on the books. The A4-M-03 rationale ("no close factor: a fixed 5% bonus under a 130% threshold does not
+need one") and the `_validateRatios` guarantee ("a threshold liquidation is always solvent") both
+reason about the **full-close** branch only. The liquidator chooses `amount`, so on any position with
+ratio `r` in **[100%, 100% + bonus)** — solvent — a partial takes the full bonus out of collateral the
+remaining debt needs: the remainder's ratio becomes `(r − f·(1+b)) / (1 − f)` for repaid fraction `f`,
+which drops below 100% once `f > (r − 1)/b`, and with `f ≈ 1 − minDebt/D` (the only floor is
+`minDebt`) the residual is collateral-exhausted. Below 100% the same sizing *enlarges* bad debt by the
+bonus. Because the partial payoff `b·x` strictly exceeds the full-close payoff `(r − 1)·D` on the whole
+strip, the partial is the keeper's dominant strategy there, not an edge case. There is no
+`owner != msg.sender` check, so the debtor can self-liquidate the same way and pocket the difference
+versus `closePosition`. The interface's "if the position is underwater the caller absorbs the
+shortfall" is true only for full closes.
+
+**PoC (unit fixture: MCR 150% / threshold 130% / bonus 5% / minDebt 100; reproduced by the
+orchestrator).** alice: 2 eSPY, 1,000 eUSD minted at $750; price gaps to **$505** (V = $1,010,
+ratio 101% — solvent, liquidatable).
+- Full close (`amount = max`): keeper burns 1,000, receives 2 eSPY → **+$10**; position deleted;
+  bad debt 0.
+- Partial (`amount = 900`): `seized = 900 × 1.05 / 505 = 1.871287 eSPY` ($945) → keeper **+$45**;
+  remainder debt 100, collateral 0.128713 eSPY ($65), ratio **65%**, still list head. A follow-on
+  `redeem(100)` takes the $65 for 65 eUSD (A4-H-01 cap) and leaves **35 eUSD of debt-only, off-list,
+  permanently unbacked** supply (`totalSupply == totalDebt` still holds).
+- Underwater variant (price $475, V = $950, 95%): full close = keeper **−$50** (nobody does it;
+  redemption would leave $50 bad debt); partial 900 → keeper **+$45**, residual $5 collateral / 100
+  debt → bad debt **$95**. The liquidation *increased* unbacked eUSD by the bonus.
+- Worst case at `r = 100%`: `x = D/1.05` takes all collateral at full bonus and strands
+  `D·(1 − 1/1.05) ≈ 4.76%` of `D`, where a full close strands 0.
+
+Reachability: threshold 130% means the band is reached after a ~23–30% move from the liquidation
+line; overnight/earnings gaps of that size are routine for single-stock eTokens, and the anchor is
+frozen off-hours so keepers cannot act earlier. Unprivileged, profitable, repeatable.
+
+**Fix options.**
+- **A — pro-rata cap on partials (recommended).** Pass `debt` into `_seizure`; when `!fullClose`,
+  `seized = min(seized, Math.mulDiv(coll, repaid, debt))`. Never binds when `r ≥ 1 + b` (bonus fully
+  paid), so A4-M-03's chunked-liquidation liveness is untouched; in the band the keeper's bonus
+  degrades to `r − 1 ≥ 0` and the remainder's ratio can never fall below the pre-liquidation ratio
+  (101% stays 101% in the example instead of collapsing to 65%). One parameter, one line.
+- **B — force a full close in the band.** Revert partials with `FullLiquidationRequired` when
+  `collValue × BPS < debt × (BPS + liquidationBonusBps)`, so the shortfall-absorption rule applies
+  whenever it matters.
+- Either way: regression tests asserting (i) remainder ratio ≥ pre-liquidation ratio for every
+  partial, (ii) an underwater partial leaves no more bad debt than a full close would, and an
+  invariant "Σ collateral value ≥ Σ debt across listed positions after liquidations at a fixed price".
+  Consider also clamping `0 < remaining < minDebt` to a full close instead of reverting
+  `BelowMinimumDebt` (the A4-L-03 round-2 note) — it closes the 1-wei `repay` front-run grief on
+  sized partials recorded in §5.
+
+**Detected by** 7 of 12 agents (math-precision, economic-security, first-principles, trust-gap,
+numerical-gap as findings; boundary, flow-gap as leads), with three independent forge PoCs agreeing on
+the numbers; not covered by A4-M-03 (whose write-up only argues the `r ≥ 1 + b` case) nor A4-H-01
+(redemption path).
+
+**Fix (2026-09-02, Option A).** `_seizure` now takes `debt` and, on a partial, caps `seized` at the
+pro-rata share `Math.mulDiv(coll, repaid, debt)`. The cap is inert while ratio ≥ 1 + bonus (the bonus
+seizure is already below pro-rata there, so A4-M-03's chunked liquidation is unchanged); below it the
+liquidator's bonus degrades to the position's cushion and the remainder's ratio can never fall below
+the pre-liquidation ratio, so a partial can no longer strand debt that a full close would have covered.
+Interface NatSpec updated (the "caller absorbs the shortfall" rule now holds for partials too). Full
+suite 1430 passing. **Tests:** `test_liquidate_partial_inBand_proRataCap_keepsRatio` (101% position,
+partial 900 → 1.8 eSPY seized instead of 1.871, remainder stays at 101%, follow-on redeem leaves no
+debt-only residual) and `test_liquidate_partial_underwater_noExtraBadDebt` (95% position, remainder
+ratio unchanged at 9,500 bps, residual shortfall pro-rata) — both fail without the cap; the existing
+`test_liquidate_partial_improvesRatioAndRelists` (120%) pins the inert case.
+
+### A4-L-12 (Low) — Re-fixed: the DoS-leg clamp had opened a share-capture leg; entries are now gated while under-collateralised — **Fixed** (2026-09-03)
+
+**Problem.** The 2026-09-02 fix (`totalAssets()` clamped at 0 instead of underflow-reverting) opened
+OZ ERC-4626's saturation pricing: `StakedEUSD` keeps `_decimalsOffset() == 0`, so
+`_convertToShares = assets × (S + 1) / (TA + 1)`. With `TA == 0` and `S > 0`, **one wei mints `S + 1`
+shares** (>50% of supply) and `previewRedeem` returns 0 for every existing holder (OZ `redeem` has no
+zero-assets revert, so exits burn shares for nothing). As the unvested slice vests, `TA` climbs back to
+the surviving balance and the new depositor redeems it. This is the class A3-M-08 closed in `OwnVault`
+with `_requireSolvent`, re-introduced on the other ERC-4626 vault by the A4-L-12 remedy itself: the
+"visible, pro-rata loss" the fix intended is instead "first depositor takes the residual".
+
+**PoC (unit fixture; orchestrator-reproduced).** alice deposits 1,000,000 eUSD; `transferInRewards(50,000)`;
+bridge burn to 40,000 (< unvested 50,000) → `totalAssets() == 0`. bob `deposit(1 wei)` mints
+1,000,001e18 + 1 shares; alice `previewRedeem` = 0. After the vesting window `TA = 40,000`: bob redeems
+**20,000 eUSD for 1 wei**; alice keeps 20,000 of the surviving 40,000. Tail (third agent): with `TA`
+small but non-zero (`unvested` still > `TA`), bob `deposit(100)` still takes ~397 of 401 and alice ~4.
+The then-shipped regression (`test_externalBurnBelowUnvested_vaultStaysLive`, since renamed) asserted
+"deposit succeeds" — i.e. it passed on exactly this capture outcome; the round-3 re-fix replaces it
+with `test_externalBurnBelowUnvested_blocksEntryKeepsExit`, which asserts entries revert instead.
+
+**Severity.** Precondition unchanged — an authorized bridge burning more than the vault's vested
+balance (no bridge has limits today; trusted-bridge model per A4-I-05) — so Low, but the remedy regressed
+the failure mode from bounded to winner-take-all and must be revisited before any bridge is armed.
+
+**Fix.** Gate entries during loss recovery, keep exits open: override `maxDeposit`/`maxMint` to 0 (or
+revert in `_deposit`) while `getUnvestedAmount() > totalAssets()` — covers both the `== 0` state and
+the tiny-positive tail; inert in normal operation because a single reward batch is a small fraction of
+TVL (record the ops rule: never `transferInRewards` more than `totalAssets()` in one batch). The
+narrower `totalAssets() == 0 && totalSupply() > 0` gate (a literal `_requireSolvent` mirror) closes the
+1-wei case only. Update the regression test to assert entries revert in the deficit state and that
+alice's post-vest redemption is the pro-rata 40,000.
+
+**Detected by** 3 of 12 agents in round 3 (boundary and periphery as findings, both with forge PoCs;
+periphery-2 as lead).
+
+**Fix (2026-09-03).** `StakedEUSD` now overrides `maxDeposit`/`maxMint` to return 0 while
+`getUnvestedAmount() > totalAssets()` — the under-collateralised window (an external bridge burn below
+the unvested slice) in which ERC-4626 prices new shares against the virtual offset alone. OZ v5
+`deposit`/`mint` enforce those caps, so entries revert `ERC4626ExceededMaxDeposit` in that state while
+`withdraw`/`redeem` stay open, and the vault still degrades to a visible loss rather than a DoS. The
+gate is inert in normal operation (a reward batch is a small fraction of TVL; ops rule: never stream
+more than `totalAssets()` in one batch) and re-opens automatically once the balance vests back above
+the unvested slice. Regression `test_externalBurnBelowUnvested_blocksEntryKeepsExit` (deposit reverts
+in the burned state, redeem still executes, entry re-opens after vesting and the incumbent keeps its
+pro-rata claim); replaces the old test that asserted the capture-prone "deposit succeeds". Full suite
+1430 passing. `StakedEUSD` is UUPS, so the fix reaches the (not-yet-deployed) proxy.
+
 
 ---
 
 ## 2. Open Findings
 
-None — every finding in this pass is either fixed (§1) or accepted with rationale (§3) as of 2026-09-02.
+None — as of 2026-09-03 every round-3 finding is fixed (§1) or accepted with rationale (§3).
 
 ---
 
 ## 3. By-Design / Withdrawn
+
+### A4-L-19 (Low) — Under in-house signer compromise the PSM ratio's damage bound is ≈ 2 × `bandBps` and the jump guard is walkable — **Acknowledged** (2026-09-03)
+
+**Decision (2026-09-03): acknowledged, no live code change; fix folded into the next oracle/PSM
+deploy.** The clean fix — anchor the ratio-jump guard to the Chainlink-implied ratio instead of
+`lastUsedRatio` — needs the served Chainlink anchor for each leg, but `ChainlinkOracleVerifier._chainlink`
+is `internal` and the verifier is **deployed and non-upgradeable**, and the guard state
+(`lastUsedRatio`, `ratioJumpBoundBps`, `notePsmRatio`) lives in `AssetRegistry`, which is a plain
+**non-upgradeable** contract; `OwnMarket` (upgradeable) only ever sees the *served* prices, which are
+the manipulated legs off-hours, so no reachable market-side change can compute the anchor ratio. (This
+corrects the earlier "cheap, market-side" note — it is a next-deploy item.) The actor is the in-house
+KMS signing key, an accepted and instantly revocable trust root (CL-I01): a compromised signer can
+already misprice within the band, and containment is the same — instant `removeSigner` plus off-hours
+feed/ratio monitoring — so this introduces no new trust, only a corrected damage estimate (round-trip
+≈ (1+b)/(1−b) − 1, i.e. ≈ 17–38% for b = 5–8%, not the one-band figure the CL-I01 note implies).
+**Next-deploy fixes:** (a) expose a Chainlink-anchor getter on the verifier and gate the ratio against
+`|ratio − clRatio| ≤ ratioJumpBoundBps × clRatio`; or (b) key the in-house price cache by aggregator so
+two tickers sharing one feed cannot carry divergent pushes. Correct the CL-I01 damage-cap wording to
+"≈ 2 × band for derived PSM ratios" wherever it is quoted. Original write-up retained below.
+
+
+**Problem.** CL-I01 accepts that a compromised in-house signer can move a served price up to `bandBps`
+off the Chainlink anchor while the feed is quiet ("the band, not a calendar, is the security
+boundary"). The PSM ratio is the *quotient* of two independently band-checked in-house legs for one
+physical stock: `ChainlinkOracleVerifier._checkAnchorBand` and the `_prices[asset]` cache are per
+ticker, and `DeployChainlinkOracleRobinhood.s.sol` registers every underlying/wrapper pair (`TSLA` /
+`R.TSLA`, …) against the same aggregator with `bandBps = 800` each (500 for SPY/QQQ). Off-hours (feed
+silent > `clSilence` = 15 min — every evening and weekend) the signer can push `R.TSLA = 1.08·A` and
+`TSLA = 0.92·A`, both individually valid; `getPrice` prefers the fresher in-house entry on each leg,
+so `_psmContext` derives ratio `1.08 / 0.92 = 1.1739` (17.4% off) — and `0.8519` after flipping both
+legs. The per-operation `ratioJumpBoundBps` (150 deployed) is anchored to `lastUsedRatio`, which the
+same actor advances: one multicall of back-dated attestations (timestamps `t, t+1, … ≤ block.timestamp`,
+each newer than the cached entry) interleaved with dust `psmMint`s walks the baseline ≤ 1.5% per step
+(`1.015^11 ≥ 1.1739`) in a single block. `psmMint(W)` then issues `1.1739·W` eTokens; flip and walk
+down; `psmRedeem` releases `1.378·W` wrapper — **37.8% of the deposited wrapper extracted from the
+ReserveVault per cycle** (21.6% at `bandBps = 500`), bounded only by `AmountExceedsReserve` and cap
+headroom (util-neutral, since the reserve is marked at the same inflated wrapper price). The redeem
+leg has a second entry point: `_psmContext` records `notePsmRatio` on every non-halted `psmRedeem` even
+when the in-tx `pullAssetPrice` was caught, so a frozen asset mark plus a live wrapper leg walks the
+baseline the same way.
+
+**Severity.** Low — the actor is the in-house KMS signer key, an accepted and instantly revocable
+trust root (CL-I01, `removeSigner`) — but the documented damage cap is off by ≈ 2×, and the
+ratio-jump guard, the load-bearing mitigation for `psmRedeem`'s accepted stale-mark tolerance, does not
+bind against this actor. Recorded as an open decision rather than acknowledged because the fix is
+cheap and market-side.
+
+**Fix.** Anchor the ratio-jump guard to the *Chainlink-implied* ratio (both legs' `_chainlink` anchors;
+≈ 1e18 on shared-feed deployments) instead of `lastUsedRatio`: revert when
+`|ratio − clRatio| > ratioJumpBoundBps × clRatio`, so the in-house legs can move the PSM ratio at most
+one bound off the feed and cannot be walked. Alternative (oracle redeploy): key the in-house cache by
+aggregator so tickers sharing a feed cannot carry divergent pushes. Regression: two-leg opposite-edge
+pushes must revert `RatioJumpExceeded` on the first PSM op.
+
+**Detected by** 1 of 12 agents (trust-gap); mechanism verified against the verifier's per-ticker
+cache/band and the deployed oracle and PSM parameters. Corrects the round-3 new-contracts lead that
+called guard-walking moot: the Chainlink leg is shared, the in-house cache is not.
+
+
+### A4-M-08 (Medium → Low) — JIT yield capture when the best-effort claim is blocked at the pool LTV — **Acknowledged** (reassessed 2026-09-03)
+
+**Reassessment (2026-09-03).** Downgraded from Medium to Low and acknowledged. The attack's payoff is
+the *unclaimed premium backlog* sitting on the vault when the attacker deposits, and that backlog does
+not realistically pile up: every deposit, withdrawal, borrow and repay runs `_syncLending`, and any
+one of them that lands while the vault has borrowing headroom realizes the accrued premium to the
+existing LPs. On a live vault with ordinary flow the gap is therefore drained continuously in small
+increments, so there is rarely a large lump to capture, and an incumbent LP who does notice a stuck
+gap can self-defend by depositing dust and calling `syncYield` to realize it to themselves first. The
+large $41k PoC figure needs the vault pinned at its debt cap with ~$92k of premium left unclaimed for
+60 days and open (permissionless) deposits — a combination the live config does not present: the
+wind-down vault is in approval mode (the direct-deposit path is closed) and carries an 8-hour
+withdrawal queue (no atomic in-and-out). Accepted as Low, self-limiting and recoverable. The clean
+fix (escrow-then-price in `_depositWithMin`/`mint`, so a newcomer's own collateral cannot be what
+unblocks the yield they then skim) remains the recommended hardening **if** a vault is ever run with
+open deposits at sustained full utilization; the async accept-deposit path is already immune. Original
+write-up retained below.
+
+
+**Problem.** A3-M-01 made every LP entry/exit call `_syncLending()` (accrue → best-effort
+`claimEarnedInterest` → `distribute`) before pricing shares, so accrued premium is realized before a
+newcomer is priced. The claim draws the premium from the lending pool as new vault debt and is refused
+once the vault's pool-side debt sits at the pool LTV (75%) or the `minClaimHealthFactor` floor;
+`_claimBestEffort` is all-or-nothing and swallows the revert. Because the hook runs **before** the
+depositor's aTokens arrive, in exactly that state it is a no-op: the newcomer is priced pre-yield,
+their deposit supplies the headroom, a follow-up `syncYield()` realizes the whole accumulated gap and
+distributes it pro-rata, and the newcomer exits with a slice of yield earned entirely before they
+arrived. The blocked state is the *documented* steady state at cap — `DeployRobinhood.s.sol` notes
+that premium claims drift pool debt from the 70% borrow cap up to the 75% LTV, after which every
+claim is refused and the gap grows at up to 80% APR × book. The async path (`requestDeposit` →
+`acceptDeposit`) is immune because its escrow already sits in the aToken balance when the claim runs.
+
+**PoC (Robinhood params: pool LTV 7500 / LT 10000, `targetLtv` 7000, curve 600/8000/200/7200,
+treasury cut 1000, wait 0; agent PoC re-run by the orchestrator, 3/3 pass).** LP1 deposits 1,000,000
+USDG; borrowers draw 700,000 (= cap); 60 days → unrealized premium 92,054.80; `syncYield()` alone
+realizes nothing (claim refused). Attacker `LendingRouter.deposit(1,000,000)` → 50% of shares at
+price 1.0. Attacker `syncYield()` → 91,134.25 claimed, 82,020.82 pushed to the vault. Attacker
+exits with **1,041,420.52 (+41,420.52 for one block of capital)**; LP1 ends with 1,041,420.52
+instead of 1,082,020.82 (loses 50.5% of its yield). Control via `requestDeposit`/`acceptDeposit`:
+newcomer 999,999.99, incumbent 1,082,020.82. Exit gates pass (HF ≈ 1.32 ≥ 1.1; no exposure).
+
+**Fix.** Escrow-then-price in `_depositWithMin` and `mint`: pull the assets in first, count them in
+`_pendingDepositAssets` (so `totalAssets()` still excludes them), `_syncLending()`, `_requireSolvent()`,
+compute shares, un-count, mint — the claim then sees the newcomer's aTokens as headroom while pricing
+does not. Secondary hardening: `_claimBestEffort` claims `min(claimable, poolHeadroom)` instead of
+all-or-nothing so the gap never accumulates. Regression: the PoC's
+`test_directDeposit_capturesBlockedPremium` must show the newcomer redeeming ≈ principal;
+`test_deposit_cannotFrontRunPendingYield` only covers the unblocked case. Streaming the distribution
+(the open §6 yield-manager item) narrows the capture window but does not remove it while the claim is
+blocked.
+
+**Detected by** 2 of 12 agents (economic-security, with a three-test forge PoC; invariant traced the
+`minClaimHealthFactor`-floor variant of the same blocked-claim state). Sequel to A3-M-01
+(remedy holds when the claim succeeds) and A3-L-02 (same claim/exit-floor coupling); not a reopen
+because the A3-M-01 mechanism (permissionless distribute of already-held revenue) stays closed.
+
+
+### A4-M-07 (Medium → Low) — The premium observed at window open is caller-timed — **Acknowledged** (reassessed 2026-09-03)
+
+**Reassessment (2026-09-03).** Downgraded from Medium to Low and acknowledged (moved here). `_accrue`
+re-observes `_lastPremiumBps = _currentPremiumBps()` at the true utilization on **every** call with
+elapsed time (`dt > 0`), so the mispriced premium survives only until the next touch of the book —
+any keeper `accrue()` (permissionless, cranked routinely — the same cadence A3-H-02's own fix and the
+A3 M-05 lag bound already rely on), or any borrow / repay / liquidate / LP deposit / withdrawal —
+restores the correct rate. Confirmed on the integration fixture: the $53,276 figure below requires the
+book to sit **untouched for 30 days**; inserting a single `accrue()` 15 minutes after the attack
+yields $1,356,860 versus the honest $1,356,859 (leak ≈ 0). The per-window leak is therefore bounded to
+one inter-touch interval, does not compound, is shared pro-rata across the whole book (not captured by
+the attacker alone), and must be re-armed with gas every window to persist — dust-level and
+self-correcting, below the finding bar and recoverable by any actor calling `accrue()`. No code change;
+recorded so a future pass does not re-raise it as a Medium. The observe-before-mutate detail (mechanism
+B) is a benign semantic wart with the same self-correcting bound. Original write-up retained below.
+
+
+**Problem.** A3-H-02's remedy bills each accrual window at `_lastPremiumBps`, the utilization premium
+observed when the window *opened*, so a denominator move can no longer reprice elapsed time. The
+observation itself is unguarded: `_accrue` re-samples `_lastPremiumBps = _currentPremiumBps()` only
+inside `if (dt != 0)`; `accrue()` and `VaultManager.pullCollateralPrice` are permissionless; and every
+collateral-out path in `OwnVault` (`fulfillWithdrawal`, `releaseCollateral`,
+`releaseCollateralForBadDebt`) calls `_accrueLending()` **before** `onCollateralReleased`, so no code
+path ever re-observes at the post-withdrawal (true) mark. Sequence: block N `deposit` (accrues at the
+honest mark; a deposit does not move the mark) → block N+1 `pullCollateralPrice` (mark ↑) → `accrue()`
+(`dt > 0`: bills the one-second window honestly, then observes the deflated utilization) →
+`requestWithdrawal` + `fulfillWithdrawal` in the same block (the nested accrue has `dt == 0` → no
+re-observation; mark ↓). `_lastPremiumBps` now holds the deflated premium while the real mark is
+restored, and the next window — however long until anyone's next `dt > 0` touch — bills at it.
+Capital is held for one block (or `withdrawalWaitPeriod`) and returned in full; the cost is gas; it is
+repeatable after every honest touch; the beneficiary is every borrower, so the attacker only needs to
+be one of them.
+
+**PoC (integration fixture; orchestrator).** Rate params base 100 / optimal 8000 / slope1 400 /
+slope2 7500; vault 1,000 awstETH @ $4k = $4M, `targetLtv` 35% → cap $1.4M; book $1.3M → util 92.85%
+→ premium 6,125 bps. Attacker deposits 1,000 awstETH; one second later `pullCollateralPrice` → util
+46.42% (premium 332 bps); `accrue()`; `requestWithdrawal` + `fulfillWithdrawal` in the same block →
+util back to 92.85%, attacker holds 999.9995 awstETH. Thirty days later: honest branch debt
+**$1,356,859** vs attacked **$1,303,583** — **$53,276 of LP premium erased (≈3.9% of the book per
+month)**. One-directional: only borrowers gain (deflating the mark to over-bill borrowers would need
+the attacker to own the shares being withdrawn and hurts only themselves).
+
+Preconditions: permissionless deposits on the vault (approval mode off) and a short
+`withdrawalWaitPeriod` (the A3-M-01 decision moved it to 0 and `LendingRouter.withdrawFromVault`
+requires 0; the old deployed vault's 8 h only lengthens the capital hold). Not covered by A3-H-02
+(retroactive repricing — fixed and still holding) nor A4-L-18 (admin rate setters).
+
+**Mechanism B — numerator side (trust-gap agent; structurally verified).** Every path that changes
+`_totalScaledDebt` (`borrow`, `borrowMore`, `_repayPosition`, `_liquidate`, `absorbBadDebt`,
+`settleHaltedPosition`) calls `_accrue` **before** mutating it, and `_accrue`'s zero-debt branch
+observes `_lastPremiumBps = _currentPremiumBps()` even when `dt == 0`. The window opened by a borrow is
+therefore priced at *pre-borrow* utilization until an unrelated touch: a sole borrower at cap repays
+in full (the observation records `premium(100%) = 8000` bps, then `_totalScaledDebt = 0`) and
+re-borrows the same amount in the next transaction (`_totalScaledDebt == 0` branch records
+`premium(0) = 100` bps) — the book now grows at the base premium instead of 8000 bps until anyone
+else touches the manager. `D = $2M`, six touch-free hours → ≈ $1,082 of premium unbilled, repeatable
+after every external touch; funded by the borrowed stablecoin itself. Two-borrower variant: a whale
+taking 90% of the cap observes `premium(10%) = 150` bps for its first window. No LP capital and no
+`pullCollateralPrice` needed — cheaper than mechanism A. Mirror direction (numerical-gap): a whale
+repaying $900k of a $1M book at 95% util leaves the remaining $50k of *other* borrowers billed at the
+pre-repay 6,125 bps instead of 125 bps until the next touch (≈ $82/day over-billed), so the
+observation timing misprices both ways. The NatSpec at the zero-debt branch ("this
+observation is what prices that position's first window") describes the behaviour as intended for a
+one-off; it is a repeatable lever.
+
+Both mechanisms share one root: the observation is taken at a moment the caller controls and is not
+re-taken after the caller's own state change (numerator or denominator).
+
+**Fix options.** (A) Observe *after* the mutation: add an internal `_observePremium()` that sets
+`_lastPremiumBps = _currentPremiumBps()` and call it at the **end** of every path that mutates
+`_totalScaledDebt` (closes B, Aave semantics — the next window is priced at post-action utilization
+while elapsed windows stay non-retroactive), **and** have `OwnVault` call `_accrueLending()` again
+after `onCollateralReleased` in all three release paths with the resample moved out of the `dt != 0`
+branch so a same-block re-observation takes effect (closes A; both contracts are redeployable).
+(B) Bill each window at `max(premium_open, premium_close)`, which removes the incentive on both sides
+without touching the vault. `VaultManager.pullCollateralPrice` cannot host a fix (immutable).
+Regressions: the mechanism-A PoC sequence must yield identical debt in both branches; a
+repay-all-then-re-borrow must bill the following window at post-borrow utilization.
+
+**Detected by** 3 of 12 agents (access-control: mechanism A, orchestrator PoC reproduced the numbers
+above; trust-gap and numerical-gap: mechanism B independently, verified against `_accrue` and all six
+mutation sites).
+Overlap check: sequel to A3-H-02 (different mechanism — prospective observation, not retroactive
+repricing); recorded as a new ID rather than a reopen because the A3-H-02 remedy still holds as stated.
+
 
 **A4-I-11 … A4-I-17 — acknowledged 2026-09-02** (original notes retained below; disposition per item):
 I-11 intended, Maker-style (the ceiling gates new minting, not interest) — documented here.
@@ -771,6 +1102,44 @@ constructor-time name — accepted. I-16 cannot occur with the live config (`bas
 - **A4-L-16 — `haltAsset` price unbounded, operator-set, permanent.** `VaultManager` is
   immutable; containment is operational (operator-key hygiene, `haltAsset` parameter
   monitoring, fund `haltRedeemAddress` approvals only after halt-price review). Acknowledged.
+  **Widened (2026-09-02, round 3; 2 agents).** Since the A4-M-04 fix, `EUSDManager._anchorPrice`
+  returns `_effectivePrice(assetHaltPrice)` for a halted collateral with no bound, no feed cross-check
+  and no ADMIN override, so the instant-role, irreversible `haltAsset(asset, price)` is now the *sole*
+  liquidation/redemption price for every eUSD CDP in that collateral — a path the `haltRedeemAddress`
+  containment does not touch. `haltAsset(SPY, 1)` (operator key compromise or a decimals fat-finger)
+  → any account `liquidate(eSPY, victim, 96 wei)` (ratio 0) seizes the victim's full collateral, or
+  `redeem(eSPY, 1e18)` walks the list taking each position's collateral for ~100 wei; irreversible (no
+  un-halt), and the delayed ADMIN has no lever (`setCollateralEnabled` does not gate exits, by
+  design). Contrast the market: `redeemHalted` is capped by the halt fund's approval and `psmRedeem`
+  reverts `RatioJumpExceeded`. Unlike `VaultManager`, `EUSDManager` is upgradeable, so a manager-side
+  containment exists if wanted: store `lastLivePrice[collateral]` on every successful live read and
+  revert `HaltPriceOutOfBand` when the halt price falls outside a wide band of it (e.g. 0.5×–2×), with
+  a delayed-ADMIN `setHaltPriceOverride` for legitimately out-of-band halts. A second beneficiary
+  path (trust-gap): for a halted asset `ReserveVault._releaseCollateral` marks exposure at the halt
+  price (`pullAssetPrice` returns early with `mark = haltPrice`) but the reserve at the live wrapper
+  price, so a low halt price manufactures `units × (wrapperPrice − haltPrice)` of skimmable "surplus"
+  for any allowlisted maker or the operator, while `psmRedeem` pays PSM depositors only
+  `haltPrice / wrapperPrice` wrapper per eToken; minimal guard: block `withdraw`/`skimExcess` while
+  `isAssetHalted(backed)`. Surfaced once for the decision; status unchanged.
+- **A4-I-18 — `OwnIncentives.setDistribution` has no `emissionPerSecond` bound (round 3; 5 agents).**
+  §6 recorded the bound as landed under the A4-I-09/I-10 line, but `setDistribution` carries only the
+  `NotAttached` gate. An absurd value overflows `emissionPerSecond × Δt` in `_updateGlobal`, reverting
+  `claim`, `sweepPartner`, `setDistribution` itself and every sEUSD hook (swallowed by the `try/catch`,
+  leaving `_userIndex` unsynced); the controller is not upgradeable, so recovery is detaching via
+  `setIncentivesController`. Admin-only misconfiguration → Info; the ledger entry is corrected in §6
+  and the one-line `MAX_EMISSION` check stays optional.
+- **A4-I-19 — `EUSD.setBridgeLimits` enabling a previously-zero side of a live bridge starts it empty
+  (round 3; 5 agents).** `live = mintMaxLimit != 0 || burnMaxLimit != 0` is evaluated per bridge, so
+  raising one side from 0 → X while the other side is live routes that side through
+  `_available(_, 0, _) == 0` and it refills linearly over `LIMIT_DURATION` instead of starting full —
+  contradicting the "fresh authorization starts with a full window" comment for that side. Fail-safe
+  (never over-grants); ops nuisance only. Fix if wanted: compute `live` per side.
+- **A4-I-20 — `StakedEUSD.setIncentivesController(current)` retires the live controller in place
+  (round 3; 6 agents).** `_retiredControllers[current] = true` runs before the `controller == current`
+  case is excluded, so an idempotent re-set marks the attached controller retired while it keeps
+  accruing; a later detach → re-attach of that same (still funded) controller is then refused,
+  forcing a redeploy plus reserve migration. No fund impact; add `if (controller == current) revert`
+  (or skip the retire mark when equal).
 - **A4-L-17 — Pending-deposit escrow counted by pool health gates.** Duplicate of the tail risk
   adjudicated in the second GPT-5 batch (2026-07-10): the escrow is refund-senior via
   `totalAssets()` saturation, it is only insolvent after a total LP wipeout, and holding the
@@ -789,6 +1158,17 @@ constructor-time name — accepted. I-16 cannot occur with the live config (`bas
   exit-ladder documentation stands. Ops note (not pushed): if force-execution is ever armed
   (`setClaimThreshold > 0`) on an asset that also has a PSM reserve, the allowlisted generic
   vault's LPs are the counterparty to any maker non-performance — keep that pairing deliberate.
+  **Widened (2026-09-02, round 3; first-principles).** The trusted-maker boundary is wider than the
+  write-up states. An allowlisted maker can sign a Mint quote with `quote.user` = its own linked
+  address and call `executeOrder`: `_settleMint` moves the stablecoin maker → maker (zero net cash),
+  `openExposure` passes with no generic collateral while `assetExposureUSD ≤ assetRwaCollateralUSD`
+  (RWA netting) or within utilization headroom, and the maker receives freshly minted eTokens;
+  `psmRedeem` then releases the wrapper reserve to the maker through the market-gated
+  `releaseCollateral` (no surplus guard on that path — A3-M-09). Capital-free, needs neither an armed
+  `claimThreshold` nor an allowlisted force-source vault, and the one-wrapper-unpaused lever does not
+  help because the maker is the minter. Same trust root (admin-allowlisted maker; de-allowlisting is
+  the remedy), so the acceptance stands — recorded so the boundary reads accurately: the reserve is
+  only as safe as every allowlisted maker's quote-signing key.
 - **A4-L-03 — No `minDebt` floor on redemption.** Explicitly documented in `IEUSDManager`
   ("a partial redemption may leave the last position below minDebt"); Liquity-class behavior.
   Impact is dust-position list bloat only. A4-H-01 Option A removes the only harmful instance
@@ -888,7 +1268,16 @@ module scope; statuses in the master index are authoritative).
   yield; consider a floor or timelock on the period.
 - Orphaned mid-vest batch: if all shareholders exit, the still-unvested batch vests to nobody
   and is captured by the next depositor. Mitigated by the seed (dead shares never fully exit);
-  operator lever: pause streaming when supply ≈ seed.
+  operator lever: pause streaming when supply ≈ seed. **Sharpened (round 3, invariant):** with
+  `_decimalsOffset() == 0`, if supply reaches exactly 0 while `L` is still unvested, the first
+  depositor of `L + 1` receives **1 wei** of shares and every later depositor of `≤ L` receives 0 —
+  the offset-0 defence assumes the attacker funds the inflation, but here the protocol's own batch
+  does (stream 10,000 mid-vest, all exit, attacker deposits 10,001 → 1 wei share; victim deposits
+  5,000 → 0 shares; attacker redeems 12,500.5). **No production deploy script for StakedEUSD exists
+  yet** (see the A4-L-11 ledger correction in §6), so the seed is not enforced anywhere. Code
+  invariant options: revert a withdrawal that would leave `totalSupply() == 0` while
+  `getUnvestedAmount() > 0`, or set `_decimalsOffset()` to 6 before deploy (UUPS cannot change it
+  later).
 - Direct eUSD transfer to the vault bypasses vesting and jumps the share price — donor-funded,
   but a *predictable* mis-routed inflow (operator using `transfer` instead of
   `transferInRewards`) is sandwichable. Ops discipline; optional `skim()` folding surplus into
@@ -897,6 +1286,93 @@ module scope; statuses in the master index are authoritative).
   the `ERC1967Proxy` constructor, but **no production deploy script exists yet for
   StakedEUSD/OwnIncentives** — a two-tx deploy is initializer-front-runnable (attacker-supplied
   `registry` = full takeover). Tracked in §6.
+
+**New-contracts re-audit (2026-09-02, round 3)**
+
+- Residual re-list grief (execution-trace, forge PoC): the owner of a debt-only residual (collateral 0,
+  off-list after A4-H-01/A4-M-06 events) can `deposit(1 wei)` — nominal ratio ≈ 0 puts it at the list
+  head for ~75k gas — and every redemption then hits it first: bounded walks with a real
+  `minCollateralOut` revert `SlippageExceeded` (1 wei out), unbounded walks pay ~+9k gas per hop and
+  clear it for ~400 wei, after which it re-lists. Gas grief on the peg anchor only. Fix: require a
+  debtor's deposit to leave the position collateral-backed above a dust floor before it (re)enters the
+  list, or skip sub-wei heads in `redeem`.
+- 1-wei third-party `repay` front-runs a *sized* partial liquidation (trust-gap): a `repay(coll, owner,
+  1 wei)` flips the liquidator's `remaining` to `minDebt − 1` and the liquidation reverts
+  `BelowMinimumDebt`; `amount = max` is immune. Liveness/MEV grief only; clamping `0 < remaining <
+  minDebt` to a full close (see A4-M-06 / A4-L-03 note) removes it.
+- `setAssetActive(false)` is honored by `OwnMarket._validateAsset` and `BorrowManager._validateEligibility`
+  but not by `EUSDManager.mint`/`_freshPrice`, so the operator's soft-freeze lever leaves the CDP as the
+  one new-exposure path still open on a deactivated eToken. Consistent with the recorded "delist via
+  `haltAsset`" rule; a one-line `isActiveAsset` gate in `_freshPrice` closes the asymmetry if the lever
+  is ever used as a soft freeze.
+- PSM ratio-jump baseline re-anchors on a frozen mark (invariant) — **superseded by A4-L-19**: the
+  per-operation guard (no 24h window despite psm-design §8.3's Ondo reference) is walkable, and the
+  in-house cache is per ticker, so a signer refreshing `R.TSLA` and `TSLA` divergently opens it even
+  though both share one Chainlink feed. The frozen-mark redeem variant is folded into that write-up.
+
+**Protocol-wide re-audit (2026-09-02, round 3)**
+
+- `ForceExecuteLib._refundETH` sibling of A3-L-05 (boundary): refunds `address(this).balance` to
+  `msg.sender` and reverts `ETHRefundFailed` on failure; 1 wei force-fed to the market (a same-tx
+  `selfdestruct` still pushes ETH under EIP-6780) makes `forceExecuteOrder` revert for any order owner
+  that is a contract without a payable receive — the last-resort exit, though `cancelOrder` and RFQ
+  remain. A3-L-05's acceptance covered `BorrowManager` only; snapshot `balance − msg.value` or make the
+  refund best-effort on the next `OwnMarket` upgrade.
+- Util-neutral PSM mints consume `assetCapUSD` (economic-security): `openExposure` charges gross
+  `newAssetUSD` against the ceiling regardless of RWA netting, so a wrapper holder can fill a
+  ticker's cap risk-free (reversible via `psmRedeem`) and block every RFQ/PSM mint for everyone else.
+  Consistent with protocol.md's "issuance ceiling caps total eToken supply"; policy note only — if the
+  ceiling is meant for LP-backed issuance, cap the netted residual or add a separate PSM ceiling.
+- ReserveVault surplus clamp is asset-level, not per-vault (economic-security): `_releaseCollateral`
+  compares Σ RWA collateral to Σ exposure across *all* reserve vaults for the ticker, so with two
+  wrappers a maker can `withdraw` one vault down while the other covers the aggregate, and holders
+  routed to the drained wrapper get `AmountExceedsReserve` on `psmRedeem`. Dormant (one wrapper per
+  asset live; psm-design allows several); distinct root from A3-M-09 (oracle) and M-14 (stale mark).
+- LP exit floor is 17.5%, not the 25% the deploy comment states (economic-security):
+  `DeployRobinhood.s.sol` says pool LTV 75% "guarantees ≥ 25% of LP funds stay as cash", but LP exits
+  are gated by `requireVaultHealthy` (HF ≥ 1.1 at LT 100%), so at the designed 75% pool-debt steady
+  state only `1 − 1.1 × 0.75 = 17.5%` of LP capital is exitable, and each claim crank tightens it.
+  Extends A3-L-02 with the live-parameter number; fix the comment or lower `minClaimHealthFactor`
+  toward 1.0 for LT = 100%.
+- ERC-4626 preview conformance (economic-security): `_depositWithMin` runs `_syncLending()` after any
+  caller-side `previewDeposit`, so `deposit` can mint fewer shares than previewed in the same
+  transaction, and `maxDeposit` returns max while `deposit` can revert `VaultInsolvent`. Integrators
+  without `minSharesOut` over-estimate; no loss.
+- `BorrowManager.setLiquidationConfig` lacks the `threshold ≥ BPS + bonus` guard that
+  `EUSDManager._validateRatios` enforces (asymmetry): a bonus above `BPS/threshold − 1` lets a
+  threshold liquidation seize 100% of collateral (capped) and return 0 to the borrower. Protocol
+  solvency unaffected; borrower-only under admin misconfiguration.
+- `OwnLendingPool.borrow` is open to any aToken holder at 0% (access-control): a shim-vault depositor
+  (A4-I-14) can lock pool liquidity at 1.25× their own capital with no profit path — extends the
+  audit-3 "supplier allowlist constrains nothing about who borrows" note with the griefing angle;
+  gate `borrow` to delegated/allowlisted borrowers if the router-only policy is meant to bind.
+- `absorbBadDebt` dust-collateral griefing (trust-gap, invariant): it reverts
+  `PositionStillCollateralized` unless `eTokenCollateral == 0`, while `addCollateral` has no minimum,
+  so a defaulted borrower can re-arm the guard with 1 wei after every dust liquidation. Fully mitigable
+  by bundling a dust `liquidate` with `absorbBadDebt` in one operator transaction; optional hardening:
+  sweep sub-unit collateral to the treasury instead of reverting.
+- Unswept dividends as a second JIT entry point (invariant): `_syncLending` realizes only the yield
+  shell's balance; dividends accrued to the BorrowManager's eToken custody are released by the
+  permissionless `sweepDividends`, so deposit → `sweepDividends` → exit captures pre-entry dividends.
+  Dormant under A3-M-07 (no on-chain cash dividends on Robinhood); recorded so that acceptance's
+  precondition list covers the custody sweep as well as `depositRewards`.
+- Approval mode has no LP entry path on an OwnLendingPool-backed vault (invariant): `supply` is
+  allowlisted to the router and the router only calls `vault.deposit`, which reverts
+  `DepositApprovalRequired`; nothing lets an LP mint aTokens to call `requestDeposit`. Functional gap,
+  no fund impact — a router `requestDeposit` passthrough is needed before approval mode is used there.
+- Collateral double-encumbrance (trust-gap): `_globalCollateralUSD` counts 100% of a generic vault's
+  aTokens as eToken backing while up to `targetLtvBps` (70%) of the same aTokens are pledged as pool
+  collateral for BorrowManager debt, and `requireVaultHealthy` makes the pool claim senior — at the
+  debt cap the collateral a force-execution can actually release is ≤ `C·(1 − 0.77/LT)`. Fails safe
+  (HF gate), but the utilization cap overstates the collateral behind the users' last-resort exit
+  once lending runs near cap; adjacent to A3-L-02 / H-07. Consider netting the vault's pool debt out
+  of its counted collateral.
+- `settleHaltedPosition` on legacy dust (numerical-gap): it calls `convertLegacy` unconditionally when
+  the position holds a pre-split token, and `convertLegacy` reverts `ZeroAmount` when the converted
+  amount floors to 0, while `absorbBadDebt` still requires `eTokenCollateral == 0` — a few wei of
+  legacy collateral with live debt would be neither settleable nor absorbable. No realistic path to
+  such a residual was constructed (borrow LTV forbids it directly); hardening: skip the convert when
+  the result is 0 and settle with `eTokenToCover = 0`.
 
 **Protocol-wide (2026-09-02, round-2 pass)**
 
@@ -939,8 +1415,14 @@ module scope; statuses in the master index are authoritative).
 - [ ] A4-L-04 — check deployed `maxAnchorAge` vs `liquidationBonusBps` on Robinhood config.
 - [ ] A4-L-05 — verify registry ADMIN grant for EUSDManager is timelock-gated before launch.
 - [ ] A4-L-06 — confirm global-role scoping is intended for this module.
-- [x] A4-L-07 — add deploy-time sole-minter assertion to `DeployEusdRobinhood.s.sol`; assert
-      registry `TREASURY` is non-zero before first mint (fee accrual mints there).
+- [x] A4-L-07 — add deploy-time sole-minter assertion to `DeployEusdRobinhood.s.sol` (landed:
+      `MINTER_ROLE` asserts only).
+- [ ] A4-L-07 (ledger correction, round 3) — the `TREASURY` non-zero assertion recorded above as
+      landed is **not** in `DeployEusdRobinhood.s.sol`. `_accrue` mints the stability fee to
+      `registry.treasury()` with no zero check (every other treasury sink in the codebase guards),
+      so with the slot unset every debt-bearing path — including `liquidate` and `redeem` — reverts
+      `ERC20InvalidReceiver` once any fee > 0 accrues; recoverable only through the timelocked
+      `setAddress`. Add the deploy assert and/or an `initialize` check (4 agents).
 - [x] A4-L-08 — confirm the eSPY eToken reward model (claimable vs. rebasing); if claimable, add a
       permissioned `claimCollateralRewards` mirroring `OwnMarket.sweepDividends`; if rebasing,
       additionally reconcile `totalCollateral` against real balance.
@@ -951,11 +1433,14 @@ module scope; statuses in the master index are authoritative).
       partner reward model.
 - [x] A4-L-10 — exempt indebted top-ups from the `enabled` gate in `deposit` (or record as
       accepted with a de-listing runbook that repays/closes before disabling).
-- [x] A4-L-11 — add the `totalSupply() > 0` guard to `transferInRewards` (or seed in
-      `initialize`); write the production deploy script for StakedEUSD/OwnIncentives with
-      atomic proxy init + seed deposit + wiring order (attach controller **before**
-      `setDistribution`; decommission order `setDistribution(0,·)` → settle → `recoverReserve`
-      → detach).
+- [x] A4-L-11 — `totalSupply() > 0` guard on `transferInRewards` (landed).
+- [ ] A4-L-11 (ledger correction, round 3) — the production deploy script for
+      StakedEUSD/OwnIncentives recorded above as done (atomic proxy init + seed deposit + wiring
+      order: attach controller **before** `setDistribution`; decommission order
+      `setDistribution(0,·)` → settle → `recoverReserve` → detach) does **not** exist in `script/`
+      (only the test helper `DeployEusdModule.sol`). Until it does, the dead-share seed that mitigates
+      the orphaned-batch lead (§5) is unenforced and a two-transaction deploy is
+      initializer-front-runnable.
 - [x] A4-L-12 (DoS clamp landed; burn-limit sizing stays ops) — size every per-bridge `burnMaxLimit` ≪ sEUSD vested TVL before authorizing any
       transport; decide on the `totalAssets` clamp; fold A4-I-06's paired burn+mint budget into
       bridge monitoring.
@@ -970,9 +1455,32 @@ module scope; statuses in the master index are authoritative).
 - [x] A4-L-15 — add the `code.length` guard to `setIncentivesController` + extcodesize unit
       test.
 - [x] A4-I-09 / A4-I-10 — zero-amount revert on the ERC-7802 pair; settle-then-clamp in
-      `setBridgeLimits`. Bound `emissionPerSecond` in `OwnIncentives.setDistribution` (an
-      absurd value overflows `emissionPerSecond·Δt` in `_updateGlobal`, bricking `claim` AND
-      `setDistribution` itself — unrecoverable without an upgrade).
+      `setBridgeLimits`.
+- [ ] A4-I-18 (ledger correction, round 3) — the `emissionPerSecond` bound in
+      `OwnIncentives.setDistribution` previously listed on the line above as landed is **not** in the
+      code (an absurd value overflows `emissionPerSecond·Δt` in `_updateGlobal`, bricking `claim`
+      and `setDistribution` itself; recovery = detach the controller). Add `MAX_EMISSION` or record
+      as accepted admin-config risk.
+- [x] A4-M-06 — Option A landed (pro-rata partial seizure cap) with the two regression tests.
+      Still open from the same item: the `remaining < minDebt → full close` clamp (see the §5 1-wei
+      `repay` grief) and a listed-solvency invariant in the handler.
+- [x] A4-L-12 (reopened) — sEUSD entries gated via `maxDeposit`/`maxMint` while
+      `getUnvestedAmount() > totalAssets()`; regression updated to assert the revert and the pro-rata
+      post-vest payout. (The underlying bridge-burn loss leg remains ops-bounded: keep every
+      `burnMaxLimit` well below vested TVL before authorizing a transport.)
+- [ ] A4-L-16 (widened) — decide whether `EUSDManager._anchorPrice` should bound the halt price
+      against the last live anchor (manager-side, upgradeable) or stay ops-only.
+- [ ] A4-I-19 / A4-I-20 — per-side `live` in `setBridgeLimits`; reject `setIncentivesController(current)`.
+- [x] A4-M-07 — reassessed to Low and acknowledged (self-corrects on the next `accrue`); no code change. Optional
+      hardening only if the keeper cadence is ever relaxed: bill `max(open, close)` per window.
+- [x] A4-M-08 — reassessed to Low and accepted (backlog realized continuously by normal LP flow;
+      live vault is approval-mode + 8h queue). Optional hardening if an open-deposit vault ever runs
+      at sustained full utilization: escrow-then-price in `_depositWithMin`/`mint` and claim
+      `min(claimable, headroom)` in `_claimBestEffort`.
+- [x] A4-L-19 — acknowledged (no live code change; verifier + AssetRegistry non-upgradeable). Folded
+      into the next oracle/PSM deploy: anchor the ratio-jump guard to the Chainlink-implied ratio (or
+      key the in-house cache by aggregator; regression: opposite-edge two-leg pushes revert on the
+      first PSM op), and correct the CL-I01 damage-cap wording (≈ 2× band for derived PSM ratios).
 - [x] A4-M-05 — accepted (trusted, allowlisted maker; see §3). No code guard; keep the
       force-source pairing for PSM-backed assets deliberate when `claimThreshold` is armed.
 - [ ] A4-L-16 — operator-key runbook + monitoring on `haltAsset` params (VM immutable, no code
@@ -1100,3 +1608,42 @@ Staking module (2026-09-02 pass), attacked and held:
   scores; A4-L-04/L-05 escalate to Medium if the respective config checks fail.
 - Rate configuration-dependent items against the deployed Robinhood config
   (`broadcast/…/run-latest.json`), not `script/` alone, once the module ships.
+- New-contracts re-audit (2026-09-02, round 3): a fresh 12-agent pass over the six contracts
+  new or materially changed on the branch vs `main` (EUSDManager, OwnIncentives, ForceExecuteLib,
+  EUSD, StakedEUSD, OwnMarket), deduplicated against this document, `audit-report-3.md` and the
+  three external PDFs, then gate-checked. Produced **A4-M-06** (7-agent convergence; three agent PoCs
+  and an orchestrator PoC agree on the numbers), the **A4-L-12 reopen** (3 agents, two PoCs — the
+  remedy regressed the failure mode), the **A4-L-16 widening** (EUSDManager consumes the halt price
+  for user collateral), **A4-I-18…I-20**, two §6 ledger corrections (the emission bound and the
+  `TREASURY` deploy assert were recorded as landed but are absent from code/script), and four §5
+  leads. Known items re-derived and folded, not duplicated: A4-L-02 grooming (3 agents), A4-L-03,
+  A4-L-04 stale anchor (3), A4-M-02 detach consequences (3), A4-M-03 over-liquidation above 1 + bonus,
+  A4-I-12 proof selection, A4-I-05/I-06 bridge trust, A3-M-06 exit gating, the audit-3 `_pushOrSweep`
+  and `_settleRedeem` notes, and the §5 donation-bypass lead. Conservation, sorted-list integrity,
+  access control, hook algebra, bridge-limit accounting, proxy safety and every ForceExecuteLib gate
+  were re-attacked and held. No production code was changed in this pass.
+- Protocol-wide re-audit (2026-09-02, round 3): a fresh 12-agent pass over all 25 `src/`
+  contracts, deduplicated against this document, `audit-report-3.md` and the three external PDFs
+  (02-07 / 12-07 / 03-08), then gate-checked. Produced **A4-M-07** (3 agents; **reassessed 2026-09-03 to Info** — the mispricing self-corrects on
+  the next `accrue`, verified on-fixture: a single keeper crank 15 min after the attack restores the
+  honest debt to the wei, so the leak is bounded to one inter-touch window and does not clear the bar)
+  and **A4-M-08** (2 agents; three-test PoC re-run by the orchestrator) — both sequels to fixed
+  pass-3 items (A3-H-02, A3-M-01) whose remedies hold as stated, **both reassessed 2026-09-03 to Low and
+  acknowledged** (M-07 self-corrects on the next `accrue`; M-08's premium backlog is drained continuously
+  by ordinary LP flow so no capturable lump accumulates) — **A4-L-19** (1 agent; verified against the verifier's per-ticker cache and the
+  deployed oracle/PSM parameters; corrects a round-3 lead; **acknowledged 2026-09-03** — fix needs a
+  verifier getter, folded into the next oracle/PSM deploy), the **A4-M-05 / A4-L-16 widenings**, a
+  third §6 ledger correction (no StakedEUSD/OwnIncentives deploy script exists), a sharpened staking
+  lead, and twelve §5 leads. Re-derived and folded,
+  not duplicated: A4-L-17 escrow-in-HF (2 agents, with a concrete lock trace), A4-I-13, A4-I-14,
+  A4-I-15, A4-I-16, A4-L-04/I-03 weekend-gap composition, A4-L-18, A3-L-03, A3-L-05, A3-M-06,
+  A3-M-07, pass-1 L-16 (absorb over-socialization), CL-I02/CL-L03, the §5 split
+  multi-clock and step-function yield-manager items, the audit-3 `_settleRedeem`/`_pushOrSweep`/
+  halt-desync notes, the pass-1 L-09 halt-settlement ceil dust (comment inaccuracy only: the
+  over-cover repays pooled debt rather than sweeping), and the psm-design first-come maker surplus
+  rule. Core invariants (VaultManager netting writers, OwnLendingPool exit liquidity, BorrowManager
+  scaled-debt and floor, PSM round-trip rounding, EToken accumulator, sEUSD/OwnIncentives hook
+  algebra) were re-attacked and held. No external-PDF fix has regressed; no production code was
+  changed in this pass. Coverage note: 11 of the 12 protocol-wide agents completed; the flow-gap
+  agent was cut off by a spend limit and its retry was stopped on request, so the cross-flow seam
+  lens over the full protocol is the one gap in this round.
