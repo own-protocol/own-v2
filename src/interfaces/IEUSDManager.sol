@@ -326,6 +326,16 @@ interface IEUSDManager {
         address collateral
     ) external;
 
+    /// @notice Crystallize the pending stability fee on any position: fold it into the position's
+    ///         debt, mint it to the treasury and re-sort the position. Permissionless bookkeeping —
+    ///         every position-touching flow already accrues on entry, so this never changes what a
+    ///         position owes, only when the stored debt and treasury balance catch up. Reverts on
+    ///         a debt-free position. Needs no oracle price and works while minting is paused.
+    /// @param collateral Collateral eToken of the position.
+    /// @param owner      Position owner.
+    /// @param hint       Sorted-list insert hint (see {deposit}).
+    function accrue(address collateral, address owner, address hint) external;
+
     // ──────────────────────────────────────────────────────────
     //  Liquidation & redemption
     // ──────────────────────────────────────────────────────────

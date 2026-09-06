@@ -729,6 +729,96 @@ contract EUSDManagerTest is Test {
         assertEq(manager.currentDebt(address(eSPY), alice), 1000e18);
     }
 
+    function test_accrue_crystallizesFees_mintsToTreasury() public {
+        _open(alice, 4e18, 1000e18);
+        vm.warp(block.timestamp + 365 days);
+        assertEq(manager.getPosition(address(eSPY), alice).debt, 1000e18);
+
+        vm.expectEmit(true, true, false, true);
+        emit IEUSDManager.StabilityFeeAccrued(address(eSPY), alice, 20e18);
+        vm.prank(keeper);
+        manager.accrue(address(eSPY), alice, address(0));
+
+        assertEq(manager.getPosition(address(eSPY), alice).debt, 1020e18);
+        assertEq(manager.totalDebt(), 1020e18);
+        assertEq(eusd.totalSupply(), 1020e18);
+        assertEq(eusd.balanceOf(treasury), 20e18);
+
+        // Immediate second call: snapshot is current, nothing more mints.
+        vm.prank(keeper);
+        manager.accrue(address(eSPY), alice, address(0));
+        assertEq(eusd.balanceOf(treasury), 20e18);
+        assertEq(manager.totalDebt(), 1020e18);
+    }
+
+    function test_accrue_reindexes_listStaysSorted() public {
+        _open(alice, 4e18, 1000e18);
+        vm.warp(block.timestamp + 200 days);
+        oracle.setPrice(SPY, PRICE); // re-post so bob's mint passes the freshness gate
+        _open(bob, 4e18, 1000e18); // fresh snapshot; alice has 200 days pending
+
+        vm.prank(keeper);
+        manager.accrue(address(eSPY), alice, address(0));
+        // Alice's stored debt grew, bob's didn't — she must sort below him.
+        assertEq(manager.listHead(address(eSPY)), alice);
+        _assertListSorted(address(eSPY));
+    }
+
+    function test_accrue_debtFreePosition_reverts() public {
+        _open(alice, 3e18, 0);
+        vm.warp(block.timestamp + 365 days);
+        vm.expectRevert(abi.encodeWithSelector(IEUSDManager.NoDebt.selector, address(eSPY), alice));
+        vm.prank(keeper);
+        manager.accrue(address(eSPY), alice, address(0));
+
+        vm.expectRevert(abi.encodeWithSelector(IEUSDManager.NoDebt.selector, address(eSPY), bob));
+        vm.prank(keeper);
+        manager.accrue(address(eSPY), bob, address(0)); // nonexistent position
+    }
+
+    function test_accrue_underwaterResidual_accruesAndStaysOffList() public {
+        oracle.setPrice(SPY, 750e18);
+        _open(alice, 2e18, 1000e18);
+        _open(bob, 40e18, 1000e18);
+        vm.prank(alice);
+        eusd.transfer(keeper, 1000e18);
+
+        oracle.setPrice(SPY, 400e18);
+        vm.prank(keeper);
+        manager.redeem(address(eSPY), 1000e18, 0, 1, address(0)); // alice → 200 eUSD debt-only residual
+
+        uint256 treasuryBefore = eusd.balanceOf(treasury);
+        vm.warp(block.timestamp + 365 days);
+        vm.prank(keeper);
+        manager.accrue(address(eSPY), alice, address(0));
+
+        assertEq(manager.getPosition(address(eSPY), alice).debt, 204e18); // 2% on 200
+        assertEq(eusd.balanceOf(treasury), treasuryBefore + 4e18);
+        assertEq(manager.listHead(address(eSPY)), bob); // residual stays off-list
+        assertEq(manager.listSize(address(eSPY)), 1);
+        assertEq(eusd.totalSupply(), manager.totalDebt());
+    }
+
+    function test_accrue_worksWhilePausedAndOracleDown() public {
+        _open(alice, 4e18, 1000e18);
+        vm.warp(block.timestamp + 365 days);
+        vm.prank(operator);
+        manager.setMintPaused(true);
+        oracle.setForceStale(true);
+
+        vm.prank(keeper);
+        manager.accrue(address(eSPY), alice, address(0));
+        assertEq(eusd.balanceOf(treasury), 20e18);
+    }
+
+    function test_accrue_invalidInputs_revert() public {
+        vm.expectRevert(abi.encodeWithSelector(IEUSDManager.CollateralNotSupported.selector, address(0xdead)));
+        manager.accrue(address(0xdead), alice, address(0));
+
+        vm.expectRevert(IEUSDManager.ZeroAddress.selector);
+        manager.accrue(address(eSPY), address(0), address(0));
+    }
+
     // ──────────────────────────────────────────────────────────
     //  liquidate
     // ──────────────────────────────────────────────────────────

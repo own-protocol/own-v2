@@ -252,6 +252,15 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
         emit PositionClosed(collateral, msg.sender, coll, debt);
     }
 
+    /// @inheritdoc IEUSDManager
+    function accrue(address collateral, address owner, address hint) external override nonReentrant {
+        _requireCollateral(collateral);
+        if (owner == address(0)) revert ZeroAddress();
+        Position storage p = _accrue(collateral, owner);
+        if (p.debt == 0) revert NoDebt(collateral, owner);
+        _reindex(collateral, owner, hint);
+    }
+
     // ──────────────────────────────────────────────────────────
     //  External — liquidation & redemption
     // ──────────────────────────────────────────────────────────
