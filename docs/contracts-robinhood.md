@@ -131,6 +131,42 @@ the script re-asserts symbol+decimals on-chain before broadcasting.
       `https://points.ownfinance.org/collection.json` (both admin-updatable). Verified on-chain
       post-deploy: roles, soulbound state, URIs, `nextTokenId == 1`.
 
+## eUSD stablecoin module (2026-09-09)
+
+Deployed from branch `stablecoin` commit `8e0ce0e` via `DeployEusdRobinhood.s.sol` /
+`DeployEusdStakingRobinhood.s.sol`. All sources Blockscout-verified (full match); proxy↔impl
+links detected.
+
+| Contract                       | Address                                      |
+| ------------------------------ | -------------------------------------------- |
+| EUSD (token)                   | `0x8B84D644CECaeE6d21373F37E1bA00f85eD7CdB7` |
+| EUSDManager (ERC-1967 proxy)   | `0x9748964d733Ff5d47F1d7E3fea620aF014dA5a9b` |
+| — implementation               | `0xd05489B53973aba11d4bFaacB11bE659eb7C63d2` |
+| StakedEUSD sEUSD (proxy)       | `0x4fefDd560c076CfE9EA0b8f4d21E60Af5A39fE96` |
+| — implementation               | `0x74f5A0c905d22Ef2dc2CC7AE0390bBFEC99bE154` |
+
+Launch parameters (verified on-chain): MCR 150% / liquidation 120% / bonus 5% / stability fee
+2%/yr / debt ceiling 250k / minDebt 100 / mintPriceMaxAge 1h (matches the verifier's in-house
+staleness window — minting works off-hours while the 24/7 gap-filler quotes, and self-halts if
+price services go silent; exits never gated). sEUSD vesting period 8h (ADMIN-tunable).
+
+Governance/roles (verified): EUSD DEFAULT_ADMIN = Safe `0x470f…78e2`, sole MINTER_ROLE =
+manager proxy, deployer fully renounced. Launch collateral eSPY, listed + enabled via Safe
+batch (also wrote registry keys `EUSD` / `EUSD_MANAGER`; note the registry has **no generic
+getter** — the eUSD slots are event/storage-only, so consumers take addresses from this doc.
+`STAKED_EUSD` slot deliberately not written). sEUSD incentives controller unset — OwnIncentives
+deploys/attaches when the OWN token exists (`OWN_TOKEN_ROBINHOOD` unset skips it in the script).
+
+State at deploy: canary CDP by deployer (0.3 eSPY, 110 eUSD debt, ~209% ratio); sEUSD seeded
+with 1 eUSD of dead shares at `0xdead`; E2E pass via `TestEusdCdpRobinhood.s.sol` +
+`TestEusdStakingRobinhood.s.sol` (stake/withdraw + 1 eUSD reward batch streaming).
+
+Remaining ops: route treasury stability fees to sEUSD (`transferInRewards`, OPERATOR, cadence
+≤ 8h); liquidation keeper + monitoring (alert on any eUSD `RoleGranted(MINTER_ROLE)`; periodic
+`totalSupply == totalDebt` check); OWN incentives (deploy → attach → fund → setDistribution);
+frontend handoff (addresses/ABIs from this table, EIP-7702 batch zap with sequential fallback,
+show per-position liquidation price).
+
 ## E2E smoke tests (2026-07-14, all passed)
 
 Scripts: `TestSetupTslaRobinhood` / `TestMintBorrowTslaRobinhood` / `TestRepayRedeemTslaRobinhood` /
