@@ -19,10 +19,14 @@ import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.s
 /// @dev Post-deploy checklist:
 ///        1. Verify eusd.hasRole(MINTER_ROLE, manager) and that the deployer no longer holds
 ///           DEFAULT_ADMIN_ROLE on the token (handed to EUSD_ADMIN_ROBINHOOD below).
-///        2. If the registry's PROTOCOL_ADMIN has already moved to the timelock, the setAddress
-///           registrations are skipped here — schedule them through the timelock instead.
+///        2. Roles the deployer lacks are handled by printing the exact calls for the Safe:
+///           addCollateral (ADMIN) and the two registry setAddress registrations
+///           (PROTOCOL_ADMIN). Execute them as one Safe batch; the module is inert until then
+///           (no collateral listed, so no deposits or mints).
 ///        3. Smoke-test in session: deposit eSPY, mint ≥ MIN_DEBT eUSD, repay, close.
-///        4. Off-hours check: mint must revert StaleMintPrice; closePosition must succeed.
+///        4. Dead-man check: with price services silent > mintPriceMaxAge, mint must revert
+///           StaleMintPrice while closePosition still succeeds. (Off-hours minting works by
+///           design while the 24/7 gap-filler quotes — band-limited, no market calendar.)
 ///        5. Bridging launches disabled by construction: no bridge has limits, and
 ///           maxNetBridgedIn defaults to 0 (fail-closed). Enabling a lane is a later Safe action —
 ///           setBridgeLimits(pool, mint, burn) AND setMaxNetBridgedIn(cap) — once a transport is
@@ -43,16 +47,22 @@ contract DeployEusdRobinhood is Script {
     bytes32 constant EUSD_KEY = keccak256("EUSD");
     bytes32 constant EUSD_MANAGER_KEY = keccak256("EUSD_MANAGER");
 
-    /// @dev Launch risk parameters. MCR 150% / liquidation 130% are sized for closed-market
+    /// @dev Protocol ADMIN role (gates addCollateral); PROTOCOL_ADMIN is role 0x00.
+    bytes32 constant ADMIN_ROLE = keccak256("ADMIN");
+
+    /// @dev Launch risk parameters. MCR 150% / liquidation 120% are sized for closed-market
     ///      gaps — eSPY cannot be liquidated while US markets are closed, so the buffer must
-    ///      absorb an overnight/weekend move. Fee 2%/yr simple; ceiling starts conservative.
+    ///      absorb an overnight/weekend move: bad debt needs a >16.7% gap below the threshold
+    ///      with no liquidation or redemption, unprecedented for SPY. Params are global to the
+    ///      manager — this sizing assumes the broad-index-only collateral policy holds.
+    ///      Fee 2%/yr simple; ceiling starts conservative.
     uint16 constant MCR_BPS = 15_000;
-    uint16 constant LIQ_THRESHOLD_BPS = 13_000;
+    uint16 constant LIQ_THRESHOLD_BPS = 12_000;
     uint16 constant LIQ_BONUS_BPS = 500;
     uint16 constant STABILITY_FEE_BPS = 200;
     uint256 constant DEBT_CEILING = 250_000e18;
     uint256 constant MIN_DEBT = 100e18;
-    uint256 constant MINT_PRICE_MAX_AGE = 900; // 15 min — in-session marks report block.timestamp
+    uint256 constant MINT_PRICE_MAX_AGE = 3600; // matches the verifier's 1h in-house staleness window
 
     function run() external {
         IProtocolRegistry registry = IProtocolRegistry(vm.envAddress("PROTOCOL_REGISTRY_ROBINHOOD"));
@@ -107,21 +117,42 @@ contract DeployEusdRobinhood is Script {
         require(!eusd.hasRole(eusd.MINTER_ROLE(), eusdAdmin), "admin is minter");
         require(!eusd.hasRole(eusd.DEFAULT_ADMIN_ROLE(), deployer), "deployer still token admin");
 
-        // 4. Launch collateral (deployer must hold the protocol ADMIN role).
-        manager.addCollateral(eSpy, COLLATERAL_TICKER);
+        // 4. Launch collateral — direct if the deployer holds ADMIN, otherwise via the Safe.
+        //    Until the Safe executes it the module is inert: no collateral, no deposits/mints.
+        bool needsSafeAddCollateral;
+        if (registry.hasRole(ADMIN_ROLE, deployer)) {
+            manager.addCollateral(eSpy, COLLATERAL_TICKER);
+        } else {
+            needsSafeAddCollateral = true;
+        }
 
-        // 5. Registry slots — only possible while the deployer still holds PROTOCOL_ADMIN;
-        //    otherwise schedule these two setAddress calls through the timelock.
+        // 5. Registry slots — direct if the deployer holds PROTOCOL_ADMIN, otherwise via the Safe.
+        bool needsSafeRegistry;
         if (registry.hasRole(0x00, deployer)) {
             registry.setAddress(EUSD_KEY, address(eusd));
             registry.setAddress(EUSD_MANAGER_KEY, address(manager));
         } else {
-            console.log("PROTOCOL_ADMIN not held by deployer - register via timelock:");
-            console.logBytes32(EUSD_KEY);
-            console.logBytes32(EUSD_MANAGER_KEY);
+            needsSafeRegistry = true;
         }
 
         vm.stopBroadcast();
+
+        // Pending governance calls, printed as a ready-to-paste Safe batch.
+        if (needsSafeAddCollateral || needsSafeRegistry) {
+            console.log("=== Safe batch required to activate the module ===");
+            if (needsSafeAddCollateral) {
+                console.log("target:", address(manager));
+                console.log("  addCollateral(eSPY, SPY) calldata:");
+                console.logBytes(abi.encodeCall(IEUSDManager.addCollateral, (eSpy, COLLATERAL_TICKER)));
+            }
+            if (needsSafeRegistry) {
+                console.log("target:", address(registry));
+                console.log("  setAddress(EUSD, token) calldata:");
+                console.logBytes(abi.encodeCall(IProtocolRegistry.setAddress, (EUSD_KEY, address(eusd))));
+                console.log("  setAddress(EUSD_MANAGER, manager) calldata:");
+                console.logBytes(abi.encodeCall(IProtocolRegistry.setAddress, (EUSD_MANAGER_KEY, address(manager))));
+            }
+        }
 
         console.log("EUSD:        ", address(eusd));
         console.log("EUSDManager: ", address(manager));

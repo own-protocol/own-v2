@@ -9,10 +9,14 @@ import {StakedEUSD} from "../../src/tokens/StakedEUSD.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
-/// @title DeployEusdStakingRobinhood — sEUSD staking vault + OWN incentives controller
-/// @notice Deploys StakedEUSD (UUPS) and OwnIncentives, seeds permanently-locked dead shares, and
-///         attaches the controller. Run after DeployEusdRobinhood.s.sol (pass its logged EUSD address as EUSD_ROBINHOOD).
-///         Touches no existing contract beyond the two new registry slots and the controller wiring.
+/// @title DeployEusdStakingRobinhood — sEUSD staking vault (+ optional OWN incentives controller)
+/// @notice Deploys StakedEUSD (UUPS) and seeds permanently-locked dead shares. If
+///         OWN_TOKEN_ROBINHOOD is set, also deploys OwnIncentives and attaches it; if unset, the
+///         vault launches controller-less (address(0) hook — fully functional, no OWN emissions)
+///         and incentives wire in later via setIncentivesController once OWN exists. Run after
+///         DeployEusdRobinhood.s.sol (pass its logged EUSD address as EUSD_ROBINHOOD).
+///         Touches no existing contract beyond the new registry slots and the controller wiring.
+///         Calls needing roles the deployer lacks are printed as a Safe batch instead.
 ///
 /// @dev Order matters: the vault is seeded (so totalSupply never returns to 0) and the controller
 ///      is attached BEFORE any emission is set. Emissions and reserve funding are deliberately left
@@ -21,14 +25,16 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 ///      reverse: setDistribution(0, .) -> settle -> recoverReserve -> detach.
 ///
 /// @dev Post-deploy checklist:
-///        1. Verify sEusd.asset() == EUSD and sEusd.incentivesController() == the OwnIncentives.
+///        1. Verify sEusd.asset() == EUSD; if OwnIncentives was deployed, verify
+///           sEusd.incentivesController() == the OwnIncentives (or execute the printed Safe call).
 ///        2. Verify sEusd.totalSupply() > 0 (the dead-share seed landed).
-///        3. Deposit a small amount of eUSD, warp, confirm the share price rises smoothly.
-///        4. When ready: fund(OWN budget) then setDistribution(emissionPerSecond, end) via ADMIN.
+///        3. Deposit a small amount of eUSD, transferInRewards, confirm the share price vests up.
+///        4. When OWN exists (if skipped here): deploy OwnIncentives, attach, register, then
+///           fund(OWN budget) and setDistribution(emissionPerSecond, end) via ADMIN.
 ///
-/// Env: DEPLOYER_PRIVATE_KEY_ROBINHOOD (deployer holds ADMIN and PROTOCOL_ADMIN to wire + register),
+/// Env: DEPLOYER_PRIVATE_KEY_ROBINHOOD,
 ///      PROTOCOL_REGISTRY_ROBINHOOD, EUSD_ROBINHOOD (the EUSD address logged by DeployEusdRobinhood),
-///      OWN_TOKEN_ROBINHOOD (the OWN reward token),
+///      OWN_TOKEN_ROBINHOOD (the OWN reward token; unset/zero = skip incentives),
 ///      SEED_EUSD_ROBINHOOD (eUSD the deployer already holds, deposited as locked dead shares).
 ///
 /// Usage:
@@ -51,13 +57,12 @@ contract DeployEusdStakingRobinhood is Script {
 
     function run() external {
         IProtocolRegistry registry = IProtocolRegistry(vm.envAddress("PROTOCOL_REGISTRY_ROBINHOOD"));
-        address own = vm.envAddress("OWN_TOKEN_ROBINHOOD");
+        address own = vm.envOr("OWN_TOKEN_ROBINHOOD", address(0));
         uint256 seed = vm.envUint("SEED_EUSD_ROBINHOOD");
         address deployer = vm.addr(vm.envUint("DEPLOYER_PRIVATE_KEY_ROBINHOOD"));
 
         address eusd = vm.envAddress("EUSD_ROBINHOOD");
         require(eusd != address(0), "EUSD address unset (from DeployEusdRobinhood)");
-        require(own != address(0), "OWN token unset");
         require(seed > 0, "seed amount is zero");
         require(IERC20(eusd).balanceOf(deployer) >= seed, "deployer lacks seed eUSD");
 
@@ -79,31 +84,55 @@ contract DeployEusdStakingRobinhood is Script {
         sEusd.deposit(seed, DEAD);
         require(sEusd.totalSupply() > 0, "seed failed");
 
-        // 3. Controller — plain contract bound to this vault and the OWN token.
-        OwnIncentives incentives = new OwnIncentives(address(registry), address(sEusd), own);
+        // 3. Controller (only if OWN exists) — plain contract bound to this vault and the OWN
+        //    token. Skipped = vault runs controller-less; wire later via setIncentivesController.
+        OwnIncentives incentives;
+        bool needsSafeAttach;
+        if (own != address(0)) {
+            incentives = new OwnIncentives(address(registry), address(sEusd), own);
 
-        // 4. Attach the controller (ADMIN only) before any emission is ever set.
-        if (registry.hasRole(ADMIN_ROLE, deployer)) {
-            sEusd.setIncentivesController(address(incentives));
-            require(address(sEusd.incentivesController()) == address(incentives), "controller not attached");
-        } else {
-            console.log("ADMIN not held by deployer - attach via ADMIN:");
-            console.log("  sEUSD.setIncentivesController(", address(incentives), ")");
+            // 4. Attach the controller (ADMIN only) before any emission is ever set.
+            if (registry.hasRole(ADMIN_ROLE, deployer)) {
+                sEusd.setIncentivesController(address(incentives));
+                require(address(sEusd.incentivesController()) == address(incentives), "controller not attached");
+            } else {
+                needsSafeAttach = true;
+            }
         }
 
-        // 5. Registry slots — only while the deployer still holds PROTOCOL_ADMIN; else via timelock.
+        // 5. Registry slots — direct if the deployer holds PROTOCOL_ADMIN, otherwise via the Safe.
+        bool needsSafeRegistry;
         if (registry.hasRole(0x00, deployer)) {
             registry.setAddress(STAKED_EUSD_KEY, address(sEusd));
-            registry.setAddress(OWN_INCENTIVES_KEY, address(incentives));
+            if (address(incentives) != address(0)) registry.setAddress(OWN_INCENTIVES_KEY, address(incentives));
         } else {
-            console.log("PROTOCOL_ADMIN not held by deployer - register via timelock:");
-            console.logBytes32(STAKED_EUSD_KEY);
-            console.logBytes32(OWN_INCENTIVES_KEY);
+            needsSafeRegistry = true;
         }
 
         vm.stopBroadcast();
 
         require(sEusd.asset() == eusd, "asset mismatch");
+
+        // Pending governance calls, printed as a ready-to-paste Safe batch.
+        if (needsSafeAttach || needsSafeRegistry) {
+            console.log("=== Safe batch required ===");
+            if (needsSafeAttach) {
+                console.log("target:", address(sEusd));
+                console.log("  setIncentivesController calldata:");
+                console.logBytes(abi.encodeCall(StakedEUSD.setIncentivesController, (address(incentives))));
+            }
+            if (needsSafeRegistry) {
+                console.log("target:", address(registry));
+                console.log("  setAddress(STAKED_EUSD, vault) calldata:");
+                console.logBytes(abi.encodeCall(IProtocolRegistry.setAddress, (STAKED_EUSD_KEY, address(sEusd))));
+                if (address(incentives) != address(0)) {
+                    console.log("  setAddress(OWN_INCENTIVES, controller) calldata:");
+                    console.logBytes(
+                        abi.encodeCall(IProtocolRegistry.setAddress, (OWN_INCENTIVES_KEY, address(incentives)))
+                    );
+                }
+            }
+        }
 
         console.log("StakedEUSD:    ", address(sEusd));
         console.log("OwnIncentives: ", address(incentives));
