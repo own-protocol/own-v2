@@ -12,7 +12,9 @@ gen-2 market/vault stack redeployed 2026-08-03 (branch `upgrade-borrow-manager`)
 | ----------------------------------- | -------------------------------------------- |
 | ProtocolRegistry                    | `0x93e08ca467046737F75AAD4C936356c196AaA36F` |
 | AssetRegistry                       | `0xDfEFfe8C385A28351Cc07a249A3B2C15Fe7b928A` |
-| OwnMarket                           | `0x448e0Abd706C84Fe2897DdDd597BA2b043F53178` |
+| OwnMarket (gen-3, ERC-1967/UUPS)    | `0x5feC69cB6ADC42031570735c3B61Dc2CfEd4ee64` |
+| — implementation                    | `0xd8Fd80d09E172276fe46b422Ea9DAEE2337ED2Eb` |
+| — ForceExecuteLib (linked)          | `0x8b41ef72A703F413Ab98A0268d8958995cfE999D` |
 | VaultManager                        | `0xfA2981bA6F5E955f3FF4c9DBd9a79Ff29015d352` |
 | ETokenFactory                       | `0x21C8Ab24844101EE7A2625A7f281f7ceD679782A` |
 | ChainlinkOracleVerifier (in-house)  | `0x72158ca9C5Dab08f3c470188a34c6e609fa6af9b` |
@@ -167,6 +169,27 @@ Remaining ops: route treasury stability fees to sEUSD (`transferInRewards`, OPER
 frontend handoff (addresses/ABIs from this table, EIP-7702 batch zap with sequential fallback,
 show per-position liquidation price).
 
+## Gen-3 OwnMarket — UUPS (2026-09-09, cutover 2026-09-10)
+
+Deployed from branch `stablecoin` via `RedeployMarket3Robinhood.s.sol` (addresses in the core
+table above). Behaviorally identical to gen-2 — the delta is upgradability only: ERC-1967/UUPS
+proxy (`_authorizeUpgrade` = registry ADMIN, i.e. the Safe), proxy-safe EIP-712 domain, and the
+force-execute path extracted into the external-linked `ForceExecuteLib`. Bare implementation is
+un-initializable (asserted at deploy). This is the last market *swap* — all future market logic
+changes go through `UpgradeOwnMarket.s.sol` as one-tx Safe upgrades; storage layout is
+append-only from this deploy's commit.
+
+Cutover: single Safe write `registry.setAddress(MARKET, proxy)` — every consumer (eToken
+mint/burn, PSM ReserveVault custody, OwnVault/VaultManager/AssetRegistry hooks, BorrowManager
+`convertLegacy`/`redeemHalted`) resolves `registry.market()` dynamically, and the gen-2 book was
+empty (zero orders ever created), so nothing migrated. The maker/RFQ quote service re-points its
+EIP-712 `verifyingContract` to the new proxy at cutover — quotes signed for the old market are
+domain-invalid on the new one. Post-cutover smoke: rerun `TestMintBorrowTslaRobinhood` /
+`TestPsmTslaRobinhood` round-trips.
+
+Note: an orphan OwnMarket implementation from a nonce-raced first broadcast attempt exists at
+the deployer's nonce-320 address — un-initializable, referenced by nothing, ignore it.
+
 ## E2E smoke tests (2026-07-14, all passed)
 
 Scripts: `TestSetupTslaRobinhood` / `TestMintBorrowTslaRobinhood` / `TestRepayRedeemTslaRobinhood` /
@@ -196,17 +219,18 @@ and `setMakerAllowed(TSLA, operator, false)` executed during the signer/maker ro
 - [ ] Small psmMint/psmRedeem round-trip before announcing
 - [ ] Migrate PROTOCOL_ADMIN to Safe multisig
 
-## Superseded contracts (gen-1, 2026-07-14 deploy — reference only)
+## Superseded contracts (reference only)
 
-Replaced by the gen-2 stack on 2026-08-03. The gen-1 market remains the live `registry.market()`
-until the Safe cutover executes; the gen-1 vault is in wind-down (withdrawal wait 0, deposits
-gated, lending grants revoked) and will be deregistered once fully drained (halt first if dust
-holders remain). ~927 USDG of borrower debt on the gen-1 BorrowManager must be repaid there —
-positions do not migrate.
+Gen-1 stack replaced by gen-2 on 2026-08-03 (gen-1→gen-2 market cutover has since executed);
+gen-2 market replaced by the gen-3 UUPS proxy on 2026-09-10. The gen-1 vault is in wind-down
+(withdrawal wait 0, deposits gated, lending grants revoked) and will be deregistered once fully
+drained (halt first if dust holders remain). ~927 USDG of borrower debt on the gen-1
+BorrowManager must be repaid there — positions do not migrate.
 
 | Contract                                  | Address                                      |
 | ----------------------------------------- | -------------------------------------------- |
-| OwnMarket v1 (live until Safe cutover)    | `0xF17Ce62F389B5bAA9C24f448D329E898c8f8dEf7` |
+| OwnMarket gen-2 (non-proxy)               | `0x448e0Abd706C84Fe2897DdDd597BA2b043F53178` |
+| OwnMarket v1                              | `0xF17Ce62F389B5bAA9C24f448D329E898c8f8dEf7` |
 | OwnVault v1 (oUSDG, wind-down)            | `0x246705F13bF56e3A572ae1407c065126230557FC` |
 | BorrowManager v1 (non-proxy, repay-only)  | `0xa58738135ce8D44E746B04967590A831C7E01bF1` |
 | VaultYieldManager v1                      | `0x2efb4f919302f9548d7E497503Fa92E5dd93f841` |
