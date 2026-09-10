@@ -9,9 +9,11 @@ The backing stack has two layers:
 
 Issuance runs through two paths: an **RFQ marketplace** where market makers quote mints and redeems against signed oracle-priced quotes, and a **PSM (peg-stability module)** for permissionless two-way 1:1 conversion between wrapper tokens and eTokens (`psmMint` / `psmRedeem`, plus permissionless DvP fills of resting orders against the reserve via `psmFillOrder`). Every holder has a code-property exit: a maker fill, an in-kind PSM redemption against the reserve, or a forced redemption against vault collateral at the oracle price.
 
-**Core contracts**: ProtocolRegistry, OwnMarket, OwnVault, ReserveVault, VaultManager, AssetRegistry, BorrowManager, OwnLendingPool, OracleVerifier, PythOracleVerifier
+On top of the CST layer sits **eUSD**, an overcollateralized stablecoin minted CDP-style against eToken collateral (launch collateral: eSPY). Borrowers deposit eTokens and mint eUSD against a fresh oracle price; redemptions burn eUSD for $1 of collateral from the riskiest positions, anchoring the peg, and every exit path (repay, close, liquidate, redeem) works even with markets closed or feeds down. **sEUSD** is the ERC-4626 staking vault that streams base eUSD yield to stakers with sUSDe-style vesting, with an attachable controller for OWN token incentives.
 
-**Tokens**: EToken, ETokenFactory, OwnAToken, OwnDebtToken
+**Core contracts**: ProtocolRegistry, OwnMarket, OwnVault, ReserveVault, VaultManager, AssetRegistry, BorrowManager, OwnLendingPool, EUSDManager, OwnIncentives, OracleVerifier, PythOracleVerifier
+
+**Tokens**: EToken, ETokenFactory, OwnAToken, OwnDebtToken, EUSD, StakedEUSD
 
 **Peripheral contracts**: LendingRouter, VaultYieldManager, WETHRouter, WstETHRouter
 
@@ -58,10 +60,11 @@ forge script script/Deploy.s.sol --rpc-url base_sepolia --broadcast --verify
 ```
 src/
   core/           Core protocol contracts (OwnMarket, OwnVault, ReserveVault,
-                  OwnLendingPool, registries)
+                  OwnLendingPool, EUSDManager, OwnIncentives, registries)
   interfaces/     Interface definitions and shared types
-  libraries/      Interest-rate model and lending math
-  tokens/         EToken (CST), lending pool receipt/debt tokens
+  libraries/      Interest-rate model, lending math, force-execute logic
+  tokens/         EToken (CST), eUSD stablecoin + sEUSD staking vault,
+                  lending pool receipt/debt tokens
   periphery/      Routers and vault yield manager
 test/
   unit/           Unit tests with mocked dependencies
@@ -74,8 +77,9 @@ docs/             Protocol, PSM design, and deployment documentation
 
 ## Documentation
 
-- [Protocol Documentation](docs/protocol.md) — how the protocol works, contract architecture, order lifecycle, oracle system, PSM & reserve vaults
+- [Protocol Documentation](docs/protocol.md) — how the protocol works, contract architecture, order lifecycle, oracle system, PSM & reserve vaults, eUSD stablecoin & staking
 - [PSM Design](docs/psm-design.md) — peg-stability module and RWA reserve-vault design and decision log
+- [eUSD Q&A](docs/eusd-qa.md) — eUSD stablecoin design questions and answers
 - [Deployment Guide](docs/deployment.md) — step-by-step deployment instructions
 - [Development Guide](AGENTS.md) — coding conventions, security patterns, testing standards
 
