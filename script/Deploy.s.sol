@@ -3,6 +3,8 @@ pragma solidity 0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
 
+import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
+
 import {AssetRegistry} from "../src/core/AssetRegistry.sol";
 
 import {OwnMarket} from "../src/core/OwnMarket.sol";
@@ -113,8 +115,12 @@ contract Deploy is Script {
         d.assetRegistry = address(new AssetRegistry(d.registry));
         console.log("AssetRegistry:", d.assetRegistry);
 
-        // ── 5. OwnMarket ──────────────────────────────────────
-        d.market = address(new OwnMarket(d.registry));
+        // ── 5. OwnMarket (UUPS proxy; ForceExecuteLib is auto-deployed and linked into the
+        //       implementation by forge in this broadcast — the impl address is needed for
+        //       explorer verification with the library link) ──
+        address marketImpl = address(new OwnMarket());
+        d.market = address(new ERC1967Proxy(marketImpl, abi.encodeCall(OwnMarket.initialize, (d.registry))));
+        console.log("OwnMarket impl:", marketImpl);
         console.log("OwnMarket:", d.market);
 
         // ── 6. VaultManager ───────────────────────────────────

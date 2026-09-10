@@ -149,6 +149,79 @@ psmMint/psmRedeem round-trip.
 > **Split runbook:** a stock split jumps `uiMultiplier` far beyond the ratio-jump bound by design.
 > Halt, re-mark under the new multiplier, resume — do not widen the bound.
 
+## eUSD collateral policy & split runbook
+
+**Collateral selection (preferred).** Onboard only eTokens that are **low-volatility** and
+**unlikely to ever be re-denominated**: broad index ETFs (SPY has never split since 1993; QQQ
+split once, in 2000). Avoid single stocks and anything with a split history or a high share price
+that invites one, and avoid anything whose Robinhood-side token carries a non-1.0 `uiMultiplier`
+schedule (dividend reinvestors). Every `addCollateral` is a permanent commitment to price that
+token through any future corporate action.
+
+**Why it matters.** `EUSDManager` custodies collateral by token address and prices it by ticker.
+Ticker prices are per *active* eToken unit, so after `AssetRegistry.migrateToken` the manager
+scales the price of the (now legacy) held token by `legacyRatioToActive` — positions keep their
+pre-split USD value (A4-H-02 fix). That protection holds only once **both** the registry ratio and
+the post-split feed are live; between the two, every valuation is off by the split ratio in one
+direction or the other. The window is the hazard, and the sequence below closes it.
+
+**Delisting an eUSD collateral.** Always via `VaultManager.haltAsset(ticker, price)` (review
+the price — it is permanent and unbanded, A4-L-16). From the halt, `EUSDManager` values the
+collateral at the halt price without the feed, refuses mint / withdraw-with-debt, and lets
+positions wind down through repay, close, liquidate and redeem. Never let a listed collateral's
+feed go dark without a halt: exits would revert on `PriceNotAvailable` until one is set.
+
+**If a split on an eUSD collateral is unavoidable — sequence (market closed, feed still
+pre-split):**
+
+1. `EUSDManager.setMintPaused(true)` (OPERATOR, instant) and `setCollateralEnabled(legacy, false)`
+   (ADMIN) — freezes mint and deposit on the legacy token. `withdrawCollateral` with debt is
+   fresh-price gated (`mintPriceMaxAge`), so it self-blocks while the market is closed.
+2. Run `AssetRegistry.migrateToken(ticker, newToken, ratio)` **before** the feed moves. With the
+   anchor still pre-split, legacy positions read *over*-valued by `ratio` until the open — that
+   direction is safe: nothing becomes falsely liquidatable, and a redeemer is short-changed only
+   if they ignore `minCollateralOut`. Never let the feed move first: that direction under-values
+   every position by `ratio` and makes healthy positions liquidatable for the window.
+3. At the open, confirm the feed reflects the post-split price (in-house signer and Chainlink
+   both), then verify on a sample position that `collateralRatioBps` equals its pre-split value.
+4. `addCollateral(newToken, ticker)` so new positions open on the active token, then
+   `setMintPaused(false)`.
+5. Leave the legacy collateral **disabled** (exits only: repay / close / redeem / liquidate keep
+   working). Owners migrate at their own pace — close, `OwnMarket.convertLegacy`, reopen on the
+   new token. `addCollateral` rejects legacy tokens, so the old address cannot be re-enabled by
+   mistake.
+
+## OWN incentives controller — wiring & migration runbook
+
+`StakedEUSD` notifies one `OwnIncentives` controller on every balance change; the controller
+trusts live balances **only while it is the wired controller**, and a campaign can only be
+started on the wired controller (`NotAttached`). Detaching retires a controller permanently: it
+freezes to paying already-accrued OWN and can never be re-wired (`ControllerRetired`). The setter
+also rejects code-less addresses (`ControllerNotContract`), which would otherwise brick every
+sEUSD transfer.
+
+**Launch order:** OWN → sEUSD → `OwnIncentives(registry, sEUSD, OWN)` →
+`sEUSD.setIncentivesController(ctrl)` → `fund` → `setDistribution`. Deposits made before the
+wiring are fine (they earn nothing retroactively); a campaign cannot be started before it.
+
+**Migrating to a new OWN token (or a new controller):**
+
+1. `old.setDistribution(0, 0)` — ends the campaign and freezes the index.
+2. Announce a **claim window** (≥ 7 days). While the old controller is still wired, any claim,
+   transfer, deposit or withdrawal settles a holder's unsettled tail exactly. Partners: run
+   `sweepPartner` for each registered pooled account.
+3. Deploy `new = OwnIncentives(registry, sEUSD, NEW_OWN)`; `sEUSD.setIncentivesController(new)`.
+   From this point the old controller pays only what was checkpointed before the swap — a holder
+   who never settled during the window forfeits only the tail since their last checkpoint; that
+   OWN stays in the old reserve.
+4. `old.recoverReserve(remaining, treasury)` (ADMIN) once claims have quietened; use it to make
+   good any documented unsettled tails off-chain if desired.
+5. `new.fund(...)` → `new.setDistribution(rate, end)`. Every holder starts synced at index 0.
+
+Never wire a controller that was wired before, and never start a campaign on a controller that
+is not wired — both are enforced on-chain, but the ordering above is what keeps the migration
+loss-free for holders.
+
 ## Off-chain services checklist
 
 - **Price signer (KMS):** publish marks for `USDG` ($1), the 7 launch tickers, and each wrapper

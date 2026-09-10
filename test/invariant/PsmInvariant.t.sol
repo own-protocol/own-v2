@@ -7,10 +7,12 @@ import {MockERC20} from "../helpers/MockERC20.sol";
 
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {OwnMarket} from "../../src/core/OwnMarket.sol";
+
 import {OwnVault} from "../../src/core/OwnVault.sol";
 import {ReserveVault} from "../../src/core/ReserveVault.sol";
 import {AssetConfig, Order, OrderStatus, OrderType} from "../../src/interfaces/types/Types.sol";
 import {EToken} from "../../src/tokens/EToken.sol";
+import {deployOwnMarket} from "../helpers/DeployOwnMarket.sol";
 
 import {PsmHandler} from "./handlers/PsmHandler.sol";
 
@@ -45,7 +47,7 @@ contract PsmInvariantTest is BaseTest {
         vault = new OwnVault(address(weth), "Own ETH Vault", "oETH", address(protocolRegistry), address(vm1Manager));
         vaultManager.registerVault(address(vault), ETH_ASSET);
 
-        market = new OwnMarket(address(protocolRegistry));
+        market = deployOwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
 
         eTSLA = new EToken("Own Tesla", "eTSLA", TSLA, address(protocolRegistry), address(usdc));

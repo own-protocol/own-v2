@@ -10,8 +10,10 @@ import {AssetConfig, BPS, Order, OrderStatus, OrderType, PRECISION, Quote} from 
 
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {OwnMarket} from "../../src/core/OwnMarket.sol";
+
 import {OwnVault} from "../../src/core/OwnVault.sol";
 import {EToken} from "../../src/tokens/EToken.sol";
+import {deployOwnMarket} from "../helpers/DeployOwnMarket.sol";
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
@@ -55,7 +57,7 @@ contract OrderLifecycleTest is BaseTest {
         vault = new OwnVault(address(weth), "Own ETH Vault", "oETH", address(protocolRegistry), address(vm1Manager));
         vaultManager.registerVault(address(vault), ETH);
 
-        market = new OwnMarket(address(protocolRegistry));
+        market = deployOwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
 
         vm.stopPrank();
@@ -436,6 +438,22 @@ contract OrderLifecycleTest is BaseTest {
 
         vm.prank(Actors.MINTER1);
         vm.expectRevert(abi.encodeWithSelector(IOwnMarket.InvalidOrderStatus.selector, orderId));
+        market.forceExecuteOrder(orderId, address(vault), assetPriceData, collateralPriceData);
+    }
+
+    /// @dev A4-L-13: an expired order that nobody retired is not a standing force-execution right.
+    function test_forceExecute_expiredUnretiredOrder_reverts() public {
+        _mintETokensViaFlow(Actors.MINTER1, MINT_AMOUNT);
+        uint256 eTokenBal = eTSLA.balanceOf(Actors.MINTER1);
+        uint256 expiry = block.timestamp + CLAIM_THRESHOLD + 1 days;
+        uint256 orderId = _placeRedeem(Actors.MINTER1, eTokenBal, expiry);
+
+        vm.warp(expiry + 1); // past the claim window AND past expiry; order still Open
+        bytes memory assetPriceData = abi.encode(uint256(TSLA_PRICE), uint256(block.timestamp));
+        bytes memory collateralPriceData = abi.encode(uint256(ETH_PRICE), uint256(block.timestamp));
+
+        vm.prank(Actors.MINTER1);
+        vm.expectRevert(abi.encodeWithSelector(IOwnMarket.OrderExpiredError.selector, orderId));
         market.forceExecuteOrder(orderId, address(vault), assetPriceData, collateralPriceData);
     }
 

@@ -69,7 +69,7 @@ contract TestRepayRedeemTslaRobinhood is Script {
         uint256 operatorPk,
         address vmAddr,
         uint256 etslaAmount
-    ) internal returns (Quote memory q, bytes memory sig) {
+    ) internal view returns (Quote memory q, bytes memory sig) {
         q = Quote({
             orderId: 0,
             user: vmAddr,
@@ -87,7 +87,7 @@ contract TestRepayRedeemTslaRobinhood is Script {
     /// @dev Fresh operator-signed TSLA price attestation for the mark refresh.
     function _priceProof(
         uint256 operatorPk
-    ) internal returns (bytes memory priceData) {
+    ) internal view returns (bytes memory priceData) {
         uint256 ts = block.timestamp;
         (uint8 v, bytes32 r, bytes32 s) =
             vm.sign(operatorPk, OracleVerifier(INHOUSE_ORACLE).priceDigest(TSLA, TSLA_PRICE, ts));

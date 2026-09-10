@@ -121,7 +121,7 @@ contract LendingRouterTest is BaseTest {
     //  registerReserve
     // ──────────────────────────────────────────────────────────
 
-    function test_registerReserve_setsMappingAndApproval() public {
+    function test_registerReserve_setsMappingAndApproval() public view {
         (address aToken, bool enabled) = router.reserves(address(wstETHU));
         assertEq(aToken, address(awstETH));
         assertTrue(enabled);

@@ -144,11 +144,11 @@ contract RouterIntegrationTest is BaseTest {
         wethVault.redeem(shares, Actors.LP1, Actors.LP1);
     }
 
-    function test_vault_maxWithdraw_returnsZero() public {
+    function test_vault_maxWithdraw_returnsZero() public view {
         assertEq(wethVault.maxWithdraw(Actors.LP1), 0, "maxWithdraw should be 0");
     }
 
-    function test_vault_maxRedeem_returnsZero() public {
+    function test_vault_maxRedeem_returnsZero() public view {
         assertEq(wethVault.maxRedeem(Actors.LP1), 0, "maxRedeem should be 0");
     }
 

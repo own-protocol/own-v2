@@ -6,6 +6,7 @@ import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {BorrowManager} from "../../src/core/BorrowManager.sol";
 
 import {OwnMarket} from "../../src/core/OwnMarket.sol";
+
 import {OwnVault} from "../../src/core/OwnVault.sol";
 import {IBorrowManager} from "../../src/interfaces/IBorrowManager.sol";
 import {IOwnMarket} from "../../src/interfaces/IOwnMarket.sol";
@@ -16,6 +17,7 @@ import {EToken} from "../../src/tokens/EToken.sol";
 import {Actors} from "../helpers/Actors.sol";
 import {BaseTest} from "../helpers/BaseTest.sol";
 import {deployBorrowManager} from "../helpers/DeployBorrowManager.sol";
+import {deployOwnMarket} from "../helpers/DeployOwnMarket.sol";
 import {MockAToken, MockAaveDebtToken, MockAaveV3Pool} from "../helpers/MockAaveV3Pool.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
@@ -90,7 +92,7 @@ contract RFQAusdcFlowsTest is BaseTest {
             new OwnVault(address(ausdcAToken), "Own aUSDC", "oaUSDC", address(protocolRegistry), address(vm1Manager));
         vaultManager.registerVault(address(vault), AUSDC);
 
-        market = new OwnMarket(address(protocolRegistry));
+        market = deployOwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
         vault.setRequireDepositApproval(true);
 

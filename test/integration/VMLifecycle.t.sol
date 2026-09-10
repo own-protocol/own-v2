@@ -12,8 +12,10 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {OwnMarket} from "../../src/core/OwnMarket.sol";
+
 import {OwnVault} from "../../src/core/OwnVault.sol";
 import {EToken} from "../../src/tokens/EToken.sol";
+import {deployOwnMarket} from "../helpers/DeployOwnMarket.sol";
 
 /// @title VMLifecycle Integration Test
 /// @notice Tests manager binding to vault, order filling, and signer identity verification.
@@ -73,7 +75,7 @@ contract VMLifecycleTest is BaseTest {
         });
         assetRegistry.addAsset(ETH, address(weth), ethConfig);
 
-        market = new OwnMarket(address(protocolRegistry));
+        market = deployOwnMarket(address(protocolRegistry));
         protocolRegistry.setAddress(protocolRegistry.MARKET(), address(market));
 
         vm.stopPrank();

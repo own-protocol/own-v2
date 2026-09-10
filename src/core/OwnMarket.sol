@@ -5,11 +5,14 @@ import {IAssetRegistry} from "../interfaces/IAssetRegistry.sol";
 import {IEToken} from "../interfaces/IEToken.sol";
 import {IOracleVerifier} from "../interfaces/IOracleVerifier.sol";
 import {IOwnMarket} from "../interfaces/IOwnMarket.sol";
-import {IOwnVault} from "../interfaces/IOwnVault.sol";
 import {IProtocolRegistry} from "../interfaces/IProtocolRegistry.sol";
 import {IReserveVault} from "../interfaces/IReserveVault.sol";
 import {IVaultManager} from "../interfaces/IVaultManager.sol";
+
 import {BPS, Order, OrderStatus, OrderType, PRECISION, PsmConfig, Quote} from "../interfaces/types/Types.sol";
+import {ForceExecuteLib} from "../libraries/ForceExecuteLib.sol";
+import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
+import {UUPSUpgradeable} from "@openzeppelin/contracts/proxy/utils/UUPSUpgradeable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
@@ -29,7 +32,12 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 ///         global claim threshold, releasing the order's bound vault collateral as recourse against
 ///         an unresponsive maker. Trading pause blocks execution and force-execute; a permanently
 ///         halted asset blocks both and is redeemed via {redeemHalted} from the halt redeem address.
-contract OwnMarket is IOwnMarket, ReentrancyGuard, EIP712 {
+/// @dev Runs behind an ERC-1967 proxy (UUPS) so the market address survives upgrades (e.g. the
+///      planned crosschain eToken bridging paths). Upgrades are ADMIN-gated ({_authorizeUpgrade});
+///      storage is append-only from this baseline. EIP712's immutables are set in the
+///      implementation constructor and are proxy-safe (OZ v5 rebuilds the domain separator when
+///      address(this) differs from the cached implementation address).
+contract OwnMarket is IOwnMarket, Initializable, UUPSUpgradeable, ReentrancyGuard, EIP712 {
     using SafeERC20 for IERC20;
     using ECDSA for bytes32;
 
@@ -43,16 +51,15 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard, EIP712 {
     );
 
     // ──────────────────────────────────────────────────────────
-    //  Immutables
-    // ──────────────────────────────────────────────────────────
-
-    IProtocolRegistry public immutable registry;
-
-    // ──────────────────────────────────────────────────────────
     //  State
     // ──────────────────────────────────────────────────────────
 
-    uint256 private _nextOrderId = 1;
+    /// @dev Initializer-set, fixed thereafter (storage, not immutable, so an upgraded
+    ///      implementation can never silently rebind it).
+    IProtocolRegistry public registry;
+
+    /// @dev Set to 1 in {initialize} — inline initializers do not run behind a proxy.
+    uint256 private _nextOrderId;
 
     mapping(uint256 => Order) private _orders;
     mapping(address => uint256[]) private _userOrders;
@@ -61,15 +68,41 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard, EIP712 {
     mapping(bytes32 => bool) private _usedQuotes;
 
     // ──────────────────────────────────────────────────────────
-    //  Constructor
+    //  Modifiers
     // ──────────────────────────────────────────────────────────
 
-    /// @param registry_ ProtocolRegistry contract address.
-    constructor(
-        address registry_
-    ) EIP712("Own Protocol", "1") {
-        registry = IProtocolRegistry(registry_);
+    bytes32 private constant ADMIN = keccak256("ADMIN");
+
+    modifier onlyAdmin() {
+        if (!registry.hasRole(ADMIN, msg.sender)) revert OnlyAdmin();
+        _;
     }
+
+    // ──────────────────────────────────────────────────────────
+    //  Construction / initialization (UUPS)
+    // ──────────────────────────────────────────────────────────
+
+    /// @dev The implementation is only ever used behind an ERC-1967 proxy; lock its own
+    ///      initializers so the bare implementation can never be initialized or taken over.
+    constructor() EIP712("Own Protocol", "1") {
+        _disableInitializers();
+    }
+
+    /// @notice Initialize the market proxy (runs once, in the proxy's constructor call).
+    /// @param registry_ ProtocolRegistry contract address.
+    function initialize(
+        address registry_
+    ) external initializer {
+        if (registry_ == address(0)) revert ZeroAddress();
+        registry = IProtocolRegistry(registry_);
+        _nextOrderId = 1;
+    }
+
+    /// @dev UUPS upgrade gate: only the protocol ADMIN role may upgrade this proxy's
+    ///      implementation.
+    function _authorizeUpgrade(
+        address
+    ) internal view override onlyAdmin {}
 
     // ──────────────────────────────────────────────────────────
     //  Market orders (atomic)
@@ -183,6 +216,8 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard, EIP712 {
     }
 
     /// @inheritdoc IOwnMarket
+    /// @dev Body lives in ForceExecuteLib (linked external library, delegatecalled) to keep the
+    ///      market under the EIP-170 size limit; behavior is unchanged. See the library NatSpec.
     function forceExecuteOrder(
         uint256 orderId,
         address vault,
@@ -190,53 +225,8 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard, EIP712 {
         bytes calldata collateralPriceData
     ) external payable nonReentrant {
         Order storage order = _openOrder(orderId);
-        if (order.user != msg.sender) revert OnlyOrderOwner(orderId);
-        if (order.orderType != OrderType.Redeem) revert ForceMintNotAllowed(orderId);
-        // A redeem order escrowed in a now-legacy token cannot be force-executed; cancel to recover.
-        if (order.escrowToken != _activeToken(order.asset)) revert OrderTokenMigrated(orderId);
-
-        IVaultManager vmgr = _vaultManager();
-        // Collateral source: the redeemer picks any vault in the registry's admin-approved pool —
-        // force-execution is the user's last-resort exit, so source flexibility is deliberate.
-        // An empty pool (the default) disables force-execution for the asset (fail-safe).
-        if (!_assetRegistry().isForceExecuteVaultAllowed(order.asset, vault)) {
-            revert ForceExecuteVaultNotAllowed(order.asset, vault);
-        }
-        if (!vmgr.isRegisteredVault(vault)) revert VaultNotRegistered(vault);
-        if (vmgr.isVaultExcluded(vault)) revert VaultExcludedFromPool(vault);
-        // Pool entries can go stale (deregister → re-register as RWA); reserves never source
-        // force-execution — releaseCollateral there is market-gated, which this call would pass.
-        if (vmgr.vaultBackedAsset(vault) != bytes32(0)) revert RwaVaultNotEligible(vault);
-        // Pause and halt both disable the force path.
-        if (vmgr.isTradingPaused(order.asset)) revert AssetPaused(order.asset);
-        if (vmgr.isAssetHalted(order.asset)) revert ForceDisabledDuringHalt(order.asset);
-        // A zero claim threshold (pre-deploy default) disables force-execution entirely.
-        uint256 threshold = vmgr.claimThreshold();
-        if (threshold == 0) revert ForceNotEnabled();
-        if (block.timestamp < order.createdAt + threshold) {
-            revert ForceWindowNotElapsed(orderId);
-        }
-
-        uint256 remaining = order.amount - order.filledAmount;
-
-        // Fresh price required: the current oracle price must still satisfy the order's limit, so a
-        // stale favorable print can't be exercised after the market has moved. Payout settles at the
-        // limit (bare oracle price, no maker spread).
-        (uint256 currentPrice, uint256 assetTs) = _verifyAssetPrice(order.asset, assetPriceData);
-        if (_isStale(assetTs, registry.priceMaxAge())) revert StaleAssetPrice();
-        if (currentPrice < order.limitPrice) revert PriceBelowMinimum();
-
-        uint256 grossUsd = Math.mulDiv(remaining, order.limitPrice, PRECISION);
-        uint256 grossCollateral = _convertToCollateral(vault, grossUsd, collateralPriceData);
-
-        // Effects.
-        order.filledAmount = order.amount;
-        order.status = OrderStatus.ForceExecuted;
-
-        // Interactions: release collateral, burn escrowed eTokens, shrink global exposure.
-        IOwnVault(vault).releaseCollateral(order.user, grossCollateral);
-        IEToken(_activeToken(order.asset)).burn(address(this), remaining);
-        vmgr.closeExposure(order.asset, remaining);
+        (uint256 remaining, uint256 grossCollateral) =
+            ForceExecuteLib.forceExecute(order, orderId, registry, vault, assetPriceData, collateralPriceData);
 
         emit OrderForceExecuted(orderId, order.user, remaining, grossCollateral);
 
@@ -633,50 +623,6 @@ contract OwnMarket is IOwnMarket, ReentrancyGuard, EIP712 {
         if (ok && (ret.length == 0 || abi.decode(ret, (bool)))) return;
         IERC20(token).safeTransfer(registry.treasury(), amount);
         emit EscrowSweptToTreasury(to, token, amount);
-    }
-
-    // ──────────────────────────────────────────────────────────
-    //  Internal — oracle helpers (force path only)
-    // ──────────────────────────────────────────────────────────
-
-    /// @dev Verify a fresh signed price proof for an asset, forwarding the oracle's ETH fee.
-    function _verifyAssetPrice(
-        bytes32 asset,
-        bytes calldata priceData
-    ) private returns (uint256 price, uint256 timestamp) {
-        address oracleAddr = _getOracleForAsset(asset);
-        if (oracleAddr == address(0)) revert AssetOracleNotSet(asset);
-        return _verifyPaidPrice(oracleAddr, asset, priceData);
-    }
-
-    /// @dev Verify a signed price proof against `oracleAddr`, forwarding the oracle's ETH fee.
-    function _verifyPaidPrice(
-        address oracleAddr,
-        bytes32 asset,
-        bytes calldata priceData
-    ) private returns (uint256 price, uint256 timestamp) {
-        IOracleVerifier oracle = IOracleVerifier(oracleAddr);
-        uint256 fee = oracle.verifyFee(priceData);
-        (price, timestamp) = oracle.verifyPrice{value: fee}(asset, priceData);
-    }
-
-    /// @dev Convert a USD value (18 decimals) to collateral units using the vault's collateral oracle.
-    function _convertToCollateral(
-        address vault,
-        uint256 usdValue,
-        bytes calldata collateralPriceData
-    ) private returns (uint256) {
-        bytes32 collatAsset = _vaultManager().vaultCollateralAsset(vault);
-        address oracleAddr = _getOracleForAsset(collatAsset);
-        if (oracleAddr == address(0)) revert CollateralOracleNotSet();
-        (uint256 price, uint256 timestamp) = _verifyPaidPrice(oracleAddr, collatAsset, collateralPriceData);
-
-        // Collateral is released now, so its price must be current.
-        if (_isStale(timestamp, registry.priceMaxAge())) revert StaleCollateralPrice();
-
-        // usdValue and price are 18-decimal, so this yields an 18-decimal collateral amount.
-        // Scale down to the collateral token's decimals (floor — protocol-favorable).
-        return Math.mulDiv(usdValue, PRECISION, price) / _tokenScale(IOwnVault(vault).asset());
     }
 
     // ──────────────────────────────────────────────────────────
