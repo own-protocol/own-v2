@@ -190,6 +190,23 @@ domain-invalid on the new one. Post-cutover smoke: rerun `TestMintBorrowTslaRobi
 Note: an orphan OwnMarket implementation from a nonce-raced first broadcast attempt exists at
 the deployer's nonce-320 address — un-initializable, referenced by nothing, ignore it.
 
+Cutover executed and verified on-chain 2026-09-10: `registry.market()` → gen-3 proxy;
+functional probe (`psmRedeem` eth_call impersonating an eToken holder) confirmed the eToken
+burn gate and ReserveVault release gate accept the new market.
+
+## Asset support pause (2026-09-10)
+
+Frontend + MM support temporarily withdrawn for **MU, AAPL, AMZN, AMD, META** (active set: TSLA,
+SPCX, MSFT, GOOGL, SPY, QQQ, NVDA). All five had **zero eToken supply** — no holders, borrowers,
+or liquidation exposure. On-chain action (Safe batch, verified): `setAssetCapUSD(ticker, 0)` on
+the VaultManager for the five — blocks all new minting (RFQ **and** PSM) at the `openExposure`
+gate while every exit stays structurally open. Deliberately NOT `setAssetTradingPaused` (gates
+`psmRedeem`, the permissionless exit) and NOT `haltAsset` (permanent). With zero supply and zero
+cap, the KMS price feed, mark keepers, and MM quoting can drop these tickers entirely.
+
+Re-enable path (per asset): Safe `setAssetCapUSD(ticker, 1_000_000e18)` → resume KMS feed +
+keeper + MM quoting → restore the ticker in the app address book.
+
 ## E2E smoke tests (2026-07-14, all passed)
 
 Scripts: `TestSetupTslaRobinhood` / `TestMintBorrowTslaRobinhood` / `TestRepayRedeemTslaRobinhood` /

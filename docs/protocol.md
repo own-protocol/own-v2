@@ -98,6 +98,8 @@ The protocol is organized into three layers (vaults are deployed directly and re
 | **OwnVault**                  | `src/core/OwnVault.sol`         | ERC-4626 collateral vault. Holds LP collateral (custody), manages async deposit/withdrawal queues, distributes yield, supports lending opt-in (binds exactly one borrow manager for its lifetime — `setBorrowManager` is one-shot; the manager is a per-vault UUPS/ERC-1967 proxy, so ADMIN can upgrade its logic without changing the bound address), and vault-level pause/halt. Risk accounting and order controls live in the VaultManager, not the vault. Operator address: `manager`.                                                                                                                                                        |
 | **VaultManager**              | `src/core/VaultManager.sol`     | Central, pooled risk accounting **and** global control hub for **all** vaults. Owns global exposure, collateral marks, utilization, the per-asset issuance ceiling, per-vault collateral concentration caps, **the vault registry/allowlist** (admin `registerVault`/`deregisterVault` + `getAllVaults`), the signer registry, the global payment token, trading pause, permanent asset halt + halt redeem address, and the claim threshold. Valued at keeper-cached marks. See §9. |
 | **AssetRegistry**             | `src/core/AssetRegistry.sol`    | Whitelists assets, maps tickers to eToken addresses, stores oracle configurations. Supports token migration (post-stock-split). Governs which assets are valid for **all** vaults.                                                                                                                                                                                                                                                         |
+| **EUSDManager**               | `src/core/EUSDManager.sol`      | eUSD stablecoin CDP engine (ERC-1967/UUPS proxy). Custodies eToken collateral, mints/burns eUSD against fresh oracle prices, accrues the stability fee to the treasury, and runs redemptions (sorted riskiest-first list) and partial liquidations. Exits (repay/close/liquidate/redeem) are never gated. See §15.                                                                                                                          |
+| **OwnIncentives**             | `src/core/OwnIncentives.sol`    | OWN emission controller for sEUSD (Aave-style index). Attached to StakedEUSD via `setIncentivesController`; funded and driven by ADMIN (`fund` → `setDistribution`). A detached controller retires permanently and pays only already-accrued OWN.                                                                                                                                                                                          |
 
 ### Oracle Contracts
 
@@ -111,6 +113,8 @@ The protocol is organized into three layers (vaults are deployed directly and re
 | Contract         | File                             | Purpose                                                                                                                                                                      |
 | ---------------- | -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **EToken**       | `src/tokens/EToken.sol`          | Synthetic asset token (ERC-20 + ERC-2612 Permit). Mint/burn restricted to OwnMarket. Supports admin-updatable metadata (for stock splits) and a dividend reward accumulator. |
+| **EUSD**         | `src/tokens/EUSD.sol`            | The eUSD stablecoin (ERC-20 + Permit). `MINTER_ROLE` (mint/burn) held only by the EUSDManager, preserving `totalSupply == totalDebt`. ERC-7802 crosschain mint/burn for rate-limited bridges — per-bridge rolling limits plus a global `maxNetBridgedIn` cap, all fail-closed at zero until admin opens a lane. |
+| **StakedEUSD**   | `src/tokens/StakedEUSD.sol`      | sEUSD — ERC-4626 staking vault for eUSD (ERC-1967/UUPS proxy; the asset is an implementation immutable enforced across upgrades). Base yield streams in via OPERATOR `transferInRewards` and vests linearly (sUSDe-style) over `vestingPeriod`; an optional OwnIncentives controller is notified on every balance change for OWN emissions. Seeded with permanently-locked dead shares. |
 | **VaultYieldManager** | `src/periphery/VaultYieldManager.sol` | Automated LP yield distribution shell, installed as an OwnVault's `manager` (`setManager`). All BorrowManager revenue (premium sweeps, dividend sweeps, interest claims) lands here as stablecoin; a permissionless `distribute` splits it treasury-cut / LP-yield (converted 1:1 to the vault's aToken via `OwnLendingPool.supply` and pushed with `shareYield`). The vault calls its `syncYield` before pricing LP entry/exit. The VM entity drives the deposit queue through `acceptDeposit`/`rejectDeposit` passthroughs. |
 | **WETHRouter**   | `src/periphery/WETHRouter.sol`   | Wraps native ETH to WETH for vault deposits and unwraps on redemption.                                                                                                       |
 | **WstETHRouter** | `src/periphery/WstETHRouter.sol` | Wraps stETH to wstETH for alternative collateral vaults. Supports ERC-2612 permit.                                                                                           |
@@ -885,3 +889,81 @@ On an issuer corporate action (split / ticker change) with ≥24h notice:
 issuer (Dinari) that is the share price (splits rebase balances in place); for a total-return
 issuer (Ondo) it is share price × sValue. It equals the underlying equity feed only while the
 multiplier is 1.
+
+---
+
+## 15. eUSD Stablecoin & Staking
+
+eUSD is an overcollateralized USD stablecoin minted CDP-style against eToken collateral. It
+composes with the CST layer rather than replacing it: users acquire eTokens through the market or
+PSM, deposit them as collateral in the **EUSDManager**, and mint eUSD against them.
+
+### CDP mechanics (EUSDManager)
+
+Positions are per `(collateral, owner)`. The core flows:
+
+- **`deposit` / `withdrawCollateral`** — deposit needs no price (health only improves);
+  withdrawal with outstanding debt is risk-increasing and takes the same gates as minting.
+- **`mint`** — requires minting unpaused, a fresh oracle price (age ≤ `mintPriceMaxAge`),
+  resulting ratio ≥ **MCR**, position debt ≥ `minDebt`, and total debt ≤ `debtCeiling`.
+- **`repay` / `closePosition`** — always available, no oracle involved. Anyone may repay on an
+  owner's behalf; only lever-up is owner-only.
+- **`accrue`** — permissionless fee crystallization on any position with debt (see below).
+
+**Exits are never gated.** Repay, close, liquidate, and redeem work while minting is paused,
+markets are closed, or feeds are down — the design invariant carried over from the CST layer.
+Risk-increasing actions pause with trading; exits price off the last oracle anchor (no age
+bound), and a halted collateral is valued at its fixed halt price with no feed at all.
+
+### Stability fee & supply invariant
+
+The stability fee is a fixed annual rate accrued lazily from a global bps-seconds index (simple
+interest between touches). On any position touch — or a permissionless `accrue` — the pending fee
+is folded into the position's debt and **minted as eUSD to the protocol treasury**, preserving
+`eusd.totalSupply() == totalDebt` exactly at every accrual point. Rate changes settle the index
+first and apply prospectively only.
+
+### Redemptions (peg anchor)
+
+`redeem` burns eUSD for exactly $1 of collateral per eUSD (floor-rounded), sourced from the
+riskiest positions first via an on-chain sorted list (ascending collateral ratio; insert hints
+keep re-sorting O(1)). Always available, never pausable, no freshness bound — this is the peg's
+hard floor. Each touched position sheds debt and collateral at 1:1 value, so its ratio improves
+(deleveraging, not liquidation). An underwater head redeems only its collateral-backed portion;
+the unbacked residual stays on the owner's books off-list.
+
+### Liquidations
+
+A position whose ratio falls below the liquidation threshold (at the oracle anchor — works
+off-hours) can be liquidated in chunks: the liquidator burns eUSD and receives collateral worth
+`repaid × (1 + bonus)`, capped at the position's collateral and, for partials, at the pro-rata
+share — so a remainder's ratio never worsens and under-bonus shortfalls land on the liquidator,
+never as unbacked debt. Ratio parameters enforce `MCR ≥ liqThreshold ≥ 100% + bonus`, so a fresh
+mint is never instantly liquidatable and a threshold liquidation is solvent.
+
+### Collateral lifecycle
+
+`addCollateral` validates the token is the active eToken for its ticker and is a **permanent
+commitment** — there is no removal, only `setCollateralEnabled(false)` (blocks first deposits
+and all minting; top-ups and every exit unaffected). Delisting runs through
+`VaultManager.haltAsset` (positions wind down at the frozen halt price). Stock splits follow the
+AssetRegistry migration: a legacy collateral's price is scaled by `legacyRatioToActive`, so
+positions keep their pre-split USD value (sequence in `docs/deployment-robinhood.md`).
+
+### EUSD token & bridging
+
+Plain ERC-20 + Permit; `MINTER_ROLE` is held only by the EUSDManager. Crosschain transfers use
+ERC-7802 (`crosschainMint`/`crosschainBurn`) with two independent brakes: per-bridge rolling
+mint/burn rate limits, and a global `maxNetBridgedIn` cap bounding total bridged-in supply beyond
+local CDP backing. Both default to zero — bridging is fail-closed until admin opens a lane.
+
+### sEUSD staking (StakedEUSD + OwnIncentives)
+
+sEUSD is a standard ERC-4626 vault over eUSD with no claim step — yield arrives as share-price
+appreciation. An OPERATOR streams reward batches in via `transferInRewards`; each batch vests
+linearly over `vestingPeriod` (rolling any unvested remainder into the new batch), so rewards
+cannot be sandwiched by deposit-before/withdraw-after. The vault is seeded at deploy with
+permanently-locked dead shares (first-depositor inflation defense; supply never returns to zero
+mid-vest). OWN emissions are a separate, optional layer: an **OwnIncentives** controller attached
+by ADMIN accrues OWN per share-second (`fund` → `setDistribution`); detaching a controller
+retires it permanently. Launch order and migration runbook: `docs/deployment-robinhood.md`.
