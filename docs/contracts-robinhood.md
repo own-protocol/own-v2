@@ -236,6 +236,16 @@ and `setMakerAllowed(TSLA, operator, false)` executed during the signer/maker ro
 - [ ] Small psmMint/psmRedeem round-trip before announcing
 - [ ] Migrate PROTOCOL_ADMIN to Safe multisig
 
+## Team vesting — self-hosted Sablier Lockup v4.0.1 (pending)
+
+Runbook: docs/deployment-robinhood.md, "Team token vesting". Build with `FOUNDRY_PROFILE=sablier`.
+
+- [ ] `script/sablier/DeploySablierLockupRobinhood.s.sol` — SablierComptroller proxy `0x…`, impl
+      `0x…`, LockupNFTDescriptor `0x…`, SablierLockup `0x…`; admin = Safe; fees 0; oracle unset.
+- [ ] `script/sablier/CreateTeamVestingRobinhood.s.sol` — 5 LL streams (ids 1–5), token `0x…`,
+      start `…`, cliff (30%) `…`, fully vested `…`; sender = Safe; cancelable, non-transferable.
+- [ ] Blockscout verification of all four contracts under the `sablier` profile.
+
 ## Superseded contracts (reference only)
 
 Gen-1 stack replaced by gen-2 on 2026-08-03 (gen-1→gen-2 market cutover has since executed);

@@ -221,14 +221,24 @@ Use OpenZeppelin Contracts v5.x via Foundry's git submodule system. Keep depende
 lib/
 ├── forge-std/              # Foundry test utilities (Test, console, Vm)
 ├── openzeppelin-contracts/ # v5.x: ERC20, ERC4626, SafeERC20, ECDSA, ReentrancyGuard, Math, Ownable
+├── pyth-sdk-solidity/      # Pyth oracle interfaces
+│
+│   # Team-vesting only (script/sablier, test/sablier, FOUNDRY_PROFILE=sablier) — nothing in src/
+│   # imports these. Sablier Lockup v4.0.1 is compiled against the exact deps it was audited with.
+├── sablier-evm-monorepo/                    # tag lockup@v4.0.1 (Cantina-audited)
+├── openzeppelin-contracts-v5.3.0/           # Sablier's pinned OZ (context-remapped to Sablier only)
+├── openzeppelin-contracts-upgradeable-v5.3.0/
+├── prb-math/                                # v4.1.0
+├── chainlink/                               # single vendored AggregatorV3Interface (see README)
 └── (no other dependencies unless explicitly discussed)
 ```
 
-Remappings (in `remappings.txt`):
+Remappings (in `foundry.toml`):
 
 ```
 forge-std/=lib/forge-std/src/
-@openzeppelin/=lib/openzeppelin-contracts/
+@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/
+(+ the Sablier-scoped set — see foundry.toml)
 ```
 
 Do NOT add dependencies without discussion. Every dependency is attack surface. If a utility is < 50 lines, inline it in `libraries/`.
