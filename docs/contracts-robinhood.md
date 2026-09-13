@@ -236,15 +236,13 @@ and `setMakerAllowed(TSLA, operator, false)` executed during the signer/maker ro
 - [ ] Small psmMint/psmRedeem round-trip before announcing
 - [ ] Migrate PROTOCOL_ADMIN to Safe multisig
 
-## Team vesting — self-hosted Sablier Lockup v4.0.1 (pending)
+## Team vesting — OpenZeppelin VestingWallet (pending)
 
-Runbook: docs/deployment-robinhood.md, "Team token vesting". Build with `FOUNDRY_PROFILE=sablier`.
+Runbook: docs/deployment-robinhood.md, "Team token vesting". One wallet per beneficiary, linear
+over 180 days from `start`, no cliff, no clawback.
 
-- [ ] `script/sablier/DeploySablierLockupRobinhood.s.sol` — SablierComptroller proxy `0x…`, impl
-      `0x…`, LockupNFTDescriptor `0x…`, SablierLockup `0x…`; admin = Safe; fees 0; oracle unset.
-- [ ] `script/sablier/CreateTeamVestingRobinhood.s.sol` — 5 LL streams (ids 1–5), token `0x…`,
-      start `…`, cliff (30%) `…`, fully vested `…`; sender = Safe; cancelable, non-transferable.
-- [ ] Blockscout verification of all four contracts under the `sablier` profile.
+- [ ] `DeployTeamVestingRobinhood.s.sol` — token `0x…`, start `…`, fully vested `…`;
+      wallets: `0x…`, `0x…`, `0x…`, `0x…`, `0x…` (owner = beneficiary, Blockscout-verified).
 
 ## Superseded contracts (reference only)
 

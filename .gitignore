@@ -1,8 +1,6 @@
 # Compiler output
 cache/
 out/
-cache-sablier/
-out-sablier/
 
 # Ignores development broadcast logs
 broadcast/

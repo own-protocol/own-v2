@@ -7,26 +7,12 @@ evm_version = "cancun"
 optimizer = true
 optimizer_runs = 200
 via_ir = false
-# Sablier sources only compile via IR; they live in their own profile below (see [profile.sablier]).
-skip = ["script/sablier/**", "test/sablier/**"]
 
 # Remappings
 remappings = [
     "forge-std/=lib/forge-std/src/",
-    "@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/",
-    "@pythnetwork/=lib/pyth-sdk-solidity/",
-    # Sablier Lockup v4.0.1 (Cantina-audited), compiled against the exact OpenZeppelin 5.3.0 it was
-    # audited with (context remappings keep that pin scoped to the Sablier sources). Own-v2 code that
-    # talks to Sablier imports OZ types via @openzeppelin-v5.3.0/ so the types line up.
-    # See docs/deployment-robinhood.md, "Team token vesting".
-    "@sablier/lockup/=lib/sablier-evm-monorepo/lockup/",
-    "@sablier/evm-utils/=lib/sablier-evm-monorepo/utils/",
-    "@prb/math/=lib/prb-math/",
-    "@chainlink/=lib/chainlink/",
-    "@openzeppelin-v5.3.0/contracts/=lib/openzeppelin-contracts-v5.3.0/contracts/",
-    "lib/sablier-evm-monorepo/:@openzeppelin/contracts/=lib/openzeppelin-contracts-v5.3.0/contracts/",
-    "lib/sablier-evm-monorepo/:@openzeppelin/contracts-upgradeable/=lib/openzeppelin-contracts-upgradeable-v5.3.0/contracts/",
-    "lib/openzeppelin-contracts-upgradeable-v5.3.0/:@openzeppelin/contracts/=lib/openzeppelin-contracts-v5.3.0/contracts/"
+    "@openzeppelin/=lib/openzeppelin-contracts/",
+    "@pythnetwork/=lib/pyth-sdk-solidity/"
 ]
 
 # Testing
@@ -68,21 +54,6 @@ invariant = { runs = 1_000, depth = 100 }
 [profile.audit]
 fuzz = { runs = 50_000 }
 invariant = { runs = 5_000, depth = 200 }
-
-# Sablier profile: builds/tests/deploys ONLY script/sablier + test/sablier, with Sablier's own
-# production compiler settings (via-IR, optimizer 200 runs — lockup/foundry.toml "optimized"
-# profile; evm_version stays cancun like the rest of this repo's Robinhood deployments).
-# Never deploy own-v2 contracts from this profile: their bytecode differs from the default build.
-#   FOUNDRY_PROFILE=sablier forge test --match-path 'test/sablier/*'
-[profile.sablier]
-via_ir = true
-optimizer = true
-optimizer_runs = 200
-script = "script/sablier"
-test = "test/sablier"
-out = "out-sablier"
-cache_path = "cache-sablier"
-skip = []
 
 # RPC endpoints
 [rpc_endpoints]

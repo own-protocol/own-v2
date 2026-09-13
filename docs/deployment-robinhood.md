@@ -222,71 +222,37 @@ Never wire a controller that was wired before, and never start a campaign on a c
 is not wired — both are enforced on-chain, but the ordering above is what keeps the migration
 loss-free for holders.
 
-## Team token vesting — self-hosted Sablier Lockup v4.0.1
+## Team token vesting — OpenZeppelin VestingWallet
 
-Sablier has no Robinhood Chain deployment (their `sablier-labs/deployments` broadcasts list has
-no chain 4663 entry), so we deploy their unmodified, audited contracts ourselves rather than
-writing vesting logic. Everything lives in `script/sablier/` + `test/sablier/` and is built with
-`FOUNDRY_PROFILE=sablier` (via-IR, as Sablier's own production profile — the sources do not
-compile without it).
+`script/robinhood/DeployTeamVestingRobinhood.s.sol` deploys one unmodified OpenZeppelin
+`VestingWallet` (v5.6.1, `lib/openzeppelin-contracts/contracts/finance/VestingWallet.sol`, covered
+by OpenZeppelin's release audits in `lib/openzeppelin-contracts/audits/`) per team member and
+funds it from the deployer in the same broadcast. No custom vesting code, no new dependencies.
 
-**What is deployed (all vendored at `lib/sablier-evm-monorepo`, tag `lockup@v4.0.1`, commit
-`fae38dc7`):**
+**Schedule.** Each wallet vests its full balance linearly, per second, from `VESTING_START_ROBINHOOD`
+(default: deploy block) to `start + 180 days` (6 × 30 days). There is no cliff, so a small amount
+is releasable right after start. If nothing should be releasable for the first month, switch the
+script to `VestingWalletCliff` — still audited, still no custom code.
 
-| Contract                                 | Role                                                         |
-| ---------------------------------------- | ------------------------------------------------------------ |
-| `SablierComptroller` (UUPS impl + proxy) | Admin/fee hub the Lockup requires. Fees 0, oracle unset.     |
-| `LockupNFTDescriptor`                    | On-chain SVG metadata for the stream NFTs.                   |
-| `SablierLockup`                          | Singleton holding every stream; one ERC-721 per beneficiary. |
+**Properties to accept before funding.**
 
-**Audit trail.** Lockup v4.0 — Cantina, 2026-03-18; utils/comptroller is covered by the same
-review (`github.com/sablier-labs/audits`, `lockup/v4.0/`). The sources are compiled against the
-exact OpenZeppelin 5.3.0 (`contracts` + `contracts-upgradeable`) they were audited with, via
-context remappings in `foundry.toml`; the rest of this repo stays on OZ 5.6.1. Deltas from
-Sablier's canonical builds: solc 0.8.28 (they use 0.8.29; pragma is `>=0.8.22`) and
-`evm_version = cancun` (they use shanghai) — source is byte-identical, bytecode is not.
-
-**Licence.** Sablier's headers say BUSL-1.1, but Sablier announced the change to GPL-3.0 on
-2026-07-13 (the BUSL "Change Date" is read from the `license-dates.sablier.eth` ENS record; see
-the monorepo README). Confirm that record before mainnet use.
-
-### Schedule (`CreateTeamVestingRobinhood.s.sol`)
-
-One `LOCKUP_LINEAR` stream per team member, `createWithTimestampsLL` with
-`unlockAmounts.cliff = 30%`:
-
-- `start` → `start + 30d`: nothing.
-- `start + 30d` (cliff, "month 1"): 30% of the allocation becomes withdrawable at once.
-- `start + 30d` → `start + 210d`: the remaining 70% streams linearly per second (6 × 30 days).
-
-The 30% tranche rounds down; the dust streams linearly so totals are exact. Defaults: streams
-are **cancelable by `sender`** (recipient keeps what has vested, the rest refunds to the sender —
-set `VESTING_SENDER_ROBINHOOD` to the Safe) and **non-transferable** (the beneficiary cannot sell
-the NFT). Override with `VESTING_CANCELABLE_ROBINHOOD` / `VESTING_TRANSFERABLE_ROBINHOOD`.
-
-### Runbook
+- No clawback: once funded, the tokens are irrevocably the beneficiary's on schedule.
+- The beneficiary owns the wallet and can transfer ownership (i.e. sell the unvested claim).
+- Anyone can call `release(token)`; the tokens only ever go to the beneficiary.
+- Tokens sent to a wallet later vest on the same curve.
 
 ```bash
-# 0. Prove the schedule locally (deploys protocol + 5 streams on a 4663 fork, 28 tests)
-FOUNDRY_PROFILE=sablier forge test --match-path 'test/sablier/*' -vv
+# 0. Prove it locally (5 wallets on a 4663 fork, schedule + release + validation tests)
+forge test --match-path test/unit/DeployTeamVestingRobinhood.t.sol -vv
 
-# 1. Protocol (comptroller + descriptor + lockup). SABLIER_ADMIN_ROBINHOOD should be the Safe.
-FOUNDRY_PROFILE=sablier forge script script/sablier/DeploySablierLockupRobinhood.s.sol \
-  --rpc-url robinhood --broadcast \
+# 1. Set VESTING_* in .env (see .env.example), fund the deployer with the token total, simulate
+#    without --broadcast and read the printed table, then:
+forge script script/robinhood/DeployTeamVestingRobinhood.s.sol --rpc-url robinhood --broadcast \
   --verify --verifier blockscout --verifier-url https://robinhoodchain.blockscout.com/api/
-
-# 2. Export SABLIER_LOCKUP_ROBINHOOD + the VESTING_* vars, fund the deployer with the token total,
-#    then create the streams (simulate first without --broadcast and read the printed table).
-FOUNDRY_PROFILE=sablier forge script script/sablier/CreateTeamVestingRobinhood.s.sol \
-  --rpc-url robinhood --broadcast
 ```
 
-Verification through Blockscout must use the same profile (`FOUNDRY_PROFILE=sablier`) so the
-via-IR metadata matches. Never deploy own-v2 contracts from that profile.
-
-**Beneficiaries withdraw** with `SablierLockup.withdrawMax(streamId, to)` (no fee; anyone may call
-it, but funds can only go to the stream's recipient). **Cancel** (sender only):
-`SablierLockup.cancel(streamId)`. Stream IDs are sequential from 1 and printed by the script.
+Record the five wallet addresses in docs/contracts-robinhood.md. Beneficiaries release with
+`VestingWallet.release(token)` on their own wallet.
 
 ## Off-chain services checklist
 
