@@ -226,10 +226,15 @@ loss-free for holders.
 
 `script/robinhood/DeployTeamVestingRobinhood.s.sol` deploys one unmodified OpenZeppelin
 `VestingWallet` (v5.6.1, `lib/openzeppelin-contracts/contracts/finance/VestingWallet.sol`, covered
-by OpenZeppelin's release audits in `lib/openzeppelin-contracts/audits/`) per team member and
-funds it from the deployer in the same broadcast. No custom vesting code, no new dependencies.
+by OpenZeppelin's release audits in `lib/openzeppelin-contracts/audits/`) per team member. No
+custom vesting code, no new dependencies.
 
-**Schedule.** Each wallet vests its full balance linearly, per second, from `VESTING_START_ROBINHOOD`
+**The wallets are deployed empty.** The tokens live in the Safe, which funds each wallet with a
+plain ERC-20 `transfer` afterwards; the script prints that batch (target + calldata) ready to
+paste. The deployer only pays gas: it never holds the tokens and has no role on any wallet. The
+sole owner of each wallet is its beneficiary.
+
+**Schedule.** Each wallet vests whatever it holds linearly, per second, from `VESTING_START_ROBINHOOD`
 (default: deploy block) to `start + 180 days` (6 × 30 days). There is no cliff, so a small amount
 is releasable right after start. If nothing should be releasable for the first month, switch the
 script to `VestingWalletCliff` — still audited, still no custom code.
@@ -239,16 +244,20 @@ script to `VestingWalletCliff` — still audited, still no custom code.
 - No clawback: once funded, the tokens are irrevocably the beneficiary's on schedule.
 - The beneficiary owns the wallet and can transfer ownership (i.e. sell the unvested claim).
 - Anyone can call `release(token)`; the tokens only ever go to the beneficiary.
-- Tokens sent to a wallet later vest on the same curve.
+- The curve is anchored to `start`, not to funding time. Tokens that arrive after `start` are
+  treated as locked since `start`, so the elapsed share is releasable at once. Fund before `start`
+  (or set `VESTING_START_ROBINHOOD` a little ahead) for a clean linear curve.
 
 ```bash
-# 0. Prove it locally (5 wallets on a 4663 fork, schedule + release + validation tests)
+# 0. Prove it locally (5 wallets on a 4663 fork, Safe funding, schedule + release + validation)
 forge test --match-path test/unit/DeployTeamVestingRobinhood.t.sol -vv
 
-# 1. Set VESTING_* in .env (see .env.example), fund the deployer with the token total, simulate
-#    without --broadcast and read the printed table, then:
+# 1. Set VESTING_* in .env (see .env.example); simulate without --broadcast and read the table.
 forge script script/robinhood/DeployTeamVestingRobinhood.s.sol --rpc-url robinhood --broadcast \
   --verify --verifier blockscout --verifier-url https://robinhoodchain.blockscout.com/api/
+
+# 2. In the Safe, execute the printed batch: token.transfer(wallet_i, amount_i) × 5.
+#    Then confirm on Blockscout that each wallet's balance equals its allocation.
 ```
 
 Record the five wallet addresses in docs/contracts-robinhood.md. Beneficiaries release with

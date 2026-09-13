@@ -17,6 +17,7 @@ contract DeployTeamVestingRobinhoodTest is Test {
     uint64 internal constant DURATION = 180 days;
 
     address internal deployer = vm.addr(DEPLOYER_KEY);
+    address internal safe = Actors.ADMIN;
     address internal attacker = Actors.ATTACKER;
 
     MockERC20 internal token;
@@ -47,7 +48,7 @@ contract DeployTeamVestingRobinhoodTest is Test {
         for (uint256 i = 0; i < amounts.length; i++) {
             total += amounts[i];
         }
-        token.mint(deployer, total);
+        token.mint(safe, total);
 
         start = uint64(block.timestamp + 1 days);
         endAt = start + DURATION;
@@ -62,6 +63,16 @@ contract DeployTeamVestingRobinhoodTest is Test {
 
         script = new DeployTeamVestingRobinhood();
         script.run();
+        _fundFromSafe();
+    }
+
+    /// @dev Mirrors the Safe batch the script prints: one plain transfer per wallet.
+    function _fundFromSafe() internal {
+        for (uint256 i = 0; i < team.length; i++) {
+            address wallet = address(script.wallets(i));
+            vm.prank(safe);
+            token.transfer(wallet, amounts[i]);
+        }
     }
 
     function _csvAddresses(
@@ -101,17 +112,47 @@ contract DeployTeamVestingRobinhoodTest is Test {
                                        DEPLOY
     //////////////////////////////////////////////////////////////////////////*/
 
-    function test_run_deploysAndFundsOneWalletPerBeneficiary() public view {
-        assertEq(token.balanceOf(deployer), 0, "deployer fully funded the wallets");
+    function test_run_deploysOneEmptyWalletPerBeneficiary() public {
+        DeployTeamVestingRobinhood fresh = new DeployTeamVestingRobinhood();
+        fresh.runWith(_config());
         for (uint256 i = 0; i < team.length; i++) {
-            VestingWallet wallet = script.wallets(i);
+            VestingWallet wallet = fresh.wallets(i);
             assertEq(wallet.owner(), team[i], "beneficiary owns the wallet");
             assertEq(wallet.start(), start, "start");
             assertEq(wallet.duration(), DURATION, "duration");
             assertEq(wallet.end(), endAt, "end");
-            assertEq(token.balanceOf(address(wallet)), amounts[i], "funded with the allocation");
+            assertEq(token.balanceOf(address(wallet)), 0, "deployed empty; the Safe funds it");
             assertEq(wallet.released(address(token)), 0, "nothing released yet");
         }
+        assertEq(token.balanceOf(deployer), 0, "deployer never holds the tokens");
+    }
+
+    function test_run_deployerHasNoRightsOnWallets() public {
+        VestingWallet wallet = script.wallets(0);
+        assertTrue(wallet.owner() != deployer, "deployer is not the owner");
+        vm.prank(deployer);
+        vm.expectRevert();
+        wallet.transferOwnership(deployer);
+        assertEq(wallet.owner(), team[0]);
+    }
+
+    function test_fundFromSafe_walletsHoldExactAllocations() public view {
+        assertEq(token.balanceOf(safe), 0, "Safe transferred everything");
+        for (uint256 i = 0; i < team.length; i++) {
+            assertEq(token.balanceOf(address(script.wallets(i))), amounts[i], "funded with the allocation");
+        }
+    }
+
+    function test_fundFromSafe_afterStart_elapsedShareReleasableAtOnce() public {
+        // Fresh wallets, funded 60 days after start: the schedule is anchored to start, not funding.
+        DeployTeamVestingRobinhood fresh = new DeployTeamVestingRobinhood();
+        fresh.runWith(_config());
+        VestingWallet wallet = fresh.wallets(0);
+        token.mint(safe, 900e18);
+        vm.warp(start + 60 days);
+        vm.prank(safe);
+        token.transfer(address(wallet), 900e18);
+        assertEq(wallet.releasable(address(token)), 300e18, "60/180 of the late deposit");
     }
 
     function test_run_lengthMismatch_reverts() public {
@@ -146,16 +187,7 @@ contract DeployTeamVestingRobinhoodTest is Test {
         again.runWith(cfg);
     }
 
-    function test_run_insufficientBalance_reverts() public {
-        // Deployer spent everything in setUp; running again must fail before touching the chain.
-        DeployTeamVestingRobinhood.Config memory cfg = _config();
-        DeployTeamVestingRobinhood again = new DeployTeamVestingRobinhood();
-        vm.expectRevert("deployer lacks vesting tokens");
-        again.runWith(cfg);
-    }
-
     function test_run_startInPast_reverts() public {
-        token.mint(deployer, total);
         DeployTeamVestingRobinhood.Config memory cfg = _config();
         cfg.start = block.timestamp - 1;
         DeployTeamVestingRobinhood again = new DeployTeamVestingRobinhood();
@@ -172,7 +204,6 @@ contract DeployTeamVestingRobinhoodTest is Test {
     }
 
     function test_run_wrongChain_reverts() public {
-        token.mint(deployer, total);
         DeployTeamVestingRobinhood.Config memory cfg = _config();
         DeployTeamVestingRobinhood again = new DeployTeamVestingRobinhood();
         vm.chainId(1);

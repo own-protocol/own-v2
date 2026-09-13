@@ -243,6 +243,7 @@ over 180 days from `start`, no cliff, no clawback.
 
 - [ ] `DeployTeamVestingRobinhood.s.sol` — token `0x…`, start `…`, fully vested `…`;
       wallets: `0x…`, `0x…`, `0x…`, `0x…`, `0x…` (owner = beneficiary, Blockscout-verified).
+- [ ] Safe batch executed: `transfer(wallet_i, amount_i)` × 5; balances confirmed on Blockscout.
 
 ## Superseded contracts (reference only)
 
