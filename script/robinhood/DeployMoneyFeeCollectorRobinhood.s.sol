@@ -8,27 +8,32 @@ import {MoneyFeeCollector} from "../../src/periphery/MoneyFeeCollector.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
 /// @title DeployMoneyFeeCollectorRobinhood — $MONEY fee collector / buy-&-burn (UUPS)
-/// @notice Deploys MoneyFeeCollector behind an ERC-1967 proxy, owned by the protocol Safe, with
-///         the Pons V2 fee escrow and the $MONEY token wired in. The initial payee set routes the
-///         whole distribution share (the 70%) to the Safe; the Safe reconfigures payees, swap
-///         targets and shares later, directly on the proxy. Burn share starts at 30%, burn
-///         cadence at 1 hour (contract defaults).
+/// @notice Deploys MoneyFeeCollector behind an ERC-1967 proxy, owned by the DEPLOYER for the
+///         test window, with the Pons V2 fee escrow and the $MONEY token wired in. The deployer
+///         is also the initial keeper, so swap-target config and burn tests need no Safe
+///         signatures; ownership moves to the treasury Safe (two-step) once tests pass. The
+///         initial payee set routes the whole distribution share (the 70%) to the Safe. Burn
+///         share starts at 30%, burn cadence at 1 hour (contract defaults).
 ///
-/// @dev Post-deploy checklist (ops, in order):
-///        1. Point the $MONEY pair's fee recipient at the proxy on the Pons side, so new fees are
-///           credited to it in the escrow (Pons-side action; from then on `collectFees` routes
-///           them). The proxy manages any recipient rights bound to its own address via
-///           {IMoneyFeeCollector.execute}.
-///        2. Safe: claim the historically accrued fees from the escrow to the Safe, then transfer
-///           30% of them directly to the proxy — direct transfers are burn reserve in full, so
-///           the seed funds burns only and burning can start immediately.
-///        3. Safe: `setSwapTarget(router, true)` for the vetted $MONEY swap venue.
-///        4. Keeper: verify `collectFees([...])` splits a small live claim 30/70, then a first
-///           `buyAndBurn` with a tight `minMoneyOut` ($MONEY totalSupply must drop).
+/// @dev Post-deploy checklist (ops, in order — 1-5 are deployer-only):
+///        1. Deployer: `setSwapTarget(venue, true)` for the vetted SPY→$MONEY swap venue.
+///        2. Deployer: transfer a small $MONEY amount to the proxy, `buyAndBurn` direct-burn leg
+///           ($MONEY totalSupply must drop by 10% of the seed).
+///        3. Deployer: seed a small SPY amount, `buyAndBurn` SPY→$MONEY swap leg with a tight
+///           `minMoneyOut`.
+///        4. Deployer: `escrow.credit{value: ~0.005 ether}(proxy)`, then `collectFees([])` —
+///           verify the 70/30 split lands (70% Safe, 30% proxy reserve) off the live escrow.
+///        5. Deployer: `transferOwnership(SAFE)`; rotate the keeper if moving off the deployer
+///           key (`setKeeper`).
+///        6. Safe: `acceptOwnership()` — MUST complete before step 7.
+///        7. Safe: claim accrued fees (`claimToken(SPY)`) to the Safe, transfer 30% of them
+///           directly to the proxy (direct transfers are burn reserve in full), then point the
+///           $MONEY pair's fee recipient at the proxy on the Pons side. From then on
+///           `collectFees([SPY])` routes new fees; the proxy manages recipient rights bound to
+///           its own address via {IMoneyFeeCollector.execute}.
 ///
-/// Env: DEPLOYER_PRIVATE_KEY_ROBINHOOD,
-///      SAFE_ROBINHOOD (proxy owner/admin; default: the treasury Safe),
-///      KEEPER_ROBINHOOD (initial burn keeper; unset/zero = enable later via setKeeper),
+/// Env: DEPLOYER_PRIVATE_KEY_ROBINHOOD (deployer = initial owner + initial keeper),
+///      SAFE_ROBINHOOD (payee + post-test owner; default: the treasury Safe),
 ///      PONS_FEE_ESCROW_ROBINHOOD (default: the live Pons V2 fee escrow),
 ///      MONEY_TOKEN_ROBINHOOD (default: the live $MONEY token).
 ///
@@ -47,8 +52,9 @@ contract DeployMoneyFeeCollectorRobinhood is Script {
     uint256 constant BPS = 10_000;
 
     function run() external {
+        uint256 deployerPk = vm.envUint("DEPLOYER_PRIVATE_KEY_ROBINHOOD");
+        address deployer = vm.addr(deployerPk);
         address safe = vm.envOr("SAFE_ROBINHOOD", TREASURY_SAFE);
-        address keeper = vm.envOr("KEEPER_ROBINHOOD", address(0));
         address escrow = vm.envOr("PONS_FEE_ESCROW_ROBINHOOD", PONS_FEE_ESCROW);
         address money = vm.envOr("MONEY_TOKEN_ROBINHOOD", MONEY_TOKEN);
         require(safe != address(0), "SAFE_ROBINHOOD unset");
@@ -56,7 +62,7 @@ contract DeployMoneyFeeCollectorRobinhood is Script {
         IMoneyFeeCollector.Payee[] memory payees = new IMoneyFeeCollector.Payee[](1);
         payees[0] = IMoneyFeeCollector.Payee(safe, uint96(BPS));
 
-        vm.startBroadcast(vm.envUint("DEPLOYER_PRIVATE_KEY_ROBINHOOD"));
+        vm.startBroadcast(deployerPk);
 
         MoneyFeeCollector impl = new MoneyFeeCollector();
         MoneyFeeCollector collector = MoneyFeeCollector(
@@ -64,7 +70,7 @@ contract DeployMoneyFeeCollectorRobinhood is Script {
                 address(
                     new ERC1967Proxy(
                         address(impl),
-                        abi.encodeCall(MoneyFeeCollector.initialize, (safe, escrow, money, keeper, payees))
+                        abi.encodeCall(MoneyFeeCollector.initialize, (deployer, escrow, money, deployer, payees))
                     )
                 )
             )
@@ -72,7 +78,8 @@ contract DeployMoneyFeeCollectorRobinhood is Script {
 
         vm.stopBroadcast();
 
-        require(collector.owner() == safe, "owner mismatch");
+        require(collector.owner() == deployer, "owner mismatch");
+        require(collector.isKeeper(deployer), "keeper mismatch");
         require(collector.escrow() == escrow, "escrow mismatch");
         require(collector.money() == money, "money mismatch");
         require(collector.burnShareBps() == 3000, "burn share mismatch");
@@ -81,8 +88,8 @@ contract DeployMoneyFeeCollectorRobinhood is Script {
 
         console.log("MoneyFeeCollector proxy:", address(collector));
         console.log("  implementation:       ", address(impl));
-        console.log("  owner (Safe):         ", safe);
-        console.log("  keeper:               ", keeper);
+        console.log("  owner+keeper (deployer, test window):", deployer);
+        console.log("  post-test owner (Safe):", safe);
         console.log("  escrow:               ", escrow);
         console.log("  $MONEY:               ", money);
     }
