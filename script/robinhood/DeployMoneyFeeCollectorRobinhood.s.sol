@@ -27,7 +27,7 @@ import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.s
 ///           `buyAndBurn` with a tight `minMoneyOut` ($MONEY totalSupply must drop).
 ///
 /// Env: DEPLOYER_PRIVATE_KEY_ROBINHOOD,
-///      SAFE_ROBINHOOD (proxy owner/admin),
+///      SAFE_ROBINHOOD (proxy owner/admin; default: the treasury Safe),
 ///      KEEPER_ROBINHOOD (initial burn keeper; unset/zero = enable later via setKeeper),
 ///      PONS_FEE_ESCROW_ROBINHOOD (default: the live Pons V2 fee escrow),
 ///      MONEY_TOKEN_ROBINHOOD (default: the live $MONEY token).
@@ -37,14 +37,17 @@ import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.s
 ///     --broadcast --verify --verifier blockscout \
 ///     --verifier-url https://robinhoodchain.blockscout.com/api/
 contract DeployMoneyFeeCollectorRobinhood is Script {
-    /// @dev Live Robinhood Chain (4663) addresses, overridable via env for rehearsals.
+    /// @dev Live Robinhood Chain (4663) addresses, overridable via env for rehearsals. The
+    ///      treasury Safe is the $MONEY pair's current creator-fee recipient on the Pons factory,
+    ///      so it both owns this proxy and signs the recipient handover to it.
     address constant PONS_FEE_ESCROW = 0xd3AFEB2a57f70eF218Aa82451c51B2fb0416Ac9e;
     address constant MONEY_TOKEN = 0x0a8B4763C71aC39101b3B8a97e62Da0B81549a4f;
+    address constant TREASURY_SAFE = 0x8f974d82EEaa9725ecC40600f12093B14080dA54;
 
     uint256 constant BPS = 10_000;
 
     function run() external {
-        address safe = vm.envAddress("SAFE_ROBINHOOD");
+        address safe = vm.envOr("SAFE_ROBINHOOD", TREASURY_SAFE);
         address keeper = vm.envOr("KEEPER_ROBINHOOD", address(0));
         address escrow = vm.envOr("PONS_FEE_ESCROW_ROBINHOOD", PONS_FEE_ESCROW);
         address money = vm.envOr("MONEY_TOKEN_ROBINHOOD", MONEY_TOKEN);
