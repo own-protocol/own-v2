@@ -207,6 +207,20 @@ cap, the KMS price feed, mark keepers, and MM quoting can drop these tickers ent
 Re-enable path (per asset): Safe `setAssetCapUSD(ticker, 1_000_000e18)` → resume KMS feed +
 keeper + MM quoting → restore the ticker in the app address book.
 
+## $MONEY fee collector (2026-09-14)
+
+Deployed from branch `FeeCollector` via `DeployMoneyFeeCollectorRobinhood.s.sol`. Routes Pons
+V2 trading fees of the $MONEY pair: 70% to payees, 30% held as burn reserve; keepers
+buy-and-burn $MONEY through allow-listed venues, capped at `burnSpendBps` (10%) of held
+balance per `burnInterval` (1h). $MONEY pair fees accrue in SPY — collection is
+`collectFees([SPY])`.
+
+| Contract                                | Address                                      |
+| --------------------------------------- | -------------------------------------------- |
+| MoneyFeeCollector (ERC-1967/UUPS proxy) | `0xB6BCAfB905CE0648A71F6d43155d5D53a2B08154` |
+| — implementation                        | `0x918D34E4Cc32363267b034c32e01Eb495f009A2c` |
+| $MONEY token (own.money)                | `0x0a8B4763C71aC39101b3B8a97e62Da0B81549a4f` |
+
 ## E2E smoke tests (2026-07-14, all passed)
 
 Scripts: `TestSetupTslaRobinhood` / `TestMintBorrowTslaRobinhood` / `TestRepayRedeemTslaRobinhood` /
