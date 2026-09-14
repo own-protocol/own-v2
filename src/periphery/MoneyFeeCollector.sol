@@ -26,9 +26,12 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 ///      handover). Storage is append-only across upgrades. Trust model: owner (Safe) is fully
 ///      trusted — it can upgrade and {execute} arbitrarily. Keepers are hot keys trusted only for
 ///      burn timing and slippage bounds (`minMoneyOut`): they cannot move funds anywhere but into
-///      an allow-listed swap and the $MONEY burn. The escrow and swap targets are owner-vetted
-///      external contracts. Swaps are sandwich-exposed up to the keeper's `minMoneyOut`, which is
-///      why targets are allow-listed and burns keeper-gated.
+///      an allow-listed swap and the $MONEY burn, and never choose the spend — each burn spends
+///      exactly `burnSpendBps` of the held input balance (initially 10%), so a compromised keeper
+///      key is capped to that slice per interval even through a permissive swap target. The
+///      escrow and swap targets are owner-vetted external contracts. Swaps are sandwich-exposed
+///      up to the keeper's `minMoneyOut`, which is why targets are allow-listed and burns
+///      keeper-gated.
 contract MoneyFeeCollector is IMoneyFeeCollector, Initializable, UUPSUpgradeable, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
@@ -58,6 +61,9 @@ contract MoneyFeeCollector is IMoneyFeeCollector, Initializable, UUPSUpgradeable
 
     /// @inheritdoc IMoneyFeeCollector
     uint256 public override burnShareBps;
+
+    /// @inheritdoc IMoneyFeeCollector
+    uint256 public override burnSpendBps;
 
     /// @inheritdoc IMoneyFeeCollector
     uint256 public override burnInterval;
@@ -120,6 +126,8 @@ contract MoneyFeeCollector is IMoneyFeeCollector, Initializable, UUPSUpgradeable
         _money = ERC20Burnable(money_);
         burnShareBps = 3000;
         emit BurnShareSet(3000);
+        burnSpendBps = 1000;
+        emit BurnSpendSet(1000);
         burnInterval = 1 hours;
         emit BurnIntervalSet(1 hours);
         if (keeper_ != address(0)) {
@@ -170,20 +178,23 @@ contract MoneyFeeCollector is IMoneyFeeCollector, Initializable, UUPSUpgradeable
     }
 
     /// @inheritdoc IMoneyFeeCollector
+    /// @dev The keeper has no say in the spend: `amountIn` is derived on-chain from the held
+    ///      balance and the owner-set `burnSpendBps`, capping what a compromised keeper key can
+    ///      route through a swap to that slice per `burnInterval`.
     function buyAndBurn(
         address tokenIn,
-        uint256 amountIn,
         address swapTarget,
         bytes calldata swapData,
         uint256 minMoneyOut
     ) external override onlyKeeper nonReentrant returns (uint256 moneyBurned) {
         if (block.timestamp < lastBurnAt + burnInterval) revert BurnIntervalNotElapsed();
         lastBurnAt = block.timestamp;
+        uint256 amountIn = burnSpendAmount(tokenIn);
         if (amountIn == 0) revert ZeroAmount();
 
         ERC20Burnable money_ = _money;
         if (tokenIn == address(money_)) {
-            // Reserve already held as $MONEY (e.g. a seed): burn directly, no swap involved.
+            // Reserve already held as $MONEY (e.g. a seed): burn the slice directly, no swap.
             if (swapTarget != address(0) || swapData.length != 0 || minMoneyOut != 0) revert InvalidSwapParams();
             money_.burn(amountIn);
             emit MoneyBurned(tokenIn, amountIn, amountIn);
@@ -235,6 +246,15 @@ contract MoneyFeeCollector is IMoneyFeeCollector, Initializable, UUPSUpgradeable
     }
 
     /// @inheritdoc IMoneyFeeCollector
+    function setBurnSpendBps(
+        uint256 newBurnSpendBps
+    ) external override onlyOwner {
+        if (newBurnSpendBps > BPS) revert InvalidBps();
+        burnSpendBps = newBurnSpendBps;
+        emit BurnSpendSet(newBurnSpendBps);
+    }
+
+    /// @inheritdoc IMoneyFeeCollector
     function setBurnInterval(
         uint256 newBurnInterval
     ) external override onlyOwner {
@@ -275,7 +295,13 @@ contract MoneyFeeCollector is IMoneyFeeCollector, Initializable, UUPSUpgradeable
     ) external override onlyOwner nonReentrant returns (bytes memory result) {
         bool ok;
         (ok, result) = target.call{value: value}(data);
-        if (!ok) revert ExecuteFailed();
+        if (!ok) {
+            // Bubble the target's revert reason so Safe simulations show the real cause.
+            if (result.length == 0) revert ExecuteFailed();
+            assembly ("memory-safe") {
+                revert(add(result, 0x20), mload(result))
+            }
+        }
         emit Executed(target, value, data, result);
     }
 
@@ -365,6 +391,14 @@ contract MoneyFeeCollector is IMoneyFeeCollector, Initializable, UUPSUpgradeable
     /// @inheritdoc IMoneyFeeCollector
     function payees() external view override returns (Payee[] memory) {
         return _payees;
+    }
+
+    /// @inheritdoc IMoneyFeeCollector
+    function burnSpendAmount(
+        address tokenIn
+    ) public view override returns (uint256) {
+        uint256 held = tokenIn == NATIVE ? address(this).balance : IERC20(tokenIn).balanceOf(address(this));
+        return held * burnSpendBps / BPS;
     }
 
     /// @inheritdoc IMoneyFeeCollector

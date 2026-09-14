@@ -38,7 +38,7 @@ interface IMoneyFeeCollector {
 
     /// @notice A keeper converted burn reserve into $MONEY and burned it.
     /// @param tokenIn     Asset spent (address(0) = native coin; the $MONEY token = direct burn).
-    /// @param amountIn    Amount of `tokenIn` spent.
+    /// @param amountIn    Amount of `tokenIn` spent (`burnSpendBps` of the held balance).
     /// @param moneyBurned $MONEY supply burned.
     event MoneyBurned(address indexed tokenIn, uint256 amountIn, uint256 moneyBurned);
 
@@ -47,6 +47,9 @@ interface IMoneyFeeCollector {
 
     /// @notice The burn share was updated.
     event BurnShareSet(uint256 burnShareBps);
+
+    /// @notice The per-burn reserve spend slice was updated.
+    event BurnSpendSet(uint256 burnSpendBps);
 
     /// @notice The minimum interval between burns was updated.
     event BurnIntervalSet(uint256 burnInterval);
@@ -112,7 +115,8 @@ interface IMoneyFeeCollector {
     /// @notice A native-coin transfer to a payee failed.
     error NativeTransferFailed(address to);
 
-    /// @notice The owner-authorized arbitrary call reverted.
+    /// @notice The owner-authorized arbitrary call reverted without returning a reason (a revert
+    ///         with a reason is bubbled up as-is instead).
     error ExecuteFailed();
 
     // ──────────────────────────────────────────────────────────
@@ -128,21 +132,22 @@ interface IMoneyFeeCollector {
         address[] calldata tokens
     ) external;
 
-    /// @notice Spend `amountIn` of burn reserve on $MONEY via an allow-listed swap target, then
-    ///         burn the contract's entire resulting $MONEY balance. Keeper-only, rate-limited to
-    ///         one burn per `burnInterval`. When `tokenIn` is the $MONEY token itself, no swap is
-    ///         performed (`swapTarget`/`swapData`/`minMoneyOut` must be empty) and `amountIn` is
+    /// @notice Spend a fixed slice of the held `tokenIn` reserve on $MONEY via an allow-listed
+    ///         swap target, then burn the contract's entire resulting $MONEY balance. Keeper-only,
+    ///         rate-limited to one burn per `burnInterval`. The spend amount is NOT chosen by the
+    ///         keeper: it is always `burnSpendBps` of the contract's current `tokenIn` balance
+    ///         (see {burnSpendAmount}). When `tokenIn` is the $MONEY token itself, no swap is
+    ///         performed (`swapTarget`/`swapData`/`minMoneyOut` must be empty) and that slice is
     ///         burned directly.
     /// @param tokenIn      Reserve asset to spend (address(0) = native coin).
-    /// @param amountIn     Amount of `tokenIn` to spend.
     /// @param swapTarget   Allow-listed contract executing the swap.
     /// @param swapData     Calldata forwarded to `swapTarget` (native input is attached as value;
-    ///                     ERC-20 input is approved for exactly `amountIn`).
+    ///                     ERC-20 input is approved for exactly the computed spend, so the
+    ///                     calldata must not pull more — read {burnSpendAmount} when encoding).
     /// @param minMoneyOut  Minimum $MONEY the swap must produce (slippage bound; must be nonzero).
     /// @return moneyBurned $MONEY supply burned.
     function buyAndBurn(
         address tokenIn,
-        uint256 amountIn,
         address swapTarget,
         bytes calldata swapData,
         uint256 minMoneyOut
@@ -160,6 +165,12 @@ interface IMoneyFeeCollector {
     /// @notice Set the fraction of every collection retained for burns, in BPS (≤ 10_000).
     function setBurnShareBps(
         uint256 newBurnShareBps
+    ) external;
+
+    /// @notice Set the slice of the held reserve a keeper spends per burn, in BPS (≤ 10_000).
+    ///         Zero pauses burns entirely.
+    function setBurnSpendBps(
+        uint256 newBurnSpendBps
     ) external;
 
     /// @notice Set the minimum interval between burns.
@@ -209,6 +220,15 @@ interface IMoneyFeeCollector {
 
     /// @notice Fraction of every collection retained for burns, in BPS.
     function burnShareBps() external view returns (uint256);
+
+    /// @notice Slice of the held reserve a keeper spends per burn, in BPS. Zero = burns paused.
+    function burnSpendBps() external view returns (uint256);
+
+    /// @notice The exact `tokenIn` amount the next {buyAndBurn} would spend right now
+    ///         (`burnSpendBps` of the currently held balance; address(0) = native coin).
+    function burnSpendAmount(
+        address tokenIn
+    ) external view returns (uint256);
 
     /// @notice Minimum interval between burns.
     function burnInterval() external view returns (uint256);

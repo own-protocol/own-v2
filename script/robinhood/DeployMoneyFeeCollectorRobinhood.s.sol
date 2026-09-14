@@ -76,6 +76,7 @@ contract DeployMoneyFeeCollectorRobinhood is Script {
         require(collector.escrow() == escrow, "escrow mismatch");
         require(collector.money() == money, "money mismatch");
         require(collector.burnShareBps() == 3000, "burn share mismatch");
+        require(collector.burnSpendBps() == 1000, "burn spend mismatch");
         require(collector.burnInterval() == 1 hours, "burn interval mismatch");
 
         console.log("MoneyFeeCollector proxy:", address(collector));
