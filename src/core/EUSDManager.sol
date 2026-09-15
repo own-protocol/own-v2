@@ -135,11 +135,7 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
     /// @param registry_ ProtocolRegistry contract address.
     /// @param eusd_     EUSD token address (this manager must hold its MINTER_ROLE).
     /// @param params    Initial risk parameters (validated as in the setters).
-    function initialize(
-        address registry_,
-        address eusd_,
-        RiskParams calldata params
-    ) external initializer {
+    function initialize(address registry_, address eusd_, RiskParams calldata params) external initializer {
         if (registry_ == address(0) || eusd_ == address(0)) revert ZeroAddress();
         _validateRatios(params.mcrBps, params.liquidationThresholdBps, params.liquidationBonusBps);
         if (params.stabilityFeeBps > BPS || params.mintPriceMaxAge == 0) revert InvalidRiskParams();
@@ -160,11 +156,7 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
     // ──────────────────────────────────────────────────────────
 
     /// @inheritdoc IEUSDManager
-    function deposit(
-        address collateral,
-        uint256 amount,
-        address hint
-    ) external override nonReentrant {
+    function deposit(address collateral, uint256 amount, address hint) external override nonReentrant {
         CollateralConfig storage cfg = _requireCollateral(collateral);
         if (amount == 0) revert ZeroAmount();
 
@@ -181,11 +173,7 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
     }
 
     /// @inheritdoc IEUSDManager
-    function withdrawCollateral(
-        address collateral,
-        uint256 amount,
-        address hint
-    ) external override nonReentrant {
+    function withdrawCollateral(address collateral, uint256 amount, address hint) external override nonReentrant {
         CollateralConfig storage cfg = _requireCollateral(collateral);
         if (amount == 0) revert ZeroAmount();
 
@@ -207,11 +195,7 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
     }
 
     /// @inheritdoc IEUSDManager
-    function mint(
-        address collateral,
-        uint256 amount,
-        address hint
-    ) external override nonReentrant {
+    function mint(address collateral, uint256 amount, address hint) external override nonReentrant {
         CollateralConfig storage cfg = _requireCollateral(collateral);
         if (!cfg.enabled) revert CollateralDisabled(collateral);
         if (mintPaused) revert MintingPaused();
@@ -236,12 +220,7 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
     }
 
     /// @inheritdoc IEUSDManager
-    function repay(
-        address collateral,
-        address owner,
-        uint256 amount,
-        address hint
-    ) external override nonReentrant {
+    function repay(address collateral, address owner, uint256 amount, address hint) external override nonReentrant {
         _requireCollateral(collateral);
         if (owner == address(0)) revert ZeroAddress();
         if (amount == 0) revert ZeroAmount();
@@ -338,11 +317,7 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
     }
 
     /// @inheritdoc IEUSDManager
-    function accrue(
-        address collateral,
-        address owner,
-        address hint
-    ) external override nonReentrant {
+    function accrue(address collateral, address owner, address hint) external override nonReentrant {
         _requireCollateral(collateral);
         if (owner == address(0)) revert ZeroAddress();
         Position storage p = _accrue(collateral, owner);
@@ -444,10 +419,7 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
     // ──────────────────────────────────────────────────────────
 
     /// @inheritdoc IEUSDManager
-    function addCollateral(
-        address collateral,
-        bytes32 ticker
-    ) external override onlyAdmin {
+    function addCollateral(address collateral, bytes32 ticker) external override onlyAdmin {
         if (collateral == address(0)) revert ZeroAddress();
         if (_collateralConfigs[collateral].exists) revert CollateralAlreadySupported(collateral);
         uint8 dec = IERC20Metadata(collateral).decimals();
@@ -460,10 +432,7 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
     }
 
     /// @inheritdoc IEUSDManager
-    function setCollateralEnabled(
-        address collateral,
-        bool enabled
-    ) external override onlyAdmin {
+    function setCollateralEnabled(address collateral, bool enabled) external override onlyAdmin {
         CollateralConfig storage cfg = _requireCollateral(collateral);
         cfg.enabled = enabled;
         emit CollateralEnabledSet(collateral, enabled);
@@ -560,10 +529,7 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
     /// @dev Fold a position's pending stability fee into its debt and mint it to the treasury,
     ///      keeping eusd.totalSupply() == totalDebt exact. The mint is a call into the trusted
     ///      EUSD token (no transfer hooks); all callers hold the reentrancy guard.
-    function _accrue(
-        address collateral,
-        address owner
-    ) private returns (Position storage p) {
+    function _accrue(address collateral, address owner) private returns (Position storage p) {
         _settleFeeIndex();
         p = _positions[collateral][owner];
         if (p.debt > 0 && _feeIndex > p.feeIndexSnapshot) {
@@ -611,11 +577,7 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
 
     /// @dev Re-sort a position after any collateral/debt change. Listed ⇔ debt > 0 and
     ///      collateral > 0: a debt-only residual (underwater redemption) stays off-list.
-    function _reindex(
-        address collateral,
-        address owner,
-        address hint
-    ) private {
+    function _reindex(address collateral, address owner, address hint) private {
         if (_isListed(collateral, owner)) _removeNode(collateral, owner);
         Position storage p = _positions[collateral][owner];
         if (p.debt > 0 && p.collateral > 0) _insertNode(collateral, owner, hint);
@@ -623,21 +585,14 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
 
     /// @dev List membership from the links themselves (head, or has a predecessor) — never
     ///      inferred from position state.
-    function _isListed(
-        address collateral,
-        address owner
-    ) private view returns (bool) {
+    function _isListed(address collateral, address owner) private view returns (bool) {
         return listHead[collateral] == owner || _nodes[collateral][owner].prev != address(0);
     }
 
     /// @dev Insert `owner` keeping ascending nominal-ratio order (head = riskiest). Equal ratios
     ///      insert after existing nodes. `hint` is the prospective predecessor; an unusable hint
     ///      falls back to a walk from the head.
-    function _insertNode(
-        address collateral,
-        address owner,
-        address hint
-    ) private {
+    function _insertNode(address collateral, address owner, address hint) private {
         Position storage p = _positions[collateral][owner];
         uint256 ratio = Math.mulDiv(p.collateral, PRECISION, p.debt);
 
@@ -667,10 +622,7 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
     }
 
     /// @dev Unlink `owner` from the sorted list. Callers guarantee membership.
-    function _removeNode(
-        address collateral,
-        address owner
-    ) private {
+    function _removeNode(address collateral, address owner) private {
         ListNode memory node = _nodes[collateral][owner];
         if (node.prev == address(0)) listHead[collateral] = node.next;
         else _nodes[collateral][node.prev].next = node.next;
@@ -697,10 +649,7 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
     ///      trading (as in BorrowManager): a halted asset has no live value to lever against and a
     ///      paused one cannot be turned into cash — both are wind-down only (repay / close /
     ///      liquidate / redeem stay open).
-    function _freshPrice(
-        address collateral,
-        bytes32 ticker
-    ) private view returns (uint256 price) {
+    function _freshPrice(address collateral, bytes32 ticker) private view returns (uint256 price) {
         IVaultManager vm = _vaultManager();
         if (vm.isAssetHalted(ticker)) revert CollateralHalted(ticker);
         if (vm.isTradingPaused(ticker)) revert CollateralPaused(ticker);
@@ -717,10 +666,7 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
     ///      its own hard usability window. A halted asset is worth exactly its fixed halt price
     ///      (its only redeemable value, via OwnMarket.redeemHalted) — the feed is not consulted, so
     ///      exits keep working after the feed dies.
-    function _anchorPrice(
-        address collateral,
-        bytes32 ticker
-    ) private view returns (uint256 price) {
+    function _anchorPrice(address collateral, bytes32 ticker) private view returns (uint256 price) {
         IVaultManager vm = _vaultManager();
         if (vm.isAssetHalted(ticker)) return _effectivePrice(collateral, vm.assetHaltPrice(ticker));
         (price,) = _oracle(ticker).getPrice(ticker);
@@ -736,10 +682,7 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
     ///      `legacyRatioToActive` active units, so its price is scaled by that ratio (same rule as
     ///      BorrowManager). Active tokens have ratio 0 → identity. Floor rounding errs against
     ///      the debtor.
-    function _effectivePrice(
-        address collateral,
-        uint256 price
-    ) private view returns (uint256) {
+    function _effectivePrice(address collateral, uint256 price) private view returns (uint256) {
         uint256 ratio = IAssetRegistry(registry.assetRegistry()).legacyRatioToActive(collateral);
         return ratio == 0 ? price : Math.mulDiv(price, ratio, PRECISION);
     }
@@ -768,22 +711,14 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
     }
 
     /// @dev Collateral ratio in BPS. Floor rounding: measured ratios err against the debtor.
-    function _ratioBps(
-        uint256 coll,
-        uint256 debt,
-        uint256 price
-    ) private pure returns (uint256) {
+    function _ratioBps(uint256 coll, uint256 debt, uint256 price) private pure returns (uint256) {
         if (debt == 0) return type(uint256).max;
         return Math.mulDiv(Math.mulDiv(coll, price, PRECISION), BPS, debt);
     }
 
     /// @dev Shared ratio-parameter validation: a fresh mint can never be instantly liquidatable
     ///      (mcr ≥ threshold) and a threshold liquidation is always solvent (threshold ≥ 1+bonus).
-    function _validateRatios(
-        uint16 mcrBps,
-        uint16 liquidationThresholdBps,
-        uint16 liquidationBonusBps
-    ) private pure {
+    function _validateRatios(uint16 mcrBps, uint16 liquidationThresholdBps, uint16 liquidationBonusBps) private pure {
         if (mcrBps < liquidationThresholdBps || uint256(liquidationThresholdBps) < BPS + liquidationBonusBps) {
             revert InvalidRiskParams();
         }
@@ -807,28 +742,19 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
     }
 
     /// @inheritdoc IEUSDManager
-    function getPosition(
-        address collateral,
-        address owner
-    ) external view override returns (Position memory) {
+    function getPosition(address collateral, address owner) external view override returns (Position memory) {
         return _positions[collateral][owner];
     }
 
     /// @inheritdoc IEUSDManager
-    function currentDebt(
-        address collateral,
-        address owner
-    ) public view override returns (uint256) {
+    function currentDebt(address collateral, address owner) public view override returns (uint256) {
         Position storage p = _positions[collateral][owner];
         if (p.debt == 0) return 0;
         return p.debt + Math.mulDiv(p.debt, globalFeeIndex() - p.feeIndexSnapshot, BPS * YEAR);
     }
 
     /// @inheritdoc IEUSDManager
-    function collateralRatioBps(
-        address collateral,
-        address owner
-    ) public view override returns (uint256) {
+    function collateralRatioBps(address collateral, address owner) public view override returns (uint256) {
         uint256 debt = currentDebt(collateral, owner);
         if (debt == 0) return type(uint256).max;
         return _ratioBps(
@@ -839,44 +765,29 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
     }
 
     /// @inheritdoc IEUSDManager
-    function isLiquidatable(
-        address collateral,
-        address owner
-    ) external view override returns (bool) {
+    function isLiquidatable(address collateral, address owner) external view override returns (bool) {
         return collateralRatioBps(collateral, owner) < _riskParams.liquidationThresholdBps;
     }
 
     /// @inheritdoc IEUSDManager
-    function nominalRatio(
-        address collateral,
-        address owner
-    ) external view override returns (uint256) {
+    function nominalRatio(address collateral, address owner) external view override returns (uint256) {
         Position storage p = _positions[collateral][owner];
         if (p.debt == 0) revert NoDebt(collateral, owner);
         return Math.mulDiv(p.collateral, PRECISION, p.debt);
     }
 
     /// @inheritdoc IEUSDManager
-    function listNext(
-        address collateral,
-        address owner
-    ) external view override returns (address) {
+    function listNext(address collateral, address owner) external view override returns (address) {
         return _nodes[collateral][owner].next;
     }
 
     /// @inheritdoc IEUSDManager
-    function listPrev(
-        address collateral,
-        address owner
-    ) external view override returns (address) {
+    function listPrev(address collateral, address owner) external view override returns (address) {
         return _nodes[collateral][owner].prev;
     }
 
     /// @inheritdoc IEUSDManager
-    function findInsertHint(
-        address collateral,
-        uint256 ratio
-    ) external view override returns (address) {
+    function findInsertHint(address collateral, uint256 ratio) external view override returns (address) {
         address prev;
         address node = listHead[collateral];
         while (node != address(0)) {

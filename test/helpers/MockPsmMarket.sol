@@ -28,11 +28,7 @@ contract MockPsmMarket {
         ratio = ratio_;
     }
 
-    function psmMint(
-        bytes32,
-        address wrapper,
-        uint256 wrapperAmount
-    ) external returns (uint256 eTokenAmount) {
+    function psmMint(bytes32, address wrapper, uint256 wrapperAmount) external returns (uint256 eTokenAmount) {
         IERC20(wrapper).safeTransferFrom(msg.sender, address(this), wrapperAmount);
         eTokenAmount = wrapperAmount * ratio / 1e18;
         eToken.mint(msg.sender, eTokenAmount);

@@ -83,6 +83,12 @@
       "offset": 0,
       "slot": "16",
       "type": "t_uint256"
+    },
+    {
+      "label": "stakeZap",
+      "offset": 0,
+      "slot": "17",
+      "type": "t_address"
     }
   ],
   "types": {

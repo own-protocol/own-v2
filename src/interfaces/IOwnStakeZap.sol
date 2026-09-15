@@ -122,29 +122,18 @@ interface IOwnStakeZap {
     /// @param moneyAmount $MONEY pulled from the caller and staked (may be zero).
     /// @param eusdToMint  eUSD minted against the new collateral and staked (may be zero).
     /// @param hint        Sorted-list insert hint for the CDP.
-    function stakeFromSpyAndMoney(
-        uint256 spyAmount,
-        uint256 moneyAmount,
-        uint256 eusdToMint,
-        address hint
-    ) external;
+    function stakeFromSpyAndMoney(uint256 spyAmount, uint256 moneyAmount, uint256 eusdToMint, address hint) external;
 
     /// @notice Stake eUSD and $MONEY the caller already holds. No CDP involved.
     /// @param eusdAmount  eUSD pulled and staked (may be zero).
     /// @param moneyAmount $MONEY pulled and staked (may be zero; both zero reverts).
-    function stakeFromEusdAndMoney(
-        uint256 eusdAmount,
-        uint256 moneyAmount
-    ) external;
+    function stakeFromEusdAndMoney(uint256 eusdAmount, uint256 moneyAmount) external;
 
     /// @notice Migrate from sEUSD: redeem the caller's shares (instant, no cooldown), stake the
     ///         eUSD alongside `moneyAmount` of $MONEY.
     /// @param shares      sEUSD shares redeemed (caller must have approved the zap).
     /// @param moneyAmount $MONEY pulled and staked alongside (may be zero).
-    function stakeFromSeusd(
-        uint256 shares,
-        uint256 moneyAmount
-    ) external;
+    function stakeFromSeusd(uint256 shares, uint256 moneyAmount) external;
 
     /// @notice Compound: claim the caller's settled SPY rewards, PSM-mint them into collateral
     ///         eTokens and deposit them into the caller's CDP — yield becomes index collateral.
@@ -158,10 +147,7 @@ interface IOwnStakeZap {
     ///         remainder above the outstanding debt is returned to the caller as eUSD.
     /// @param eusdAmount Staked eUSD to unwind into the repayment (18 decimals).
     /// @param hint       Sorted-list insert hint for the CDP.
-    function rebalance(
-        uint256 eusdAmount,
-        address hint
-    ) external;
+    function rebalance(uint256 eusdAmount, address hint) external;
 
     // ──────────────────────────────────────────────────────────
     //  Admin (via ProtocolRegistry roles)

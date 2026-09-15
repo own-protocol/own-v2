@@ -152,19 +152,13 @@ interface IOwnStakingV2 {
     ///         (first curve knot) until the next refresh — staking never reverts on price.
     /// @param money $MONEY to add (may be zero).
     /// @param eusd  eUSD to add (may be zero; both zero reverts).
-    function stake(
-        uint256 money,
-        uint256 eusd
-    ) external;
+    function stake(uint256 money, uint256 eusd) external;
 
     /// @notice Unstake $MONEY and/or eUSD. Settles pending rewards, then re-snapshots the boost.
     ///         Needs no oracle price — a full exit always works.
     /// @param money $MONEY to remove (may be zero).
     /// @param eusd  eUSD to remove (may be zero; both zero reverts).
-    function unstake(
-        uint256 money,
-        uint256 eusd
-    ) external;
+    function unstake(uint256 money, uint256 eusd) external;
 
     /// @notice Pay out the caller's settled SPY rewards.
     /// @param to Recipient of the SPY.
@@ -182,11 +176,7 @@ interface IOwnStakingV2 {
     /// @param owner Position owner credited with the stake.
     /// @param money $MONEY to add (may be zero).
     /// @param eusd  eUSD to add (may be zero; both zero reverts).
-    function stakeFor(
-        address owner,
-        uint256 money,
-        uint256 eusd
-    ) external;
+    function stakeFor(address owner, uint256 money, uint256 eusd) external;
 
     // ──────────────────────────────────────────────────────────
     //  Zap surface (whitelisted zap only)
@@ -199,11 +189,7 @@ interface IOwnStakingV2 {
     /// @param owner Position owner to unstake from.
     /// @param money $MONEY to remove (may be zero).
     /// @param eusd  eUSD to remove (may be zero; both zero reverts).
-    function unstakeFor(
-        address owner,
-        uint256 money,
-        uint256 eusd
-    ) external;
+    function unstakeFor(address owner, uint256 money, uint256 eusd) external;
 
     /// @notice Pay `owner`'s settled SPY rewards to the caller. Zap only — the zap converts the
     ///         SPY to CDP collateral for `owner` in the same transaction (compounding).
@@ -295,11 +281,7 @@ interface IOwnStakingV2 {
     /// @param token  Token to rescue.
     /// @param to     Recipient.
     /// @param amount Amount to transfer.
-    function rescueToken(
-        address token,
-        address to,
-        uint256 amount
-    ) external;
+    function rescueToken(address token, address to, uint256 amount) external;
 
     // ──────────────────────────────────────────────────────────
     //  Views
@@ -324,10 +306,7 @@ interface IOwnStakingV2 {
     ///         Returns the floor boost when the price is stale, zero, or missing.
     /// @param money $MONEY staked.
     /// @param eusd  eUSD staked.
-    function previewBoost(
-        uint256 money,
-        uint256 eusd
-    ) external view returns (uint256);
+    function previewBoost(uint256 money, uint256 eusd) external view returns (uint256);
 
     /// @notice Current $MONEY price used for boosts (18 decimals). Zero when stale or missing.
     function moneyPrice() external view returns (uint256);

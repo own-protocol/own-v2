@@ -104,11 +104,7 @@ contract OwnStakingV2Test is Test {
         return usd * 1e18 * PRICE_SCALE / MONEY_PRICE;
     }
 
-    function _stake(
-        address user,
-        uint256 moneyAmt,
-        uint256 eusdAmt
-    ) internal {
+    function _stake(address user, uint256 moneyAmt, uint256 eusdAmt) internal {
         vm.prank(user);
         staking.stake(moneyAmt, eusdAmt);
     }

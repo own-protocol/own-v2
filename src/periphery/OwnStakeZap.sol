@@ -84,9 +84,8 @@ contract OwnStakeZap is IOwnStakeZap, Initializable, UUPSUpgradeable, Reentrancy
     ) external initializer {
         if (
             cfg.registry == address(0) || cfg.eusdManager == address(0) || cfg.staking == address(0)
-                || cfg.market == address(0) || cfg.sEusd == address(0) || cfg.eusd == address(0)
-                || cfg.money == address(0) || cfg.spy == address(0) || cfg.collateral == address(0)
-                || cfg.swapRouter == address(0)
+                || cfg.market == address(0) || cfg.sEusd == address(0) || cfg.eusd == address(0) || cfg.money == address(0)
+                || cfg.spy == address(0) || cfg.collateral == address(0) || cfg.swapRouter == address(0)
         ) revert ZeroAddress();
         registry = IProtocolRegistry(cfg.registry);
         _eusdManager = IEUSDManager(cfg.eusdManager);
@@ -165,10 +164,7 @@ contract OwnStakeZap is IOwnStakeZap, Initializable, UUPSUpgradeable, Reentrancy
     }
 
     /// @inheritdoc IOwnStakeZap
-    function stakeFromEusdAndMoney(
-        uint256 eusdAmount,
-        uint256 moneyAmount
-    ) external override nonReentrant {
+    function stakeFromEusdAndMoney(uint256 eusdAmount, uint256 moneyAmount) external override nonReentrant {
         if (eusdAmount == 0 && moneyAmount == 0) revert ZeroAmount();
         if (eusdAmount != 0) _eusd.safeTransferFrom(msg.sender, address(this), eusdAmount);
         if (moneyAmount != 0) _money.safeTransferFrom(msg.sender, address(this), moneyAmount);
@@ -177,10 +173,7 @@ contract OwnStakeZap is IOwnStakeZap, Initializable, UUPSUpgradeable, Reentrancy
     }
 
     /// @inheritdoc IOwnStakeZap
-    function stakeFromSeusd(
-        uint256 shares,
-        uint256 moneyAmount
-    ) external override nonReentrant {
+    function stakeFromSeusd(uint256 shares, uint256 moneyAmount) external override nonReentrant {
         if (shares == 0) revert ZeroAmount();
         // Instant ERC-4626 exit; requires the caller's sEUSD approval to the zap.
         uint256 eusdOut = _sEusd.redeem(shares, address(this), msg.sender);
@@ -201,10 +194,7 @@ contract OwnStakeZap is IOwnStakeZap, Initializable, UUPSUpgradeable, Reentrancy
     }
 
     /// @inheritdoc IOwnStakeZap
-    function rebalance(
-        uint256 eusdAmount,
-        address hint
-    ) external override nonReentrant {
+    function rebalance(uint256 eusdAmount, address hint) external override nonReentrant {
         if (eusdAmount == 0) revert ZeroAmount();
         _staking.unstakeFor(msg.sender, 0, eusdAmount);
         // Repay burns from this contract's balance, capped at the position's debt.

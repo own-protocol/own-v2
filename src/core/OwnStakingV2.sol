@@ -183,37 +183,23 @@ contract OwnStakingV2 is IOwnStakingV2, Initializable, UUPSUpgradeable, Reentran
     // ──────────────────────────────────────────────────────────
 
     /// @inheritdoc IOwnStakingV2
-    function stake(
-        uint256 money,
-        uint256 eusd
-    ) external override nonReentrant {
+    function stake(uint256 money, uint256 eusd) external override nonReentrant {
         _stakeFor(msg.sender, money, eusd);
     }
 
     /// @inheritdoc IOwnStakingV2
-    function stakeFor(
-        address owner,
-        uint256 money,
-        uint256 eusd
-    ) external override nonReentrant {
+    function stakeFor(address owner, uint256 money, uint256 eusd) external override nonReentrant {
         if (owner == address(0)) revert ZeroAddress();
         _stakeFor(owner, money, eusd);
     }
 
     /// @inheritdoc IOwnStakingV2
-    function unstake(
-        uint256 money,
-        uint256 eusd
-    ) external override nonReentrant {
+    function unstake(uint256 money, uint256 eusd) external override nonReentrant {
         _unstake(msg.sender, msg.sender, money, eusd);
     }
 
     /// @inheritdoc IOwnStakingV2
-    function unstakeFor(
-        address owner,
-        uint256 money,
-        uint256 eusd
-    ) external override nonReentrant onlyZap {
+    function unstakeFor(address owner, uint256 money, uint256 eusd) external override nonReentrant onlyZap {
         _unstake(owner, msg.sender, money, eusd);
     }
 
@@ -372,11 +358,7 @@ contract OwnStakingV2 is IOwnStakingV2, Initializable, UUPSUpgradeable, Reentran
     /// @inheritdoc IOwnStakingV2
     /// @dev SPY, eUSD and $MONEY are never rescuable — user deposits and the reward stream live
     ///      on this contract's balance.
-    function rescueToken(
-        address token,
-        address to,
-        uint256 amount
-    ) external override onlyAdmin nonReentrant {
+    function rescueToken(address token, address to, uint256 amount) external override onlyAdmin nonReentrant {
         if (token == address(_spy) || token == address(_eusd) || token == address(_money)) {
             revert ProtectedToken(token);
         }
@@ -391,11 +373,7 @@ contract OwnStakingV2 is IOwnStakingV2, Initializable, UUPSUpgradeable, Reentran
 
     /// @dev Shared stake body: tokens pulled from msg.sender, position credited to `owner`.
     ///      Callers hold the reentrancy guard.
-    function _stakeFor(
-        address owner,
-        uint256 money,
-        uint256 eusd
-    ) private {
+    function _stakeFor(address owner, uint256 money, uint256 eusd) private {
         if (money == 0 && eusd == 0) revert ZeroAmount();
         _settle(owner);
 
@@ -420,12 +398,7 @@ contract OwnStakingV2 is IOwnStakingV2, Initializable, UUPSUpgradeable, Reentran
 
     /// @dev Shared unstake body: `owner`'s position shrinks, tokens go to `to`. Callers hold the
     ///      reentrancy guard and gate who may unstake on whose behalf.
-    function _unstake(
-        address owner,
-        address to,
-        uint256 money,
-        uint256 eusd
-    ) private {
+    function _unstake(address owner, address to, uint256 money, uint256 eusd) private {
         if (money == 0 && eusd == 0) revert ZeroAmount();
         _settle(owner);
 
@@ -449,10 +422,7 @@ contract OwnStakingV2 is IOwnStakingV2, Initializable, UUPSUpgradeable, Reentran
 
     /// @dev Shared claim body: `owner`'s settled rewards paid to `to`. Callers hold the
     ///      reentrancy guard and gate who may claim on whose behalf.
-    function _claim(
-        address owner,
-        address to
-    ) private returns (uint256 amount) {
+    function _claim(address owner, address to) private returns (uint256 amount) {
         if (to == address(0)) revert ZeroAddress();
         _settle(owner);
         Position storage p = _positions[owner];
@@ -502,10 +472,7 @@ contract OwnStakingV2 is IOwnStakingV2, Initializable, UUPSUpgradeable, Reentran
     /// @dev Re-snapshot a settled position's boost at the current oracle price and fold the
     ///      weight change into the total. Must run after {_settle}; `oldWeight` is the position's
     ///      weight before any amount mutation — the weight its rewards were just settled at.
-    function _resnapshotBoost(
-        Position storage p,
-        uint256 oldWeight
-    ) private {
+    function _resnapshotBoost(Position storage p, uint256 oldWeight) private {
         uint256 newBoost = _boostFor(p.moneyStaked, p.eusdStaked);
         uint256 newWeight = p.eusdStaked * newBoost / BPS;
         p.boostBps = newBoost;
@@ -558,10 +525,7 @@ contract OwnStakingV2 is IOwnStakingV2, Initializable, UUPSUpgradeable, Reentran
     /// @dev Boost for a hypothetical position at the current oracle price. A position with no
     ///      eUSD carries no weight, so its boost is 0; an unusable price (stale, zero, missing)
     ///      evaluates at zero coverage — the curve floor — never reverting.
-    function _boostFor(
-        uint256 money,
-        uint256 eusd
-    ) private view returns (uint256) {
+    function _boostFor(uint256 money, uint256 eusd) private view returns (uint256) {
         if (eusd == 0) return 0;
         uint256 coverageBps;
         if (money != 0) {
@@ -586,8 +550,9 @@ contract OwnStakingV2 is IOwnStakingV2, Initializable, UUPSUpgradeable, Reentran
             Knot memory hi = knots[i];
             if (coverageBps <= hi.coverageBps) {
                 Knot memory lo = knots[i - 1];
-                return lo.boostBps + (uint256(hi.boostBps) - lo.boostBps) * (coverageBps - lo.coverageBps)
-                    / (uint256(hi.coverageBps) - lo.coverageBps);
+                return lo.boostBps
+                    + (uint256(hi.boostBps) - lo.boostBps) * (coverageBps - lo.coverageBps)
+                        / (uint256(hi.coverageBps) - lo.coverageBps);
             }
         }
         // Unreachable: coverage below the last knot always lands in a segment.
@@ -648,10 +613,7 @@ contract OwnStakingV2 is IOwnStakingV2, Initializable, UUPSUpgradeable, Reentran
     }
 
     /// @inheritdoc IOwnStakingV2
-    function previewBoost(
-        uint256 money,
-        uint256 eusd
-    ) external view override returns (uint256) {
+    function previewBoost(uint256 money, uint256 eusd) external view override returns (uint256) {
         return _boostFor(money, eusd);
     }
 
