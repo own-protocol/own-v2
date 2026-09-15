@@ -2,11 +2,42 @@
 pragma solidity 0.8.28;
 
 /// @title IOwnStakeZap — one-transaction routes into OwnStakingV2
-/// @notice Stateless router collapsing the multi-step basket flows (PSM-mint collateral, CDP
-///         deposit, eUSD mint, dual-asset stake) into single transactions on any wallet. Holds no
-///         funds and no admin: replace by deploying a new zap and repointing the whitelists on
-///         EUSDManager and OwnStakingV2.
+/// @notice Router collapsing the multi-step basket flows (PSM-mint collateral, CDP deposit, eUSD
+///         mint, dual-asset stake) into single transactions on any wallet. Holds standing user
+///         approvals but never funds between transactions. UUPS-upgradable behind a stable proxy
+///         address (ADMIN via ProtocolRegistry), so user approvals survive upgrades; only the
+///         swap router is rotatable without an upgrade.
 interface IOwnStakeZap {
+    // ──────────────────────────────────────────────────────────
+    //  Types
+    // ──────────────────────────────────────────────────────────
+
+    /// @notice Initializer wiring (bundled to keep the call stack-friendly).
+    /// @param registry         ProtocolRegistry (role authority).
+    /// @param eusdManager      CDP engine (must whitelist the zap via setStakeZap).
+    /// @param staking          OwnStakingV2 (must whitelist the zap via setZap).
+    /// @param market           OwnMarket whose PSM converts SPY into the collateral eToken.
+    /// @param sEusd            Legacy sEUSD vault (migration source).
+    /// @param eusd             eUSD token.
+    /// @param money            $MONEY token.
+    /// @param spy              SPY token (PSM wrapper and reward asset).
+    /// @param collateral       Collateral eToken (eSPY).
+    /// @param collateralTicker PSM asset ticker for the collateral (e.g. bytes32("SPY")).
+    /// @param swapRouter       Vetted router for the SPY→$MONEY swap leg.
+    struct InitConfig {
+        address registry;
+        address eusdManager;
+        address staking;
+        address market;
+        address sEusd;
+        address eusd;
+        address money;
+        address spy;
+        address collateral;
+        bytes32 collateralTicker;
+        address swapRouter;
+    }
+
     // ──────────────────────────────────────────────────────────
     //  Events
     // ──────────────────────────────────────────────────────────
@@ -38,6 +69,10 @@ interface IOwnStakeZap {
     /// @param eusdReturned  Unused remainder returned to the user (18 decimals).
     event Rebalanced(address indexed user, uint256 eusdUnstaked, uint256 debtRepaid, uint256 eusdReturned);
 
+    /// @notice Emitted when the vetted swap router changes.
+    /// @param swapRouter New router for the SPY→$MONEY leg.
+    event SwapRouterSet(address indexed swapRouter);
+
     // ──────────────────────────────────────────────────────────
     //  Errors
     // ──────────────────────────────────────────────────────────
@@ -56,6 +91,8 @@ interface IOwnStakeZap {
     error InsufficientMoneyOut(uint256 moneyOut, uint256 minMoneyOut);
     /// @notice No settled rewards to compound.
     error NothingToCompound();
+    /// @notice Caller lacks the ADMIN role.
+    error OnlyAdmin();
 
     // ──────────────────────────────────────────────────────────
     //  Entries
@@ -127,7 +164,17 @@ interface IOwnStakeZap {
     ) external;
 
     // ──────────────────────────────────────────────────────────
-    //  Views (wiring, all immutable)
+    //  Admin (via ProtocolRegistry roles)
+    // ──────────────────────────────────────────────────────────
+
+    /// @notice Rotate the vetted swap router for the SPY→$MONEY leg (e.g. a router migration).
+    /// @param swapRouter_ New router (non-zero).
+    function setSwapRouter(
+        address swapRouter_
+    ) external;
+
+    // ──────────────────────────────────────────────────────────
+    //  Views (wiring, initializer-set)
     // ──────────────────────────────────────────────────────────
 
     /// @notice The CDP engine.

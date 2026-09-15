@@ -19,6 +19,7 @@ import {MockPsmMarket} from "../helpers/MockPsmMarket.sol";
 import {MockSwapRouter} from "../helpers/MockSwapRouter.sol";
 import {MockVaultManager} from "../helpers/MockVaultManager.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
+import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
 import {Test} from "forge-std/Test.sol";
 
 contract OwnStakeZapTest is Test {
@@ -112,17 +113,9 @@ contract OwnStakeZapTest is Test {
         router = new MockSwapRouter();
         money.mint(address(router), 1e12 * 1e18);
 
-        zap = new OwnStakeZap(
-            address(manager),
-            address(staking),
-            address(psm),
-            address(sEusd),
-            address(eusd),
-            address(money),
-            address(spy),
-            address(eSPY),
-            SPY_TICKER,
-            address(router)
+        OwnStakeZap zapImpl = new OwnStakeZap();
+        zap = OwnStakeZap(
+            address(new ERC1967Proxy(address(zapImpl), abi.encodeCall(OwnStakeZap.initialize, (_zapConfig()))))
         );
 
         vm.startPrank(admin);
@@ -160,6 +153,22 @@ contract OwnStakeZapTest is Test {
         uint256 usd
     ) internal pure returns (uint256) {
         return usd * 1e18 * 1e18 / MONEY_PRICE;
+    }
+
+    function _zapConfig() internal view returns (IOwnStakeZap.InitConfig memory) {
+        return IOwnStakeZap.InitConfig({
+            registry: address(registry),
+            eusdManager: address(manager),
+            staking: address(staking),
+            market: address(psm),
+            sEusd: address(sEusd),
+            eusd: address(eusd),
+            money: address(money),
+            spy: address(spy),
+            collateral: address(eSPY),
+            collateralTicker: SPY_TICKER,
+            swapRouter: address(router)
+        });
     }
 
     // ──────────────────────────────────────────────────────────
@@ -372,5 +381,48 @@ contract OwnStakeZapTest is Test {
         vm.expectRevert();
         vm.prank(alice);
         zap.stakeFromSpyAndMoney(10e18, 0, 3400e18, address(0));
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Upgradeability & admin
+    // ──────────────────────────────────────────────────────────
+
+    function test_initialize_twice_reverts() public {
+        vm.expectRevert(Initializable.InvalidInitialization.selector);
+        zap.initialize(_zapConfig());
+    }
+
+    function test_upgrade_adminGated() public {
+        OwnStakeZap newImpl = new OwnStakeZap();
+        vm.expectRevert(IOwnStakeZap.OnlyAdmin.selector);
+        vm.prank(attacker);
+        zap.upgradeToAndCall(address(newImpl), "");
+
+        vm.prank(admin);
+        zap.upgradeToAndCall(address(newImpl), "");
+
+        // Approvals and wiring live in proxy storage: flows keep working after the upgrade.
+        vm.prank(alice);
+        zap.stakeFromSpyAndMoney(1e18, 0, 100e18, address(0));
+        assertEq(manager.getPosition(address(eSPY), alice).collateral, 1e18);
+    }
+
+    function test_setSwapRouter_adminGatedAndRotates() public {
+        vm.expectRevert(IOwnStakeZap.OnlyAdmin.selector);
+        vm.prank(attacker);
+        zap.setSwapRouter(attacker);
+
+        MockSwapRouter newRouter = new MockSwapRouter();
+        money.mint(address(newRouter), 1e12 * 1e18);
+        vm.prank(admin);
+        zap.setSwapRouter(address(newRouter));
+        assertEq(zap.swapRouter(), address(newRouter));
+
+        // Swaps route through the new router; the old one no longer gets an allowance.
+        uint256 moneyOut = _moneyFor(1500);
+        bytes memory swapData = abi.encodeCall(MockSwapRouter.swap, (address(spy), 3e18, address(money), moneyOut));
+        vm.prank(alice);
+        zap.stakeFromSpy(10e18, 3e18, moneyOut, swapData, 0, address(0));
+        assertEq(spy.balanceOf(address(newRouter)), 3e18, "slice went to the new router");
     }
 }

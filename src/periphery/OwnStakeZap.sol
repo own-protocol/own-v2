@@ -5,92 +5,114 @@ import {IEUSDManager} from "../interfaces/IEUSDManager.sol";
 import {IOwnMarket} from "../interfaces/IOwnMarket.sol";
 import {IOwnStakeZap} from "../interfaces/IOwnStakeZap.sol";
 import {IOwnStakingV2} from "../interfaces/IOwnStakingV2.sol";
+import {IProtocolRegistry} from "../interfaces/IProtocolRegistry.sol";
 import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
+import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
+import {UUPSUpgradeable} from "@openzeppelin/contracts/proxy/utils/UUPSUpgradeable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 /// @title OwnStakeZap — one-transaction routes into OwnStakingV2
 /// @notice Collapses the basket flows (swap, PSM-mint, CDP deposit, eUSD mint, dual-asset stake)
-///         into single transactions. Stateless: no owner, no admin, no upgrade — replace by
-///         deploying a new zap and repointing `EUSDManager.setStakeZap` and
-///         `OwnStakingV2.setZap`. Every entry runs on real amounts inside one transaction and
-///         reverts whole if any leg fails, so nothing is ever quoted or stranded.
-/// @dev Trust model: the zap holds standing user *approvals* but never funds between
-///      transactions, so the swap leg is the only dangerous surface. It is confined to the
-///      constructor-pinned `swapRouter` with an exact just-in-time allowance that is reset after
-///      the call — user-supplied `swapData` can therefore spend at most the caller's own
-///      in-flight SPY slice, never another user's approval. On-behalf CDP surfaces
-///      ({IEUSDManager.depositFor}/{mintFor}) and staking surfaces ({IOwnStakingV2.unstakeFor}/
-///      {claimFor}) only accept this contract, and every entry passes `msg.sender` as the owner,
-///      so the zap can only ever act on the caller's own position.
-contract OwnStakeZap is IOwnStakeZap, ReentrancyGuard {
+///         into single transactions. Holds standing user approvals but never funds between
+///         transactions. Every entry runs on real amounts inside one transaction and reverts
+///         whole if any leg fails, so nothing is ever quoted or stranded.
+/// @dev Runs behind an ERC-1967 proxy (UUPS) so the zap address — and every user approval
+///      granted to it — survives upgrades; upgrades are ADMIN-gated via ProtocolRegistry roles
+///      and storage is append-only across upgrades. Trust model: the swap leg is the only
+///      dangerous surface. It is confined to the ADMIN-set `swapRouter` with an exact
+///      just-in-time allowance that is reset after the call — user-supplied `swapData` can
+///      therefore spend at most the caller's own in-flight SPY slice, never another user's
+///      approval. On-behalf CDP surfaces ({IEUSDManager.depositFor}/{mintFor}) and staking
+///      surfaces ({IOwnStakingV2.unstakeFor}/{claimFor}) only accept this contract, and every
+///      entry passes `msg.sender` as the owner, so the zap can only ever act on the caller's own
+///      position.
+contract OwnStakeZap is IOwnStakeZap, Initializable, UUPSUpgradeable, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
     // ──────────────────────────────────────────────────────────
-    //  Immutable wiring
+    //  Constants
     // ──────────────────────────────────────────────────────────
 
-    IEUSDManager private immutable _eusdManager;
-    IOwnStakingV2 private immutable _staking;
-    IOwnMarket private immutable _market;
-    IERC4626 private immutable _sEusd;
-    IERC20 private immutable _eusd;
-    IERC20 private immutable _money;
-    IERC20 private immutable _spy;
-    IERC20 private immutable _collateral;
-    bytes32 private immutable _collateralTicker;
-    address private immutable _swapRouter;
+    bytes32 private constant ADMIN = keccak256("ADMIN");
 
     // ──────────────────────────────────────────────────────────
-    //  Construction
+    //  State
     // ──────────────────────────────────────────────────────────
 
-    /// @param eusdManager_ CDP engine (must whitelist this zap via setStakeZap).
-    /// @param staking_     OwnStakingV2 (must whitelist this zap via setZap).
-    /// @param market_      OwnMarket whose PSM converts SPY into the collateral eToken.
-    /// @param sEusd_       Legacy sEUSD vault (migration source).
-    /// @param eusd_        eUSD token.
-    /// @param money_       $MONEY token.
-    /// @param spy_         SPY token (PSM wrapper and reward asset).
-    /// @param collateral_  Collateral eToken (eSPY).
-    /// @param ticker_      PSM asset ticker for the collateral (e.g. bytes32("SPY")).
-    /// @param swapRouter_  Vetted router for the SPY→$MONEY swap leg.
-    constructor(
-        address eusdManager_,
-        address staking_,
-        address market_,
-        address sEusd_,
-        address eusd_,
-        address money_,
-        address spy_,
-        address collateral_,
-        bytes32 ticker_,
-        address swapRouter_
-    ) {
+    /// @notice ProtocolRegistry used to resolve the ADMIN role.
+    /// @dev Initializer-set, fixed thereafter (storage, not immutable, so an upgraded
+    ///      implementation can never silently rebind it).
+    IProtocolRegistry public registry;
+
+    /// @dev Protocol wiring. Initializer-set; only the swap router is ADMIN-rotatable.
+    IEUSDManager private _eusdManager;
+    IOwnStakingV2 private _staking;
+    IOwnMarket private _market;
+    IERC4626 private _sEusd;
+    IERC20 private _eusd;
+    IERC20 private _money;
+    IERC20 private _spy;
+    IERC20 private _collateral;
+    bytes32 private _collateralTicker;
+    address private _swapRouter;
+
+    // ──────────────────────────────────────────────────────────
+    //  Modifiers
+    // ──────────────────────────────────────────────────────────
+
+    modifier onlyAdmin() {
+        if (!registry.hasRole(ADMIN, msg.sender)) revert OnlyAdmin();
+        _;
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Construction / initialization (UUPS)
+    // ──────────────────────────────────────────────────────────
+
+    /// @dev The implementation is only ever used behind an ERC-1967 proxy; lock its own
+    ///      initializers so the bare implementation can never be initialized or taken over.
+    constructor() {
+        _disableInitializers();
+    }
+
+    /// @notice Initialize the zap proxy (runs once, in the proxy's constructor call).
+    /// @param cfg Full protocol wiring — see {IOwnStakeZap.InitConfig}.
+    function initialize(
+        InitConfig calldata cfg
+    ) external initializer {
         if (
-            eusdManager_ == address(0) || staking_ == address(0) || market_ == address(0) || sEusd_ == address(0)
-                || eusd_ == address(0) || money_ == address(0) || spy_ == address(0) || collateral_ == address(0)
-                || swapRouter_ == address(0)
+            cfg.registry == address(0) || cfg.eusdManager == address(0) || cfg.staking == address(0)
+                || cfg.market == address(0) || cfg.sEusd == address(0) || cfg.eusd == address(0)
+                || cfg.money == address(0) || cfg.spy == address(0) || cfg.collateral == address(0)
+                || cfg.swapRouter == address(0)
         ) revert ZeroAddress();
-        _eusdManager = IEUSDManager(eusdManager_);
-        _staking = IOwnStakingV2(staking_);
-        _market = IOwnMarket(market_);
-        _sEusd = IERC4626(sEusd_);
-        _eusd = IERC20(eusd_);
-        _money = IERC20(money_);
-        _spy = IERC20(spy_);
-        _collateral = IERC20(collateral_);
-        _collateralTicker = ticker_;
-        _swapRouter = swapRouter_;
+        registry = IProtocolRegistry(cfg.registry);
+        _eusdManager = IEUSDManager(cfg.eusdManager);
+        _staking = IOwnStakingV2(cfg.staking);
+        _market = IOwnMarket(cfg.market);
+        _sEusd = IERC4626(cfg.sEusd);
+        _eusd = IERC20(cfg.eusd);
+        _money = IERC20(cfg.money);
+        _spy = IERC20(cfg.spy);
+        _collateral = IERC20(cfg.collateral);
+        _collateralTicker = cfg.collateralTicker;
+        _swapRouter = cfg.swapRouter;
+        emit SwapRouterSet(cfg.swapRouter);
 
         // Standing approvals to the fixed protocol contracts the zap routes through. The router
         // deliberately gets none — its allowance is exact and per-swap.
-        IERC20(spy_).forceApprove(market_, type(uint256).max);
-        IERC20(collateral_).forceApprove(eusdManager_, type(uint256).max);
-        IERC20(money_).forceApprove(staking_, type(uint256).max);
-        IERC20(eusd_).forceApprove(staking_, type(uint256).max);
+        IERC20(cfg.spy).forceApprove(cfg.market, type(uint256).max);
+        IERC20(cfg.collateral).forceApprove(cfg.eusdManager, type(uint256).max);
+        IERC20(cfg.money).forceApprove(cfg.staking, type(uint256).max);
+        IERC20(cfg.eusd).forceApprove(cfg.staking, type(uint256).max);
     }
+
+    /// @dev UUPS upgrade gate: ADMIN (via ProtocolRegistry) only.
+    function _authorizeUpgrade(
+        address
+    ) internal view override onlyAdmin {}
 
     // ──────────────────────────────────────────────────────────
     //  Entries
@@ -190,6 +212,19 @@ contract OwnStakeZap is IOwnStakeZap, ReentrancyGuard {
         uint256 leftover = _eusd.balanceOf(address(this));
         if (leftover != 0) _eusd.safeTransfer(msg.sender, leftover);
         emit Rebalanced(msg.sender, eusdAmount, eusdAmount - leftover, leftover);
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Admin
+    // ──────────────────────────────────────────────────────────
+
+    /// @inheritdoc IOwnStakeZap
+    function setSwapRouter(
+        address swapRouter_
+    ) external override onlyAdmin {
+        if (swapRouter_ == address(0)) revert ZeroAddress();
+        _swapRouter = swapRouter_;
+        emit SwapRouterSet(swapRouter_);
     }
 
     // ──────────────────────────────────────────────────────────
