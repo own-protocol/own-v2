@@ -207,6 +207,39 @@ contract OwnStakeZap is IOwnStakeZap, Initializable, UUPSUpgradeable, Reentrancy
         emit Rebalanced(msg.sender, eusdAmount, eusdAmount - leftover, leftover);
     }
 
+    /// @inheritdoc IOwnStakeZap
+    function unwind(
+        address hint
+    ) external override nonReentrant {
+        IOwnStakingV2.Position memory pos = _staking.position(msg.sender);
+        uint256 balBefore = _eusd.balanceOf(address(this));
+
+        uint256 spyOut = _staking.claimFor(msg.sender);
+        if (pos.eusdStaked == 0 && pos.moneyStaked == 0) {
+            if (spyOut == 0) revert NothingToUnwind();
+        } else {
+            _staking.unstakeFor(msg.sender, pos.moneyStaked, pos.eusdStaked);
+        }
+
+        // Accrue first so the debt read includes pending stability fees, then clear it in full —
+        // any shortfall beyond the unstaked eUSD (typically those fees) is pulled from the caller.
+        uint256 debt;
+        if (_eusdManager.getPosition(address(_collateral), msg.sender).debt != 0) {
+            _eusdManager.accrue(address(_collateral), msg.sender, hint);
+            debt = _eusdManager.getPosition(address(_collateral), msg.sender).debt;
+            if (debt > pos.eusdStaked) {
+                _eusd.safeTransferFrom(msg.sender, address(this), debt - pos.eusdStaked);
+            }
+            _eusdManager.repay(address(_collateral), msg.sender, debt, hint);
+        }
+
+        uint256 leftover = _eusd.balanceOf(address(this)) - balBefore;
+        if (leftover != 0) _eusd.safeTransfer(msg.sender, leftover);
+        if (pos.moneyStaked != 0) _money.safeTransfer(msg.sender, pos.moneyStaked);
+        if (spyOut != 0) _spy.safeTransfer(msg.sender, spyOut);
+        emit Unwound(msg.sender, pos.moneyStaked, spyOut, pos.eusdStaked, debt, leftover);
+    }
+
     // ──────────────────────────────────────────────────────────
     //  Admin
     // ──────────────────────────────────────────────────────────

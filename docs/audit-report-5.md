@@ -134,6 +134,18 @@ enablement, pause, minDebt, ceiling, fresh-price MCR, accrual, reindex) plus a `
 check. `stakeZap` is appended last in storage (layout snapshot updated); `onlyZap` with an unset
 zap correctly disables the surface; events attribute to `owner`. No findings.
 
+## Post-pass additions (not covered by the 12-agent scan)
+
+- **`OwnStakeZap.unwind(hint)`** (added 2026-09-15, after the pass): one-transaction exit — claims
+  rewards, unstakes the full position, accrues then repays the CDP debt in full (shortfall beyond
+  the unstaked eUSD, typically stability fees, is pulled from the caller), returns $MONEY, SPY and
+  surplus eUSD. Collateral withdrawal stays a direct call by design — a `withdrawCollateralFor`
+  zap surface was considered and REJECTED to keep the zap's standing powers minimal (it would
+  extend A5-I-01 from "create debt" to "move collateral"). `unwind` composes only pre-audited
+  surfaces (`claimFor`/`unstakeFor` zap-gated with owner = msg.sender, permissionless `accrue`,
+  `repay` burning from the caller), uses the same delta accounting as the fixed `rebalance`, and
+  is `nonReentrant` — but it has not been through a full agent pass; include it in the next one.
+
 ## Leads (not scored — trails for manual review)
 
 - **SPY wrapper token semantics vs. reward accounting** (8/12 agents): `notifyRewardAmount` books

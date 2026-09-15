@@ -416,6 +416,79 @@ contract OwnStakeZapTest is Test {
         assertEq(eusd.balanceOf(address(zap)), 900e18, "donation untouched");
     }
 
+    function test_unwind_fullExit() public {
+        uint256 m = _moneyFor(1000);
+        vm.prank(alice);
+        zap.stakeFromSpyAndMoney(10e18, m, 1000e18, address(0));
+
+        vm.prank(operator);
+        staking.notifyRewardAmount(700e18);
+        vm.warp(block.timestamp + 7 days);
+        uint256 earned = staking.earned(alice);
+        assertGt(earned, 0);
+
+        uint256 moneyBefore = money.balanceOf(alice);
+        uint256 spyBefore = spy.balanceOf(alice);
+        uint256 eusdBefore = eusd.balanceOf(alice);
+        vm.prank(alice);
+        zap.unwind(address(0));
+
+        assertEq(manager.getPosition(address(eSPY), alice).debt, 0, "debt cleared incl. accrued fee");
+        assertEq(staking.position(alice).eusdStaked, 0, "position emptied");
+        assertEq(staking.position(alice).moneyStaked, 0);
+        assertEq(money.balanceOf(alice) - moneyBefore, m, "money returned");
+        assertEq(spy.balanceOf(alice) - spyBefore, earned, "rewards returned");
+        // Fee shortfall pulled from the wallet: small, and nothing else moved.
+        assertLt(eusdBefore - eusd.balanceOf(alice), 1e18, "only the 7-day fee was pulled");
+
+        // The two remaining direct steps still work: withdraw collateral.
+        vm.prank(alice);
+        manager.withdrawCollateral(address(eSPY), 10e18, address(0));
+    }
+
+    function test_unwind_leftoverAfterSmallDebt() public {
+        vm.prank(alice);
+        zap.stakeFromSpyAndMoney(10e18, 0, 1000e18, address(0));
+
+        // Pay the debt down to 150 out-of-band; unwind then repays 150 and returns 850.
+        vm.startPrank(alice);
+        eusd.approve(address(manager), type(uint256).max);
+        manager.repay(address(eSPY), alice, 850e18, address(0));
+
+        uint256 balBefore = eusd.balanceOf(alice);
+        vm.expectEmit(true, false, false, true);
+        emit IOwnStakeZap.Unwound(alice, 0, 0, 1000e18, 150e18, 850e18);
+        zap.unwind(address(0));
+        vm.stopPrank();
+
+        assertEq(manager.getPosition(address(eSPY), alice).debt, 0, "debt cleared");
+        assertEq(eusd.balanceOf(alice) - balBefore, 850e18, "surplus eUSD returned");
+    }
+
+    function test_unwind_pullsShortfallFromWallet() public {
+        vm.prank(alice);
+        zap.stakeFromSpyAndMoney(10e18, 0, 1000e18, address(0));
+
+        // Shrink the staked leg below the debt: staked 950, debt 1000.
+        vm.startPrank(alice);
+        staking.unstake(0, 950e18);
+        eusd.approve(address(staking), type(uint256).max);
+        staking.stake(0, 900e18);
+
+        uint256 balBefore = eusd.balanceOf(alice);
+        zap.unwind(address(0));
+        vm.stopPrank();
+
+        assertEq(manager.getPosition(address(eSPY), alice).debt, 0, "debt cleared in full");
+        assertEq(balBefore - eusd.balanceOf(alice), 50e18, "shortfall pulled from wallet");
+    }
+
+    function test_unwind_nothing_reverts() public {
+        vm.expectRevert(IOwnStakeZap.NothingToUnwind.selector);
+        vm.prank(alice);
+        zap.unwind(address(0));
+    }
+
     // ──────────────────────────────────────────────────────────
     //  Gating
     // ──────────────────────────────────────────────────────────

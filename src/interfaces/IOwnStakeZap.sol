@@ -69,6 +69,22 @@ interface IOwnStakeZap {
     /// @param eusdReturned  Unused remainder returned to the user (18 decimals).
     event Rebalanced(address indexed user, uint256 eusdUnstaked, uint256 debtRepaid, uint256 eusdReturned);
 
+    /// @notice Emitted on a full exit via {unwind}.
+    /// @param user         Position owner.
+    /// @param moneyReturned $MONEY unstaked and returned (18 decimals).
+    /// @param spyRewards   SPY rewards claimed and returned (18 decimals).
+    /// @param eusdUnstaked Staked eUSD withdrawn (18 decimals).
+    /// @param debtRepaid   CDP debt repaid from the unstaked eUSD (18 decimals).
+    /// @param eusdReturned eUSD returned to the caller after the repayment (18 decimals).
+    event Unwound(
+        address indexed user,
+        uint256 moneyReturned,
+        uint256 spyRewards,
+        uint256 eusdUnstaked,
+        uint256 debtRepaid,
+        uint256 eusdReturned
+    );
+
     /// @notice Emitted when the vetted swap router changes.
     /// @param swapRouter New router for the SPY→$MONEY leg.
     event SwapRouterSet(address indexed swapRouter);
@@ -91,6 +107,8 @@ interface IOwnStakeZap {
     error InsufficientMoneyOut(uint256 moneyOut, uint256 minMoneyOut);
     /// @notice No settled rewards to compound.
     error NothingToCompound();
+    /// @notice The caller has no staked position and no rewards to unwind.
+    error NothingToUnwind();
     /// @notice Caller lacks the ADMIN role.
     error OnlyAdmin();
 
@@ -148,6 +166,17 @@ interface IOwnStakeZap {
     /// @param eusdAmount Staked eUSD to unwind into the repayment (18 decimals).
     /// @param hint       Sorted-list insert hint for the CDP.
     function rebalance(uint256 eusdAmount, address hint) external;
+
+    /// @notice Full exit in one transaction: claim the caller's SPY rewards, unstake their entire
+    ///         position, repay their CDP debt IN FULL — any shortfall beyond the unstaked eUSD
+    ///         (typically accrued stability fees) is pulled from the caller's wallet — and send
+    ///         everything liquid ($MONEY, SPY rewards, surplus eUSD) back to the caller. CDP
+    ///         collateral is NOT withdrawn: the caller finishes with {IEUSDManager.withdrawCollateral}
+    ///         (and optionally a PSM redeem) directly.
+    /// @param hint Sorted-list insert hint for the CDP.
+    function unwind(
+        address hint
+    ) external;
 
     // ──────────────────────────────────────────────────────────
     //  Admin (via ProtocolRegistry roles)
