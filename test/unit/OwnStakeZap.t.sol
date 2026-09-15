@@ -91,9 +91,10 @@ contract OwnStakeZapTest is Test {
         );
 
         IOwnStakingV2.Knot[] memory knots = new IOwnStakingV2.Knot[](4);
+        // Launch curve — keep in sync with OwnStakingV2.t.sol's _defaultCurve.
         knots[0] = IOwnStakingV2.Knot(0, 1000);
-        knots[1] = IOwnStakingV2.Knot(10_000, 4000);
-        knots[2] = IOwnStakingV2.Knot(20_000, 12_000);
+        knots[1] = IOwnStakingV2.Knot(10_000, 10_000);
+        knots[2] = IOwnStakingV2.Knot(20_000, 19_000);
         knots[3] = IOwnStakingV2.Knot(30_000, 36_000);
         OwnStakingV2 stakingImpl = new OwnStakingV2();
         staking = OwnStakingV2(
@@ -188,7 +189,7 @@ contract OwnStakeZapTest is Test {
         IOwnStakingV2.Position memory pos = staking.position(alice);
         assertEq(pos.eusdStaked, 1000e18, "minted eUSD staked");
         assertEq(pos.moneyStaked, moneyAmt, "money staked");
-        assertEq(staking.boostBps(alice), 4000, "1:1 coverage boost");
+        assertEq(staking.boostBps(alice), 10_000, "1:1 coverage boost");
 
         // Zap is stateless: nothing stranded.
         assertEq(spy.balanceOf(address(zap)), 0);
@@ -216,6 +217,38 @@ contract OwnStakeZapTest is Test {
         assertEq(pos.moneyStaked, moneyOut, "swap output staked");
         assertEq(pos.eusdStaked, 1000e18);
         assertEq(spy.balanceOf(address(zap)), 0);
+    }
+
+    function test_stakeFromSpy_fullSwapSplit_succeeds() public {
+        // Regression (A5-L-02): spyForMoney == spyAmount with a full router fill used to revert
+        // in psmMint(0); it must skip the CDP leg and stake the money.
+        uint256 moneyOut = _moneyFor(1500);
+        bytes memory swapData = abi.encodeCall(MockSwapRouter.swap, (address(spy), 10e18, address(money), moneyOut));
+
+        vm.prank(alice);
+        zap.stakeFromSpy(10e18, 10e18, moneyOut, swapData, 0, address(0));
+
+        assertEq(manager.getPosition(address(eSPY), alice).collateral, 0, "no CDP leg");
+        assertEq(staking.position(alice).moneyStaked, moneyOut, "swap output staked");
+        assertEq(spy.balanceOf(address(zap)), 0);
+    }
+
+    function test_stakeFromSpy_fullSwapSplit_mintsAgainstHeadroom() public {
+        // Full swap plus a mint against collateral deposited in an earlier zap.
+        vm.prank(alice);
+        zap.stakeFromSpyAndMoney(10e18, 0, 500e18, address(0));
+
+        uint256 moneyOut = _moneyFor(1500);
+        bytes memory swapData = abi.encodeCall(MockSwapRouter.swap, (address(spy), 5e18, address(money), moneyOut));
+
+        vm.prank(alice);
+        zap.stakeFromSpy(5e18, 5e18, moneyOut, swapData, 300e18, address(0));
+
+        IEUSDManager.Position memory cdp = manager.getPosition(address(eSPY), alice);
+        assertEq(cdp.collateral, 10e18, "collateral unchanged");
+        assertEq(cdp.debt, 800e18, "minted against existing headroom");
+        assertEq(staking.position(alice).eusdStaked, 800e18);
+        assertEq(staking.position(alice).moneyStaked, moneyOut);
     }
 
     function test_stakeFromSpy_slippage_reverts() public {
@@ -345,6 +378,42 @@ contract OwnStakeZapTest is Test {
         assertEq(manager.getPosition(address(eSPY), alice).debt, 0, "debt cleared");
         assertEq(eusd.balanceOf(alice) - balBefore, 350e18, "excess returned to alice");
         assertEq(staking.position(alice).eusdStaked, 500e18);
+    }
+
+    function test_rebalance_donationCannotDoS() public {
+        // Regression (A5-M-02): a pre-loaded eUSD balance must not revert smaller rebalances
+        // nor be swept to the caller as change.
+        vm.prank(alice);
+        zap.stakeFromSpyAndMoney(10e18, 0, 1000e18, address(0));
+        eusd.mint(address(zap), 900e18); // donation larger than the repayment below
+
+        uint256 aliceBefore = eusd.balanceOf(alice);
+        vm.prank(alice);
+        zap.rebalance(400e18, address(0)); // repaid 400 < donation 900: must not revert
+
+        assertEq(manager.getPosition(address(eSPY), alice).debt, 600e18, "debt repaid");
+        assertEq(eusd.balanceOf(alice), aliceBefore, "no change due, donation not swept");
+        assertEq(eusd.balanceOf(address(zap)), 900e18, "donation untouched");
+    }
+
+    function test_rebalance_overshootWithDonation_emitsTrueRepaid() public {
+        vm.prank(alice);
+        zap.stakeFromSpyAndMoney(10e18, 0, 1000e18, address(0));
+        eusd.mint(address(zap), 900e18);
+
+        // Alice's debt is 150 after an out-of-band repay; unwind 500 -> repaid 150, change 350.
+        vm.startPrank(alice);
+        eusd.approve(address(manager), type(uint256).max);
+        manager.repay(address(eSPY), alice, 850e18, address(0));
+
+        uint256 balBefore = eusd.balanceOf(alice);
+        vm.expectEmit(true, false, false, true);
+        emit IOwnStakeZap.Rebalanced(alice, 500e18, 150e18, 350e18);
+        zap.rebalance(500e18, address(0));
+        vm.stopPrank();
+
+        assertEq(eusd.balanceOf(alice) - balBefore, 350e18, "only own change returned");
+        assertEq(eusd.balanceOf(address(zap)), 900e18, "donation untouched");
     }
 
     // ──────────────────────────────────────────────────────────

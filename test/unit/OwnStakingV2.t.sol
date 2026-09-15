@@ -74,9 +74,10 @@ contract OwnStakingV2Test is Test {
     /// @dev Launch curve: 0.1x floor, 0.4x at 1:1, 1.2x at 2:1, 3.6x at 3:1 (convex).
     function _defaultCurve() internal pure returns (IOwnStakingV2.Knot[] memory knots) {
         knots = new IOwnStakingV2.Knot[](4);
+        // Par at 100% coverage, ~×1.9 per 100% above (convex: slopes 0.9 / 0.9 / 1.7).
         knots[0] = IOwnStakingV2.Knot(0, 1000);
-        knots[1] = IOwnStakingV2.Knot(10_000, 4000);
-        knots[2] = IOwnStakingV2.Knot(20_000, 12_000);
+        knots[1] = IOwnStakingV2.Knot(10_000, 10_000);
+        knots[2] = IOwnStakingV2.Knot(20_000, 19_000);
         knots[3] = IOwnStakingV2.Knot(30_000, 36_000);
     }
 
@@ -173,21 +174,21 @@ contract OwnStakingV2Test is Test {
 
     function test_boost_atKnots() public {
         _stake(alice, _moneyFor(1000), 1000e18); // 1:1
-        assertEq(staking.boostBps(alice), 4000);
+        assertEq(staking.boostBps(alice), 10_000);
 
         _stake(bob, _moneyFor(3000), 1000e18); // 3:1
         assertEq(staking.boostBps(bob), 36_000);
-        assertEq(staking.totalWeight(), 400e18 + 3600e18);
+        assertEq(staking.totalWeight(), 1000e18 + 3600e18);
     }
 
     function test_boost_interpolatesBetweenKnots() public {
-        // 0.5:1 sits halfway on the first segment: 0.1x + (0.4-0.1)/2 = 0.25x.
+        // 0.5:1 sits halfway on the first segment: 0.1x + (1.0-0.1)/2 = 0.55x.
         _stake(alice, _moneyFor(500), 1000e18);
-        assertEq(staking.boostBps(alice), 2500);
+        assertEq(staking.boostBps(alice), 5500);
 
-        // 1.5:1 sits halfway on the second segment: 0.4x + (1.2-0.4)/2 = 0.8x.
+        // 1.5:1 sits halfway on the second segment: 1.0x + (1.9-1.0)/2 = 1.45x.
         _stake(bob, _moneyFor(1500), 1000e18);
-        assertEq(staking.boostBps(bob), 8000);
+        assertEq(staking.boostBps(bob), 14_500);
     }
 
     function test_boost_beyondLastKnot_clamps() public {
@@ -221,7 +222,7 @@ contract OwnStakingV2Test is Test {
     }
 
     function test_previewBoost_matchesStake() public {
-        assertEq(staking.previewBoost(_moneyFor(1500), 1000e18), 8000);
+        assertEq(staking.previewBoost(_moneyFor(1500), 1000e18), 14_500);
         _stake(alice, _moneyFor(1500), 1000e18);
         assertEq(staking.boostBps(alice), staking.previewBoost(_moneyFor(1500), 1000e18));
     }
@@ -233,7 +234,7 @@ contract OwnStakingV2Test is Test {
     function test_stake_pullsBothLegs() public {
         uint256 m = _moneyFor(1000);
         vm.expectEmit(true, false, false, true);
-        emit IOwnStakingV2.Staked(alice, m, 1000e18, 4000);
+        emit IOwnStakingV2.Staked(alice, m, 1000e18, 10_000);
         _stake(alice, m, 1000e18);
 
         assertEq(money.balanceOf(address(staking)), m);
@@ -262,11 +263,11 @@ contract OwnStakingV2Test is Test {
     }
 
     function test_unstake_partial_resnapshotsBoost() public {
-        _stake(alice, _moneyFor(1000), 1000e18); // 1:1 -> 0.4x
+        _stake(alice, _moneyFor(1000), 1000e18); // 1:1 -> 1.0x
         vm.prank(alice);
-        staking.unstake(0, 500e18); // now 2:1 -> 1.2x
-        assertEq(staking.boostBps(alice), 12_000);
-        assertEq(staking.totalWeight(), 600e18);
+        staking.unstake(0, 500e18); // now 2:1 -> 1.9x
+        assertEq(staking.boostBps(alice), 19_000);
+        assertEq(staking.totalWeight(), 950e18);
     }
 
     function test_unstake_insufficient_reverts() public {
@@ -412,15 +413,38 @@ contract OwnStakingV2Test is Test {
         staking.renotifyUndistributed();
     }
 
-    function test_syncRewards_foldsDonations() public {
+    function test_syncRewards_booksDonationsToUndistributed() public {
         _stake(alice, 0, 1000e18);
         spy.mint(address(staking), 70e18); // direct transfer, e.g. rerouted fees
 
         uint256 synced = staking.syncRewards();
         assertEq(synced, 70e18);
+        assertEq(staking.undistributed(), 70e18, "booked, not streamed");
+        assertEq(staking.rewardRate(), 0, "sync alone starts no stream");
 
+        vm.prank(operator);
+        staking.renotifyUndistributed();
         vm.warp(block.timestamp + DURATION);
         assertApproxEqRel(staking.earned(alice), 70e18, 1e12);
+    }
+
+    function test_syncRewards_dustCannotResetStreamWindow() public {
+        // Regression (A5-M-01): a 1-wei donation + sync must not touch the live schedule.
+        _stake(alice, 0, 1000e18);
+        _notify(700e18);
+        uint256 rateBefore = staking.rewardRate();
+        uint256 finishBefore = staking.periodFinish();
+
+        vm.warp(block.timestamp + 6 days);
+        spy.mint(address(staking), 1);
+        staking.syncRewards();
+
+        assertEq(staking.rewardRate(), rateBefore, "rate untouched");
+        assertEq(staking.periodFinish(), finishBefore, "finish untouched");
+        assertEq(staking.undistributed(), 1, "dust parked in bucket");
+
+        vm.warp(finishBefore);
+        assertApproxEqRel(staking.earned(alice), 700e18, 1e12, "full batch on schedule");
     }
 
     function test_syncRewards_nothing_reverts() public {
@@ -448,7 +472,7 @@ contract OwnStakingV2Test is Test {
         _notify(700e18);
         vm.warp(block.timestamp + 1 days);
 
-        // Price halves: coverage 3:1 -> 1.5:1, boost 3.6x -> 0.8x after refresh.
+        // Price halves: coverage 3:1 -> 1.5:1, boost 3.6x -> 1.45x after refresh.
         oracle.setPrice(MONEY_TICKER, MONEY_PRICE / 2);
         uint256 earnedAtOldWeight = staking.earned(alice);
 
@@ -457,9 +481,40 @@ contract OwnStakingV2Test is Test {
         vm.prank(attacker); // permissionless
         staking.refreshBoost(users);
 
-        assertEq(staking.boostBps(alice), 8000);
+        assertEq(staking.boostBps(alice), 14_500);
         assertApproxEqRel(staking.earned(alice), earnedAtOldWeight, 1e12, "day one earned at old weight");
-        assertEq(staking.totalWeight(), 800e18);
+        assertEq(staking.totalWeight(), 1450e18);
+    }
+
+    function test_refreshBoost_oracleOutage_keepsLastMark() public {
+        // Regression (A5-L-01): an outage repricing uses the last usable mark, never the floor.
+        _stake(alice, _moneyFor(3000), 1000e18); // 3.6x, caches the mark
+        assertEq(staking.lastMoneyPrice(), MONEY_PRICE);
+
+        oracle.setForceStale(true);
+        assertEq(staking.moneyPrice(), MONEY_PRICE, "view falls back to cache");
+
+        address[] memory users = new address[](1);
+        users[0] = alice;
+        vm.prank(attacker); // permissionless
+        staking.refreshBoost(users);
+
+        assertEq(staking.boostBps(alice), 36_000, "outage cannot floor an existing snapshot");
+        assertEq(staking.totalWeight(), 3600e18);
+    }
+
+    function test_lastMark_tracksLatestUsablePrice() public {
+        _stake(alice, _moneyFor(3000), 1000e18);
+        oracle.setPrice(MONEY_TICKER, MONEY_PRICE / 2);
+        _stake(bob, 0, 1e18); // any touch refreshes the cache
+        assertEq(staking.lastMoneyPrice(), MONEY_PRICE / 2);
+
+        // Outage: alice reprices at the halved cached mark (coverage 1.5:1 -> 1.45x), not the floor.
+        oracle.setForceStale(true);
+        address[] memory users = new address[](1);
+        users[0] = alice;
+        staking.refreshBoost(users);
+        assertEq(staking.boostBps(alice), 14_500);
     }
 
     function test_refreshBoost_priceRecovery_raisesBoost() public {
@@ -601,7 +656,7 @@ contract OwnStakingV2Test is Test {
         staking.stakeFor(alice, m, 1000e18);
 
         assertEq(staking.position(alice).eusdStaked, 1000e18, "position credited to alice");
-        assertEq(staking.boostBps(alice), 4000);
+        assertEq(staking.boostBps(alice), 10_000);
         assertEq(staking.position(bob).eusdStaked, 0, "bob holds no position");
         assertEq(bobMoneyBefore - money.balanceOf(bob), m, "tokens pulled from bob");
     }

@@ -125,6 +125,12 @@
       "offset": 0,
       "slot": "20",
       "type": "t_address"
+    },
+    {
+      "label": "lastMoneyPrice",
+      "offset": 0,
+      "slot": "21",
+      "type": "t_uint256"
     }
   ],
   "types": {

@@ -196,10 +196,13 @@ contract OwnStakeZap is IOwnStakeZap, Initializable, UUPSUpgradeable, Reentrancy
     /// @inheritdoc IOwnStakeZap
     function rebalance(uint256 eusdAmount, address hint) external override nonReentrant {
         if (eusdAmount == 0) revert ZeroAmount();
+        // Delta accounting: a pre-existing balance (donation) must never count as this call's
+        // change — it would overstate leftover past eusdAmount and revert the event math.
+        uint256 balBefore = _eusd.balanceOf(address(this));
         _staking.unstakeFor(msg.sender, 0, eusdAmount);
         // Repay burns from this contract's balance, capped at the position's debt.
         _eusdManager.repay(address(_collateral), msg.sender, eusdAmount, hint);
-        uint256 leftover = _eusd.balanceOf(address(this));
+        uint256 leftover = _eusd.balanceOf(address(this)) - balBefore;
         if (leftover != 0) _eusd.safeTransfer(msg.sender, leftover);
         emit Rebalanced(msg.sender, eusdAmount, eusdAmount - leftover, leftover);
     }
@@ -231,8 +234,12 @@ contract OwnStakeZap is IOwnStakeZap, Initializable, UUPSUpgradeable, Reentrancy
         uint256 eusdToMint,
         address hint
     ) private {
-        uint256 minted = _market.psmMint(_collateralTicker, address(_spy), spyToPsm);
-        _eusdManager.depositFor(msg.sender, address(_collateral), minted, hint);
+        // A 100% swap split (or a full router fill) leaves no SPY for the CDP leg; minting
+        // against existing collateral headroom stays available.
+        if (spyToPsm != 0) {
+            uint256 minted = _market.psmMint(_collateralTicker, address(_spy), spyToPsm);
+            _eusdManager.depositFor(msg.sender, address(_collateral), minted, hint);
+        }
         if (eusdToMint != 0) {
             _eusdManager.mintFor(msg.sender, address(_collateral), eusdToMint, hint);
         }

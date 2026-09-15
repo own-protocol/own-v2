@@ -21,9 +21,11 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 ///         the allowance is the on-chain spending cap and no hot key ever holds funds.
 /// @dev Boosts are snapshots taken whenever a position is touched, which keeps the reward index
 ///      exact between touches; price moves are folded in by the permissionless {refreshBoost}.
-///      The oracle only gates how much weight a $MONEY stake carries, never funds: a stale, zero,
-///      or missing price floors the boost (first curve knot) on stake and refresh, and unstaking
-///      never reads a price, so a full exit always works. Runs behind an ERC-1967 proxy (UUPS),
+///      The oracle only gates how much weight a $MONEY stake carries, never funds: when the live
+///      price is stale, zero, or missing, boosts reprice at the last usable mark ({lastMoneyPrice})
+///      instead — the floor applies only before any mark has ever been seen — and unstaking a full
+///      exit never reads a price, so it always works. The MONEY ticker is a TWAP mark, smoothing
+///      short-lived wicks out of coverage. Runs behind an ERC-1967 proxy (UUPS),
 ///      ADMIN-gated upgrade via ProtocolRegistry roles; storage is append-only across upgrades.
 ///      Positions are plain per-account storage — non-transferable by construction.
 contract OwnStakingV2 is IOwnStakingV2, Initializable, UUPSUpgradeable, ReentrancyGuard {
@@ -108,6 +110,9 @@ contract OwnStakingV2 is IOwnStakingV2, Initializable, UUPSUpgradeable, Reentran
 
     /// @inheritdoc IOwnStakingV2
     address public override zap;
+
+    /// @inheritdoc IOwnStakingV2
+    uint256 public override lastMoneyPrice;
 
     // ──────────────────────────────────────────────────────────
     //  Modifiers
@@ -248,7 +253,8 @@ contract OwnStakingV2 is IOwnStakingV2, Initializable, UUPSUpgradeable, Reentran
         amount = held - _accountedRewards;
         if (amount == 0) revert NothingToSync();
         _accountedRewards = held;
-        _notify(amount);
+        // Booked, not notified: only the operator may reshape the stream ({renotifyUndistributed}).
+        undistributed += amount;
         emit RewardsSynced(amount);
     }
 
@@ -473,6 +479,8 @@ contract OwnStakingV2 is IOwnStakingV2, Initializable, UUPSUpgradeable, Reentran
     ///      weight change into the total. Must run after {_settle}; `oldWeight` is the position's
     ///      weight before any amount mutation — the weight its rewards were just settled at.
     function _resnapshotBoost(Position storage p, uint256 oldWeight) private {
+        uint256 live = _liveMoneyPrice();
+        if (live != 0) lastMoneyPrice = live;
         uint256 newBoost = _boostFor(p.moneyStaked, p.eusdStaked);
         uint256 newWeight = p.eusdStaked * newBoost / BPS;
         p.boostBps = newBoost;
@@ -522,9 +530,9 @@ contract OwnStakingV2 is IOwnStakingV2, Initializable, UUPSUpgradeable, Reentran
         emit CurveSet(knots);
     }
 
-    /// @dev Boost for a hypothetical position at the current oracle price. A position with no
-    ///      eUSD carries no weight, so its boost is 0; an unusable price (stale, zero, missing)
-    ///      evaluates at zero coverage — the curve floor — never reverting.
+    /// @dev Boost for a hypothetical position at the current boost price ({_moneyPrice}). A
+    ///      position with no eUSD carries no weight, so its boost is 0; a zero price (no usable
+    ///      mark ever cached) evaluates at zero coverage — the curve floor — never reverting.
     function _boostFor(uint256 money, uint256 eusd) private view returns (uint256) {
         if (eusd == 0) return 0;
         uint256 coverageBps;
@@ -559,10 +567,19 @@ contract OwnStakingV2 is IOwnStakingV2, Initializable, UUPSUpgradeable, Reentran
         return knots[last].boostBps;
     }
 
-    /// @dev Current $MONEY price from the registry's in-house oracle; 0 when the oracle is unset,
-    ///      reverts (stale / unavailable), returns zero, or the price is older than
-    ///      {priceMaxAge}. Callers treat 0 as "floor the boost" — the oracle never gates funds.
+    /// @dev $MONEY price for boost math: the live oracle mark when usable, else {lastMoneyPrice}.
+    ///      Returns 0 only before any usable mark has ever been cached, so an oracle outage can
+    ///      never re-floor an existing snapshot. The oracle never gates funds. The MONEY ticker
+    ///      is published as a TWAP mark (window managed off-chain by the oracle service), so
+    ///      short price wicks cannot move coverage.
     function _moneyPrice() private view returns (uint256) {
+        uint256 live = _liveMoneyPrice();
+        return live != 0 ? live : lastMoneyPrice;
+    }
+
+    /// @dev Live oracle mark; 0 when the oracle is unset, reverts (stale / unavailable), returns
+    ///      zero, or the price is older than {priceMaxAge}.
+    function _liveMoneyPrice() private view returns (uint256) {
         address oracle = registry.inhouseOracle();
         if (oracle == address(0) || oracle.code.length == 0) return 0;
         try IOracleVerifier(oracle).getPrice(MONEY_TICKER) returns (uint256 price, uint256 timestamp) {

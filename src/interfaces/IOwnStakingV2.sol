@@ -207,8 +207,10 @@ interface IOwnStakingV2 {
         address[] calldata users
     ) external;
 
-    /// @notice Fold SPY transferred directly to this contract (donations, alternative fee
-    ///         routing) into the reward stream. Permissionless.
+    /// @notice Book SPY transferred directly to this contract (donations, alternative fee
+    ///         routing) into the undistributed bucket. Permissionless — it re-enters the
+    ///         stream only via the operator's {renotifyUndistributed}, so a dust surplus can
+    ///         never reset the streaming window.
     /// @return amount Surplus SPY absorbed.
     function syncRewards() external returns (uint256 amount);
 
@@ -302,14 +304,20 @@ interface IOwnStakingV2 {
         address user
     ) external view returns (uint256);
 
-    /// @notice The boost a hypothetical position would snapshot at the current oracle price.
-    ///         Returns the floor boost when the price is stale, zero, or missing.
+    /// @notice The boost a hypothetical position would snapshot at the current boost price
+    ///         (live oracle mark, or the last usable mark during an outage). Returns the floor
+    ///         boost only before any usable mark has ever been seen.
     /// @param money $MONEY staked.
     /// @param eusd  eUSD staked.
     function previewBoost(uint256 money, uint256 eusd) external view returns (uint256);
 
-    /// @notice Current $MONEY price used for boosts (18 decimals). Zero when stale or missing.
+    /// @notice Current $MONEY price used for boosts (18 decimals): the live oracle mark when
+    ///         usable, else {lastMoneyPrice}. Zero only before any usable mark has been seen.
     function moneyPrice() external view returns (uint256);
+
+    /// @notice Last usable $MONEY mark cached on a boost re-snapshot (18 decimals). Boosts
+    ///         reprice against this during an oracle outage so an outage never floors them.
+    function lastMoneyPrice() external view returns (uint256);
 
     /// @notice The boost curve.
     function curve() external view returns (Knot[] memory);
