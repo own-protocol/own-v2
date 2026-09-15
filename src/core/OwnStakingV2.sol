@@ -106,6 +106,9 @@ contract OwnStakingV2 is IOwnStakingV2, Initializable, UUPSUpgradeable, Reentran
     /// @dev Positions by owner.
     mapping(address => Position) private _positions;
 
+    /// @inheritdoc IOwnStakingV2
+    address public override zap;
+
     // ──────────────────────────────────────────────────────────
     //  Modifiers
     // ──────────────────────────────────────────────────────────
@@ -117,6 +120,12 @@ contract OwnStakingV2 is IOwnStakingV2, Initializable, UUPSUpgradeable, Reentran
 
     modifier onlyOperator() {
         if (!registry.hasRole(OPERATOR, msg.sender)) revert OnlyOperator();
+        _;
+    }
+
+    modifier onlyZap() {
+        // A zero zap disables the surface: msg.sender can never be address(0).
+        if (msg.sender != zap) revert OnlyZap();
         _;
     }
 
@@ -178,26 +187,17 @@ contract OwnStakingV2 is IOwnStakingV2, Initializable, UUPSUpgradeable, Reentran
         uint256 money,
         uint256 eusd
     ) external override nonReentrant {
-        if (money == 0 && eusd == 0) revert ZeroAmount();
-        _settle(msg.sender);
+        _stakeFor(msg.sender, money, eusd);
+    }
 
-        Position storage p = _positions[msg.sender];
-        uint256 oldWeight = p.eusdStaked * p.boostBps / BPS;
-        if (eusd != 0) {
-            uint256 totalAfter = totalEusdStaked + eusd;
-            if (stakeCap != 0 && totalAfter > stakeCap) revert StakeCapExceeded(totalAfter, stakeCap);
-            totalEusdStaked = totalAfter;
-            p.eusdStaked += eusd;
-        }
-        if (money != 0) {
-            totalMoneyStaked += money;
-            p.moneyStaked += money;
-        }
-        _resnapshotBoost(p, oldWeight);
-        emit Staked(msg.sender, money, eusd, p.boostBps);
-
-        if (money != 0) _money.safeTransferFrom(msg.sender, address(this), money);
-        if (eusd != 0) _eusd.safeTransferFrom(msg.sender, address(this), eusd);
+    /// @inheritdoc IOwnStakingV2
+    function stakeFor(
+        address owner,
+        uint256 money,
+        uint256 eusd
+    ) external override nonReentrant {
+        if (owner == address(0)) revert ZeroAddress();
+        _stakeFor(owner, money, eusd);
     }
 
     /// @inheritdoc IOwnStakingV2
@@ -205,21 +205,37 @@ contract OwnStakingV2 is IOwnStakingV2, Initializable, UUPSUpgradeable, Reentran
         uint256 money,
         uint256 eusd
     ) external override nonReentrant {
-        _unstake(money, eusd);
+        _unstake(msg.sender, msg.sender, money, eusd);
+    }
+
+    /// @inheritdoc IOwnStakingV2
+    function unstakeFor(
+        address owner,
+        uint256 money,
+        uint256 eusd
+    ) external override nonReentrant onlyZap {
+        _unstake(owner, msg.sender, money, eusd);
     }
 
     /// @inheritdoc IOwnStakingV2
     function claim(
         address to
     ) external override nonReentrant returns (uint256 amount) {
-        return _claim(to);
+        return _claim(msg.sender, to);
+    }
+
+    /// @inheritdoc IOwnStakingV2
+    function claimFor(
+        address owner
+    ) external override nonReentrant onlyZap returns (uint256 amount) {
+        return _claim(owner, msg.sender);
     }
 
     /// @inheritdoc IOwnStakingV2
     function exit() external override nonReentrant {
         Position storage p = _positions[msg.sender];
-        _unstake(p.moneyStaked, p.eusdStaked);
-        _claim(msg.sender);
+        _unstake(msg.sender, msg.sender, p.moneyStaked, p.eusdStaked);
+        _claim(msg.sender, msg.sender);
     }
 
     /// @inheritdoc IOwnStakingV2
@@ -346,6 +362,14 @@ contract OwnStakingV2 is IOwnStakingV2, Initializable, UUPSUpgradeable, Reentran
     }
 
     /// @inheritdoc IOwnStakingV2
+    function setZap(
+        address zap_
+    ) external override onlyAdmin {
+        zap = zap_;
+        emit ZapSet(zap_);
+    }
+
+    /// @inheritdoc IOwnStakingV2
     /// @dev SPY, eUSD and $MONEY are never rescuable — user deposits and the reward stream live
     ///      on this contract's balance.
     function rescueToken(
@@ -365,15 +389,47 @@ contract OwnStakingV2 is IOwnStakingV2, Initializable, UUPSUpgradeable, Reentran
     //  Internal — position flows
     // ──────────────────────────────────────────────────────────
 
-    /// @dev Shared unstake body; callers hold the reentrancy guard.
-    function _unstake(
+    /// @dev Shared stake body: tokens pulled from msg.sender, position credited to `owner`.
+    ///      Callers hold the reentrancy guard.
+    function _stakeFor(
+        address owner,
         uint256 money,
         uint256 eusd
     ) private {
         if (money == 0 && eusd == 0) revert ZeroAmount();
-        _settle(msg.sender);
+        _settle(owner);
 
-        Position storage p = _positions[msg.sender];
+        Position storage p = _positions[owner];
+        uint256 oldWeight = p.eusdStaked * p.boostBps / BPS;
+        if (eusd != 0) {
+            uint256 totalAfter = totalEusdStaked + eusd;
+            if (stakeCap != 0 && totalAfter > stakeCap) revert StakeCapExceeded(totalAfter, stakeCap);
+            totalEusdStaked = totalAfter;
+            p.eusdStaked += eusd;
+        }
+        if (money != 0) {
+            totalMoneyStaked += money;
+            p.moneyStaked += money;
+        }
+        _resnapshotBoost(p, oldWeight);
+        emit Staked(owner, money, eusd, p.boostBps);
+
+        if (money != 0) _money.safeTransferFrom(msg.sender, address(this), money);
+        if (eusd != 0) _eusd.safeTransferFrom(msg.sender, address(this), eusd);
+    }
+
+    /// @dev Shared unstake body: `owner`'s position shrinks, tokens go to `to`. Callers hold the
+    ///      reentrancy guard and gate who may unstake on whose behalf.
+    function _unstake(
+        address owner,
+        address to,
+        uint256 money,
+        uint256 eusd
+    ) private {
+        if (money == 0 && eusd == 0) revert ZeroAmount();
+        _settle(owner);
+
+        Position storage p = _positions[owner];
         if (money > p.moneyStaked || eusd > p.eusdStaked) revert InsufficientStake();
         uint256 oldWeight = p.eusdStaked * p.boostBps / BPS;
         if (eusd != 0) {
@@ -385,25 +441,27 @@ contract OwnStakingV2 is IOwnStakingV2, Initializable, UUPSUpgradeable, Reentran
             totalMoneyStaked -= money;
         }
         _resnapshotBoost(p, oldWeight);
-        emit Unstaked(msg.sender, money, eusd, p.boostBps);
+        emit Unstaked(owner, money, eusd, p.boostBps);
 
-        if (money != 0) _money.safeTransfer(msg.sender, money);
-        if (eusd != 0) _eusd.safeTransfer(msg.sender, eusd);
+        if (money != 0) _money.safeTransfer(to, money);
+        if (eusd != 0) _eusd.safeTransfer(to, eusd);
     }
 
-    /// @dev Shared claim body; callers hold the reentrancy guard.
+    /// @dev Shared claim body: `owner`'s settled rewards paid to `to`. Callers hold the
+    ///      reentrancy guard and gate who may claim on whose behalf.
     function _claim(
+        address owner,
         address to
     ) private returns (uint256 amount) {
         if (to == address(0)) revert ZeroAddress();
-        _settle(msg.sender);
-        Position storage p = _positions[msg.sender];
+        _settle(owner);
+        Position storage p = _positions[owner];
         amount = p.rewardsOwed;
         if (amount == 0) return 0;
         p.rewardsOwed = 0;
         _accountedRewards -= amount;
         _spy.safeTransfer(to, amount);
-        emit Claimed(msg.sender, to, amount);
+        emit Claimed(owner, to, amount);
     }
 
     // ──────────────────────────────────────────────────────────

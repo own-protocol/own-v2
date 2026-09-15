@@ -109,6 +109,10 @@ interface IOwnStakingV2 {
     /// @param amount Amount rescued.
     event TokenRescued(address indexed token, address indexed to, uint256 amount);
 
+    /// @notice Emitted when the whitelisted zap changes.
+    /// @param zap New zap address (address(0) disables the zap surface).
+    event ZapSet(address indexed zap);
+
     // ──────────────────────────────────────────────────────────
     //  Errors
     // ──────────────────────────────────────────────────────────
@@ -136,6 +140,8 @@ interface IOwnStakingV2 {
     error NoUndistributed();
     /// @notice The token cannot be rescued (reward or staked asset).
     error ProtectedToken(address token);
+    /// @notice Caller is not the whitelisted zap.
+    error OnlyZap();
 
     // ──────────────────────────────────────────────────────────
     //  User actions
@@ -169,6 +175,43 @@ interface IOwnStakingV2 {
 
     /// @notice Unstake everything and claim in one call.
     function exit() external;
+
+    /// @notice Stake $MONEY and/or eUSD pulled from the caller into `owner`'s position.
+    ///         Permissionless: staking for someone else only ever benefits them. Same rules as
+    ///         {stake}, including the eUSD cap and the boost re-snapshot.
+    /// @param owner Position owner credited with the stake.
+    /// @param money $MONEY to add (may be zero).
+    /// @param eusd  eUSD to add (may be zero; both zero reverts).
+    function stakeFor(
+        address owner,
+        uint256 money,
+        uint256 eusd
+    ) external;
+
+    // ──────────────────────────────────────────────────────────
+    //  Zap surface (whitelisted zap only)
+    // ──────────────────────────────────────────────────────────
+
+    /// @notice Unstake from `owner`'s position with the tokens paid to the caller. Zap only —
+    ///         on-behalf withdrawal surface reachable solely through the whitelisted zap, whose
+    ///         only use is rebalancing: the unstaked eUSD immediately repays `owner`'s CDP debt
+    ///         in the same transaction, so `owner`'s health only improves.
+    /// @param owner Position owner to unstake from.
+    /// @param money $MONEY to remove (may be zero).
+    /// @param eusd  eUSD to remove (may be zero; both zero reverts).
+    function unstakeFor(
+        address owner,
+        uint256 money,
+        uint256 eusd
+    ) external;
+
+    /// @notice Pay `owner`'s settled SPY rewards to the caller. Zap only — the zap converts the
+    ///         SPY to CDP collateral for `owner` in the same transaction (compounding).
+    /// @param owner Position owner whose rewards are claimed.
+    /// @return amount SPY paid to the caller.
+    function claimFor(
+        address owner
+    ) external returns (uint256 amount);
 
     /// @notice Permissionlessly re-snapshot boosts at the current oracle price, settling each
     ///         position at its old weight first. Called by the keeper after price moves; any user
@@ -239,6 +282,13 @@ interface IOwnStakingV2 {
     /// @param source New source (non-zero).
     function setRewardSource(
         address source
+    ) external;
+
+    /// @notice Set the whitelisted zap allowed to call {unstakeFor}/{claimFor}
+    ///         (address(0) disables both).
+    /// @param zap_ New zap address.
+    function setZap(
+        address zap_
     ) external;
 
     /// @notice Rescue a token that is neither the reward asset nor a staked asset.
@@ -317,4 +367,7 @@ interface IOwnStakingV2 {
 
     /// @notice Address `notifyRewardAmount` pulls SPY from (the treasury Safe).
     function rewardSource() external view returns (address);
+
+    /// @notice The whitelisted zap (address(0) = none).
+    function zap() external view returns (address);
 }

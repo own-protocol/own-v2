@@ -595,6 +595,83 @@ contract OwnStakingV2Test is Test {
     }
 
     // ──────────────────────────────────────────────────────────
+    //  Zap surface
+    // ──────────────────────────────────────────────────────────
+
+    function test_stakeFor_creditsOwnerPullsFromCaller() public {
+        uint256 m = _moneyFor(1000);
+        uint256 bobMoneyBefore = money.balanceOf(bob);
+        vm.prank(bob);
+        staking.stakeFor(alice, m, 1000e18);
+
+        assertEq(staking.position(alice).eusdStaked, 1000e18, "position credited to alice");
+        assertEq(staking.boostBps(alice), 4000);
+        assertEq(staking.position(bob).eusdStaked, 0, "bob holds no position");
+        assertEq(bobMoneyBefore - money.balanceOf(bob), m, "tokens pulled from bob");
+    }
+
+    function test_stakeFor_zeroOwner_reverts() public {
+        vm.expectRevert(IOwnStakingV2.ZeroAddress.selector);
+        vm.prank(alice);
+        staking.stakeFor(address(0), 0, 1e18);
+    }
+
+    function test_stakeFor_respectsCap() public {
+        vm.prank(admin);
+        staking.setStakeCap(500e18);
+        vm.expectRevert(abi.encodeWithSelector(IOwnStakingV2.StakeCapExceeded.selector, 501e18, 500e18));
+        vm.prank(bob);
+        staking.stakeFor(alice, 0, 501e18);
+    }
+
+    function test_unstakeFor_onlyZap() public {
+        _stake(alice, 0, 1000e18);
+        vm.expectRevert(IOwnStakingV2.OnlyZap.selector);
+        vm.prank(attacker);
+        staking.unstakeFor(alice, 0, 1000e18);
+    }
+
+    function test_unstakeFor_paysZap() public {
+        address zapAddr = address(uint160(uint256(keccak256("zap"))));
+        vm.prank(admin);
+        staking.setZap(zapAddr);
+
+        _stake(alice, _moneyFor(1000), 1000e18);
+        vm.prank(zapAddr);
+        staking.unstakeFor(alice, 0, 400e18);
+
+        assertEq(eusd.balanceOf(zapAddr), 400e18, "eUSD paid to the zap");
+        assertEq(staking.position(alice).eusdStaked, 600e18, "alice's position reduced");
+    }
+
+    function test_claimFor_onlyZapAndPaysZap() public {
+        address zapAddr = address(uint160(uint256(keccak256("zap"))));
+        vm.prank(admin);
+        staking.setZap(zapAddr);
+
+        _stake(alice, 0, 1000e18);
+        _notify(700e18);
+        vm.warp(block.timestamp + DURATION);
+        uint256 owed = staking.earned(alice);
+
+        vm.expectRevert(IOwnStakingV2.OnlyZap.selector);
+        vm.prank(attacker);
+        staking.claimFor(alice);
+
+        vm.prank(zapAddr);
+        uint256 paid = staking.claimFor(alice);
+        assertEq(paid, owed);
+        assertEq(spy.balanceOf(zapAddr), owed, "SPY paid to the zap");
+        assertEq(staking.earned(alice), 0);
+    }
+
+    function test_setZap_adminGated() public {
+        vm.expectRevert(IOwnStakingV2.OnlyAdmin.selector);
+        vm.prank(attacker);
+        staking.setZap(attacker);
+    }
+
+    // ──────────────────────────────────────────────────────────
     //  Solvency sanity
     // ──────────────────────────────────────────────────────────
 
