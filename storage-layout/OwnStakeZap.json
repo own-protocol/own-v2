@@ -1,0 +1,112 @@
+{
+  "storage": [
+    {
+      "label": "registry",
+      "offset": 0,
+      "slot": "0",
+      "type": "t_contract(IProtocolRegistry)"
+    },
+    {
+      "label": "_eusdManager",
+      "offset": 0,
+      "slot": "1",
+      "type": "t_contract(IEUSDManager)"
+    },
+    {
+      "label": "_staking",
+      "offset": 0,
+      "slot": "2",
+      "type": "t_contract(IOwnStakingV2)"
+    },
+    {
+      "label": "_market",
+      "offset": 0,
+      "slot": "3",
+      "type": "t_contract(IOwnMarket)"
+    },
+    {
+      "label": "_sEusd",
+      "offset": 0,
+      "slot": "4",
+      "type": "t_contract(IERC4626)"
+    },
+    {
+      "label": "_eusd",
+      "offset": 0,
+      "slot": "5",
+      "type": "t_contract(IERC20)"
+    },
+    {
+      "label": "_money",
+      "offset": 0,
+      "slot": "6",
+      "type": "t_contract(IERC20)"
+    },
+    {
+      "label": "_spy",
+      "offset": 0,
+      "slot": "7",
+      "type": "t_contract(IERC20)"
+    },
+    {
+      "label": "_collateral",
+      "offset": 0,
+      "slot": "8",
+      "type": "t_contract(IERC20)"
+    },
+    {
+      "label": "_collateralTicker",
+      "offset": 0,
+      "slot": "9",
+      "type": "t_bytes32"
+    },
+    {
+      "label": "_swapRouter",
+      "offset": 0,
+      "slot": "10",
+      "type": "t_address"
+    }
+  ],
+  "types": {
+    "t_address": {
+      "encoding": "inplace",
+      "label": "address",
+      "numberOfBytes": "20"
+    },
+    "t_bytes32": {
+      "encoding": "inplace",
+      "label": "bytes32",
+      "numberOfBytes": "32"
+    },
+    "t_contract(IERC20)": {
+      "encoding": "inplace",
+      "label": "contract IERC20",
+      "numberOfBytes": "20"
+    },
+    "t_contract(IERC4626)": {
+      "encoding": "inplace",
+      "label": "contract IERC4626",
+      "numberOfBytes": "20"
+    },
+    "t_contract(IEUSDManager)": {
+      "encoding": "inplace",
+      "label": "contract IEUSDManager",
+      "numberOfBytes": "20"
+    },
+    "t_contract(IOwnMarket)": {
+      "encoding": "inplace",
+      "label": "contract IOwnMarket",
+      "numberOfBytes": "20"
+    },
+    "t_contract(IOwnStakingV2)": {
+      "encoding": "inplace",
+      "label": "contract IOwnStakingV2",
+      "numberOfBytes": "20"
+    },
+    "t_contract(IProtocolRegistry)": {
+      "encoding": "inplace",
+      "label": "contract IProtocolRegistry",
+      "numberOfBytes": "20"
+    }
+  }
+}
