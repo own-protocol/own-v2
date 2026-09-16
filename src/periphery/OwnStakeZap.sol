@@ -128,6 +128,7 @@ contract OwnStakeZap is IOwnStakeZap, Initializable, UUPSUpgradeable, Reentrancy
     ) external override nonReentrant {
         if (spyAmount == 0) revert ZeroAmount();
         if (spyForMoney > spyAmount) revert InvalidSplit(spyForMoney, spyAmount);
+        uint256 spyBefore = _spy.balanceOf(address(this));
         _spy.safeTransferFrom(msg.sender, address(this), spyAmount);
 
         uint256 moneyOut;
@@ -145,9 +146,9 @@ contract OwnStakeZap is IOwnStakeZap, Initializable, UUPSUpgradeable, Reentrancy
             if (moneyOut < minMoneyOut) revert InsufficientMoneyOut(moneyOut, minMoneyOut);
         }
 
-        // PSM-mint the full remaining SPY balance: a partial router pull becomes extra
-        // collateral for the caller rather than dust stranded on the zap.
-        _buildCdpAndStake(spyAmount, _spy.balanceOf(address(this)), moneyOut, eusdToMint, hint);
+        // PSM-mint this call's remaining SPY (delta from entry): a partial router pull becomes
+        // extra collateral for the caller, while a pre-existing balance is never swept.
+        _buildCdpAndStake(spyAmount, _spy.balanceOf(address(this)) - spyBefore, moneyOut, eusdToMint, hint);
     }
 
     /// @inheritdoc IOwnStakeZap
@@ -251,6 +252,15 @@ contract OwnStakeZap is IOwnStakeZap, Initializable, UUPSUpgradeable, Reentrancy
         if (swapRouter_ == address(0)) revert ZeroAddress();
         _swapRouter = swapRouter_;
         emit SwapRouterSet(swapRouter_);
+    }
+
+    /// @inheritdoc IOwnStakeZap
+    /// @dev No protected list: the zap holds no funds between transactions, so anything resting
+    ///      here is a mis-send.
+    function rescueToken(address token, address to, uint256 amount) external override onlyAdmin nonReentrant {
+        if (to == address(0)) revert ZeroAddress();
+        IERC20(token).safeTransfer(to, amount);
+        emit TokenRescued(token, to, amount);
     }
 
     // ──────────────────────────────────────────────────────────

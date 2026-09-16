@@ -90,12 +90,11 @@ contract OwnStakeZapTest is Test {
             })
         );
 
-        IOwnStakingV2.Knot[] memory knots = new IOwnStakingV2.Knot[](4);
+        IOwnStakingV2.Knot[] memory knots = new IOwnStakingV2.Knot[](3);
         // Launch curve — keep in sync with OwnStakingV2.t.sol's _defaultCurve.
         knots[0] = IOwnStakingV2.Knot(0, 1000);
-        knots[1] = IOwnStakingV2.Knot(10_000, 10_000);
-        knots[2] = IOwnStakingV2.Knot(20_000, 19_000);
-        knots[3] = IOwnStakingV2.Knot(30_000, 36_000);
+        knots[1] = IOwnStakingV2.Knot(10_000, 12_000);
+        knots[2] = IOwnStakingV2.Knot(30_000, 36_000);
         OwnStakingV2 stakingImpl = new OwnStakingV2();
         staking = OwnStakingV2(
             address(
@@ -189,7 +188,7 @@ contract OwnStakeZapTest is Test {
         IOwnStakingV2.Position memory pos = staking.position(alice);
         assertEq(pos.eusdStaked, 1000e18, "minted eUSD staked");
         assertEq(pos.moneyStaked, moneyAmt, "money staked");
-        assertEq(staking.boostBps(alice), 10_000, "1:1 coverage boost");
+        assertEq(staking.boostBps(alice), 12_000, "1:1 coverage boost");
 
         // Zap is stateless: nothing stranded.
         assertEq(spy.balanceOf(address(zap)), 0);
@@ -216,6 +215,30 @@ contract OwnStakeZapTest is Test {
         IOwnStakingV2.Position memory pos = staking.position(alice);
         assertEq(pos.moneyStaked, moneyOut, "swap output staked");
         assertEq(pos.eusdStaked, 1000e18);
+        assertEq(spy.balanceOf(address(zap)), 0);
+    }
+
+    function test_stakeFromSpy_donationNotSwept() public {
+        // Regression (A5-L-03): SPY resting on the zap must never enter the next caller's CDP.
+        spy.mint(address(zap), 5e18); // mis-sent SPY
+
+        vm.prank(alice);
+        zap.stakeFromSpy(10e18, 0, 0, "", 1000e18, address(0));
+
+        assertEq(manager.getPosition(address(eSPY), alice).collateral, 10e18, "only alice's SPY converted");
+        assertEq(spy.balanceOf(address(zap)), 5e18, "donation left in place for rescue");
+    }
+
+    function test_rescueToken_adminGatedAndRescues() public {
+        spy.mint(address(zap), 5e18);
+
+        vm.expectRevert(IOwnStakeZap.OnlyAdmin.selector);
+        vm.prank(attacker);
+        zap.rescueToken(address(spy), attacker, 5e18);
+
+        vm.prank(admin);
+        zap.rescueToken(address(spy), treasury, 5e18);
+        assertEq(spy.balanceOf(treasury), 5e18, "donation returned");
         assertEq(spy.balanceOf(address(zap)), 0);
     }
 

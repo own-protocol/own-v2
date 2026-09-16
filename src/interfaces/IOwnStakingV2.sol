@@ -142,14 +142,16 @@ interface IOwnStakingV2 {
     error ProtectedToken(address token);
     /// @notice Caller is not the whitelisted zap.
     error OnlyZap();
+    /// @notice Adding $MONEY needs a live oracle price — the cached mark never prices new stake.
+    error StaleMoneyPrice();
 
     // ──────────────────────────────────────────────────────────
     //  User actions
     // ──────────────────────────────────────────────────────────
 
     /// @notice Stake $MONEY and/or eUSD. Settles pending rewards, then re-snapshots the boost at
-    ///         the current oracle price. A stale, zero, or missing $MONEY price floors the boost
-    ///         (first curve knot) until the next refresh — staking never reverts on price.
+    ///         the current oracle price. Adding $MONEY requires a live price — new stake is never
+    ///         valued at the cached mark; eUSD-only stakes need no price and never revert on one.
     /// @param money $MONEY to add (may be zero).
     /// @param eusd  eUSD to add (may be zero; both zero reverts).
     function stake(uint256 money, uint256 eusd) external;
@@ -171,8 +173,7 @@ interface IOwnStakingV2 {
     function exit() external;
 
     /// @notice Stake $MONEY and/or eUSD pulled from the caller into `owner`'s position.
-    ///         Permissionless: staking for someone else only ever benefits them. Same rules as
-    ///         {stake}, including the eUSD cap and the boost re-snapshot.
+    ///         Zap only: same rules as {stake}, including the eUSD cap and the boost re-snapshot.
     /// @param owner Position owner credited with the stake.
     /// @param money $MONEY to add (may be zero).
     /// @param eusd  eUSD to add (may be zero; both zero reverts).

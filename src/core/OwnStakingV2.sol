@@ -22,9 +22,10 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 /// @dev Boosts are snapshots taken whenever a position is touched, which keeps the reward index
 ///      exact between touches; price moves are folded in by the permissionless {refreshBoost}.
 ///      The oracle only gates how much weight a $MONEY stake carries, never funds: when the live
-///      price is stale, zero, or missing, boosts reprice at the last usable mark ({lastMoneyPrice})
-///      instead — the floor applies only before any mark has ever been seen — and unstaking a full
-///      exit never reads a price, so it always works. The MONEY ticker is a TWAP mark, smoothing
+///      price is stale, zero, or missing, existing boosts reprice at the last usable mark
+///      ({lastMoneyPrice}) instead — the floor applies only before any mark has ever been seen —
+///      and unstaking a full exit never reads a price, so it always works. Adding $MONEY is the
+///      one price-gated action: new stake is never valued at the cached mark. The MONEY ticker is a TWAP mark, smoothing
 ///      short-lived wicks out of coverage. Runs behind an ERC-1967 proxy (UUPS),
 ///      ADMIN-gated upgrade via ProtocolRegistry roles; storage is append-only across upgrades.
 ///      Positions are plain per-account storage — non-transferable by construction.
@@ -193,7 +194,7 @@ contract OwnStakingV2 is IOwnStakingV2, Initializable, UUPSUpgradeable, Reentran
     }
 
     /// @inheritdoc IOwnStakingV2
-    function stakeFor(address owner, uint256 money, uint256 eusd) external override nonReentrant {
+    function stakeFor(address owner, uint256 money, uint256 eusd) external override nonReentrant onlyZap {
         if (owner == address(0)) revert ZeroAddress();
         _stakeFor(owner, money, eusd);
     }
@@ -381,6 +382,9 @@ contract OwnStakingV2 is IOwnStakingV2, Initializable, UUPSUpgradeable, Reentran
     ///      Callers hold the reentrancy guard.
     function _stakeFor(address owner, uint256 money, uint256 eusd) private {
         if (money == 0 && eusd == 0) revert ZeroAmount();
+        // New $MONEY is never valued at the cached mark — the fallback only holds existing
+        // snapshots harmless through an outage, it does not price entries.
+        if (money != 0 && _liveMoneyPrice() == 0) revert StaleMoneyPrice();
         _settle(owner);
 
         Position storage p = _positions[owner];
@@ -510,7 +514,9 @@ contract OwnStakingV2 is IOwnStakingV2, Initializable, UUPSUpgradeable, Reentran
     // ──────────────────────────────────────────────────────────
 
     /// @dev Replace the curve after validating monotonicity: at least two knots, coverage
-    ///      strictly increasing, boost non-decreasing, capped by {maxBoostBps}.
+    ///      strictly increasing, boost non-decreasing, capped by {maxBoostBps}, and boost/coverage
+    ///      non-increasing across knots — no segment steeper than the ray from the origin, so
+    ///      weight = eusdStaked × boost(coverage) can never decrease when eUSD is added.
     function _setCurve(
         Knot[] calldata knots
     ) private {
@@ -520,6 +526,11 @@ contract OwnStakingV2 is IOwnStakingV2, Initializable, UUPSUpgradeable, Reentran
             if (i != 0) {
                 if (knots[i].coverageBps <= knots[i - 1].coverageBps) revert InvalidCurve();
                 if (knots[i].boostBps < knots[i - 1].boostBps) revert InvalidCurve();
+                if (
+                    knots[i - 1].coverageBps != 0
+                        && uint256(knots[i - 1].boostBps) * knots[i].coverageBps
+                            < uint256(knots[i].boostBps) * knots[i - 1].coverageBps
+                ) revert InvalidCurve();
             }
             if (knots[i].boostBps > maxBoostBps) revert InvalidCurve();
         }

@@ -394,7 +394,9 @@ interface IEUSDManager {
     ///         so its ratio improves (deleveraging). An underwater head only redeems its
     ///         collateral-backed portion: the burn is capped at that collateral's value, the
     ///         unbacked debt residual stays on the owner's books off-list, and the walk continues.
-    ///         A partial redemption may leave the last position below minDebt.
+    ///         A partial redemption never leaves a listed position below minDebt: the last touch
+    ///         is clamped to leave exactly minDebt, so `debtRepaid` can fall short of `amount` by
+    ///         up to minDebt even while positions remain.
     /// @param collateral       Collateral eToken to redeem into.
     /// @param amount           Max eUSD to burn from the caller (18 decimals).
     /// @param minCollateralOut Min collateral acceptable for the burned amount (18 decimals).

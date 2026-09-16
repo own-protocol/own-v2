@@ -387,6 +387,9 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
             address owner = listHead[collateral];
             if (owner == address(0)) break;
             (uint256 repaid, uint256 seized) = _redeemFrom(collateral, owner, price, remaining, hint);
+            // The head yields nothing when the minDebt clamp consumes the whole request; every
+            // other outcome delists or shrinks it, so this is the only zero-progress case.
+            if (repaid == 0 && seized == 0) break;
             remaining -= repaid;
             collateralOut += seized;
             touched++;
@@ -548,6 +551,9 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
     ///      the redeemer receives at most $1 of collateral per eUSD burned. An underwater position
     ///      only redeems its collateral-backed portion; the unbacked residual stays on the books
     ///      off-list (clearable by repay/close/liquidation) so it never pins the head at ratio 0.
+    ///      A partial redemption may not leave dust: the remaining debt is either 0 or >= minDebt
+    ///      (repaid is clamped to leave exactly minDebt, same rule as {repay}); a node where even
+    ///      that clamp yields nothing redeemable returns zeros and the caller stops the walk.
     function _redeemFrom(
         address collateral,
         address owner,
@@ -557,6 +563,15 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
     ) private returns (uint256 repaid, uint256 seized) {
         Position storage p = _accrue(collateral, owner);
         repaid = maxAmount > p.debt ? p.debt : maxAmount;
+        uint256 remainingDebt = p.debt - repaid;
+        if (remainingDebt != 0 && remainingDebt < _riskParams.minDebt) {
+            uint256 minDebt = _riskParams.minDebt;
+            repaid = p.debt > minDebt ? p.debt - minDebt : 0;
+            if (repaid == 0) {
+                _reindex(collateral, owner, hint);
+                return (0, 0);
+            }
+        }
         seized = Math.mulDiv(repaid, PRECISION, price);
         if (seized > p.collateral) {
             seized = p.collateral;

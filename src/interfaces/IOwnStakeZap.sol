@@ -89,6 +89,12 @@ interface IOwnStakeZap {
     /// @param swapRouter New router for the SPY→$MONEY leg.
     event SwapRouterSet(address indexed swapRouter);
 
+    /// @notice Emitted when a mis-sent token is rescued.
+    /// @param token  Token rescued.
+    /// @param to     Recipient.
+    /// @param amount Amount transferred.
+    event TokenRescued(address indexed token, address indexed to, uint256 amount);
+
     // ──────────────────────────────────────────────────────────
     //  Errors
     // ──────────────────────────────────────────────────────────
@@ -187,6 +193,14 @@ interface IOwnStakeZap {
     function setSwapRouter(
         address swapRouter_
     ) external;
+
+    /// @notice Rescue a token mis-sent to the zap. The zap holds no funds between transactions,
+    ///         so any resting balance is a mis-send; every entry accounts by exact amounts or
+    ///         balance deltas, so a resting balance is never spendable by other callers either.
+    /// @param token  Token to rescue.
+    /// @param to     Recipient (non-zero).
+    /// @param amount Amount to transfer.
+    function rescueToken(address token, address to, uint256 amount) external;
 
     // ──────────────────────────────────────────────────────────
     //  Views (wiring, initializer-set)
