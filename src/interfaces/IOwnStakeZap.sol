@@ -49,6 +49,13 @@ interface IOwnStakeZap {
     /// @param eusdStaked  eUSD staked (18 decimals).
     event ZapStaked(address indexed user, uint256 spyIn, uint256 moneyStaked, uint256 eusdStaked);
 
+    /// @notice Emitted when a CDP is built or extended without the staking leg.
+    /// @param user            Position owner.
+    /// @param spyIn           SPY the user brought (18 decimals; 0 for a mint-only call).
+    /// @param collateralAdded Collateral eTokens deposited (18 decimals).
+    /// @param eusdMinted      eUSD minted against the CDP and paid to the user (18 decimals).
+    event CdpBuilt(address indexed user, uint256 spyIn, uint256 collateralAdded, uint256 eusdMinted);
+
     /// @notice Emitted when sEUSD is migrated into the staking contract.
     /// @param user        Position owner.
     /// @param sharesIn    sEUSD shares redeemed.
@@ -152,6 +159,16 @@ interface IOwnStakeZap {
     /// @param eusdAmount  eUSD pulled and staked (may be zero).
     /// @param moneyAmount $MONEY pulled and staked (may be zero; both zero reverts).
     function stakeFromEusdAndMoney(uint256 eusdAmount, uint256 moneyAmount) external;
+
+    /// @notice Build or extend the caller's CDP without staking: PSM-mint the caller's SPY into
+    ///         collateral, deposit it, and mint eUSD against the position straight to the
+    ///         caller's wallet. Either leg may be zero — SPY-only deposits, or mint-only against
+    ///         existing headroom.
+    /// @param spyAmount  SPY pulled from the caller and PSM-minted into collateral (may be zero).
+    /// @param eusdToMint eUSD minted against the CDP and paid to the caller (may be zero; both
+    ///                   zero reverts).
+    /// @param hint       Sorted-list insert hint for the CDP.
+    function depositAndMint(uint256 spyAmount, uint256 eusdToMint, address hint) external;
 
     /// @notice Migrate from sEUSD: redeem the caller's shares (instant, no cooldown), stake the
     ///         eUSD alongside `moneyAmount` of $MONEY.

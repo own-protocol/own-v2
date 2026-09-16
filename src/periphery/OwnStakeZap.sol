@@ -174,6 +174,23 @@ contract OwnStakeZap is IOwnStakeZap, Initializable, UUPSUpgradeable, Reentrancy
     }
 
     /// @inheritdoc IOwnStakeZap
+    function depositAndMint(uint256 spyAmount, uint256 eusdToMint, address hint) external override nonReentrant {
+        if (spyAmount == 0 && eusdToMint == 0) revert ZeroAmount();
+        uint256 minted;
+        if (spyAmount != 0) {
+            _spy.safeTransferFrom(msg.sender, address(this), spyAmount);
+            minted = _market.psmMint(_collateralTicker, address(_spy), spyAmount);
+            _eusdManager.depositFor(msg.sender, address(_collateral), minted, hint);
+        }
+        if (eusdToMint != 0) {
+            // Minted to the zap ({IEUSDManager.mintFor}), forwarded whole to the caller.
+            _eusdManager.mintFor(msg.sender, address(_collateral), eusdToMint, hint);
+            _eusd.safeTransfer(msg.sender, eusdToMint);
+        }
+        emit CdpBuilt(msg.sender, spyAmount, minted, eusdToMint);
+    }
+
+    /// @inheritdoc IOwnStakeZap
     function stakeFromSeusd(uint256 shares, uint256 moneyAmount) external override nonReentrant {
         if (shares == 0) revert ZeroAmount();
         // Instant ERC-4626 exit; requires the caller's sEUSD approval to the zap.

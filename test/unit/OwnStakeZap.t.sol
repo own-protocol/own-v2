@@ -218,6 +218,52 @@ contract OwnStakeZapTest is Test {
         assertEq(spy.balanceOf(address(zap)), 0);
     }
 
+    function test_depositAndMint_buildsCdpAndPaysWallet() public {
+        // 10 SPY @ $500 → $5,000 collateral; 1,000 eUSD minted straight to the wallet, no stake.
+        uint256 eusdBefore = eusd.balanceOf(alice);
+        vm.prank(alice);
+        zap.depositAndMint(10e18, 1000e18, address(0));
+
+        IEUSDManager.Position memory cdp = manager.getPosition(address(eSPY), alice);
+        assertEq(cdp.collateral, 10e18, "collateral deposited for alice");
+        assertEq(cdp.debt, 1000e18, "debt on alice");
+        assertEq(eusd.balanceOf(alice) - eusdBefore, 1000e18, "minted eUSD paid to the wallet");
+        assertEq(staking.position(alice).eusdStaked, 0, "no staking leg");
+
+        // Zap is stateless: nothing stranded.
+        assertEq(spy.balanceOf(address(zap)), 0);
+        assertEq(eusd.balanceOf(address(zap)), 0);
+        assertEq(eSPY.balanceOf(address(zap)), 0);
+    }
+
+    function test_depositAndMint_depositOnly() public {
+        uint256 eusdBefore = eusd.balanceOf(alice);
+        vm.prank(alice);
+        zap.depositAndMint(10e18, 0, address(0));
+
+        assertEq(manager.getPosition(address(eSPY), alice).collateral, 10e18);
+        assertEq(manager.getPosition(address(eSPY), alice).debt, 0);
+        assertEq(eusd.balanceOf(alice), eusdBefore, "no eUSD minted");
+    }
+
+    function test_depositAndMint_mintOnlyAgainstHeadroom() public {
+        uint256 eusdBefore = eusd.balanceOf(alice);
+        vm.prank(alice);
+        zap.depositAndMint(10e18, 1000e18, address(0));
+
+        vm.prank(alice);
+        zap.depositAndMint(0, 500e18, address(0));
+
+        assertEq(manager.getPosition(address(eSPY), alice).debt, 1500e18, "minted against headroom");
+        assertEq(eusd.balanceOf(alice) - eusdBefore, 1500e18);
+    }
+
+    function test_depositAndMint_bothZero_reverts() public {
+        vm.expectRevert(IOwnStakeZap.ZeroAmount.selector);
+        vm.prank(alice);
+        zap.depositAndMint(0, 0, address(0));
+    }
+
     function test_stakeFromSpy_donationNotSwept() public {
         // Regression (A5-L-03): SPY resting on the zap must never enter the next caller's CDP.
         spy.mint(address(zap), 5e18); // mis-sent SPY

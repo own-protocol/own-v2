@@ -291,6 +291,14 @@ diff — A5-M-04, A5-L-04 and A5-L-05 live in pre-branch code surfaced by that w
   second scan (2026-09-16): traced across all debt/stake branches, delta accounting exact,
   immune to donations, third-party repay front-runs, and the accrual/minDebt edge (it re-reads
   debt after `accrue`). Clean, save the uncapped-shortfall lead below.*
+- **`OwnStakeZap.depositAndMint(spyAmount, eusdToMint, hint)`** (added 2026-09-16, after both
+  scans): CDP-only entry for the "borrow now, stake later" journey — PSM-mints the caller's SPY
+  into collateral, deposits it, and mints eUSD against the position straight to the caller's
+  wallet; either leg may be zero (deposit-only, or mint-only against existing headroom). This is
+  the first zap surface that releases eUSD to a wallet rather than staking it; the debt still
+  only ever lands on `msg.sender`, amounts are exact (no balance reads), and it composes only
+  pre-audited surfaces (`psmMint`, `depositFor`, `mintFor` + a `safeTransfer` of the exact
+  minted amount). Not yet through an agent pass — include in the next one.
 
 ## Leads (not scored — trails for manual review)
 
