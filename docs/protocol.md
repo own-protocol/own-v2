@@ -107,6 +107,7 @@ The protocol is organized into three layers (vaults are deployed directly and re
 
 | Contract               | File                              | Purpose                                                                                                                            |
 | ---------------------- | --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| **MoneyPriceFeed**     | `src/oracle/MoneyPriceFeed.sol`   | Keeper-pushed $MONEY TWAP mark behind the AggregatorV3 read surface. Registered as the MONEY aggregator on the ChainlinkOracleVerifier with `bandBps = 0` (no signer leg); the verifier's `maxAnchorAge` enforces staleness, and OwnStakingV2 degrades to its cached mark — gates boost weight only, never funds. |
 | **OracleVerifier** *(archived)*     | `archive/OracleVerifier.sol`     | In-house signed oracle. Prices are pushed by an authorized signer with ECDSA verification, staleness checks, and deviation bounds. |
 | **PythOracleVerifier** *(archived)* | `archive/PythOracleVerifier.sol` | Wraps Pyth Network price feeds. Normalizes prices to 18 decimals. Supports both cached reads and inline proof verification.        |
 

@@ -61,7 +61,7 @@ forge script script/robinhood/DeployRobinhood.s.sol --rpc-url robinhood --broadc
 src/
   registry/       ProtocolRegistry (addresses, roles, timelock) + AssetRegistry
                   (asset whitelist, ticker → eToken map, oracle configs)
-  oracle/         ChainlinkOracleVerifier
+  oracle/         ChainlinkOracleVerifier, MoneyPriceFeed (keeper-pushed $MONEY mark)
   core/           CST issuance engine — OwnMarket (RFQ + PSM), ReserveVault,
                   VaultManager (risk hub), eTokens, force-execute logic
   eusd/           The eUSD stablecoin — EUSDManager (CDP engine) + EUSD token

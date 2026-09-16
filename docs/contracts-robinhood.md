@@ -152,6 +152,13 @@ links detected.
 | OwnStakeZap (ERC-1967 proxy)      | `0xE28423b4CA87cB9e822E99325A09A9457291e8fa` |
 | — implementation                  | `0xf98D894Dc4A0C01B59eb30CF4B7750111cc5FF52` |
 | LinearBoostCalculator             | `0xc23E6e6EaE9551014c479123E2cc6e4B1c9233D2` |
+| MoneyPriceFeed                    | `0x31283f38ec6e63AC9A5b2C37563eD31F708411EE` |
+
+MoneyPriceFeed: keeper-pushed $MONEY TWAP mark behind the AggregatorV3 surface, for OwnStakingV2 boost pricing. Pending Safe call wires it as the
+MONEY aggregator: `setChainlinkConfig(MONEY, feed, 0, 900, 5400, 86400, 0, 0)` — `bandBps = 0`
+keeps the signer leg off (pushed mark is the only source); `clFreshWindow` 90 min tracks the
+cadence; alert if no push lands for > 90 min. Staking's `priceMaxAge` is 24h (initialize
+default), coinciding with `maxAnchorAge`.
 
 Launch parameters (verified on-chain): MCR 150% / liquidation 120% / bonus 5% / stability fee
 2%/yr / debt ceiling 250k / minDebt 100 / mintPriceMaxAge 1h (matches the verifier's in-house
@@ -178,7 +185,7 @@ Deployed from branch `stablecoin` via `RedeployMarket3Robinhood.s.sol` (addresse
 table above). Behaviorally identical to gen-2 — the delta is upgradability only: ERC-1967/UUPS
 proxy (`_authorizeUpgrade` = registry ADMIN, i.e. the Safe), proxy-safe EIP-712 domain, and the
 force-execute path extracted into the external-linked `ForceExecuteLib`. Bare implementation is
-un-initializable (asserted at deploy). This is the last market *swap* — all future market logic
+un-initializable (asserted at deploy). This is the last market _swap_ — all future market logic
 changes go through `UpgradeOwnMarket.s.sol` as one-tx Safe upgrades; storage layout is
 append-only from this deploy's commit.
 
