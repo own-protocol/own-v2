@@ -99,7 +99,9 @@ The protocol is organized into three layers (vaults are deployed directly and re
 | **VaultManager**              | `src/core/VaultManager.sol`     | Central, pooled risk accounting **and** global control hub for **all** vaults. Owns global exposure, collateral marks, utilization, the per-asset issuance ceiling, per-vault collateral concentration caps, **the vault registry/allowlist** (admin `registerVault`/`deregisterVault` + `getAllVaults`), the signer registry, the global payment token, trading pause, permanent asset halt + halt redeem address, and the claim threshold. Valued at keeper-cached marks. See §9. |
 | **AssetRegistry**             | `src/core/AssetRegistry.sol`    | Whitelists assets, maps tickers to eToken addresses, stores oracle configurations. Supports token migration (post-stock-split). Governs which assets are valid for **all** vaults.                                                                                                                                                                                                                                                         |
 | **EUSDManager**               | `src/core/EUSDManager.sol`      | eUSD stablecoin CDP engine (ERC-1967/UUPS proxy). Custodies eToken collateral, mints/burns eUSD against fresh oracle prices, accrues the stability fee to the treasury, and runs redemptions (sorted riskiest-first list) and partial liquidations. Exits (repay/close/liquidate/redeem) are never gated. See §15.                                                                                                                          |
-| **OwnIncentives**             | `src/core/OwnIncentives.sol`    | OWN emission controller for sEUSD (Aave-style index). Attached to StakedEUSD via `setIncentivesController`; funded and driven by ADMIN (`fund` → `setDistribution`). A detached controller retires permanently and pays only already-accrued OWN.                                                                                                                                                                                          |
+| **OwnStakingV2**              | `src/core/OwnStakingV2.sol`     | $MONEY staking (ERC-1967/UUPS proxy). Stake eUSD as earning principal, $MONEY as the boost leg; SPY rewards stream Synthetix-style over `weight = eusdStaked × boost`. Boost priced by a swappable IBoostCalculator; oracle gates weight, never funds. See §15.                                                                                                                                                                              |
+| **LinearBoostCalculator**     | `src/core/LinearBoostCalculator.sol` | Launch boost calculator: 0.1× floor rising linearly to 3.6× at 3.0 coverage. Immutable pure pricing; splitting-neutral by shape. Replaced (not upgraded) via `setBoostCalculator` — swaps reviewed with core-contract rigor.                                                                                                                                                                                                          |
+| **OwnIncentives** *(deprecated)* | `src/core/OwnIncentives.sol` | OWN emission controller for sEUSD (Aave-style index). Deprecated with the sEUSD module — superseded by OwnStakingV2; never attached on Robinhood Chain.                                                                                                                                                                                                                                                                                     |
 
 ### Oracle Contracts
 
@@ -114,7 +116,8 @@ The protocol is organized into three layers (vaults are deployed directly and re
 | ---------------- | -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **EToken**       | `src/tokens/EToken.sol`          | Synthetic asset token (ERC-20 + ERC-2612 Permit). Mint/burn restricted to OwnMarket. Supports admin-updatable metadata (for stock splits) and a dividend reward accumulator. |
 | **EUSD**         | `src/tokens/EUSD.sol`            | The eUSD stablecoin (ERC-20 + Permit). `MINTER_ROLE` (mint/burn) held only by the EUSDManager, preserving `totalSupply == totalDebt`. ERC-7802 crosschain mint/burn for rate-limited bridges — per-bridge rolling limits plus a global `maxNetBridgedIn` cap, all fail-closed at zero until admin opens a lane. |
-| **StakedEUSD**   | `src/tokens/StakedEUSD.sol`      | sEUSD — ERC-4626 staking vault for eUSD (ERC-1967/UUPS proxy; the asset is an implementation immutable enforced across upgrades). Base yield streams in via OPERATOR `transferInRewards` and vests linearly (sUSDe-style) over `vestingPeriod`; an optional OwnIncentives controller is notified on every balance change for OWN emissions. Seeded with permanently-locked dead shares. |
+| **StakedEUSD** *(deprecated)* | `src/tokens/StakedEUSD.sol` | sEUSD — ERC-4626 staking vault for eUSD (ERC-1967/UUPS proxy). Deprecated — superseded by OwnStakingV2 ($MONEY staking, §15); the deployed vault stays withdrawable but receives no further reward batches. |
+| **OwnStakeZap**  | `src/periphery/OwnStakeZap.sol`  | One-transaction basket entries/exits for $MONEY staking (ERC-1967/UUPS proxy): SPY → swap slice to $MONEY → PSM-mint collateral → mint eUSD → stake; plus compound, rebalance, unwind, depositAndMint. JIT router allowance + delta accounting; holds no funds between transactions. |
 | **VaultYieldManager** | `src/periphery/VaultYieldManager.sol` | Automated LP yield distribution shell, installed as an OwnVault's `manager` (`setManager`). All BorrowManager revenue (premium sweeps, dividend sweeps, interest claims) lands here as stablecoin; a permissionless `distribute` splits it treasury-cut / LP-yield (converted 1:1 to the vault's aToken via `OwnLendingPool.supply` and pushed with `shareYield`). The vault calls its `syncYield` before pricing LP entry/exit. The VM entity drives the deposit queue through `acceptDeposit`/`rejectDeposit` passthroughs. |
 | **WETHRouter**   | `src/periphery/WETHRouter.sol`   | Wraps native ETH to WETH for vault deposits and unwraps on redemption.                                                                                                       |
 | **WstETHRouter** | `src/periphery/WstETHRouter.sol` | Wraps stETH to wstETH for alternative collateral vaults. Supports ERC-2612 permit.                                                                                           |
@@ -957,13 +960,61 @@ ERC-7802 (`crosschainMint`/`crosschainBurn`) with two independent brakes: per-br
 mint/burn rate limits, and a global `maxNetBridgedIn` cap bounding total bridged-in supply beyond
 local CDP backing. Both default to zero — bridging is fail-closed until admin opens a lane.
 
-### sEUSD staking (StakedEUSD + OwnIncentives)
+**Arming rule (MUST, before any lane opens):** never grant `setBridgeLimits` to an external
+bridge/transport address directly — only to a protocol-owned **bridge gateway** contract. Two
+known limitations of the ERC-7802 surface make a directly-authorized bridge strictly trusted
+(audit report 4, I-05/I-06, acknowledged): `crosschainBurn(from, …)` is allowance-free (a
+compromised bridge can burn any holder's balance), and every burn refunds `netBridgedIn`
+headroom — so a paired burn(victim)+mint(self) loop recycles the global cap into per-window
+theft that supply monitoring cannot see. EUSD is non-upgradeable; the fix lives in the gateway
+instead: it must (a) burn only with the holder's explicit approval/consent (spend an ERC-20
+allowance or equivalent), and (b) forward mints/burns to the actual transport, so the transport
+never holds token-level authorization and can be swapped or killed at the gateway. Size the
+gateway's per-window limits as the worst-case theft budget of a gateway-key compromise, not as
+UX throughput, and monitor `CrosschainBurn` events against user-initiated exits. Re-review
+report 4 I-05/I-06 as part of any arming.
 
-sEUSD is a standard ERC-4626 vault over eUSD with no claim step — yield arrives as share-price
-appreciation. An OPERATOR streams reward batches in via `transferInRewards`; each batch vests
-linearly over `vestingPeriod` (rolling any unvested remainder into the new batch), so rewards
-cannot be sandwiched by deposit-before/withdraw-after. The vault is seeded at deploy with
-permanently-locked dead shares (first-depositor inflation defense; supply never returns to zero
-mid-vest). OWN emissions are a separate, optional layer: an **OwnIncentives** controller attached
-by ADMIN accrues OWN per share-second (`fund` → `setDistribution`); detaching a controller
-retires it permanently. Launch order and migration runbook: `docs/deployment-robinhood.md`.
+### $MONEY staking (OwnStakingV2 + OwnStakeZap)
+
+Dual-asset staking behind a UUPS proxy: eUSD is the earning principal, staked $MONEY multiplies
+it. Each position's reward weight is `eusdStaked × boost`, and SPY rewards stream linearly
+(Synthetix-style index) over a 7-day window per batch — the OPERATOR pulls each batch from the
+treasury Safe within its live ERC-20 allowance, so the allowance is the on-chain spending cap.
+Seconds that pass with zero total weight bank into an `undistributed` bucket only the operator
+can re-stream; permissionless `syncRewards` books stray SPY into the same bucket. A global
+`stakeCap` bounds total staked eUSD.
+
+**Boost pricing** is delegated to an admin-swappable **IBoostCalculator** — a pure view fed the
+position's oracle-priced $MONEY value and staked eUSD. Launch calculator is
+`LinearBoostCalculator`: 0.1× floor rising linearly to 3.6× at 3.0 coverage, flat beyond. The
+linear shape is deliberate: weight `min(floor·eusd + slope·moneyValue, max·eusd)` is concave and
+scale-linear, so splitting a position across wallets never gains reward share — the tables in
+`docs/staking-apr-launch.md` are exact and ungameable. The staking core clamps any calculator
+result to `maxBoostBps`, holds a position's last snapshot if a calculator reverts (a broken
+calculator can never gate a touch), and swapping calculators never retro-touches snapshots —
+the permissionless `refreshBoost` reprices positions afterwards. **Calculator swaps are
+security-critical**: any replacement shape (knots, steps, curves) must be reviewed with
+core-contract rigor for splitting-neutrality and eUSD-monotonicity before `setBoostCalculator`
+(audit pass 5, A5-M-05); on-chain validation deliberately does not attempt economic safety.
+
+**Boosts are snapshots**, re-taken whenever a position is touched; price moves fold in via
+`refreshBoost`, callable by anyone on anyone. The $MONEY mark is an oracle TWAP (window managed
+off-chain), and the oracle gates weight, never funds: during an outage existing snapshots hold
+at the last usable mark, while *additions* — new $MONEY, or new eUSD onto a $MONEY-holding
+position — require a live mark and revert otherwise. Exits, claims and refreshes never require
+a fresh price.
+
+**OwnStakeZap** collapses the basket journeys into single transactions: SPY → optional
+router-swap slice to $MONEY → PSM-mint the rest into eSPY collateral → mint eUSD against it →
+stake both legs (`stakeFromSpy` and variants); plus `compound`, `rebalance` (unstake eUSD to
+repay debt), `unwind` (full exit + debt repayment) and `depositAndMint`. The swap leg hands
+user-supplied calldata to an admin-set router under a just-in-time exact allowance that is
+revoked after the call, with balance-delta accounting and a mandatory non-zero `minMoneyOut`, so
+`swapData` can spend at most the caller's own in-flight slice. The zap holds no funds between
+transactions (admin `rescueToken` recovers mis-sends), and every on-behalf surface it calls is
+zap-whitelisted with the owner hardcoded to the zap's own caller — zap upgrades and the router
+choice are therefore security-critical (A5-I-01 and the router-constraint lead in audit pass 5).
+The zap pins the eSPY collateral address at initialize: an AssetRegistry migration requires the
+split-runbook zap step in `docs/deployment-robinhood.md`. Deploy sequence:
+`script/robinhood/DeployMoneyStakingRobinhood.s.sol`; launch APR tables:
+`docs/staking-apr-launch.md`.

@@ -2,6 +2,7 @@
 pragma solidity 0.8.28;
 
 import {EUSDManager} from "../../src/core/EUSDManager.sol";
+import {LinearBoostCalculator} from "../../src/core/LinearBoostCalculator.sol";
 import {OwnStakingV2} from "../../src/core/OwnStakingV2.sol";
 import {ProtocolRegistry} from "../../src/core/ProtocolRegistry.sol";
 import {IEUSDManager} from "../../src/interfaces/IEUSDManager.sol";
@@ -90,11 +91,8 @@ contract OwnStakeZapTest is Test {
             })
         );
 
-        IOwnStakingV2.Knot[] memory knots = new IOwnStakingV2.Knot[](3);
-        // Launch curve — keep in sync with OwnStakingV2.t.sol's _defaultCurve.
-        knots[0] = IOwnStakingV2.Knot(0, 1000);
-        knots[1] = IOwnStakingV2.Knot(10_000, 12_000);
-        knots[2] = IOwnStakingV2.Knot(30_000, 36_000);
+        // Launch calculator — keep in sync with OwnStakingV2.t.sol's setUp.
+        LinearBoostCalculator calc = new LinearBoostCalculator(1000, 36_000, 30_000);
         OwnStakingV2 stakingImpl = new OwnStakingV2();
         staking = OwnStakingV2(
             address(
@@ -102,7 +100,7 @@ contract OwnStakeZapTest is Test {
                     address(stakingImpl),
                     abi.encodeCall(
                         OwnStakingV2.initialize,
-                        (address(registry), address(eusd), address(money), address(spy), safe, knots)
+                        (address(registry), address(eusd), address(money), address(spy), safe, address(calc))
                     )
                 )
             )
@@ -188,7 +186,7 @@ contract OwnStakeZapTest is Test {
         IOwnStakingV2.Position memory pos = staking.position(alice);
         assertEq(pos.eusdStaked, 1000e18, "minted eUSD staked");
         assertEq(pos.moneyStaked, moneyAmt, "money staked");
-        assertEq(staking.boostBps(alice), 12_000, "1:1 coverage boost");
+        assertEq(staking.boostBps(alice), 12_666, "1:1 coverage boost");
 
         // Zap is stateless: nothing stranded.
         assertEq(spy.balanceOf(address(zap)), 0);

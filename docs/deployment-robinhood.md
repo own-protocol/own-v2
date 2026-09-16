@@ -149,6 +149,15 @@ psmMint/psmRedeem round-trip.
 > **Split runbook:** a stock split jumps `uiMultiplier` far beyond the ratio-jump bound by design.
 > Halt, re-mark under the new multiplier, resume — do not widen the bound.
 
+## eUSD bridging policy
+
+Bridging is **launch-disabled** (no bridge limits, `maxNetBridgedIn = 0`) and must stay that way
+until a lane is deliberately armed. When arming: **never call `setBridgeLimits` for an external
+bridge/transport address** — authorize only a protocol-owned gateway contract that enforces
+holder consent on burns and fronts the real transport. Rationale, threat model, and the full
+arming rule: `docs/protocol.md` ("EUSD token & bridging — Arming rule") and audit report 4
+I-05/I-06. EUSD is non-upgradeable, so the gateway is the only place the fix can live.
+
 ## eUSD collateral policy & split runbook
 
 **Collateral selection (preferred).** Onboard only eTokens that are **low-volatility** and
@@ -186,6 +195,10 @@ pre-split):**
    both), then verify on a sample position that `collateralRatioBps` equals its pre-split value.
 4. `addCollateral(newToken, ticker)` so new positions open on the active token, then
    `setMintPaused(false)`.
+   > **Zap step (A5-L-06):** in the same window, `OwnStakeZap.rescueToken` any stray SPY/legacy
+   > balance off the zap and upgrade the zap to reference the new token *before* SPY entries are
+   > used again — the zap pins the collateral address at initialize, so post-migration its SPY
+   > entries revert, and a stray legacy balance would deposit at the legacy-ratio valuation.
 5. Leave the legacy collateral **disabled** (exits only: repay / close / redeem / liquidate keep
    working). Owners migrate at their own pace — close, `OwnMarket.convertLegacy`, reopen on the
    new token. `addCollateral` rejects legacy tokens, so the old address cannot be re-enabled by

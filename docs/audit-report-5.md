@@ -12,11 +12,20 @@ A **second 12-agent scan** (2026-09-16) covered the same contracts plus the full
 (A5-H-01, A5-M-03/04, A5-L-03/04/05); all seven were re-verified against source by the
 orchestrator before booking, and A5-H-01 carries a 3/3-passing PoC.
 
+A **third 12-agent scan** (2026-09-16) added `tokens/EUSD.sol` to scope and re-ran the full
+staking/zap/manager surface post-remediation. New: A5-M-05 (extends A5-H-01), A5-L-06 (sharpens
+the `_collateral` ops lead), and a reopened residual on A5-M-03. The scan's top EUSD report —
+`crosschainBurn` burn+mint recycling of the `netBridgedIn` cap into bridge theft — deduplicated
+against **Report 4 (audits/09-09-2026) I-05/I-06**, both Acknowledged there under the
+trusted-bridge model; see the drop list under the third-scan leads. Every other third-scan
+report also deduplicated into an existing entry.
+
 ### Scope
 
 ```
 core/OwnStakingV2.sol        periphery/OwnStakeZap.sol
 core/EUSDManager.sol (diff vs main: stakeZap wiring, depositFor/mintFor, setStakeZap)
+tokens/EUSD.sol (third scan)
 ```
 
 ---
@@ -27,8 +36,8 @@ core/EUSDManager.sol (diff vs main: stakeZap wiring, depositFor/mintFor, setStak
 | -------- | ----- | ----- | ---- | --------- |
 | Critical | 0     | 0     | 0    | —         |
 | High     | 1     | 1     | 0    | —         |
-| Medium   | 4     | 4     | 0    | —         |
-| Low      | 5     | 3     | 0    | 2         |
+| Medium   | 5     | 5     | 0    | —         |
+| Low      | 6     | 3     | 0    | 3         |
 | Info     | 1     | 0     | 0    | 1         |
 
 | ID      | Severity | Finding                                                                 | Status    |
@@ -36,13 +45,15 @@ core/EUSDManager.sol (diff vs main: stakeZap wiring, depositFor/mintFor, setStak
 | A5-H-01 | High     | Reward weight non-monotonic in staked eUSD under a convex boost curve   | Fixed     |
 | A5-M-01 | Medium   | Permissionless `syncRewards` dilutes the reward stream with 1-wei dust  | Fixed     |
 | A5-M-02 | Medium   | eUSD donation to the zap DoSes smaller `rebalance` calls                 | Fixed     |
-| A5-M-03 | Medium   | Stale-price fallback prices weight-increasing stakes at a dead mark      | Fixed     |
+| A5-M-03 | Medium   | Stale-price fallback prices weight-increasing stakes at a dead mark      | Fixed (incl. residual) |
 | A5-M-04 | Medium   | Partial redemption bypasses the `minDebt` floor                          | Fixed     |
+| A5-M-05 | Medium   | Convex curve segments make position-splitting weight-profitable          | Fixed     |
 | A5-L-01 | Low      | Third-party boost flooring during oracle outage redistributes rewards    | Fixed     |
 | A5-L-02 | Low      | Permitted 100% swap split in `stakeFromSpy` always reverts               | Fixed     |
 | A5-L-03 | Low      | Stray SPY on the zap is swept into the next `stakeFromSpy` caller's CDP  | Fixed     |
 | A5-L-04 | Low      | Permissionless `accrue` reorders the redemption queue                    | Acknowledged |
 | A5-L-05 | Low      | `withdrawCollateral` skips the collateral-disabled gate                  | Acknowledged |
+| A5-L-06 | Low      | Stray legacy eTokens deposit at the legacy-ratio valuation post-migration | Acknowledged |
 | A5-I-01 | Info     | `mintFor` grants the zap standing debt-creation power over any position  | By design |
 
 ---
@@ -135,6 +146,24 @@ that adding $MONEY waits out an oracle outage — the fail-safe direction. Regre
 / zero / aged price all revert the $MONEY leg, eUSD-only entry stays open, and the cache still
 serves views and refreshes while refusing to price a new entry.
 
+**Reopened — residual (third scan, 2026-09-16):** the fix gates only the $MONEY leg, but
+`stake(0, eusd)` on a $MONEY-carrying position re-runs `_resnapshotBoost` at the cached mark, so
+*new eUSD principal* also acquires weight priced off the dead mark — the fix's premise
+("eUSD-only stakes need no price") holds only for positions with no $MONEY, and `refreshBoost`
+cannot correct the snapshot during the outage (it reads the same cache). 5/12 agents converged.
+Marginal weight of added eUSD is the segment's ray intercept `b_lo − s·c_lo`: under the current
+launch curve this is 0 on the upper segment (it sits exactly on the ray) and 0.1× on the floor
+segment, so the attack is **unprofitable today** — but it turns profitable under any admissible
+curve with positive high-coverage intercepts, and the A5-M-05 concavity fix *increases* those
+intercepts.
+
+**Residual fix (2026-09-16):** the `_stakeFor` gate now reverts `StaleMoneyPrice` for any
+addition touching a $MONEY exposure — new $MONEY, or new eUSD onto a position with
+`moneyStaked != 0`. Additions to money-free positions and every exit/claim path stay price-free
+(the never-gates-funds invariant is untouched). Regression tests: eUSD add on a money-holding
+position reverts during an outage and reprices normally once the mark is live again; money-free
+eUSD additions stay open; partial and full exits work through an outage.
+
 ## A5-M-04 — Partial redemption bypasses the `minDebt` floor (Medium, Fixed 2026-09-16)
 
 `mint`, `mintFor`, `repay`, and `liquidate` all enforce `remaining == 0 || remaining ≥ minDebt`;
@@ -152,6 +181,36 @@ stops rather than dusting — Liquity's cancel-the-last-partial semantics. Redem
 blocked, only shorted by at most `minDebt` at the tail of a walk; the underwater-residual path
 (off-list, collateral-backed portion only) is untouched. Regression tests: dust-leaving partial
 clamps to exactly `minDebt`, the shortfall cascade across positions, and the minDebt-head stop.
+
+## A5-M-05 — Convex curve segments make position-splitting weight-profitable (Medium, Fixed 2026-09-16)
+
+Extends A5-H-01. The ray condition guarantees weight is monotone in staked eUSD, but not that
+`W(e, m) = e·f(m·p/e)` is superadditive — that requires `f` globally concave with
+`knots[0].coverageBps == 0`, a strictly stronger property `_setCurve` never checks. The reshaped
+launch curve `(0, 0.1×) → (1.0, 1.2×) → (3.0, 3.6×)` has segment slopes 1.1 then 1.2 — a convex
+kink at coverage 1.0 that passes the ray check at exact equality — so splitting pays **today**:
+a staker at coverage 1.0 who moves all $MONEY to a sliver address at coverage 3.0 (boost 3.6×)
+and parks the remaining eUSD at floor gains ~5.5% total weight for identical capital; other
+admissible flat-floor-then-steep curves reach +13–25% (worked examples in the scan). Zero-sum
+against merged/honest stakers for the life of the curve; no sybil cost beyond a second address.
+
+**Fix (2026-09-16) — by design simplification, not more validation.** The knot machinery
+(`Knot` struct, `_setCurve` and its four validation rules, `_evalCurve` interpolation) is deleted
+from the core and replaced with an admin-swappable `IBoostCalculator` strategy contract; launch
+calculator is `LinearBoostCalculator(floor 0.1×, max 3.6×, maxCoverage 3.0)` — a straight ramp,
+whose weight `min(floor·eusd + slope·moneyValue, max·eusd)` is a minimum of linear functions,
+hence concave and superadditive: splitting a position across accounts can never gain weight, so
+the exploit class is structurally impossible rather than validated away. The core keeps four
+guardrails: results are clamped to `maxBoostBps`; a reverting calculator never gates a touch
+(the position keeps its last snapshot — exits always work, `previewBoost` surfaces
+`BoostCalculatorFailed`); the calculator is a pure view fed `moneyValue` by the core (no oracle
+deps, no reentry); and swaps don't retro-touch snapshots (permissionless `refreshBoost`
+reprices, same as `setCurve` before). **Norm adopted:** calculator swaps are security-critical —
+review any new calculator (knots, steps, or otherwise) with core-contract rigor for
+splitting-neutrality and monotonicity before setting it; on-chain validation no longer attempts
+to enforce economic safety. Regression tests: swap-and-reprice, zero/non-admin swap reverts, and
+broken-calculator behavior (snapshot held, exits open, preview reverts). The A5-M-03 residual
+gate ships alongside, closing the stale-mark interaction for any future calculator shape.
 
 ## A5-L-01 — Third-party boost flooring during oracle outage (Low, Fixed 2026-09-15)
 
@@ -245,6 +304,27 @@ their own liquidation risk; protocol-level backstops remain (`setMintPaused`, an
 VaultManager trading pause/halt both close this path via `_freshPrice`). One-line fix
 (`CollateralDisabled` in the debt-bearing branch) stands ready if the disable lever ever needs to
 be a hard exposure cap.
+
+## A5-L-06 — Stray legacy eTokens deposit at the legacy-ratio valuation post-migration (Low, Acknowledged 2026-09-16 — third scan)
+
+Sharpens the known ops lead (initializer-pinned `_collateral`). After an AssetRegistry migration,
+`psmMint` credits the zap in the *new* active token while `depositFor` pulls the frozen old
+address — normally the already-booked revert-DoS. But if the zap holds ≥ `minted` of the *old*
+token (mis-sends accumulated before an admin `rescueToken`), the deposit **succeeds** against the
+legacy units, and `_effectivePrice` values them at `legacyRatioToActive` (4× after a 4:1 split):
+the caller banks over-valued collateral the protocol eats, while their freshly-minted new-token
+units strand on the zap. (Same corporate-action family as Report 4 H-02 — stock-split
+mis-valuation in the manager, fixed there via the legacy-ratio machinery this variant abuses
+from the zap side.) Requires a migration plus an unrescued stray balance in the same window —
+hence Low. Fix would be the ops lead's: resolve the active token from the registry at call time
+(closes the DoS and this variant together).
+
+**Acknowledged (2026-09-16):** accepted as-is. The zap is UUPS-replaceable, and a split is a
+planned admin-sequenced event during which the zap is upgraded/replaced anyway — the split
+runbook (`docs/deployment-robinhood.md`) now includes rescuing stray SPY from the zap and
+upgrading it inside the same maintenance window, which closes both the revert-DoS and the
+mis-valuation variant operationally. Revisit only if a collateral with real split risk is ever
+onboarded (policy prefers split-averse index ETFs).
 
 ## A5-I-01 — `mintFor` standing zap power (Info, By design — accepted 2026-09-15)
 
@@ -364,6 +444,73 @@ diff — A5-M-04, A5-L-04 and A5-L-05 live in pre-branch code surfaced by that w
   add); the A5-I-01 rationale for rejecting `withdrawCollateralFor` ("don't extend zap powers to
   moving funds") reads inconsistently with `unstakeFor` already moving staked principal to the
   zap — resolve the documented trust model one way or the other.
+
+### Third-scan leads (2026-09-16, scope + `tokens/EUSD.sol`)
+
+- **No deployment scripts for the new proxies**: unlike every other UUPS contract in `script/`,
+  OwnStakingV2/OwnStakeZap have no atomic `new ERC1967Proxy(impl, initData)` deploy; a two-step
+  deploy is initializer-front-runnable (attacker-supplied registry → ADMIN → `_authorizeUpgrade`
+  takeover). Write the scripts before deployment.
+- **"Unlimited" bridge limit permanently bricks the bridge**: `EUSD._available` computes
+  `maxLimit * elapsed`, which overflows for `maxLimit` near `uint256.max` — and `setBridgeLimits`
+  re-enters the same expression while settling the old config, so an over-limit bridge can never
+  be reconfigured or de-authorized. Bound `maxLimit` (or saturate the multiply);
+  `type(uint256).max` is the idiomatic "no limit" an operator will eventually reach for.
+- **`setSwapRouter` accepts protocol addresses**: pointed at `_staking`/`_eusdManager`, user
+  `swapData` would reach `onlyZap` surfaces as the zap. Admin-misconfig only — reject known
+  protocol addresses in the setter (defense in depth on the existing router-constraint lead).
+  Related refinements to that lead: router-resident dust is creditable to a caller via
+  sweep-style router commands, and the swap leg assumes SPY tolerates `approve`-to-zero.
+- **`setMinDebt` vs live heads**: raising `minDebt` above an existing head's debt makes every
+  sub-head redemption hit the A5-M-04 stop until that node repays or is liquidated — check the
+  live list before raising the parameter.
+- **Anchor price ignores the trading pause**: `redeem`/`liquidate` price at `_anchorPrice` while
+  `isTradingPaused` blocks the debtor's fresh-price levers (mint/withdraw) — consistent with the
+  exits-never-gated rule and the accepted psmRedeem stance, and Report 4 L-06 already
+  acknowledged the stale-anchor-exit family (`maxAnchorAge` width vs bonus); the
+  pause-specifically nuance is the one residual question. Confirm as design.
+- **`setMintPaused` NatSpec says "only gates mint"** but `mintPaused` also blocks indebted
+  partial withdrawals — the gate itself is the deliberate Report 4 L-16 fix (withdraw-with-debt
+  escaping the `mintPaused` lever), so this is a one-line NatSpec correction only.
+- **Fee accrual on unbacked residuals**: permissionless `accrue` keeps minting stability-fee eUSD
+  to treasury against `coll = 0` residuals — unbacked supply on top of the known
+  ceiling-consumption note; skip fee minting on zero-collateral positions or write residuals off.
+- **`initialize` asserts (append to second-scan lead)**: also assert $MONEY `decimals() == 18`
+  and document the oracle's 1e18 MONEY scale — `_boostFor`'s coverage math silently mis-scales by
+  1e12 otherwise.
+- **Entry-vs-fallback price age**: the $MONEY entry gate accepts marks up to `priceMaxAge` (24h)
+  old — second-order given the TWAP mark, but a split entry-age (tight) vs fallback-age (loose)
+  removes the day-old-"live"-mark window.
+
+**Duplicates dropped (third scan → existing entries):**
+
+- **Bridge `crosschainBurn` recycles the `netBridgedIn` cap into theft** (3/12 agents, sized High
+  if a bridge is armed) → **Report 4 (audits/09-09-2026) I-05 + I-06, Acknowledged (Info)**.
+  Report 4 already found both halves — allowance-free burn under the trusted-bridge model (I-05)
+  and burn+mint pairing evading the global cap, including the wider variant where organic
+  outflows through honest bridges grant every other bridge cumulative mint headroom (I-06) —
+  and accepted them because bridging is **launch-disabled** (no bridge limits set,
+  `maxNetBridgedIn = 0`) with an explicit re-review gate before any transport is armed, treating
+  per-window `min(mintMaxLimit, burnMaxLimit)` as the theft budget. The third scan's independent
+  High-if-armed sizing reinforces that gate; Report 4's recorded fix direction (per-bridge net
+  tracking) matches the scan's. Not re-booked. **Ops rule adopted (2026-09-16):** EUSD is
+  non-upgradeable, so bridging may only ever be armed through a protocol-owned gateway contract
+  that enforces holder consent on burns and fronts the actual transport — never by granting
+  limits to an external bridge address directly. Documented in `docs/protocol.md` ("EUSD token &
+  bridging — Arming rule").
+
+Other drops → existing pass-5 entries: SPY wrapper reward-accounting trust
+(→ first-scan lead; re-confirmed by 5/12 agents — still the top pre-launch verification item),
+`sweepCollateralRewards` pre-claim preview (→ second-scan lead; two third-scan agents verified it
+exact against the current EToken), rewards-only `exit()` revert (→ second-scan lead),
+`timestamp + priceMaxAge` outside the try/catch (→ second-scan lead), `refreshBoost` missing
+`nonReentrant` + unincentivized-keeper (→ attacked-and-held / second-scan notes),
+redemption-queue fee drift (→ A5-L-04, acknowledged), `withdrawCollateral` disabled gate
+(→ A5-L-05, acknowledged), zap `_collateral` migration DoS (→ ops lead; sharpened as A5-L-06),
+minDebt-head redemption stop (→ A5-M-04 designed semantics; new nuance kept as the `setMinDebt`
+lead), notify/index truncation dust (→ ops note), cached mark never expiring (→ A5-M-03/L-01
+design notes), `stakeFromSpyAndMoney` nominal-amount SPY pulls (→ subsumed by the SPY
+token-semantics lead: fee-taking SPY breaks those paths DoS-only).
 
 ## Attacked and held
 

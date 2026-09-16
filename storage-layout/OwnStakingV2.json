@@ -55,10 +55,10 @@
       "type": "t_uint256"
     },
     {
-      "label": "_curve",
+      "label": "boostCalculator",
       "offset": 0,
       "slot": "9",
-      "type": "t_array(t_struct(Knot)_storage)dyn_storage"
+      "type": "t_contract(IBoostCalculator)"
     },
     {
       "label": "totalWeight",
@@ -139,11 +139,10 @@
       "label": "address",
       "numberOfBytes": "20"
     },
-    "t_array(t_struct(Knot)_storage)dyn_storage": {
-      "base": "t_struct(Knot)_storage",
-      "encoding": "dynamic_array",
-      "label": "struct IOwnStakingV2.Knot[]",
-      "numberOfBytes": "32"
+    "t_contract(IBoostCalculator)": {
+      "encoding": "inplace",
+      "label": "contract IBoostCalculator",
+      "numberOfBytes": "20"
     },
     "t_contract(IERC20)": {
       "encoding": "inplace",
@@ -161,25 +160,6 @@
       "label": "mapping(address => struct IOwnStakingV2.Position)",
       "numberOfBytes": "32",
       "value": "t_struct(Position)_storage"
-    },
-    "t_struct(Knot)_storage": {
-      "encoding": "inplace",
-      "label": "struct IOwnStakingV2.Knot",
-      "members": [
-        {
-          "label": "coverageBps",
-          "offset": 0,
-          "slot": "0",
-          "type": "t_uint64"
-        },
-        {
-          "label": "boostBps",
-          "offset": 8,
-          "slot": "0",
-          "type": "t_uint64"
-        }
-      ],
-      "numberOfBytes": "32"
     },
     "t_struct(Position)_storage": {
       "encoding": "inplace",
@@ -222,11 +202,6 @@
       "encoding": "inplace",
       "label": "uint256",
       "numberOfBytes": "32"
-    },
-    "t_uint64": {
-      "encoding": "inplace",
-      "label": "uint64",
-      "numberOfBytes": "8"
     }
   }
 }

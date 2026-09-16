@@ -1,25 +1,18 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-/// @title IOwnStakingV2 — Dual-asset staking with a curve-boosted SPY reward stream
+import {IBoostCalculator} from "./IBoostCalculator.sol";
+
+/// @title IOwnStakingV2 — Dual-asset staking with a boosted SPY reward stream
 /// @notice Stake eUSD (the earning principal) alongside $MONEY (the multiplier). Each position's
-///         reward weight is `eusdStaked × boost`, where the boost is read off an admin-set
-///         piecewise-linear curve over the position's coverage ratio — the oracle-priced value of
-///         its staked $MONEY relative to its staked eUSD. SPY rewards stream in linearly
-///         (Synthetix-style index) from an admin-set reward source, pulled by the operator within
-///         the source's live ERC-20 allowance.
+///         reward weight is `eusdStaked × boost`, where the boost is priced by an admin-swappable
+///         {IBoostCalculator} from the position's oracle-priced $MONEY value and staked eUSD.
+///         SPY rewards stream in linearly (Synthetix-style index) from an admin-set reward
+///         source, pulled by the operator within the source's live ERC-20 allowance.
 interface IOwnStakingV2 {
     // ──────────────────────────────────────────────────────────
     //  Types
     // ──────────────────────────────────────────────────────────
-
-    /// @notice One point of the boost curve.
-    /// @param coverageBps Coverage ratio (staked $MONEY value / staked eUSD value), 10_000 = 1:1.
-    /// @param boostBps    Boost multiplier at that coverage, 10_000 = 1.0x.
-    struct Knot {
-        uint64 coverageBps;
-        uint64 boostBps;
-    }
 
     /// @notice A user's staking position.
     /// @param moneyStaked     $MONEY units staked (18 decimals).
@@ -79,9 +72,9 @@ interface IOwnStakingV2 {
     /// @param amount SPY re-notified.
     event UndistributedRenotified(uint256 amount);
 
-    /// @notice Emitted when the boost curve is replaced.
-    /// @param knots The new curve.
-    event CurveSet(Knot[] knots);
+    /// @notice Emitted when the boost calculator is replaced.
+    /// @param calculator The new calculator.
+    event BoostCalculatorSet(address indexed calculator);
 
     /// @notice Emitted when the global eUSD deposit cap changes.
     /// @param cap New cap in eUSD (0 = uncapped).
@@ -131,9 +124,8 @@ interface IOwnStakingV2 {
     error StakeCapExceeded(uint256 totalAfter, uint256 cap);
     /// @notice Unstake amount exceeds the position's staked balance.
     error InsufficientStake();
-    /// @notice The curve is malformed: fewer than two knots, coverage not strictly increasing,
-    ///         boost decreasing, or a boost above the hard cap.
-    error InvalidCurve();
+    /// @notice The boost calculator reverted or returned garbage.
+    error BoostCalculatorFailed();
     /// @notice No un-accounted SPY balance to sync.
     error NothingToSync();
     /// @notice No undistributed rewards to re-notify.
@@ -150,8 +142,9 @@ interface IOwnStakingV2 {
     // ──────────────────────────────────────────────────────────
 
     /// @notice Stake $MONEY and/or eUSD. Settles pending rewards, then re-snapshots the boost at
-    ///         the current oracle price. Adding $MONEY requires a live price — new stake is never
-    ///         valued at the cached mark; eUSD-only stakes need no price and never revert on one.
+    ///         the current oracle price. Adding $MONEY — or eUSD onto a $MONEY-holding position —
+    ///         requires a live price: new stake is never valued at the cached mark. eUSD-only
+    ///         stakes on money-free positions need no price and never revert on one.
     /// @param money $MONEY to add (may be zero).
     /// @param eusd  eUSD to add (may be zero; both zero reverts).
     function stake(uint256 money, uint256 eusd) external;
@@ -235,11 +228,12 @@ interface IOwnStakingV2 {
     //  Admin (via ProtocolRegistry roles)
     // ──────────────────────────────────────────────────────────
 
-    /// @notice Replace the boost curve. Knots must be strictly increasing in coverage,
-    ///         non-decreasing in boost, at least two, and capped by `maxBoostBps`.
-    /// @param knots The new curve.
-    function setCurve(
-        Knot[] calldata knots
+    /// @notice Replace the boost calculator. Snapshots are not retro-touched; the permissionless
+    ///         {refreshBoost} reprices positions under the new calculator. Calculator swaps are
+    ///         security-critical: review a new calculator with core-contract rigor before setting.
+    /// @param calculator The new calculator (non-zero).
+    function setBoostCalculator(
+        address calculator
     ) external;
 
     /// @notice Set the global cap on total staked eUSD (0 = uncapped).
@@ -248,7 +242,7 @@ interface IOwnStakingV2 {
         uint256 cap
     ) external;
 
-    /// @notice Set the hard boost cap applied over any curve.
+    /// @notice Set the hard boost cap applied over any calculator result.
     /// @param maxBoostBps_ New cap (non-zero).
     function setMaxBoost(
         uint256 maxBoostBps_
@@ -320,8 +314,8 @@ interface IOwnStakingV2 {
     ///         reprice against this during an oracle outage so an outage never floors them.
     function lastMoneyPrice() external view returns (uint256);
 
-    /// @notice The boost curve.
-    function curve() external view returns (Knot[] memory);
+    /// @notice The boost calculator pricing position boosts.
+    function boostCalculator() external view returns (IBoostCalculator);
 
     /// @notice Sum of all position weights (eusdStaked × boost / BPS).
     function totalWeight() external view returns (uint256);
@@ -347,7 +341,7 @@ interface IOwnStakingV2 {
     /// @notice Global cap on total staked eUSD (0 = uncapped).
     function stakeCap() external view returns (uint256);
 
-    /// @notice Hard boost cap applied over any curve.
+    /// @notice Hard boost cap applied over any calculator result.
     function maxBoostBps() external view returns (uint256);
 
     /// @notice Max accepted $MONEY price age for boost snapshots (seconds).
