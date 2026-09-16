@@ -3,7 +3,7 @@ pragma solidity 0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
 
-import {EUSDManager} from "../../src/core/EUSDManager.sol";
+import {EUSDManager} from "../../src/eusd/EUSDManager.sol";
 import {IProtocolRegistry} from "../../src/interfaces/IProtocolRegistry.sol";
 import {UUPSUpgradeable} from "@openzeppelin/contracts/proxy/utils/UUPSUpgradeable.sol";
 

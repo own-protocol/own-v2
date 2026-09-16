@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {ProtocolRegistry} from "../../src/core/ProtocolRegistry.sol";
 import {VaultManager} from "../../src/core/VaultManager.sol";
 import {IOwnMarket} from "../../src/interfaces/IOwnMarket.sol";
 import {IOwnVault} from "../../src/interfaces/IOwnVault.sol";
 import {BPS, OrderType, PRECISION, Quote} from "../../src/interfaces/types/Types.sol";
+import {ProtocolRegistry} from "../../src/registry/ProtocolRegistry.sol";
 import {Actors} from "./Actors.sol";
 import {MockAUSDC} from "./MockAUSDC.sol";
 import {MockDEX} from "./MockDEX.sol";

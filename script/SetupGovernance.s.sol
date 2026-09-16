@@ -3,7 +3,7 @@ pragma solidity 0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
 
-import {ProtocolRegistry} from "../src/core/ProtocolRegistry.sol";
+import {ProtocolRegistry} from "../src/registry/ProtocolRegistry.sol";
 
 /// @title SetupGovernance — Hand protocol control from the deployer to governance + a timelock
 /// @notice Run by the current PROTOCOL_ADMIN (the deployer, after Deploy.s.sol). Grants the functional

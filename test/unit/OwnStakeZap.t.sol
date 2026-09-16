@@ -1,16 +1,18 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {EUSDManager} from "../../src/core/EUSDManager.sol";
-import {LinearBoostCalculator} from "../../src/core/LinearBoostCalculator.sol";
-import {OwnStakingV2} from "../../src/core/OwnStakingV2.sol";
-import {ProtocolRegistry} from "../../src/core/ProtocolRegistry.sol";
+import {StakedEUSD} from "../../archive/StakedEUSD.sol";
+import {EUSD} from "../../src/eusd/EUSD.sol";
+import {EUSDManager} from "../../src/eusd/EUSDManager.sol";
 import {IEUSDManager} from "../../src/interfaces/IEUSDManager.sol";
 import {IOwnStakeZap} from "../../src/interfaces/IOwnStakeZap.sol";
 import {IOwnStakingV2} from "../../src/interfaces/IOwnStakingV2.sol";
-import {OwnStakeZap} from "../../src/periphery/OwnStakeZap.sol";
-import {EUSD} from "../../src/tokens/EUSD.sol";
-import {StakedEUSD} from "../../src/tokens/StakedEUSD.sol";
+import {ProtocolRegistry} from "../../src/registry/ProtocolRegistry.sol";
+import {LinearBoostCalculator} from "../../src/staking/LinearBoostCalculator.sol";
+
+import {OwnStakeZap} from "../../src/staking/OwnStakeZap.sol";
+import {OwnStakingV2} from "../../src/staking/OwnStakingV2.sol";
+
 import {Actors} from "../helpers/Actors.sol";
 import {deployEUSDManager, deployStakedEUSD} from "../helpers/DeployEusdModule.sol";
 import {MockAssetRegistry} from "../helpers/MockAssetRegistry.sol";

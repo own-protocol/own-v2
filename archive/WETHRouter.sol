@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: BUSL-1.1
 pragma solidity 0.8.28;
 
-import {IWETHRouter} from "../interfaces/IWETHRouter.sol";
-import {IWETH} from "../interfaces/external/IWETH.sol";
+import {IWETHRouter} from "./IWETHRouter.sol";
+import {IWETH} from "./IWETH.sol";
 import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";

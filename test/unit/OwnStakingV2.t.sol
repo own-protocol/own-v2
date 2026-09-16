@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {LinearBoostCalculator} from "../../src/core/LinearBoostCalculator.sol";
-import {OwnStakingV2} from "../../src/core/OwnStakingV2.sol";
-import {ProtocolRegistry} from "../../src/core/ProtocolRegistry.sol";
 import {IOwnStakingV2} from "../../src/interfaces/IOwnStakingV2.sol";
+import {ProtocolRegistry} from "../../src/registry/ProtocolRegistry.sol";
+import {LinearBoostCalculator} from "../../src/staking/LinearBoostCalculator.sol";
+import {OwnStakingV2} from "../../src/staking/OwnStakingV2.sol";
+
 import {Actors} from "../helpers/Actors.sol";
 import {MockERC20} from "../helpers/MockERC20.sol";
 import {MockOracleVerifier} from "../helpers/MockOracleVerifier.sol";

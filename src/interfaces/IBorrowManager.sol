@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {InterestRateModel} from "../libraries/InterestRateModel.sol";
+import {InterestRateModel} from "../lending/InterestRateModel.sol";
 
 /// @title IBorrowManager — Provider-neutral borrow-manager interface
 /// @notice Borrowers post eTokens as collateral and borrow the protocol's stablecoin (e.g. USDC),

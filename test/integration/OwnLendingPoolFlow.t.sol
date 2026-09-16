@@ -1,17 +1,19 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
-import {BorrowManager} from "../../src/core/BorrowManager.sol";
+import {BorrowManager} from "../../src/lending/BorrowManager.sol";
+import {AssetRegistry} from "../../src/registry/AssetRegistry.sol";
 
-import {OwnLendingPool} from "../../src/core/OwnLendingPool.sol";
-import {OwnVault} from "../../src/core/OwnVault.sol";
 import {AssetConfig, BPS} from "../../src/interfaces/types/Types.sol";
-import {InterestRateModel} from "../../src/libraries/InterestRateModel.sol";
-import {LendingRouter} from "../../src/periphery/LendingRouter.sol";
-import {VaultYieldManager} from "../../src/periphery/VaultYieldManager.sol";
-import {EToken} from "../../src/tokens/EToken.sol";
-import {OwnAToken} from "../../src/tokens/OwnAToken.sol";
+import {InterestRateModel} from "../../src/lending/InterestRateModel.sol";
+import {LendingRouter} from "../../src/lending/LendingRouter.sol";
+
+import {EToken} from "../../src/core/EToken.sol";
+import {OwnAToken} from "../../src/lending/OwnAToken.sol";
+import {OwnLendingPool} from "../../src/lending/OwnLendingPool.sol";
+import {OwnVault} from "../../src/lending/OwnVault.sol";
+import {VaultYieldManager} from "../../src/lending/VaultYieldManager.sol";
+
 import {deployBorrowManager} from "../helpers/DeployBorrowManager.sol";
 
 import {Actors} from "../helpers/Actors.sol";

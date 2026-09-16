@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {EUSDManager} from "../../../src/core/EUSDManager.sol";
+import {EUSD} from "../../../src/eusd/EUSD.sol";
+import {EUSDManager} from "../../../src/eusd/EUSDManager.sol";
 import {IEUSDManager} from "../../../src/interfaces/IEUSDManager.sol";
 import {BPS, PRECISION} from "../../../src/interfaces/types/Types.sol";
-import {EUSD} from "../../../src/tokens/EUSD.sol";
 import {MockERC20} from "../../helpers/MockERC20.sol";
 import {MockOracleVerifier} from "../../helpers/MockOracleVerifier.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";

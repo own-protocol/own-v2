@@ -5,16 +5,17 @@ import {Script, console} from "forge-std/Script.sol";
 
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
-import {AssetRegistry} from "../src/core/AssetRegistry.sol";
+import {AssetRegistry} from "../src/registry/AssetRegistry.sol";
 
 import {OwnMarket} from "../src/core/OwnMarket.sol";
-import {ProtocolRegistry} from "../src/core/ProtocolRegistry.sol";
 import {VaultManager} from "../src/core/VaultManager.sol";
+import {ProtocolRegistry} from "../src/registry/ProtocolRegistry.sol";
 
+import {WETHRouter} from "../archive/WETHRouter.sol";
+
+import {ETokenFactory} from "../src/core/ETokenFactory.sol";
 import {IProtocolRegistry} from "../src/interfaces/IProtocolRegistry.sol";
 import {AssetConfig} from "../src/interfaces/types/Types.sol";
-import {WETHRouter} from "../src/periphery/WETHRouter.sol";
-import {ETokenFactory} from "../src/tokens/ETokenFactory.sol";
 
 /// @title Deploy — Deploy all core Own Protocol contracts to Base Sepolia
 /// @notice Deploys core contracts, registers them in ProtocolRegistry, registers the ETH collateral

@@ -9,13 +9,13 @@ The backing stack has two layers:
 
 Issuance runs through two paths: an **RFQ marketplace** where market makers quote mints and redeems against signed oracle-priced quotes, and a **PSM (peg-stability module)** for permissionless two-way 1:1 conversion between wrapper tokens and eTokens (`psmMint` / `psmRedeem`, plus permissionless DvP fills of resting orders against the reserve via `psmFillOrder`). Every holder has a code-property exit: a maker fill, an in-kind PSM redemption against the reserve, or a forced redemption against vault collateral at the oracle price.
 
-On top of the CST layer sits **eUSD**, an overcollateralized stablecoin minted CDP-style against eToken collateral (launch collateral: eSPY). Borrowers deposit eTokens and mint eUSD against a fresh oracle price; redemptions burn eUSD for $1 of collateral from the riskiest positions, anchoring the peg, and every exit path (repay, close, liquidate, redeem) works even with markets closed or feeds down. **sEUSD** is the ERC-4626 staking vault that streams base eUSD yield to stakers with sUSDe-style vesting, with an attachable controller for OWN token incentives.
+On top of the CST layer sits **eUSD**, an overcollateralized stablecoin minted CDP-style against eToken collateral (launch collateral: eSPY). Borrowers deposit eTokens and mint eUSD against a fresh oracle price; redemptions burn eUSD for $1 of collateral from the riskiest positions, anchoring the peg, and every exit path (repay, close, liquidate, redeem) works even with markets closed or feeds down. **OwnStakingV2** is the staking layer: eUSD stakes as earning principal with a $MONEY boost leg, and SPY rewards stream over boosted weight.
 
-**Core contracts**: ProtocolRegistry, OwnMarket, OwnVault, ReserveVault, VaultManager, AssetRegistry, BorrowManager, OwnLendingPool, EUSDManager, OwnIncentives, OracleVerifier, PythOracleVerifier
+**Core contracts**: ProtocolRegistry, OwnMarket, OwnVault, ReserveVault, VaultManager, AssetRegistry, BorrowManager, OwnLendingPool, EUSDManager, OwnStakingV2, ChainlinkOracleVerifier
 
-**Tokens**: EToken, ETokenFactory, OwnAToken, OwnDebtToken, EUSD, StakedEUSD
+**Tokens**: EToken, ETokenFactory, OwnAToken, OwnDebtToken, EUSD
 
-**Peripheral contracts**: LendingRouter, VaultYieldManager, WETHRouter, WstETHRouter
+**Peripheral contracts**: LendingRouter, VaultYieldManager, OwnStakeZap, MoneyFeeCollector
 
 See [docs/protocol.md](docs/protocol.md) for comprehensive protocol documentation and [docs/psm-design.md](docs/psm-design.md) for the PSM & reserve-vault design.
 
@@ -51,27 +51,32 @@ forge test -vvv
 See [docs/deployment.md](docs/deployment.md) for full deployment instructions.
 
 ```bash
-# Deploy core contracts to Base Sepolia
-forge script script/Deploy.s.sol --rpc-url base_sepolia --broadcast --verify
+# Deploy core contracts to Robinhood Chain
+forge script script/robinhood/DeployRobinhood.s.sol --rpc-url robinhood --broadcast --verify
 ```
 
 ## Project Structure
 
 ```
 src/
-  core/           Core protocol contracts (OwnMarket, OwnVault, ReserveVault,
-                  OwnLendingPool, EUSDManager, OwnIncentives, registries)
+  registry/       ProtocolRegistry (addresses, roles, timelock) + AssetRegistry
+                  (asset whitelist, ticker → eToken map, oracle configs)
+  oracle/         ChainlinkOracleVerifier
+  core/           CST issuance engine — OwnMarket (RFQ + PSM), ReserveVault,
+                  VaultManager (risk hub), eTokens, force-execute logic
+  eusd/           The eUSD stablecoin — EUSDManager (CDP engine) + EUSD token
+  staking/        OwnStakingV2, boost calculator, stake zap, fee collector
+  lending/        Capital & credit — OwnVault (LP collateral), OwnLendingPool,
+                  per-vault BorrowManager, receipt/debt tokens, lending router,
+                  vault yield manager, rate/lending math
   interfaces/     Interface definitions and shared types
-  libraries/      Interest-rate model, lending math, force-execute logic
-  tokens/         EToken (CST), eUSD stablecoin + sEUSD staking vault,
-                  lending pool receipt/debt tokens
-  periphery/      Routers and vault yield manager
 test/
   unit/           Unit tests with mocked dependencies
   integration/    End-to-end flow tests
   invariant/      Stateful property tests
   fork/           Mainnet-fork tests
-script/           Deployment scripts (testnet + mainnet)
+script/           Deployment scripts (Robinhood Chain + legacy Base)
+archive/          Retired contracts kept for reference (sEUSD, ETH routers, old oracles)
 docs/             Protocol, PSM design, and deployment documentation
 ```
 

@@ -4,15 +4,15 @@ pragma solidity 0.8.28;
 import {Actors} from "../helpers/Actors.sol";
 import {BaseTest} from "../helpers/BaseTest.sol";
 
-import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {OwnMarket} from "../../src/core/OwnMarket.sol";
+import {AssetRegistry} from "../../src/registry/AssetRegistry.sol";
 
-import {OwnVault} from "../../src/core/OwnVault.sol";
 import {ReserveVault} from "../../src/core/ReserveVault.sol";
+import {OwnVault} from "../../src/lending/OwnVault.sol";
 import {deployOwnMarket} from "../helpers/DeployOwnMarket.sol";
 
+import {EToken} from "../../src/core/EToken.sol";
 import {AssetConfig, PRECISION} from "../../src/interfaces/types/Types.sol";
-import {EToken} from "../../src/tokens/EToken.sol";
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 

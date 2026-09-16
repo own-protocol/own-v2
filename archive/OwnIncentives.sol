@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: BUSL-1.1
 pragma solidity 0.8.28;
 
-import {IOwnIncentives} from "../interfaces/IOwnIncentives.sol";
-import {IProtocolRegistry} from "../interfaces/IProtocolRegistry.sol";
-import {IStakedEUSD} from "../interfaces/IStakedEUSD.sol";
-import {PRECISION} from "../interfaces/types/Types.sol";
+import {IOwnIncentives} from "./IOwnIncentives.sol";
+import {IProtocolRegistry} from "../src/interfaces/IProtocolRegistry.sol";
+import {IStakedEUSD} from "./IStakedEUSD.sol";
+import {PRECISION} from "../src/interfaces/types/Types.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";

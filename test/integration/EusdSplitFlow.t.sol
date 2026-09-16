@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
-import {EUSDManager} from "../../src/core/EUSDManager.sol";
+import {EToken} from "../../src/core/EToken.sol";
+import {EUSD} from "../../src/eusd/EUSD.sol";
+import {EUSDManager} from "../../src/eusd/EUSDManager.sol";
 import {IEUSDManager} from "../../src/interfaces/IEUSDManager.sol";
 import {AssetConfig} from "../../src/interfaces/types/Types.sol";
-import {EToken} from "../../src/tokens/EToken.sol";
-import {EUSD} from "../../src/tokens/EUSD.sol";
+import {AssetRegistry} from "../../src/registry/AssetRegistry.sol";
 import {Actors} from "../helpers/Actors.sol";
 import {BaseTest} from "../helpers/BaseTest.sol";
 import {deployEUSDManager} from "../helpers/DeployEusdModule.sol";

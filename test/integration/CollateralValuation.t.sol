@@ -8,11 +8,11 @@ import {AssetConfig, BPS, OrderStatus, OrderType, PRECISION, Quote} from "../../
 
 import {IOwnMarket} from "../../src/interfaces/IOwnMarket.sol";
 
-import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {OwnMarket} from "../../src/core/OwnMarket.sol";
+import {AssetRegistry} from "../../src/registry/AssetRegistry.sol";
 
-import {OwnVault} from "../../src/core/OwnVault.sol";
-import {EToken} from "../../src/tokens/EToken.sol";
+import {EToken} from "../../src/core/EToken.sol";
+import {OwnVault} from "../../src/lending/OwnVault.sol";
 import {deployOwnMarket} from "../helpers/DeployOwnMarket.sol";
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";

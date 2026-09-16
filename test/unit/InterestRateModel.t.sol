@@ -2,7 +2,7 @@
 pragma solidity 0.8.28;
 
 import {BPS} from "../../src/interfaces/types/Types.sol";
-import {InterestRateModel} from "../../src/libraries/InterestRateModel.sol";
+import {InterestRateModel} from "../../src/lending/InterestRateModel.sol";
 import {Test} from "forge-std/Test.sol";
 
 /// @dev External wrapper so `vm.expectRevert` can observe library reverts.

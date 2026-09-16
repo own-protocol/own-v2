@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {BorrowManager} from "../../../src/core/BorrowManager.sol";
+import {EToken} from "../../../src/core/EToken.sol";
 import {IVaultManager} from "../../../src/interfaces/IVaultManager.sol";
-import {EToken} from "../../../src/tokens/EToken.sol";
+import {BorrowManager} from "../../../src/lending/BorrowManager.sol";
 import {Actors} from "../../helpers/Actors.sol";
 import {MockAaveV3Pool} from "../../helpers/MockAaveV3Pool.sol";
 import {MockERC20} from "../../helpers/MockERC20.sol";

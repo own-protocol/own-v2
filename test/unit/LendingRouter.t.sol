@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {OwnVault} from "../../src/core/OwnVault.sol";
 import {ILendingRouter} from "../../src/interfaces/ILendingRouter.sol";
 import {IOwnVault} from "../../src/interfaces/IOwnVault.sol";
-import {LendingRouter} from "../../src/periphery/LendingRouter.sol";
+import {LendingRouter} from "../../src/lending/LendingRouter.sol";
+import {OwnVault} from "../../src/lending/OwnVault.sol";
 
 import {Actors} from "../helpers/Actors.sol";
 import {BaseTest} from "../helpers/BaseTest.sol";

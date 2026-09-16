@@ -3,7 +3,7 @@ pragma solidity 0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
 
-import {OwnershipNFT} from "../../src/tokens/OwnershipNFT.sol";
+import {OwnershipNFT} from "./OwnershipNFT.sol";
 
 /// @title DeployOwnershipNftRobinhood — Deploy the soulbound points-program NFT
 /// @notice Deploys OwnershipNFT (see docs/points-program.md). Standalone — no registry wiring;

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {EToken} from "../../../src/tokens/EToken.sol";
+import {EToken} from "../../../src/core/EToken.sol";
 
 import {Actors} from "../../helpers/Actors.sol";
 import {MockERC20} from "../../helpers/MockERC20.sol";

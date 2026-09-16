@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {ProtocolRegistry} from "../../src/core/ProtocolRegistry.sol";
 import {IProtocolRegistry} from "../../src/interfaces/IProtocolRegistry.sol";
+import {ProtocolRegistry} from "../../src/registry/ProtocolRegistry.sol";
 
 import {Actors} from "../helpers/Actors.sol";
 import {BaseTest} from "../helpers/BaseTest.sol";

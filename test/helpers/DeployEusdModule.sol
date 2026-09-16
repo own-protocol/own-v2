@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {EUSDManager} from "../../src/core/EUSDManager.sol";
+import {StakedEUSD} from "../../archive/StakedEUSD.sol";
+import {EUSDManager} from "../../src/eusd/EUSDManager.sol";
 import {IEUSDManager} from "../../src/interfaces/IEUSDManager.sol";
-import {StakedEUSD} from "../../src/tokens/StakedEUSD.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
 /// @dev Deploy an EUSDManager the way production does under UUPS: a fresh implementation behind

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {ChainlinkOracleVerifier} from "../../src/core/ChainlinkOracleVerifier.sol";
 import {IOracleVerifier} from "../../src/interfaces/IOracleVerifier.sol";
+import {ChainlinkOracleVerifier} from "../../src/oracle/ChainlinkOracleVerifier.sol";
 import {Actors} from "../helpers/Actors.sol";
 import {BaseTest} from "../helpers/BaseTest.sol";
 import {MockAggregatorV3, MockScaledUiToken} from "../helpers/MockAggregatorV3.sol";

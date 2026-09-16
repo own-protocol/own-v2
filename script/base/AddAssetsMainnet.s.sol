@@ -3,11 +3,11 @@ pragma solidity 0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
 
-import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
+import {ETokenFactory} from "../../src/core/ETokenFactory.sol";
 import {VaultManager} from "../../src/core/VaultManager.sol";
 import {IProtocolRegistry} from "../../src/interfaces/IProtocolRegistry.sol";
 import {AssetConfig} from "../../src/interfaces/types/Types.sol";
-import {ETokenFactory} from "../../src/tokens/ETokenFactory.sol";
+import {AssetRegistry} from "../../src/registry/AssetRegistry.sol";
 
 /// @title AddAssetsMainnet — Register the launch asset set (Base mainnet)
 /// @notice For each asset: creates its EToken, registers it in the AssetRegistry (in-house oracle),

@@ -2,7 +2,7 @@
 pragma solidity 0.8.28;
 
 import {IMoneyFeeCollector} from "../../src/interfaces/IMoneyFeeCollector.sol";
-import {MoneyFeeCollector} from "../../src/periphery/MoneyFeeCollector.sol";
+import {MoneyFeeCollector} from "../../src/staking/MoneyFeeCollector.sol";
 import {Actors} from "../helpers/Actors.sol";
 import {MockERC20} from "../helpers/MockERC20.sol";
 import {MockMoney} from "../helpers/MockMoney.sol";

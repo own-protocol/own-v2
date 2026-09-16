@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {ProtocolRegistry} from "../../src/core/ProtocolRegistry.sol";
 import {ReserveVault} from "../../src/core/ReserveVault.sol";
 import {VaultManager} from "../../src/core/VaultManager.sol";
 import {IProtocolRegistry} from "../../src/interfaces/IProtocolRegistry.sol";
+import {ProtocolRegistry} from "../../src/registry/ProtocolRegistry.sol";
 import {MockOracleVerifier} from "../helpers/MockOracleVerifier.sol";
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";

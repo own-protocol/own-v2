@@ -3,12 +3,12 @@ pragma solidity 0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
 
-import {LinearBoostCalculator} from "../../src/core/LinearBoostCalculator.sol";
-import {OwnStakingV2} from "../../src/core/OwnStakingV2.sol";
 import {IEUSDManager} from "../../src/interfaces/IEUSDManager.sol";
 import {IOwnStakeZap} from "../../src/interfaces/IOwnStakeZap.sol";
 import {IProtocolRegistry} from "../../src/interfaces/IProtocolRegistry.sol";
-import {OwnStakeZap} from "../../src/periphery/OwnStakeZap.sol";
+import {LinearBoostCalculator} from "../../src/staking/LinearBoostCalculator.sol";
+import {OwnStakeZap} from "../../src/staking/OwnStakeZap.sol";
+import {OwnStakingV2} from "../../src/staking/OwnStakingV2.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
 /// @title DeployMoneyStakingRobinhood — $MONEY staking (OwnStakingV2 + zap + boost calculator)
