@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {ChainlinkOracleVerifier} from "../../src/core/ChainlinkOracleVerifier.sol";
-import {ProtocolRegistry} from "../../src/core/ProtocolRegistry.sol";
 import {IOracleVerifier} from "../../src/interfaces/IOracleVerifier.sol";
+import {ChainlinkOracleVerifier} from "../../src/oracle/ChainlinkOracleVerifier.sol";
+import {ProtocolRegistry} from "../../src/registry/ProtocolRegistry.sol";
 import {Test} from "forge-std/Test.sol";
 
 interface IAggV3 {

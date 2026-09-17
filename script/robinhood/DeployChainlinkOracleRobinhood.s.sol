@@ -3,9 +3,9 @@ pragma solidity 0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
 
-import {ChainlinkOracleVerifier} from "../../src/core/ChainlinkOracleVerifier.sol";
 import {IOracleVerifier} from "../../src/interfaces/IOracleVerifier.sol";
 import {IProtocolRegistry} from "../../src/interfaces/IProtocolRegistry.sol";
+import {ChainlinkOracleVerifier} from "../../src/oracle/ChainlinkOracleVerifier.sol";
 
 /// @title DeployChainlinkOracleRobinhood — Deploy + configure the Chainlink-primary oracle
 /// @notice Step 1 of the oracle migration (see docs/chainlink-feeds-robinhood.md). Deploys

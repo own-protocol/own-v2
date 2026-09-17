@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {OwnIncentives} from "../../src/core/OwnIncentives.sol";
-import {ProtocolRegistry} from "../../src/core/ProtocolRegistry.sol";
+import {OwnIncentives} from "./OwnIncentives.sol";
+import {ProtocolRegistry} from "../src/registry/ProtocolRegistry.sol";
 
-import {IOwnIncentives} from "../../src/interfaces/IOwnIncentives.sol";
-import {EUSD} from "../../src/tokens/EUSD.sol";
-import {StakedEUSD} from "../../src/tokens/StakedEUSD.sol";
+import {IOwnIncentives} from "./IOwnIncentives.sol";
+import {EUSD} from "../src/eusd/EUSD.sol";
+import {StakedEUSD} from "./StakedEUSD.sol";
 
-import {Actors} from "../helpers/Actors.sol";
-import {deployStakedEUSD} from "../helpers/DeployEusdModule.sol";
-import {MockERC20} from "../helpers/MockERC20.sol";
+import {Actors} from "../test/helpers/Actors.sol";
+import {deployStakedEUSD} from "../test/helpers/DeployEusdModule.sol";
+import {MockERC20} from "../test/helpers/MockERC20.sol";
 import {Test} from "forge-std/Test.sol";
 
 /// @dev A controller whose hook always reverts — must never brick sEUSD transfers.

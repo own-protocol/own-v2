@@ -4,11 +4,12 @@ pragma solidity 0.8.28;
 import {Script, console} from "forge-std/Script.sol";
 
 import {OracleVerifier} from "../../archive/OracleVerifier.sol";
-import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
+
 import {ReserveVault} from "../../src/core/ReserveVault.sol";
 import {VaultManager} from "../../src/core/VaultManager.sol";
 import {IProtocolRegistry} from "../../src/interfaces/IProtocolRegistry.sol";
 import {AssetConfig} from "../../src/interfaces/types/Types.sol";
+import {AssetRegistry} from "../../src/registry/AssetRegistry.sol";
 
 /// @title DeployPsmRobinhood — PSM configuration for the Robinhood Chain launch
 /// @notice Run after DeployRobinhood.s.sol + AddAssetsRobinhood.s.sol. Registers the wrapper

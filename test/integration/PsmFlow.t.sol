@@ -11,12 +11,13 @@ import {IReserveVault} from "../../src/interfaces/IReserveVault.sol";
 import {IVaultManager} from "../../src/interfaces/IVaultManager.sol";
 import {AssetConfig, BPS, Order, OrderStatus, OrderType, PRECISION, Quote} from "../../src/interfaces/types/Types.sol";
 
-import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {OwnMarket} from "../../src/core/OwnMarket.sol";
+import {AssetRegistry} from "../../src/registry/AssetRegistry.sol";
 
-import {OwnVault} from "../../src/core/OwnVault.sol";
+import {EToken} from "../../src/core/EToken.sol";
+
 import {ReserveVault} from "../../src/core/ReserveVault.sol";
-import {EToken} from "../../src/tokens/EToken.sol";
+import {OwnVault} from "../../src/lending/OwnVault.sol";
 import {deployOwnMarket} from "../helpers/DeployOwnMarket.sol";
 
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";

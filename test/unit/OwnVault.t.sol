@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {OwnVault} from "../../src/core/OwnVault.sol";
+import {OwnVault} from "../../src/lending/OwnVault.sol";
 
 import {IBorrowManager} from "../../src/interfaces/IBorrowManager.sol";
 import {IOwnVault} from "../../src/interfaces/IOwnVault.sol";

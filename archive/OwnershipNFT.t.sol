@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {IOwnershipNFT} from "../../src/interfaces/IOwnershipNFT.sol";
-import {OwnershipNFT} from "../../src/tokens/OwnershipNFT.sol";
-import {Actors} from "../helpers/Actors.sol";
+import {IOwnershipNFT} from "./IOwnershipNFT.sol";
+import {OwnershipNFT} from "./OwnershipNFT.sol";
+import {Actors} from "../test/helpers/Actors.sol";
 import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
 import {IERC721Errors} from "@openzeppelin/contracts/interfaces/draft-IERC6093.sol";
 import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";

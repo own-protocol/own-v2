@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {OwnMarket} from "../../src/core/OwnMarket.sol";
+import {AssetRegistry} from "../../src/registry/AssetRegistry.sol";
 import {deployOwnMarket} from "../helpers/DeployOwnMarket.sol";
 
+import {EToken} from "../../src/core/EToken.sol";
 import {IOwnMarket} from "../../src/interfaces/IOwnMarket.sol";
-import {EToken} from "../../src/tokens/EToken.sol";
 
 import {IOwnVault} from "../../src/interfaces/IOwnVault.sol";
 import {IVaultManager} from "../../src/interfaces/IVaultManager.sol";

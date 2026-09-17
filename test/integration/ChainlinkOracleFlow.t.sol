@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
-import {ChainlinkOracleVerifier} from "../../src/core/ChainlinkOracleVerifier.sol";
 import {AssetConfig} from "../../src/interfaces/types/Types.sol";
-import {EToken} from "../../src/tokens/EToken.sol";
+import {ChainlinkOracleVerifier} from "../../src/oracle/ChainlinkOracleVerifier.sol";
+import {AssetRegistry} from "../../src/registry/AssetRegistry.sol";
+
+import {EToken} from "../../src/core/EToken.sol";
 import {Actors} from "../helpers/Actors.sol";
 import {BaseTest} from "../helpers/BaseTest.sol";
 import {MockAggregatorV3} from "../helpers/MockAggregatorV3.sol";

@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {ProtocolRegistry} from "../../src/core/ProtocolRegistry.sol";
+import {ProtocolRegistry} from "../../src/registry/ProtocolRegistry.sol";
 
-import {EUSD} from "../../src/tokens/EUSD.sol";
-import {StakedEUSD} from "../../src/tokens/StakedEUSD.sol";
+import {StakedEUSD} from "../../archive/StakedEUSD.sol";
+import {EUSD} from "../../src/eusd/EUSD.sol";
 import {Actors} from "../helpers/Actors.sol";
 import {deployStakedEUSD} from "../helpers/DeployEusdModule.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";

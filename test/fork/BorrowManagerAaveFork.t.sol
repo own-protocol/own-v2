@@ -1,20 +1,20 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
-import {BorrowManager} from "../../src/core/BorrowManager.sol";
+import {BorrowManager} from "../../src/lending/BorrowManager.sol";
+import {AssetRegistry} from "../../src/registry/AssetRegistry.sol";
 
-import {OwnVault} from "../../src/core/OwnVault.sol";
-import {ProtocolRegistry} from "../../src/core/ProtocolRegistry.sol";
 import {VaultManager} from "../../src/core/VaultManager.sol";
 import {IOwnVault} from "../../src/interfaces/IOwnVault.sol";
 import {IProtocolRegistry} from "../../src/interfaces/IProtocolRegistry.sol";
 import {IAaveV3Pool} from "../../src/interfaces/external/IAaveV3Pool.sol";
 import {AssetConfig, BPS} from "../../src/interfaces/types/Types.sol";
-import {InterestRateModel} from "../../src/libraries/InterestRateModel.sol";
+import {InterestRateModel} from "../../src/lending/InterestRateModel.sol";
+import {OwnVault} from "../../src/lending/OwnVault.sol";
+import {ProtocolRegistry} from "../../src/registry/ProtocolRegistry.sol";
 
-import {LendingRouter} from "../../src/periphery/LendingRouter.sol";
-import {EToken} from "../../src/tokens/EToken.sol";
+import {EToken} from "../../src/core/EToken.sol";
+import {LendingRouter} from "../../src/lending/LendingRouter.sol";
 import {deployBorrowManager} from "../helpers/DeployBorrowManager.sol";
 import {MockYieldManager} from "../helpers/MockYieldManager.sol";
 

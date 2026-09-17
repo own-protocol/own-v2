@@ -3,8 +3,8 @@ pragma solidity 0.8.28;
 
 import {IETokenFactory} from "../../src/interfaces/IETokenFactory.sol";
 
-import {EToken} from "../../src/tokens/EToken.sol";
-import {ETokenFactory} from "../../src/tokens/ETokenFactory.sol";
+import {EToken} from "../../src/core/EToken.sol";
+import {ETokenFactory} from "../../src/core/ETokenFactory.sol";
 import {Actors} from "../helpers/Actors.sol";
 import {BaseTest} from "../helpers/BaseTest.sol";
 import {MockERC20} from "../helpers/MockERC20.sol";

@@ -11,8 +11,8 @@ import {IOwnVault} from "../interfaces/IOwnVault.sol";
 import {IProtocolRegistry} from "../interfaces/IProtocolRegistry.sol";
 import {IVaultManager} from "../interfaces/IVaultManager.sol";
 import {IAaveV3Pool} from "../interfaces/external/IAaveV3Pool.sol";
-import {InterestRateModel} from "../libraries/InterestRateModel.sol";
-import {LendingMath} from "../libraries/LendingMath.sol";
+import {InterestRateModel} from "./InterestRateModel.sol";
+import {LendingMath} from "./LendingMath.sol";
 
 import {BPS, PRECISION, VaultStatus} from "../interfaces/types/Types.sol";
 import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";

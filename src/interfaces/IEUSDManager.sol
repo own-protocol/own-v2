@@ -207,6 +207,10 @@ interface IEUSDManager {
     /// @param fee        Fee added to debt and minted to the treasury (18 decimals).
     event StabilityFeeAccrued(address indexed collateral, address indexed owner, uint256 fee);
 
+    /// @notice Emitted when the whitelisted stake zap changes.
+    /// @param zap New zap address (address(0) disables {depositFor}/{mintFor}).
+    event StakeZapSet(address indexed zap);
+
     // ──────────────────────────────────────────────────────────
     //  Errors
     // ──────────────────────────────────────────────────────────
@@ -278,6 +282,8 @@ interface IEUSDManager {
     /// @param collateralOut    Collateral the redemption produced (18 decimals).
     /// @param minCollateralOut Caller's floor (18 decimals).
     error SlippageExceeded(uint256 collateralOut, uint256 minCollateralOut);
+    /// @notice Caller is not the whitelisted stake zap.
+    error OnlyZap();
 
     // ──────────────────────────────────────────────────────────
     //  Position management
@@ -337,6 +343,29 @@ interface IEUSDManager {
     function accrue(address collateral, address owner, address hint) external;
 
     // ──────────────────────────────────────────────────────────
+    //  Zap surface (whitelisted stake zap only)
+    // ──────────────────────────────────────────────────────────
+
+    /// @notice Deposit collateral into `owner`'s position, pulled from the caller. Zap only. Same
+    ///         rules as {deposit} — health only improves, so acting on another owner is safe; the
+    ///         zap only ever passes its own transaction sender as `owner`.
+    /// @param owner      Position owner credited with the collateral.
+    /// @param collateral Collateral eToken to deposit.
+    /// @param amount     Amount to deposit (18 decimals).
+    /// @param hint       Sorted-list insert hint (see {deposit}).
+    function depositFor(address owner, address collateral, uint256 amount, address hint) external;
+
+    /// @notice Mint eUSD against `owner`'s position, paid to the caller. Zap only — this is
+    ///         risk-increasing on-behalf surface, reachable solely through the whitelisted zap,
+    ///         which stakes the minted eUSD for `owner` in the same transaction. Same gates as
+    ///         {mint}: fresh price, MCR, min debt, ceiling, pause.
+    /// @param owner      Position owner taking on the debt.
+    /// @param collateral Collateral eToken backing the mint.
+    /// @param amount     eUSD to mint to the caller (18 decimals).
+    /// @param hint       Sorted-list insert hint (see {deposit}).
+    function mintFor(address owner, address collateral, uint256 amount, address hint) external;
+
+    // ──────────────────────────────────────────────────────────
     //  Liquidation & redemption
     // ──────────────────────────────────────────────────────────
 
@@ -365,7 +394,9 @@ interface IEUSDManager {
     ///         so its ratio improves (deleveraging). An underwater head only redeems its
     ///         collateral-backed portion: the burn is capped at that collateral's value, the
     ///         unbacked debt residual stays on the owner's books off-list, and the walk continues.
-    ///         A partial redemption may leave the last position below minDebt.
+    ///         A partial redemption never leaves a listed position below minDebt: the last touch
+    ///         is clamped to leave exactly minDebt, so `debtRepaid` can fall short of `amount` by
+    ///         up to minDebt even while positions remain.
     /// @param collateral       Collateral eToken to redeem into.
     /// @param amount           Max eUSD to burn from the caller (18 decimals).
     /// @param minCollateralOut Min collateral acceptable for the burned amount (18 decimals).
@@ -448,6 +479,13 @@ interface IEUSDManager {
         bool paused
     ) external;
 
+    /// @notice Set the whitelisted stake zap allowed to call {depositFor}/{mintFor}
+    ///         (address(0) disables both).
+    /// @param zap New zap address.
+    function setStakeZap(
+        address zap
+    ) external;
+
     // ──────────────────────────────────────────────────────────
     //  Views
     // ──────────────────────────────────────────────────────────
@@ -466,6 +504,9 @@ interface IEUSDManager {
 
     /// @notice Whether minting is currently paused.
     function mintPaused() external view returns (bool);
+
+    /// @notice The whitelisted stake zap (address(0) = none).
+    function stakeZap() external view returns (address);
 
     /// @notice Total outstanding eUSD debt across all positions (18 decimals). Equals
     ///         eusd.totalSupply() at all times.

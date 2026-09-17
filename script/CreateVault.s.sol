@@ -3,9 +3,9 @@ pragma solidity 0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
 
-import {OwnVault} from "../src/core/OwnVault.sol";
 import {IProtocolRegistry} from "../src/interfaces/IProtocolRegistry.sol";
 import {IVaultManager} from "../src/interfaces/IVaultManager.sol";
+import {OwnVault} from "../src/lending/OwnVault.sol";
 
 /// @title CreateVault — Deploy a WETH vault and register it with the VaultManager
 /// @notice Run by deployer (= admin) after Deploy.s.sol. Vaults are deployed directly (no factory)

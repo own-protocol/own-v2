@@ -6,16 +6,20 @@ import {Script, console} from "forge-std/Script.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
 import {OracleVerifier} from "../../archive/OracleVerifier.sol";
-import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
-import {OwnLendingPool} from "../../src/core/OwnLendingPool.sol";
-import {OwnMarket} from "../../src/core/OwnMarket.sol";
-import {OwnVault} from "../../src/core/OwnVault.sol";
-import {ProtocolRegistry} from "../../src/core/ProtocolRegistry.sol";
-import {VaultManager} from "../../src/core/VaultManager.sol";
+
 import {IProtocolRegistry} from "../../src/interfaces/IProtocolRegistry.sol";
 import {AssetConfig} from "../../src/interfaces/types/Types.sol";
-import {LendingRouter} from "../../src/periphery/LendingRouter.sol";
-import {ETokenFactory} from "../../src/tokens/ETokenFactory.sol";
+import {LendingRouter} from "../../src/lending/LendingRouter.sol";
+import {OwnLendingPool} from "../../src/lending/OwnLendingPool.sol";
+
+import {AssetRegistry} from "../../src/registry/AssetRegistry.sol";
+import {ProtocolRegistry} from "../../src/registry/ProtocolRegistry.sol";
+
+import {ETokenFactory} from "../../src/core/ETokenFactory.sol";
+import {OwnMarket} from "../../src/core/OwnMarket.sol";
+
+import {VaultManager} from "../../src/core/VaultManager.sol";
+import {OwnVault} from "../../src/lending/OwnVault.sol";
 
 /// @title DeployRobinhood — Own Protocol core deploy for Robinhood Chain (USDG collateral vault)
 /// @notice Robinhood Chain (4663) has no Aave, so this deploy replaces the Base wiring with the

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {BorrowManager} from "../../src/core/BorrowManager.sol";
-import {InterestRateModel} from "../../src/libraries/InterestRateModel.sol";
+import {BorrowManager} from "../../src/lending/BorrowManager.sol";
+import {InterestRateModel} from "../../src/lending/InterestRateModel.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
 /// @dev Deploy a BorrowManager the way production does under UUPS: a fresh implementation behind

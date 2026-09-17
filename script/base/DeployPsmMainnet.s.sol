@@ -3,11 +3,11 @@ pragma solidity 0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
 
-import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {ReserveVault} from "../../src/core/ReserveVault.sol";
 import {VaultManager} from "../../src/core/VaultManager.sol";
 import {IProtocolRegistry} from "../../src/interfaces/IProtocolRegistry.sol";
 import {AssetConfig} from "../../src/interfaces/types/Types.sol";
+import {AssetRegistry} from "../../src/registry/AssetRegistry.sol";
 
 /// @title DeployPsmMainnet — PSM configuration for the v2 launch (Base mainnet)
 /// @notice Run after DeployMainnet.s.sol + AddAssetsMainnet.s.sol. Registers the wrapper

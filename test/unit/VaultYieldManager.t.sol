@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {OwnLendingPool} from "../../src/core/OwnLendingPool.sol";
-import {OwnVault} from "../../src/core/OwnVault.sol";
 import {IVaultYieldManager} from "../../src/interfaces/IVaultYieldManager.sol";
 import {BPS} from "../../src/interfaces/types/Types.sol";
-import {VaultYieldManager} from "../../src/periphery/VaultYieldManager.sol";
-import {OwnAToken} from "../../src/tokens/OwnAToken.sol";
+
+import {OwnAToken} from "../../src/lending/OwnAToken.sol";
+import {OwnLendingPool} from "../../src/lending/OwnLendingPool.sol";
+import {OwnVault} from "../../src/lending/OwnVault.sol";
+import {VaultYieldManager} from "../../src/lending/VaultYieldManager.sol";
 
 import {Actors} from "../helpers/Actors.sol";
 import {BaseTest} from "../helpers/BaseTest.sol";

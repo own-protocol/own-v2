@@ -3,11 +3,12 @@ pragma solidity 0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
 
-import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
-import {EUSDManager} from "../../src/core/EUSDManager.sol";
+import {EUSD} from "../../src/eusd/EUSD.sol";
+import {EUSDManager} from "../../src/eusd/EUSDManager.sol";
 import {IEUSDManager} from "../../src/interfaces/IEUSDManager.sol";
 import {IProtocolRegistry} from "../../src/interfaces/IProtocolRegistry.sol";
-import {EUSD} from "../../src/tokens/EUSD.sol";
+import {AssetRegistry} from "../../src/registry/AssetRegistry.sol";
+
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
 /// @title DeployEusdRobinhood — eUSD CDP module for the Robinhood Chain launch

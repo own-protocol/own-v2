@@ -97,6 +97,10 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
     uint256 private _feeIndex;
     uint256 private _feeIndexUpdated;
 
+    /// @inheritdoc IEUSDManager
+    /// @dev Appended for the OwnStakeZap upgrade — storage stays append-only across upgrades.
+    address public override stakeZap;
+
     // ──────────────────────────────────────────────────────────
     //  Modifiers
     // ──────────────────────────────────────────────────────────
@@ -108,6 +112,12 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
 
     modifier onlyOperator() {
         if (!registry.hasRole(OPERATOR, msg.sender)) revert OnlyOperator();
+        _;
+    }
+
+    modifier onlyZap() {
+        // A zero stakeZap disables the surface: msg.sender can never be address(0).
+        if (msg.sender != stakeZap) revert OnlyZap();
         _;
     }
 
@@ -233,6 +243,60 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
     }
 
     /// @inheritdoc IEUSDManager
+    function depositFor(
+        address owner,
+        address collateral,
+        uint256 amount,
+        address hint
+    ) external override nonReentrant onlyZap {
+        CollateralConfig storage cfg = _requireCollateral(collateral);
+        if (owner == address(0)) revert ZeroAddress();
+        if (amount == 0) revert ZeroAmount();
+
+        Position storage p = _accrue(collateral, owner);
+        // Same rule as {deposit}: disabled collateral accepts top-ups from existing debtors only.
+        if (!cfg.enabled && p.debt == 0) revert CollateralDisabled(collateral);
+        p.collateral += amount;
+        totalCollateral[collateral] += amount;
+        _reindex(collateral, owner, hint);
+
+        IERC20(collateral).safeTransferFrom(msg.sender, address(this), amount);
+        emit CollateralDeposited(collateral, owner, amount);
+    }
+
+    /// @inheritdoc IEUSDManager
+    function mintFor(
+        address owner,
+        address collateral,
+        uint256 amount,
+        address hint
+    ) external override nonReentrant onlyZap {
+        CollateralConfig storage cfg = _requireCollateral(collateral);
+        if (owner == address(0)) revert ZeroAddress();
+        if (!cfg.enabled) revert CollateralDisabled(collateral);
+        if (mintPaused) revert MintingPaused();
+        if (amount == 0) revert ZeroAmount();
+
+        Position storage p = _accrue(collateral, owner);
+
+        uint256 newDebt = p.debt + amount;
+        if (newDebt < _riskParams.minDebt) revert BelowMinimumDebt(newDebt, _riskParams.minDebt);
+        uint256 newTotal = totalDebt + amount;
+        if (newTotal > _riskParams.debtCeiling) revert DebtCeilingExceeded(newTotal, _riskParams.debtCeiling);
+
+        uint256 ratio = _ratioBps(p.collateral, newDebt, _freshPrice(collateral, cfg.ticker));
+        if (ratio < _riskParams.mcrBps) revert CollateralRatioTooLow(ratio, _riskParams.mcrBps);
+
+        p.debt = newDebt;
+        totalDebt = newTotal;
+        _reindex(collateral, owner, hint);
+
+        // Minted to the zap, which stakes it for `owner` in the same transaction.
+        _eusd.mint(msg.sender, amount);
+        emit EUSDMinted(collateral, owner, amount, newDebt);
+    }
+
+    /// @inheritdoc IEUSDManager
     function closePosition(
         address collateral
     ) external override nonReentrant {
@@ -323,6 +387,9 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
             address owner = listHead[collateral];
             if (owner == address(0)) break;
             (uint256 repaid, uint256 seized) = _redeemFrom(collateral, owner, price, remaining, hint);
+            // The head yields nothing when the minDebt clamp consumes the whole request; every
+            // other outcome delists or shrinks it, so this is the only zero-progress case.
+            if (repaid == 0 && seized == 0) break;
             remaining -= repaid;
             collateralOut += seized;
             touched++;
@@ -432,6 +499,14 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
         emit MintPausedSet(paused);
     }
 
+    /// @inheritdoc IEUSDManager
+    function setStakeZap(
+        address zap
+    ) external override onlyAdmin {
+        stakeZap = zap;
+        emit StakeZapSet(zap);
+    }
+
     // ──────────────────────────────────────────────────────────
     //  Internal
     // ──────────────────────────────────────────────────────────
@@ -476,6 +551,9 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
     ///      the redeemer receives at most $1 of collateral per eUSD burned. An underwater position
     ///      only redeems its collateral-backed portion; the unbacked residual stays on the books
     ///      off-list (clearable by repay/close/liquidation) so it never pins the head at ratio 0.
+    ///      A partial redemption may not leave dust: the remaining debt is either 0 or >= minDebt
+    ///      (repaid is clamped to leave exactly minDebt, same rule as {repay}); a node where even
+    ///      that clamp yields nothing redeemable returns zeros and the caller stops the walk.
     function _redeemFrom(
         address collateral,
         address owner,
@@ -485,6 +563,15 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
     ) private returns (uint256 repaid, uint256 seized) {
         Position storage p = _accrue(collateral, owner);
         repaid = maxAmount > p.debt ? p.debt : maxAmount;
+        uint256 remainingDebt = p.debt - repaid;
+        if (remainingDebt != 0 && remainingDebt < _riskParams.minDebt) {
+            uint256 minDebt = _riskParams.minDebt;
+            repaid = p.debt > minDebt ? p.debt - minDebt : 0;
+            if (repaid == 0) {
+                _reindex(collateral, owner, hint);
+                return (0, 0);
+            }
+        }
         seized = Math.mulDiv(repaid, PRECISION, price);
         if (seized > p.collateral) {
             seized = p.collateral;

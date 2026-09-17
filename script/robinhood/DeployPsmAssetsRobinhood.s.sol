@@ -4,11 +4,12 @@ pragma solidity 0.8.28;
 import {Script, console} from "forge-std/Script.sol";
 
 import {OracleVerifier} from "../../archive/OracleVerifier.sol";
-import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
+
 import {ReserveVault} from "../../src/core/ReserveVault.sol";
 import {VaultManager} from "../../src/core/VaultManager.sol";
 import {IProtocolRegistry} from "../../src/interfaces/IProtocolRegistry.sol";
 import {AssetConfig} from "../../src/interfaces/types/Types.sol";
+import {AssetRegistry} from "../../src/registry/AssetRegistry.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 
 /// @title DeployPsmAssetsRobinhood — PSM reserves for the remaining launch assets

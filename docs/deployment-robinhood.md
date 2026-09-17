@@ -42,7 +42,7 @@ Every broadcast that creates contracts takes:
 To verify a single contract after the fact:
 
 ```bash
-forge verify-contract <ADDR> src/core/OwnVault.sol:OwnVault --chain-id 4663 \
+forge verify-contract <ADDR> src/lending/OwnVault.sol:OwnVault --chain-id 4663 \
   --verifier blockscout --verifier-url https://robinhoodchain.blockscout.com/api/ \
   --constructor-args $(cast abi-encode "constructor(address,string,string,address,address)" ...)
 ```
@@ -149,6 +149,15 @@ psmMint/psmRedeem round-trip.
 > **Split runbook:** a stock split jumps `uiMultiplier` far beyond the ratio-jump bound by design.
 > Halt, re-mark under the new multiplier, resume — do not widen the bound.
 
+## eUSD bridging policy
+
+Bridging is **launch-disabled** (no bridge limits, `maxNetBridgedIn = 0`) and must stay that way
+until a lane is deliberately armed. When arming: **never call `setBridgeLimits` for an external
+bridge/transport address** — authorize only a protocol-owned gateway contract that enforces
+holder consent on burns and fronts the real transport. Rationale, threat model, and the full
+arming rule: `docs/protocol.md` ("EUSD token & bridging — Arming rule") and audit report 4
+I-05/I-06. EUSD is non-upgradeable, so the gateway is the only place the fix can live.
+
 ## eUSD collateral policy & split runbook
 
 **Collateral selection (preferred).** Onboard only eTokens that are **low-volatility** and
@@ -186,41 +195,14 @@ pre-split):**
    both), then verify on a sample position that `collateralRatioBps` equals its pre-split value.
 4. `addCollateral(newToken, ticker)` so new positions open on the active token, then
    `setMintPaused(false)`.
+   > **Zap step (A5-L-06):** in the same window, `OwnStakeZap.rescueToken` any stray SPY/legacy
+   > balance off the zap and upgrade the zap to reference the new token *before* SPY entries are
+   > used again — the zap pins the collateral address at initialize, so post-migration its SPY
+   > entries revert, and a stray legacy balance would deposit at the legacy-ratio valuation.
 5. Leave the legacy collateral **disabled** (exits only: repay / close / redeem / liquidate keep
    working). Owners migrate at their own pace — close, `OwnMarket.convertLegacy`, reopen on the
    new token. `addCollateral` rejects legacy tokens, so the old address cannot be re-enabled by
    mistake.
-
-## OWN incentives controller — wiring & migration runbook
-
-`StakedEUSD` notifies one `OwnIncentives` controller on every balance change; the controller
-trusts live balances **only while it is the wired controller**, and a campaign can only be
-started on the wired controller (`NotAttached`). Detaching retires a controller permanently: it
-freezes to paying already-accrued OWN and can never be re-wired (`ControllerRetired`). The setter
-also rejects code-less addresses (`ControllerNotContract`), which would otherwise brick every
-sEUSD transfer.
-
-**Launch order:** OWN → sEUSD → `OwnIncentives(registry, sEUSD, OWN)` →
-`sEUSD.setIncentivesController(ctrl)` → `fund` → `setDistribution`. Deposits made before the
-wiring are fine (they earn nothing retroactively); a campaign cannot be started before it.
-
-**Migrating to a new OWN token (or a new controller):**
-
-1. `old.setDistribution(0, 0)` — ends the campaign and freezes the index.
-2. Announce a **claim window** (≥ 7 days). While the old controller is still wired, any claim,
-   transfer, deposit or withdrawal settles a holder's unsettled tail exactly. Partners: run
-   `sweepPartner` for each registered pooled account.
-3. Deploy `new = OwnIncentives(registry, sEUSD, NEW_OWN)`; `sEUSD.setIncentivesController(new)`.
-   From this point the old controller pays only what was checkpointed before the swap — a holder
-   who never settled during the window forfeits only the tail since their last checkpoint; that
-   OWN stays in the old reserve.
-4. `old.recoverReserve(remaining, treasury)` (ADMIN) once claims have quietened; use it to make
-   good any documented unsettled tails off-chain if desired.
-5. `new.fund(...)` → `new.setDistribution(rate, end)`. Every holder starts synced at index 0.
-
-Never wire a controller that was wired before, and never start a campaign on a controller that
-is not wired — both are enforced on-chain, but the ordering above is what keeps the migration
-loss-free for holders.
 
 ## Off-chain services checklist
 

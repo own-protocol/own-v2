@@ -90,7 +90,10 @@ the script re-asserts symbol+decimals on-chain before broadcasting.
 - Maker rotated 2026-07-16: `0xefD77159Ff7eAE9DeaeC2F0D45e5171fb2fe2C1f` is sole VaultManager quote
   signer (self-linked settlement wallet) and maker on all 7 active tickers; old MM signer
   `0x7eAa…27e2` and operator test key fully deregistered (one-off script, since deleted).
-- Governance: deployer EOA is PROTOCOL_ADMIN/ADMIN/OPERATOR (3h transfer delay). Migrate to Safe.
+- Governance: admin roles migrated off the deployer EOA (2026-09) — the deployer no longer holds
+  PROTOCOL_ADMIN/ADMIN. Admin actions (upgrades, setZap/setStakeZap, registry writes) now execute
+  via the governance Safe; deploy scripts detect the missing role and print ready-to-paste Safe
+  calldata instead of broadcasting directly.
 
 ## Deploy sequence status
 
@@ -139,35 +142,42 @@ Deployed from branch `stablecoin` commit `8e0ce0e` via `DeployEusdRobinhood.s.so
 `DeployEusdStakingRobinhood.s.sol`. All sources Blockscout-verified (full match); proxy↔impl
 links detected.
 
-| Contract                       | Address                                      |
-| ------------------------------ | -------------------------------------------- |
-| EUSD (token)                   | `0x8B84D644CECaeE6d21373F37E1bA00f85eD7CdB7` |
-| EUSDManager (ERC-1967 proxy)   | `0x9748964d733Ff5d47F1d7E3fea620aF014dA5a9b` |
-| — implementation               | `0xd05489B53973aba11d4bFaacB11bE659eb7C63d2` |
-| StakedEUSD sEUSD (proxy)       | `0x4fefDd560c076CfE9EA0b8f4d21E60Af5A39fE96` |
-| — implementation               | `0x74f5A0c905d22Ef2dc2CC7AE0390bBFEC99bE154` |
+| Contract                          | Address                                      |
+| --------------------------------- | -------------------------------------------- |
+| EUSD (token)                      | `0x8B84D644CECaeE6d21373F37E1bA00f85eD7CdB7` |
+| EUSDManager (ERC-1967 proxy)      | `0x9748964d733Ff5d47F1d7E3fea620aF014dA5a9b` |
+| — implementation (v2, 2026-09-16) | `0x83f293c3Ce5eB627AAFE5e1E76e3f2340E620cF2` |
+| OwnStakingV2 (ERC-1967 proxy)     | `0xfD1CC0751D5d9C0D5f9eAd6b8525FdEe22423b76` |
+| — implementation                  | `0xF524E4855F36592d10D6c869f10Ecd652a6C7801` |
+| OwnStakeZap (ERC-1967 proxy)      | `0xE28423b4CA87cB9e822E99325A09A9457291e8fa` |
+| — implementation                  | `0xf98D894Dc4A0C01B59eb30CF4B7750111cc5FF52` |
+| LinearBoostCalculator             | `0xc23E6e6EaE9551014c479123E2cc6e4B1c9233D2` |
+| MoneyPriceFeed                    | `0x31283f38ec6e63AC9A5b2C37563eD31F708411EE` |
+
+MoneyPriceFeed: keeper-pushed $MONEY TWAP mark behind the AggregatorV3 surface, for OwnStakingV2 boost pricing. Pending Safe call wires it as the
+MONEY aggregator: `setChainlinkConfig(MONEY, feed, 0, 900, 5400, 86400, 0, 0)` — `bandBps = 0`
+keeps the signer leg off (pushed mark is the only source); `clFreshWindow` 90 min tracks the
+cadence; alert if no push lands for > 90 min. Staking's `priceMaxAge` is 24h (initialize
+default), coinciding with `maxAnchorAge`.
 
 Launch parameters (verified on-chain): MCR 150% / liquidation 120% / bonus 5% / stability fee
 2%/yr / debt ceiling 250k / minDebt 100 / mintPriceMaxAge 1h (matches the verifier's in-house
 staleness window — minting works off-hours while the 24/7 gap-filler quotes, and self-halts if
-price services go silent; exits never gated). sEUSD vesting period 8h (ADMIN-tunable).
+price services go silent; exits never gated).
 
 Governance/roles (verified): EUSD DEFAULT_ADMIN = Safe `0x470f…78e2`, sole MINTER_ROLE =
 manager proxy, deployer fully renounced. Launch collateral eSPY, listed + enabled via Safe
 batch (also wrote registry keys `EUSD` / `EUSD_MANAGER`; note the registry has **no generic
 getter** — the eUSD slots are event/storage-only, so consumers take addresses from this doc.
-`STAKED_EUSD` slot deliberately not written). sEUSD incentives controller unset — OwnIncentives
-deploys/attaches when the OWN token exists (`OWN_TOKEN_ROBINHOOD` unset skips it in the script).
+`STAKED_EUSD` slot deliberately not written).
 
 State at deploy: canary CDP by deployer (0.3 eSPY, 110 eUSD debt, ~209% ratio); sEUSD seeded
 with 1 eUSD of dead shares at `0xdead`; E2E pass via `TestEusdCdpRobinhood.s.sol` +
 `TestEusdStakingRobinhood.s.sol` (stake/withdraw + 1 eUSD reward batch streaming).
 
-Remaining ops: route treasury stability fees to sEUSD (`transferInRewards`, OPERATOR, cadence
-≤ 8h); liquidation keeper + monitoring (alert on any eUSD `RoleGranted(MINTER_ROLE)`; periodic
-`totalSupply == totalDebt` check); OWN incentives (deploy → attach → fund → setDistribution);
-frontend handoff (addresses/ABIs from this table, EIP-7702 batch zap with sequential fallback,
-show per-position liquidation price).
+Remaining ops: liquidation keeper + monitoring (alert on any eUSD `RoleGranted(MINTER_ROLE)`;
+periodic `totalSupply == totalDebt` check); frontend handoff (addresses/ABIs from this table,
+EIP-7702 batch zap with sequential fallback, show per-position liquidation price).
 
 ## Gen-3 OwnMarket — UUPS (2026-09-09, cutover 2026-09-10)
 
@@ -175,7 +185,7 @@ Deployed from branch `stablecoin` via `RedeployMarket3Robinhood.s.sol` (addresse
 table above). Behaviorally identical to gen-2 — the delta is upgradability only: ERC-1967/UUPS
 proxy (`_authorizeUpgrade` = registry ADMIN, i.e. the Safe), proxy-safe EIP-712 domain, and the
 force-execute path extracted into the external-linked `ForceExecuteLib`. Bare implementation is
-un-initializable (asserted at deploy). This is the last market *swap* — all future market logic
+un-initializable (asserted at deploy). This is the last market _swap_ — all future market logic
 changes go through `UpgradeOwnMarket.s.sol` as one-tx Safe upgrades; storage layout is
 append-only from this deploy's commit.
 
@@ -207,6 +217,18 @@ cap, the KMS price feed, mark keepers, and MM quoting can drop these tickers ent
 Re-enable path (per asset): Safe `setAssetCapUSD(ticker, 1_000_000e18)` → resume KMS feed +
 keeper + MM quoting → restore the ticker in the app address book.
 
+## $MONEY staking (2026-09-16)
+
+Deployed from branch `OwnStakingV2` via `UpgradeEusdManagerRobinhood.s.sol` +
+`DeployMoneyStakingRobinhood.s.sol`. Wiring (manager upgrade, `setStakeZap`, `setZap`) executes
+via a governance Safe batch (executed 2026-09-16, incl. a Safe signer rotation); SPY reward
+allowance via a treasury Safe approval. Addresses live in the eUSD stablecoin module table
+above. sEUSD staking is deprecated by this deploy — withdraw-only, no new reward batches.
+
+An accidental duplicate broadcast (same block-window, nonces 0x156–0x15a) deployed a second,
+unused set — staking proxy `0x7fe0…1df2`, zap proxy `0x187d…60c2`, calculator `0xea73…aba7`.
+Never wire or fund these; the table above is canonical.
+
 ## $MONEY fee collector (2026-09-14)
 
 Deployed from branch `FeeCollector` via `DeployMoneyFeeCollectorRobinhood.s.sol`. Routes Pons
@@ -220,6 +242,15 @@ balance per `burnInterval` (1h). $MONEY pair fees accrue in SPY — collection i
 | MoneyFeeCollector (ERC-1967/UUPS proxy) | `0xB6BCAfB905CE0648A71F6d43155d5D53a2B08154` |
 | — implementation                        | `0x918D34E4Cc32363267b034c32e01Eb495f009A2c` |
 | $MONEY token (own.money)                | `0x0a8B4763C71aC39101b3B8a97e62Da0B81549a4f` |
+| Pons V2 swap venue (SPY↔$MONEY)         | `0x65050A9b7E5075A2bA5cED7b1b64EE66262c40Dc` |
+
+The Pons V2 swap venue is the canonical SPY↔$MONEY router for protocol integrations: the fee
+collector's allow-listed `buyAndBurn` target (verified on-chain 2026-09-16 from its hourly
+keeper txs) and the `OwnStakeZap` swap router (`SWAP_ROUTER` in
+`DeployMoneyStakingRobinhood.s.sol`). It is a TransparentUpgradeableProxy controlled by Pons,
+not the protocol — integrations must confine it (exact JIT allowance + min-out delta check, as
+both existing consumers do) and any future consumer should reuse this address rather than
+introducing a second venue.
 
 ## E2E smoke tests (2026-07-14, all passed)
 
@@ -248,7 +279,7 @@ and `setMakerAllowed(TSLA, operator, false)` executed during the signer/maker ro
 - [ ] RFQ quote service live; linked settlement wallet funded with USDG
 - [x] Remove operator from oracle signers (`removeSigner`) — done 2026-07-16; sole signer now `0xa7C8…FeBF`
 - [ ] Small psmMint/psmRedeem round-trip before announcing
-- [ ] Migrate PROTOCOL_ADMIN to Safe multisig
+- [x] Migrate PROTOCOL_ADMIN to Safe multisig — done 2026-09; deployer EOA holds no admin roles
 
 ## Superseded contracts (reference only)
 
@@ -256,7 +287,9 @@ Gen-1 stack replaced by gen-2 on 2026-08-03 (gen-1→gen-2 market cutover has si
 gen-2 market replaced by the gen-3 UUPS proxy on 2026-09-10. The gen-1 vault is in wind-down
 (withdrawal wait 0, deposits gated, lending grants revoked) and will be deregistered once fully
 drained (halt first if dust holders remain). ~927 USDG of borrower debt on the gen-1
-BorrowManager must be repaid there — positions do not migrate.
+BorrowManager must be repaid there — positions do not migrate. EUSDManager impl v1 was
+replaced in-place via UUPS upgrade 2026-09-16; sEUSD staking was deprecated the same day
+(superseded by OwnStakingV2 — the vault stays withdrawable, no new reward batches).
 
 | Contract                                  | Address                                      |
 | ----------------------------------------- | -------------------------------------------- |
@@ -267,3 +300,6 @@ BorrowManager must be repaid there — positions do not migrate.
 | VaultYieldManager v1                      | `0x2efb4f919302f9548d7E497503Fa92E5dd93f841` |
 | LendingRouter v1                          | `0xf3f1f274bFe61544d3045321E2c0c84Aa40274f1` |
 | OracleVerifier v1 (pre-Chainlink cutover) | `0x654CFb0f871A6a22F184B9a3960BaA4fE3dAe055` |
+| EUSDManager impl v1 (upgraded away)       | `0xd05489B53973aba11d4bFaacB11bE659eb7C63d2` |
+| StakedEUSD sEUSD proxy (withdraw-only)    | `0x4fefDd560c076CfE9EA0b8f4d21E60Af5A39fE96` |
+| — implementation                          | `0x74f5A0c905d22Ef2dc2CC7AE0390bBFEC99bE154` |

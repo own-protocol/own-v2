@@ -3,10 +3,11 @@ pragma solidity 0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
 
-import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
-import {ChainlinkOracleVerifier} from "../../src/core/ChainlinkOracleVerifier.sol";
-import {ProtocolRegistry} from "../../src/core/ProtocolRegistry.sol";
 import {AssetConfig} from "../../src/interfaces/types/Types.sol";
+import {ChainlinkOracleVerifier} from "../../src/oracle/ChainlinkOracleVerifier.sol";
+
+import {AssetRegistry} from "../../src/registry/AssetRegistry.sol";
+import {ProtocolRegistry} from "../../src/registry/ProtocolRegistry.sol";
 
 /// @title SwitchOracleChainlinkRobinhood — Cut all assets over to the Chainlink oracle
 /// @notice Step 2 of the oracle migration. Replaces the in-house OracleVerifier with the deployed

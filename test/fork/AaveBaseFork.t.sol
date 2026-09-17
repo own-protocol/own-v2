@@ -1,19 +1,20 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {BorrowManager} from "../../src/core/BorrowManager.sol";
+import {BorrowManager} from "../../src/lending/BorrowManager.sol";
 
-import {OwnVault} from "../../src/core/OwnVault.sol";
-import {ProtocolRegistry} from "../../src/core/ProtocolRegistry.sol";
 import {VaultManager} from "../../src/core/VaultManager.sol";
+import {OwnVault} from "../../src/lending/OwnVault.sol";
+import {ProtocolRegistry} from "../../src/registry/ProtocolRegistry.sol";
+
 import {deployBorrowManager} from "../helpers/DeployBorrowManager.sol";
 
 import {IBorrowManager} from "../../src/interfaces/IBorrowManager.sol";
 import {ILendingRouter} from "../../src/interfaces/ILendingRouter.sol";
 import {IProtocolRegistry} from "../../src/interfaces/IProtocolRegistry.sol";
 import {IAaveV3Pool} from "../../src/interfaces/external/IAaveV3Pool.sol";
-import {InterestRateModel} from "../../src/libraries/InterestRateModel.sol";
-import {LendingRouter} from "../../src/periphery/LendingRouter.sol";
+import {InterestRateModel} from "../../src/lending/InterestRateModel.sol";
+import {LendingRouter} from "../../src/lending/LendingRouter.sol";
 
 import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";

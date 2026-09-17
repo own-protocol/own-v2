@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {OwnVault} from "../../src/core/OwnVault.sol";
-import {IWETHRouter} from "../../src/interfaces/IWETHRouter.sol";
-import {WETHRouter} from "../../src/periphery/WETHRouter.sol";
+import {OwnVault} from "../src/lending/OwnVault.sol";
+import {IWETHRouter} from "./IWETHRouter.sol";
+import {WETHRouter} from "./WETHRouter.sol";
 
-import {Actors} from "../helpers/Actors.sol";
-import {BaseTest} from "../helpers/BaseTest.sol";
-import {MockWETH} from "../helpers/MockWETH.sol";
+import {Actors} from "../test/helpers/Actors.sol";
+import {BaseTest} from "../test/helpers/BaseTest.sol";
+import {MockWETH} from "../test/helpers/MockWETH.sol";
 import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Test} from "forge-std/Test.sol";

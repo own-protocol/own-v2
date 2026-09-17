@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {EUSDManager} from "../../src/core/EUSDManager.sol";
-import {ProtocolRegistry} from "../../src/core/ProtocolRegistry.sol";
+import {EToken} from "../../src/core/EToken.sol";
+import {EUSD} from "../../src/eusd/EUSD.sol";
+import {EUSDManager} from "../../src/eusd/EUSDManager.sol";
 import {IEUSDManager} from "../../src/interfaces/IEUSDManager.sol";
 import {BPS} from "../../src/interfaces/types/Types.sol";
-import {EToken} from "../../src/tokens/EToken.sol";
-import {EUSD} from "../../src/tokens/EUSD.sol";
+import {ProtocolRegistry} from "../../src/registry/ProtocolRegistry.sol";
 import {Actors} from "../helpers/Actors.sol";
 import {deployEUSDManager} from "../helpers/DeployEusdModule.sol";
 import {MockAssetRegistry} from "../helpers/MockAssetRegistry.sol";
@@ -1049,6 +1049,55 @@ contract EUSDManagerTest is Test {
         assertEq(manager.getPosition(address(eSPY), alice).collateral, 2e18);
         assertEq(eusd.totalSupply(), 500e18);
         assertEq(manager.totalDebt(), 500e18);
+    }
+
+    // Regression (A5-M-04): a partial redemption may not leave a listed position with dust
+    // debt — the last touch is clamped to leave exactly minDebt, mirroring repay's rule.
+
+    function test_redeem_partial_neverLeavesDustDebt() public {
+        _open(alice, 3e18, 1000e18);
+        vm.prank(alice);
+        eusd.transfer(keeper, 950e18);
+
+        vm.prank(keeper);
+        (uint256 out, uint256 repaid) = manager.redeem(address(eSPY), 950e18, 0, 0, address(0));
+
+        // 950 would leave 50 < minDebt: clamped to 900, leaving exactly minDebt.
+        assertEq(repaid, 900e18);
+        assertEq(out, 18e17); // $900 / $500 per eSPY
+        assertEq(manager.getPosition(address(eSPY), alice).debt, MIN_DEBT);
+        assertEq(manager.listSize(address(eSPY)), 1);
+        assertEq(eusd.balanceOf(keeper), 50e18, "unburned remainder stays with the redeemer");
+    }
+
+    function test_redeem_clampRollsShortfallToNothing_thenNextHeadAbsorbs() public {
+        _open(alice, 3e18, 1000e18); // riskiest
+        _open(bob, 4e18, 1000e18);
+        vm.prank(alice);
+        eusd.transfer(keeper, 1000e18);
+        vm.prank(bob);
+        eusd.transfer(keeper, 950e18);
+
+        vm.prank(keeper);
+        (, uint256 repaid) = manager.redeem(address(eSPY), 1950e18, 0, 0, address(0));
+
+        // Alice fully redeemed; bob clamped at minDebt.
+        assertEq(repaid, 1900e18);
+        assertEq(manager.getPosition(address(eSPY), alice).debt, 0);
+        assertEq(manager.getPosition(address(eSPY), bob).debt, MIN_DEBT);
+        _assertListSorted(address(eSPY));
+    }
+
+    function test_redeem_minDebtHead_stopsInsteadOfDusting() public {
+        _open(alice, 3e17, 100e18); // exactly minDebt at the head
+        _open(bob, 4e18, 1000e18);
+        vm.prank(alice);
+        eusd.transfer(keeper, 50e18);
+
+        // 50 can neither dust the head nor skip past it: the walk stops, nothing redeemed.
+        vm.expectRevert(abi.encodeWithSelector(IEUSDManager.NothingToRedeem.selector, address(eSPY)));
+        vm.prank(keeper);
+        manager.redeem(address(eSPY), 50e18, 0, 0, address(0));
     }
 
     function test_redeem_fullPosition_leavesCollateralClaimable() public {

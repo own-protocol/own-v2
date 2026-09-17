@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
-import {BorrowManager} from "../../src/core/BorrowManager.sol";
+import {BorrowManager} from "../../src/lending/BorrowManager.sol";
+import {AssetRegistry} from "../../src/registry/AssetRegistry.sol";
 
-import {OwnVault} from "../../src/core/OwnVault.sol";
+import {EToken} from "../../src/core/EToken.sol";
 import {IBorrowManager} from "../../src/interfaces/IBorrowManager.sol";
 import {AssetConfig, BPS, PRECISION} from "../../src/interfaces/types/Types.sol";
-import {InterestRateModel} from "../../src/libraries/InterestRateModel.sol";
-import {EToken} from "../../src/tokens/EToken.sol";
+import {InterestRateModel} from "../../src/lending/InterestRateModel.sol";
+import {OwnVault} from "../../src/lending/OwnVault.sol";
 import {deployBorrowManager} from "../helpers/DeployBorrowManager.sol";
 
 import {Actors} from "../helpers/Actors.sol";

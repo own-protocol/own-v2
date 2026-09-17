@@ -3,11 +3,12 @@ pragma solidity 0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
 
-import {BorrowManager} from "../../src/core/BorrowManager.sol";
-import {OwnLendingPool} from "../../src/core/OwnLendingPool.sol";
-import {OwnVault} from "../../src/core/OwnVault.sol";
-import {InterestRateModel} from "../../src/libraries/InterestRateModel.sol";
-import {VaultYieldManager} from "../../src/periphery/VaultYieldManager.sol";
+import {BorrowManager} from "../../src/lending/BorrowManager.sol";
+
+import {InterestRateModel} from "../../src/lending/InterestRateModel.sol";
+import {OwnLendingPool} from "../../src/lending/OwnLendingPool.sol";
+import {OwnVault} from "../../src/lending/OwnVault.sol";
+import {VaultYieldManager} from "../../src/lending/VaultYieldManager.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
 /// @title EnableLendingRobinhood — BorrowManager + VaultYieldManager for the oUSDG vault

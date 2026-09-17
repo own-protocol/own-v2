@@ -3,8 +3,8 @@ pragma solidity 0.8.28;
 
 import {IEToken} from "../../src/interfaces/IEToken.sol";
 
+import {EToken} from "../../src/core/EToken.sol";
 import {PRECISION} from "../../src/interfaces/types/Types.sol";
-import {EToken} from "../../src/tokens/EToken.sol";
 import {Actors} from "../helpers/Actors.sol";
 import {BaseTest} from "../helpers/BaseTest.sol";
 import {MockERC20} from "../helpers/MockERC20.sol";

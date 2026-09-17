@@ -3,10 +3,10 @@ pragma solidity 0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
 
-import {BorrowManager} from "../../src/core/BorrowManager.sol";
-import {OwnVault} from "../../src/core/OwnVault.sol";
 import {IProtocolRegistry} from "../../src/interfaces/IProtocolRegistry.sol";
-import {InterestRateModel} from "../../src/libraries/InterestRateModel.sol";
+import {BorrowManager} from "../../src/lending/BorrowManager.sol";
+import {InterestRateModel} from "../../src/lending/InterestRateModel.sol";
+import {OwnVault} from "../../src/lending/OwnVault.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
 /// @title EnableLendingMainnet — Deploy + wire the BorrowManager for the aUSDC vault (Base mainnet)

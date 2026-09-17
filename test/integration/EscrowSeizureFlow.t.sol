@@ -6,8 +6,8 @@ import {BaseTest} from "../helpers/BaseTest.sol";
 
 import {AssetConfig, DepositRequest, DepositStatus} from "../../src/interfaces/types/Types.sol";
 
-import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
-import {OwnVault} from "../../src/core/OwnVault.sol";
+import {OwnVault} from "../../src/lending/OwnVault.sol";
+import {AssetRegistry} from "../../src/registry/AssetRegistry.sol";
 
 /// @title EscrowSeizureFlow Integration Test
 /// @notice Pending-deposit escrow is accounted separately (excluded from `totalAssets`) but is NOT

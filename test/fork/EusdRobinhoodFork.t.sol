@@ -1,14 +1,15 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {ChainlinkOracleVerifier} from "../../src/core/ChainlinkOracleVerifier.sol";
-import {EUSDManager} from "../../src/core/EUSDManager.sol";
 import {OwnMarket} from "../../src/core/OwnMarket.sol";
-import {ProtocolRegistry} from "../../src/core/ProtocolRegistry.sol";
+import {EUSD} from "../../src/eusd/EUSD.sol";
+import {EUSDManager} from "../../src/eusd/EUSDManager.sol";
 import {IAssetRegistry} from "../../src/interfaces/IAssetRegistry.sol";
 import {IEUSDManager} from "../../src/interfaces/IEUSDManager.sol";
 import {IOwnMarket} from "../../src/interfaces/IOwnMarket.sol";
-import {EUSD} from "../../src/tokens/EUSD.sol";
+import {ChainlinkOracleVerifier} from "../../src/oracle/ChainlinkOracleVerifier.sol";
+import {ProtocolRegistry} from "../../src/registry/ProtocolRegistry.sol";
+
 import {deployEUSDManager} from "../helpers/DeployEusdModule.sol";
 import {deployOwnMarket} from "../helpers/DeployOwnMarket.sol";
 import {UUPSUpgradeable} from "@openzeppelin/contracts/proxy/utils/UUPSUpgradeable.sol";

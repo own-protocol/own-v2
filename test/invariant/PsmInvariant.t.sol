@@ -5,13 +5,14 @@ import {Actors} from "../helpers/Actors.sol";
 import {BaseTest} from "../helpers/BaseTest.sol";
 import {MockERC20} from "../helpers/MockERC20.sol";
 
-import {AssetRegistry} from "../../src/core/AssetRegistry.sol";
 import {OwnMarket} from "../../src/core/OwnMarket.sol";
+import {AssetRegistry} from "../../src/registry/AssetRegistry.sol";
 
-import {OwnVault} from "../../src/core/OwnVault.sol";
+import {EToken} from "../../src/core/EToken.sol";
+
 import {ReserveVault} from "../../src/core/ReserveVault.sol";
 import {AssetConfig, Order, OrderStatus, OrderType} from "../../src/interfaces/types/Types.sol";
-import {EToken} from "../../src/tokens/EToken.sol";
+import {OwnVault} from "../../src/lending/OwnVault.sol";
 import {deployOwnMarket} from "../helpers/DeployOwnMarket.sol";
 
 import {PsmHandler} from "./handlers/PsmHandler.sol";

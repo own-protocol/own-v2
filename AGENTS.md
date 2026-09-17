@@ -129,7 +129,7 @@ script/
 
 1. **Write the interface first** (`interfaces/IFoo.sol`). Define the external API, events, errors, and structs. This is the contract's specification.
 2. **Write the tests** (`test/unit/Foo.t.sol`). Tests encode expected behavior. Every public/external function gets at least: one happy-path test, one revert test per error condition, one edge case (zero amounts, max values, boundary conditions).
-3. **Implement the contract** (`src/core/Foo.sol`). Make the tests pass. Nothing more.
+3. **Implement the contract** (`src/<domain>/Foo.sol` — e.g. `src/core/`, `src/eusd/`, `src/staking/`, `src/lending/`). Make the tests pass. Nothing more.
 4. **Run the full suite** before committing. `forge test -vvv` must be green.
 5. **Write invariant tests** for any contract that holds funds or tracks balances. These run after unit tests pass.
 6. **Gas snapshot** after implementation stabilises. `forge snapshot` to baseline, `forge snapshot --diff` on subsequent changes.

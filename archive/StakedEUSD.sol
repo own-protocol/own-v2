@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: BUSL-1.1
 pragma solidity 0.8.28;
 
-import {IOwnIncentives} from "../interfaces/IOwnIncentives.sol";
-import {IProtocolRegistry} from "../interfaces/IProtocolRegistry.sol";
+import {IOwnIncentives} from "./IOwnIncentives.sol";
+import {IProtocolRegistry} from "../src/interfaces/IProtocolRegistry.sol";
 
 import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
 import {UUPSUpgradeable} from "@openzeppelin/contracts/proxy/utils/UUPSUpgradeable.sol";

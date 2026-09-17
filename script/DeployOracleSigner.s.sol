@@ -4,7 +4,7 @@ pragma solidity 0.8.28;
 import {Script, console} from "forge-std/Script.sol";
 
 import {OracleVerifier} from "../archive/OracleVerifier.sol";
-import {ProtocolRegistry} from "../src/core/ProtocolRegistry.sol";
+import {ProtocolRegistry} from "../src/registry/ProtocolRegistry.sol";
 
 /// @title DeployOracleSigner — Deploy in-house OracleVerifier, register in ProtocolRegistry, add signer
 /// @notice Deploys the OracleVerifier contract, registers it as INHOUSE_ORACLE in the existing

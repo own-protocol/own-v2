@@ -2,12 +2,12 @@
 pragma solidity 0.8.28;
 
 import {OwnMarket} from "../../../src/core/OwnMarket.sol";
-import {OwnVault} from "../../../src/core/OwnVault.sol";
+import {OwnVault} from "../../../src/lending/OwnVault.sol";
 
+import {EToken} from "../../../src/core/EToken.sol";
 import {IOwnMarket} from "../../../src/interfaces/IOwnMarket.sol";
 import {IVaultManager} from "../../../src/interfaces/IVaultManager.sol";
 import {BPS, Order, OrderStatus, OrderType, PRECISION, Quote} from "../../../src/interfaces/types/Types.sol";
-import {EToken} from "../../../src/tokens/EToken.sol";
 
 import {Actors} from "../../helpers/Actors.sol";
 import {MockERC20} from "../../helpers/MockERC20.sol";

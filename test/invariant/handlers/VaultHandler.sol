@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {OwnVault} from "../../../src/core/OwnVault.sol";
 import {WithdrawalRequest, WithdrawalStatus} from "../../../src/interfaces/types/Types.sol";
+import {OwnVault} from "../../../src/lending/OwnVault.sol";
 
 import {Actors} from "../../helpers/Actors.sol";
 import {MockERC20} from "../../helpers/MockERC20.sol";

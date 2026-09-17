@@ -3,8 +3,8 @@ pragma solidity 0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
 
-import {AssetRegistry} from "../src/core/AssetRegistry.sol";
 import {AssetConfig} from "../src/interfaces/types/Types.sol";
+import {AssetRegistry} from "../src/registry/AssetRegistry.sol";
 
 /// @title UpdateOracleType — Switch TSLA and GOLD to in-house oracle
 /// @notice Calls AssetRegistry.updateAssetConfig() to set oracleType=1 (in-house)

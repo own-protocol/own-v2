@@ -4,7 +4,7 @@ pragma solidity 0.8.28;
 import {Script, console} from "forge-std/Script.sol";
 
 import {IBorrowManager} from "../../src/interfaces/IBorrowManager.sol";
-import {InterestRateModel} from "../../src/libraries/InterestRateModel.sol";
+import {InterestRateModel} from "../../src/lending/InterestRateModel.sol";
 
 /// @title UpdateRateParamsMainnet — Retune the live BorrowManager interest curve (admin, deployer key)
 /// @notice Calls setRateParams on the bound BorrowManager. New curve: premium 3% at 0% util rising

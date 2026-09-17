@@ -3,7 +3,7 @@ pragma solidity 0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
 
-import {OwnVault} from "../src/core/OwnVault.sol";
+import {OwnVault} from "../src/lending/OwnVault.sol";
 
 /// @title SetVM — Update the vault manager address
 /// @notice Run by admin (deployer) to change the VM bound to a vault.

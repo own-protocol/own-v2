@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
+import {EUSD} from "../../src/eusd/EUSD.sol";
 import {IEUSD} from "../../src/interfaces/IEUSD.sol";
 import {IERC7802} from "../../src/interfaces/external/IERC7802.sol";
-import {EUSD} from "../../src/tokens/EUSD.sol";
 import {Actors} from "../helpers/Actors.sol";
 import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
 import {IERC20Errors} from "@openzeppelin/contracts/interfaces/draft-IERC6093.sol";
