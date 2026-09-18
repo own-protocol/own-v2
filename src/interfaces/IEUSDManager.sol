@@ -79,10 +79,14 @@ interface IEUSDManager {
     /// @param collateral       Collateral held (eToken units, 18 decimals).
     /// @param debt             eUSD debt including fees accrued up to `feeIndexSnapshot` (18 decimals).
     /// @param feeIndexSnapshot Global fee index (bps-seconds) at the last accrual.
+    /// @param feesAccrued      Stability fees folded into `debt` and not yet repaid, clamped to
+    ///                         `debt` whenever debt shrinks (18 decimals). Bounds the fee portion
+    ///                         settleable from collateral in {closePositionPrincipalOnly}.
     struct Position {
         uint256 collateral;
         uint256 debt;
         uint256 feeIndexSnapshot;
+        uint256 feesAccrued;
     }
 
     // ──────────────────────────────────────────────────────────
@@ -161,6 +165,15 @@ interface IEUSDManager {
     /// @param debtRepaid         eUSD burned to retire the debt (18 decimals).
     event PositionClosed(
         address indexed collateral, address indexed owner, uint256 collateralReturned, uint256 debtRepaid
+    );
+
+    /// @notice Emitted when a position close settles its accrued fees from collateral.
+    /// @param collateral    Collateral eToken.
+    /// @param owner         Position owner.
+    /// @param feesSettled   Fee debt retired by burning the treasury's eUSD (18 decimals).
+    /// @param feeCollateral Collateral transferred to the treasury in exchange (18 decimals).
+    event PositionFeesSettledFromCollateral(
+        address indexed collateral, address indexed owner, uint256 feesSettled, uint256 feeCollateral
     );
 
     /// @notice Emitted when collateral eToken dividends held by the manager are swept to the treasury.
@@ -329,6 +342,20 @@ interface IEUSDManager {
     ///         exit.
     /// @param collateral Collateral eToken of the position.
     function closePosition(
+        address collateral
+    ) external;
+
+    /// @notice Close the caller's position paying only the principal in eUSD: the accrued
+    ///         stability fees are settled from collateral instead, so a debtor who minted X never
+    ///         needs more than X eUSD to exit. Collateral worth the fee debt at the oracle anchor
+    ///         (rounded against the owner) goes to the treasury, and the matching eUSD — minted to
+    ///         the treasury when the fees accrued — is burned from the treasury's balance,
+    ///         preserving `eusd.totalSupply() == totalDebt`. Value-neutral for the treasury; the
+    ///         settleable amount is capped at the position's tracked `feesAccrued`. Works
+    ///         off-hours (anchor price, halt price for halted assets). Reverts if the treasury
+    ///         balance cannot cover the burn — fall back to {closePosition}.
+    /// @param collateral Collateral eToken of the position.
+    function closePositionPrincipalOnly(
         address collateral
     ) external;
 

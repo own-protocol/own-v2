@@ -5,7 +5,7 @@ import {EToken} from "../../src/core/EToken.sol";
 import {EUSD} from "../../src/eusd/EUSD.sol";
 import {EUSDManager} from "../../src/eusd/EUSDManager.sol";
 import {IEUSDManager} from "../../src/interfaces/IEUSDManager.sol";
-import {BPS} from "../../src/interfaces/types/Types.sol";
+import {BPS, PRECISION} from "../../src/interfaces/types/Types.sol";
 import {ProtocolRegistry} from "../../src/registry/ProtocolRegistry.sol";
 import {Actors} from "../helpers/Actors.sol";
 import {deployEUSDManager} from "../helpers/DeployEusdModule.sol";
@@ -13,6 +13,8 @@ import {MockAssetRegistry} from "../helpers/MockAssetRegistry.sol";
 import {MockERC20} from "../helpers/MockERC20.sol";
 import {MockOracleVerifier} from "../helpers/MockOracleVerifier.sol";
 import {MockVaultManager} from "../helpers/MockVaultManager.sol";
+
+import {IERC20Errors} from "@openzeppelin/contracts/interfaces/draft-IERC6093.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
 import {UUPSUpgradeable} from "@openzeppelin/contracts/proxy/utils/UUPSUpgradeable.sol";
@@ -683,6 +685,122 @@ contract EUSDManagerTest is Test {
         vm.expectRevert(abi.encodeWithSelector(IEUSDManager.EmptyPosition.selector, address(eSPY), alice));
         vm.prank(alice);
         manager.closePosition(address(eSPY));
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  closePositionPrincipalOnly
+    // ──────────────────────────────────────────────────────────
+
+    function test_closePrincipalOnly_pendingFees_paysOnlyMinted() public {
+        _open(alice, 4e18, 1000e18);
+        vm.warp(block.timestamp + 365 days); // 2% → 20 eUSD fee; alice holds only the 1000 minted
+
+        uint256 feeCollateral = Math.mulDiv(20e18, PRECISION, PRICE, Math.Rounding.Ceil); // 0.04 eSPY
+        vm.expectEmit(true, true, false, true);
+        emit IEUSDManager.PositionClosed(address(eSPY), alice, 4e18 - feeCollateral, 1000e18);
+        vm.expectEmit(true, true, false, true);
+        emit IEUSDManager.PositionFeesSettledFromCollateral(address(eSPY), alice, 20e18, feeCollateral);
+        vm.prank(alice);
+        manager.closePositionPrincipalOnly(address(eSPY));
+
+        assertEq(eusd.balanceOf(alice), 0);
+        assertEq(eusd.balanceOf(treasury), 0); // pending fee minted on entry, burned right back
+        assertEq(eusd.totalSupply(), 0);
+        assertEq(manager.totalDebt(), 0);
+        assertEq(eSPY.balanceOf(treasury), feeCollateral);
+        assertEq(eSPY.balanceOf(alice), 1_000_000e18 - feeCollateral);
+        assertEq(manager.totalCollateral(address(eSPY)), 0);
+        assertEq(manager.listSize(address(eSPY)), 0);
+        assertEq(manager.getPosition(address(eSPY), alice).debt, 0);
+        assertEq(manager.getPosition(address(eSPY), alice).feesAccrued, 0);
+    }
+
+    function test_closePrincipalOnly_crystallizedFees_burnsTreasuryBalance() public {
+        _open(alice, 4e18, 1000e18);
+        vm.warp(block.timestamp + 365 days);
+        vm.prank(keeper);
+        manager.accrue(address(eSPY), alice, address(0)); // 20 minted to the treasury
+        vm.warp(block.timestamp + 365 days); // +20.4 pending on 1020
+
+        vm.prank(alice);
+        manager.closePositionPrincipalOnly(address(eSPY));
+
+        // Both fee legs (crystallized 20 + pending 20.4) settled from collateral and burned.
+        assertEq(eusd.balanceOf(alice), 0);
+        assertEq(eusd.balanceOf(treasury), 0);
+        assertEq(eusd.totalSupply(), 0);
+        assertEq(manager.totalDebt(), 0);
+        assertEq(eSPY.balanceOf(treasury), Math.mulDiv(40.4e18, PRECISION, PRICE, Math.Rounding.Ceil));
+    }
+
+    function test_closePrincipalOnly_noFees_worksOracleDown() public {
+        _open(alice, 4e18, 1000e18);
+        oracle.setForceStale(true); // no fee accrued yet → no price needed
+        vm.prank(alice);
+        manager.closePositionPrincipalOnly(address(eSPY));
+        assertEq(eSPY.balanceOf(alice), 1_000_000e18);
+        assertEq(eusd.totalSupply(), 0);
+    }
+
+    function test_closePrincipalOnly_repayClampsFeesAccrued() public {
+        vm.prank(admin);
+        manager.setMinDebt(1e18);
+        _open(alice, 40e18, 1000e18);
+        vm.warp(block.timestamp + 10 * 365 days); // 20% simple → 200 fee, debt 1200
+
+        vm.prank(address(manager));
+        eusd.mint(alice, 100e18); // top up so alice can repay 1100
+        vm.prank(alice);
+        manager.repay(address(eSPY), alice, 1100e18, address(0));
+        assertEq(manager.getPosition(address(eSPY), alice).feesAccrued, 100e18); // clamped to debt
+
+        vm.prank(alice);
+        manager.closePositionPrincipalOnly(address(eSPY));
+
+        assertEq(eusd.balanceOf(alice), 0); // remaining 100 debt settled entirely from collateral
+        assertEq(eusd.balanceOf(treasury), 100e18); // 200 minted over time − 100 burned
+        assertEq(eSPY.balanceOf(treasury), Math.mulDiv(100e18, PRECISION, PRICE, Math.Rounding.Ceil));
+        assertEq(manager.totalDebt(), 0);
+    }
+
+    function test_closePrincipalOnly_underwaterResidual_capsAtCollateral() public {
+        oracle.setPrice(SPY, 750e18);
+        _open(alice, 2e18, 1000e18);
+        _open(bob, 40e18, 1000e18);
+
+        oracle.setPrice(SPY, 400e18);
+        vm.prank(bob);
+        manager.redeem(address(eSPY), 1000e18, 0, 1, address(0)); // alice → 200 eUSD debt-only residual
+        vm.warp(block.timestamp + 365 days); // +4 pending on the residual
+
+        vm.prank(alice);
+        manager.closePositionPrincipalOnly(address(eSPY));
+
+        // No collateral to settle from: the fee leg caps to zero and alice pays the full 204.
+        assertEq(eusd.balanceOf(alice), 1000e18 - 204e18);
+        assertEq(eusd.balanceOf(treasury), 4e18);
+        assertEq(eSPY.balanceOf(treasury), 0);
+        assertEq(manager.totalDebt(), 1000e18); // bob's untouched position
+        assertEq(eusd.totalSupply(), manager.totalDebt());
+    }
+
+    function test_closePrincipalOnly_treasurySpentFees_reverts() public {
+        _open(alice, 4e18, 1000e18);
+        vm.warp(block.timestamp + 365 days);
+        vm.prank(keeper);
+        manager.accrue(address(eSPY), alice, address(0));
+        vm.prank(treasury);
+        eusd.transfer(keeper, 20e18); // treasury no longer holds the crystallized fees
+
+        vm.expectRevert(abi.encodeWithSelector(IERC20Errors.ERC20InsufficientBalance.selector, treasury, 0, 20e18));
+        vm.prank(alice);
+        manager.closePositionPrincipalOnly(address(eSPY));
+    }
+
+    function test_closePrincipalOnly_emptyPosition_reverts() public {
+        vm.expectRevert(abi.encodeWithSelector(IEUSDManager.EmptyPosition.selector, address(eSPY), alice));
+        vm.prank(alice);
+        manager.closePositionPrincipalOnly(address(eSPY));
     }
 
     // ──────────────────────────────────────────────────────────

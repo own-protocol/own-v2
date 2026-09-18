@@ -146,7 +146,7 @@ links detected.
 | --------------------------------- | -------------------------------------------- |
 | EUSD (token)                      | `0x8B84D644CECaeE6d21373F37E1bA00f85eD7CdB7` |
 | EUSDManager (ERC-1967 proxy)      | `0x9748964d733Ff5d47F1d7E3fea620aF014dA5a9b` |
-| — implementation (v2, 2026-09-16) | `0x83f293c3Ce5eB627AAFE5e1E76e3f2340E620cF2` |
+| — implementation (v3, 2026-09-18) | `0x8f0EB3331Da1ba72A7451601fc9e197D6551674e` |
 | OwnStakingV2 (ERC-1967 proxy)     | `0xfD1CC0751D5d9C0D5f9eAd6b8525FdEe22423b76` |
 | — implementation                  | `0xF524E4855F36592d10D6c869f10Ecd652a6C7801` |
 | OwnStakeZap (ERC-1967 proxy)      | `0xE28423b4CA87cB9e822E99325A09A9457291e8fa` |
@@ -216,6 +216,20 @@ cap, the KMS price feed, mark keepers, and MM quoting can drop these tickers ent
 
 Re-enable path (per asset): Safe `setAssetCapUSD(ticker, 1_000_000e18)` → resume KMS feed +
 keeper + MM quoting → restore the ticker in the app address book.
+
+## EUSDManager v3 — closePositionPrincipalOnly (2026-09-18)
+
+Deployed from branch `update-eusdmanager` via `UpgradeEusdManagerRobinhood.s.sol`; proxy switched
+via governance Safe `upgradeToAndCall(v3, "")`. Adds `closePositionPrincipalOnly` (accrued fees
+settled in collateral at the anchor price, treasury's fee eUSD burned in the same amount) and the
+append-only `Position.feesAccrued` field. Post-upgrade checks passed: implementation slot,
+`totalDebt == eusd.totalSupply()`, `stakeZap`, risk params, and the eSPY head position intact
+with `feesAccrued == 0`.
+
+Operational notes: fee tracking starts at this upgrade — fees folded into debt before it settle
+in eUSD like principal. The treasury must retain an eUSD float covering outstanding
+`feesAccrued` (and migrate its balance before any treasury address rotation) or the
+principal-only path reverts; `closePosition` remains the fallback.
 
 ## $MONEY staking (2026-09-16)
 
@@ -301,5 +315,6 @@ replaced in-place via UUPS upgrade 2026-09-16; sEUSD staking was deprecated the 
 | LendingRouter v1                          | `0xf3f1f274bFe61544d3045321E2c0c84Aa40274f1` |
 | OracleVerifier v1 (pre-Chainlink cutover) | `0x654CFb0f871A6a22F184B9a3960BaA4fE3dAe055` |
 | EUSDManager impl v1 (upgraded away)       | `0xd05489B53973aba11d4bFaacB11bE659eb7C63d2` |
+| EUSDManager impl v2 (upgraded away)       | `0x83f293c3Ce5eB627AAFE5e1E76e3f2340E620cF2` |
 | StakedEUSD sEUSD proxy (withdraw-only)    | `0x4fefDd560c076CfE9EA0b8f4d21E60Af5A39fE96` |
 | — implementation                          | `0x74f5A0c905d22Ef2dc2CC7AE0390bBFEC99bE154` |
