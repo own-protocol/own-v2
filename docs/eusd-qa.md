@@ -42,6 +42,17 @@ Yes and yes. Ratio uses the live price, so capacity grows (e.g. $100 debt → ~$
 after the 2%/yr fee grows debt to ~$102). Debt is in eUSD, collateral in eSPY units: on close you
 repay ~$102 and receive the entire 1 eSPY at $200 — all appreciation is the owner's.
 
+**Q: I minted 100 eUSD but the fee grew my debt to 100.3 — I only hold 100. How do I close?**
+`closePositionPrincipalOnly`: burn only the non-fee debt (the 100) and settle the fee
+portion from collateral — eSPY worth the fee debt (anchor price, rounded against the owner) goes
+to the treasury, and the treasury's eUSD (minted to it when those fees accrued) is burned in the
+same amount, keeping `totalSupply == totalDebt` exact. Value-neutral for the treasury (it swaps
+fee eUSD for equal-value collateral); the settleable amount is capped by the position's tracked
+`feesAccrued`, so the path can never be used as a general collateral-for-eUSD swap. Pending
+(uncrystallized) fees net out — minted on entry, burned in the same call. Works off-hours; if
+the treasury has moved its fee eUSD elsewhere the burn reverts and `closePosition` is the
+fallback.
+
 **Q: Does liquidation surplus go back to the user automatically?**
 Yes, same transaction (`liquidate`): seized = repaid × 1.05 capped at the position's
 collateral; on a full close the remainder transfers straight to the owner. E.g. $150 coll / $100

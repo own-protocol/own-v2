@@ -157,6 +157,27 @@ contract EUSDHandler is CommonBase, StdCheats, StdUtils {
         ghost_totalBurned += debt;
     }
 
+    function closePrincipalOnly(uint256 actorSeed, uint256 collSeed) external {
+        (address actor, MockERC20 token, uint256 c) = _pick(actorSeed, collSeed);
+        IEUSDManager.Position memory p = manager.getPosition(address(token), actor);
+        if (p.collateral == 0 && p.debt == 0) return;
+        uint256 debt = manager.currentDebt(address(token), actor);
+
+        // Mirror the contract's fee cap (pending fee folds into feesAccrued on entry, then
+        // clamped to debt and to the collateral's value) to know what the actor must fund.
+        uint256 fees = p.feesAccrued + (debt - p.debt);
+        if (fees > debt) fees = debt;
+        if (fees > 0) {
+            uint256 feeColl = Math.mulDiv(fees, PRECISION, _prices[c], Math.Rounding.Ceil);
+            if (feeColl > p.collateral) fees = Math.mulDiv(p.collateral, _prices[c], PRECISION);
+        }
+        if (eusd.balanceOf(actor) < debt - fees) return;
+
+        vm.prank(actor);
+        manager.closePositionPrincipalOnly(address(token));
+        ghost_totalBurned += debt;
+    }
+
     function liquidate(uint256 actorSeed, uint256 collSeed, uint256 targetSeed) external {
         (, MockERC20 token,) = _pick(actorSeed, collSeed);
         address target = _actors[bound(targetSeed, 0, _actors.length - 1)];

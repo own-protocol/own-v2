@@ -235,6 +235,7 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
         }
 
         p.debt = remaining;
+        if (p.feesAccrued > remaining) p.feesAccrued = remaining;
         totalDebt -= repaid;
         _reindex(collateral, owner, hint);
 
@@ -301,19 +302,57 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
         address collateral
     ) external override nonReentrant {
         _requireCollateral(collateral);
+        _close(collateral, false);
+    }
+
+    /// @inheritdoc IEUSDManager
+    /// @dev The entry accrual mints any pending fee to the treasury and folds it into
+    ///      `feesAccrued`, so the treasury burn nets pending fees to zero and retires previously
+    ///      minted ones from its balance.
+    function closePositionPrincipalOnly(
+        address collateral
+    ) external override nonReentrant {
+        _requireCollateral(collateral);
+        _close(collateral, true);
+    }
+
+    /// @dev Shared close: retire the full debt, delete the position, pay out the collateral.
+    ///      With `feesFromCollateral`, the tracked fee portion is settled in kind — collateral of
+    ///      equal value (anchor price, ceil rounding against the debtor) to the treasury, whose
+    ///      eUSD is burned in the same amount — and the caller burns only the remainder. An
+    ///      underwater position caps the settlement at its collateral value; the caller pays the
+    ///      rest in eUSD.
+    function _close(address collateral, bool feesFromCollateral) private {
         Position storage p = _accrue(collateral, msg.sender);
         uint256 debt = p.debt;
         uint256 coll = p.collateral;
         if (debt == 0 && coll == 0) revert EmptyPosition(collateral, msg.sender);
+
+        uint256 fees;
+        uint256 feeCollateral;
+        if (feesFromCollateral && p.feesAccrued > 0) {
+            fees = p.feesAccrued;
+            uint256 price = _anchorPrice(collateral, _collateralConfigs[collateral].ticker);
+            feeCollateral = Math.mulDiv(fees, PRECISION, price, Math.Rounding.Ceil);
+            if (feeCollateral > coll) {
+                feeCollateral = coll;
+                fees = Math.mulDiv(feeCollateral, price, PRECISION);
+            }
+        }
 
         if (_isListed(collateral, msg.sender)) _removeNode(collateral, msg.sender);
         totalDebt -= debt;
         totalCollateral[collateral] -= coll;
         delete _positions[collateral][msg.sender];
 
-        if (debt > 0) _eusd.burn(msg.sender, debt);
-        if (coll > 0) IERC20(collateral).safeTransfer(msg.sender, coll);
-        emit PositionClosed(collateral, msg.sender, coll, debt);
+        if (debt > fees) _eusd.burn(msg.sender, debt - fees);
+        if (coll > feeCollateral) IERC20(collateral).safeTransfer(msg.sender, coll - feeCollateral);
+        emit PositionClosed(collateral, msg.sender, coll - feeCollateral, debt - fees);
+        if (fees > 0) {
+            _eusd.burn(registry.treasury(), fees);
+            IERC20(collateral).safeTransfer(registry.treasury(), feeCollateral);
+            emit PositionFeesSettledFromCollateral(collateral, msg.sender, fees, feeCollateral);
+        }
     }
 
     /// @inheritdoc IEUSDManager
@@ -358,6 +397,7 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
         totalDebt -= repaid;
         totalCollateral[collateral] -= seized + refund;
         p.debt = remaining;
+        if (p.feesAccrued > remaining) p.feesAccrued = remaining;
         p.collateral -= seized + refund;
         _reindex(collateral, owner, hint);
         if (remaining == 0) delete _positions[collateral][owner];
@@ -539,6 +579,7 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
             uint256 fee = Math.mulDiv(p.debt, _feeIndex - p.feeIndexSnapshot, BPS * YEAR);
             if (fee > 0) {
                 p.debt += fee;
+                p.feesAccrued += fee;
                 totalDebt += fee;
                 _eusd.mint(registry.treasury(), fee);
                 emit StabilityFeeAccrued(collateral, owner, fee);
@@ -579,6 +620,7 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
         }
 
         p.debt -= repaid;
+        if (p.feesAccrued > p.debt) p.feesAccrued = p.debt;
         p.collateral -= seized;
         totalDebt -= repaid;
         totalCollateral[collateral] -= seized;
