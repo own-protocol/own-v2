@@ -25,7 +25,7 @@ contract NotifyRewardsRobinhood is Script {
     address constant STAKING_V2 = 0xfD1CC0751D5d9C0D5f9eAd6b8525FdEe22423b76;
     address constant TREASURY_SAFE = 0x8f974d82EEaa9725ecC40600f12093B14080dA54;
 
-    uint256 constant SPY_USD_BUDGET = 2_000e18;
+    uint256 constant SPY_USD_BUDGET = 2000e18;
     uint256 constant MAX_PRICE_AGE = 90 minutes;
 
     function run() external {
@@ -33,14 +33,8 @@ contract NotifyRewardsRobinhood is Script {
         require(price != 0 && block.timestamp - ts <= MAX_PRICE_AGE, "stale R.SPY price");
         uint256 spyAmount = SPY_USD_BUDGET * 1e18 / price;
 
-        require(
-            IERC20(RSPY).allowance(TREASURY_SAFE, STAKING_V2) >= spyAmount,
-            "treasury allowance too low"
-        );
-        require(
-            IERC20(RSPY).balanceOf(TREASURY_SAFE) >= spyAmount,
-            "treasury balance too low"
-        );
+        require(IERC20(RSPY).allowance(TREASURY_SAFE, STAKING_V2) >= spyAmount, "treasury allowance too low");
+        require(IERC20(RSPY).balanceOf(TREASURY_SAFE) >= spyAmount, "treasury balance too low");
 
         console.log("R.SPY mark (1e18 USD):", price);
         console.log("SPY notify amount    :", spyAmount);
