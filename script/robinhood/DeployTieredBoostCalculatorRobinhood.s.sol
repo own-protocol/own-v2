@@ -15,8 +15,9 @@ import {TieredBoostCalculator} from "../../src/staking/TieredBoostCalculator.sol
 ///
 /// @dev Post-deploy checklist:
 ///        1. Execute the Safe call if printed; verify staking.boostCalculator() == the new calculator.
-///        2. refreshBoost(all stakers) — every tier needs no more coverage than the 3:1 launch
-///           line, so a refresh only ever raises or holds a snapshot.
+///        2. refreshBoost(all stakers), batched with step 1 — every tier needs no more coverage
+///           than the 3:1 launch line, so at an unchanged $MONEY price a refresh only raises or
+///           holds a snapshot; it also reprices, so a lower mark lowers some.
 ///        3. Record the address in docs/contracts-robinhood.md; ship the app's tier-aware curve.
 ///
 /// Env: DEPLOYER_PRIVATE_KEY_ROBINHOOD.

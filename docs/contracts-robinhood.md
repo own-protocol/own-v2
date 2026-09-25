@@ -151,8 +151,14 @@ links detected.
 | — implementation                  | `0xF524E4855F36592d10D6c869f10Ecd652a6C7801` |
 | OwnStakeZap (ERC-1967 proxy)      | `0xE28423b4CA87cB9e822E99325A09A9457291e8fa` |
 | — implementation                  | `0xf98D894Dc4A0C01B59eb30CF4B7750111cc5FF52` |
-| LinearBoostCalculator             | `0xc23E6e6EaE9551014c479123E2cc6e4B1c9233D2` |
+| TieredBoostCalculator (live)      | `0x00434cfc44e5f30295c14d9f98b8763787db2613` |
+| LinearBoostCalculator (retired)   | `0xc23E6e6EaE9551014c479123E2cc6e4B1c9233D2` |
 | MoneyPriceFeed                    | `0x31283f38ec6e63AC9A5b2C37563eD31F708411EE` |
+
+TieredBoostCalculator (2026-09-25, `DeployTieredBoostCalculatorRobinhood.s.sol`): tiers <$10k 3.0,
+$10k 2.0, $25k 1.0, $50k 0.2, $100k+ 0.1 full-boost coverage; 0.1× floor, 3.6× max. Swapped in via
+governance Safe batch `setBoostCalculator` + `refreshBoost(all 39 stakers)`. Etherscan-verified
+(robin.etherscan.io) along with the EUSD, EUSDManager and OwnStakingV2 proxies and implementations.
 
 MoneyPriceFeed: keeper-pushed $MONEY TWAP mark behind the AggregatorV3 surface, for OwnStakingV2 boost pricing. Pending Safe call wires it as the
 MONEY aggregator: `setChainlinkConfig(MONEY, feed, 0, 900, 5400, 86400, 0, 0)` — `bandBps = 0`
