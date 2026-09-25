@@ -1,6 +1,8 @@
 # OwnStakingV2 — launch APR reference
 
-Boost model (`LinearBoostCalculator`, live): `boost = min(0.1 + 1.1667 × coverage, 3.6)`.
+Boost model (`LinearBoostCalculator`, the launch line, now tier 0 of the live `TieredBoostCalculator`):
+`boost = min(0.1 + 1.1667 × coverage, 3.6)`. Positions of $10k+ eUSD reach 3.6× at lower coverage
+(2.0 / 1.0 / 0.2 / 0.1 from $10k / $25k / $50k / $100k); the per-boost APRs below are unchanged.
 Weight = boost × eUSD; a fixed weekly SPY budget splits pro-rata by weight, so
 `APR(boost) = boost × 52 × weeklyBudget / totalWeight`. APR is quoted on eUSD staked alone
 ($MONEY capital never enters the denominator). Money-free stakers earn the 0.1× floor, not 0×.

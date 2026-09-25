@@ -2,9 +2,11 @@
 pragma solidity 0.8.28;
 
 import {IOwnStakingV2} from "../../src/interfaces/IOwnStakingV2.sol";
+import {ITieredBoostCalculator} from "../../src/interfaces/ITieredBoostCalculator.sol";
 import {ProtocolRegistry} from "../../src/registry/ProtocolRegistry.sol";
 import {LinearBoostCalculator} from "../../src/staking/LinearBoostCalculator.sol";
 import {OwnStakingV2} from "../../src/staking/OwnStakingV2.sol";
+import {TieredBoostCalculator} from "../../src/staking/TieredBoostCalculator.sol";
 
 import {Actors} from "../helpers/Actors.sol";
 import {MockERC20} from "../helpers/MockERC20.sol";
@@ -647,6 +649,35 @@ contract OwnStakingV2Test is Test {
         users[0] = alice;
         staking.refreshBoost(users);
         assertEq(staking.boostBps(alice), 30_000);
+    }
+
+    function test_setBoostCalculator_tiered_repricesBySize() public {
+        _stake(alice, _moneyFor(10_000), 100_000e18); // 0.1:1 -> 2166 on the launch line
+        _stake(bob, _moneyFor(1000), 1000e18); // 1:1 -> 12_666
+        assertEq(staking.boostBps(alice), 2166);
+
+        ITieredBoostCalculator.Tier[] memory t = new ITieredBoostCalculator.Tier[](5);
+        t[0] = ITieredBoostCalculator.Tier(0, 30_000);
+        t[1] = ITieredBoostCalculator.Tier(10_000e18, 20_000);
+        t[2] = ITieredBoostCalculator.Tier(25_000e18, 10_000);
+        t[3] = ITieredBoostCalculator.Tier(50_000e18, 2000);
+        t[4] = ITieredBoostCalculator.Tier(100_000e18, 1000);
+        address calc = address(new TieredBoostCalculator(1000, 36_000, t));
+        vm.prank(admin);
+        staking.setBoostCalculator(calc);
+
+        address[] memory users = new address[](2);
+        users[0] = alice;
+        users[1] = bob;
+        staking.refreshBoost(users);
+        assertEq(staking.boostBps(alice), 36_000);
+        assertEq(staking.boostBps(bob), 12_666);
+        assertEq(staking.totalWeight(), 100_000e18 * 36_000 / 10_000 + 1000e18 * 12_666 / 10_000);
+
+        // Dropping below $100k re-snapshots at the $50k tier: 0.1 + 3.5 × 10k / 19,999.8 -> 1.85x.
+        vm.prank(alice);
+        staking.unstake(0, 1e18);
+        assertEq(staking.boostBps(alice), 18_500);
     }
 
     function test_setBoostCalculator_zeroOrNonAdmin_reverts() public {

@@ -25,7 +25,7 @@ contract NotifyRewardsRobinhood is Script {
     address constant STAKING_V2 = 0xfD1CC0751D5d9C0D5f9eAd6b8525FdEe22423b76;
     address constant TREASURY_SAFE = 0x8f974d82EEaa9725ecC40600f12093B14080dA54;
 
-    uint256 constant SPY_USD_BUDGET = 2000e18;
+    uint256 constant SPY_USD_BUDGET = 2500e18;
     uint256 constant MAX_PRICE_AGE = 90 minutes;
 
     function run() external {
