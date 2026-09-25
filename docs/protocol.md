@@ -101,6 +101,7 @@ The protocol is organized into three layers (vaults are deployed directly and re
 | **EUSDManager**               | `src/eusd/EUSDManager.sol`      | eUSD stablecoin CDP engine (ERC-1967/UUPS proxy). Custodies eToken collateral, mints/burns eUSD against fresh oracle prices, accrues the stability fee to the treasury, and runs redemptions (sorted riskiest-first list) and partial liquidations. Exits (repay/close/liquidate/redeem) are never gated. See §15.                                                                                                                          |
 | **OwnStakingV2**              | `src/staking/OwnStakingV2.sol`     | $MONEY staking (ERC-1967/UUPS proxy). Stake eUSD as earning principal, $MONEY as the boost leg; SPY rewards stream Synthetix-style over `weight = eusdStaked × boost`. Boost priced by a swappable IBoostCalculator; oracle gates weight, never funds. See §15.                                                                                                                                                                              |
 | **LinearBoostCalculator**     | `src/staking/LinearBoostCalculator.sol` | Launch boost calculator: 0.1× floor rising linearly to 3.6× at 3.0 coverage. Immutable pure pricing; splitting-neutral by shape. Replaced (not upgraded) via `setBoostCalculator` — swaps reviewed with core-contract rigor.                                                                                                                                                                                                          |
+| **TieredBoostCalculator**    | `src/staking/TieredBoostCalculator.sol` | Size-tiered boost calculator: same linear shape, full-boost coverage steps down as staked eUSD grows (tier table set at deploy). Immutable; splitting never gains, weight monotone in eUSD. Swapped in via `setBoostCalculator`. |
 | **OwnIncentives** *(archived)*   | `archive/OwnIncentives.sol`   | OWN emission controller for sEUSD (Aave-style index). Deprecated with the sEUSD module — superseded by OwnStakingV2; never attached on Robinhood Chain.                                                                                                                                                                                                                                                                                     |
 
 ### Oracle Contracts
@@ -997,6 +998,15 @@ the permissionless `refreshBoost` reprices positions afterwards. **Calculator sw
 security-critical**: any replacement shape (knots, steps, curves) must be reviewed with
 core-contract rigor for splitting-neutrality and eUSD-monotonicity before `setBoostCalculator`
 (audit pass 5, A5-M-05); on-chain validation deliberately does not attempt economic safety.
+
+**TieredBoostCalculator** (`src/staking/TieredBoostCalculator.sol`) keeps the linear shape but
+steps the full-boost coverage down with position size: each tier `(minEusd, maxCoverageBps)`
+applies from `minEusd` staked eUSD. Proposed table: <$10k 3.0, $10k 2.0, $25k 1.0, $50k 0.2,
+$100k+ 0.1 coverage, same 0.1×/3.6× floor and max. The constructor requires the first tier at 0,
+`minEusd` strictly ascending and `maxCoverageBps` non-increasing — the ordering under which weight
+stays monotone in staked eUSD and `min(floor·eusd + slope(eusd)·moneyValue, max·eusd)` with a
+non-decreasing slope is superadditive, so splitting never gains share (merging does, by design).
+Tier changes are a redeploy + `setBoostCalculator` + `refreshBoost`, like any calculator swap.
 
 **Boosts are snapshots**, re-taken whenever a position is touched; price moves fold in via
 `refreshBoost`, callable by anyone on anyone. The $MONEY mark is an oracle TWAP (window managed
