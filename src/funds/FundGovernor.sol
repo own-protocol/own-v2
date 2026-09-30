@@ -43,6 +43,9 @@ contract FundGovernor is IFundGovernor, Initializable, ReentrancyGuard {
     mapping(uint256 id => mapping(address account => bool)) private _voted;
     mapping(address wrapper => bool) private _isWrapper;
 
+    /// @inheritdoc IFundGovernor
+    mapping(address account => uint64) public override lastDepositAt;
+
     modifier onlyAdmin() {
         if (msg.sender != _admin()) revert NotAdmin();
         _;
@@ -130,11 +133,12 @@ contract FundGovernor is IFundGovernor, Initializable, ReentrancyGuard {
         if (s != ProposalState.Active) revert WrongState(s);
         if (msg.sender == IFund(fund).manager()) revert CreatorCannotVote();
         if (_voted[id][msg.sender]) revert AlreadyVoted();
+        Proposal storage p = _proposals[id];
+        if (lastDepositAt[msg.sender] >= p.startTime) revert DepositedAfterProposal();
         weight = votingPower(msg.sender);
         if (weight == 0) revert NoVotingPower();
 
         _voted[id][msg.sender] = true;
-        Proposal storage p = _proposals[id];
         if (support_) p.forVotes += weight;
         else p.againstVotes += weight;
         if (p.endTime > unlockAt[msg.sender]) unlockAt[msg.sender] = p.endTime;
@@ -166,6 +170,7 @@ contract FundGovernor is IFundGovernor, Initializable, ReentrancyGuard {
         uint256 received = IERC20(token).balanceOf(address(this)) - balanceBefore;
         if (received == 0) revert ZeroAmount();
         escrowOf[msg.sender][token] += received;
+        lastDepositAt[msg.sender] = uint64(block.timestamp);
         emit Deposited(msg.sender, token, received);
     }
 
@@ -287,8 +292,8 @@ contract FundGovernor is IFundGovernor, Initializable, ReentrancyGuard {
         address creator = f.manager();
         IFundStaking staking = IFundStaking(f.staking());
         address poolManager = address(IFundHook(IFundFactory(f.factory()).hook()).poolManager());
-        uint256 excluded = f.balanceOf(poolManager) + f.balanceOf(address(f)) + f.balanceOf(f.launch())
-            + f.balanceOf(creator) + staking.convertToAssets(staking.balanceOf(creator));
+        uint256 excluded =
+            f.balanceOf(poolManager) + f.balanceOf(creator) + staking.convertToAssets(staking.balanceOf(creator));
         uint256 supply = f.totalSupply();
         return supply > excluded ? supply - excluded : 0;
     }

@@ -89,7 +89,8 @@ interface IFundStaking is IERC20 {
     /// @return The fund.
     function fund() external view returns (address);
 
-    /// @notice Fund tokens held by the vault.
+    /// @notice Fund tokens staked plus yield minted to the vault. Tokens sent to the vault directly
+    ///         are not counted and earn nothing.
     /// @return The amount.
     function totalAssets() external view returns (uint256);
 

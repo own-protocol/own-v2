@@ -161,15 +161,12 @@ contract FundHook is IFundHook, IHooks, IUnlockCallback {
         if (liquidity == 0) revert InvalidSeed();
         cfg.liquidity = liquidity;
 
-        poolManager.unlock(abi.encode(Action.Seed, fund, liquidity));
+        (uint256 used0, uint256 used1) =
+            abi.decode(poolManager.unlock(abi.encode(Action.Seed, fund, liquidity)), (uint256, uint256));
+        _sweepSeedDust(fund);
 
-        uint256 shareDust = IERC20(fund).balanceOf(address(this));
-        if (shareDust != 0) IFund(fund).burn(shareDust);
-        address usdg = factory.usdg();
-        uint256 usdgDust = IERC20(usdg).balanceOf(address(this));
-        if (usdgDust != 0) IERC20(usdg).safeTransfer(factory.protocolFeeRecipient(), usdgDust);
-
-        emit PoolSeeded(fund, liquidity, usdgAmount - usdgDust, shareAmount - shareDust);
+        if (cfg.usdgIsCurrency0) emit PoolSeeded(fund, liquidity, used0, used1);
+        else emit PoolSeeded(fund, liquidity, used1, used0);
     }
 
     /// @inheritdoc IFundHook
@@ -226,9 +223,7 @@ contract FundHook is IFundHook, IHooks, IUnlockCallback {
             (,, uint128 liquidity) = abi.decode(data, (Action, address, uint128));
             params.liquidityDelta = SafeCast.toInt256(uint256(liquidity));
             (BalanceDelta delta,) = poolManager.modifyLiquidity(key, params, "");
-            _settle(key.currency0, delta.amount0());
-            _settle(key.currency1, delta.amount1());
-            return "";
+            return abi.encode(_settle(key.currency0, delta.amount0()), _settle(key.currency1, delta.amount1()));
         }
 
         (,, address recipient) = abi.decode(data, (Action, address, address));
@@ -484,12 +479,23 @@ contract FundHook is IFundHook, IHooks, IUnlockCallback {
         return protocolFee + creatorFee;
     }
 
+    // Sweeps the whole balance: the hook holds nothing between seeds, so anything else was donated.
+    function _sweepSeedDust(
+        address fund
+    ) private {
+        uint256 shareDust = IERC20(fund).balanceOf(address(this));
+        if (shareDust != 0) IFund(fund).burn(shareDust);
+        address usdg = factory.usdg();
+        uint256 usdgDust = IERC20(usdg).balanceOf(address(this));
+        if (usdgDust != 0) IERC20(usdg).safeTransfer(factory.protocolFeeRecipient(), usdgDust);
+    }
+
     function _settle(
         Currency currency,
         int128 delta
-    ) private {
-        if (delta >= 0) return;
-        uint256 amount = uint256(-int256(delta));
+    ) private returns (uint256 amount) {
+        if (delta >= 0) return 0;
+        amount = uint256(-int256(delta));
         poolManager.sync(currency);
         IERC20(Currency.unwrap(currency)).safeTransfer(address(poolManager), amount);
         poolManager.settle();

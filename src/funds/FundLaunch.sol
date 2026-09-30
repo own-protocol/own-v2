@@ -152,10 +152,10 @@ contract FundLaunch is IFundLaunch, Initializable, ReentrancyGuard {
         uint256 usdgValue = Math.mulDiv(totalUsdg, PRECISION, 10 ** IERC20Metadata(usdg).decimals());
         uint256 premiumValue = Math.mulDiv(basketValue, BPS + _config.launchPremiumBps, BPS);
 
+        // A miss is not final: whoever calls picks the prices, so a dip must not fail a launch that
+        // could still graduate. Failure comes from {markFailed} after the deadline.
         if (basketValue == 0 || basketValue < minGraduationUsd || usdgValue == 0 || premiumValue <= usdgValue) {
-            status = Status.Failed;
-            emit LaunchFailed(basketValue);
-            return;
+            revert NotGraduated(basketValue);
         }
 
         status = Status.Succeeded;

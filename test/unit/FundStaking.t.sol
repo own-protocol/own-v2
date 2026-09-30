@@ -29,6 +29,15 @@ contract FundStakingTest is FundTestBase {
         assertEq(staking.totalAssets(), 60_000e18 + minted);
     }
 
+    function test_accrue_donationEarnsNoYield() public {
+        vm.prank(bob);
+        fund.transfer(address(staking), 40_000e18);
+        assertEq(staking.totalAssets(), 60_000e18);
+        vm.warp(block.timestamp + 1 days);
+        _refreshFeeds();
+        assertEq(staking.accrue(), uint256(60_000e18) * 10 / 10_000);
+    }
+
     function test_accrue_higherTierAtHigherPremium() public {
         _setFeed(address(fund), 1.6e8); // NAV ~0.769, so ~108% premium: tier 3, 0.3% a day
         vm.warp(block.timestamp + 1 days);

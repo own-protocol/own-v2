@@ -9,18 +9,20 @@ import {GovernanceConfig} from "./types/FundTypes.sol";
 ///         - The creator (the fund's manager) proposes a new basket. Proposing casts the creator's
 ///           fixed share of the vote (30% by default) in favour.
 ///         - Holders share the rest (70% by default) in proportion to the fund tokens they vote
-///           with, measured against the fund tokens held by holders when the proposal was made
-///           (supply minus the pool, locked mints, unclaimed launch allocations and the creator's
-///           own balance). Fund tokens, staked fund tokens and admin-listed ERC-4626 wrappers of
-///           the staked token all count, valued in fund tokens.
+///           with, measured against the fund tokens outside the creator's hands when the proposal
+///           was made (supply minus the pool and the creator's own balance; locked mints and
+///           unclaimed launch allocations count). Fund tokens, staked fund tokens and admin-listed
+///           ERC-4626 wrappers of the staked token all count, valued in fund tokens.
 ///         - A proposal passes with at least 50% of the total vote in favour, of which at least
 ///           20% comes from holders. So the creator alone can never pass one, and holders alone
 ///           need 50 of their 70 points.
 ///         - After voting there is a delay during which the admin can veto, then anyone executes.
 ///
 ///         Voting power is escrowed, not snapshotted: holders deposit tokens here and those tokens
-///         stay locked until the end of every proposal they voted on. That rules out flash-loan
-///         votes and voting the same tokens twice, and costs pool swaps nothing.
+///         stay locked until the end of every proposal they voted on. Only an account whose last
+///         deposit came before a proposal was made can vote on it, so tokens that were outside
+///         the count at that moment never vote. That rules out flash-loan votes and voting the
+///         same tokens twice, and costs pool swaps nothing.
 ///
 ///         The admin can replace this module per fund ({IFund-setGovernor}) with another design
 ///         (quadratic voting, futarchy, bribe markets) or upgrade it for every fund through the
@@ -163,6 +165,9 @@ interface IFundGovernor {
     /// @notice Escrowed tokens are locked until the proposals voted on end.
     error TokensLocked();
 
+    /// @notice The voter deposited after the proposal was made.
+    error DepositedAfterProposal();
+
     /// @notice The token does not count for voting.
     error NotVoteToken();
 
@@ -206,6 +211,7 @@ interface IFundGovernor {
     ) external;
 
     /// @notice Vote with everything the caller has escrowed. Locks the escrow until voting ends.
+    ///         Reverts if the caller's last deposit was at or after the proposal's start.
     /// @param id      Proposal id.
     /// @param support Whether in favour.
     /// @return weight Fund-token value voted.
@@ -293,8 +299,8 @@ interface IFundGovernor {
         address account
     ) external view returns (uint256);
 
-    /// @notice Fund tokens held by holders now: supply minus the pool, locked mints, unclaimed
-    ///         launch allocations and the creator's own fund and staked balance.
+    /// @notice Fund tokens outside the creator's hands now: supply minus the pool and the
+    ///         creator's own fund and staked balance.
     /// @return The amount.
     function eligibleSupply() external view returns (uint256);
 
@@ -306,6 +312,13 @@ interface IFundGovernor {
         address account,
         address token
     ) external view returns (uint256);
+
+    /// @notice When `account` last deposited.
+    /// @param account The account.
+    /// @return Timestamp.
+    function lastDepositAt(
+        address account
+    ) external view returns (uint64);
 
     /// @notice When `account`'s escrow unlocks.
     /// @param account The account.

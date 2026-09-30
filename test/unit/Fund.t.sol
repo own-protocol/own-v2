@@ -6,6 +6,48 @@ import {IFund} from "../../src/interfaces/IFund.sol";
 import {FundMetadata, LockOption, PlatformMetadata} from "../../src/interfaces/types/FundTypes.sol";
 import {FundTestBase} from "../helpers/FundTestBase.sol";
 import {MockSwapRouter} from "../helpers/MockSwapRouter.sol";
+import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+
+/// @dev Stands in as the fund's governor and tries to change the basket when it is paid mid-swap.
+contract BasketSwapper is ERC20 {
+    Fund internal immutable fund;
+    address internal immutable replacement;
+
+    constructor(
+        Fund fund_,
+        address replacement_
+    ) ERC20("Hop", "HOP") {
+        fund = fund_;
+        replacement = replacement_;
+    }
+
+    function mint(
+        address to,
+        uint256 amount
+    ) external {
+        _mint(to, amount);
+    }
+
+    function _update(
+        address from,
+        address to,
+        uint256 value
+    ) internal override {
+        super._update(from, to, value);
+        if (to == address(fund)) {
+            address[] memory a = fund.assets();
+            a[2] = replacement;
+            uint16[] memory w = new uint16[](3);
+            w[0] = 4000;
+            w[1] = 3000;
+            w[2] = 3000;
+            fund.setTargetWeights(a, w);
+            // Refill the reused slot so the old per-slot balance check would pass.
+            IERC20(replacement).transfer(address(fund), IERC20(replacement).balanceOf(address(this)));
+        }
+    }
+}
 
 contract FundTest is FundTestBase {
     MockSwapRouter internal router;
@@ -279,6 +321,46 @@ contract FundTest is FundTestBase {
         fund.rebalance(_swap(10e9, 7.4e18, 7.4e18));
     }
 
+    function test_rebalance_allowanceRefillsLinearly() public {
+        tsla.mint(address(router), 100e18);
+        vm.startPrank(creator);
+        fund.rebalance(_swap(10e9, 7.4e18, 7.4e18));
+        fund.rebalance(_swap(10e9, 7.4e18, 7.4e18));
+        fund.rebalance(_swap(10e9, 7.4e18, 7.4e18));
+        vm.stopPrank();
+
+        // Half a day drains ~$5k of the ~$9k used: one more $3k sale fits, a second does not.
+        vm.warp(block.timestamp + 12 hours);
+        _refreshFeeds();
+        vm.startPrank(creator);
+        fund.rebalance(_swap(10e9, 7.4e18, 7.4e18));
+        vm.expectRevert(IFund.RebalanceVolumeExceeded.selector);
+        fund.rebalance(_swap(10e9, 7.4e18, 7.4e18));
+        vm.stopPrank();
+    }
+
+    function test_rebalance_basketChangeMidSwap_reverts() public {
+        BasketSwapper hop = new BasketSwapper(fund, address(spare));
+        vm.prank(admin);
+        fund.setGovernor(address(hop));
+        hop.mint(address(router), 1);
+        spare.mint(address(hop), tsla.balanceOf(address(fund))); // 85 SPARE ($85) for $34k of TSLA
+
+        // Sells all TSLA; the payout swaps TSLA's slot for SPARE so the balance checks would skip it.
+        uint256 tslaHeld = tsla.balanceOf(address(fund));
+        IFund.RebalanceParams memory p = IFund.RebalanceParams({
+            sellAsset: address(tsla),
+            sellAmount: tslaHeld,
+            buyAsset: address(pons),
+            minBuyAmount: 0,
+            router: address(router),
+            data: abi.encodeCall(MockSwapRouter.swap, (address(tsla), tslaHeld, address(hop), 1))
+        });
+        vm.prank(creator);
+        vm.expectRevert(IFund.RebalanceCallFailed.selector);
+        fund.rebalance(p);
+    }
+
     function test_rebalance_tooMuchValueLost_reverts() public {
         tsla.mint(address(router), 100e18);
         // 7 TSLA = $2,800, 6.7% below the $3,000 sold.
@@ -363,6 +445,57 @@ contract FundTest is FundTestBase {
         vm.prank(address(governor));
         vm.expectRevert(abi.encodeWithSelector(IFund.AssetHasBalance.selector, address(pons)));
         fund.setTargetWeights(a, w);
+    }
+
+    function test_setTargetWeights_dustDoesNotBlockDrop() public {
+        (address[] memory withSpare, uint16[] memory w4) = _basketWithSpare();
+        vm.prank(address(governor));
+        fund.setTargetWeights(withSpare, w4);
+
+        spare.mint(address(fund), 1); // a griefer's 1 wei
+        address[] memory a = new address[](3);
+        a[0] = address(net);
+        a[1] = address(pons);
+        a[2] = address(tsla);
+        uint16[] memory w = new uint16[](3);
+        w[0] = 4000;
+        w[1] = 3000;
+        w[2] = 3000;
+        vm.prank(address(governor));
+        fund.setTargetWeights(a, w);
+        assertFalse(fund.isAsset(address(spare)));
+    }
+
+    function test_setTargetWeights_moreThanDust_reverts() public {
+        (address[] memory withSpare, uint16[] memory w4) = _basketWithSpare();
+        vm.prank(address(governor));
+        fund.setTargetWeights(withSpare, w4);
+
+        spare.mint(address(fund), 101e18); // $101, over 0.1% of the ~$100k basket
+        address[] memory a = new address[](3);
+        a[0] = address(net);
+        a[1] = address(pons);
+        a[2] = address(tsla);
+        uint16[] memory w = new uint16[](3);
+        w[0] = 4000;
+        w[1] = 3000;
+        w[2] = 3000;
+        vm.prank(address(governor));
+        vm.expectRevert(abi.encodeWithSelector(IFund.AssetHasBalance.selector, address(spare)));
+        fund.setTargetWeights(a, w);
+    }
+
+    function _basketWithSpare() internal view returns (address[] memory a, uint16[] memory w) {
+        a = new address[](4);
+        a[0] = address(net);
+        a[1] = address(pons);
+        a[2] = address(tsla);
+        a[3] = address(spare);
+        w = new uint16[](4);
+        w[0] = 4000;
+        w[1] = 2000;
+        w[2] = 3000;
+        w[3] = 1000;
     }
 
     function test_setTargetWeights_badSum_reverts() public {

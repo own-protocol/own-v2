@@ -28,8 +28,9 @@ Uniswap v4 pool against USDG, and pays stakers new tokens while it trades above 
 2. **Launch window (36h).** Anyone deposits any basket asset plus USDG worth 30% of it. Deposits
    are not capped per asset; the manager rebalances any excess after launch.
 3. **Finalize.** Assets are valued at closing oracle prices (basket value R, USDG U).
-   - If R is below the minimum, every depositor is refunded. If nobody finalizes within 7 days of
-     the close, anyone can mark the launch failed and refunds open.
+   - If R is below the minimum, finalizing reverts, so a price dip picked by the caller cannot
+     fail a launch that could still graduate. If nobody finalizes within 7 days of the close,
+     anyone can mark the launch failed and every depositor is refunded.
    - Otherwise depositors get C = R fund tokens, one per dollar they brought. The pool gets
      M = U·C / (1.3R − U) newly minted tokens plus all the USDG, as one full-range position that
      the hook owns and can never remove.
@@ -52,16 +53,19 @@ Uniswap v4 pool against USDG, and pays stakers new tokens while it trades above 
    - **Portfolio changes:** only the governor can change assets and weights. The creator
      proposes and holds 30% of the vote; holders share 70% in proportion to the fund tokens they
      vote with (fund token, sMF1, or an admin-listed ERC-4626 wrapper of sMF1), measured against
-     holder supply at proposal time (pool, locked mints, unclaimed launch tokens and the
-     creator's own balance excluded). A proposal passes with at least 50% in favour, of which at
+     supply at proposal time minus the pool and the creator's own balance (locked mints and
+     unclaimed launch tokens count). A proposal passes with at least 50% in favour, of which at
      least 20% from holders. Voting runs 3 days, then a 1-day delay in which the admin can veto,
      then anyone executes within 7 days. Votes are escrowed: tokens deposited to vote stay locked
-     until the end of every proposal voted on, which rules out flash-loan and double votes. The
+     until the end of every proposal voted on, and only accounts whose last deposit came before
+     the proposal can vote on it. That rules out flash-loan and double votes, and tokens moved in
+     after the count (from the creator, the pool or new mints) cannot vote. The
      admin can swap in another governor (quadratic, futarchy, bribes) per fund.
    - **Rebalancing:** the manager swaps between basket assets through admin-allowed routers. Each
-     swap may lose at most 2% of oracle value, and the value sold is capped at 10% of the basket
-     per rolling day. Dropping an asset takes a vote to weight 0, a rebalance out, then a vote to
-     remove it.
+     swap may lose at most 2% of oracle value, and the value sold is rate limited to 10% of the
+     basket: that much at once, refilling linearly over a day. Dropping an asset takes a vote to
+     weight 0, a rebalance out, then a vote to remove it; dust worth up to 0.1% of the basket is
+     left behind so a donation cannot block the removal.
    - **Market price:** the hook adds the pool tick to an accumulator before every swap and keeps
      checkpoints at least 5 minutes apart for over 3 hours. `FundTwapFeed` reads a 30-minute TWAP
      from it (USDG counted as $1). Anyone can call `hook.poke(fund)` to keep checkpoints regular

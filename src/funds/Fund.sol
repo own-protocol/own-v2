@@ -35,6 +35,9 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuard {
     /// @notice Maximum number of lock options.
     uint256 public constant MAX_LOCK_OPTIONS = 8;
 
+    /// @notice A dropped asset worth at most this share of the basket may be left behind, in basis points.
+    uint256 public constant DUST_BPS = 10;
+
     uint256 private constant NO_LOCK = type(uint256).max;
 
     /// @inheritdoc IFund
@@ -76,11 +79,12 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuard {
 
     mapping(address account => Lock[]) private _locks;
 
-    /// @notice Start of the current rebalance volume window.
-    uint64 public rebalanceWindowStart;
+    /// @notice When {rebalanceVolume} was last updated.
+    uint64 public rebalanceVolumeUpdatedAt;
 
-    /// @notice Oracle value sold by rebalances in the current window, 18 decimals USD.
-    uint192 public rebalanceWindowVolume;
+    /// @notice Oracle value sold by rebalances that still counts against the cap, 18 decimals USD.
+    ///         It drains linearly at the full cap per day.
+    uint192 public rebalanceVolume;
 
     /// @inheritdoc IFund
     address public override governor;
@@ -298,7 +302,7 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuard {
     function setTargetWeights(
         address[] calldata assets_,
         uint16[] calldata weightsBps_
-    ) external override onlyGovernor {
+    ) external override onlyGovernor nonReentrant {
         if (!launched) revert NotLaunched();
         _setBasket(assets_, weightsBps_);
     }
@@ -396,14 +400,8 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuard {
     }
 
     /// @inheritdoc IFund
-    function totalValue() public view override returns (uint256 value) {
-        IFundOracle o = IFundOracle(IFundFactory(factory).oracle());
-        uint256 n = _assets.length;
-        for (uint256 i; i < n; ++i) {
-            address a = _assets[i];
-            uint256 bal = IERC20(a).balanceOf(address(this));
-            if (bal != 0) value += _value(a, bal, o.price(a));
-        }
+    function totalValue() public view override returns (uint256) {
+        return _valueOf(_assets, IFundOracle(IFundFactory(factory).oracle()));
     }
 
     /// @inheritdoc IFund
@@ -482,15 +480,14 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuard {
         IFundFactory fac,
         uint256 soldValue
     ) internal {
-        uint256 volume = rebalanceWindowVolume;
-        if (block.timestamp >= uint256(rebalanceWindowStart) + 1 days) {
-            rebalanceWindowStart = uint64(block.timestamp);
-            volume = 0;
-        }
-        volume += soldValue;
         // Measured against the post-trade basket, which differs from pre-trade by at most the slippage bound.
-        if (volume > Math.mulDiv(totalValue(), fac.rebalanceVolumeCapBps(), BPS)) revert RebalanceVolumeExceeded();
-        rebalanceWindowVolume = SafeCast.toUint192(volume);
+        uint256 cap = Math.mulDiv(totalValue(), fac.rebalanceVolumeCapBps(), BPS);
+        uint256 drained = Math.mulDiv(cap, block.timestamp - rebalanceVolumeUpdatedAt, 1 days);
+        uint256 volume = rebalanceVolume;
+        volume = (volume > drained ? volume - drained : 0) + soldValue;
+        if (volume > cap) revert RebalanceVolumeExceeded();
+        rebalanceVolume = SafeCast.toUint192(volume);
+        rebalanceVolumeUpdatedAt = uint64(block.timestamp);
     }
 
     function _pull(
@@ -627,12 +624,33 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuard {
         }
         if (sum != BPS) revert InvalidBasket();
 
+        uint256 dustLimit;
         for (uint256 i; i < old.length; ++i) {
-            if (!isAsset[old[i]] && IERC20(old[i]).balanceOf(address(this)) != 0) revert AssetHasBalance(old[i]);
+            address a = old[i];
+            if (isAsset[a]) continue;
+            uint256 bal = IERC20(a).balanceOf(address(this));
+            if (bal == 0) continue;
+            // Anyone can send a dropped asset back to the fund, so a balance worth under DUST_BPS of the
+            // basket is left behind rather than blocking the change.
+            (bool ok, uint256 p) = o.tryPrice(a);
+            if (dustLimit == 0) dustLimit = Math.mulDiv(_valueOf(old, o), DUST_BPS, BPS);
+            if (!ok || _value(a, bal, p) > dustLimit) revert AssetHasBalance(a);
         }
 
         _assets = assets_;
         emit TargetWeightsSet(assets_, weightsBps_);
+    }
+
+    function _valueOf(
+        address[] memory assets,
+        IFundOracle o
+    ) internal view returns (uint256 value) {
+        uint256 n = assets.length;
+        for (uint256 i; i < n; ++i) {
+            address a = assets[i];
+            uint256 bal = IERC20(a).balanceOf(address(this));
+            if (bal != 0) value += _value(a, bal, o.price(a));
+        }
     }
 
     function _value(

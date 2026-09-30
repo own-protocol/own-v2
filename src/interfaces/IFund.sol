@@ -174,7 +174,7 @@ interface IFund is IERC20 {
     /// @notice Basket asset list or weights are invalid.
     error InvalidBasket();
 
-    /// @notice An asset with a balance cannot be removed from the basket.
+    /// @notice An asset with more than a dust balance cannot be removed from the basket.
     /// @param asset The asset.
     error AssetHasBalance(address asset);
 
@@ -279,8 +279,9 @@ interface IFund is IERC20 {
     ) external returns (uint256 amount);
 
     /// @notice Swap between two basket assets through an allowed router. Manager only. Each swap
-    ///         may lose at most the factory's slippage bound in oracle value, and the value sold per
-    ///         rolling day is capped, which bounds what a manager can leak through bad fills.
+    ///         may lose at most the factory's slippage bound in oracle value, and the value sold is
+    ///         rate limited: at most the daily cap at once, with the allowance refilling linearly
+    ///         over a day. This bounds what a manager can leak through bad fills.
     /// @param params Swap parameters.
     function rebalance(
         RebalanceParams calldata params
@@ -288,7 +289,8 @@ interface IFund is IERC20 {
 
     /// @notice Replace the basket's asset list and target weights. Governor only, after launch.
     ///         Assets still held cannot be dropped (vote their weight to zero, rebalance out, then
-    ///         drop them); new assets need an oracle feed.
+    ///         drop them), except dust worth at most `DUST_BPS` of the basket, which is left behind.
+    ///         New assets need an oracle feed.
     /// @param assets_     Assets.
     /// @param weightsBps_ Target weights (sum 10 000).
     function setTargetWeights(

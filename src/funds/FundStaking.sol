@@ -35,6 +35,9 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuard {
 
     YieldTier[] private _tiers;
 
+    // Tracked rather than read from the balance, so donated fund tokens earn no yield.
+    uint256 private _totalStaked;
+
     constructor() ERC20("", "") {
         _disableInitializers();
     }
@@ -60,6 +63,7 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuard {
         _accrue();
         shares = convertToShares(assets);
         if (shares == 0) revert ZeroAmount();
+        _totalStaked += assets;
         IERC20(fund).safeTransferFrom(msg.sender, address(this), assets);
         _mint(receiver, shares);
         emit Staked(msg.sender, receiver, assets, shares);
@@ -74,6 +78,7 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuard {
         if (receiver == address(0)) revert ZeroAddress();
         _accrue();
         assets = convertToAssets(shares);
+        _totalStaked -= assets;
         _burn(msg.sender, shares);
         IERC20(fund).safeTransfer(receiver, assets);
         emit Unstaked(msg.sender, receiver, assets, shares);
@@ -107,7 +112,7 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuard {
 
     /// @inheritdoc IFundStaking
     function totalAssets() public view override returns (uint256) {
-        return IERC20(fund).balanceOf(address(this));
+        return _totalStaked;
     }
 
     /// @inheritdoc IFundStaking
@@ -165,7 +170,10 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuard {
         if (rate == 0) return 0;
 
         minted = Math.mulDiv(staked, rate * elapsed, BPS * 1 days);
-        if (minted != 0) IFund(fund).moduleMint(address(this), minted);
+        if (minted != 0) {
+            _totalStaked += minted;
+            IFund(fund).moduleMint(address(this), minted);
+        }
         emit YieldAccrued(elapsed, premium, rate, minted);
     }
 
