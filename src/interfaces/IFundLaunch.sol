@@ -6,9 +6,7 @@ import {LaunchConfig} from "./types/FundTypes.sol";
 /// @title IFundLaunch — the deposit window that starts a fund
 /// @notice For a fixed window, anyone deposits any basket asset plus USDG worth `usdgRatioBps` of
 ///         the asset's value. When the window closes:
-///         - below the minimum raise (valued at closing prices), {finalize} reverts so it can be
-///           retried if prices recover; if nobody finalizes by the deadline, anyone marks the
-///           launch failed and everyone is refunded;
+///         - below the minimum raise (valued at closing prices), everyone is refunded;
 ///         - otherwise every basket asset moves into the fund, each depositor can claim one fund
 ///           token per dollar of basket value they brought (at closing prices), and all the USDG
 ///           plus newly minted fund tokens seed the fund's Uniswap v4 pool as permanently locked,
@@ -74,10 +72,6 @@ interface IFundLaunch {
     /// @notice The finalization deadline has not passed yet.
     error FinalizeDeadlineNotPassed();
 
-    /// @notice At current prices the basket is below the minimum raise, or too small for the USDG.
-    /// @param basketValue Basket value, 18 decimals USD.
-    error NotGraduated(uint256 basketValue);
-
     /// @notice The asset is not a mintable basket asset.
     /// @param asset The asset.
     error AssetNotAccepted(address asset);
@@ -110,11 +104,10 @@ interface IFundLaunch {
         uint256 amount
     ) external returns (uint256 usdgPaid);
 
-    /// @notice Close the launch once the window has ended. Anyone can call. Reverts while the
-    ///         basket misses the minimum at current prices.
+    /// @notice Close the launch once the window has ended. Anyone can call.
     function finalize() external;
 
-    /// @notice Mark the launch failed if it was not finalized by the deadline. Anyone can call.
+    /// @notice Mark the launch failed if it was not finalized in time. Anyone can call.
     function markFailed() external;
 
     /// @notice Claim the caller's fund tokens after a successful launch.

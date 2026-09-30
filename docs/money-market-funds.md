@@ -28,9 +28,9 @@ Uniswap v4 pool against USDG, and pays stakers new tokens while it trades above 
 2. **Launch window (36h).** Anyone deposits any basket asset plus USDG worth 30% of it. Deposits
    are not capped per asset; the manager rebalances any excess after launch.
 3. **Finalize.** Assets are valued at closing oracle prices (basket value R, USDG U).
-   - If R is below the minimum, finalizing reverts, so a price dip picked by the caller cannot
-     fail a launch that could still graduate. If nobody finalizes within 7 days of the close,
-     anyone can mark the launch failed and every depositor is refunded.
+   - If R is below the minimum, every depositor is refunded. If nobody finalizes within 7 days of
+     the close, anyone can mark the launch failed and refunds open. The keeper should finalize
+     right at the close, because whoever finalizes first fixes the closing prices.
    - Otherwise depositors get C = R fund tokens, one per dollar they brought. The pool gets
      M = U·C / (1.3R − U) newly minted tokens plus all the USDG, as one full-range position that
      the hook owns and can never remove.
@@ -49,7 +49,9 @@ Uniswap v4 pool against USDG, and pays stakers new tokens while it trades above 
    - **Staking:** while the market TWAP trades at a premium to NAV, sMF1 earns the daily rate of
      the highest tier that premium reaches, paid by minting new fund tokens. Every tier is capped
      by the factory's yield cap (3% a day by default, admin-set; lowering it clamps existing
-     tiers at once). There is no yield at or below NAV.
+     tiers at once). There is no yield at or below NAV. Yield is distributed every 8 hours (the
+     keeper calls `accrue`; stakes and unstakes accrue too), and one accrual covers at most 8
+     hours, so a single premium reading never sets the rate for longer.
    - **Portfolio changes:** only the governor can change assets and weights. The creator
      proposes and holds 30% of the vote; holders share 70% in proportion to the fund tokens they
      vote with (fund token, sMF1, or an admin-listed ERC-4626 wrapper of sMF1), measured against

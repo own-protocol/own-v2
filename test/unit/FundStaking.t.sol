@@ -22,10 +22,10 @@ contract FundStakingTest is FundTestBase {
 
     function test_accrue_payTierRateForPremium() public {
         // Premium is 30%: tier 1 pays 0.1% a day.
-        vm.warp(block.timestamp + 1 days);
+        vm.warp(block.timestamp + 8 hours);
         _refreshFeeds();
         uint256 minted = staking.accrue();
-        assertEq(minted, uint256(60_000e18) * 10 * 1 days / (10_000 * 1 days));
+        assertEq(minted, uint256(60_000e18) * 10 * 8 hours / (10_000 * 1 days));
         assertEq(staking.totalAssets(), 60_000e18 + minted);
     }
 
@@ -33,17 +33,17 @@ contract FundStakingTest is FundTestBase {
         vm.prank(bob);
         fund.transfer(address(staking), 40_000e18);
         assertEq(staking.totalAssets(), 60_000e18);
-        vm.warp(block.timestamp + 1 days);
+        vm.warp(block.timestamp + 8 hours);
         _refreshFeeds();
-        assertEq(staking.accrue(), uint256(60_000e18) * 10 / 10_000);
+        assertEq(staking.accrue(), uint256(60_000e18) * 10 / 10_000 / 3);
     }
 
     function test_accrue_higherTierAtHigherPremium() public {
         _setFeed(address(fund), 1.6e8); // NAV ~0.769, so ~108% premium: tier 3, 0.3% a day
-        vm.warp(block.timestamp + 1 days);
+        vm.warp(block.timestamp + 8 hours);
         _refreshFeeds();
         uint256 minted = staking.accrue();
-        assertEq(minted, uint256(60_000e18) * 30 * 1 days / (10_000 * 1 days));
+        assertEq(minted, uint256(60_000e18) * 30 * 8 hours / (10_000 * 1 days));
     }
 
     function test_accrue_noYieldBelowFirstTier() public {
@@ -69,8 +69,8 @@ contract FundStakingTest is FundTestBase {
     function test_accrue_periodCapped() public {
         vm.warp(block.timestamp + 5 days);
         _refreshFeeds();
-        uint256 minted = staking.accrue();
-        assertEq(minted, uint256(60_000e18) * 10 * 1 days / (10_000 * 1 days));
+        uint256 minted = staking.accrue(); // one distribution period, not five days
+        assertEq(minted, uint256(60_000e18) * 10 * 8 hours / (10_000 * 1 days));
     }
 
     function test_accrue_dilutesNonStakers() public {
@@ -96,11 +96,11 @@ contract FundStakingTest is FundTestBase {
     }
 
     function test_unstake_returnsPrincipalPlusYield() public {
-        vm.warp(block.timestamp + 1 days);
+        vm.warp(block.timestamp + 8 hours);
         _refreshFeeds();
         vm.prank(alice);
         uint256 assets = staking.unstake(60_000e18, alice);
-        assertApproxEqAbs(assets, 60_000e18 + uint256(60_000e18) * 10 * 1 days / (10_000 * 1 days), 1);
+        assertApproxEqAbs(assets, 60_000e18 + uint256(60_000e18) * 10 * 8 hours / (10_000 * 1 days), 1);
         assertEq(fund.balanceOf(alice), assets);
     }
 
@@ -175,10 +175,10 @@ contract FundStakingTest is FundTestBase {
         assertEq(staking.rateForPremium(20_000), 15);
 
         _setFeed(address(fund), 1.6e8);
-        vm.warp(block.timestamp + 1 days);
+        vm.warp(block.timestamp + 8 hours);
         _refreshFeeds();
         uint256 minted = staking.accrue();
-        assertEq(minted, uint256(60_000e18) * 15 / 10_000);
+        assertEq(minted, uint256(60_000e18) * 15 / 10_000 / 3);
     }
 
     function test_maxYieldRate_zeroStopsYield() public {
@@ -194,9 +194,9 @@ contract FundStakingTest is FundTestBase {
         tiers[0] = YieldTier({minPremiumBps: 0, rateBpsPerDay: 300});
         vm.prank(admin);
         staking.setYieldTiers(tiers);
-        vm.warp(block.timestamp + 1 days);
+        vm.warp(block.timestamp + 8 hours);
         _refreshFeeds();
-        assertEq(staking.accrue(), uint256(60_000e18) * 300 / 10_000);
+        assertEq(staking.accrue(), uint256(60_000e18) * 300 / 10_000 / 3);
     }
 
     function test_nameFollowsFundMetadata() public {

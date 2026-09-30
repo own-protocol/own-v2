@@ -21,8 +21,9 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
-    /// @notice Longest period a single accrual covers; keepers accrue far more often than this.
-    uint256 public constant MAX_ACCRUAL_PERIOD = 1 days;
+    /// @notice Longest period one accrual covers. Yield is distributed every 8 hours, so one
+    ///         premium reading never sets the rate for longer than that.
+    uint256 public constant MAX_ACCRUAL_PERIOD = 8 hours;
 
     /// @notice Maximum number of yield tiers.
     uint256 public constant MAX_TIERS = 8;

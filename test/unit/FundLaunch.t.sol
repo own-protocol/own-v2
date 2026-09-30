@@ -151,31 +151,13 @@ contract FundLaunchTest is FundTestBase {
         assertApproxEqAbs(usdg.balanceOf(protocolTreasury) - treasuryBefore, 30_000e6 + 1, 1);
     }
 
-    function test_finalize_belowMinimum_revertsThenFailsAtDeadline() public {
+    function test_finalize_belowMinimum_fails() public {
         _deposit(alice, address(net), 10e9); // $3k < $10k minimum
         vm.warp(launch.endTime());
         _refreshFeeds();
-        vm.expectRevert(abi.encodeWithSelector(IFundLaunch.NotGraduated.selector, 3000e18));
         launch.finalize();
-        assertEq(uint8(launch.status()), uint8(IFundLaunch.Status.Open));
-
-        vm.warp(launch.finalizeDeadline() + 1);
-        launch.markFailed();
         assertEq(uint8(launch.status()), uint8(IFundLaunch.Status.Failed));
         assertFalse(fund.launched());
-    }
-
-    function test_finalize_dipCannotFailLaunch() public {
-        _deposit(alice, address(net), 40e9); // $12k, just over the $10k minimum
-        vm.warp(launch.endTime());
-        _refreshFeeds();
-        _setFeed(address(net), 240e8); // a dip: $9.6k
-        vm.expectRevert(abi.encodeWithSelector(IFundLaunch.NotGraduated.selector, 9600e18));
-        launch.finalize();
-
-        _setFeed(address(net), 300e8); // recovered
-        launch.finalize();
-        assertEq(uint8(launch.status()), uint8(IFundLaunch.Status.Succeeded));
     }
 
     function test_finalize_twice_reverts() public {
@@ -210,9 +192,8 @@ contract FundLaunchTest is FundTestBase {
         vm.warp(launch.endTime());
         _refreshFeeds();
         _setFeed(address(net), 60e8); // basket now $60k, and $60k * 1.3 < $90k USDG
-        vm.expectRevert(abi.encodeWithSelector(IFundLaunch.NotGraduated.selector, 60_000e18));
         launch.finalize();
-        assertEq(uint8(launch.status()), uint8(IFundLaunch.Status.Open));
+        assertEq(uint8(launch.status()), uint8(IFundLaunch.Status.Failed));
     }
 
     // ──────────────────────────────────────────────────────────
