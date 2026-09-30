@@ -3,10 +3,17 @@ pragma solidity 0.8.28;
 
 import {Fund} from "../../src/funds/Fund.sol";
 import {FundFactory} from "../../src/funds/FundFactory.sol";
+import {FundGovernor} from "../../src/funds/FundGovernor.sol";
 import {FundLaunch} from "../../src/funds/FundLaunch.sol";
 import {FundStaking} from "../../src/funds/FundStaking.sol";
 import {IFundFactory} from "../../src/interfaces/IFundFactory.sol";
-import {CreateFundParams, LaunchConfig} from "../../src/interfaces/types/FundTypes.sol";
+import {
+    CreateFundParams,
+    GovernanceConfig,
+    LaunchConfig,
+    PlatformMetadata,
+    YieldTier
+} from "../../src/interfaces/types/FundTypes.sol";
 import {FundTestBase} from "../helpers/FundTestBase.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import {UpgradeableBeacon} from "@openzeppelin/contracts/proxy/beacon/UpgradeableBeacon.sol";
@@ -31,6 +38,78 @@ contract FundFactoryTest is FundTestBase {
         assertEq(cfg.launchPremiumBps, 3000);
         assertEq(cfg.finalizeGrace, 7 days);
         assertEq(factory.hook(), address(hook));
+        assertEq(factory.maxYieldRateBpsPerDay(), 300);
+        GovernanceConfig memory gov = factory.governanceConfig();
+        assertEq(gov.creatorPowerBps, 3000);
+        assertEq(gov.passThresholdBps, 5000);
+        assertEq(gov.minUserSupportBps, 2000);
+        assertEq(gov.votingPeriod, 3 days);
+        assertEq(gov.executionDelay, 1 days);
+        assertEq(gov.executionWindow, 7 days);
+    }
+
+    function test_createFund_wiresGovernor() public {
+        _createFund();
+        assertEq(fund.governor(), address(governor));
+        assertEq(governor.fund(), address(fund));
+        assertEq(governor.config().creatorPowerBps, 3000);
+    }
+
+    function test_createFund_tierAboveYieldCap_reverts() public {
+        CreateFundParams memory p = _defaultParams();
+        p.yieldTiers[2] = YieldTier({minPremiumBps: 10_000, rateBpsPerDay: 301});
+        vm.prank(launcher);
+        vm.expectRevert();
+        factory.createFund(p);
+    }
+
+    function test_setMaxYieldRate_ownerOnlyAndBounded() public {
+        vm.prank(attacker);
+        vm.expectRevert(IFundFactory.NotOwner.selector);
+        factory.setMaxYieldRate(100);
+        vm.startPrank(admin);
+        vm.expectRevert(IFundFactory.InvalidYieldCap.selector);
+        factory.setMaxYieldRate(10_001);
+        factory.setMaxYieldRate(100);
+        vm.stopPrank();
+        assertEq(factory.maxYieldRateBpsPerDay(), 100);
+    }
+
+    function test_setGovernanceConfig_appliesToNewFunds() public {
+        GovernanceConfig memory c = factory.governanceConfig();
+        c.creatorPowerBps = 2000;
+        c.votingPeriod = 5 days;
+        vm.prank(admin);
+        factory.setGovernanceConfig(c);
+        _createFund();
+        assertEq(governor.config().creatorPowerBps, 2000);
+        assertEq(governor.config().votingPeriod, 5 days);
+    }
+
+    function test_setGovernanceConfig_invalid_reverts() public {
+        GovernanceConfig memory c = factory.governanceConfig();
+        c.votingPeriod = 10 minutes;
+        vm.prank(admin);
+        vm.expectRevert(IFundFactory.InvalidGovernanceConfig.selector);
+        factory.setGovernanceConfig(c);
+    }
+
+    function test_setPlatformMetadata_ownerOnly() public {
+        PlatformMetadata memory m =
+            PlatformMetadata({name: "MONEY Market Funds by Own", description: "About Own.", url: "https://own.money"});
+        vm.prank(attacker);
+        vm.expectRevert(IFundFactory.NotOwner.selector);
+        factory.setPlatformMetadata(m);
+        vm.prank(admin);
+        factory.setPlatformMetadata(m);
+        assertEq(factory.platformMetadata().description, "About Own.");
+    }
+
+    function test_upgradeModule_governor() public {
+        address impl = address(new FundGovernor());
+        vm.prank(admin);
+        factory.upgradeModule(IFundFactory.Module.Governor, impl);
+        assertEq(UpgradeableBeacon(factory.beacon(IFundFactory.Module.Governor)).implementation(), impl);
     }
 
     function test_createFund_whitelistedLauncher() public {
@@ -58,7 +137,7 @@ contract FundFactoryTest is FundTestBase {
         factory.setWhitelistEnabled(false);
         CreateFundParams memory p = _defaultParams();
         vm.prank(attacker);
-        (address f,,) = factory.createFund(p);
+        (address f,,,) = factory.createFund(p);
         assertTrue(factory.isFund(f));
     }
 
@@ -93,7 +172,8 @@ contract FundFactoryTest is FundTestBase {
                             lpTreasury,
                             address(new Fund()),
                             address(new FundLaunch()),
-                            address(new FundStaking())
+                            address(new FundStaking()),
+                            address(new FundGovernor())
                         )
                     )
                 )

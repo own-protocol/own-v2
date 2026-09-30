@@ -9,7 +9,8 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 ///         to NAV, the vault mints new fund tokens to itself at the rate of the highest tier the
 ///         premium reaches, so each share is worth more fund tokens. No premium, no yield. The new
 ///         tokens have no new backing: non-stakers are diluted, which is the incentive to stake.
-///         Yield accrues before every stake and unstake, so late stakers cannot capture it.
+///         Yield accrues before every stake and unstake, so late stakers cannot capture it. Tier
+///         rates are daily and capped by the factory's admin-set yield cap (3% a day by default).
 interface IFundStaking is IERC20 {
     /// @notice Emitted on a stake.
     /// @param sender   Payer of the fund tokens.
@@ -28,9 +29,9 @@ interface IFundStaking is IERC20 {
     /// @notice Emitted when yield accrues.
     /// @param elapsed        Seconds covered.
     /// @param premiumBps     Premium read.
-    /// @param rateBpsPerWeek Rate applied.
+    /// @param rateBpsPerDay  Daily rate applied.
     /// @param minted         Fund tokens minted to the vault.
-    event YieldAccrued(uint256 elapsed, int256 premiumBps, uint256 rateBpsPerWeek, uint256 minted);
+    event YieldAccrued(uint256 elapsed, int256 premiumBps, uint256 rateBpsPerDay, uint256 minted);
 
     /// @notice Emitted when the yield tiers change.
     /// @param tiers New tiers.
@@ -45,7 +46,7 @@ interface IFundStaking is IERC20 {
     /// @notice Caller is not the platform admin.
     error NotAdmin();
 
-    /// @notice Tiers are not ascending, or a rate exceeds the hard cap.
+    /// @notice Tiers are not ascending, or a rate exceeds the factory's yield cap.
     error InvalidTiers();
 
     /// @notice Initialise a staking proxy. Called once by the factory.
@@ -100,9 +101,9 @@ interface IFundStaking is IERC20 {
     /// @return The tiers.
     function yieldTiers() external view returns (YieldTier[] memory);
 
-    /// @notice Weekly rate for a premium.
+    /// @notice Daily rate paid at a premium, after the factory's yield cap.
     /// @param premiumBps Premium over NAV, in basis points.
-    /// @return Rate, in basis points per week.
+    /// @return Rate, in basis points per day.
     function rateForPremium(
         int256 premiumBps
     ) external view returns (uint256);

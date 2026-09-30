@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
+import {IPoolManager} from "v4-core/src/interfaces/IPoolManager.sol";
 import {PoolKey} from "v4-core/src/types/PoolKey.sol";
 
 /// @title IFundHook — Uniswap v4 hook for every fund's USDG pool
@@ -10,7 +11,9 @@ import {PoolKey} from "v4-core/src/types/PoolKey.sol";
 ///           pool's LP fee, and sends them straight to their recipients;
 ///         - owns each pool's launch liquidity as a full-range position with no removal path, so it
 ///           is locked forever (LP fees on it can still be collected to the LP fee recipient);
-///         - lets the platform admin set each pool's LP fee.
+///         - lets the platform admin set each pool's LP fee;
+///         - records a tick accumulator before every swap, so each pool's time-weighted average
+///           price can be read onchain without a keeper ({consult}).
 interface IFundHook {
     /// @notice Emitted when a fund's pool is registered.
     /// @param fund   The fund.
@@ -75,6 +78,13 @@ interface IFundHook {
     /// @notice A hook entry point this hook does not enable was called.
     error HookNotImplemented();
 
+    /// @notice Record the pool's current price in its TWAP accumulator. Anyone can call; swaps do
+    ///         it automatically, so this only keeps checkpoints regular while trading is quiet.
+    /// @param fund The fund.
+    function poke(
+        address fund
+    ) external;
+
     /// @notice Register a fund's pool. Factory only.
     /// @param fund The fund.
     function registerFund(
@@ -110,6 +120,28 @@ interface IFundHook {
         address fund,
         uint24 lpFee
     ) external;
+
+    /// @notice Time-weighted mean tick of the fund's pool over at least the last `window` seconds.
+    ///         The measured period starts at the newest checkpoint at least `window` old, so it can
+    ///         run longer than `window` when trading is quiet.
+    /// @param fund   The fund.
+    /// @param window Minimum period, in seconds (up to {maxTwapWindow}).
+    /// @return ok       False if the pool is not seeded, the window is out of range, or there is
+    ///                  not yet enough history.
+    /// @return meanTick Arithmetic mean tick, rounded towards negative infinity.
+    /// @return period   Seconds actually measured.
+    function consult(
+        address fund,
+        uint32 window
+    ) external view returns (bool ok, int24 meanTick, uint32 period);
+
+    /// @notice Longest window {consult} serves, in seconds.
+    /// @return The window.
+    function maxTwapWindow() external view returns (uint32);
+
+    /// @notice The Uniswap v4 pool manager.
+    /// @return The pool manager.
+    function poolManager() external view returns (IPoolManager);
 
     /// @notice The fund's pool key.
     /// @param fund The fund.

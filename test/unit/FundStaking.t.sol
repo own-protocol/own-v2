@@ -21,20 +21,20 @@ contract FundStakingTest is FundTestBase {
     }
 
     function test_accrue_payTierRateForPremium() public {
-        // Premium is 30%: tier 1 pays 0.5% a week.
+        // Premium is 30%: tier 1 pays 0.1% a day.
         vm.warp(block.timestamp + 1 days);
         _refreshFeeds();
         uint256 minted = staking.accrue();
-        assertEq(minted, uint256(60_000e18) * 50 * 1 days / (10_000 * 1 weeks));
+        assertEq(minted, uint256(60_000e18) * 10 * 1 days / (10_000 * 1 days));
         assertEq(staking.totalAssets(), 60_000e18 + minted);
     }
 
     function test_accrue_higherTierAtHigherPremium() public {
-        _setFeed(address(fund), 1.6e8); // NAV ~0.769, so ~108% premium: tier 3, 1% a week
+        _setFeed(address(fund), 1.6e8); // NAV ~0.769, so ~108% premium: tier 3, 0.3% a day
         vm.warp(block.timestamp + 1 days);
         _refreshFeeds();
         uint256 minted = staking.accrue();
-        assertEq(minted, uint256(60_000e18) * 100 * 1 days / (10_000 * 1 weeks));
+        assertEq(minted, uint256(60_000e18) * 30 * 1 days / (10_000 * 1 days));
     }
 
     function test_accrue_noYieldBelowFirstTier() public {
@@ -61,7 +61,7 @@ contract FundStakingTest is FundTestBase {
         vm.warp(block.timestamp + 5 days);
         _refreshFeeds();
         uint256 minted = staking.accrue();
-        assertEq(minted, uint256(60_000e18) * 50 * 1 days / (10_000 * 1 weeks));
+        assertEq(minted, uint256(60_000e18) * 10 * 1 days / (10_000 * 1 days));
     }
 
     function test_accrue_dilutesNonStakers() public {
@@ -91,7 +91,7 @@ contract FundStakingTest is FundTestBase {
         _refreshFeeds();
         vm.prank(alice);
         uint256 assets = staking.unstake(60_000e18, alice);
-        assertApproxEqAbs(assets, 60_000e18 + uint256(60_000e18) * 50 * 1 days / (10_000 * 1 weeks), 1);
+        assertApproxEqAbs(assets, 60_000e18 + uint256(60_000e18) * 10 * 1 days / (10_000 * 1 days), 1);
         assertEq(fund.balanceOf(alice), assets);
     }
 
@@ -107,7 +107,7 @@ contract FundStakingTest is FundTestBase {
 
     function test_setYieldTiers_adminOnly() public {
         YieldTier[] memory tiers = new YieldTier[](1);
-        tiers[0] = YieldTier({minPremiumBps: 500, rateBpsPerWeek: 25});
+        tiers[0] = YieldTier({minPremiumBps: 500, rateBpsPerDay: 25});
         vm.prank(creator);
         vm.expectRevert(IFundStaking.NotAdmin.selector);
         staking.setYieldTiers(tiers);
@@ -119,7 +119,7 @@ contract FundStakingTest is FundTestBase {
 
     function test_setYieldTiers_rateAboveCap_reverts() public {
         YieldTier[] memory tiers = new YieldTier[](1);
-        tiers[0] = YieldTier({minPremiumBps: 500, rateBpsPerWeek: 201});
+        tiers[0] = YieldTier({minPremiumBps: 500, rateBpsPerDay: 301});
         vm.prank(admin);
         vm.expectRevert(IFundStaking.InvalidTiers.selector);
         staking.setYieldTiers(tiers);
@@ -127,8 +127,8 @@ contract FundStakingTest is FundTestBase {
 
     function test_setYieldTiers_notAscending_reverts() public {
         YieldTier[] memory tiers = new YieldTier[](2);
-        tiers[0] = YieldTier({minPremiumBps: 500, rateBpsPerWeek: 25});
-        tiers[1] = YieldTier({minPremiumBps: 500, rateBpsPerWeek: 50});
+        tiers[0] = YieldTier({minPremiumBps: 500, rateBpsPerDay: 25});
+        tiers[1] = YieldTier({minPremiumBps: 500, rateBpsPerDay: 50});
         vm.prank(admin);
         vm.expectRevert(IFundStaking.InvalidTiers.selector);
         staking.setYieldTiers(tiers);
@@ -137,8 +137,65 @@ contract FundStakingTest is FundTestBase {
     function test_rateForPremium_tiers() public view {
         assertEq(staking.rateForPremium(-100), 0);
         assertEq(staking.rateForPremium(999), 0);
-        assertEq(staking.rateForPremium(1000), 50);
-        assertEq(staking.rateForPremium(5000), 75);
-        assertEq(staking.rateForPremium(20_000), 100);
+        assertEq(staking.rateForPremium(1000), 10);
+        assertEq(staking.rateForPremium(5000), 20);
+        assertEq(staking.rateForPremium(20_000), 30);
+    }
+
+    function test_setYieldTiers_threePercentADayAllowed() public {
+        YieldTier[] memory tiers = new YieldTier[](1);
+        tiers[0] = YieldTier({minPremiumBps: 500, rateBpsPerDay: 300});
+        vm.prank(admin);
+        staking.setYieldTiers(tiers);
+        assertEq(staking.rateForPremium(3000), 300);
+    }
+
+    function test_maxYieldRate_adminRaisesCap() public {
+        vm.prank(admin);
+        factory.setMaxYieldRate(500);
+        YieldTier[] memory tiers = new YieldTier[](1);
+        tiers[0] = YieldTier({minPremiumBps: 500, rateBpsPerDay: 500});
+        vm.prank(admin);
+        staking.setYieldTiers(tiers);
+        assertEq(staking.rateForPremium(3000), 500);
+    }
+
+    function test_maxYieldRate_loweredCapClampsExistingTiers() public {
+        vm.prank(admin);
+        factory.setMaxYieldRate(15);
+        assertEq(staking.rateForPremium(20_000), 15);
+
+        _setFeed(address(fund), 1.6e8);
+        vm.warp(block.timestamp + 1 days);
+        _refreshFeeds();
+        uint256 minted = staking.accrue();
+        assertEq(minted, uint256(60_000e18) * 15 / 10_000);
+    }
+
+    function test_maxYieldRate_zeroStopsYield() public {
+        vm.prank(admin);
+        factory.setMaxYieldRate(0);
+        vm.warp(block.timestamp + 1 days);
+        _refreshFeeds();
+        assertEq(staking.accrue(), 0);
+    }
+
+    function test_accrue_fullCapPaysThreePercentADay() public {
+        YieldTier[] memory tiers = new YieldTier[](1);
+        tiers[0] = YieldTier({minPremiumBps: 0, rateBpsPerDay: 300});
+        vm.prank(admin);
+        staking.setYieldTiers(tiers);
+        vm.warp(block.timestamp + 1 days);
+        _refreshFeeds();
+        assertEq(staking.accrue(), uint256(60_000e18) * 300 / 10_000);
+    }
+
+    function test_nameFollowsFundMetadata() public {
+        assertEq(staking.name(), "Staked MONEY Market Fund 1");
+        assertEq(staking.symbol(), "sMF1");
+        vm.prank(creator);
+        fund.setMetadata("Robin Fund", "ROBIN", "", "");
+        assertEq(staking.name(), "Staked Robin Fund");
+        assertEq(staking.symbol(), "sROBIN");
     }
 }

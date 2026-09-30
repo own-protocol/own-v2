@@ -3,10 +3,17 @@ pragma solidity 0.8.28;
 
 import {IFund} from "../interfaces/IFund.sol";
 import {IFundFactory} from "../interfaces/IFundFactory.sol";
+import {IFundGovernor} from "../interfaces/IFundGovernor.sol";
 import {IFundHook} from "../interfaces/IFundHook.sol";
 import {IFundLaunch} from "../interfaces/IFundLaunch.sol";
 import {IFundStaking} from "../interfaces/IFundStaking.sol";
-import {CreateFundParams, LaunchConfig} from "../interfaces/types/FundTypes.sol";
+import {
+    CreateFundParams,
+    GovernanceConfig,
+    GovernanceConfigLib,
+    LaunchConfig,
+    PlatformMetadata
+} from "../interfaces/types/FundTypes.sol";
 import {BPS} from "../interfaces/types/Types.sol";
 import {BeaconProxy} from "@openzeppelin/contracts/proxy/beacon/BeaconProxy.sol";
 import {UpgradeableBeacon} from "@openzeppelin/contracts/proxy/beacon/UpgradeableBeacon.sol";
@@ -16,7 +23,7 @@ import {UUPSUpgradeable} from "@openzeppelin/contracts/proxy/utils/UUPSUpgradeab
 /// @title FundFactory — MONEY Market Fund platform hub
 /// @notice See {IFundFactory}.
 /// @dev Runs behind an ERC-1967 proxy (UUPS); storage is append-only across upgrades. It owns
-///      the three module beacons, so the factory owner upgrades every fund through
+///      the four module beacons, so the factory owner upgrades every fund through
 ///      {upgradeModule}. The hook is wired once after deployment ({setHook}) because its address
 ///      must be mined against the factory address.
 contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
@@ -25,6 +32,9 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
 
     /// @notice Hard cap on the rebalance slippage bound.
     uint16 public constant MAX_REBALANCE_SLIPPAGE_BPS = 1000;
+
+    /// @notice Default staking yield cap: 3% a day.
+    uint16 public constant DEFAULT_MAX_YIELD_RATE_BPS_PER_DAY = 300;
 
     /// @inheritdoc IFundFactory
     address public override owner;
@@ -72,6 +82,12 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
     address[] private _funds;
     mapping(Module module => address) private _beacons;
 
+    /// @inheritdoc IFundFactory
+    uint16 public override maxYieldRateBpsPerDay;
+
+    GovernanceConfig private _governanceConfig;
+    PlatformMetadata private _platformMetadata;
+
     /// @notice Emitted once, when the hook is wired.
     /// @param hook The hook.
     event HookSet(address hook);
@@ -100,6 +116,7 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
     /// @param fundImpl               Fund implementation.
     /// @param launchImpl             Launch implementation.
     /// @param stakingImpl            Staking implementation.
+    /// @param governorImpl           Governor implementation.
     function initialize(
         address owner_,
         address oracle_,
@@ -108,7 +125,8 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
         address lpFeeRecipient_,
         address fundImpl,
         address launchImpl,
-        address stakingImpl
+        address stakingImpl,
+        address governorImpl
     ) external initializer {
         if (
             owner_ == address(0) || oracle_ == address(0) || usdg_ == address(0) || protocolFeeRecipient_ == address(0)
@@ -137,9 +155,24 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
         _launchConfig = cfg;
         emit LaunchConfigSet(cfg);
 
+        maxYieldRateBpsPerDay = DEFAULT_MAX_YIELD_RATE_BPS_PER_DAY;
+        emit MaxYieldRateSet(DEFAULT_MAX_YIELD_RATE_BPS_PER_DAY);
+
+        GovernanceConfig memory gov = GovernanceConfig({
+            creatorPowerBps: 3000,
+            passThresholdBps: 5000,
+            minUserSupportBps: 2000,
+            votingPeriod: 3 days,
+            executionDelay: 1 days,
+            executionWindow: 7 days
+        });
+        _governanceConfig = gov;
+        emit GovernanceConfigSet(gov);
+
         _beacons[Module.Fund] = address(new UpgradeableBeacon(fundImpl, address(this)));
         _beacons[Module.Launch] = address(new UpgradeableBeacon(launchImpl, address(this)));
         _beacons[Module.Staking] = address(new UpgradeableBeacon(stakingImpl, address(this)));
+        _beacons[Module.Governor] = address(new UpgradeableBeacon(governorImpl, address(this)));
     }
 
     /// @notice Wire the pool hook. Owner only, once.
@@ -156,7 +189,7 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
     /// @inheritdoc IFundFactory
     function createFund(
         CreateFundParams calldata p
-    ) external override returns (address fund, address launch, address staking) {
+    ) external override returns (address fund, address launch, address staking, address governor) {
         if (whitelistEnabled && !isLauncher[msg.sender]) revert NotLauncher();
         if (hook == address(0)) revert HookNotSet();
 
@@ -171,12 +204,18 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
             new BeaconProxy(_beacons[Module.Staking], abi.encodeCall(IFundStaking.initialize, (fund, p.yieldTiers)))
         );
 
-        IFund(fund).setModules(launch, staking);
+        governor = address(
+            new BeaconProxy(
+                _beacons[Module.Governor], abi.encodeCall(IFundGovernor.initialize, (fund, _governanceConfig))
+            )
+        );
+
+        IFund(fund).setModules(launch, staking, governor);
         IFundHook(hook).registerFund(fund);
         isFund[fund] = true;
         _funds.push(fund);
 
-        emit FundCreated(fund, launch, staking, msg.sender, p.manager);
+        emit FundCreated(fund, launch, staking, governor, msg.sender, p.manager);
     }
 
     /// @inheritdoc IFundFactory
@@ -266,6 +305,32 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
     }
 
     /// @inheritdoc IFundFactory
+    function setMaxYieldRate(
+        uint16 rateBpsPerDay
+    ) external override onlyOwner {
+        if (rateBpsPerDay > BPS) revert InvalidYieldCap();
+        maxYieldRateBpsPerDay = rateBpsPerDay;
+        emit MaxYieldRateSet(rateBpsPerDay);
+    }
+
+    /// @inheritdoc IFundFactory
+    function setGovernanceConfig(
+        GovernanceConfig calldata config
+    ) external override onlyOwner {
+        if (!GovernanceConfigLib.isValid(config)) revert InvalidGovernanceConfig();
+        _governanceConfig = config;
+        emit GovernanceConfigSet(config);
+    }
+
+    /// @inheritdoc IFundFactory
+    function setPlatformMetadata(
+        PlatformMetadata calldata metadata
+    ) external override onlyOwner {
+        _platformMetadata = metadata;
+        emit PlatformMetadataSet(metadata);
+    }
+
+    /// @inheritdoc IFundFactory
     function upgradeModule(
         Module module,
         address implementation
@@ -294,6 +359,16 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
     /// @inheritdoc IFundFactory
     function launchConfig() external view override returns (LaunchConfig memory) {
         return _launchConfig;
+    }
+
+    /// @inheritdoc IFundFactory
+    function governanceConfig() external view override returns (GovernanceConfig memory) {
+        return _governanceConfig;
+    }
+
+    /// @inheritdoc IFundFactory
+    function platformMetadata() external view override returns (PlatformMetadata memory) {
+        return _platformMetadata;
     }
 
     /// @inheritdoc IFundFactory

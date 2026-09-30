@@ -3,6 +3,7 @@ pragma solidity 0.8.28;
 
 import {Fund} from "../../src/funds/Fund.sol";
 import {FundFactory} from "../../src/funds/FundFactory.sol";
+import {FundGovernor} from "../../src/funds/FundGovernor.sol";
 import {FundHook} from "../../src/funds/FundHook.sol";
 import {FundLaunch} from "../../src/funds/FundLaunch.sol";
 import {FundOracle} from "../../src/funds/FundOracle.sol";
@@ -48,6 +49,7 @@ abstract contract FundTestBase is Test {
     Fund internal fund;
     FundLaunch internal launch;
     FundStaking internal staking;
+    FundGovernor internal governor;
 
     uint32 internal constant STALENESS = 1 days;
 
@@ -79,7 +81,8 @@ abstract contract FundTestBase is Test {
                 lpTreasury,
                 address(new Fund()),
                 address(new FundLaunch()),
-                address(new FundStaking())
+                address(new FundStaking()),
+                address(new FundGovernor())
             )
         );
         factory = FundFactory(address(new ERC1967Proxy(address(factoryImpl), init)));
@@ -103,6 +106,8 @@ abstract contract FundTestBase is Test {
     function _defaultParams() internal view returns (CreateFundParams memory p) {
         p.name = "MONEY Market Fund 1";
         p.symbol = "MF1";
+        p.logoURI = "ipfs://mf1-logo";
+        p.description = "Robinhood Chain ecosystem tokens and stocks.";
         p.assets = new address[](3);
         p.assets[0] = address(net);
         p.assets[1] = address(pons);
@@ -119,9 +124,9 @@ abstract contract FundTestBase is Test {
         p.lockOptions[0] = LockOption({duration: 7 days, discountBps: 500});
         p.lockOptions[1] = LockOption({duration: 30 days, discountBps: 1000});
         p.yieldTiers = new YieldTier[](3);
-        p.yieldTiers[0] = YieldTier({minPremiumBps: 1000, rateBpsPerWeek: 50});
-        p.yieldTiers[1] = YieldTier({minPremiumBps: 5000, rateBpsPerWeek: 75});
-        p.yieldTiers[2] = YieldTier({minPremiumBps: 10_000, rateBpsPerWeek: 100});
+        p.yieldTiers[0] = YieldTier({minPremiumBps: 1000, rateBpsPerDay: 10});
+        p.yieldTiers[1] = YieldTier({minPremiumBps: 5000, rateBpsPerDay: 20});
+        p.yieldTiers[2] = YieldTier({minPremiumBps: 10_000, rateBpsPerDay: 30});
     }
 
     function _createFund() internal {
@@ -132,10 +137,11 @@ abstract contract FundTestBase is Test {
         CreateFundParams memory p
     ) internal {
         vm.prank(launcher);
-        (address f, address l, address s) = factory.createFund(p);
+        (address f, address l, address s, address g) = factory.createFund(p);
         fund = Fund(f);
         launch = FundLaunch(l);
         staking = FundStaking(s);
+        governor = FundGovernor(g);
     }
 
     /// @dev Creates the fund, takes $36k NET + $30k PONS + $34k TSLA from alice and bob, and

@@ -13,17 +13,19 @@ struct LockOption {
 }
 
 /// @notice One staker-yield tier: while the fund trades at a premium of at least `minPremiumBps`
-///         over NAV, stakers earn `rateBpsPerWeek` of the staked balance, paid in new fund tokens.
-/// @param minPremiumBps   Premium threshold, in basis points of NAV (ascending across tiers).
-/// @param rateBpsPerWeek  Weekly rate, in basis points of the staked balance.
+///         over NAV, stakers earn `rateBpsPerDay` of the staked balance, paid in new fund tokens.
+/// @param minPremiumBps  Premium threshold, in basis points of NAV (ascending across tiers).
+/// @param rateBpsPerDay  Daily rate, in basis points of the staked balance (capped by the factory).
 struct YieldTier {
     uint16 minPremiumBps;
-    uint16 rateBpsPerWeek;
+    uint16 rateBpsPerDay;
 }
 
 /// @notice Everything a launcher chooses when creating a fund.
 /// @param name                 Fund token name.
 /// @param symbol               Fund token symbol.
+/// @param logoURI              Logo URI chosen by the creator.
+/// @param description          Description chosen by the creator.
 /// @param assets               Basket assets (each must have an oracle feed).
 /// @param weightsBps           Target weight per asset; sums to 10 000.
 /// @param manager              Creator address that manages the basket (weights, rebalances).
@@ -35,6 +37,8 @@ struct YieldTier {
 struct CreateFundParams {
     string name;
     string symbol;
+    string logoURI;
+    string description;
     address[] assets;
     uint16[] weightsBps;
     address manager;
@@ -56,4 +60,62 @@ struct LaunchConfig {
     uint32 finalizeGrace;
     uint16 usdgRatioBps;
     uint16 launchPremiumBps;
+}
+
+/// @notice Voting rules for a fund's portfolio changes, snapshotted into each proposal.
+/// @param creatorPowerBps    Fixed share of the total vote held by the creator (the proposer).
+/// @param passThresholdBps   Share of the total vote in favour needed to pass.
+/// @param minUserSupportBps  Share of the total vote in favour that must come from holders.
+/// @param votingPeriod       Voting length, in seconds.
+/// @param executionDelay     Wait after voting ends before a passed proposal can execute (admin
+///                           veto window).
+/// @param executionWindow    Time after the delay within which it must execute, or it expires.
+struct GovernanceConfig {
+    uint16 creatorPowerBps;
+    uint16 passThresholdBps;
+    uint16 minUserSupportBps;
+    uint32 votingPeriod;
+    uint32 executionDelay;
+    uint32 executionWindow;
+}
+
+/// @title GovernanceConfigLib — bounds shared by the factory and every governor
+library GovernanceConfigLib {
+    /// @notice Whether `c` is within bounds: the creator's share leaves room for holders, the
+    ///         thresholds are reachable, and every period is between one hour and 30 days (the
+    ///         delay may be zero).
+    /// @param c The parameters.
+    /// @return True if valid.
+    function isValid(
+        GovernanceConfig memory c
+    ) internal pure returns (bool) {
+        return c.creatorPowerBps < 10_000 && c.passThresholdBps != 0 && c.passThresholdBps <= 10_000
+            && c.minUserSupportBps <= 10_000 - c.creatorPowerBps && c.votingPeriod >= 1 hours
+            && c.votingPeriod <= 30 days && c.executionDelay <= 30 days && c.executionWindow >= 1 hours
+            && c.executionWindow <= 30 days;
+    }
+}
+
+/// @notice Platform-wide metadata every fund carries: what a MONEY Market Fund is and who runs it.
+/// @param name        Platform name, e.g. "MONEY Market Funds by Own".
+/// @param description About the platform, Own and the MONEY token.
+/// @param url         Platform link.
+struct PlatformMetadata {
+    string name;
+    string description;
+    string url;
+}
+
+/// @notice A fund's full metadata: the creator's fields plus the platform's.
+/// @param name        Fund token name.
+/// @param symbol      Fund token symbol.
+/// @param logoURI     Logo URI.
+/// @param description Fund description.
+/// @param platform    Platform metadata.
+struct FundMetadata {
+    string name;
+    string symbol;
+    string logoURI;
+    string description;
+    PlatformMetadata platform;
 }

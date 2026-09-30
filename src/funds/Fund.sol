@@ -4,7 +4,7 @@ pragma solidity 0.8.28;
 import {IFund} from "../interfaces/IFund.sol";
 import {IFundFactory} from "../interfaces/IFundFactory.sol";
 import {IFundOracle} from "../interfaces/IFundOracle.sol";
-import {CreateFundParams, LockOption} from "../interfaces/types/FundTypes.sol";
+import {CreateFundParams, FundMetadata, LockOption} from "../interfaces/types/FundTypes.sol";
 import {BPS, PRECISION} from "../interfaces/types/Types.sol";
 import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
@@ -82,6 +82,15 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuard {
     /// @notice Oracle value sold by rebalances in the current window, 18 decimals USD.
     uint192 public rebalanceWindowVolume;
 
+    /// @inheritdoc IFund
+    address public override governor;
+
+    /// @inheritdoc IFund
+    string public override logoURI;
+
+    /// @inheritdoc IFund
+    string public override description;
+
     modifier onlyAdmin() {
         if (msg.sender != IFundFactory(factory).owner()) revert NotAdmin();
         _;
@@ -94,6 +103,11 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuard {
 
     modifier onlyManager() {
         if (msg.sender != manager) revert NotManager();
+        _;
+    }
+
+    modifier onlyGovernor() {
+        if (msg.sender != governor) revert NotGovernor();
         _;
     }
 
@@ -112,8 +126,7 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuard {
     ) external override initializer {
         if (params.manager == address(0)) revert ZeroAddress();
         factory = msg.sender;
-        _fundName = params.name;
-        _fundSymbol = params.symbol;
+        _setMetadata(params.name, params.symbol, params.logoURI, params.description);
         manager = params.manager;
         emit ManagerSet(params.manager);
         _setCreatorFee(params.creatorFeeBps, params.creatorFeeRecipient);
@@ -124,12 +137,15 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuard {
     /// @inheritdoc IFund
     function setModules(
         address launch_,
-        address staking_
+        address staking_,
+        address governor_
     ) external override onlyFactory {
         if (launch != address(0)) revert ModulesAlreadySet();
-        if (launch_ == address(0) || staking_ == address(0)) revert ZeroAddress();
+        if (launch_ == address(0) || staking_ == address(0) || governor_ == address(0)) revert ZeroAddress();
         launch = launch_;
         staking = staking_;
+        governor = governor_;
+        emit GovernorSet(governor_);
     }
 
     /// @inheritdoc IFund
@@ -282,7 +298,7 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuard {
     function setTargetWeights(
         address[] calldata assets_,
         uint16[] calldata weightsBps_
-    ) external override onlyManager {
+    ) external override onlyGovernor {
         if (!launched) revert NotLaunched();
         _setBasket(assets_, weightsBps_);
     }
@@ -300,6 +316,26 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuard {
         LockOption[] calldata options
     ) external override onlyAdmin {
         _setLockOptions(options);
+    }
+
+    /// @inheritdoc IFund
+    function setGovernor(
+        address governor_
+    ) external override onlyAdmin {
+        if (governor_ == address(0)) revert ZeroAddress();
+        governor = governor_;
+        emit GovernorSet(governor_);
+    }
+
+    /// @inheritdoc IFund
+    function setMetadata(
+        string calldata name_,
+        string calldata symbol_,
+        string calldata logoURI_,
+        string calldata description_
+    ) external override {
+        if (msg.sender != manager && msg.sender != IFundFactory(factory).owner()) revert NotManagerOrAdmin();
+        _setMetadata(name_, symbol_, logoURI_, description_);
     }
 
     /// @inheritdoc IFund
@@ -329,6 +365,17 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuard {
     /// @return The symbol.
     function symbol() public view override returns (string memory) {
         return _fundSymbol;
+    }
+
+    /// @inheritdoc IFund
+    function metadata() external view override returns (FundMetadata memory) {
+        return FundMetadata({
+            name: _fundName,
+            symbol: _fundSymbol,
+            logoURI: logoURI,
+            description: description,
+            platform: IFundFactory(factory).platformMetadata()
+        });
     }
 
     /// @inheritdoc IFund
@@ -521,6 +568,25 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuard {
         creatorFeeBps = feeBps;
         creatorFeeRecipient = recipient;
         emit CreatorFeeSet(feeBps, recipient);
+    }
+
+    function _setMetadata(
+        string calldata name_,
+        string calldata symbol_,
+        string calldata logoURI_,
+        string calldata description_
+    ) internal {
+        uint256 nameLen = bytes(name_).length;
+        uint256 symbolLen = bytes(symbol_).length;
+        if (
+            nameLen == 0 || nameLen > 64 || symbolLen == 0 || symbolLen > 16 || bytes(logoURI_).length > 512
+                || bytes(description_).length > 2000
+        ) revert InvalidMetadata();
+        _fundName = name_;
+        _fundSymbol = symbol_;
+        logoURI = logoURI_;
+        description = description_;
+        emit MetadataSet(name_, symbol_, logoURI_, description_);
     }
 
     function _setLockOptions(

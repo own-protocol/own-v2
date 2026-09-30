@@ -1,29 +1,37 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {CreateFundParams, LaunchConfig} from "./types/FundTypes.sol";
+import {CreateFundParams, GovernanceConfig, LaunchConfig, PlatformMetadata} from "./types/FundTypes.sol";
 
 /// @title IFundFactory — creates MONEY Market Funds and holds platform-wide settings
-/// @notice Every fund is three beacon proxies (fund token + basket, launch, staking) sharing the
-///         platform's oracle, USDG and pool hook. The factory owner is the platform admin: it
-///         sets the protocol fee, the launcher whitelist, rebalance routers and launch
-///         parameters, and upgrades every fund at once through the beacons.
+/// @notice Every fund is four beacon proxies (fund token + basket, launch, staking, governor)
+///         sharing the platform's oracle, USDG and pool hook. The factory owner is the platform
+///         admin: it sets the protocol fee, the launcher whitelist, rebalance routers, launch and
+///         governance parameters, the staking yield cap and the platform metadata, and upgrades
+///         every fund at once through the beacons.
 interface IFundFactory {
     /// @notice Which beacon a call refers to.
     enum Module {
         Fund,
         Launch,
-        Staking
+        Staking,
+        Governor
     }
 
     /// @notice Emitted when a fund is created.
     /// @param fund     The fund token and basket.
     /// @param launch   Its launch contract.
     /// @param staking  Its staking vault.
+    /// @param governor Its governor.
     /// @param launcher The whitelisted caller that created it.
     /// @param manager  The creator managing it.
     event FundCreated(
-        address indexed fund, address launch, address staking, address indexed launcher, address indexed manager
+        address indexed fund,
+        address launch,
+        address staking,
+        address governor,
+        address indexed launcher,
+        address indexed manager
     );
 
     /// @notice Emitted when the protocol fee changes.
@@ -64,6 +72,18 @@ interface IFundFactory {
     /// @param config New parameters.
     event LaunchConfigSet(LaunchConfig config);
 
+    /// @notice Emitted when the staking yield cap changes.
+    /// @param rateBpsPerDay New cap, in basis points of the staked balance per day.
+    event MaxYieldRateSet(uint16 rateBpsPerDay);
+
+    /// @notice Emitted when the governance parameters for new funds change.
+    /// @param config New parameters.
+    event GovernanceConfigSet(GovernanceConfig config);
+
+    /// @notice Emitted when the platform metadata changes.
+    /// @param metadata New metadata.
+    event PlatformMetadataSet(PlatformMetadata metadata);
+
     /// @notice Emitted when a module beacon is pointed at a new implementation.
     /// @param module         The module.
     /// @param implementation The new implementation.
@@ -99,15 +119,22 @@ interface IFundFactory {
     /// @notice The slippage bound is out of range.
     error InvalidSlippage();
 
-    /// @notice Create a fund with its launch and staking vault. Whitelisted launchers only while
-    ///         whitelisting is on. The launch window opens immediately.
+    /// @notice The yield cap is out of range.
+    error InvalidYieldCap();
+
+    /// @notice A governance parameter is out of range.
+    error InvalidGovernanceConfig();
+
+    /// @notice Create a fund with its launch, staking vault and governor. Whitelisted launchers
+    ///         only while whitelisting is on. The launch window opens immediately.
     /// @param params Fund parameters.
-    /// @return fund    The fund token and basket.
-    /// @return launch  Its launch contract.
-    /// @return staking Its staking vault.
+    /// @return fund     The fund token and basket.
+    /// @return launch   Its launch contract.
+    /// @return staking  Its staking vault.
+    /// @return governor Its governor.
     function createFund(
         CreateFundParams calldata params
-    ) external returns (address fund, address launch, address staking);
+    ) external returns (address fund, address launch, address staking, address governor);
 
     /// @notice Set the protocol fee charged on pool trades, mints and redeems. Owner only.
     /// @param feeBps Fee, in basis points (capped).
@@ -167,6 +194,25 @@ interface IFundFactory {
         LaunchConfig calldata config
     ) external;
 
+    /// @notice Set the highest daily rate any staking yield tier may pay. Owner only. Applies to
+    ///         every fund at once: tiers above a lowered cap pay the cap.
+    /// @param rateBpsPerDay Cap, in basis points of the staked balance per day (at most 10 000).
+    function setMaxYieldRate(
+        uint16 rateBpsPerDay
+    ) external;
+
+    /// @notice Set the governance parameters used by funds created from now on. Owner only.
+    /// @param config New parameters.
+    function setGovernanceConfig(
+        GovernanceConfig calldata config
+    ) external;
+
+    /// @notice Set the platform metadata every fund shows. Owner only.
+    /// @param metadata New metadata.
+    function setPlatformMetadata(
+        PlatformMetadata calldata metadata
+    ) external;
+
     /// @notice Point a module beacon at a new implementation, upgrading every fund. Owner only.
     /// @param module         The module.
     /// @param implementation The new implementation.
@@ -184,7 +230,8 @@ interface IFundFactory {
     /// @notice Accept a pending ownership transfer. Pending owner only.
     function acceptOwnership() external;
 
-    /// @notice Platform admin; also the admin of every fund, launch, staking vault and the hook.
+    /// @notice Platform admin; also the admin of every fund, launch, staking vault, governor and
+    ///         the hook.
     /// @return The owner.
     function owner() external view returns (address);
 
@@ -245,6 +292,18 @@ interface IFundFactory {
     /// @notice Launch parameters used by funds created from now on.
     /// @return The parameters.
     function launchConfig() external view returns (LaunchConfig memory);
+
+    /// @notice Highest daily rate a staking yield tier may pay, in basis points.
+    /// @return The cap.
+    function maxYieldRateBpsPerDay() external view returns (uint16);
+
+    /// @notice Governance parameters used by funds created from now on.
+    /// @return The parameters.
+    function governanceConfig() external view returns (GovernanceConfig memory);
+
+    /// @notice Platform metadata every fund shows.
+    /// @return The metadata.
+    function platformMetadata() external view returns (PlatformMetadata memory);
 
     /// @notice Whether `fund` was created by this factory.
     /// @param fund The address.

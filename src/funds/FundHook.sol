@@ -15,6 +15,7 @@ import {IPoolManager} from "v4-core/src/interfaces/IPoolManager.sol";
 import {IUnlockCallback} from "v4-core/src/interfaces/callback/IUnlockCallback.sol";
 import {Hooks} from "v4-core/src/libraries/Hooks.sol";
 import {LPFeeLibrary} from "v4-core/src/libraries/LPFeeLibrary.sol";
+import {StateLibrary} from "v4-core/src/libraries/StateLibrary.sol";
 import {TickMath} from "v4-core/src/libraries/TickMath.sol";
 import {BalanceDelta, BalanceDeltaLibrary} from "v4-core/src/types/BalanceDelta.sol";
 import {BeforeSwapDelta, BeforeSwapDeltaLibrary, toBeforeSwapDelta} from "v4-core/src/types/BeforeSwapDelta.sol";
@@ -31,16 +32,31 @@ import {PoolKey} from "v4-core/src/types/PoolKey.sol";
 ///      - USDG is the unspecified side: {afterSwap} returns an unspecified delta on the USDG leg.
 ///      Either way the fee is taken from the pool manager straight to the recipients inside the
 ///      same callback, and the returned delta makes the trader pay it.
+///
+///      TWAP: before each swap moves the price, the tick that has held since the last update is
+///      added to a per-pool accumulator (as in Uniswap v3). Checkpoints are copied into a ring at
+///      most every {OBSERVATION_INTERVAL}, and the ring spans longer than {MAX_TWAP_WINDOW}, so
+///      a checkpoint old enough for any allowed window is always kept.
 contract FundHook is IFundHook, IHooks, IUnlockCallback {
     using SafeERC20 for IERC20;
     using PoolIdLibrary for PoolKey;
     using BalanceDeltaLibrary for BalanceDelta;
+    using StateLibrary for IPoolManager;
 
     /// @notice Tick spacing of every fund pool.
     int24 public constant TICK_SPACING = 60;
 
     /// @notice Hard cap on a pool's LP fee (10%, in hundredths of a basis point).
     uint24 public constant MAX_LP_FEE = 100_000;
+
+    /// @notice Minimum spacing between ring checkpoints.
+    uint32 public constant OBSERVATION_INTERVAL = 5 minutes;
+
+    /// @notice Ring size; 48 checkpoints at least 5 minutes apart span at least 235 minutes.
+    uint256 public constant OBSERVATION_SLOTS = 48;
+
+    /// @notice Longest window {consult} serves.
+    uint32 public constant MAX_TWAP_WINDOW = 3 hours;
 
     enum Action {
         Seed,
@@ -55,14 +71,26 @@ contract FundHook is IFundHook, IHooks, IUnlockCallback {
         uint128 liquidity;
     }
 
+    struct Observation {
+        uint32 timestamp;
+        int56 tickCumulative;
+    }
+
+    struct Twap {
+        Observation latest;
+        uint8 index;
+        Observation[OBSERVATION_SLOTS] ring;
+    }
+
     /// @notice The Uniswap v4 pool manager.
-    IPoolManager public immutable poolManager;
+    IPoolManager public immutable override poolManager;
 
     /// @notice The fund factory (its owner is this hook's admin).
     IFundFactory public immutable factory;
 
     mapping(address fund => PoolKey) private _keys;
     mapping(PoolId => PoolConfig) private _configs;
+    mapping(PoolId => Twap) private _twaps;
 
     modifier onlyPoolManager() {
         if (msg.sender != address(poolManager)) revert NotPoolManager();
@@ -118,6 +146,9 @@ contract FundHook is IFundHook, IHooks, IUnlockCallback {
         uint160 sqrtPrice = _sqrtPriceX96(amount0, amount1);
 
         poolManager.initialize(key, sqrtPrice);
+        Twap storage twap = _twaps[key.toId()];
+        twap.latest = Observation({timestamp: uint32(block.timestamp), tickCumulative: 0});
+        twap.ring[0] = twap.latest;
         if (cfg.lpFee != 0) poolManager.updateDynamicLPFee(key, cfg.lpFee);
 
         uint128 liquidity = FullRangeLiquidity.liquidityForAmounts(
@@ -139,6 +170,15 @@ contract FundHook is IFundHook, IHooks, IUnlockCallback {
         if (usdgDust != 0) IERC20(usdg).safeTransfer(factory.protocolFeeRecipient(), usdgDust);
 
         emit PoolSeeded(fund, liquidity, usdgAmount - usdgDust, shareAmount - shareDust);
+    }
+
+    /// @inheritdoc IFundHook
+    function poke(
+        address fund
+    ) external override {
+        PoolId id = _keys[fund].toId();
+        if (!_configs[id].seeded) revert NotRegistered();
+        _observe(id);
     }
 
     /// @inheritdoc IFundHook
@@ -216,7 +256,9 @@ contract FundHook is IFundHook, IHooks, IUnlockCallback {
         IPoolManager.SwapParams calldata params,
         bytes calldata
     ) external override onlyPoolManager returns (bytes4, BeforeSwapDelta, uint24) {
-        PoolConfig memory cfg = _configs[key.toId()];
+        PoolId id = key.toId();
+        _observe(id);
+        PoolConfig memory cfg = _configs[id];
         bool specifiedIs0 = (params.amountSpecified < 0) == params.zeroForOne;
         if (specifiedIs0 != cfg.usdgIsCurrency0) {
             return (IHooks.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
@@ -320,6 +362,51 @@ contract FundHook is IFundHook, IHooks, IUnlockCallback {
     }
 
     /// @inheritdoc IFundHook
+    function consult(
+        address fund,
+        uint32 window
+    ) external view override returns (bool ok, int24 meanTick, uint32 period) {
+        PoolId id = _keys[fund].toId();
+        if (!_configs[id].seeded || window == 0 || window > MAX_TWAP_WINDOW) return (false, 0, 0);
+        uint32 nowTs = uint32(block.timestamp);
+        if (nowTs <= window) return (false, 0, 0);
+        uint32 target = nowTs - window;
+
+        Twap storage twap = _twaps[id];
+        Observation memory latest = twap.latest;
+        (, int24 tick,,) = poolManager.getSlot0(id);
+        int56 cumulativeNow = latest.tickCumulative + int56(tick) * int56(uint56(nowTs - latest.timestamp));
+
+        Observation memory from = latest;
+        if (from.timestamp > target) {
+            uint256 index = twap.index;
+            bool found;
+            for (uint256 i; i < OBSERVATION_SLOTS; ++i) {
+                from = twap.ring[index];
+                if (from.timestamp == 0) break;
+                if (from.timestamp <= target) {
+                    found = true;
+                    break;
+                }
+                index = index == 0 ? OBSERVATION_SLOTS - 1 : index - 1;
+            }
+            if (!found) return (false, 0, 0);
+        }
+
+        period = nowTs - from.timestamp;
+        int56 delta = cumulativeNow - from.tickCumulative;
+        int56 elapsed = int56(uint56(period));
+        meanTick = int24(delta / elapsed);
+        if (delta < 0 && delta % elapsed != 0) meanTick--;
+        ok = true;
+    }
+
+    /// @inheritdoc IFundHook
+    function maxTwapWindow() external pure override returns (uint32) {
+        return MAX_TWAP_WINDOW;
+    }
+
+    /// @inheritdoc IFundHook
     function poolKeyOf(
         address fund
     ) external view override returns (PoolKey memory) {
@@ -359,6 +446,27 @@ contract FundHook is IFundHook, IHooks, IUnlockCallback {
             afterAddLiquidityReturnDelta: false,
             afterRemoveLiquidityReturnDelta: false
         });
+    }
+
+    function _observe(
+        PoolId id
+    ) private {
+        Twap storage twap = _twaps[id];
+        Observation memory latest = twap.latest;
+        uint32 nowTs = uint32(block.timestamp);
+        if (nowTs == latest.timestamp) return;
+        (, int24 tick,,) = poolManager.getSlot0(id);
+        latest = Observation({
+            timestamp: nowTs,
+            tickCumulative: latest.tickCumulative + int56(tick) * int56(uint56(nowTs - latest.timestamp))
+        });
+        twap.latest = latest;
+        uint256 index = twap.index;
+        if (nowTs - twap.ring[index].timestamp >= OBSERVATION_INTERVAL) {
+            index = (index + 1) % OBSERVATION_SLOTS;
+            twap.index = uint8(index);
+            twap.ring[index] = latest;
+        }
     }
 
     function _takeFees(

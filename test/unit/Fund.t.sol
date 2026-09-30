@@ -3,7 +3,7 @@ pragma solidity 0.8.28;
 
 import {Fund} from "../../src/funds/Fund.sol";
 import {IFund} from "../../src/interfaces/IFund.sol";
-import {LockOption} from "../../src/interfaces/types/FundTypes.sol";
+import {FundMetadata, LockOption, PlatformMetadata} from "../../src/interfaces/types/FundTypes.sol";
 import {FundTestBase} from "../helpers/FundTestBase.sol";
 import {MockSwapRouter} from "../helpers/MockSwapRouter.sol";
 
@@ -346,7 +346,7 @@ contract FundTest is FundTestBase {
         w[1] = 2000;
         w[2] = 3000;
         w[3] = 1000;
-        vm.prank(creator);
+        vm.prank(address(governor));
         fund.setTargetWeights(a, w);
         assertTrue(fund.isAsset(address(spare)));
         assertEq(fund.targetWeightBps(address(pons)), 2000);
@@ -360,7 +360,7 @@ contract FundTest is FundTestBase {
         uint16[] memory w = new uint16[](2);
         w[0] = 5000;
         w[1] = 5000;
-        vm.prank(creator);
+        vm.prank(address(governor));
         vm.expectRevert(abi.encodeWithSelector(IFund.AssetHasBalance.selector, address(pons)));
         fund.setTargetWeights(a, w);
     }
@@ -371,16 +371,16 @@ contract FundTest is FundTestBase {
         w[0] = 4000;
         w[1] = 3000;
         w[2] = 2000;
-        vm.prank(creator);
+        vm.prank(address(governor));
         vm.expectRevert(IFund.InvalidBasket.selector);
         fund.setTargetWeights(a, w);
     }
 
-    function test_setTargetWeights_notManager_reverts() public {
+    function test_setTargetWeights_notGovernor_reverts() public {
         address[] memory a = fund.assets();
         uint16[] memory w = new uint16[](3);
-        vm.prank(attacker);
-        vm.expectRevert(IFund.NotManager.selector);
+        vm.prank(creator);
+        vm.expectRevert(IFund.NotGovernor.selector);
         fund.setTargetWeights(a, w);
     }
 
@@ -431,7 +431,7 @@ contract FundTest is FundTestBase {
     function test_setModules_twice_reverts() public {
         vm.prank(address(factory));
         vm.expectRevert(IFund.ModulesAlreadySet.selector);
-        fund.setModules(alice, bob);
+        fund.setModules(alice, bob, bob);
     }
 
     function test_implementation_cannotBeInitialized() public {
@@ -445,5 +445,63 @@ contract FundTest is FundTestBase {
         assertEq(fund.symbol(), "MF1");
         assertEq(fund.decimals(), 18);
         assertEq(staking.symbol(), "sMF1");
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  metadata and governor
+    // ──────────────────────────────────────────────────────────
+
+    function test_metadata_creatorFieldsPlusPlatform() public {
+        vm.prank(admin);
+        factory.setPlatformMetadata(
+            PlatformMetadata({
+                name: "MONEY Market Funds by Own", description: "Basket-backed funds on Own.", url: "https://own.money"
+            })
+        );
+        FundMetadata memory m = fund.metadata();
+        assertEq(m.name, "MONEY Market Fund 1");
+        assertEq(m.symbol, "MF1");
+        assertEq(m.logoURI, "ipfs://mf1-logo");
+        assertEq(m.description, "Robinhood Chain ecosystem tokens and stocks.");
+        assertEq(m.platform.name, "MONEY Market Funds by Own");
+        assertEq(m.platform.url, "https://own.money");
+    }
+
+    function test_setMetadata_creatorAndAdmin() public {
+        vm.prank(creator);
+        fund.setMetadata("Robin Fund", "ROBIN", "ipfs://robin", "New description");
+        assertEq(fund.name(), "Robin Fund");
+        assertEq(fund.symbol(), "ROBIN");
+        assertEq(fund.logoURI(), "ipfs://robin");
+        assertEq(fund.description(), "New description");
+
+        vm.prank(admin);
+        fund.setMetadata("MF1", "MF1", "", "");
+        assertEq(fund.name(), "MF1");
+        assertEq(fund.logoURI(), "");
+    }
+
+    function test_setMetadata_stranger_reverts() public {
+        vm.prank(attacker);
+        vm.expectRevert(IFund.NotManagerOrAdmin.selector);
+        fund.setMetadata("X", "X", "", "");
+    }
+
+    function test_setMetadata_emptyName_reverts() public {
+        vm.prank(creator);
+        vm.expectRevert(IFund.InvalidMetadata.selector);
+        fund.setMetadata("", "MF1", "", "");
+    }
+
+    function test_setMetadata_longSymbol_reverts() public {
+        vm.prank(creator);
+        vm.expectRevert(IFund.InvalidMetadata.selector);
+        fund.setMetadata("MF1", "SEVENTEEN_CHARSXX", "", "");
+    }
+
+    function test_setGovernor_zero_reverts() public {
+        vm.prank(admin);
+        vm.expectRevert(IFund.ZeroAddress.selector);
+        fund.setGovernor(address(0));
     }
 }

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {CreateFundParams, LockOption} from "./types/FundTypes.sol";
+import {CreateFundParams, FundMetadata, LockOption} from "./types/FundTypes.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 /// @title IFund — a MONEY Market Fund token and the basket that backs it
@@ -15,8 +15,12 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 ///           TWAP (optionally discounted in exchange for a lock), never below NAV.
 ///         - Fees: the protocol fee and the creator fee are charged in fund tokens on mints and
 ///           redeems (and in USDG on pool trades, by the hook).
-///         - The manager (creator) sets target weights and rebalances through admin-allowed
-///           routers, bounded by oracle value.
+///         - Portfolio changes (assets and target weights) come only from the fund's governor,
+///           which holders and the creator vote through. The admin can swap the governor.
+///         - The manager (creator) rebalances towards the targets through admin-allowed routers,
+///           bounded by oracle value.
+///         - Name, symbol, logo and description are chosen by the creator and can be updated by
+///           the creator or the admin; platform metadata comes from the factory.
 interface IFund is IERC20 {
     /// @notice A locked mint.
     /// @param amount   Fund tokens locked (zero once claimed).
@@ -103,6 +107,17 @@ interface IFund is IERC20 {
     /// @param manager New manager.
     event ManagerSet(address manager);
 
+    /// @notice Emitted when the governor changes.
+    /// @param governor New governor.
+    event GovernorSet(address governor);
+
+    /// @notice Emitted when the fund's metadata changes.
+    /// @param name        Name.
+    /// @param symbol      Symbol.
+    /// @param logoURI     Logo URI.
+    /// @param description Description.
+    event MetadataSet(string name, string symbol, string logoURI, string description);
+
     /// @notice Emitted when minting is paused or unpaused.
     /// @param paused Whether minting is paused.
     event MintPausedSet(bool paused);
@@ -118,6 +133,15 @@ interface IFund is IERC20 {
 
     /// @notice Caller is not the manager.
     error NotManager();
+
+    /// @notice Caller is not the governor.
+    error NotGovernor();
+
+    /// @notice Caller is neither the manager nor the platform admin.
+    error NotManagerOrAdmin();
+
+    /// @notice A metadata field is empty or too long.
+    error InvalidMetadata();
 
     /// @notice Caller is not the launch or staking module.
     error NotModule();
@@ -194,12 +218,14 @@ interface IFund is IERC20 {
         CreateFundParams calldata params
     ) external;
 
-    /// @notice Wire the launch and staking modules. Factory only, once.
-    /// @param launch_  Launch module.
-    /// @param staking_ Staking module.
+    /// @notice Wire the launch, staking and governor modules. Factory only, once.
+    /// @param launch_   Launch module.
+    /// @param staking_  Staking module.
+    /// @param governor_ Governor.
     function setModules(
         address launch_,
-        address staking_
+        address staking_,
+        address governor_
     ) external;
 
     /// @notice Mark the fund live after a successful launch. Launch only, once.
@@ -260,8 +286,9 @@ interface IFund is IERC20 {
         RebalanceParams calldata params
     ) external;
 
-    /// @notice Replace the basket's asset list and target weights. Manager only, after launch.
-    ///         Assets still held cannot be dropped; new assets need an oracle feed.
+    /// @notice Replace the basket's asset list and target weights. Governor only, after launch.
+    ///         Assets still held cannot be dropped (vote their weight to zero, rebalance out, then
+    ///         drop them); new assets need an oracle feed.
     /// @param assets_     Assets.
     /// @param weightsBps_ Target weights (sum 10 000).
     function setTargetWeights(
@@ -283,6 +310,25 @@ interface IFund is IERC20 {
         LockOption[] calldata options
     ) external;
 
+    /// @notice Replace the governor, e.g. with a quadratic, futarchy or bribe-market module.
+    ///         Admin only.
+    /// @param governor_ New governor.
+    function setGovernor(
+        address governor_
+    ) external;
+
+    /// @notice Update the fund's name, symbol, logo and description. Manager or admin.
+    /// @param name_        Name (1 to 64 bytes).
+    /// @param symbol_      Symbol (1 to 16 bytes).
+    /// @param logoURI_     Logo URI (at most 512 bytes).
+    /// @param description_ Description (at most 2 000 bytes).
+    function setMetadata(
+        string calldata name_,
+        string calldata symbol_,
+        string calldata logoURI_,
+        string calldata description_
+    ) external;
+
     /// @notice Replace the manager. Admin only.
     /// @param manager_ New manager.
     function setManager(
@@ -302,6 +348,22 @@ interface IFund is IERC20 {
     /// @notice The creator managing the basket.
     /// @return The manager.
     function manager() external view returns (address);
+
+    /// @notice The governor, the only source of portfolio changes.
+    /// @return The governor.
+    function governor() external view returns (address);
+
+    /// @notice Logo URI.
+    /// @return The URI.
+    function logoURI() external view returns (string memory);
+
+    /// @notice Fund description.
+    /// @return The description.
+    function description() external view returns (string memory);
+
+    /// @notice Full metadata: the fund's fields plus the platform's.
+    /// @return The metadata.
+    function metadata() external view returns (FundMetadata memory);
 
     /// @notice Launch module.
     /// @return The launch.

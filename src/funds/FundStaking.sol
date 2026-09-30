@@ -21,9 +21,6 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
-    /// @notice Hard cap on any tier's weekly rate; raising it needs an implementation upgrade.
-    uint16 public constant MAX_RATE_BPS_PER_WEEK = 200;
-
     /// @notice Longest period a single accrual covers; keepers accrue far more often than this.
     uint256 public constant MAX_ACCRUAL_PERIOD = 1 days;
 
@@ -37,8 +34,6 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuard {
     uint64 public override lastAccrual;
 
     YieldTier[] private _tiers;
-    string private _stakedName;
-    string private _stakedSymbol;
 
     constructor() ERC20("", "") {
         _disableInitializers();
@@ -51,8 +46,6 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuard {
     ) external override initializer {
         if (fund_ == address(0)) revert ZeroAddress();
         fund = fund_;
-        _stakedName = string.concat("Staked ", IERC20Metadata(fund_).name());
-        _stakedSymbol = string.concat("s", IERC20Metadata(fund_).symbol());
         lastAccrual = uint64(block.timestamp);
         _setTiers(tiers_);
     }
@@ -100,16 +93,16 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuard {
         _setTiers(tiers_);
     }
 
-    /// @notice Share token name.
+    /// @notice Share token name, following the fund's current name.
     /// @return The name.
     function name() public view override returns (string memory) {
-        return _stakedName;
+        return string.concat("Staked ", IERC20Metadata(fund).name());
     }
 
-    /// @notice Share token symbol.
+    /// @notice Share token symbol, following the fund's current symbol.
     /// @return The symbol.
     function symbol() public view override returns (string memory) {
-        return _stakedSymbol;
+        return string.concat("s", IERC20Metadata(fund).symbol());
     }
 
     /// @inheritdoc IFundStaking
@@ -129,7 +122,11 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuard {
         uint256 n = _tiers.length;
         for (uint256 i; i < n; ++i) {
             if (premiumBps < int256(uint256(_tiers[i].minPremiumBps))) break;
-            rate = _tiers[i].rateBpsPerWeek;
+            rate = _tiers[i].rateBpsPerDay;
+        }
+        if (rate != 0) {
+            uint256 cap = _maxRate();
+            if (rate > cap) rate = cap;
         }
     }
 
@@ -167,7 +164,7 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuard {
         uint256 rate = rateForPremium(premium);
         if (rate == 0) return 0;
 
-        minted = Math.mulDiv(staked, rate * elapsed, BPS * 1 weeks);
+        minted = Math.mulDiv(staked, rate * elapsed, BPS * 1 days);
         if (minted != 0) IFund(fund).moduleMint(address(this), minted);
         emit YieldAccrued(elapsed, premium, rate, minted);
     }
@@ -176,12 +173,17 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuard {
         YieldTier[] calldata tiers_
     ) internal {
         if (tiers_.length > MAX_TIERS) revert InvalidTiers();
+        uint256 cap = _maxRate();
         delete _tiers;
         for (uint256 i; i < tiers_.length; ++i) {
-            if (tiers_[i].rateBpsPerWeek > MAX_RATE_BPS_PER_WEEK) revert InvalidTiers();
+            if (tiers_[i].rateBpsPerDay > cap) revert InvalidTiers();
             if (i != 0 && tiers_[i].minPremiumBps <= tiers_[i - 1].minPremiumBps) revert InvalidTiers();
             _tiers.push(tiers_[i]);
         }
         emit YieldTiersSet(tiers_);
+    }
+
+    function _maxRate() internal view returns (uint256) {
+        return IFundFactory(IFund(fund).factory()).maxYieldRateBpsPerDay();
     }
 }
