@@ -4,6 +4,8 @@ pragma solidity 0.8.28;
 import {Script, console} from "forge-std/Script.sol";
 
 import {Fund} from "../../src/funds/Fund.sol";
+import {FundBribes} from "../../src/funds/FundBribes.sol";
+import {FundCurators} from "../../src/funds/FundCurators.sol";
 import {FundFactory} from "../../src/funds/FundFactory.sol";
 import {FundGovernor} from "../../src/funds/FundGovernor.sol";
 import {FundHook} from "../../src/funds/FundHook.sol";
@@ -18,21 +20,24 @@ import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.s
 import {IPoolManager} from "v4-core/src/interfaces/IPoolManager.sol";
 import {Hooks} from "v4-core/src/libraries/Hooks.sol";
 
-/// @title DeployFundsRobinhood — MONEY Market Fund platform on Robinhood Chain
-/// @notice Deploys the oracle, the four module implementations, the factory proxy, the Uniswap v4
+/// @title DeployFundsRobinhood — Own Curated Funds platform on Robinhood Chain
+/// @notice Deploys the oracle, the six module implementations, the factory proxy, the Uniswap v4
 ///         hook at a mined CREATE2 address, and the redeem-to-USDG zap. Wires the hook, sets the
-///         platform metadata and (optionally) the first whitelisted launcher, then starts the
+///         platform metadata, allows USDG (and MONEY, if given) as bribe tokens, then starts the
 ///         two-step ownership handover of the factory and oracle to FUNDS_ADMIN.
 ///
 /// @dev Post-deploy checklist:
 ///        1. FUNDS_ADMIN calls acceptOwnership() on the factory and on the oracle.
 ///        2. Admin sets a feed for every basket asset: oracle.setFeed(asset, aggregator, staleness).
 ///        3. Admin allows rebalance / zap routers: factory.setRouter(router, true).
-///        4. Launcher creates the fund; after launch run AddFundTwapFeedRobinhood for its TWAP.
+///        4. Admin fills the listing eligibility list: factory.setEligibleAsset(token, true).
+///        5. Admin creates the fund (curators, curator fee, minimum curator stake of 0.5% = 50 bps,
+///           the Own keeper as manager); after launch run AddFundTwapFeedRobinhood for its TWAP.
+///        6. The keeper finalizes each launch at its close and calls governor.flip() every
+///           Thursday 00:00 UTC.
 ///
 /// Env: DEPLOYER_PRIVATE_KEY_ROBINHOOD, FUNDS_ADMIN, PROTOCOL_FEE_RECIPIENT,
-///      LP_FEE_RECIPIENT (optional, defaults to PROTOCOL_FEE_RECIPIENT),
-///      FUND_LAUNCHER (optional first whitelisted launcher)
+///      MONEY_TOKEN (optional, allowed as a bribe token)
 ///
 /// Usage:
 ///   forge script script/funds/DeployFundsRobinhood.s.sol --rpc-url robinhood --broadcast \
@@ -55,13 +60,12 @@ contract DeployFundsRobinhood is Script {
         address deployer = vm.addr(key);
         address admin = vm.envAddress("FUNDS_ADMIN");
         address protocolFeeRecipient = vm.envAddress("PROTOCOL_FEE_RECIPIENT");
-        address lpFeeRecipient = vm.envOr("LP_FEE_RECIPIENT", protocolFeeRecipient);
-        address launcher = vm.envOr("FUND_LAUNCHER", address(0));
+        address money = vm.envOr("MONEY_TOKEN", address(0));
 
         vm.startBroadcast(key);
 
         FundOracle oracle = new FundOracle(deployer);
-        FundFactory factory = _deployFactory(deployer, address(oracle), protocolFeeRecipient, lpFeeRecipient);
+        FundFactory factory = _deployFactory(deployer, address(oracle), protocolFeeRecipient);
 
         bytes memory args = abi.encode(IPoolManager(POOL_MANAGER), IFundFactory(address(factory)));
         (address mined, bytes32 salt) = HookMiner.find(CREATE2_FACTORY, HOOK_FLAGS, type(FundHook).creationCode, args);
@@ -70,7 +74,8 @@ contract DeployFundsRobinhood is Script {
 
         factory.setHook(address(hook));
         factory.setPlatformMetadata(_platformMetadata());
-        if (launcher != address(0)) factory.setLauncher(launcher, true);
+        factory.setBribeToken(USDG, true);
+        if (money != address(0)) factory.setBribeToken(money, true);
 
         FundRedeemZap zap = new FundRedeemZap(address(factory));
 
@@ -89,38 +94,35 @@ contract DeployFundsRobinhood is Script {
         console.log("Launch beacon   ", factory.beacon(IFundFactory.Module.Launch));
         console.log("Staking beacon  ", factory.beacon(IFundFactory.Module.Staking));
         console.log("Governor beacon ", factory.beacon(IFundFactory.Module.Governor));
+        console.log("Curators beacon ", factory.beacon(IFundFactory.Module.Curators));
+        console.log("Bribes beacon   ", factory.beacon(IFundFactory.Module.Bribes));
         if (admin != deployer) console.log("Pending owner (must accept on factory and oracle):", admin);
     }
 
     function _deployFactory(
         address owner,
         address oracle,
-        address protocolFeeRecipient,
-        address lpFeeRecipient
+        address protocolFeeRecipient
     ) internal returns (FundFactory) {
-        bytes memory init = abi.encodeCall(
-            FundFactory.initialize,
-            (
-                owner,
-                oracle,
-                USDG,
-                protocolFeeRecipient,
-                lpFeeRecipient,
-                address(new Fund()),
-                address(new FundLaunch()),
-                address(new FundStaking()),
-                address(new FundGovernor())
-            )
-        );
+        address[6] memory impls = [
+            address(new Fund()),
+            address(new FundLaunch()),
+            address(new FundStaking()),
+            address(new FundGovernor()),
+            address(new FundCurators()),
+            address(new FundBribes())
+        ];
+        bytes memory init = abi.encodeCall(FundFactory.initialize, (owner, oracle, USDG, protocolFeeRecipient, impls));
         return FundFactory(address(new ERC1967Proxy(address(new FundFactory()), init)));
     }
 
     function _platformMetadata() internal pure returns (PlatformMetadata memory) {
         return PlatformMetadata({
-            name: "MONEY Market Funds by Own",
-            description: "A MONEY Market Fund is a token backed by a basket of Robinhood Chain tokens held onchain. "
-            "Any holder can redeem it for their share of the whole basket at any time, and stakers earn new fund "
-            "tokens while it trades above its net asset value. Holders and the creator vote on the basket. "
+            name: "Own Curated Funds",
+            description: "An Own Curated Fund is a token backed by a basket of Robinhood Chain tokens held onchain, "
+            "plus the fund's own USDG pool position. Any holder can redeem it for their share of the backing at any "
+            "time, and stakers earn new fund tokens while it trades above its net asset value. Curators and stakers "
+            "set the basket weights in a weekly vote. "
             "Own is the DeFi protocol on Robinhood Chain behind eUSD and OwnX. $MONEY is Own's token, "
             "launched fair on Pons and paired with SPY.",
             url: "https://own.money"

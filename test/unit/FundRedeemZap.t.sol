@@ -10,13 +10,15 @@ contract FundRedeemZapTest is FundTestBase {
     FundRedeemZap internal zap;
     MockSwapRouter internal router;
 
-    uint256 internal constant SHARES = 13_000e18; // 10% of supply
+    uint256 internal constant SHARES = 11_000e18; // ~10% of supply
+    uint256 internal bobShares;
 
     function setUp() public override {
         super.setUp();
         _launchDefault();
         vm.prank(bob);
-        launch.claim(false); // 40k MF1
+        bobShares = launch.claim(false);
+        _passDepositorLock(); // the zap pulls the tokens, which locked launch tokens cannot do
 
         zap = new FundRedeemZap(address(factory));
         router = new MockSwapRouter();
@@ -29,42 +31,42 @@ contract FundRedeemZapTest is FundTestBase {
     }
 
     function test_redeemToUsdg_swapsWholeBasket() public {
-        uint256[] memory amounts = fund.previewRedeem(SHARES);
+        (uint256[] memory amounts, uint256 usdgPart) = fund.previewRedeem(SHARES);
         IFundRedeemZap.Route[] memory routes = _routes(amounts, [uint256(3600e6), 3000e6, 3400e6]);
 
         uint256 usdgBefore = usdg.balanceOf(bob);
         vm.prank(bob);
         uint256 out = zap.redeemToUsdg(address(fund), SHARES, routes, 10_000e6, bob);
 
-        assertEq(out, 10_000e6);
-        assertEq(usdg.balanceOf(bob) - usdgBefore, 10_000e6);
-        assertEq(fund.balanceOf(bob), 40_000e18 - SHARES);
+        assertApproxEqRel(out, 10_000e6 + usdgPart, 1e14);
+        assertEq(usdg.balanceOf(bob) - usdgBefore, out);
+        assertEq(fund.balanceOf(bob), bobShares - SHARES);
         _assertZapEmpty();
     }
 
     function test_redeemToUsdg_unroutedAssetPaidInKind() public {
-        uint256[] memory amounts = fund.previewRedeem(SHARES);
+        (uint256[] memory amounts, uint256 usdgPart) = fund.previewRedeem(SHARES);
         IFundRedeemZap.Route[] memory routes = _routes(amounts, [uint256(3600e6), 3000e6, 3400e6]);
         routes[1].router = address(0); // keep PONS
 
         vm.prank(bob);
         uint256 out = zap.redeemToUsdg(address(fund), SHARES, routes, 0, bob);
 
-        assertEq(out, 7000e6);
+        assertApproxEqRel(out, 7000e6 + usdgPart, 1e14);
         assertEq(pons.balanceOf(bob), amounts[1]);
         _assertZapEmpty();
     }
 
     function test_redeemToUsdg_belowMinimum_reverts() public {
-        uint256[] memory amounts = fund.previewRedeem(SHARES);
+        (uint256[] memory amounts, uint256 usdgPart) = fund.previewRedeem(SHARES);
         IFundRedeemZap.Route[] memory routes = _routes(amounts, [uint256(3600e6), 3000e6, 3400e6]);
         vm.prank(bob);
         vm.expectRevert(IFundRedeemZap.Slippage.selector);
-        zap.redeemToUsdg(address(fund), SHARES, routes, 10_000e6 + 1, bob);
+        zap.redeemToUsdg(address(fund), SHARES, routes, 10_000e6 + usdgPart * 2, bob);
     }
 
     function test_redeemToUsdg_routerNotAllowed_reverts() public {
-        uint256[] memory amounts = fund.previewRedeem(SHARES);
+        (uint256[] memory amounts, uint256 usdgPart) = fund.previewRedeem(SHARES);
         IFundRedeemZap.Route[] memory routes = _routes(amounts, [uint256(3600e6), 3000e6, 3400e6]);
         vm.prank(admin);
         factory.setRouter(address(router), false);
@@ -74,7 +76,7 @@ contract FundRedeemZapTest is FundTestBase {
     }
 
     function test_redeemToUsdg_routerFails_reverts() public {
-        uint256[] memory amounts = fund.previewRedeem(SHARES);
+        (uint256[] memory amounts, uint256 usdgPart) = fund.previewRedeem(SHARES);
         IFundRedeemZap.Route[] memory routes = _routes(amounts, [uint256(3600e6), 3000e6, 3400e6]);
         routes[0].data = abi.encodeCall(MockSwapRouter.alwaysReverts, ());
         vm.prank(bob);
@@ -83,7 +85,7 @@ contract FundRedeemZapTest is FundTestBase {
     }
 
     function test_redeemToUsdg_routerCannotPullMoreThanRedeemed() public {
-        uint256[] memory amounts = fund.previewRedeem(SHARES);
+        (uint256[] memory amounts, uint256 usdgPart) = fund.previewRedeem(SHARES);
         IFundRedeemZap.Route[] memory routes = _routes(amounts, [uint256(3600e6), 3000e6, 3400e6]);
         routes[0].data =
             abi.encodeCall(MockSwapRouter.swap, (address(net), amounts[0] + 1, address(usdg), uint256(3600e6)));

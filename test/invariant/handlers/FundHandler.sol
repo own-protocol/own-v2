@@ -51,7 +51,7 @@ contract FundHandler is Test {
         if (bal == 0) return;
         amount = bound(amount, 1, bal);
         vm.prank(actor);
-        fund.redeem(amount, actor, new uint256[](0));
+        fund.redeem(amount, actor, new uint256[](0), 0);
         ++redeems;
     }
 

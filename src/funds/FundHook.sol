@@ -15,6 +15,7 @@ import {IPoolManager} from "v4-core/src/interfaces/IPoolManager.sol";
 import {IUnlockCallback} from "v4-core/src/interfaces/callback/IUnlockCallback.sol";
 import {Hooks} from "v4-core/src/libraries/Hooks.sol";
 import {LPFeeLibrary} from "v4-core/src/libraries/LPFeeLibrary.sol";
+import {SqrtPriceMath} from "v4-core/src/libraries/SqrtPriceMath.sol";
 import {StateLibrary} from "v4-core/src/libraries/StateLibrary.sol";
 import {TickMath} from "v4-core/src/libraries/TickMath.sol";
 import {BalanceDelta, BalanceDeltaLibrary} from "v4-core/src/types/BalanceDelta.sol";
@@ -37,6 +38,10 @@ import {PoolKey} from "v4-core/src/types/PoolKey.sol";
 ///      added to a per-pool accumulator (as in Uniswap v3). Checkpoints are copied into a ring at
 ///      most every {OBSERVATION_INTERVAL}, and the ring spans longer than {MAX_TWAP_WINDOW}, so
 ///      a checkpoint old enough for any allowed window is always kept.
+///
+///      The fund's position is this hook's full-range position (salt 0) in the fund's pool. It is
+///      valued at the pool TWAP: price manipulation inside a block never moves it, because the
+///      accumulator only adds a tick once it has held across a block boundary.
 contract FundHook is IFundHook, IHooks, IUnlockCallback {
     using SafeERC20 for IERC20;
     using PoolIdLibrary for PoolKey;
@@ -58,9 +63,13 @@ contract FundHook is IFundHook, IHooks, IUnlockCallback {
     /// @notice Longest window {consult} serves.
     uint32 public constant MAX_TWAP_WINDOW = 3 hours;
 
+    /// @notice Window over which the fund's position is valued.
+    uint32 public constant POSITION_TWAP_WINDOW = 30 minutes;
+
     enum Action {
         Seed,
-        Collect
+        Collect,
+        Remove
     }
 
     struct PoolConfig {
@@ -79,6 +88,8 @@ contract FundHook is IFundHook, IHooks, IUnlockCallback {
     struct Twap {
         Observation latest;
         uint8 index;
+        // The tick at the start of the latest observed block, for a zero-length TWAP period.
+        int24 blockTick;
         Observation[OBSERVATION_SLOTS] ring;
     }
 
@@ -149,6 +160,7 @@ contract FundHook is IFundHook, IHooks, IUnlockCallback {
         Twap storage twap = _twaps[key.toId()];
         twap.latest = Observation({timestamp: uint32(block.timestamp), tickCumulative: 0});
         twap.ring[0] = twap.latest;
+        twap.blockTick = TickMath.getTickAtSqrtPrice(sqrtPrice);
         if (cfg.lpFee != 0) poolManager.updateDynamicLPFee(key, cfg.lpFee);
 
         uint128 liquidity = FullRangeLiquidity.liquidityForAmounts(
@@ -181,14 +193,42 @@ contract FundHook is IFundHook, IHooks, IUnlockCallback {
     /// @inheritdoc IFundHook
     function collectLpFees(
         address fund
-    ) external override returns (uint256 amount0, uint256 amount1) {
+    ) external override returns (uint256 usdgAmount, uint256 burned) {
+        PoolConfig storage cfg = _seededConfig(fund);
+        if (cfg.liquidity == 0) return (0, 0);
+        (, usdgAmount, burned) =
+            abi.decode(poolManager.unlock(abi.encode(Action.Collect, fund)), (uint256, uint256, uint256));
+        if (burned != 0) IFund(fund).burn(burned);
+        emit LpFeesCollected(fund, usdgAmount, burned);
+    }
+
+    /// @inheritdoc IFundHook
+    function redeemPosition(
+        uint256 numerator,
+        uint256 denominator,
+        address receiver
+    ) external override returns (uint256 usdgPaid) {
+        address fund = msg.sender;
         PoolKey memory key = _keys[fund];
-        if (address(key.hooks) == address(0)) revert NotRegistered();
-        if (!_configs[key.toId()].seeded) revert NotRegistered();
-        address recipient = factory.lpFeeRecipient();
-        (amount0, amount1) =
-            abi.decode(poolManager.unlock(abi.encode(Action.Collect, fund, recipient)), (uint256, uint256));
-        emit LpFeesCollected(fund, recipient, amount0, amount1);
+        if (address(key.hooks) == address(0)) revert NotFund();
+        PoolConfig storage cfg = _configs[key.toId()];
+        if (!cfg.seeded || cfg.liquidity == 0 || numerator == 0) return 0;
+        // Rounds down: a redeemer never removes more than their share of the position.
+        uint128 liquidity = SafeCast.toUint128(Math.mulDiv(cfg.liquidity, numerator, denominator));
+        if (liquidity == 0) return 0;
+        (uint256 usdgCap,) = _amountsAt(cfg, _positionTick(key.toId()), liquidity);
+        usdgPaid = _reduce(fund, cfg, liquidity, receiver, usdgCap);
+    }
+
+    /// @inheritdoc IFundHook
+    function withdrawPosition(
+        address fund,
+        uint128 liquidity
+    ) external override {
+        if (msg.sender != factory.owner()) revert NotAdmin();
+        PoolConfig storage cfg = _seededConfig(fund);
+        if (liquidity == 0 || liquidity > cfg.liquidity) revert InsufficientLiquidity();
+        _reduce(fund, cfg, liquidity, fund, 0);
     }
 
     /// @inheritdoc IFundHook
@@ -226,11 +266,42 @@ contract FundHook is IFundHook, IHooks, IUnlockCallback {
             return abi.encode(_settle(key.currency0, delta.amount0()), _settle(key.currency1, delta.amount1()));
         }
 
-        (,, address recipient) = abi.decode(data, (Action, address, address));
-        (BalanceDelta fees,) = poolManager.modifyLiquidity(key, params, "");
-        uint256 amount0 = _take(key.currency0, fees.amount0(), recipient);
-        uint256 amount1 = _take(key.currency1, fees.amount1(), recipient);
-        return abi.encode(amount0, amount1);
+        bool usdgIs0 = _configs[key.toId()].usdgIsCurrency0;
+        if (action == Action.Collect) {
+            (BalanceDelta fees,) = poolManager.modifyLiquidity(key, params, "");
+            return _payOut(key, usdgIs0, fees, fees, fund, fund, type(uint256).max);
+        }
+
+        (,, uint128 removed, address receiver, uint256 usdgCap) =
+            abi.decode(data, (Action, address, uint128, address, uint256));
+        params.liquidityDelta = -SafeCast.toInt256(uint256(removed));
+        (BalanceDelta callerDelta, BalanceDelta feesAccrued) = poolManager.modifyLiquidity(key, params, "");
+        return _payOut(key, usdgIs0, callerDelta, callerDelta - feesAccrued, receiver, fund, usdgCap);
+    }
+
+    /// @dev Takes a removal's tokens from the pool manager: the principal USDG up to `usdgCap` to
+    ///      `receiver`, the rest of the USDG to the fund, and every fund token to this hook (to be
+    ///      burned). Returns (USDG to receiver, USDG to fund, fund tokens taken).
+    function _payOut(
+        PoolKey memory key,
+        bool usdgIs0,
+        BalanceDelta total,
+        BalanceDelta principal,
+        address receiver,
+        address fund,
+        uint256 usdgCap
+    ) private returns (bytes memory) {
+        (Currency usdg, Currency share) = usdgIs0 ? (key.currency0, key.currency1) : (key.currency1, key.currency0);
+        int128 usdgPrincipal = usdgIs0 ? principal.amount0() : principal.amount1();
+        int128 usdgTotal = usdgIs0 ? total.amount0() : total.amount1();
+        uint256 all = usdgTotal > 0 ? uint256(int256(usdgTotal)) : 0;
+        uint256 paid = usdgPrincipal > 0 ? uint256(int256(usdgPrincipal)) : 0;
+        if (paid > usdgCap) paid = usdgCap;
+        if (receiver == fund) paid = 0;
+        if (paid != 0) poolManager.take(usdg, receiver, paid);
+        if (all > paid) poolManager.take(usdg, fund, all - paid);
+        uint256 burned = _take(share, usdgIs0 ? total.amount1() : total.amount0(), address(this));
+        return abi.encode(paid, all - paid, burned);
     }
 
     /// @inheritdoc IHooks
@@ -416,10 +487,20 @@ contract FundHook is IFundHook, IHooks, IUnlockCallback {
     }
 
     /// @inheritdoc IFundHook
-    function lockedLiquidity(
+    function positionLiquidity(
         address fund
     ) external view override returns (uint128) {
         return _configs[_keys[fund].toId()].liquidity;
+    }
+
+    /// @inheritdoc IFundHook
+    function positionAmounts(
+        address fund
+    ) external view override returns (uint256 usdgAmount, uint256 fundTokens) {
+        PoolId id = _keys[fund].toId();
+        PoolConfig storage cfg = _configs[id];
+        if (!cfg.seeded || cfg.liquidity == 0) return (0, 0);
+        return _amountsAt(cfg, _positionTick(id), cfg.liquidity);
     }
 
     /// @notice Callbacks this hook enables; its deployed address must encode exactly these.
@@ -456,12 +537,88 @@ contract FundHook is IFundHook, IHooks, IUnlockCallback {
             tickCumulative: latest.tickCumulative + int56(tick) * int56(uint56(nowTs - latest.timestamp))
         });
         twap.latest = latest;
+        twap.blockTick = tick;
         uint256 index = twap.index;
         if (nowTs - twap.ring[index].timestamp >= OBSERVATION_INTERVAL) {
             index = (index + 1) % OBSERVATION_SLOTS;
             twap.index = uint8(index);
             twap.ring[index] = latest;
         }
+    }
+
+    function _reduce(
+        address fund,
+        PoolConfig storage cfg,
+        uint128 liquidity,
+        address receiver,
+        uint256 usdgCap
+    ) private returns (uint256 paid) {
+        cfg.liquidity -= liquidity;
+        uint256 toFund;
+        uint256 burned;
+        (paid, toFund, burned) = abi.decode(
+            poolManager.unlock(abi.encode(Action.Remove, fund, liquidity, receiver, usdgCap)),
+            (uint256, uint256, uint256)
+        );
+        if (burned != 0) IFund(fund).burn(burned);
+        emit PositionReduced(fund, liquidity, paid, toFund, burned);
+    }
+
+    function _seededConfig(
+        address fund
+    ) private view returns (PoolConfig storage cfg) {
+        PoolKey memory key = _keys[fund];
+        if (address(key.hooks) == address(0)) revert NotRegistered();
+        cfg = _configs[key.toId()];
+        if (!cfg.seeded) revert NotRegistered();
+    }
+
+    /// @dev Mean tick over {POSITION_TWAP_WINDOW}, or over all history since seeding when there is
+    ///      less, or the tick at the start of the block when the pool was seeded in this block.
+    function _positionTick(
+        PoolId id
+    ) private view returns (int24) {
+        Twap storage twap = _twaps[id];
+        Observation memory latest = twap.latest;
+        uint32 nowTs = uint32(block.timestamp);
+        (, int24 tick,,) = poolManager.getSlot0(id);
+        int56 cumulativeNow = latest.tickCumulative + int56(tick) * int56(uint56(nowTs - latest.timestamp));
+        uint32 target = nowTs > POSITION_TWAP_WINDOW ? nowTs - POSITION_TWAP_WINDOW : 0;
+
+        Observation memory from = latest;
+        if (from.timestamp > target) {
+            uint256 index = twap.index;
+            for (uint256 i; i < OBSERVATION_SLOTS; ++i) {
+                Observation memory o = twap.ring[index];
+                if (o.timestamp == 0) break;
+                from = o;
+                if (o.timestamp <= target) break;
+                index = index == 0 ? OBSERVATION_SLOTS - 1 : index - 1;
+            }
+        }
+        if (from.timestamp == nowTs) return twap.blockTick;
+
+        int56 elapsed = int56(uint56(nowTs - from.timestamp));
+        int56 delta = cumulativeNow - from.tickCumulative;
+        int24 meanTick = int24(delta / elapsed);
+        if (delta < 0 && delta % elapsed != 0) meanTick--;
+        return meanTick;
+    }
+
+    function _amountsAt(
+        PoolConfig storage cfg,
+        int24 tick,
+        uint128 liquidity
+    ) private view returns (uint256 usdgAmount, uint256 fundTokens) {
+        uint160 sqrtPrice = TickMath.getSqrtPriceAtTick(tick);
+        uint160 sqrtLower = TickMath.getSqrtPriceAtTick(TickMath.minUsableTick(TICK_SPACING));
+        uint160 sqrtUpper = TickMath.getSqrtPriceAtTick(TickMath.maxUsableTick(TICK_SPACING));
+        if (sqrtPrice < sqrtLower) sqrtPrice = sqrtLower;
+        if (sqrtPrice > sqrtUpper) sqrtPrice = sqrtUpper;
+        // Rounds down: the position is never overstated.
+        uint256 amount0 = SqrtPriceMath.getAmount0Delta(sqrtPrice, sqrtUpper, liquidity, false);
+        uint256 amount1 = SqrtPriceMath.getAmount1Delta(sqrtLower, sqrtPrice, liquidity, false);
+        (usdgAmount, fundTokens) = cfg.usdgIsCurrency0 ? (amount0, amount1) : (amount1, amount0);
     }
 
     function _takeFees(
@@ -471,12 +628,12 @@ contract FundHook is IFundHook, IHooks, IUnlockCallback {
     ) private returns (uint256) {
         // Rounds down: a fee never exceeds the configured share of the USDG leg.
         uint256 protocolFee = Math.mulDiv(amount, factory.protocolFeeBps(), BPS);
-        uint256 creatorFee = Math.mulDiv(amount, IFund(cfg.fund).creatorFeeBps(), BPS);
+        uint256 curatorFee = Math.mulDiv(amount, IFund(cfg.fund).curatorFeeBps(), BPS);
         Currency usdg = cfg.usdgIsCurrency0 ? key.currency0 : key.currency1;
         if (protocolFee != 0) poolManager.take(usdg, factory.protocolFeeRecipient(), protocolFee);
-        if (creatorFee != 0) poolManager.take(usdg, IFund(cfg.fund).creatorFeeRecipient(), creatorFee);
-        if (protocolFee != 0 || creatorFee != 0) emit SwapFeesTaken(cfg.fund, protocolFee, creatorFee);
-        return protocolFee + creatorFee;
+        if (curatorFee != 0) poolManager.take(usdg, IFund(cfg.fund).curators(), curatorFee);
+        if (protocolFee != 0 || curatorFee != 0) emit SwapFeesTaken(cfg.fund, protocolFee, curatorFee);
+        return protocolFee + curatorFee;
     }
 
     // Sweeps the whole balance: the hook holds nothing between seeds, so anything else was donated.
@@ -487,7 +644,7 @@ contract FundHook is IFundHook, IHooks, IUnlockCallback {
         if (shareDust != 0) IFund(fund).burn(shareDust);
         address usdg = factory.usdg();
         uint256 usdgDust = IERC20(usdg).balanceOf(address(this));
-        if (usdgDust != 0) IERC20(usdg).safeTransfer(factory.protocolFeeRecipient(), usdgDust);
+        if (usdgDust != 0) IERC20(usdg).safeTransfer(fund, usdgDust);
     }
 
     function _settle(

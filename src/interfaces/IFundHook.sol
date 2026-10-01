@@ -7,10 +7,14 @@ import {PoolKey} from "v4-core/src/types/PoolKey.sol";
 /// @title IFundHook — Uniswap v4 hook for every fund's USDG pool
 /// @notice One hook serves all funds. Each fund gets one dynamic-fee pool against USDG that only
 ///         this hook can initialise. The hook:
-///         - takes the protocol fee and the fund's creator fee in USDG on every swap, on top of the
+///         - takes the protocol fee and the fund's curator fee in USDG on every swap, on top of the
 ///           pool's LP fee, and sends them straight to their recipients;
-///         - owns each pool's launch liquidity as a full-range position with no removal path, so it
-///           is locked forever (LP fees on it can still be collected to the LP fee recipient);
+///         - holds each fund's launch liquidity as a full-range position on the fund's behalf. The
+///           fund counts it as backing (at the pool TWAP). It leaves the pool only through the
+///           fund's redeems (a pro-rata slice) or an admin withdrawal, and both return it to the
+///           fund side: USDG to the fund or the redeemer, fund tokens burned. LP fees it earns go
+///           to the fund the same way. Outside LPs can add their own positions; only the fund's
+///           counts;
 ///         - lets the platform admin set each pool's LP fee;
 ///         - records a tick accumulator before every swap, so each pool's time-weighted average
 ///           price can be read onchain without a keeper ({consult}).
@@ -30,15 +34,24 @@ interface IFundHook {
     /// @notice Emitted when USDG fees are taken on a swap.
     /// @param fund        The fund.
     /// @param protocolFee USDG to the protocol fee recipient.
-    /// @param creatorFee  USDG to the creator fee recipient.
-    event SwapFeesTaken(address indexed fund, uint256 protocolFee, uint256 creatorFee);
+    /// @param curatorFee  USDG to the curators module.
+    event SwapFeesTaken(address indexed fund, uint256 protocolFee, uint256 curatorFee);
 
-    /// @notice Emitted when LP fees are collected from a locked position.
-    /// @param fund      The fund.
-    /// @param recipient Recipient.
-    /// @param amount0   Currency0 collected.
-    /// @param amount1   Currency1 collected.
-    event LpFeesCollected(address indexed fund, address recipient, uint256 amount0, uint256 amount1);
+    /// @notice Emitted when LP fees on the fund's position are collected.
+    /// @param fund       The fund.
+    /// @param usdgAmount USDG sent to the fund.
+    /// @param burned     Fund tokens burned.
+    event LpFeesCollected(address indexed fund, uint256 usdgAmount, uint256 burned);
+
+    /// @notice Emitted when part of the fund's position leaves the pool.
+    /// @param fund        The fund.
+    /// @param liquidity   Liquidity removed.
+    /// @param usdgPaid    USDG paid to the redeemer (zero for an admin withdrawal).
+    /// @param usdgToFund  USDG sent to the fund.
+    /// @param burned      Fund tokens burned.
+    event PositionReduced(
+        address indexed fund, uint128 liquidity, uint256 usdgPaid, uint256 usdgToFund, uint256 burned
+    );
 
     /// @notice Emitted when a pool's LP fee changes.
     /// @param fund  The fund.
@@ -54,8 +67,14 @@ interface IFundHook {
     /// @notice Caller is not the platform admin.
     error NotAdmin();
 
-    /// @notice Caller is not the fund's launch.
+    /// @notice Caller is not the launch module.
     error NotLaunch();
+
+    /// @notice Caller is not the fund.
+    error NotFund();
+
+    /// @notice More liquidity than the fund's position holds.
+    error InsufficientLiquidity();
 
     /// @notice Pools using this hook can only be initialised by the hook.
     error InitializeNotAllowed();
@@ -91,10 +110,9 @@ interface IFundHook {
         address fund
     ) external;
 
-    /// @notice Initialise the fund's pool at `usdgAmount / shareAmount` and lock both amounts as
-    ///         full-range liquidity. The fund's launch only, once; the tokens must already be held
-    ///         by the hook. Dust left over is burned (fund tokens) or sent to the protocol fee
-    ///         recipient (USDG).
+    /// @notice Initialise the fund's pool at `usdgAmount / shareAmount` and add both amounts as
+    ///         the fund's full-range position. The fund's launch only, once; the tokens must already be held
+    ///         by the hook. Dust left over is burned (fund tokens) or sent to the fund (USDG).
     /// @param fund        The fund.
     /// @param usdgAmount  USDG to add.
     /// @param shareAmount Fund tokens to add.
@@ -104,14 +122,38 @@ interface IFundHook {
         uint256 shareAmount
     ) external;
 
-    /// @notice Collect LP fees earned by a fund's locked position to the LP fee recipient. Anyone
-    ///         can call.
+    /// @notice Collect LP fees earned by the fund's position: USDG to the fund, fund tokens burned.
+    ///         Anyone can call.
     /// @param fund The fund.
-    /// @return amount0 Currency0 collected.
-    /// @return amount1 Currency1 collected.
+    /// @return usdgAmount USDG sent to the fund.
+    /// @return burned     Fund tokens burned.
     function collectLpFees(
         address fund
-    ) external returns (uint256 amount0, uint256 amount1);
+    ) external returns (uint256 usdgAmount, uint256 burned);
+
+    /// @notice Remove `numerator / denominator` of the fund's position for a redeem. The fund
+    ///         only. The fund tokens removed are burned; the redeemer gets the USDG removed, capped
+    ///         at that slice's USDG at the pool TWAP, and any excess (and any LP fees the removal
+    ///         collects) goes to the fund.
+    /// @param numerator   Share of the position, numerator.
+    /// @param denominator Share of the position, denominator.
+    /// @param receiver    Receiver of the USDG.
+    /// @return usdgPaid USDG paid to `receiver`.
+    function redeemPosition(
+        uint256 numerator,
+        uint256 denominator,
+        address receiver
+    ) external returns (uint256 usdgPaid);
+
+    /// @notice Withdraw `liquidity` of the fund's position out of the pool, in rare cases. Admin
+    ///         only. The USDG goes to the fund and the fund tokens are burned; nothing goes to a
+    ///         wallet.
+    /// @param fund      The fund.
+    /// @param liquidity Liquidity to remove.
+    function withdrawPosition(
+        address fund,
+        uint128 liquidity
+    ) external;
 
     /// @notice Set a fund pool's LP fee. Admin only.
     /// @param fund  The fund.
@@ -157,10 +199,20 @@ interface IFundHook {
         address fund
     ) external view returns (bool);
 
-    /// @notice Liquidity locked in the fund's pool.
+    /// @notice Liquidity in the fund's own position.
     /// @param fund The fund.
     /// @return The liquidity.
-    function lockedLiquidity(
+    function positionLiquidity(
         address fund
     ) external view returns (uint128);
+
+    /// @notice The fund's position valued at the pool TWAP (a 30-minute window, or the history
+    ///         there is right after seeding, or the price at the start of the block in the seeding
+    ///         block). Zero before seeding.
+    /// @param fund The fund.
+    /// @return usdgAmount USDG in the position.
+    /// @return fundTokens Fund tokens in the position.
+    function positionAmounts(
+        address fund
+    ) external view returns (uint256 usdgAmount, uint256 fundTokens);
 }

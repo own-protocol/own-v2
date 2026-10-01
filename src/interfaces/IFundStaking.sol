@@ -4,13 +4,17 @@ pragma solidity 0.8.28;
 import {YieldTier} from "./types/FundTypes.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
-/// @title IFundStaking — staked fund tokens (e.g. sMF1) earning premium-tiered yield
+/// @title IFundStaking — staked fund tokens (e.g. sOCF1) earning premium-tiered yield
 /// @notice Stakers deposit fund tokens and receive vault shares. While the fund trades at a premium
 ///         to NAV, the vault mints new fund tokens to itself at the rate of the highest tier the
 ///         premium reaches, so each share is worth more fund tokens. No premium, no yield. The new
 ///         tokens have no new backing: non-stakers are diluted, which is the incentive to stake.
 ///         Yield accrues before every stake and unstake, so late stakers cannot capture it. Tier
 ///         rates are daily and capped by the factory's admin-set yield cap (3% a day by default).
+///
+///         Shares staked from launch-locked fund tokens are locked the same way until the fund's
+///         depositor unlock: they can be deposited in the governor (and come back to the same
+///         account) or unstaked (the fund tokens come back locked), but not transferred.
 interface IFundStaking is IERC20 {
     /// @notice Emitted on a stake.
     /// @param sender   Payer of the fund tokens.
@@ -33,6 +37,11 @@ interface IFundStaking is IERC20 {
     /// @param minted         Fund tokens minted to the vault.
     event YieldAccrued(uint256 elapsed, int256 premiumBps, uint256 rateBpsPerDay, uint256 minted);
 
+    /// @notice Emitted when an account's locked shares change.
+    /// @param account The account.
+    /// @param locked  Shares now locked.
+    event LockedSharesSet(address indexed account, uint256 locked);
+
     /// @notice Emitted when the yield tiers change.
     /// @param tiers New tiers.
     event YieldTiersSet(YieldTier[] tiers);
@@ -49,13 +58,37 @@ interface IFundStaking is IERC20 {
     /// @notice Tiers are not ascending, or a rate exceeds the factory's yield cap.
     error InvalidTiers();
 
+    /// @notice Caller is not the fund's launch module.
+    error NotLaunch();
+
+    /// @notice The transfer would move shares that are still locked.
+    error SharesLocked();
+
     /// @notice Initialise a staking proxy. Called once by the factory.
     /// @param fund_  The fund token.
-    /// @param tiers_ Yield tiers chosen by the creator.
+    /// @param tiers_ Yield tiers set by Own at launch.
     function initialize(
         address fund_,
         YieldTier[] calldata tiers_
     ) external;
+
+    /// @notice Stake fund tokens the launch is releasing to a depositor; every share minted is
+    ///         locked until the depositor unlock. Launch only.
+    /// @param assets   Fund tokens staked (pulled from the launch).
+    /// @param receiver Receiver of the shares.
+    /// @return shares Shares minted.
+    function stakeLocked(
+        uint256 assets,
+        address receiver
+    ) external returns (uint256 shares);
+
+    /// @notice Shares of `account` that are still locked (meaningful only before the fund's
+    ///         depositor unlock).
+    /// @param account The account.
+    /// @return The locked shares.
+    function lockedShares(
+        address account
+    ) external view returns (uint256);
 
     /// @notice Stake fund tokens.
     /// @param assets   Fund tokens.
@@ -79,7 +112,7 @@ interface IFundStaking is IERC20 {
     /// @return minted Fund tokens minted.
     function accrue() external returns (uint256 minted);
 
-    /// @notice Replace the yield tiers. Admin only (creators set them once, at launch).
+    /// @notice Replace the yield tiers. Admin only.
     /// @param tiers_ New tiers.
     function setYieldTiers(
         YieldTier[] calldata tiers_

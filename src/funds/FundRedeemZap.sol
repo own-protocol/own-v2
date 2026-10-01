@@ -40,7 +40,7 @@ contract FundRedeemZap is IFundRedeemZap, ReentrancyGuard {
 
         IERC20 usdg = IERC20(fac.usdg());
         IERC20(fund).safeTransferFrom(msg.sender, address(this), shares);
-        uint256[] memory amounts = IFund(fund).redeem(shares, address(this), new uint256[](0));
+        (uint256[] memory amounts,) = IFund(fund).redeem(shares, address(this), new uint256[](0), 0);
         _swap(fac, fund, address(usdg), assets, amounts, routes);
 
         // The zap holds nothing between calls, so its whole balance is this redeem's output.

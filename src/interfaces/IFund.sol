@@ -4,23 +4,27 @@ pragma solidity 0.8.28;
 import {CreateFundParams, FundMetadata, LockOption} from "./types/FundTypes.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
-/// @title IFund — a MONEY Market Fund token and the basket that backs it
-/// @notice The fund token is a plain ERC-20 whose supply is backed by a basket of tokens held in
-///         this contract. NAV per token is the basket's oracle value divided by the full supply,
-///         including tokens locked in the pool and in staking.
+/// @title IFund — an Own Curated Fund token and the basket that backs it
+/// @notice The fund token is a plain ERC-20 backed by a basket of tokens held in this contract, any
+///         idle USDG the fund holds, and the fund's own position in its USDG pool.
 ///
-///         - Redeem: burn fund tokens for a pro-rata slice of every basket asset, at any time.
-///           Needs no oracle and cannot be paused.
+///         - NAV per token = (basket + idle USDG + the USDG in the fund's pool position) divided by
+///           (supply minus the fund tokens in that position). The position is valued at the pool
+///           TWAP, never the spot price.
+///         - Redeem: burn fund tokens for a pro-rata slice of every basket asset, of idle USDG and of
+///           the pool position (its USDG paid out, its fund tokens burned), at any time. The basket
+///           part needs no oracle and nothing can pause it.
 ///         - Mint: deposit one basket asset at its oracle value, priced at the fund token's market
 ///           TWAP (optionally discounted in exchange for a lock), never below NAV.
-///         - Fees: the protocol fee and the creator fee are charged in fund tokens on mints and
-///           redeems (and in USDG on pool trades, by the hook).
-///         - Portfolio changes (assets and target weights) come only from the fund's governor,
-///           which holders and the creator vote through. The admin can swap the governor.
-///         - The manager (creator) rebalances towards the targets through admin-allowed routers,
-///           bounded by oracle value.
-///         - Name, symbol, logo and description are chosen by the creator and can be updated by
-///           the creator or the admin; platform metadata comes from the factory.
+///         - Fees: the protocol fee and the curator fee are charged in fund tokens on mints and
+///           redeems (and in USDG on pool trades, by the hook). The curator fee goes to the fund's
+///           curators module, which splits it among the curators.
+///         - Portfolio changes (assets and target weights) come only from the fund's governor
+///           (the weekly weight vote and listing proposals). The admin can swap the governor.
+///         - The manager (the Own keeper) rebalances towards the targets through admin-allowed
+///           routers, bounded by oracle value.
+///         - Depositors' launch tokens cannot be transferred for the launch's lock period; they can
+///           still be staked and redeemed.
 interface IFund is IERC20 {
     /// @notice A locked mint.
     /// @param amount   Fund tokens locked (zero once claimed).
@@ -65,16 +69,19 @@ interface IFund is IERC20 {
     );
 
     /// @notice Emitted on a redeem.
-    /// @param sender   Holder that redeemed.
-    /// @param receiver Receiver of the basket assets.
-    /// @param shares   Fund tokens redeemed, including fees.
-    /// @param amounts  Amount of each basket asset paid out, in {assets} order.
-    event Redeemed(address indexed sender, address indexed receiver, uint256 shares, uint256[] amounts);
+    /// @param sender     Holder that redeemed.
+    /// @param receiver   Receiver of the basket assets and USDG.
+    /// @param shares     Fund tokens redeemed, including fees.
+    /// @param amounts    Amount of each basket asset paid out, in {assets} order.
+    /// @param usdgAmount USDG paid out (idle USDG plus the pool position slice).
+    event Redeemed(
+        address indexed sender, address indexed receiver, uint256 shares, uint256[] amounts, uint256 usdgAmount
+    );
 
     /// @notice Emitted when fees are charged in fund tokens.
     /// @param protocolFee Fund tokens to the protocol fee recipient.
-    /// @param creatorFee  Fund tokens to the creator fee recipient.
-    event FeesCharged(uint256 protocolFee, uint256 creatorFee);
+    /// @param curatorFee  Fund tokens to the curators module.
+    event FeesCharged(uint256 protocolFee, uint256 curatorFee);
 
     /// @notice Emitted when a locked mint is claimed.
     /// @param account Owner of the lock.
@@ -94,10 +101,14 @@ interface IFund is IERC20 {
     /// @param weightsBps Target weights.
     event TargetWeightsSet(address[] assets, uint16[] weightsBps);
 
-    /// @notice Emitted when the creator fee changes.
-    /// @param feeBps    Fee, in basis points.
-    /// @param recipient Recipient.
-    event CreatorFeeSet(uint16 feeBps, address recipient);
+    /// @notice Emitted when the curator fee changes.
+    /// @param feeBps Fee, in basis points.
+    event CuratorFeeSet(uint16 feeBps);
+
+    /// @notice Emitted when an account's locked launch tokens change.
+    /// @param account The account.
+    /// @param locked  Fund tokens now locked.
+    event LaunchLockSet(address indexed account, uint256 locked);
 
     /// @notice Emitted when the lock options change.
     /// @param options New options.
@@ -123,7 +134,8 @@ interface IFund is IERC20 {
     event MintPausedSet(bool paused);
 
     /// @notice Emitted once, when the launch succeeds and the fund goes live.
-    event Launched();
+    /// @param depositorUnlockAt When depositors' launch tokens become transferable.
+    event Launched(uint64 depositorUnlockAt);
 
     /// @notice Caller is not the platform admin.
     error NotAdmin();
@@ -137,9 +149,6 @@ interface IFund is IERC20 {
     /// @notice Caller is not the governor.
     error NotGovernor();
 
-    /// @notice Caller is neither the manager nor the platform admin.
-    error NotManagerOrAdmin();
-
     /// @notice A metadata field is empty or too long.
     error InvalidMetadata();
 
@@ -148,6 +157,15 @@ interface IFund is IERC20 {
 
     /// @notice Caller is not the launch module.
     error NotLaunch();
+
+    /// @notice Caller is not the staking module.
+    error NotStaking();
+
+    /// @notice The transfer would move launch tokens that are still locked.
+    error LaunchTokensLocked();
+
+    /// @notice The redeem is larger than the supply backed by the basket.
+    error RedeemTooLarge();
 
     /// @notice A required address is zero.
     error ZeroAddress();
@@ -184,7 +202,7 @@ interface IFund is IERC20 {
     /// @notice A lock option is invalid.
     error InvalidLockOptions();
 
-    /// @notice The creator fee is above its cap.
+    /// @notice The curator fee is above its cap.
     error FeeTooHigh();
 
     /// @notice Output is below the caller's minimum.
@@ -218,18 +236,23 @@ interface IFund is IERC20 {
         CreateFundParams calldata params
     ) external;
 
-    /// @notice Wire the launch, staking and governor modules. Factory only, once.
+    /// @notice Wire the per-fund modules. Factory only, once.
     /// @param launch_   Launch module.
     /// @param staking_  Staking module.
     /// @param governor_ Governor.
+    /// @param curators_ Curators module (the curator fee recipient).
     function setModules(
         address launch_,
         address staking_,
-        address governor_
+        address governor_,
+        address curators_
     ) external;
 
     /// @notice Mark the fund live after a successful launch. Launch only, once.
-    function markLaunched() external;
+    /// @param depositorUnlockAt_ When depositors' launch tokens become transferable.
+    function markLaunched(
+        uint64 depositorUnlockAt_
+    ) external;
 
     /// @notice Mint fund tokens without a deposit: launch allocations and staker yield. Modules only.
     /// @param to     Receiver.
@@ -238,6 +261,25 @@ interface IFund is IERC20 {
         address to,
         uint256 amount
     ) external;
+
+    /// @notice Lock `amount` more of `account`'s fund tokens until {depositorUnlockAt}. Launch and
+    ///         staking only (launch claims, and unstaking locked stake). A no-op once unlocked.
+    /// @param account The account.
+    /// @param amount  Fund tokens to lock.
+    function addLaunchLock(
+        address account,
+        uint256 amount
+    ) external;
+
+    /// @notice Release the part of `account`'s lock that staking `amount` would move out, so the
+    ///         staking module can lock the stake instead. Staking only. Unlocked tokens move first.
+    /// @param account The staker.
+    /// @param amount  Fund tokens being staked.
+    /// @return moved Locked fund tokens moving into staking.
+    function releaseLaunchLock(
+        address account,
+        uint256 amount
+    ) external returns (uint256 moved);
 
     /// @notice Mint fund tokens by depositing one basket asset.
     /// @param asset        Basket asset deposited (target weight above zero).
@@ -254,16 +296,21 @@ interface IFund is IERC20 {
         address receiver
     ) external returns (uint256 shares);
 
-    /// @notice Redeem fund tokens for a pro-rata slice of every basket asset.
+    /// @notice Redeem fund tokens for a pro-rata slice of every basket asset, of idle USDG and of
+    ///         the fund's pool position. The position slice pays its USDG (at most its TWAP value,
+    ///         so moving the spot price cannot inflate it) and burns its fund tokens.
     /// @param shares        Fund tokens redeemed, fees included.
-    /// @param receiver      Receiver of the basket assets.
+    /// @param receiver      Receiver of the basket assets and USDG.
     /// @param minAmountsOut Per-asset minimum, in {assets} order (empty to skip).
-    /// @return amounts Amount of each asset paid out, in {assets} order.
+    /// @param minUsdgOut    Minimum USDG paid out.
+    /// @return amounts    Amount of each asset paid out, in {assets} order.
+    /// @return usdgAmount USDG paid out.
     function redeem(
         uint256 shares,
         address receiver,
-        uint256[] calldata minAmountsOut
-    ) external returns (uint256[] memory amounts);
+        uint256[] calldata minAmountsOut,
+        uint256 minUsdgOut
+    ) external returns (uint256[] memory amounts, uint256 usdgAmount);
 
     /// @notice Burn caller's fund tokens without redeeming (raises NAV for everyone else).
     /// @param amount Amount.
@@ -278,7 +325,8 @@ interface IFund is IERC20 {
         uint256[] calldata lockIds
     ) external returns (uint256 amount);
 
-    /// @notice Swap between two basket assets through an allowed router. Manager only. Each swap
+    /// @notice Swap a basket asset (or idle USDG) into another basket asset through an allowed
+    ///         router. Manager only. Each swap
     ///         may lose at most the factory's slippage bound in oracle value, and the value sold is
     ///         rate limited: at most the daily cap at once, with the allowance refilling linearly
     ///         over a day. This bounds what a manager can leak through bad fills.
@@ -298,12 +346,10 @@ interface IFund is IERC20 {
         uint16[] calldata weightsBps_
     ) external;
 
-    /// @notice Set the creator fee. Admin only (the creator cannot change it).
-    /// @param feeBps    Fee, in basis points (capped).
-    /// @param recipient Recipient.
-    function setCreatorFee(
-        uint16 feeBps,
-        address recipient
+    /// @notice Set the curator fee. Admin only.
+    /// @param feeBps Fee, in basis points (capped at 10%).
+    function setCuratorFee(
+        uint16 feeBps
     ) external;
 
     /// @notice Replace the mint-with-lock options. Admin only.
@@ -319,7 +365,7 @@ interface IFund is IERC20 {
         address governor_
     ) external;
 
-    /// @notice Update the fund's name, symbol, logo and description. Manager or admin.
+    /// @notice Update the fund's name, symbol, logo and description. Admin only.
     /// @param name_        Name (1 to 64 bytes).
     /// @param symbol_      Symbol (1 to 16 bytes).
     /// @param logoURI_     Logo URI (at most 512 bytes).
@@ -347,7 +393,7 @@ interface IFund is IERC20 {
     /// @return The factory.
     function factory() external view returns (address);
 
-    /// @notice The creator managing the basket.
+    /// @notice The Own keeper that rebalances the basket.
     /// @return The manager.
     function manager() external view returns (address);
 
@@ -383,13 +429,47 @@ interface IFund is IERC20 {
     /// @return True while paused.
     function mintPaused() external view returns (bool);
 
-    /// @notice Creator fee, in basis points.
-    /// @return The fee.
-    function creatorFeeBps() external view returns (uint16);
+    /// @notice Curators module: the curator fee recipient.
+    /// @return The curators module.
+    function curators() external view returns (address);
 
-    /// @notice Creator fee recipient.
-    /// @return The recipient.
-    function creatorFeeRecipient() external view returns (address);
+    /// @notice Curator fee, in basis points.
+    /// @return The fee.
+    function curatorFeeBps() external view returns (uint16);
+
+    /// @notice When depositors' launch tokens become transferable (0 before launch).
+    /// @return The timestamp.
+    function depositorUnlockAt() external view returns (uint64);
+
+    /// @notice Fund tokens of `account` that are still launch-locked (meaningful only before
+    ///         {depositorUnlockAt}).
+    /// @param account The account.
+    /// @return The locked amount.
+    function launchLocked(
+        address account
+    ) external view returns (uint256);
+
+    /// @notice Idle USDG held by the fund.
+    /// @return The amount.
+    function idleUsdg() external view returns (uint256);
+
+    /// @notice The fund's pool position at the pool TWAP.
+    /// @return usdgAmount USDG in the position.
+    /// @return fundTokens Fund tokens in the position.
+    function positionAmounts() external view returns (uint256 usdgAmount, uint256 fundTokens);
+
+    /// @notice Supply that NAV is spread over: total supply minus the fund tokens in the fund's
+    ///         pool position (at the pool TWAP).
+    /// @return The supply.
+    function effectiveSupply() external view returns (uint256);
+
+    /// @notice Whether `asset`'s balance is dust: worth at most `DUST_BPS` of the basket, so it can
+    ///         be dropped from the basket.
+    /// @param asset The asset.
+    /// @return True if it can be dropped.
+    function isDust(
+        address asset
+    ) external view returns (bool);
 
     /// @notice Basket assets.
     /// @return The assets.
@@ -420,7 +500,8 @@ interface IFund is IERC20 {
         address account
     ) external view returns (Lock[] memory);
 
-    /// @notice Basket value, 18 decimals USD. Reverts if any asset's price is unavailable.
+    /// @notice Backing value: basket, idle USDG and the pool position's USDG, 18 decimals USD.
+    ///         Reverts if any asset's price is unavailable.
     /// @return The value.
     function totalValue() external view returns (uint256);
 
@@ -445,10 +526,11 @@ interface IFund is IERC20 {
         uint256 lockOption
     ) external view returns (uint256 shares, uint256 mintPrice);
 
-    /// @notice Quote a redeem.
+    /// @notice Quote a redeem (the USDG figure assumes the pool's spot price equals its TWAP).
     /// @param shares Fund tokens redeemed, fees included.
-    /// @return amounts Amount of each asset paid out, in {assets} order.
+    /// @return amounts    Amount of each asset paid out, in {assets} order.
+    /// @return usdgAmount USDG paid out.
     function previewRedeem(
         uint256 shares
-    ) external view returns (uint256[] memory amounts);
+    ) external view returns (uint256[] memory amounts, uint256 usdgAmount);
 }

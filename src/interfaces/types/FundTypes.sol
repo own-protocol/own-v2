@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-/// @title FundTypes — shared types for MONEY Market Funds
+/// @title FundTypes — shared types for Own Curated Funds
 
 /// @notice A mint-with-lock option: the minter accepts a lock on the minted fund tokens in exchange
 ///         for a discount to the fund token's market price.
@@ -21,19 +21,22 @@ struct YieldTier {
     uint16 rateBpsPerDay;
 }
 
-/// @notice Everything a launcher chooses when creating a fund.
-/// @param name                 Fund token name.
-/// @param symbol               Fund token symbol.
-/// @param logoURI              Logo URI chosen by the creator.
-/// @param description          Description chosen by the creator.
-/// @param assets               Basket assets (each must have an oracle feed).
-/// @param weightsBps           Target weight per asset; sums to 10 000.
-/// @param manager              Creator address that manages the basket (weights, rebalances).
-/// @param creatorFeeRecipient  Receives the creator fee.
-/// @param creatorFeeBps        Creator fee on pool trades, mints and redeems (0 to 10%).
-/// @param minGraduationUsd     Minimum basket value (18 decimals USD) the launch must raise.
-/// @param lockOptions          Mint-with-lock options.
-/// @param yieldTiers           Staker-yield tiers by premium.
+/// @notice Everything Own chooses when creating a fund.
+/// @param name               Fund token name.
+/// @param symbol             Fund token symbol.
+/// @param logoURI            Logo URI.
+/// @param description        Description.
+/// @param assets             Basket assets (each must have an oracle feed; USDG is not allowed).
+/// @param weightsBps         Starting target weight per asset; sums to 10 000.
+/// @param manager            The Own keeper that rebalances the basket.
+/// @param curators           Starting curators (at most the factory's curator cap).
+/// @param curatorFeeBps      Curator fee on pool trades, mints and redeems (0 to 10%).
+/// @param minCuratorStakeBps Share of supply each curator must keep staked in the governor.
+/// @param minRaiseUsd        Minimum basket value (18 decimals USD) the launch must raise.
+/// @param launchSupply       Fixed fund token supply created at launch (0 for the default 100M).
+/// @param launchDuration     Deposit window length, in seconds (0 for the default 7 days).
+/// @param lockOptions        Mint-with-lock options.
+/// @param yieldTiers         Staker-yield tiers by premium.
 struct CreateFundParams {
     string name;
     string symbol;
@@ -42,62 +45,80 @@ struct CreateFundParams {
     address[] assets;
     uint16[] weightsBps;
     address manager;
-    address creatorFeeRecipient;
-    uint16 creatorFeeBps;
-    uint256 minGraduationUsd;
+    address[] curators;
+    uint16 curatorFeeBps;
+    uint16 minCuratorStakeBps;
+    uint256 minRaiseUsd;
+    uint256 launchSupply;
+    uint32 launchDuration;
     LockOption[] lockOptions;
     YieldTier[] yieldTiers;
 }
 
-/// @notice Launch parameters snapshotted into each launch when its fund is created.
-/// @param duration           Deposit window length, in seconds.
-/// @param finalizeGrace      Time after the window closes within which finalization must happen,
-///                           otherwise the launch can be marked failed and refunded.
-/// @param usdgRatioBps       USDG each depositor adds, as basis points of their basket deposit value.
-/// @param launchPremiumBps   Premium over NAV at which the pool opens.
+/// @notice Launch rules. The factory holds the defaults; each launch snapshots them with its own
+///         duration and supply.
+/// @param duration            Deposit window length, in seconds (1 to 30 days).
+/// @param finalizeGrace       Time after the window closes within which finalization must happen,
+///                            otherwise the launch can be marked failed and refunded.
+/// @param usdgRatioBps        USDG each depositor adds, as basis points of their deposit's value.
+/// @param launchPremiumBps    Premium over NAV at which the pool opens.
+/// @param earlyYieldBpsPerDay Extra launch tokens per day a deposit sits in the window, in basis
+///                            points of its value.
+/// @param overweightHaircutBps Haircut on deposit value above an asset's target weight of the raise.
+/// @param withdrawCutoff      Deposits can be withdrawn until this long before the window closes.
+/// @param depositorLock       How long depositors' launch tokens stay non-transferable.
 struct LaunchConfig {
     uint32 duration;
     uint32 finalizeGrace;
     uint16 usdgRatioBps;
     uint16 launchPremiumBps;
+    uint16 earlyYieldBpsPerDay;
+    uint16 overweightHaircutBps;
+    uint32 withdrawCutoff;
+    uint32 depositorLock;
 }
 
-/// @notice Voting rules for a fund's portfolio changes, snapshotted into each proposal.
-/// @param creatorPowerBps    Fixed share of the total vote held by the creator (the proposer).
-/// @param passThresholdBps   Share of the total vote in favour needed to pass.
-/// @param minUserSupportBps  Share of the total vote in favour that must come from holders.
-/// @param votingPeriod       Voting length, in seconds.
-/// @param executionDelay     Wait after voting ends before a passed proposal can execute (admin
-///                           veto window).
-/// @param executionWindow    Time after the delay within which it must execute, or it expires.
+/// @notice A fund's governance rules: the weekly weight vote and proposals.
+/// @param curatorShareBps     Share of every vote held by the curators together (split equally).
+/// @param minVoteBps          A token with less than this share of the vote is targeted at 0.
+/// @param maxWeightBps        Cap on any token's target weight.
+/// @param maxWeeklyShiftBps   Largest move of any weight in one week.
+/// @param dropAfterEpochs     Consecutive weeks under `minVoteBps` after which a token is dropped.
+/// @param quorumBps           Yes votes a proposal needs, as a share of all possible votes.
+/// @param votingPeriod        Proposal voting length, in seconds.
+/// @param vetoPeriod          Wait after voting ends in which Own can veto, in seconds.
+/// @param executionWindow     Time after the veto period within which a proposal must execute.
+/// @param proposalThresholdUsd Stake (valued at NAV, 18 decimals USD) a non-curator needs to propose.
 struct GovernanceConfig {
-    uint16 creatorPowerBps;
-    uint16 passThresholdBps;
-    uint16 minUserSupportBps;
+    uint16 curatorShareBps;
+    uint16 minVoteBps;
+    uint16 maxWeightBps;
+    uint16 maxWeeklyShiftBps;
+    uint8 dropAfterEpochs;
+    uint16 quorumBps;
     uint32 votingPeriod;
-    uint32 executionDelay;
+    uint32 vetoPeriod;
     uint32 executionWindow;
+    uint256 proposalThresholdUsd;
 }
 
 /// @title GovernanceConfigLib — bounds shared by the factory and every governor
 library GovernanceConfigLib {
-    /// @notice Whether `c` is within bounds: the creator's share leaves room for holders, the
-    ///         thresholds are reachable, and every period is between one hour and 30 days (the
-    ///         delay may be zero).
+    /// @notice Whether `c` is within bounds.
     /// @param c The parameters.
     /// @return True if valid.
     function isValid(
         GovernanceConfig memory c
     ) internal pure returns (bool) {
-        return c.creatorPowerBps < 10_000 && c.passThresholdBps != 0 && c.passThresholdBps <= 10_000
-            && c.minUserSupportBps <= 10_000 - c.creatorPowerBps && c.votingPeriod >= 1 hours
-            && c.votingPeriod <= 30 days && c.executionDelay <= 30 days && c.executionWindow >= 1 hours
-            && c.executionWindow <= 30 days;
+        return c.curatorShareBps <= 5000 && c.minVoteBps <= 1000 && c.maxWeightBps >= 1000 && c.maxWeightBps <= 10_000
+            && c.maxWeeklyShiftBps != 0 && c.maxWeeklyShiftBps <= 10_000 && c.dropAfterEpochs != 0 && c.quorumBps != 0
+            && c.quorumBps <= 10_000 && c.votingPeriod >= 1 hours && c.votingPeriod <= 30 days
+            && c.vetoPeriod <= 30 days && c.executionWindow >= 1 hours && c.executionWindow <= 30 days;
     }
 }
 
-/// @notice Platform-wide metadata every fund carries: what a MONEY Market Fund is and who runs it.
-/// @param name        Platform name, e.g. "MONEY Market Funds by Own".
+/// @notice Platform-wide metadata every fund carries.
+/// @param name        Platform name, e.g. "Own Curated Funds".
 /// @param description About the platform, Own and the MONEY token.
 /// @param url         Platform link.
 struct PlatformMetadata {
@@ -106,7 +127,7 @@ struct PlatformMetadata {
     string url;
 }
 
-/// @notice A fund's full metadata: the creator's fields plus the platform's.
+/// @notice A fund's full metadata: its own fields plus the platform's.
 /// @param name        Fund token name.
 /// @param symbol      Fund token symbol.
 /// @param logoURI     Logo URI.
