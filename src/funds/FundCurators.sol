@@ -46,13 +46,15 @@ contract FundCurators is IFundCurators, Initializable, ReentrancyGuard {
     mapping(address curator => mapping(address token => uint256)) private _debt;
     mapping(address curator => mapping(address token => uint256)) private _owed;
 
+    IFundFactory private _factory;
+
     modifier onlyAdmin() {
-        if (msg.sender != _factory().owner()) revert NotAdmin();
+        if (msg.sender != _factory.owner()) revert NotAdmin();
         _;
     }
 
     modifier onlyAdminOrGovernor() {
-        if (msg.sender != _factory().owner() && msg.sender != IFund(fund).governor()) revert NotAdminOrGovernor();
+        if (msg.sender != _factory.owner() && msg.sender != IFund(fund).governor()) revert NotAdminOrGovernor();
         _;
     }
 
@@ -68,10 +70,12 @@ contract FundCurators is IFundCurators, Initializable, ReentrancyGuard {
     ) external override initializer {
         if (fund_ == address(0)) revert ZeroAddress();
         fund = fund_;
+        _factory = IFundFactory(IFund(fund_).factory());
         _setMinStake(minStakeBps_);
-        uint256 cap = IFundFactory(msg.sender).curatorCap();
+        uint256 cap = _factory.curatorCap();
+        address[2] memory tokens = _feeTokens();
         for (uint256 i; i < curators_.length; ++i) {
-            _add(curators_[i], cap);
+            _add(curators_[i], cap, tokens);
         }
     }
 
@@ -79,23 +83,22 @@ contract FundCurators is IFundCurators, Initializable, ReentrancyGuard {
     function addCurator(
         address curator
     ) external override onlyAdminOrGovernor {
-        _distributeAll();
-        _add(curator, _factory().curatorCap());
+        address[2] memory tokens = _distributeAll();
+        _add(curator, _factory.curatorCap(), tokens);
     }
 
     /// @inheritdoc IFundCurators
     function removeCurator(
         address curator
     ) external override onlyAdminOrGovernor {
-        _distributeAll();
-        _remove(curator);
+        _remove(curator, _distributeAll());
     }
 
     /// @inheritdoc IFundCurators
     function replaceCurator(address curator, address replacement) external override onlyAdminOrGovernor {
-        _distributeAll();
-        _remove(curator);
-        _add(replacement, type(uint256).max);
+        address[2] memory tokens = _distributeAll();
+        _remove(curator, tokens);
+        _add(replacement, type(uint256).max, tokens);
     }
 
     /// @inheritdoc IFundCurators
@@ -111,7 +114,7 @@ contract FundCurators is IFundCurators, Initializable, ReentrancyGuard {
     ) external override {
         IFund f = IFund(fund);
         if (msg.sender != f.governor()) revert NotGovernor();
-        _distributeAll();
+        address[2] memory tokens = _distributeAll();
         uint256 required = Math.mulDiv(f.totalSupply(), minStakeBps, BPS, Math.Rounding.Ceil);
         IFundGovernor gov = IFundGovernor(msg.sender);
         uint256 n = _curators.length;
@@ -126,7 +129,7 @@ contract FundCurators is IFundCurators, Initializable, ReentrancyGuard {
                 st.belowSince = uint32(epoch);
                 continue;
             }
-            if (ok != st.compliant) _setCompliant(c, ok);
+            if (ok != st.compliant) _setCompliant(c, ok, tokens);
         }
     }
 
@@ -181,22 +184,19 @@ contract FundCurators is IFundCurators, Initializable, ReentrancyGuard {
         if (_state[curator].compliant) amount += (acc - _debt[curator][token]) / PRECISION;
     }
 
-    function _add(address curator, uint256 cap) internal {
+    function _add(address curator, uint256 cap, address[2] memory tokens) internal {
         if (curator == address(0)) revert ZeroAddress();
         if (_state[curator].active) revert AlreadyCurator();
         if (_curators.length >= cap) revert CuratorCapReached();
         _curators.push(curator);
         _state[curator].active = true;
-        _state[curator].belowSince = 0;
-        _setCompliant(curator, true);
+        _setCompliant(curator, true, tokens);
         emit CuratorAdded(curator);
     }
 
-    function _remove(
-        address curator
-    ) internal {
+    function _remove(address curator, address[2] memory tokens) internal {
         if (!_state[curator].active) revert NotCurator();
-        if (_state[curator].compliant) _setCompliant(curator, false);
+        if (_state[curator].compliant) _setCompliant(curator, false, tokens);
         delete _state[curator];
         uint256 n = _curators.length;
         for (uint256 i; i < n; ++i) {
@@ -210,8 +210,7 @@ contract FundCurators is IFundCurators, Initializable, ReentrancyGuard {
     }
 
     /// @dev Callers distribute arrived fees first.
-    function _setCompliant(address curator, bool compliant) internal {
-        address[2] memory tokens = _feeTokens();
+    function _setCompliant(address curator, bool compliant, address[2] memory tokens) internal {
         for (uint256 i; i < 2; ++i) {
             _settle(curator, tokens[i]);
             _debt[curator][tokens[i]] = _accPerCurator[tokens[i]];
@@ -230,8 +229,9 @@ contract FundCurators is IFundCurators, Initializable, ReentrancyGuard {
         _debt[curator][token] = acc;
     }
 
-    function _distributeAll() internal {
-        address[2] memory tokens = _feeTokens();
+    /// @dev Returns the fee tokens.
+    function _distributeAll() internal returns (address[2] memory tokens) {
+        tokens = _feeTokens();
         _distribute(tokens[0]);
         _distribute(tokens[1]);
     }
@@ -264,10 +264,6 @@ contract FundCurators is IFundCurators, Initializable, ReentrancyGuard {
     }
 
     function _feeTokens() internal view returns (address[2] memory) {
-        return [fund, _factory().usdg()];
-    }
-
-    function _factory() internal view returns (IFundFactory) {
-        return IFundFactory(IFund(fund).factory());
+        return [fund, _factory.usdg()];
     }
 }

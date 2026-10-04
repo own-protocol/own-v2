@@ -94,9 +94,6 @@ interface IFundHook {
     /// @notice The LP fee is above its cap.
     error LpFeeTooHigh();
 
-    /// @notice A hook entry point this hook does not enable was called.
-    error HookNotImplemented();
-
     /// @notice Record the pool's current price in its TWAP accumulator. Anyone can call; swaps do
     ///         it automatically, so this only keeps checkpoints regular while trading is quiet.
     /// @param fund The fund.

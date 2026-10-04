@@ -4,6 +4,7 @@ pragma solidity 0.8.28;
 import {IFund} from "../../interfaces/IFund.sol";
 import {IFundFactory} from "../../interfaces/IFundFactory.sol";
 import {IFundOracle} from "../../interfaces/IFundOracle.sol";
+import {BasketEntry} from "../../interfaces/types/FundTypes.sol";
 import {BPS, PRECISION} from "../../interfaces/types/Types.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
@@ -20,7 +21,7 @@ library FundRebalance {
     ///         {IFund-rebalance}.
     /// @param factory         The fund's factory.
     /// @param assets          The basket.
-    /// @param isAsset         Basket membership.
+    /// @param basket          Basket membership.
     /// @param params          The swap.
     /// @param volume          Rebalance volume before this swap (USD, 18 decimals).
     /// @param volumeUpdatedAt When `volume` was last updated.
@@ -28,18 +29,18 @@ library FundRebalance {
     function rebalance(
         address factory,
         address[] storage assets,
-        mapping(address => bool) storage isAsset,
+        mapping(address => BasketEntry) storage basket,
         IFund.RebalanceParams calldata params,
         uint256 volume,
         uint256 volumeUpdatedAt
     ) public returns (uint256 newVolume) {
         IFundFactory fac = IFundFactory(factory);
-        if (!fac.isRouter(params.router) || isAsset[params.router] || params.router == address(this)) {
+        if (!fac.isRouter(params.router) || basket[params.router].listed || params.router == address(this)) {
             revert IFund.RouterNotAllowed();
         }
         address usdg = fac.usdg();
         if (
-            (!isAsset[params.sellAsset] && params.sellAsset != usdg) || !isAsset[params.buyAsset]
+            (!basket[params.sellAsset].listed && params.sellAsset != usdg) || !basket[params.buyAsset].listed
                 || params.sellAsset == params.buyAsset
         ) {
             revert IFund.InvalidBasket();

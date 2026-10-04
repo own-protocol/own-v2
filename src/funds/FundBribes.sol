@@ -34,6 +34,8 @@ contract FundBribes is IFundBribes, Initializable, ReentrancyGuard {
     mapping(uint256 id => mapping(address reward => mapping(address briber => uint256))) private _listingBribesBy;
     mapping(uint256 id => mapping(address reward => mapping(address account => bool))) private _listingClaimed;
 
+    IFundFactory private _factory;
+
     constructor() {
         _disableInitializers();
     }
@@ -44,6 +46,7 @@ contract FundBribes is IFundBribes, Initializable, ReentrancyGuard {
     ) external override initializer {
         if (fund_ == address(0)) revert ZeroAddress();
         fund = fund_;
+        _factory = IFundFactory(IFund(fund_).factory());
     }
 
     /// @inheritdoc IFundBribes
@@ -86,9 +89,9 @@ contract FundBribes is IFundBribes, Initializable, ReentrancyGuard {
         address reward
     ) external override nonReentrant returns (uint256 amount) {
         IFundGovernor gov = _governor();
-        bool skipped = !gov.isTallied(epoch) && epoch < gov.nextEpochToTally();
-        bool unvoted = gov.isTallied(epoch) && gov.tokenVotes(token, epoch) == 0;
-        if (!skipped && !unvoted) revert NotRefundable();
+        // Refundable when no one voted for the token in a tallied epoch, or the epoch was skipped.
+        bool refundable = gov.isTallied(epoch) ? gov.tokenVotes(token, epoch) == 0 : epoch < gov.nextEpochToTally();
+        if (!refundable) revert NotRefundable();
         amount = _bribesBy[epoch][token][reward][msg.sender];
         if (amount == 0) revert NothingToClaim();
         _bribesBy[epoch][token][reward][msg.sender] = 0;
@@ -188,7 +191,7 @@ contract FundBribes is IFundBribes, Initializable, ReentrancyGuard {
 
     function _pull(address token, address reward, uint256 amount) internal returns (uint256 net, uint256 cut) {
         if (amount == 0) revert ZeroAmount();
-        IFundFactory fac = IFundFactory(IFund(fund).factory());
+        IFundFactory fac = _factory;
         if (reward != token && !fac.isBribeToken(reward)) revert RewardNotAllowed();
         IERC20 r = IERC20(reward);
         uint256 balanceBefore = r.balanceOf(address(this));

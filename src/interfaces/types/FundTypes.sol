@@ -3,6 +3,23 @@ pragma solidity 0.8.28;
 
 /// @title FundTypes — shared types for Own Curated Funds
 
+/// @dev Maximum number of basket assets (bounds every loop over a basket).
+uint256 constant MAX_BASKET_ASSETS = 20;
+
+/// @dev A 1e18-scaled share ("WAD"): 1e18 is the whole, e.g. every possible vote.
+uint256 constant WAD = 1e18;
+
+/// @dev Converts basis points to WAD.
+uint256 constant BPS_TO_WAD = 1e14;
+
+/// @notice A token's place in a fund's basket, kept in one storage slot.
+/// @param listed    Whether the token is in the basket.
+/// @param weightBps Target weight, in basis points.
+struct BasketEntry {
+    bool listed;
+    uint16 weightBps;
+}
+
 /// @notice A mint-with-lock option: the minter accepts a lock on the minted fund tokens in exchange
 ///         for a discount to the fund token's market price.
 /// @param duration    Lock length, in seconds (non-zero).

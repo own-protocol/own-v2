@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 pragma solidity 0.8.28;
 
+import {BPS_TO_WAD, WAD} from "../../interfaces/types/FundTypes.sol";
 import {BPS} from "../../interfaces/types/Types.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
@@ -9,9 +10,6 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 ///         External library, linked at deployment, so the governor stays under the contract size
 ///         limit.
 library GaugeMath {
-    uint256 private constant WAD = 1e18;
-    uint256 private constant BPS_TO_WAD = 1e14;
-
     /// @notice Targets: cast votes plus silent votes spread at the current weights, then the
     ///         minimum-vote and cap guardrails.
     /// @param votes       Cast votes per token (WAD).

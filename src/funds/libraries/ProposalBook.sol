@@ -7,7 +7,7 @@ import {IFundFactory} from "../../interfaces/IFundFactory.sol";
 import {IFundGovernor} from "../../interfaces/IFundGovernor.sol";
 import {IFundOracle} from "../../interfaces/IFundOracle.sol";
 import {IFundStaking} from "../../interfaces/IFundStaking.sol";
-import {GovernanceConfig} from "../../interfaces/types/FundTypes.sol";
+import {BPS_TO_WAD, GovernanceConfig, MAX_BASKET_ASSETS} from "../../interfaces/types/FundTypes.sol";
 import {BPS, PRECISION} from "../../interfaces/types/Types.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
@@ -16,11 +16,6 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 ///         so the governor stays under the contract size limit. `msg.sender` is the governor's
 ///         caller and calls to the curators module come from the governor.
 library ProposalBook {
-    uint256 private constant BPS_TO_WAD = 1e14;
-
-    /// @notice Maximum basket size (matches the fund's own bound).
-    uint256 internal constant MAX_ASSETS = 20;
-
     struct Book {
         IFundGovernor.Proposal[] proposals;
         mapping(uint256 id => address[]) curators;
@@ -216,7 +211,7 @@ library ProposalBook {
         IFundFactory fac = IFundFactory(f.factory());
         if (kind == IFundGovernor.ProposalKind.List) {
             return !f.isAsset(target) && target != fund && target != fac.usdg() && fac.isEligibleAsset(target)
-                && IFundOracle(fac.oracle()).hasFeed(target) && f.assets().length < MAX_ASSETS;
+                && IFundOracle(fac.oracle()).hasFeed(target) && f.assets().length < MAX_BASKET_ASSETS;
         }
         if (kind == IFundGovernor.ProposalKind.Delist) return f.isAsset(target) && !targetDelisted;
         IFundCurators cur = IFundCurators(f.curators());

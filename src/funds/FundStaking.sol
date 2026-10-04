@@ -5,8 +5,8 @@ import {IFund} from "../interfaces/IFund.sol";
 import {IFundFactory} from "../interfaces/IFundFactory.sol";
 import {IFundGovernor} from "../interfaces/IFundGovernor.sol";
 import {IFundStaking} from "../interfaces/IFundStaking.sol";
-import {YieldPoint} from "../interfaces/types/FundTypes.sol";
-import {BPS, PRECISION} from "../interfaces/types/Types.sol";
+import {BPS_TO_WAD, YieldPoint} from "../interfaces/types/FundTypes.sol";
+import {PRECISION} from "../interfaces/types/Types.sol";
 import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -29,8 +29,6 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuard {
     /// @notice Maximum number of yield curve points.
     uint256 public constant MAX_YIELD_POINTS = 8;
 
-    uint256 private constant BPS_TO_WAD = PRECISION / BPS;
-
     /// @inheritdoc IFundStaking
     address public override fund;
 
@@ -45,6 +43,8 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuard {
     /// @inheritdoc IFundStaking
     mapping(address account => uint256) public override lockedShares;
 
+    IFundFactory private _factory;
+
     constructor() ERC20("", "") {
         _disableInitializers();
     }
@@ -53,39 +53,20 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuard {
     function initialize(address fund_, YieldPoint[] calldata curve_) external override initializer {
         if (fund_ == address(0)) revert ZeroAddress();
         fund = fund_;
+        _factory = IFundFactory(IFund(fund_).factory());
         lastAccrual = uint64(block.timestamp);
         _setCurve(curve_);
     }
 
     /// @inheritdoc IFundStaking
     function stake(uint256 assets, address receiver) external override nonReentrant returns (uint256 shares) {
-        if (assets == 0) revert ZeroAmount();
-        if (receiver == address(0)) revert ZeroAddress();
-        _accrue();
-        shares = convertToShares(assets);
-        if (shares == 0) revert ZeroAmount();
-        _totalStaked += assets;
-        uint256 moved = IFund(fund).releaseLaunchLock(msg.sender, assets);
-        IERC20(fund).safeTransferFrom(msg.sender, address(this), assets);
-        _mint(receiver, shares);
-        // Rounds up: a locked deposit never yields an unlocked share.
-        if (moved != 0) _addLock(receiver, Math.min(Math.mulDiv(shares, moved, assets, Math.Rounding.Ceil), shares));
-        emit Staked(msg.sender, receiver, assets, shares);
+        return _stake(assets, receiver, false);
     }
 
     /// @inheritdoc IFundStaking
     function stakeLocked(uint256 assets, address receiver) external override nonReentrant returns (uint256 shares) {
         if (msg.sender != IFund(fund).launch()) revert NotLaunch();
-        if (assets == 0) revert ZeroAmount();
-        if (receiver == address(0)) revert ZeroAddress();
-        _accrue();
-        shares = convertToShares(assets);
-        if (shares == 0) revert ZeroAmount();
-        _totalStaked += assets;
-        IERC20(fund).safeTransferFrom(msg.sender, address(this), assets);
-        _mint(receiver, shares);
-        _addLock(receiver, shares);
-        emit Staked(msg.sender, receiver, assets, shares);
+        return _stake(assets, receiver, true);
     }
 
     /// @inheritdoc IFundStaking
@@ -116,7 +97,7 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuard {
     function setYieldCurve(
         YieldPoint[] calldata curve_
     ) external override nonReentrant {
-        if (msg.sender != IFundFactory(IFund(fund).factory()).owner()) revert NotAdmin();
+        if (msg.sender != _factory.owner()) revert NotAdmin();
         _accrue();
         _setCurve(curve_);
     }
@@ -182,6 +163,26 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuard {
     ) public view override returns (uint256) {
         // Rounds down: unstakers never take more than their shares are worth.
         return Math.mulDiv(shares, totalAssets() + 1, totalSupply() + 1);
+    }
+
+    /// @dev With `allLocked` every new share is locked; otherwise as many as the launch-locked fund
+    ///      tokens moved in, rounded up so a locked deposit never yields an unlocked share.
+    function _stake(uint256 assets, address receiver, bool allLocked) internal returns (uint256 shares) {
+        if (assets == 0) revert ZeroAmount();
+        if (receiver == address(0)) revert ZeroAddress();
+        _accrue();
+        shares = convertToShares(assets);
+        if (shares == 0) revert ZeroAmount();
+        _totalStaked += assets;
+        uint256 locked = shares;
+        if (!allLocked) {
+            uint256 moved = IFund(fund).releaseLaunchLock(msg.sender, assets);
+            locked = Math.min(Math.mulDiv(shares, moved, assets, Math.Rounding.Ceil), shares);
+        }
+        IERC20(fund).safeTransferFrom(msg.sender, address(this), assets);
+        _mint(receiver, shares);
+        if (locked != 0) _addLock(receiver, locked);
+        emit Staked(msg.sender, receiver, assets, shares);
     }
 
     /// @dev Mints the yield owed since the last accrual, at the rate of the premium read now.
@@ -260,6 +261,6 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuard {
     }
 
     function _maxRate() internal view returns (uint256) {
-        return IFundFactory(IFund(fund).factory()).maxYieldRateBpsPerDay();
+        return _factory.maxYieldRateBpsPerDay();
     }
 }

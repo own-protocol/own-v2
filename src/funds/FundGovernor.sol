@@ -6,7 +6,13 @@ import {IFundCurators} from "../interfaces/IFundCurators.sol";
 import {IFundFactory} from "../interfaces/IFundFactory.sol";
 import {IFundGovernor} from "../interfaces/IFundGovernor.sol";
 import {IFundStaking} from "../interfaces/IFundStaking.sol";
-import {GovernanceConfig, GovernanceConfigLib} from "../interfaces/types/FundTypes.sol";
+import {
+    BPS_TO_WAD,
+    GovernanceConfig,
+    GovernanceConfigLib,
+    MAX_BASKET_ASSETS,
+    WAD
+} from "../interfaces/types/FundTypes.sol";
 import {BPS} from "../interfaces/types/Types.sol";
 import {EpochHistory} from "./libraries/EpochHistory.sol";
 
@@ -37,13 +43,10 @@ contract FundGovernor is IFundGovernor, Initializable, ReentrancyGuard {
     uint256 public constant MAX_WRAPPERS = 4;
 
     /// @notice Maximum basket size (matches the fund's own bound).
-    uint256 public constant MAX_ASSETS = 20;
+    uint256 public constant MAX_ASSETS = MAX_BASKET_ASSETS;
 
     /// @notice Epoch length; epochs flip Thursday 00:00 UTC (the Unix epoch was a Thursday).
     uint256 public constant EPOCH = 1 weeks;
-
-    uint256 private constant WAD = 1e18;
-    uint256 private constant BPS_TO_WAD = 1e14;
 
     struct Allocation {
         address[] tokens;
@@ -96,7 +99,7 @@ contract FundGovernor is IFundGovernor, Initializable, ReentrancyGuard {
     ProposalBook.Book private _book;
 
     modifier onlyAdmin() {
-        if (msg.sender != _factory().owner()) revert NotAdmin();
+        _checkAdmin();
         _;
     }
 
@@ -117,12 +120,13 @@ contract FundGovernor is IFundGovernor, Initializable, ReentrancyGuard {
 
     /// @inheritdoc IFundGovernor
     function deposit(address token, uint256 amount) external override nonReentrant {
-        if (!isVoteToken(token)) revert NotVoteToken();
+        bool isStake = token == IFund(fund).staking();
+        if (!isStake && !_isWrapper[token]) revert NotVoteToken();
         if (amount == 0) revert ZeroAmount();
         uint256 balanceBefore = IERC20(token).balanceOf(address(this));
         IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
         uint256 received = IERC20(token).balanceOf(address(this)) - balanceBefore;
-        uint256 power = token == IFund(fund).staking() ? received : IERC4626(token).convertToAssets(received);
+        uint256 power = isStake ? received : IERC4626(token).convertToAssets(received);
         if (power == 0) revert ZeroAmount();
 
         _escrow[msg.sender][token] += received;
@@ -131,7 +135,9 @@ contract FundGovernor is IFundGovernor, Initializable, ReentrancyGuard {
 
         uint256 e = currentEpoch();
         EpochHistory.History storage h = _power[msg.sender];
-        _setPower(msg.sender, e, h.valueAt(e), h.valueAt(e + 1) + power);
+        uint256 active = h.valueAt(e);
+        uint256 next = h.valueAt(e + 1);
+        _setPower(msg.sender, e, active, next, active, next + power);
         emit Deposited(msg.sender, token, received, power);
     }
 
@@ -152,7 +158,7 @@ contract FundGovernor is IFundGovernor, Initializable, ReentrancyGuard {
         uint256 next = h.valueAt(e + 1);
         // Pending power (deposited this epoch) goes first; the rest stops counting at once.
         uint256 fromPending = Math.min(power, next - active);
-        _setPower(msg.sender, e, active - (power - fromPending), next - power);
+        _setPower(msg.sender, e, active, next, active - (power - fromPending), next - power);
 
         unlockingOf[msg.sender][token] += amount;
         uint256 until = Math.max(Math.max(unlockAt[msg.sender], (e + 1) * EPOCH), _voteLockUntil[msg.sender]);
@@ -448,11 +454,17 @@ contract FundGovernor is IFundGovernor, Initializable, ReentrancyGuard {
     //  Internal: vote accounting
     // ──────────────────────────────────────────────────────────
 
-    function _setPower(address account, uint256 e, uint256 active, uint256 next) internal {
-        EpochHistory.History storage h = _power[account];
-        uint256 oldActive = h.valueAt(e);
-        uint256 oldNext = h.valueAt(e + 1);
-        h.set(e, active, next);
+    /// @dev Moves `account`'s power for epochs `e` and `e + 1` from the old values to the new ones,
+    ///      and every aggregate with it.
+    function _setPower(
+        address account,
+        uint256 e,
+        uint256 oldActive,
+        uint256 oldNext,
+        uint256 active,
+        uint256 next
+    ) internal {
+        _power[account].set(e, active, next);
         _totalPower.add(e, _delta(oldActive, active), _delta(oldNext, next));
 
         Allocation storage al = _latestAlloc(account);
@@ -515,11 +527,11 @@ contract FundGovernor is IFundGovernor, Initializable, ReentrancyGuard {
         uint256 stakerWad = WAD - curatorWad;
         _stakerShareWad[e] = stakerWad;
 
+        uint256 slice = cs.length == 0 ? 0 : curatorWad / cs.length;
         for (uint256 c; c < cs.length; ++c) {
             if (!cur.isCompliant(cs[c])) continue;
             (address[] memory tokens, uint16[] memory weights) = allocationAt(cs[c], e);
             if (tokens.length == 0) continue;
-            uint256 slice = curatorWad / cs.length;
             _curatorSlice[e][cs[c]] = slice;
             for (uint256 k; k < tokens.length; ++k) {
                 uint256 idx = _indexOf(assets, tokens[k]);
@@ -614,16 +626,16 @@ contract FundGovernor is IFundGovernor, Initializable, ReentrancyGuard {
         return Math.max(IERC20(f.staking()).totalSupply(), _totalPower.valueAt(epoch));
     }
 
+    function _checkAdmin() internal view {
+        if (msg.sender != IFundFactory(IFund(fund).factory()).owner()) revert NotAdmin();
+    }
+
     function _setConfig(
         GovernanceConfig calldata config_
     ) internal {
         if (!GovernanceConfigLib.isValid(config_)) revert InvalidConfig();
         _config = config_;
         emit ConfigSet(config_);
-    }
-
-    function _factory() internal view returns (IFundFactory) {
-        return IFundFactory(IFund(fund).factory());
     }
 
     function _indexOf(address[] memory list, address a) internal pure returns (uint256) {

@@ -27,7 +27,10 @@ import {PoolKey} from "v4-core/src/types/PoolKey.sol";
 /// @title FundHook — Uniswap v4 hook and liquidity locker for fund pools
 /// @notice See {IFundHook}.
 /// @dev Must be deployed at an address whose low bits encode exactly {getHookPermissions}
-///      (mined with CREATE2). Swap fees are taken in USDG whichever side the trader specifies:
+///      (mined with CREATE2); the pool manager calls only those callbacks, so only they are
+///      implemented. Every pool is the fund token against USDG with this hook, a dynamic fee and
+///      {TICK_SPACING}, so a fund's pool key is derived rather than stored. Swap fees are taken in
+///      USDG whichever side the trader specifies:
 ///      - USDG is the specified side (exact USDG in, or exact USDG out): {beforeSwap} returns a
 ///        specified delta, so the pool swaps the amount net of (or grossed up by) the fee;
 ///      - USDG is the unspecified side: {afterSwap} returns an unspecified delta on the USDG leg.
@@ -42,7 +45,7 @@ import {PoolKey} from "v4-core/src/types/PoolKey.sol";
 ///      The fund's position is this hook's full-range position (salt 0) in the fund's pool. It is
 ///      valued at the pool TWAP: price manipulation inside a block never moves it, because the
 ///      accumulator only adds a tick once it has held across a block boundary.
-contract FundHook is IFundHook, IHooks, IUnlockCallback {
+contract FundHook is IFundHook, IUnlockCallback {
     using SafeERC20 for IERC20;
     using PoolIdLibrary for PoolKey;
     using BalanceDeltaLibrary for BalanceDelta;
@@ -72,21 +75,20 @@ contract FundHook is IFundHook, IHooks, IUnlockCallback {
         Remove
     }
 
-    struct PoolConfig {
-        address fund;
-        bool usdgIsCurrency0;
-        bool seeded;
-        uint24 lpFee;
-        uint128 liquidity;
-    }
-
     struct Observation {
         uint32 timestamp;
         int56 tickCumulative;
     }
 
-    struct Twap {
-        Observation latest;
+    /// @dev The first slot holds the pool's flags and the latest accumulator checkpoint, so a swap
+    ///      reads both with one storage load.
+    struct Pool {
+        bool registered;
+        bool seeded;
+        uint24 lpFee;
+        uint128 liquidity;
+        uint32 observedAt;
+        int56 tickCumulative;
         uint8 index;
         // The tick at the start of the latest observed block, for a zero-length TWAP period.
         int24 blockTick;
@@ -99,9 +101,13 @@ contract FundHook is IFundHook, IHooks, IUnlockCallback {
     /// @notice The fund factory (its owner is this hook's admin).
     IFundFactory public immutable factory;
 
-    mapping(address fund => PoolKey) private _keys;
-    mapping(PoolId => PoolConfig) private _configs;
-    mapping(PoolId => Twap) private _twaps;
+    address private immutable _usdg;
+    int24 private immutable _tickLower = TickMath.minUsableTick(TICK_SPACING);
+    int24 private immutable _tickUpper = TickMath.maxUsableTick(TICK_SPACING);
+    uint160 private immutable _sqrtLower = TickMath.getSqrtPriceAtTick(TickMath.minUsableTick(TICK_SPACING));
+    uint160 private immutable _sqrtUpper = TickMath.getSqrtPriceAtTick(TickMath.maxUsableTick(TICK_SPACING));
+
+    mapping(address fund => Pool) private _pools;
 
     modifier onlyPoolManager() {
         if (msg.sender != address(poolManager)) revert NotPoolManager();
@@ -111,6 +117,7 @@ contract FundHook is IFundHook, IHooks, IUnlockCallback {
     constructor(IPoolManager poolManager_, IFundFactory factory_) {
         poolManager = poolManager_;
         factory = factory_;
+        _usdg = factory_.usdg();
         Hooks.validateHookPermissions(IHooks(address(this)), getHookPermissions());
     }
 
@@ -119,58 +126,40 @@ contract FundHook is IFundHook, IHooks, IUnlockCallback {
         address fund
     ) external override {
         if (msg.sender != address(factory)) revert NotFactory();
-        if (address(_keys[fund].hooks) != address(0)) revert AlreadyRegistered();
-
-        address usdg = factory.usdg();
-        bool usdgIsCurrency0 = usdg < fund;
-        PoolKey memory key = PoolKey({
-            currency0: Currency.wrap(usdgIsCurrency0 ? usdg : fund),
-            currency1: Currency.wrap(usdgIsCurrency0 ? fund : usdg),
-            fee: LPFeeLibrary.DYNAMIC_FEE_FLAG,
-            tickSpacing: TICK_SPACING,
-            hooks: IHooks(address(this))
-        });
-        _keys[fund] = key;
-        PoolId id = key.toId();
-        _configs[id] = PoolConfig({fund: fund, usdgIsCurrency0: usdgIsCurrency0, seeded: false, lpFee: 0, liquidity: 0});
-        emit FundRegistered(fund, PoolId.unwrap(id));
+        Pool storage pool = _pools[fund];
+        if (pool.registered) revert AlreadyRegistered();
+        pool.registered = true;
+        emit FundRegistered(fund, PoolId.unwrap(_key(fund).toId()));
     }
 
     /// @inheritdoc IFundHook
     function seedPool(address fund, uint256 usdgAmount, uint256 shareAmount) external override {
-        PoolKey memory key = _keys[fund];
-        if (address(key.hooks) == address(0)) revert NotRegistered();
+        Pool storage pool = _pools[fund];
+        if (!pool.registered) revert NotRegistered();
         if (msg.sender != IFund(fund).launch()) revert NotLaunch();
-        PoolConfig storage cfg = _configs[key.toId()];
-        if (cfg.seeded) revert AlreadySeeded();
+        if (pool.seeded) revert AlreadySeeded();
         if (usdgAmount == 0 || shareAmount == 0) revert InvalidSeed();
-        cfg.seeded = true;
+        pool.seeded = true;
 
-        (uint256 amount0, uint256 amount1) = cfg.usdgIsCurrency0 ? (usdgAmount, shareAmount) : (shareAmount, usdgAmount);
+        bool usdgIs0 = _usdg < fund;
+        (uint256 amount0, uint256 amount1) = usdgIs0 ? (usdgAmount, shareAmount) : (shareAmount, usdgAmount);
         uint160 sqrtPrice = _sqrtPriceX96(amount0, amount1);
 
-        poolManager.initialize(key, sqrtPrice);
-        Twap storage twap = _twaps[key.toId()];
-        twap.latest = Observation({timestamp: uint32(block.timestamp), tickCumulative: 0});
-        twap.ring[0] = twap.latest;
-        twap.blockTick = TickMath.getTickAtSqrtPrice(sqrtPrice);
-        if (cfg.lpFee != 0) poolManager.updateDynamicLPFee(key, cfg.lpFee);
+        PoolKey memory key = _key(fund);
+        pool.blockTick = poolManager.initialize(key, sqrtPrice);
+        pool.observedAt = uint32(block.timestamp);
+        pool.ring[0] = Observation({timestamp: uint32(block.timestamp), tickCumulative: 0});
+        if (pool.lpFee != 0) poolManager.updateDynamicLPFee(key, pool.lpFee);
 
-        uint128 liquidity = FullRangeLiquidity.liquidityForAmounts(
-            sqrtPrice,
-            TickMath.getSqrtPriceAtTick(TickMath.minUsableTick(TICK_SPACING)),
-            TickMath.getSqrtPriceAtTick(TickMath.maxUsableTick(TICK_SPACING)),
-            amount0,
-            amount1
-        );
+        uint128 liquidity = FullRangeLiquidity.liquidityForAmounts(sqrtPrice, _sqrtLower, _sqrtUpper, amount0, amount1);
         if (liquidity == 0) revert InvalidSeed();
-        cfg.liquidity = liquidity;
+        pool.liquidity = liquidity;
 
         (uint256 used0, uint256 used1) =
             abi.decode(poolManager.unlock(abi.encode(Action.Seed, fund, liquidity)), (uint256, uint256));
         _sweepSeedDust(fund);
 
-        if (cfg.usdgIsCurrency0) emit PoolSeeded(fund, liquidity, used0, used1);
+        if (usdgIs0) emit PoolSeeded(fund, liquidity, used0, used1);
         else emit PoolSeeded(fund, liquidity, used1, used0);
     }
 
@@ -178,17 +167,16 @@ contract FundHook is IFundHook, IHooks, IUnlockCallback {
     function poke(
         address fund
     ) external override {
-        PoolId id = _keys[fund].toId();
-        if (!_configs[id].seeded) revert NotRegistered();
-        _observe(id);
+        Pool storage pool = _pools[fund];
+        if (!pool.seeded) revert NotRegistered();
+        _observe(pool, _key(fund).toId());
     }
 
     /// @inheritdoc IFundHook
     function collectLpFees(
         address fund
     ) external override returns (uint256 usdgAmount, uint256 burned) {
-        PoolConfig storage cfg = _seededConfig(fund);
-        if (cfg.liquidity == 0) return (0, 0);
+        if (_seeded(fund).liquidity == 0) return (0, 0);
         (, usdgAmount, burned) =
             abi.decode(poolManager.unlock(abi.encode(Action.Collect, fund)), (uint256, uint256, uint256));
         if (burned != 0) IFund(fund).burn(burned);
@@ -202,34 +190,32 @@ contract FundHook is IFundHook, IHooks, IUnlockCallback {
         address receiver
     ) external override returns (uint256 usdgPaid) {
         address fund = msg.sender;
-        PoolKey memory key = _keys[fund];
-        if (address(key.hooks) == address(0)) revert NotFund();
-        PoolConfig storage cfg = _configs[key.toId()];
-        if (!cfg.seeded || cfg.liquidity == 0 || numerator == 0) return 0;
+        Pool storage pool = _pools[fund];
+        if (!pool.registered) revert NotFund();
+        if (!pool.seeded || pool.liquidity == 0 || numerator == 0) return 0;
         // Rounds down: a redeemer never removes more than their share of the position.
-        uint128 liquidity = SafeCast.toUint128(Math.mulDiv(cfg.liquidity, numerator, denominator));
+        uint128 liquidity = SafeCast.toUint128(Math.mulDiv(pool.liquidity, numerator, denominator));
         if (liquidity == 0) return 0;
-        (uint256 usdgCap,) = _amountsAt(cfg, _positionTick(key.toId()), liquidity);
-        usdgPaid = _reduce(fund, cfg, liquidity, receiver, usdgCap);
+        (uint256 usdgCap,) = _amountsAt(fund, _positionTick(pool, fund), liquidity);
+        usdgPaid = _reduce(fund, pool, liquidity, receiver, usdgCap);
     }
 
     /// @inheritdoc IFundHook
     function withdrawPosition(address fund, uint128 liquidity) external override {
         if (msg.sender != factory.owner()) revert NotAdmin();
-        PoolConfig storage cfg = _seededConfig(fund);
-        if (liquidity == 0 || liquidity > cfg.liquidity) revert InsufficientLiquidity();
-        _reduce(fund, cfg, liquidity, fund, 0);
+        Pool storage pool = _seeded(fund);
+        if (liquidity == 0 || liquidity > pool.liquidity) revert InsufficientLiquidity();
+        _reduce(fund, pool, liquidity, fund, 0);
     }
 
     /// @inheritdoc IFundHook
     function setLpFee(address fund, uint24 lpFee) external override {
         if (msg.sender != factory.owner()) revert NotAdmin();
         if (lpFee > MAX_LP_FEE) revert LpFeeTooHigh();
-        PoolKey memory key = _keys[fund];
-        if (address(key.hooks) == address(0)) revert NotRegistered();
-        PoolConfig storage cfg = _configs[key.toId()];
-        cfg.lpFee = lpFee;
-        if (cfg.seeded) poolManager.updateDynamicLPFee(key, lpFee);
+        Pool storage pool = _pools[fund];
+        if (!pool.registered) revert NotRegistered();
+        pool.lpFee = lpFee;
+        if (pool.seeded) poolManager.updateDynamicLPFee(_key(fund), lpFee);
         emit LpFeeSet(fund, lpFee);
     }
 
@@ -238,10 +224,10 @@ contract FundHook is IFundHook, IHooks, IUnlockCallback {
         bytes calldata data
     ) external override onlyPoolManager returns (bytes memory) {
         (Action action, address fund) = abi.decode(data, (Action, address));
-        PoolKey memory key = _keys[fund];
+        PoolKey memory key = _key(fund);
         IPoolManager.ModifyLiquidityParams memory params = IPoolManager.ModifyLiquidityParams({
-            tickLower: TickMath.minUsableTick(TICK_SPACING),
-            tickUpper: TickMath.maxUsableTick(TICK_SPACING),
+            tickLower: _tickLower,
+            tickUpper: _tickUpper,
             liquidityDelta: 0,
             salt: bytes32(0)
         });
@@ -253,156 +239,56 @@ contract FundHook is IFundHook, IHooks, IUnlockCallback {
             return abi.encode(_settle(key.currency0, delta.amount0()), _settle(key.currency1, delta.amount1()));
         }
 
-        bool usdgIs0 = _configs[key.toId()].usdgIsCurrency0;
         if (action == Action.Collect) {
             (BalanceDelta fees,) = poolManager.modifyLiquidity(key, params, "");
-            return _payOut(key, usdgIs0, fees, fees, fund, fund, type(uint256).max);
+            return _payOut(fees, fees, fund, fund, type(uint256).max);
         }
 
         (,, uint128 removed, address receiver, uint256 usdgCap) =
             abi.decode(data, (Action, address, uint128, address, uint256));
         params.liquidityDelta = -SafeCast.toInt256(uint256(removed));
         (BalanceDelta callerDelta, BalanceDelta feesAccrued) = poolManager.modifyLiquidity(key, params, "");
-        return _payOut(key, usdgIs0, callerDelta, callerDelta - feesAccrued, receiver, fund, usdgCap);
+        return _payOut(callerDelta, callerDelta - feesAccrued, receiver, fund, usdgCap);
     }
 
-    /// @dev Takes a removal's tokens from the pool manager: the principal USDG up to `usdgCap` to
-    ///      `receiver`, the rest of the USDG to the fund, and every fund token to this hook (to be
-    ///      burned). Returns (USDG to receiver, USDG to fund, fund tokens taken).
-    function _payOut(
-        PoolKey memory key,
-        bool usdgIs0,
-        BalanceDelta total,
-        BalanceDelta principal,
-        address receiver,
-        address fund,
-        uint256 usdgCap
-    ) private returns (bytes memory) {
-        (Currency usdg, Currency share) = usdgIs0 ? (key.currency0, key.currency1) : (key.currency1, key.currency0);
-        int128 usdgPrincipal = usdgIs0 ? principal.amount0() : principal.amount1();
-        int128 usdgTotal = usdgIs0 ? total.amount0() : total.amount1();
-        uint256 all = usdgTotal > 0 ? uint256(int256(usdgTotal)) : 0;
-        uint256 paid = usdgPrincipal > 0 ? uint256(int256(usdgPrincipal)) : 0;
-        if (paid > usdgCap) paid = usdgCap;
-        if (receiver == fund) paid = 0;
-        if (paid != 0) poolManager.take(usdg, receiver, paid);
-        if (all > paid) poolManager.take(usdg, fund, all - paid);
-        uint256 burned = _take(share, usdgIs0 ? total.amount1() : total.amount0(), address(this));
-        return abi.encode(paid, all - paid, burned);
-    }
-
-    /// @inheritdoc IHooks
-    function beforeInitialize(address, PoolKey calldata, uint160) external pure override returns (bytes4) {
-        // The pool manager skips this callback when the hook itself initialises, so any call here
-        // is someone else trying to create a pool on this hook.
+    /// @notice Pool manager callback; any call is someone else trying to create a pool on this hook.
+    /// @dev The pool manager skips this callback when the hook itself initialises.
+    function beforeInitialize(address, PoolKey calldata, uint160) external pure returns (bytes4) {
         revert InitializeNotAllowed();
     }
 
-    /// @inheritdoc IHooks
+    /// @notice Pool manager callback: records the TWAP accumulator and, when USDG is the specified
+    ///         side, takes the swap fees.
     function beforeSwap(
         address,
         PoolKey calldata key,
         IPoolManager.SwapParams calldata params,
         bytes calldata
-    ) external override onlyPoolManager returns (bytes4, BeforeSwapDelta, uint24) {
-        PoolId id = key.toId();
-        _observe(id);
-        PoolConfig memory cfg = _configs[id];
+    ) external onlyPoolManager returns (bytes4, BeforeSwapDelta, uint24) {
+        (address fund, bool usdgIs0) = _fundOf(key);
+        _observe(_pools[fund], key.toId());
         bool specifiedIs0 = (params.amountSpecified < 0) == params.zeroForOne;
-        if (specifiedIs0 != cfg.usdgIsCurrency0) {
-            return (IHooks.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
-        }
+        if (specifiedIs0 != usdgIs0) return (IHooks.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
         uint256 amount = params.amountSpecified < 0 ? uint256(-params.amountSpecified) : uint256(params.amountSpecified);
-        uint256 fee = _takeFees(key, cfg, amount);
+        uint256 fee = _takeFees(fund, usdgIs0 ? key.currency0 : key.currency1, amount);
         return (IHooks.beforeSwap.selector, toBeforeSwapDelta(SafeCast.toInt128(SafeCast.toInt256(fee)), 0), 0);
     }
 
-    /// @inheritdoc IHooks
+    /// @notice Pool manager callback: takes the swap fees when USDG is the unspecified side.
     function afterSwap(
         address,
         PoolKey calldata key,
         IPoolManager.SwapParams calldata params,
         BalanceDelta delta,
         bytes calldata
-    ) external override onlyPoolManager returns (bytes4, int128) {
-        PoolConfig memory cfg = _configs[key.toId()];
+    ) external onlyPoolManager returns (bytes4, int128) {
+        (address fund, bool usdgIs0) = _fundOf(key);
         bool specifiedIs0 = (params.amountSpecified < 0) == params.zeroForOne;
-        if (specifiedIs0 == cfg.usdgIsCurrency0) return (IHooks.afterSwap.selector, 0);
-        int128 usdgDelta = cfg.usdgIsCurrency0 ? delta.amount0() : delta.amount1();
+        if (specifiedIs0 == usdgIs0) return (IHooks.afterSwap.selector, 0);
+        int128 usdgDelta = usdgIs0 ? delta.amount0() : delta.amount1();
         uint256 amount = usdgDelta < 0 ? uint256(-int256(usdgDelta)) : uint256(int256(usdgDelta));
-        uint256 fee = _takeFees(key, cfg, amount);
+        uint256 fee = _takeFees(fund, usdgIs0 ? key.currency0 : key.currency1, amount);
         return (IHooks.afterSwap.selector, SafeCast.toInt128(SafeCast.toInt256(fee)));
-    }
-
-    /// @inheritdoc IHooks
-    function afterInitialize(address, PoolKey calldata, uint160, int24) external pure override returns (bytes4) {
-        revert HookNotImplemented();
-    }
-
-    /// @inheritdoc IHooks
-    function beforeAddLiquidity(
-        address,
-        PoolKey calldata,
-        IPoolManager.ModifyLiquidityParams calldata,
-        bytes calldata
-    ) external pure override returns (bytes4) {
-        revert HookNotImplemented();
-    }
-
-    /// @inheritdoc IHooks
-    function afterAddLiquidity(
-        address,
-        PoolKey calldata,
-        IPoolManager.ModifyLiquidityParams calldata,
-        BalanceDelta,
-        BalanceDelta,
-        bytes calldata
-    ) external pure override returns (bytes4, BalanceDelta) {
-        revert HookNotImplemented();
-    }
-
-    /// @inheritdoc IHooks
-    function beforeRemoveLiquidity(
-        address,
-        PoolKey calldata,
-        IPoolManager.ModifyLiquidityParams calldata,
-        bytes calldata
-    ) external pure override returns (bytes4) {
-        revert HookNotImplemented();
-    }
-
-    /// @inheritdoc IHooks
-    function afterRemoveLiquidity(
-        address,
-        PoolKey calldata,
-        IPoolManager.ModifyLiquidityParams calldata,
-        BalanceDelta,
-        BalanceDelta,
-        bytes calldata
-    ) external pure override returns (bytes4, BalanceDelta) {
-        revert HookNotImplemented();
-    }
-
-    /// @inheritdoc IHooks
-    function beforeDonate(
-        address,
-        PoolKey calldata,
-        uint256,
-        uint256,
-        bytes calldata
-    ) external pure override returns (bytes4) {
-        revert HookNotImplemented();
-    }
-
-    /// @inheritdoc IHooks
-    function afterDonate(
-        address,
-        PoolKey calldata,
-        uint256,
-        uint256,
-        bytes calldata
-    ) external pure override returns (bytes4) {
-        revert HookNotImplemented();
     }
 
     /// @inheritdoc IFundHook
@@ -410,39 +296,12 @@ contract FundHook is IFundHook, IHooks, IUnlockCallback {
         address fund,
         uint32 window
     ) external view override returns (bool ok, int24 meanTick, uint32 period) {
-        PoolId id = _keys[fund].toId();
-        if (!_configs[id].seeded || window == 0 || window > MAX_TWAP_WINDOW) return (false, 0, 0);
-        uint32 nowTs = uint32(block.timestamp);
-        if (nowTs <= window) return (false, 0, 0);
-        uint32 target = nowTs - window;
-
-        Twap storage twap = _twaps[id];
-        Observation memory latest = twap.latest;
-        (, int24 tick,,) = poolManager.getSlot0(id);
-        int56 cumulativeNow = latest.tickCumulative + int56(tick) * int56(uint56(nowTs - latest.timestamp));
-
-        Observation memory from = latest;
-        if (from.timestamp > target) {
-            uint256 index = twap.index;
-            bool found;
-            for (uint256 i; i < OBSERVATION_SLOTS; ++i) {
-                from = twap.ring[index];
-                if (from.timestamp == 0) break;
-                if (from.timestamp <= target) {
-                    found = true;
-                    break;
-                }
-                index = index == 0 ? OBSERVATION_SLOTS - 1 : index - 1;
-            }
-            if (!found) return (false, 0, 0);
+        Pool storage pool = _pools[fund];
+        if (!pool.seeded || window == 0 || window > MAX_TWAP_WINDOW || block.timestamp <= window) {
+            return (false, 0, 0);
         }
-
-        period = nowTs - from.timestamp;
-        int56 delta = cumulativeNow - from.tickCumulative;
-        int56 elapsed = int56(uint56(period));
-        meanTick = int24(delta / elapsed);
-        if (delta < 0 && delta % elapsed != 0) meanTick--;
-        ok = true;
+        (ok, meanTick, period) = _twap(pool, fund, uint32(block.timestamp) - window);
+        if (!ok) return (false, 0, 0);
     }
 
     /// @inheritdoc IFundHook
@@ -453,32 +312,31 @@ contract FundHook is IFundHook, IHooks, IUnlockCallback {
     /// @inheritdoc IFundHook
     function poolKeyOf(
         address fund
-    ) external view override returns (PoolKey memory) {
-        return _keys[fund];
+    ) external view override returns (PoolKey memory key) {
+        if (_pools[fund].registered) key = _key(fund);
     }
 
     /// @inheritdoc IFundHook
     function isSeeded(
         address fund
     ) external view override returns (bool) {
-        return _configs[_keys[fund].toId()].seeded;
+        return _pools[fund].seeded;
     }
 
     /// @inheritdoc IFundHook
     function positionLiquidity(
         address fund
     ) external view override returns (uint128) {
-        return _configs[_keys[fund].toId()].liquidity;
+        return _pools[fund].liquidity;
     }
 
     /// @inheritdoc IFundHook
     function positionAmounts(
         address fund
     ) external view override returns (uint256 usdgAmount, uint256 fundTokens) {
-        PoolId id = _keys[fund].toId();
-        PoolConfig storage cfg = _configs[id];
-        if (!cfg.seeded || cfg.liquidity == 0) return (0, 0);
-        return _amountsAt(cfg, _positionTick(id), cfg.liquidity);
+        Pool storage pool = _pools[fund];
+        if (!pool.seeded || pool.liquidity == 0) return (0, 0);
+        return _amountsAt(fund, _positionTick(pool, fund), pool.liquidity);
     }
 
     /// @notice Callbacks this hook enables; its deployed address must encode exactly these.
@@ -502,36 +360,31 @@ contract FundHook is IFundHook, IHooks, IUnlockCallback {
         });
     }
 
-    function _observe(
-        PoolId id
-    ) private {
-        Twap storage twap = _twaps[id];
-        Observation memory latest = twap.latest;
+    function _observe(Pool storage pool, PoolId id) private {
         uint32 nowTs = uint32(block.timestamp);
-        if (nowTs == latest.timestamp) return;
+        uint32 last = pool.observedAt;
+        if (nowTs == last) return;
         (, int24 tick,,) = poolManager.getSlot0(id);
-        latest = Observation({
-            timestamp: nowTs,
-            tickCumulative: latest.tickCumulative + int56(tick) * int56(uint56(nowTs - latest.timestamp))
-        });
-        twap.latest = latest;
-        twap.blockTick = tick;
-        uint256 index = twap.index;
-        if (nowTs - twap.ring[index].timestamp >= OBSERVATION_INTERVAL) {
+        int56 cumulative = pool.tickCumulative + int56(tick) * int56(uint56(nowTs - last));
+        pool.observedAt = nowTs;
+        pool.tickCumulative = cumulative;
+        pool.blockTick = tick;
+        uint256 index = pool.index;
+        if (nowTs - pool.ring[index].timestamp >= OBSERVATION_INTERVAL) {
             index = (index + 1) % OBSERVATION_SLOTS;
-            twap.index = uint8(index);
-            twap.ring[index] = latest;
+            pool.index = uint8(index);
+            pool.ring[index] = Observation({timestamp: nowTs, tickCumulative: cumulative});
         }
     }
 
     function _reduce(
         address fund,
-        PoolConfig storage cfg,
+        Pool storage pool,
         uint128 liquidity,
         address receiver,
         uint256 usdgCap
     ) private returns (uint256 paid) {
-        cfg.liquidity -= liquidity;
+        pool.liquidity -= liquidity;
         uint256 toFund;
         uint256 burned;
         (paid, toFund, burned) = abi.decode(
@@ -542,71 +395,36 @@ contract FundHook is IFundHook, IHooks, IUnlockCallback {
         emit PositionReduced(fund, liquidity, paid, toFund, burned);
     }
 
-    function _seededConfig(
-        address fund
-    ) private view returns (PoolConfig storage cfg) {
-        PoolKey memory key = _keys[fund];
-        if (address(key.hooks) == address(0)) revert NotRegistered();
-        cfg = _configs[key.toId()];
-        if (!cfg.seeded) revert NotRegistered();
+    /// @dev Takes a removal's tokens from the pool manager: the principal USDG up to `usdgCap` to
+    ///      `receiver`, the rest of the USDG to the fund, and every fund token to this hook (to be
+    ///      burned). Returns (USDG to receiver, USDG to fund, fund tokens taken).
+    function _payOut(
+        BalanceDelta total,
+        BalanceDelta principal,
+        address receiver,
+        address fund,
+        uint256 usdgCap
+    ) private returns (bytes memory) {
+        bool usdgIs0 = _usdg < fund;
+        int128 usdgPrincipal = usdgIs0 ? principal.amount0() : principal.amount1();
+        int128 usdgTotal = usdgIs0 ? total.amount0() : total.amount1();
+        uint256 all = usdgTotal > 0 ? uint256(int256(usdgTotal)) : 0;
+        uint256 paid = usdgPrincipal > 0 ? uint256(int256(usdgPrincipal)) : 0;
+        if (paid > usdgCap) paid = usdgCap;
+        if (receiver == fund) paid = 0;
+        if (paid != 0) poolManager.take(Currency.wrap(_usdg), receiver, paid);
+        if (all > paid) poolManager.take(Currency.wrap(_usdg), fund, all - paid);
+        uint256 burned = _take(Currency.wrap(fund), usdgIs0 ? total.amount1() : total.amount0(), address(this));
+        return abi.encode(paid, all - paid, burned);
     }
 
-    /// @dev Mean tick over {POSITION_TWAP_WINDOW}, or over all history since seeding when there is
-    ///      less, or the tick at the start of the block when the pool was seeded in this block.
-    function _positionTick(
-        PoolId id
-    ) private view returns (int24) {
-        Twap storage twap = _twaps[id];
-        Observation memory latest = twap.latest;
-        uint32 nowTs = uint32(block.timestamp);
-        (, int24 tick,,) = poolManager.getSlot0(id);
-        int56 cumulativeNow = latest.tickCumulative + int56(tick) * int56(uint56(nowTs - latest.timestamp));
-        uint32 target = nowTs > POSITION_TWAP_WINDOW ? nowTs - POSITION_TWAP_WINDOW : 0;
-
-        Observation memory from = latest;
-        if (from.timestamp > target) {
-            uint256 index = twap.index;
-            for (uint256 i; i < OBSERVATION_SLOTS; ++i) {
-                Observation memory o = twap.ring[index];
-                if (o.timestamp == 0) break;
-                from = o;
-                if (o.timestamp <= target) break;
-                index = index == 0 ? OBSERVATION_SLOTS - 1 : index - 1;
-            }
-        }
-        if (from.timestamp == nowTs) return twap.blockTick;
-
-        int56 elapsed = int56(uint56(nowTs - from.timestamp));
-        int56 delta = cumulativeNow - from.tickCumulative;
-        int24 meanTick = int24(delta / elapsed);
-        if (delta < 0 && delta % elapsed != 0) meanTick--;
-        return meanTick;
-    }
-
-    function _amountsAt(
-        PoolConfig storage cfg,
-        int24 tick,
-        uint128 liquidity
-    ) private view returns (uint256 usdgAmount, uint256 fundTokens) {
-        uint160 sqrtPrice = TickMath.getSqrtPriceAtTick(tick);
-        uint160 sqrtLower = TickMath.getSqrtPriceAtTick(TickMath.minUsableTick(TICK_SPACING));
-        uint160 sqrtUpper = TickMath.getSqrtPriceAtTick(TickMath.maxUsableTick(TICK_SPACING));
-        if (sqrtPrice < sqrtLower) sqrtPrice = sqrtLower;
-        if (sqrtPrice > sqrtUpper) sqrtPrice = sqrtUpper;
-        // Rounds down: the position is never overstated.
-        uint256 amount0 = SqrtPriceMath.getAmount0Delta(sqrtPrice, sqrtUpper, liquidity, false);
-        uint256 amount1 = SqrtPriceMath.getAmount1Delta(sqrtLower, sqrtPrice, liquidity, false);
-        (usdgAmount, fundTokens) = cfg.usdgIsCurrency0 ? (amount0, amount1) : (amount1, amount0);
-    }
-
-    function _takeFees(PoolKey calldata key, PoolConfig memory cfg, uint256 amount) private returns (uint256) {
+    function _takeFees(address fund, Currency usdg, uint256 amount) private returns (uint256) {
         // Rounds down: a fee never exceeds the configured share of the USDG leg.
         uint256 protocolFee = Math.mulDiv(amount, factory.protocolFeeBps(), BPS);
-        uint256 curatorFee = Math.mulDiv(amount, IFund(cfg.fund).curatorFeeBps(), BPS);
-        Currency usdg = cfg.usdgIsCurrency0 ? key.currency0 : key.currency1;
+        uint256 curatorFee = Math.mulDiv(amount, IFund(fund).curatorFeeBps(), BPS);
         if (protocolFee != 0) poolManager.take(usdg, factory.protocolFeeRecipient(), protocolFee);
-        if (curatorFee != 0) poolManager.take(usdg, IFund(cfg.fund).curators(), curatorFee);
-        if (protocolFee != 0 || curatorFee != 0) emit SwapFeesTaken(cfg.fund, protocolFee, curatorFee);
+        if (curatorFee != 0) poolManager.take(usdg, IFund(fund).curators(), curatorFee);
+        if (protocolFee != 0 || curatorFee != 0) emit SwapFeesTaken(fund, protocolFee, curatorFee);
         return protocolFee + curatorFee;
     }
 
@@ -616,9 +434,8 @@ contract FundHook is IFundHook, IHooks, IUnlockCallback {
     ) private {
         uint256 shareDust = IERC20(fund).balanceOf(address(this));
         if (shareDust != 0) IFund(fund).burn(shareDust);
-        address usdg = factory.usdg();
-        uint256 usdgDust = IERC20(usdg).balanceOf(address(this));
-        if (usdgDust != 0) IERC20(usdg).safeTransfer(fund, usdgDust);
+        uint256 usdgDust = IERC20(_usdg).balanceOf(address(this));
+        if (usdgDust != 0) IERC20(_usdg).safeTransfer(fund, usdgDust);
     }
 
     function _settle(Currency currency, int128 delta) private returns (uint256 amount) {
@@ -633,6 +450,90 @@ contract FundHook is IFundHook, IHooks, IUnlockCallback {
         if (delta <= 0) return 0;
         amount = uint256(int256(delta));
         poolManager.take(currency, recipient, amount);
+    }
+
+    function _seeded(
+        address fund
+    ) private view returns (Pool storage pool) {
+        pool = _pools[fund];
+        if (!pool.seeded) revert NotRegistered();
+    }
+
+    /// @dev Mean tick over {POSITION_TWAP_WINDOW}, or over all history since seeding when there is
+    ///      less, or the tick at the start of the block when the pool was seeded in this block.
+    function _positionTick(Pool storage pool, address fund) private view returns (int24 meanTick) {
+        uint32 nowTs = uint32(block.timestamp);
+        (, meanTick,) = _twap(pool, fund, nowTs > POSITION_TWAP_WINDOW ? nowTs - POSITION_TWAP_WINDOW : 0);
+    }
+
+    /// @dev Mean tick since the newest checkpoint at or before `target` (`found`), or else since the
+    ///      oldest checkpoint kept. Over a zero-length period it is the tick at the start of the block.
+    function _twap(
+        Pool storage pool,
+        address fund,
+        uint32 target
+    ) private view returns (bool found, int24 meanTick, uint32 period) {
+        Observation memory latest = Observation({timestamp: pool.observedAt, tickCumulative: pool.tickCumulative});
+        Observation memory from = latest;
+        found = from.timestamp <= target;
+        if (!found) {
+            uint256 index = pool.index;
+            for (uint256 i; i < OBSERVATION_SLOTS; ++i) {
+                Observation memory o = pool.ring[index];
+                if (o.timestamp == 0) break;
+                from = o;
+                if (o.timestamp <= target) {
+                    found = true;
+                    break;
+                }
+                index = index == 0 ? OBSERVATION_SLOTS - 1 : index - 1;
+            }
+        }
+
+        uint32 nowTs = uint32(block.timestamp);
+        period = nowTs - from.timestamp;
+        if (period == 0) return (found, pool.blockTick, 0);
+        (, int24 tick,,) = poolManager.getSlot0(_key(fund).toId());
+        int56 delta =
+            latest.tickCumulative + int56(tick) * int56(uint56(nowTs - latest.timestamp)) - from.tickCumulative;
+        int56 elapsed = int56(uint56(period));
+        meanTick = int24(delta / elapsed);
+        if (delta < 0 && delta % elapsed != 0) meanTick--;
+    }
+
+    function _amountsAt(
+        address fund,
+        int24 tick,
+        uint128 liquidity
+    ) private view returns (uint256 usdgAmount, uint256 fundTokens) {
+        uint160 sqrtPrice = TickMath.getSqrtPriceAtTick(tick);
+        if (sqrtPrice < _sqrtLower) sqrtPrice = _sqrtLower;
+        if (sqrtPrice > _sqrtUpper) sqrtPrice = _sqrtUpper;
+        // Rounds down: the position is never overstated.
+        uint256 amount0 = SqrtPriceMath.getAmount0Delta(sqrtPrice, _sqrtUpper, liquidity, false);
+        uint256 amount1 = SqrtPriceMath.getAmount1Delta(_sqrtLower, sqrtPrice, liquidity, false);
+        (usdgAmount, fundTokens) = _usdg < fund ? (amount0, amount1) : (amount1, amount0);
+    }
+
+    function _key(
+        address fund
+    ) private view returns (PoolKey memory) {
+        bool usdgIs0 = _usdg < fund;
+        return PoolKey({
+            currency0: Currency.wrap(usdgIs0 ? _usdg : fund),
+            currency1: Currency.wrap(usdgIs0 ? fund : _usdg),
+            fee: LPFeeLibrary.DYNAMIC_FEE_FLAG,
+            tickSpacing: TICK_SPACING,
+            hooks: IHooks(address(this))
+        });
+    }
+
+    /// @dev Only this hook initialises pools on itself, so every pool it sees is a fund against USDG.
+    function _fundOf(
+        PoolKey calldata key
+    ) private view returns (address fund, bool usdgIs0) {
+        usdgIs0 = Currency.unwrap(key.currency0) == _usdg;
+        fund = Currency.unwrap(usdgIs0 ? key.currency1 : key.currency0);
     }
 
     function _sqrtPriceX96(uint256 amount0, uint256 amount1) private pure returns (uint160) {
