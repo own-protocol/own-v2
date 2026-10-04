@@ -3,36 +3,46 @@ pragma solidity 0.8.28;
 
 import {CreateFundParams, GovernanceConfig, LaunchConfig, PlatformMetadata} from "./types/FundTypes.sol";
 
-/// @title IFundFactory — creates MONEY Market Funds and holds platform-wide settings
-/// @notice Every fund is four beacon proxies (fund token + basket, launch, staking, governor)
-///         sharing the platform's oracle, USDG and pool hook. The factory owner is the platform
-///         admin: it sets the protocol fee, the launcher whitelist, rebalance routers, launch and
-///         governance parameters, the staking yield cap and the platform metadata, and upgrades
-///         every fund at once through the beacons.
+/// @title IFundFactory — creates Own Curated Funds and holds platform-wide settings
+/// @notice Every fund is six beacon proxies (fund token + basket, launch, staking, governor,
+///         curators, bribes) sharing the platform's oracle, USDG and pool hook. The factory owner
+///         is the platform admin (Own): it launches funds (the launcher whitelist stays in the code,
+///         empty by default, so launches can be opened up later), and sets the protocol fee,
+///         rebalance routers, launch and governance defaults, the curator cap, the bribe cut and
+///         bribe tokens, the list of tokens eligible for listing, the staking yield cap and the
+///         platform metadata. It upgrades every fund at once through the beacons.
 interface IFundFactory {
     /// @notice Which beacon a call refers to.
     enum Module {
         Fund,
         Launch,
         Staking,
-        Governor
+        Governor,
+        Curators,
+        Bribes
+    }
+
+    /// @notice The contracts that make up one fund.
+    /// @param fund     The fund token and basket.
+    /// @param launch   Its launch.
+    /// @param staking  Its staking vault.
+    /// @param governor Its governor.
+    /// @param curators Its curators module.
+    /// @param bribes   Its bribes module.
+    struct FundModules {
+        address fund;
+        address launch;
+        address staking;
+        address governor;
+        address curators;
+        address bribes;
     }
 
     /// @notice Emitted when a fund is created.
     /// @param fund     The fund token and basket.
-    /// @param launch   Its launch contract.
-    /// @param staking  Its staking vault.
-    /// @param governor Its governor.
-    /// @param launcher The whitelisted caller that created it.
-    /// @param manager  The creator managing it.
-    event FundCreated(
-        address indexed fund,
-        address launch,
-        address staking,
-        address governor,
-        address indexed launcher,
-        address indexed manager
-    );
+    /// @param modules  All of its contracts.
+    /// @param launcher The caller that created it.
+    event FundCreated(address indexed fund, FundModules modules, address indexed launcher);
 
     /// @notice Emitted when the protocol fee changes.
     /// @param feeBps New fee, in basis points.
@@ -42,9 +52,23 @@ interface IFundFactory {
     /// @param recipient New recipient.
     event ProtocolFeeRecipientSet(address recipient);
 
-    /// @notice Emitted when the LP fee recipient changes.
-    /// @param recipient New recipient.
-    event LpFeeRecipientSet(address recipient);
+    /// @notice Emitted when the curator cap changes.
+    /// @param cap New cap per fund.
+    event CuratorCapSet(uint8 cap);
+
+    /// @notice Emitted when the bribe cut changes.
+    /// @param cutBps New cut, in basis points.
+    event BribeCutSet(uint16 cutBps);
+
+    /// @notice Emitted when a bribe token is allowed or disallowed.
+    /// @param token   The token.
+    /// @param allowed Whether bribes may be paid in it.
+    event BribeTokenSet(address indexed token, bool allowed);
+
+    /// @notice Emitted when a token is added to or removed from the listing eligibility list.
+    /// @param token    The token.
+    /// @param eligible Whether funds may list it.
+    event EligibleAssetSet(address indexed token, bool eligible);
 
     /// @notice Emitted when launch whitelisting is switched on or off.
     /// @param enabled Whether only whitelisted launchers may create funds.
@@ -104,8 +128,11 @@ interface IFundFactory {
     /// @notice Caller is not the pending owner.
     error NotPendingOwner();
 
-    /// @notice Caller is not a whitelisted launcher while whitelisting is on.
+    /// @notice Caller is neither the owner nor a whitelisted launcher while whitelisting is on.
     error NotLauncher();
+
+    /// @notice The curator cap is out of range.
+    error InvalidCuratorCap();
 
     /// @notice A required address is zero.
     error ZeroAddress();
@@ -125,16 +152,14 @@ interface IFundFactory {
     /// @notice A governance parameter is out of range.
     error InvalidGovernanceConfig();
 
-    /// @notice Create a fund with its launch, staking vault and governor. Whitelisted launchers
-    ///         only while whitelisting is on. The launch window opens immediately.
+    /// @notice Create a fund with all its modules. The owner, or (while whitelisting is on) a
+    ///         whitelisted launcher; anyone once whitelisting is off. The launch window opens
+    ///         immediately. A zero launch supply or duration takes the default (100M tokens, 7 days).
     /// @param params Fund parameters.
-    /// @return fund     The fund token and basket.
-    /// @return launch   Its launch contract.
-    /// @return staking  Its staking vault.
-    /// @return governor Its governor.
+    /// @return modules The fund's contracts.
     function createFund(
         CreateFundParams calldata params
-    ) external returns (address fund, address launch, address staking, address governor);
+    ) external returns (FundModules memory modules);
 
     /// @notice Set the protocol fee charged on pool trades, mints and redeems. Owner only.
     /// @param feeBps Fee, in basis points (capped).
@@ -148,10 +173,32 @@ interface IFundFactory {
         address recipient
     ) external;
 
-    /// @notice Set the recipient of LP fees collected from locked pool positions. Owner only.
-    /// @param recipient The recipient.
-    function setLpFeeRecipient(
-        address recipient
+    /// @notice Set the maximum number of curators per fund. Owner only.
+    /// @param cap Cap (1 to 50).
+    function setCuratorCap(
+        uint8 cap
+    ) external;
+
+    /// @notice Set Own's cut of every bribe. Owner only.
+    /// @param cutBps Cut, in basis points (at most 10%).
+    function setBribeCut(
+        uint16 cutBps
+    ) external;
+
+    /// @notice Allow or disallow a token for paying bribes. Owner only.
+    /// @param token   The token.
+    /// @param allowed Whether allowed.
+    function setBribeToken(
+        address token,
+        bool allowed
+    ) external;
+
+    /// @notice Add or remove a token from the list funds may list. Owner only.
+    /// @param token    The token.
+    /// @param eligible Whether eligible.
+    function setEligibleAsset(
+        address token,
+        bool eligible
     ) external;
 
     /// @notice Switch launcher whitelisting on or off. Owner only.
@@ -188,7 +235,8 @@ interface IFundFactory {
         uint16 capBps
     ) external;
 
-    /// @notice Set the launch parameters used by funds created from now on. Owner only.
+    /// @notice Set the launch defaults used by funds created from now on. Owner only. The duration
+    ///         here is the default window; each fund may set its own.
     /// @param config New parameters.
     function setLaunchConfig(
         LaunchConfig calldata config
@@ -259,9 +307,34 @@ interface IFundFactory {
     /// @return The recipient.
     function protocolFeeRecipient() external view returns (address);
 
-    /// @notice Recipient of LP fees collected from locked pool positions.
-    /// @return The recipient.
-    function lpFeeRecipient() external view returns (address);
+    /// @notice Maximum number of curators per fund.
+    /// @return The cap.
+    function curatorCap() external view returns (uint8);
+
+    /// @notice Own's cut of every bribe, in basis points.
+    /// @return The cut.
+    function bribeCutBps() external view returns (uint16);
+
+    /// @notice Whether bribes may be paid in `token`.
+    /// @param token The token.
+    /// @return True if allowed.
+    function isBribeToken(
+        address token
+    ) external view returns (bool);
+
+    /// @notice Whether funds may list `token`.
+    /// @param token The token.
+    /// @return True if eligible.
+    function isEligibleAsset(
+        address token
+    ) external view returns (bool);
+
+    /// @notice A fund's contracts.
+    /// @param fund The fund.
+    /// @return The modules.
+    function modulesOf(
+        address fund
+    ) external view returns (FundModules memory);
 
     /// @notice Whether only whitelisted launchers may create funds.
     /// @return True while whitelisting is on.

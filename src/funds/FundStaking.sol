@@ -3,6 +3,7 @@ pragma solidity 0.8.28;
 
 import {IFund} from "../interfaces/IFund.sol";
 import {IFundFactory} from "../interfaces/IFundFactory.sol";
+import {IFundGovernor} from "../interfaces/IFundGovernor.sol";
 import {IFundStaking} from "../interfaces/IFundStaking.sol";
 import {YieldTier} from "../interfaces/types/FundTypes.sol";
 import {BPS} from "../interfaces/types/Types.sol";
@@ -39,6 +40,9 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuard {
     // Tracked rather than read from the balance, so donated fund tokens earn no yield.
     uint256 private _totalStaked;
 
+    /// @inheritdoc IFundStaking
+    mapping(address account => uint256) public override lockedShares;
+
     constructor() ERC20("", "") {
         _disableInitializers();
     }
@@ -65,8 +69,29 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuard {
         shares = convertToShares(assets);
         if (shares == 0) revert ZeroAmount();
         _totalStaked += assets;
+        uint256 moved = IFund(fund).releaseLaunchLock(msg.sender, assets);
         IERC20(fund).safeTransferFrom(msg.sender, address(this), assets);
         _mint(receiver, shares);
+        // Rounds up: a locked deposit never yields an unlocked share.
+        if (moved != 0) _addLock(receiver, Math.min(Math.mulDiv(shares, moved, assets, Math.Rounding.Ceil), shares));
+        emit Staked(msg.sender, receiver, assets, shares);
+    }
+
+    /// @inheritdoc IFundStaking
+    function stakeLocked(
+        uint256 assets,
+        address receiver
+    ) external override nonReentrant returns (uint256 shares) {
+        if (msg.sender != IFund(fund).launch()) revert NotLaunch();
+        if (assets == 0) revert ZeroAmount();
+        if (receiver == address(0)) revert ZeroAddress();
+        _accrue();
+        shares = convertToShares(assets);
+        if (shares == 0) revert ZeroAmount();
+        _totalStaked += assets;
+        IERC20(fund).safeTransferFrom(msg.sender, address(this), assets);
+        _mint(receiver, shares);
+        _addLock(receiver, shares);
         emit Staked(msg.sender, receiver, assets, shares);
     }
 
@@ -80,8 +105,15 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuard {
         _accrue();
         assets = convertToAssets(shares);
         _totalStaked -= assets;
+        uint256 lockedBefore = _activeLock(msg.sender);
         _burn(msg.sender, shares);
         IERC20(fund).safeTransfer(receiver, assets);
+        if (lockedBefore != 0) {
+            uint256 lockedAfter = lockedShares[msg.sender];
+            // Rounds up: unstaking locked shares never yields unlocked fund tokens.
+            uint256 lockedAssets = Math.mulDiv(assets, lockedBefore - lockedAfter, shares, Math.Rounding.Ceil);
+            IFund(fund).addLaunchLock(receiver, Math.min(lockedAssets, assets));
+        }
         emit Unstaked(msg.sender, receiver, assets, shares);
     }
 
@@ -176,6 +208,48 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuard {
             IFund(fund).moduleMint(address(this), minted);
         }
         emit YieldAccrued(elapsed, premium, rate, minted);
+    }
+
+    /// @dev Locked shares can leave an account only by being burned (unstake, which moves the lock
+    ///      back onto the fund tokens) or by going into the governor, which returns them to the
+    ///      same account; shares held in the governor still count towards the account's holdings.
+    function _update(
+        address from,
+        address to,
+        uint256 value
+    ) internal override {
+        uint256 locked = from == address(0) ? 0 : _activeLock(from);
+        address gov = locked == 0 ? address(0) : IFund(fund).governor();
+        uint256 escrowed = locked == 0 ? 0 : IFundGovernor(gov).escrowOf(from, address(this));
+        if (locked != 0 && to != address(0) && to != gov && balanceOf(from) + escrowed < value + locked) {
+            revert SharesLocked();
+        }
+        super._update(from, to, value);
+        if (locked != 0 && to == address(0)) {
+            uint256 held = balanceOf(from) + escrowed;
+            if (locked > held) {
+                lockedShares[from] = held;
+                emit LockedSharesSet(from, held);
+            }
+        }
+    }
+
+    function _addLock(
+        address account,
+        uint256 shares
+    ) internal {
+        if (block.timestamp >= IFund(fund).depositorUnlockAt()) return;
+        uint256 locked = lockedShares[account] + shares;
+        lockedShares[account] = locked;
+        emit LockedSharesSet(account, locked);
+    }
+
+    function _activeLock(
+        address account
+    ) internal view returns (uint256) {
+        uint256 locked = lockedShares[account];
+        if (locked == 0 || block.timestamp >= IFund(fund).depositorUnlockAt()) return 0;
+        return locked;
     }
 
     function _setTiers(

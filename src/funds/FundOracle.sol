@@ -8,7 +8,7 @@ interface IAggregatorV3 {
     function latestRoundData() external view returns (uint80, int256, uint256, uint256, uint80);
 }
 
-/// @title FundOracle — per-asset USD price registry for MONEY Market Funds
+/// @title FundOracle — per-asset USD price registry for Own Curated Funds
 /// @notice See {IFundOracle}. Never reads onchain spot prices: every value comes from an
 ///         owner-configured aggregator with a staleness bound.
 contract FundOracle is IFundOracle {

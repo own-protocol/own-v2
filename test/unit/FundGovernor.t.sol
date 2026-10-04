@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {FundGovernor} from "../../src/funds/FundGovernor.sol";
-import {IFund} from "../../src/interfaces/IFund.sol";
+import {IFundCurators} from "../../src/interfaces/IFundCurators.sol";
 import {IFundGovernor} from "../../src/interfaces/IFundGovernor.sol";
 import {GovernanceConfig} from "../../src/interfaces/types/FundTypes.sol";
 import {FundTestBase} from "../helpers/FundTestBase.sol";
@@ -13,492 +12,735 @@ import {ERC4626} from "@openzeppelin/contracts/token/ERC20/extensions/ERC4626.so
 contract WrappedStake is ERC4626 {
     constructor(
         IERC20 staked
-    ) ERC20("Wrapped sMF1", "wsMF1") ERC4626(staked) {}
+    ) ERC20("Wrapped sOCF1", "wsOCF1") ERC4626(staked) {}
 }
 
 contract FundGovernorTest is FundTestBase {
-    // Holders' base: 130k supply minus the 30k pool position.
-    uint256 internal constant ELIGIBLE = 100_000e18;
+    uint256 internal constant WAD = 1e18;
+
+    /// @dev Alice's staked shares from her launch claim; the only staked tokens at the start.
+    uint256 internal aliceStake;
+    address internal newCurator = makeAddr("newCurator");
 
     function setUp() public override {
         super.setUp();
         _launchDefault();
         vm.prank(alice);
-        launch.claim(true); // 60k sMF1
+        aliceStake = launch.claim(true);
         vm.prank(bob);
-        launch.claim(false); // 40k MF1
-    }
-
-    // ──────────────────────────────────────────────────────────
-    //  propose
-    // ──────────────────────────────────────────────────────────
-
-    function test_propose_snapshotsHolderBase() public {
-        uint256 id = _propose();
-        IFundGovernor.Proposal memory p = governor.getProposal(id);
-        assertEq(p.proposer, creator);
-        assertApproxEqAbs(p.eligibleSupply, ELIGIBLE, 1e8);
-        assertEq(p.endTime, block.timestamp + 3 days);
-        assertEq(p.config.creatorPowerBps, 3000);
-        assertEq(uint8(governor.state(id)), uint8(IFundGovernor.ProposalState.Active));
-        (uint256 creatorBps, uint256 holderBps) = governor.support(id);
-        assertEq(creatorBps, 3000);
-        assertEq(holderBps, 0);
-    }
-
-    function test_propose_notCreator_reverts() public {
-        (address[] memory a, uint16[] memory w) = _newBasket();
-        vm.prank(bob);
-        vm.expectRevert(IFundGovernor.NotCreator.selector);
-        governor.propose(a, w);
-    }
-
-    function test_propose_beforeLaunch_reverts() public {
-        _createFund();
-        (address[] memory a, uint16[] memory w) = _newBasket();
-        vm.prank(creator);
-        vm.expectRevert(IFundGovernor.NotLaunched.selector);
-        governor.propose(a, w);
-    }
-
-    function test_propose_badSum_reverts() public {
-        (address[] memory a, uint16[] memory w) = _newBasket();
-        w[0] += 1;
-        vm.prank(creator);
-        vm.expectRevert(IFundGovernor.InvalidProposal.selector);
-        governor.propose(a, w);
-    }
-
-    function test_propose_lengthMismatch_reverts() public {
-        (address[] memory a,) = _newBasket();
-        vm.prank(creator);
-        vm.expectRevert(IFundGovernor.InvalidProposal.selector);
-        governor.propose(a, new uint16[](1));
-    }
-
-    function test_propose_whileOpen_reverts() public {
-        _propose();
-        (address[] memory a, uint16[] memory w) = _newBasket();
-        vm.prank(creator);
-        vm.expectRevert(IFundGovernor.ProposalOpen.selector);
-        governor.propose(a, w);
-    }
-
-    function test_propose_afterDefeat_allowed() public {
-        uint256 id = _propose();
-        vm.warp(block.timestamp + 3 days);
-        assertEq(uint8(governor.state(id)), uint8(IFundGovernor.ProposalState.Defeated));
-        assertEq(_propose(), 1);
-    }
-
-    // ──────────────────────────────────────────────────────────
-    //  voting and tally
-    // ──────────────────────────────────────────────────────────
-
-    function test_pass_creatorPlusTwentyEightPercentOfHolders() public {
-        _escrow(bob, address(fund), 40_000e18);
-        uint256 id = _propose();
-        _vote(bob, id, true); // 70% * 40% = 28 points
-
-        (, uint256 holderBps) = governor.support(id);
-        assertApproxEqAbs(holderBps, 2800, 1);
-
-        vm.warp(block.timestamp + 3 days);
-        assertEq(uint8(governor.state(id)), uint8(IFundGovernor.ProposalState.Queued));
-        vm.expectRevert(abi.encodeWithSelector(IFundGovernor.WrongState.selector, IFundGovernor.ProposalState.Queued));
-        governor.execute(id);
-
-        vm.warp(block.timestamp + 1 days);
-        assertEq(uint8(governor.state(id)), uint8(IFundGovernor.ProposalState.Executable));
-        governor.execute(id);
-
-        assertEq(uint8(governor.state(id)), uint8(IFundGovernor.ProposalState.Executed));
-        assertTrue(fund.isAsset(address(spare)));
-        assertEq(fund.targetWeightBps(address(pons)), 2000);
-        assertEq(fund.targetWeightBps(address(spare)), 1000);
-    }
-
-    function test_fail_holdersBelowTwentyPercent() public {
-        // 28,000 MF1 = 19.6 points: with the creator's 30 that is 49.6, below both bars.
-        _escrow(bob, address(fund), 28_000e18);
-        uint256 id = _propose();
-        _vote(bob, id, true);
-        vm.warp(block.timestamp + 3 days);
-        assertEq(uint8(governor.state(id)), uint8(IFundGovernor.ProposalState.Defeated));
-    }
-
-    function test_pass_exactlyTwentyHolderPoints() public {
-        // 20 / 70 of the base, rounded up to clear the floor.
-        uint256 needed = (governor.eligibleSupply() * 2000 + 6999) / 7000;
-        _escrow(bob, address(fund), needed);
-        uint256 id = _propose();
-        assertEq(governor.getProposal(id).eligibleSupply, governor.eligibleSupply());
-        _vote(bob, id, true);
-        (, uint256 holderBps) = governor.support(id);
-        assertEq(holderBps, 2000);
-        vm.warp(block.timestamp + 3 days);
-        assertEq(uint8(governor.state(id)), uint8(IFundGovernor.ProposalState.Queued));
-    }
-
-    function test_holderAgainstVotesDoNotBlockAtFiftyPercent() public {
-        _escrow(bob, address(fund), 30_000e18);
-        _escrow(alice, address(staking), 60_000e18);
-        uint256 id = _propose();
-        _vote(bob, id, true); // 21 points
-        _vote(alice, id, false);
-        vm.warp(block.timestamp + 3 days);
-        assertEq(uint8(governor.state(id)), uint8(IFundGovernor.ProposalState.Queued));
-        assertEq(governor.getProposal(id).againstVotes, 60_000e18);
-    }
-
-    function test_stakedTokensVoteAtTheirFundTokenValue() public {
-        // Accrue yield so one sMF1 is worth more than one MF1.
-        vm.warp(block.timestamp + 1 days);
-        _refreshFeeds();
-        staking.accrue();
-        uint256 value = staking.convertToAssets(60_000e18);
-        assertGt(value, 60_000e18);
-
-        _escrow(alice, address(staking), 60_000e18);
-        uint256 id = _propose();
-        uint256 weight = _vote(alice, id, true);
-        assertEq(weight, value);
-    }
-
-    function test_wrappedStakeCounts() public {
-        WrappedStake wrapper = new WrappedStake(IERC20(address(staking)));
+        launch.claim(false);
         vm.prank(admin);
-        governor.setWrapper(address(wrapper), true);
-        assertTrue(governor.isVoteToken(address(wrapper)));
-
-        vm.startPrank(alice);
-        staking.approve(address(wrapper), 30_000e18);
-        uint256 wrapped = wrapper.deposit(30_000e18, alice);
-        vm.stopPrank();
-
-        _escrow(alice, address(wrapper), wrapped);
-        uint256 id = _propose();
-        uint256 weight = _vote(alice, id, true);
-        assertApproxEqAbs(weight, 30_000e18, 1);
-    }
-
-    function test_setWrapper_wrongAsset_reverts() public {
-        WrappedStake wrapper = new WrappedStake(IERC20(address(fund)));
-        vm.prank(admin);
-        vm.expectRevert(IFundGovernor.InvalidWrapper.selector);
-        governor.setWrapper(address(wrapper), true);
-    }
-
-    function test_setWrapper_removeStopsCounting() public {
-        WrappedStake wrapper = new WrappedStake(IERC20(address(staking)));
-        vm.startPrank(admin);
-        governor.setWrapper(address(wrapper), true);
-        governor.setWrapper(address(wrapper), false);
-        vm.stopPrank();
-        assertFalse(governor.isVoteToken(address(wrapper)));
-        assertEq(governor.wrappers().length, 0);
-    }
-
-    function test_castVote_creator_reverts() public {
-        uint256 id = _propose();
-        vm.prank(creator);
-        vm.expectRevert(IFundGovernor.CreatorCannotVote.selector);
-        governor.castVote(id, true);
-    }
-
-    function test_castVote_noEscrow_reverts() public {
-        uint256 id = _propose();
-        vm.prank(bob);
-        vm.expectRevert(IFundGovernor.NoVotingPower.selector);
-        governor.castVote(id, true);
-    }
-
-    function test_castVote_twice_reverts() public {
-        _escrow(bob, address(fund), 1000e18);
-        uint256 id = _propose();
-        _vote(bob, id, true);
-        vm.prank(bob);
-        vm.expectRevert(IFundGovernor.AlreadyVoted.selector);
-        governor.castVote(id, false);
-    }
-
-    function test_castVote_afterEnd_reverts() public {
-        uint256 id = _propose();
-        _escrow(bob, address(fund), 1000e18);
-        vm.warp(block.timestamp + 3 days);
-        vm.prank(bob);
-        vm.expectRevert(abi.encodeWithSelector(IFundGovernor.WrongState.selector, IFundGovernor.ProposalState.Defeated));
-        governor.castVote(id, true);
-    }
-
-    function test_sameTokensCannotVoteTwiceThroughAnotherWallet() public {
-        _escrow(bob, address(fund), 40_000e18);
-        uint256 id = _propose();
-        _vote(bob, id, true);
-
-        vm.prank(bob);
-        vm.expectRevert(IFundGovernor.TokensLocked.selector);
-        governor.withdraw(address(fund), 40_000e18, attacker);
+        factory.setEligibleAsset(address(spare), true);
     }
 
     // ──────────────────────────────────────────────────────────
-    //  escrow
+    //  Escrow
     // ──────────────────────────────────────────────────────────
 
-    function test_withdraw_afterVotingEnds() public {
-        _escrow(bob, address(fund), 40_000e18);
-        uint256 id = _propose();
-        _vote(bob, id, true);
-        vm.warp(block.timestamp + 3 days);
-        vm.prank(bob);
-        governor.withdraw(address(fund), 40_000e18, bob);
-        assertEq(fund.balanceOf(bob), 40_000e18);
-        assertEq(governor.escrowOf(bob, address(fund)), 0);
-    }
-
-    function test_withdraw_withoutVoting_anytime() public {
-        _propose();
-        _escrow(bob, address(fund), 1000e18);
-        vm.prank(bob);
-        governor.withdraw(address(fund), 1000e18, bob);
-        assertEq(fund.balanceOf(bob), 40_000e18);
-    }
-
-    function test_withdraw_moreThanEscrowed_reverts() public {
-        _escrow(bob, address(fund), 1000e18);
-        vm.prank(bob);
-        vm.expectRevert(IFundGovernor.InsufficientEscrow.selector);
-        governor.withdraw(address(fund), 1001e18, bob);
+    function test_deposit_countsFromNextEpoch() public {
+        _escrow(alice, 1000e18);
+        uint256 e = governor.currentEpoch();
+        assertEq(governor.powerAt(alice, e), 0);
+        assertEq(governor.powerAt(alice, e + 1), 1000e18);
+        assertEq(governor.totalPowerAt(e + 1), 1000e18);
+        assertEq(governor.escrowOf(alice, address(staking)), 1000e18);
+        assertEq(governor.lastDepositAt(alice), block.timestamp);
     }
 
     function test_deposit_notVoteToken_reverts() public {
         vm.prank(bob);
         vm.expectRevert(IFundGovernor.NotVoteToken.selector);
-        governor.deposit(address(usdg), 1);
+        governor.deposit(address(fund), 1e18);
+    }
+
+    function test_requestWithdrawal_stopsCountingAtOnceAndUnlocksAtFlip() public {
+        _escrow(alice, 1000e18);
+        _toNextEpoch();
+        uint256 e = governor.currentEpoch();
+        assertEq(governor.powerAt(alice, e), 1000e18);
+
+        vm.prank(alice);
+        governor.requestWithdrawal(address(staking), 400e18);
+        assertEq(governor.powerAt(alice, e), 600e18);
+        assertEq(governor.powerAt(alice, e + 1), 600e18);
+        assertEq(governor.unlockAt(alice), (e + 1) * 1 weeks);
+        assertEq(governor.escrowOf(alice, address(staking)), 1000e18);
+
+        vm.prank(alice);
+        vm.expectRevert(IFundGovernor.TokensLocked.selector);
+        governor.withdraw(address(staking));
+
+        _toNextEpoch();
+        uint256 before = staking.balanceOf(alice);
+        vm.prank(alice);
+        governor.withdraw(address(staking));
+        assertEq(staking.balanceOf(alice), before + 400e18);
+        assertEq(governor.escrowOf(alice, address(staking)), 600e18);
+    }
+
+    function test_requestWithdrawal_pendingPowerGoesFirst() public {
+        _escrow(alice, 1000e18);
+        _toNextEpoch();
+        _escrow(alice, 500e18);
+        uint256 e = governor.currentEpoch();
+        vm.prank(alice);
+        governor.requestWithdrawal(address(staking), 700e18);
+        // The 500 deposited this epoch go first; only 200 of the active 1000 stop counting.
+        assertEq(governor.powerAt(alice, e), 800e18);
+        assertEq(governor.powerAt(alice, e + 1), 800e18);
+    }
+
+    function test_requestWithdrawal_moreThanEscrowed_reverts() public {
+        _escrow(alice, 1000e18);
+        vm.prank(alice);
+        vm.expectRevert(IFundGovernor.InsufficientEscrow.selector);
+        governor.requestWithdrawal(address(staking), 1001e18);
+    }
+
+    function test_withdraw_waitsForVotedProposalToEnd() public {
+        _escrow(alice, aliceStake);
+        vm.warp(block.timestamp + 1);
+        uint256 id = _propose(curatorA, IFundGovernor.ProposalKind.List, address(spare));
+        vm.prank(alice);
+        governor.castVote(id, true);
+        // Move to the last day of the epoch, so the vote ends after the next flip.
+        uint256 e = governor.currentEpoch();
+        vm.warp((e + 1) * 1 weeks - 1 days);
+        vm.prank(alice);
+        governor.requestWithdrawal(address(staking), 1e18);
+        assertEq(governor.unlockAt(alice), governor.getProposal(id).endTime);
+    }
+
+    function test_escrowedStakeKeepsEarningYield() public {
+        _escrow(alice, aliceStake);
+        uint256 e = governor.currentEpoch() + 1;
+        uint256 before = governor.stakedAssetsAt(alice, e);
+        vm.warp(block.timestamp + 1 days);
+        _refreshFeeds();
+        staking.accrue();
+        assertGt(governor.stakedAssetsAt(alice, e), before);
+    }
+
+    function test_wrapper_depositCountsInStakedShares() public {
+        WrappedStake w = new WrappedStake(IERC20(address(staking)));
+        vm.prank(keeper);
+        vm.expectRevert(IFundGovernor.NotAdmin.selector);
+        governor.setWrapper(address(w), true);
+        vm.prank(admin);
+        governor.setWrapper(address(w), true);
+        assertTrue(governor.isVoteToken(address(w)));
+
+        _passDepositorLock();
+        vm.startPrank(alice);
+        staking.approve(address(w), 1000e18);
+        uint256 wrapped = w.deposit(1000e18, alice);
+        w.approve(address(governor), wrapped);
+        governor.deposit(address(w), wrapped);
+        vm.stopPrank();
+        assertEq(governor.powerAt(alice, governor.currentEpoch() + 1), 1000e18);
+    }
+
+    function test_setWrapper_wrongAsset_reverts() public {
+        WrappedStake w = new WrappedStake(IERC20(address(fund)));
+        vm.prank(admin);
+        vm.expectRevert(IFundGovernor.InvalidWrapper.selector);
+        governor.setWrapper(address(w), true);
     }
 
     // ──────────────────────────────────────────────────────────
-    //  veto, cancel, expiry
+    //  Gauge: votes
     // ──────────────────────────────────────────────────────────
 
-    function test_veto_adminDuringQueue() public {
-        _escrow(bob, address(fund), 40_000e18);
-        uint256 id = _propose();
-        _vote(bob, id, true);
-        vm.warp(block.timestamp + 3 days);
+    function test_vote_invalidAllocations_revert() public {
+        address[] memory t = new address[](2);
+        uint16[] memory w = new uint16[](2);
+        t[0] = address(net);
+        t[1] = address(tsla);
+        w[0] = 5000;
+        w[1] = 4999;
+        vm.prank(alice);
+        vm.expectRevert(IFundGovernor.InvalidAllocation.selector);
+        governor.vote(t, w); // sum
+
+        w[1] = 5000;
+        t[1] = address(net);
+        vm.prank(alice);
+        vm.expectRevert(IFundGovernor.InvalidAllocation.selector);
+        governor.vote(t, w); // duplicate
+
+        t[1] = address(spare);
+        vm.prank(alice);
+        vm.expectRevert(IFundGovernor.InvalidAllocation.selector);
+        governor.vote(t, w); // not in the basket
+
+        t[1] = address(tsla);
+        w[0] = 10_000;
+        w[1] = 0;
+        vm.prank(alice);
+        vm.expectRevert(IFundGovernor.InvalidAllocation.selector);
+        governor.vote(t, w); // zero weight
+
         vm.prank(admin);
-        governor.veto(id);
-        assertEq(uint8(governor.state(id)), uint8(IFundGovernor.ProposalState.Vetoed));
-        vm.warp(block.timestamp + 1 days);
-        vm.expectRevert(abi.encodeWithSelector(IFundGovernor.WrongState.selector, IFundGovernor.ProposalState.Vetoed));
+        governor.setDelisted(address(tsla), true);
+        w[0] = 5000;
+        w[1] = 5000;
+        vm.prank(alice);
+        vm.expectRevert(IFundGovernor.InvalidAllocation.selector);
+        governor.vote(t, w); // delisted
+    }
+
+    function test_vote_beforeLaunch_reverts() public {
+        _createFund();
+        vm.prank(alice);
+        vm.expectRevert(IFundGovernor.NotLaunched.selector);
+        governor.vote(new address[](0), new uint16[](0));
+    }
+
+    function test_vote_carriesOverAndCanGoSilent() public {
+        _escrow(alice, 1000e18);
+        _voteAll(alice, address(tsla));
+        uint256 e = governor.currentEpoch();
+        (address[] memory t,) = governor.allocationAt(alice, e + 5);
+        assertEq(t[0], address(tsla));
+
+        _toNextEpoch();
+        vm.prank(alice);
+        governor.vote(new address[](0), new uint16[](0));
+        (t,) = governor.allocationAt(alice, e);
+        assertEq(t.length, 1);
+        (t,) = governor.allocationAt(alice, e + 1);
+        assertEq(t.length, 0);
+    }
+
+    function test_votesOf_curatorSliceAndStakeOnTop() public {
+        _escrow(alice, aliceStake);
+        _voteAll(alice, address(tsla));
+        _voteAll(curatorA, address(tsla));
+        uint256 e = governor.currentEpoch() + 1;
+        _toNextEpoch();
+        _toNextEpoch();
+        governor.flip(); // tallies e
+
+        // curatorA: half of the curators' 30%. Alice: all the staked tokens, so the stakers' 70%.
+        assertEq(governor.votesOf(curatorA, address(tsla), e), 0.15e18);
+        assertApproxEqAbs(governor.votesOf(alice, address(tsla), e), 0.7e18, 1);
+        assertApproxEqAbs(governor.tokenVotes(address(tsla), e), 0.85e18, 1);
+        assertEq(governor.votesOf(curatorB, address(tsla), e), 0);
+        assertEq(governor.votesOf(alice, address(net), e), 0);
+    }
+
+    function test_votesOf_unescrowedStakeIsSilent() public {
+        // Alice escrows a fifth of the staked tokens: a fifth of the stakers' 70%.
+        _escrow(alice, aliceStake / 5);
+        _voteAll(alice, address(tsla));
+        uint256 e = governor.currentEpoch() + 1;
+        _toNextEpoch();
+        _toNextEpoch();
+        governor.flip();
+        assertApproxEqRel(governor.votesOf(alice, address(tsla), e), 0.14e18, 1e12);
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Gauge: flip
+    // ──────────────────────────────────────────────────────────
+
+    function test_flip_noVotes_keepsWeights() public {
+        _liftCap();
+        _toNextEpoch();
+        governor.flip();
+        assertEq(fund.targetWeightBps(address(net)), 4000);
+        assertEq(fund.targetWeightBps(address(pons)), 3000);
+        assertEq(fund.targetWeightBps(address(tsla)), 3000);
+    }
+
+    function test_flip_noVotes_weightAboveCapStillComesDown() public {
+        // With three tokens the cap is a third; NET starts at 40% and moves toward it.
+        _toNextEpoch();
+        governor.flip();
+        assertEq(fund.targetWeightBps(address(net)), 3502);
+        for (uint256 i; i < 3; ++i) {
+            _toNextEpoch();
+            governor.flip();
+        }
+        assertApproxEqAbs(fund.targetWeightBps(address(net)), 3334, 1);
+        _assertSum();
+    }
+
+    function test_flip_oncePerEpoch() public {
+        _toNextEpoch();
+        governor.flip();
+        vm.expectRevert(IFundGovernor.NothingToTally.selector);
+        governor.flip();
+        assertEq(governor.nextEpochToTally(), governor.currentEpoch());
+    }
+
+    function test_flip_catchesUpSkippedEpochsInOrder() public {
+        _toNextEpoch();
+        governor.flip();
+        uint256 first = governor.nextEpochToTally();
+        vm.warp(block.timestamp + 3 weeks);
+        _refreshFeeds();
+        governor.flip();
+        governor.flip();
+        governor.flip();
+        assertTrue(governor.isTallied(first));
+        assertTrue(governor.isTallied(first + 2));
+        vm.expectRevert(IFundGovernor.NothingToTally.selector);
+        governor.flip();
+    }
+
+    function test_flip_beforeLaunch_reverts() public {
+        _createFund();
+        vm.expectRevert(IFundGovernor.NotLaunched.selector);
+        governor.flip();
+    }
+
+    /// @dev The spec's example: no curator votes and 15% of the staked tokens vote all for a newly
+    ///      listed token (the cap is lifted here, as the example ignores it).
+    function test_flip_specExample_newTokenMovesFivePointsAWeek() public {
+        _listSpare();
+        _liftCap();
+
+        _escrow(alice, aliceStake * 15 / 100);
+        _voteAll(alice, address(spare));
+        _toNextEpoch();
+        _toNextEpoch();
+        governor.flip();
+
+        // Target: spare 10.5%, the rest keep 89.5% of their weights. Everything moves the same
+        // fraction (5 / 10.5) of the way, so spare gets 5 points (less a rounding unit).
+        assertApproxEqAbs(fund.targetWeightBps(address(spare)), 500, 1);
+        assertApproxEqAbs(fund.targetWeightBps(address(net)), 3800, 3); // takes the rounding dust
+        assertApproxEqAbs(fund.targetWeightBps(address(pons)), 2850, 1);
+        assertApproxEqAbs(fund.targetWeightBps(address(tsla)), 2850, 1);
+        _assertSum();
+
+        // Silent votes then hold spare's new 5% as well, so the target keeps growing:
+        // 10.5% + 89.5% x 5% = 14.975%, and spare moves another 5 points.
+        _toNextEpoch();
+        governor.flip();
+        assertApproxEqAbs(fund.targetWeightBps(address(spare)), 1000, 2);
+        _toNextEpoch();
+        governor.flip();
+        assertApproxEqAbs(fund.targetWeightBps(address(spare)), 1500, 3);
+        _assertSum();
+    }
+
+    function test_flip_noWeekMovesMoreThanFivePoints() public {
+        _voteAll(curatorA, address(tsla));
+        _voteAll(curatorB, address(tsla));
+        uint16[3] memory old = [uint16(4000), 3000, 3000];
+        _toNextEpoch();
+        for (uint256 i; i < 6; ++i) {
+            governor.flip();
+            uint16[3] memory now_ = _weights3();
+            for (uint256 j; j < 3; ++j) {
+                uint256 d = now_[j] > old[j] ? now_[j] - old[j] : old[j] - now_[j];
+                assertLe(d, 500);
+            }
+            _assertSum();
+            old = now_;
+            _toNextEpoch();
+        }
+        assertGt(fund.targetWeightBps(address(tsla)), 3000);
+    }
+
+    function test_flip_capsEveryTokenAtTwentyFivePercent() public {
+        _listSpare();
+        _escrow(alice, aliceStake);
+        _voteAll(alice, address(spare));
+        _toNextEpoch();
+        for (uint256 i; i < 12; ++i) {
+            _toNextEpoch();
+            governor.flip();
+        }
+        address[] memory a = fund.assets();
+        for (uint256 i; i < a.length; ++i) {
+            assertLe(fund.targetWeightBps(a[i]), 2500);
+        }
+        assertEq(fund.targetWeightBps(address(spare)), 2500);
+        _assertSum();
+    }
+
+    function test_flip_underMinimumVoteForFourWeeks_dropsDustToken() public {
+        _listSpare(); // joins at weight 0 with no balance
+        _toNextEpoch();
+        for (uint256 i; i < 3; ++i) {
+            governor.flip();
+            assertTrue(fund.isAsset(address(spare)));
+            _toNextEpoch();
+        }
+        assertEq(governor.lowStreak(address(spare)), 3);
+        governor.flip();
+        assertFalse(fund.isAsset(address(spare)));
+        assertEq(fund.assets().length, 3);
+        _assertSum();
+    }
+
+    function test_flip_delistedTokenGoesToZeroButStaysWhileHeld() public {
+        vm.prank(admin);
+        governor.setDelisted(address(pons), true);
+        _toNextEpoch();
+        for (uint256 i; i < 10; ++i) {
+            governor.flip();
+            _toNextEpoch();
+        }
+        assertEq(fund.targetWeightBps(address(pons)), 0);
+        assertTrue(fund.isAsset(address(pons))); // still holds $30k of PONS
+        _assertSum();
+    }
+
+    function test_flip_curatorBelowMinimumStake_losesSliceAfterGrace() public {
+        _liftCap();
+        _voteAll(curatorA, address(tsla));
+        _voteAll(curatorB, address(tsla));
+        _toNextEpoch();
+        governor.flip(); // first miss: a week of grace
+        assertTrue(curators.isCompliant(curatorA));
+        uint16[3] memory afterFirst = _weights3();
+        assertGt(afterFirst[2], 3000);
+
+        _toNextEpoch();
+        governor.flip(); // second miss: out
+        assertFalse(curators.isCompliant(curatorA));
+        assertFalse(curators.isCompliant(curatorB));
+        uint16[3] memory afterSecond = _weights3();
+        // Their slices now count as silent: the weights hold.
+        for (uint256 j; j < 3; ++j) {
+            assertEq(afterSecond[j], afterFirst[j]);
+        }
+    }
+
+    function test_flip_curatorWithMinimumStake_staysCompliant() public {
+        _stakeAndEscrow(curatorA, 3000e6);
+        uint256 required = fund.totalSupply() * 50 / 10_000;
+        assertGe(governor.stakedAssetsAt(curatorA, governor.currentEpoch() + 1), required);
+        _toNextEpoch();
+        _toNextEpoch();
+        governor.flip();
+        _toNextEpoch();
+        governor.flip();
+        assertTrue(curators.isCompliant(curatorA));
+        assertFalse(curators.isCompliant(curatorB));
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Proposals
+    // ──────────────────────────────────────────────────────────
+
+    function test_propose_curatorCanPropose() public {
+        uint256 id = _propose(curatorA, IFundGovernor.ProposalKind.List, address(spare));
+        IFundGovernor.Proposal memory p = governor.getProposal(id);
+        assertEq(p.proposer, curatorA);
+        assertEq(p.target, address(spare));
+        assertEq(p.endTime, block.timestamp + 3 days);
+        assertEq(p.curatorShareBps, 3000);
+        assertEq(p.stakerShareBps, 7000);
+        assertEq(p.totalStake, aliceStake);
+        assertEq(p.quorumBps, 2000);
+        assertEq(uint8(governor.state(id)), uint8(IFundGovernor.ProposalState.Active));
+    }
+
+    function test_propose_stakerNeedsThreshold() public {
+        vm.prank(bob);
+        vm.expectRevert(IFundGovernor.NotEligibleToPropose.selector);
+        governor.propose(IFundGovernor.ProposalKind.List, address(spare), address(0));
+
+        _escrow(alice, 4000e18); // ~$4.7k at NAV ~$1.18
+        vm.prank(alice);
+        vm.expectRevert(IFundGovernor.NotEligibleToPropose.selector);
+        governor.propose(IFundGovernor.ProposalKind.List, address(spare), address(0));
+
+        _escrow(alice, 1000e18); // ~$5.9k
+        vm.prank(alice);
+        governor.propose(IFundGovernor.ProposalKind.List, address(spare), address(0));
+    }
+
+    function test_propose_oneOpenAtATime() public {
+        _propose(curatorA, IFundGovernor.ProposalKind.List, address(spare));
+        vm.prank(curatorA);
+        vm.expectRevert(IFundGovernor.ProposalOpen.selector);
+        governor.propose(IFundGovernor.ProposalKind.Delist, address(pons), address(0));
+    }
+
+    function test_propose_invalidTargets_revert() public {
+        address other = makeAddr("other");
+        vm.startPrank(curatorA);
+        vm.expectRevert(IFundGovernor.InvalidProposal.selector);
+        governor.propose(IFundGovernor.ProposalKind.List, address(net), address(0)); // already listed
+        vm.expectRevert(IFundGovernor.InvalidProposal.selector);
+        governor.propose(IFundGovernor.ProposalKind.List, other, address(0)); // not eligible
+        vm.expectRevert(IFundGovernor.InvalidProposal.selector);
+        governor.propose(IFundGovernor.ProposalKind.Delist, address(spare), address(0)); // not listed
+        vm.expectRevert(IFundGovernor.InvalidProposal.selector);
+        governor.propose(IFundGovernor.ProposalKind.AddCurator, curatorB, address(0)); // already one
+        vm.expectRevert(IFundGovernor.InvalidProposal.selector);
+        governor.propose(IFundGovernor.ProposalKind.RemoveCurator, other, address(0)); // not one
+        vm.expectRevert(IFundGovernor.InvalidProposal.selector);
+        governor.propose(IFundGovernor.ProposalKind.ReplaceCurator, curatorB, curatorA); // replacement is one
+        vm.stopPrank();
+
+        vm.prank(admin);
+        factory.setCuratorCap(2);
+        vm.prank(curatorA);
+        vm.expectRevert(IFundGovernor.InvalidProposal.selector);
+        governor.propose(IFundGovernor.ProposalKind.AddCurator, other, address(0)); // over the cap
+    }
+
+    function test_list_curatorsAloneClearQuorum_joinsAtWeightZero() public {
+        uint256 id = _listSpare();
+        assertEq(uint8(governor.state(id)), uint8(IFundGovernor.ProposalState.Executed));
+        assertTrue(fund.isAsset(address(spare)));
+        assertEq(fund.targetWeightBps(address(spare)), 0);
+        assertEq(fund.targetWeightBps(address(net)), 4000);
+        IFundGovernor.Proposal memory p = governor.getProposal(id);
+        assertEq(p.yesVotes, 0.3e18);
+    }
+
+    function test_list_oneCuratorBelowQuorum_defeated() public {
+        uint256 id = _propose(curatorA, IFundGovernor.ProposalKind.List, address(spare));
+        vm.prank(curatorA);
+        governor.castVote(id, true); // 15% < 20%
+        vm.warp(block.timestamp + 3 days);
+        assertEq(uint8(governor.state(id)), uint8(IFundGovernor.ProposalState.Defeated));
+        vm.expectRevert(abi.encodeWithSelector(IFundGovernor.WrongState.selector, IFundGovernor.ProposalState.Defeated));
         governor.execute(id);
     }
 
-    function test_veto_notAdmin_reverts() public {
-        uint256 id = _propose();
-        vm.prank(creator);
+    function test_list_stakersOutvoteCurators() public {
+        _escrow(alice, aliceStake);
+        vm.warp(block.timestamp + 1);
+        uint256 id = _propose(curatorA, IFundGovernor.ProposalKind.List, address(spare));
+        vm.prank(curatorA);
+        governor.castVote(id, true);
+        vm.prank(curatorB);
+        governor.castVote(id, true);
+        vm.prank(alice);
+        uint256 votes = governor.castVote(id, false);
+        assertEq(votes, 0.7e18);
+        vm.warp(block.timestamp + 3 days);
+        assertEq(uint8(governor.state(id)), uint8(IFundGovernor.ProposalState.Defeated));
+    }
+
+    function test_castVote_depositAfterProposal_reverts() public {
+        uint256 id = _propose(curatorA, IFundGovernor.ProposalKind.List, address(spare));
+        _escrow(alice, 1000e18);
+        vm.prank(alice);
+        vm.expectRevert(IFundGovernor.DepositedAfterProposal.selector);
+        governor.castVote(id, true);
+    }
+
+    function test_castVote_twice_reverts() public {
+        uint256 id = _propose(curatorA, IFundGovernor.ProposalKind.List, address(spare));
+        vm.prank(curatorA);
+        governor.castVote(id, true);
+        vm.prank(curatorA);
+        vm.expectRevert(IFundGovernor.AlreadyVoted.selector);
+        governor.castVote(id, false);
+    }
+
+    function test_castVote_noPower_reverts() public {
+        uint256 id = _propose(curatorA, IFundGovernor.ProposalKind.List, address(spare));
+        vm.prank(bob);
+        vm.expectRevert(IFundGovernor.NoVotingPower.selector);
+        governor.castVote(id, true);
+    }
+
+    function test_veto_adminOnly() public {
+        uint256 id = _propose(curatorA, IFundGovernor.ProposalKind.List, address(spare));
+        vm.prank(curatorA);
         vm.expectRevert(IFundGovernor.NotAdmin.selector);
         governor.veto(id);
-    }
-
-    function test_cancel_creatorOnly() public {
-        uint256 id = _propose();
-        vm.prank(bob);
-        vm.expectRevert(IFundGovernor.NotCreator.selector);
-        governor.cancel(id);
-        vm.prank(creator);
-        governor.cancel(id);
-        assertEq(uint8(governor.state(id)), uint8(IFundGovernor.ProposalState.Cancelled));
-        assertEq(_propose(), 1);
-    }
-
-    function test_expiry_unblocksNewProposals() public {
-        _escrow(bob, address(fund), 40_000e18);
-        uint256 id = _propose();
-        _vote(bob, id, true);
-        vm.warp(block.timestamp + 3 days + 1 days + 7 days);
-        assertEq(uint8(governor.state(id)), uint8(IFundGovernor.ProposalState.Expired));
-        assertEq(_propose(), 1);
-    }
-
-    function test_configSnapshottedPerProposal() public {
-        _escrow(bob, address(fund), 40_000e18);
-        uint256 id = _propose();
-        GovernanceConfig memory c = governor.config();
-        c.passThresholdBps = 9000;
-        vm.prank(admin);
-        governor.setConfig(c);
-        _vote(bob, id, true);
+        _curatorsYes(id);
         vm.warp(block.timestamp + 3 days);
         assertEq(uint8(governor.state(id)), uint8(IFundGovernor.ProposalState.Queued));
+        vm.prank(admin);
+        governor.veto(id);
+        assertEq(uint8(governor.state(id)), uint8(IFundGovernor.ProposalState.Vetoed));
     }
 
-    function test_setConfig_invalid_reverts() public {
+    function test_execute_onlyAfterVetoPeriodAndWithinWindow() public {
+        uint256 id = _propose(curatorA, IFundGovernor.ProposalKind.Delist, address(pons));
+        _curatorsYes(id);
+        vm.warp(block.timestamp + 3 days + 1 days - 1);
+        vm.expectRevert(abi.encodeWithSelector(IFundGovernor.WrongState.selector, IFundGovernor.ProposalState.Queued));
+        governor.execute(id);
+        vm.warp(block.timestamp + 1 + 7 days);
+        assertEq(uint8(governor.state(id)), uint8(IFundGovernor.ProposalState.Expired));
+    }
+
+    function test_delist_proposalSetsFlag() public {
+        uint256 id = _propose(curatorA, IFundGovernor.ProposalKind.Delist, address(pons));
+        _curatorsYes(id);
+        vm.warp(block.timestamp + 4 days);
+        governor.execute(id);
+        assertTrue(governor.delisted(address(pons)));
+    }
+
+    function test_cancel_byProposerOnly() public {
+        uint256 id = _propose(curatorA, IFundGovernor.ProposalKind.List, address(spare));
+        vm.prank(curatorB);
+        vm.expectRevert(IFundGovernor.NotProposer.selector);
+        governor.cancel(id);
+        vm.prank(curatorA);
+        governor.cancel(id);
+        assertEq(uint8(governor.state(id)), uint8(IFundGovernor.ProposalState.Cancelled));
+        // A cancelled proposal frees the proposer to raise another.
+        _propose(curatorA, IFundGovernor.ProposalKind.Delist, address(pons));
+    }
+
+    function test_curatorChange_stakersDecideAlone() public {
+        _escrow(alice, aliceStake / 2);
+        vm.warp(block.timestamp + 1);
+        uint256 id = _propose(curatorA, IFundGovernor.ProposalKind.AddCurator, newCurator);
+        IFundGovernor.Proposal memory p = governor.getProposal(id);
+        assertEq(p.curatorShareBps, 0);
+        assertEq(p.stakerShareBps, 10_000);
+
+        vm.prank(curatorB);
+        vm.expectRevert(IFundGovernor.NoVotingPower.selector);
+        governor.castVote(id, true);
+
+        vm.prank(alice);
+        uint256 votes = governor.castVote(id, true);
+        assertEq(votes, 0.5e18); // half of all staked tokens
+        vm.warp(block.timestamp + 4 days);
+        governor.execute(id);
+        assertTrue(curators.isCurator(newCurator));
+        assertEq(curators.curatorCount(), 3);
+    }
+
+    function test_curatorChange_removeAndReplace() public {
+        _escrow(alice, aliceStake);
+        vm.warp(block.timestamp + 1);
+        uint256 id = _propose(alice, IFundGovernor.ProposalKind.ReplaceCurator, curatorB, newCurator);
+        vm.prank(alice);
+        governor.castVote(id, true);
+        vm.warp(block.timestamp + 4 days);
+        governor.execute(id);
+        assertFalse(curators.isCurator(curatorB));
+        assertTrue(curators.isCurator(newCurator));
+
+        id = _propose(alice, IFundGovernor.ProposalKind.RemoveCurator, newCurator);
+        vm.prank(alice);
+        governor.castVote(id, true);
+        vm.warp(block.timestamp + 4 days);
+        governor.execute(id);
+        assertFalse(curators.isCurator(newCurator));
+        assertEq(curators.curatorCount(), 1);
+    }
+
+    function test_execute_revalidates() public {
+        uint256 id = _propose(curatorA, IFundGovernor.ProposalKind.List, address(spare));
+        _curatorsYes(id);
+        vm.prank(admin);
+        factory.setEligibleAsset(address(spare), false);
+        vm.warp(block.timestamp + 4 days);
+        vm.expectRevert(IFundGovernor.InvalidProposal.selector);
+        governor.execute(id);
+    }
+
+    function test_noCurators_stakersHoldTheWholeVote() public {
+        vm.startPrank(admin);
+        curators.removeCurator(curatorA);
+        curators.removeCurator(curatorB);
+        vm.stopPrank();
+        _escrow(alice, aliceStake);
+        _voteAll(alice, address(tsla));
+        uint256 e = governor.currentEpoch() + 1;
+        _toNextEpoch();
+        _toNextEpoch();
+        governor.flip();
+        assertApproxEqAbs(governor.votesOf(alice, address(tsla), e), WAD, 1);
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Admin
+    // ──────────────────────────────────────────────────────────
+
+    function test_adminSetters_onlyAdmin() public {
         GovernanceConfig memory c = governor.config();
-        c.minUserSupportBps = 7001; // unreachable with a 30% creator share
+        vm.startPrank(curatorA);
+        vm.expectRevert(IFundGovernor.NotAdmin.selector);
+        governor.setDelisted(address(net), true);
+        vm.expectRevert(IFundGovernor.NotAdmin.selector);
+        governor.setConfig(c);
+        vm.stopPrank();
+
+        c.minVoteBps = 1001;
         vm.prank(admin);
         vm.expectRevert(IFundGovernor.InvalidConfig.selector);
         governor.setConfig(c);
     }
 
-    function test_setConfig_notAdmin_reverts() public {
+    function test_curators_adminOrGovernorOnly() public {
+        vm.prank(curatorA);
+        vm.expectRevert(IFundCurators.NotAdminOrGovernor.selector);
+        curators.addCurator(newCurator);
+        vm.prank(admin);
+        curators.addCurator(newCurator);
+        assertTrue(curators.isCurator(newCurator));
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Helpers
+    // ──────────────────────────────────────────────────────────
+
+    function _propose(
+        address who,
+        IFundGovernor.ProposalKind kind,
+        address target
+    ) internal returns (uint256) {
+        return _propose(who, kind, target, address(0));
+    }
+
+    function _propose(
+        address who,
+        IFundGovernor.ProposalKind kind,
+        address target,
+        address replacement
+    ) internal returns (uint256 id) {
+        _refreshFeeds();
+        vm.prank(who);
+        id = governor.propose(kind, target, replacement);
+    }
+
+    function _curatorsYes(
+        uint256 id
+    ) internal {
+        vm.prank(curatorA);
+        governor.castVote(id, true);
+        vm.prank(curatorB);
+        governor.castVote(id, true);
+    }
+
+    function _listSpare() internal returns (uint256 id) {
+        id = _propose(curatorA, IFundGovernor.ProposalKind.List, address(spare));
+        _curatorsYes(id);
+        vm.warp(block.timestamp + 4 days);
+        _refreshFeeds();
+        governor.execute(id);
+    }
+
+    function _liftCap() internal {
         GovernanceConfig memory c = governor.config();
-        vm.prank(creator);
-        vm.expectRevert(IFundGovernor.NotAdmin.selector);
+        c.maxWeightBps = 10_000;
+        vm.prank(admin);
         governor.setConfig(c);
     }
 
-    // ──────────────────────────────────────────────────────────
-    //  eligible supply and swapping the governor
-    // ──────────────────────────────────────────────────────────
-
-    function test_eligibleSupply_excludesCreatorHoldings() public {
-        uint256 before = governor.eligibleSupply();
-        vm.prank(bob);
-        fund.transfer(creator, 5000e18);
-        assertEq(governor.eligibleSupply(), before - 5000e18);
+    function _weights3() internal view returns (uint16[3] memory w) {
+        w[0] = fund.targetWeightBps(address(net));
+        w[1] = fund.targetWeightBps(address(pons));
+        w[2] = fund.targetWeightBps(address(tsla));
     }
 
-    function test_eligibleSupply_countsLockedMints() public {
-        uint256 before = governor.eligibleSupply();
-        uint256 supplyBefore = fund.totalSupply();
-        _mintAsset(bob, tsla, 10e18);
-        vm.prank(bob);
-        fund.mint(address(tsla), 10e18, 1, 0, bob); // locked, held by the fund
-        assertEq(governor.eligibleSupply(), before + fund.totalSupply() - supplyBefore);
-    }
-
-    function test_castVote_depositAfterProposal_reverts() public {
-        vm.prank(bob);
-        fund.transfer(creator, 30_000e18);
-        uint256 id = _propose();
-        // The creator's tokens were outside the count; handing them to a friend must not add votes.
-        vm.prank(creator);
-        fund.transfer(attacker, 30_000e18);
-        _escrow(attacker, address(fund), 30_000e18);
-        vm.prank(attacker);
-        vm.expectRevert(IFundGovernor.DepositedAfterProposal.selector);
-        governor.castVote(id, true);
-    }
-
-    function test_castVote_topUpAfterProposal_reverts() public {
-        _escrow(bob, address(fund), 20_000e18);
-        uint256 id = _propose();
-        _escrow(bob, address(fund), 20_000e18);
-        vm.prank(bob);
-        vm.expectRevert(IFundGovernor.DepositedAfterProposal.selector);
-        governor.castVote(id, true);
-        assertEq(governor.lastDepositAt(bob), block.timestamp);
-    }
-
-    function test_swapGovernor_oldOneCannotExecuteButRefunds() public {
-        _escrow(bob, address(fund), 40_000e18);
-        uint256 id = _propose();
-        _vote(bob, id, true);
-        vm.warp(block.timestamp + 4 days);
-
-        FundGovernor replacement = FundGovernor(makeAddr("quadraticGovernor"));
-        vm.prank(creator);
-        vm.expectRevert(IFund.NotAdmin.selector);
-        fund.setGovernor(address(replacement));
-        vm.prank(admin);
-        fund.setGovernor(address(replacement));
-        assertEq(fund.governor(), address(replacement));
-
-        vm.expectRevert(IFund.NotGovernor.selector);
-        governor.execute(id);
-
-        vm.prank(bob);
-        governor.withdraw(address(fund), 40_000e18, bob);
-        assertEq(fund.balanceOf(bob), 40_000e18);
-    }
-
-    function test_initialize_implementation_reverts() public {
-        FundGovernor impl = new FundGovernor();
-        GovernanceConfig memory c = governor.config();
-        vm.expectRevert();
-        impl.initialize(address(fund), c);
-    }
-
-    // ──────────────────────────────────────────────────────────
-    //  helpers
-    // ──────────────────────────────────────────────────────────
-
-    function _newBasket() internal view returns (address[] memory a, uint16[] memory w) {
-        a = new address[](4);
-        a[0] = address(net);
-        a[1] = address(pons);
-        a[2] = address(tsla);
-        a[3] = address(spare);
-        w = new uint16[](4);
-        w[0] = 4000;
-        w[1] = 2000;
-        w[2] = 3000;
-        w[3] = 1000;
-    }
-
-    // One second on, so escrow set up just before counts for the proposal.
-    function _propose() internal returns (uint256 id) {
-        vm.warp(block.timestamp + 1);
-        (address[] memory a, uint16[] memory w) = _newBasket();
-        vm.prank(creator);
-        id = governor.propose(a, w);
-    }
-
-    function _escrow(
-        address who,
-        address token,
-        uint256 amount
-    ) internal {
-        vm.startPrank(who);
-        IERC20(token).approve(address(governor), amount);
-        governor.deposit(token, amount);
-        vm.stopPrank();
-    }
-
-    function _vote(
-        address who,
-        uint256 id,
-        bool inFavour
-    ) internal returns (uint256 weight) {
-        vm.prank(who);
-        weight = governor.castVote(id, inFavour);
-    }
-}
-
-contract FundGovernorLaunchTest is FundTestBase {
-    function setUp() public override {
-        super.setUp();
-        _launchDefault();
-    }
-
-    function test_eligibleSupply_countsUnclaimedLaunchTokens() public view {
-        // Nobody has claimed: the base is still the depositors' 100k, not zero.
-        assertApproxEqAbs(governor.eligibleSupply(), 100_000e18, 1e8);
-    }
-
-    function test_earlyClaimerCannotPassAlone() public {
-        vm.prank(bob);
-        launch.claim(false); // 40k of the 100k
-        vm.startPrank(bob);
-        fund.approve(address(governor), 10_000e18);
-        governor.deposit(address(fund), 10_000e18);
-        vm.stopPrank();
-
-        vm.warp(block.timestamp + 1);
+    function _assertSum() internal view {
         address[] memory a = fund.assets();
-        uint16[] memory w = new uint16[](3);
-        w[0] = 4000;
-        w[1] = 3000;
-        w[2] = 3000;
-        vm.prank(creator);
-        uint256 id = governor.propose(a, w);
-        vm.prank(bob);
-        governor.castVote(id, true);
-
-        (, uint256 holderBps) = governor.support(id);
-        assertApproxEqAbs(holderBps, 700, 1); // 10k of 100k, not all 70 points
-        vm.warp(block.timestamp + 3 days);
-        assertEq(uint8(governor.state(id)), uint8(IFundGovernor.ProposalState.Defeated));
+        uint256 sum;
+        for (uint256 i; i < a.length; ++i) {
+            sum += fund.targetWeightBps(a[i]);
+        }
+        assertEq(sum, 10_000);
     }
 }

@@ -2,6 +2,8 @@
 pragma solidity 0.8.28;
 
 import {IFund} from "../interfaces/IFund.sol";
+import {IFundBribes} from "../interfaces/IFundBribes.sol";
+import {IFundCurators} from "../interfaces/IFundCurators.sol";
 import {IFundFactory} from "../interfaces/IFundFactory.sol";
 import {IFundGovernor} from "../interfaces/IFundGovernor.sol";
 import {IFundHook} from "../interfaces/IFundHook.sol";
@@ -20,10 +22,10 @@ import {UpgradeableBeacon} from "@openzeppelin/contracts/proxy/beacon/Upgradeabl
 import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
 import {UUPSUpgradeable} from "@openzeppelin/contracts/proxy/utils/UUPSUpgradeable.sol";
 
-/// @title FundFactory — MONEY Market Fund platform hub
+/// @title FundFactory — Own Curated Funds platform hub
 /// @notice See {IFundFactory}.
 /// @dev Runs behind an ERC-1967 proxy (UUPS); storage is append-only across upgrades. It owns
-///      the four module beacons, so the factory owner upgrades every fund through
+///      the six module beacons, so the factory owner upgrades every fund through
 ///      {upgradeModule}. The hook is wired once after deployment ({setHook}) because its address
 ///      must be mined against the factory address.
 contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
@@ -35,6 +37,18 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
 
     /// @notice Default staking yield cap: 3% a day.
     uint16 public constant DEFAULT_MAX_YIELD_RATE_BPS_PER_DAY = 300;
+
+    /// @notice Hard cap on the bribe cut.
+    uint16 public constant MAX_BRIBE_CUT_BPS = 1000;
+
+    /// @notice Hard cap on the curator cap.
+    uint8 public constant MAX_CURATOR_CAP = 50;
+
+    /// @notice Launch supply used when a fund sets none.
+    uint256 public constant DEFAULT_LAUNCH_SUPPLY = 100_000_000e18;
+
+    /// @notice Launch window used when a fund sets none.
+    uint32 public constant DEFAULT_LAUNCH_DURATION = 7 days;
 
     /// @inheritdoc IFundFactory
     address public override owner;
@@ -56,9 +70,6 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
 
     /// @inheritdoc IFundFactory
     address public override protocolFeeRecipient;
-
-    /// @inheritdoc IFundFactory
-    address public override lpFeeRecipient;
 
     /// @inheritdoc IFundFactory
     bool public override whitelistEnabled;
@@ -88,6 +99,20 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
     GovernanceConfig private _governanceConfig;
     PlatformMetadata private _platformMetadata;
 
+    /// @inheritdoc IFundFactory
+    uint8 public override curatorCap;
+
+    /// @inheritdoc IFundFactory
+    uint16 public override bribeCutBps;
+
+    /// @inheritdoc IFundFactory
+    mapping(address token => bool) public override isBribeToken;
+
+    /// @inheritdoc IFundFactory
+    mapping(address token => bool) public override isEligibleAsset;
+
+    mapping(address fund => FundModules) private _modules;
+
     /// @notice Emitted once, when the hook is wired.
     /// @param hook The hook.
     event HookSet(address hook);
@@ -111,27 +136,19 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
     /// @param owner_                 Platform admin.
     /// @param oracle_                Shared price oracle.
     /// @param usdg_                  USDG token.
-    /// @param protocolFeeRecipient_  Protocol fee recipient.
-    /// @param lpFeeRecipient_        LP fee recipient.
-    /// @param fundImpl               Fund implementation.
-    /// @param launchImpl             Launch implementation.
-    /// @param stakingImpl            Staking implementation.
-    /// @param governorImpl           Governor implementation.
+    /// @param protocolFeeRecipient_  Protocol fee recipient (Own's treasury; also gets the bribe cut).
+    /// @param impls                  Implementations, indexed by {Module}.
     function initialize(
         address owner_,
         address oracle_,
         address usdg_,
         address protocolFeeRecipient_,
-        address lpFeeRecipient_,
-        address fundImpl,
-        address launchImpl,
-        address stakingImpl,
-        address governorImpl
+        address[6] calldata impls
     ) external initializer {
-        if (
-            owner_ == address(0) || oracle_ == address(0) || usdg_ == address(0) || protocolFeeRecipient_ == address(0)
-                || lpFeeRecipient_ == address(0)
-        ) revert ZeroAddress();
+        if (owner_ == address(0) || oracle_ == address(0) || usdg_ == address(0) || protocolFeeRecipient_ == address(0))
+        {
+            revert ZeroAddress();
+        }
         owner = owner_;
         emit OwnershipTransferred(address(0), owner_);
         oracle = oracle_;
@@ -141,8 +158,6 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
         emit ProtocolFeeSet(50);
         protocolFeeRecipient = protocolFeeRecipient_;
         emit ProtocolFeeRecipientSet(protocolFeeRecipient_);
-        lpFeeRecipient = lpFeeRecipient_;
-        emit LpFeeRecipientSet(lpFeeRecipient_);
         whitelistEnabled = true;
         emit WhitelistEnabledSet(true);
         maxRebalanceSlippageBps = 200;
@@ -150,8 +165,16 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
         rebalanceVolumeCapBps = 1000;
         emit RebalanceVolumeCapSet(1000);
 
-        LaunchConfig memory cfg =
-            LaunchConfig({duration: 36 hours, finalizeGrace: 7 days, usdgRatioBps: 3000, launchPremiumBps: 3000});
+        LaunchConfig memory cfg = LaunchConfig({
+            duration: DEFAULT_LAUNCH_DURATION,
+            finalizeGrace: 7 days,
+            usdgRatioBps: 3000,
+            launchPremiumBps: 3000,
+            earlyYieldBpsPerDay: 50,
+            overweightHaircutBps: 500,
+            withdrawCutoff: 1 days,
+            depositorLock: 7 days
+        });
         _launchConfig = cfg;
         emit LaunchConfigSet(cfg);
 
@@ -159,20 +182,28 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
         emit MaxYieldRateSet(DEFAULT_MAX_YIELD_RATE_BPS_PER_DAY);
 
         GovernanceConfig memory gov = GovernanceConfig({
-            creatorPowerBps: 3000,
-            passThresholdBps: 5000,
-            minUserSupportBps: 2000,
+            curatorShareBps: 3000,
+            minVoteBps: 200,
+            maxWeightBps: 2500,
+            maxWeeklyShiftBps: 500,
+            dropAfterEpochs: 4,
+            quorumBps: 2000,
             votingPeriod: 3 days,
-            executionDelay: 1 days,
-            executionWindow: 7 days
+            vetoPeriod: 1 days,
+            executionWindow: 7 days,
+            proposalThresholdUsd: 5000e18
         });
         _governanceConfig = gov;
         emit GovernanceConfigSet(gov);
 
-        _beacons[Module.Fund] = address(new UpgradeableBeacon(fundImpl, address(this)));
-        _beacons[Module.Launch] = address(new UpgradeableBeacon(launchImpl, address(this)));
-        _beacons[Module.Staking] = address(new UpgradeableBeacon(stakingImpl, address(this)));
-        _beacons[Module.Governor] = address(new UpgradeableBeacon(governorImpl, address(this)));
+        curatorCap = 10;
+        emit CuratorCapSet(10);
+        bribeCutBps = 500;
+        emit BribeCutSet(500);
+
+        for (uint256 i; i < 6; ++i) {
+            _beacons[Module(i)] = address(new UpgradeableBeacon(impls[i], address(this)));
+        }
     }
 
     /// @notice Wire the pool hook. Owner only, once.
@@ -189,33 +220,30 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
     /// @inheritdoc IFundFactory
     function createFund(
         CreateFundParams calldata p
-    ) external override returns (address fund, address launch, address staking, address governor) {
-        if (whitelistEnabled && !isLauncher[msg.sender]) revert NotLauncher();
+    ) external override returns (FundModules memory m) {
+        if (msg.sender != owner && whitelistEnabled && !isLauncher[msg.sender]) revert NotLauncher();
         if (hook == address(0)) revert HookNotSet();
+        LaunchConfig memory cfg = _launchConfig;
+        if (p.launchDuration != 0) cfg.duration = p.launchDuration;
+        if (cfg.duration < 1 days || cfg.duration > 30 days) revert InvalidLaunchConfig();
+        uint256 supply = p.launchSupply == 0 ? DEFAULT_LAUNCH_SUPPLY : p.launchSupply;
 
-        fund = address(new BeaconProxy(_beacons[Module.Fund], abi.encodeCall(IFund.initialize, (p))));
-        launch = address(
-            new BeaconProxy(
-                _beacons[Module.Launch],
-                abi.encodeCall(IFundLaunch.initialize, (fund, p.minGraduationUsd, _launchConfig))
-            )
+        m.fund = _proxy(Module.Fund, abi.encodeCall(IFund.initialize, (p)));
+        m.launch = _proxy(Module.Launch, abi.encodeCall(IFundLaunch.initialize, (m.fund, p.minRaiseUsd, supply, cfg)));
+        m.staking = _proxy(Module.Staking, abi.encodeCall(IFundStaking.initialize, (m.fund, p.yieldTiers)));
+        m.governor = _proxy(Module.Governor, abi.encodeCall(IFundGovernor.initialize, (m.fund, _governanceConfig)));
+        m.curators = _proxy(
+            Module.Curators, abi.encodeCall(IFundCurators.initialize, (m.fund, p.curators, p.minCuratorStakeBps))
         );
-        staking = address(
-            new BeaconProxy(_beacons[Module.Staking], abi.encodeCall(IFundStaking.initialize, (fund, p.yieldTiers)))
-        );
+        m.bribes = _proxy(Module.Bribes, abi.encodeCall(IFundBribes.initialize, (m.fund)));
 
-        governor = address(
-            new BeaconProxy(
-                _beacons[Module.Governor], abi.encodeCall(IFundGovernor.initialize, (fund, _governanceConfig))
-            )
-        );
+        IFund(m.fund).setModules(m.launch, m.staking, m.governor, m.curators);
+        IFundHook(hook).registerFund(m.fund);
+        isFund[m.fund] = true;
+        _modules[m.fund] = m;
+        _funds.push(m.fund);
 
-        IFund(fund).setModules(launch, staking, governor);
-        IFundHook(hook).registerFund(fund);
-        isFund[fund] = true;
-        _funds.push(fund);
-
-        emit FundCreated(fund, launch, staking, governor, msg.sender, p.manager);
+        emit FundCreated(m.fund, m, msg.sender);
     }
 
     /// @inheritdoc IFundFactory
@@ -237,12 +265,41 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
     }
 
     /// @inheritdoc IFundFactory
-    function setLpFeeRecipient(
-        address recipient
+    function setCuratorCap(
+        uint8 cap
     ) external override onlyOwner {
-        if (recipient == address(0)) revert ZeroAddress();
-        lpFeeRecipient = recipient;
-        emit LpFeeRecipientSet(recipient);
+        if (cap == 0 || cap > MAX_CURATOR_CAP) revert InvalidCuratorCap();
+        curatorCap = cap;
+        emit CuratorCapSet(cap);
+    }
+
+    /// @inheritdoc IFundFactory
+    function setBribeCut(
+        uint16 cutBps
+    ) external override onlyOwner {
+        if (cutBps > MAX_BRIBE_CUT_BPS) revert FeeTooHigh();
+        bribeCutBps = cutBps;
+        emit BribeCutSet(cutBps);
+    }
+
+    /// @inheritdoc IFundFactory
+    function setBribeToken(
+        address token,
+        bool allowed
+    ) external override onlyOwner {
+        if (token == address(0)) revert ZeroAddress();
+        isBribeToken[token] = allowed;
+        emit BribeTokenSet(token, allowed);
+    }
+
+    /// @inheritdoc IFundFactory
+    function setEligibleAsset(
+        address token,
+        bool eligible
+    ) external override onlyOwner {
+        if (token == address(0)) revert ZeroAddress();
+        isEligibleAsset[token] = eligible;
+        emit EligibleAssetSet(token, eligible);
     }
 
     /// @inheritdoc IFundFactory
@@ -296,9 +353,11 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
         LaunchConfig calldata config
     ) external override onlyOwner {
         if (
-            config.duration < 1 hours || config.duration > 30 days || config.finalizeGrace < 1 hours
+            config.duration < 1 days || config.duration > 30 days || config.finalizeGrace < 1 hours
                 || config.finalizeGrace > 30 days || config.usdgRatioBps == 0 || config.usdgRatioBps > BPS
-                || config.launchPremiumBps > BPS
+                || config.launchPremiumBps > BPS || config.earlyYieldBpsPerDay > 100
+                || config.overweightHaircutBps > 5000 || config.withdrawCutoff > config.duration
+                || config.depositorLock > 30 days
         ) revert InvalidLaunchConfig();
         _launchConfig = config;
         emit LaunchConfigSet(config);
@@ -384,10 +443,24 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
     }
 
     /// @inheritdoc IFundFactory
+    function modulesOf(
+        address fund
+    ) external view override returns (FundModules memory) {
+        return _modules[fund];
+    }
+
+    /// @inheritdoc IFundFactory
     function beacon(
         Module module
     ) external view override returns (address) {
         return _beacons[module];
+    }
+
+    function _proxy(
+        Module module,
+        bytes memory init
+    ) internal returns (address) {
+        return address(new BeaconProxy(_beacons[module], init));
     }
 
     /// @dev UUPS upgrade gate.

@@ -24,6 +24,7 @@ contract FundTwapFeedTest is FundTestBase {
     address internal trader = makeAddr("trader");
 
     uint32 internal constant WINDOW = 30 minutes;
+    uint256 internal launchPrice;
 
     function setUp() public override {
         super.setUp();
@@ -33,10 +34,7 @@ contract FundTwapFeedTest is FundTestBase {
         swapRouter = new PoolSwapTest(poolManager);
         feed = new FundTwapFeed(IFundHook(address(hook)), address(fund), WINDOW);
 
-        vm.prank(alice);
-        launch.claim(false);
-        vm.prank(alice);
-        fund.transfer(trader, 20_000e18);
+        launchPrice = fund.navPerShare() * 13 / 10;
         usdg.mint(trader, 1_000_000e6);
         vm.startPrank(trader);
         usdg.approve(address(swapRouter), type(uint256).max);
@@ -55,7 +53,7 @@ contract FundTwapFeedTest is FundTestBase {
     function test_quietPool_reportsLaunchPrice() public {
         vm.warp(block.timestamp + WINDOW);
         (, int256 answer, uint256 startedAt, uint256 updatedAt,) = feed.latestRoundData();
-        assertApproxEqRel(uint256(answer), 1e18, 1e15); // $1.00 within a tick's rounding
+        assertApproxEqRel(uint256(answer), launchPrice, 2e15); // 1.3x NAV within a tick's rounding
         assertEq(updatedAt, block.timestamp);
         assertEq(startedAt, block.timestamp - WINDOW);
     }
@@ -64,12 +62,12 @@ contract FundTwapFeedTest is FundTestBase {
         vm.warp(block.timestamp + 1 hours);
         _swap(true, -int256(10_000e6)); // buy: spot jumps
         uint256 spot = _spotUsd();
-        assertGt(spot, 1.1e18);
+        assertGt(spot, launchPrice * 11 / 10);
 
         vm.warp(block.timestamp + 15 minutes);
         (, int256 answer,,,) = feed.latestRoundData();
-        // Half the window at $1.00, half at the new spot: well below spot, above launch.
-        assertGt(uint256(answer), 1.01e18);
+        // Half the window at the launch price, half at the new spot: well below spot, above launch.
+        assertGt(uint256(answer), launchPrice * 101 / 100);
         assertLt(uint256(answer), spot);
 
         vm.warp(block.timestamp + 1 hours);
@@ -81,7 +79,7 @@ contract FundTwapFeedTest is FundTestBase {
         vm.warp(block.timestamp + 1 hours);
         (, int256 before,,,) = feed.latestRoundData();
         _swap(true, -int256(200_000e6));
-        _swap(false, -int256(fund.balanceOf(trader) - 20_000e18));
+        _swap(false, -int256(fund.balanceOf(trader)));
         (, int256 afterAnswer,,,) = feed.latestRoundData();
         assertApproxEqRel(uint256(afterAnswer), uint256(before), 1e15);
     }
@@ -89,7 +87,7 @@ contract FundTwapFeedTest is FundTestBase {
     function test_ringKeepsCheckpointsForMaxWindow() public {
         for (uint256 i; i < 60; ++i) {
             vm.warp(block.timestamp + 6 minutes);
-            _swap(i % 2 == 0, i % 2 == 0 ? -int256(100e6) : -int256(90e18));
+            _swap(i % 2 == 0, i % 2 == 0 ? -int256(100e6) : -int256(50e18));
         }
         (bool ok,, uint32 period) = hook.consult(address(fund), hook.MAX_TWAP_WINDOW());
         assertTrue(ok);
@@ -149,11 +147,11 @@ contract FundTwapFeedTest is FundTestBase {
         _mintAsset(bob, tsla, 1e18);
         vm.prank(bob);
         uint256 shares = fund.mint(address(tsla), 1e18, 0, 0, bob);
-        assertApproxEqRel(shares, 400e18 * 9850 / 10_000, 2e15); // $400 at ~$1.00, less 1.5% fees
+        assertApproxEqRel(shares, 400e18 * 9850 / 10_000 * 1e18 / launchPrice, 2e15); // $400 at the TWAP, less 1.5% fees
     }
 
     function test_description() public view {
-        assertEq(feed.description(), "MF1 / USD pool TWAP");
+        assertEq(feed.description(), "OCF1 / USD pool TWAP");
         assertEq(feed.decimals(), 18);
     }
 
@@ -185,7 +183,7 @@ contract FundTwapFeedTest is FundTestBase {
     function _spotUsd() internal view returns (uint256) {
         (uint160 sqrtPriceX96,,,) = poolManager.getSlot0(key.toId());
         uint256 priceX192 = uint256(sqrtPriceX96) * uint256(sqrtPriceX96);
-        // raw USDG per raw MF1, scaled to USD per MF1 with 18 decimals
+        // raw USDG per raw fund token, scaled to USD per fund token with 18 decimals
         return usdgIs0 ? Math.mulDiv(1e30, 1 << 192, priceX192) : Math.mulDiv(priceX192, 1e30, 1 << 192);
     }
 }
