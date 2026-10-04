@@ -14,7 +14,7 @@ import {IFund} from "../../src/interfaces/IFund.sol";
 import {IFundFactory} from "../../src/interfaces/IFundFactory.sol";
 import {IFundLaunch} from "../../src/interfaces/IFundLaunch.sol";
 import {IFundStaking} from "../../src/interfaces/IFundStaking.sol";
-import {CreateFundParams, LockOption, YieldTier} from "../../src/interfaces/types/FundTypes.sol";
+import {CreateFundParams, LockOption, YieldPoint} from "../../src/interfaces/types/FundTypes.sol";
 import {Actors} from "./Actors.sol";
 import {MockAggregatorV3} from "./MockAggregatorV3.sol";
 import {MockERC20} from "./MockERC20.sol";
@@ -134,10 +134,10 @@ abstract contract FundTestBase is Test {
         p.lockOptions = new LockOption[](2);
         p.lockOptions[0] = LockOption({duration: 7 days, discountBps: 500});
         p.lockOptions[1] = LockOption({duration: 30 days, discountBps: 1000});
-        p.yieldTiers = new YieldTier[](3);
-        p.yieldTiers[0] = YieldTier({minPremiumBps: 1000, rateBpsPerDay: 10});
-        p.yieldTiers[1] = YieldTier({minPremiumBps: 5000, rateBpsPerDay: 20});
-        p.yieldTiers[2] = YieldTier({minPremiumBps: 10_000, rateBpsPerDay: 30});
+        p.yieldCurve = new YieldPoint[](3);
+        p.yieldCurve[0] = YieldPoint({premiumBps: 1000, rateBpsPerDay: 10});
+        p.yieldCurve[1] = YieldPoint({premiumBps: 5000, rateBpsPerDay: 20});
+        p.yieldCurve[2] = YieldPoint({premiumBps: 10_000, rateBpsPerDay: 30});
     }
 
     function _createFund() internal {

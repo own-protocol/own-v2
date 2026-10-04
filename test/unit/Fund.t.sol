@@ -171,6 +171,81 @@ contract FundTest is FundTestBase {
         assertGe(fund.navPerShare(), nav); // never dilutive
     }
 
+    function _ceilingScenario() internal returns (uint256 ceiling) {
+        vm.prank(admin);
+        fund.setMaxPremium(10_000); // 2x NAV
+        // Push PONS over its 30% target with a mint below the ceiling.
+        uint256 amount = fund.totalValue() * 50 / 1e18 * 1e18;
+        _mintAsset(bob, pons, amount);
+        vm.prank(bob);
+        fund.mint(address(pons), amount, 0, 0, bob);
+        _setFeed(address(fund), _navPrice() * 3); // market at 3x NAV
+        ceiling = fund.navPerShare() * 2;
+    }
+
+    function test_mint_aboveCeiling_pricedAtCeiling() public {
+        uint256 ceiling = _ceilingScenario();
+        uint256 oneNet = 10 ** net.decimals();
+        (, uint256 mintPrice) = fund.previewMint(address(net), oneNet, 0);
+        assertApproxEqAbs(mintPrice, ceiling, 2);
+
+        uint256 navBefore = fund.navPerShare();
+        _mintAsset(alice, net, oneNet);
+        vm.prank(alice);
+        fund.mint(address(net), oneNet, 0, 0, alice);
+        assertGt(fund.navPerShare(), navBefore); // minting at the ceiling still adds backing
+    }
+
+    function test_mint_aboveCeiling_lockDiscountOffCeiling() public {
+        uint256 ceiling = _ceilingScenario();
+        (, uint256 mintPrice) = fund.previewMint(address(net), 10 ** net.decimals(), 1); // 5% off
+        assertApproxEqAbs(mintPrice, ceiling * 95 / 100, 4);
+    }
+
+    function test_mint_aboveCeiling_overweightAsset_reverts() public {
+        _ceilingScenario();
+        _mintAsset(alice, pons, 50_000e18);
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(IFund.AssetOverweight.selector, address(pons)));
+        fund.mint(address(pons), 50_000e18, 0, 0, alice);
+    }
+
+    function test_mint_aboveCeiling_depositPastTarget_reverts() public {
+        _ceilingScenario();
+        // NET ($300) is under target, but a deposit as big as the whole fund would take it past 40%.
+        uint256 amount = fund.totalValue() / 300e18 * 10 ** net.decimals();
+        _mintAsset(alice, net, amount);
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(IFund.AssetOverweight.selector, address(net)));
+        fund.mint(address(net), amount, 0, 0, alice);
+    }
+
+    function test_mint_belowCeiling_overweightAssetAllowed() public {
+        _ceilingScenario();
+        _setFeed(address(fund), _navPrice() * 15 / 10); // back under the ceiling
+        _mintAsset(alice, pons, 50_000e18);
+        vm.prank(alice);
+        fund.mint(address(pons), 50_000e18, 0, 0, alice);
+    }
+
+    function test_mint_noCeiling_atMarketAboveTwoX() public {
+        _setFeed(address(fund), _navPrice() * 3);
+        uint256 market = uint256(feeds[address(fund)].answer()) * 1e10;
+        (, uint256 mintPrice) = fund.previewMint(address(pons), 50_000e18, 0);
+        assertEq(mintPrice, market);
+    }
+
+    function test_setMaxPremium() public {
+        vm.expectRevert(IFund.NotAdmin.selector);
+        fund.setMaxPremium(5000);
+
+        vm.expectEmit(address(fund));
+        emit IFund.MaxPremiumSet(5000);
+        vm.prank(admin);
+        fund.setMaxPremium(5000);
+        assertEq(fund.maxPremiumBps(), 5000);
+    }
+
     function test_mint_matchesPreview() public {
         _mintAsset(alice, tsla, 3e18);
         (uint256 quoted,) = fund.previewMint(address(tsla), 3e18, 2);

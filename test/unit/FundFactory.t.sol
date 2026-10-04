@@ -15,7 +15,7 @@ import {
     GovernanceConfig,
     LaunchConfig,
     PlatformMetadata,
-    YieldTier
+    YieldPoint
 } from "../../src/interfaces/types/FundTypes.sol";
 import {FundTestBase} from "../helpers/FundTestBase.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
@@ -153,7 +153,7 @@ contract FundFactoryTest is FundTestBase {
 
     function test_createFund_tierAboveYieldCap_reverts() public {
         CreateFundParams memory p = _defaultParams();
-        p.yieldTiers[2] = YieldTier({minPremiumBps: 10_000, rateBpsPerDay: 301});
+        p.yieldCurve[2] = YieldPoint({premiumBps: 10_000, rateBpsPerDay: 301});
         vm.prank(admin);
         vm.expectRevert();
         factory.createFund(p);

@@ -133,6 +133,10 @@ interface IFund is IERC20 {
     /// @param paused Whether minting is paused.
     event MintPausedSet(bool paused);
 
+    /// @notice Emitted when the mint premium ceiling changes.
+    /// @param maxPremiumBps New ceiling, in basis points over NAV (0 for none).
+    event MaxPremiumSet(uint16 maxPremiumBps);
+
     /// @notice Emitted once, when the launch succeeds and the fund goes live.
     /// @param depositorUnlockAt When depositors' launch tokens become transferable.
     event Launched(uint64 depositorUnlockAt);
@@ -188,6 +192,10 @@ interface IFund is IERC20 {
     /// @notice The asset is not in the basket, or has a zero target weight.
     /// @param asset The asset.
     error AssetNotMintable(address asset);
+
+    /// @notice A mint at the premium ceiling would take the asset above its target weight.
+    /// @param asset The asset.
+    error AssetOverweight(address asset);
 
     /// @notice Basket asset list or weights are invalid.
     error InvalidBasket();
@@ -372,6 +380,14 @@ interface IFund is IERC20 {
         bool paused
     ) external;
 
+    /// @notice Set the mint premium ceiling. Admin only. Minting is priced at no more than NAV plus
+    ///         this premium, so arbitrage (mint at the ceiling, sell into the pool) holds the market
+    ///         price near it. While it binds, a mint may not take its asset above target weight.
+    /// @param maxPremiumBps_ Ceiling, in basis points over NAV (10 000 = 2x NAV); 0 for none.
+    function setMaxPremium(
+        uint16 maxPremiumBps_
+    ) external;
+
     /// @notice The factory.
     /// @return The factory.
     function factory() external view returns (address);
@@ -411,6 +427,10 @@ interface IFund is IERC20 {
     /// @notice Whether minting is paused.
     /// @return True while paused.
     function mintPaused() external view returns (bool);
+
+    /// @notice Mint premium ceiling, in basis points over NAV (0 for none).
+    /// @return The ceiling.
+    function maxPremiumBps() external view returns (uint16);
 
     /// @notice Curators module: the curator fee recipient.
     /// @return The curators module.

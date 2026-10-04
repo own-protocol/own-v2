@@ -12,12 +12,16 @@ struct LockOption {
     uint16 discountBps;
 }
 
-/// @notice One staker-yield tier: while the fund trades at a premium of at least `minPremiumBps`
-///         over NAV, stakers earn `rateBpsPerDay` of the staked balance, paid in new fund tokens.
-/// @param minPremiumBps  Premium threshold, in basis points of NAV (ascending across tiers).
-/// @param rateBpsPerDay  Daily rate, in basis points of the staked balance (capped by the factory).
-struct YieldTier {
-    uint16 minPremiumBps;
+/// @notice One point on the staker-yield curve. Stakers earn, in new fund tokens, a daily rate
+///         interpolated linearly between the points around the fund's premium over NAV: nothing
+///         below the first point, the last point's rate from the last point on. A hump (rising to
+///         a peak, then falling to zero towards the mint ceiling) keeps yield from feeding a
+///         runaway premium.
+/// @param premiumBps     Premium, in basis points of NAV (strictly ascending across points).
+/// @param rateBpsPerDay  Daily rate at that premium, in basis points of the staked balance (capped
+///                       by the factory).
+struct YieldPoint {
+    uint16 premiumBps;
     uint16 rateBpsPerDay;
 }
 
@@ -36,7 +40,8 @@ struct YieldTier {
 /// @param launchSupply       Fixed fund token supply created at launch (0 for the default 100M).
 /// @param launchDuration     Deposit window length, in seconds (0 for the default 7 days).
 /// @param lockOptions        Mint-with-lock options.
-/// @param yieldTiers         Staker-yield tiers by premium.
+/// @param yieldCurve         Staker-yield curve by premium.
+/// @param maxPremiumBps      Mint premium ceiling, in basis points over NAV (0 for none).
 struct CreateFundParams {
     string name;
     string symbol;
@@ -52,7 +57,8 @@ struct CreateFundParams {
     uint256 launchSupply;
     uint32 launchDuration;
     LockOption[] lockOptions;
-    YieldTier[] yieldTiers;
+    YieldPoint[] yieldCurve;
+    uint16 maxPremiumBps;
 }
 
 /// @notice Launch rules. The factory holds the defaults; each launch snapshots them with its own

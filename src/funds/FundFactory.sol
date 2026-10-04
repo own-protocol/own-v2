@@ -230,7 +230,7 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
 
         m.fund = _proxy(Module.Fund, abi.encodeCall(IFund.initialize, (p)));
         m.launch = _proxy(Module.Launch, abi.encodeCall(IFundLaunch.initialize, (m.fund, p.minRaiseUsd, supply, cfg)));
-        m.staking = _proxy(Module.Staking, abi.encodeCall(IFundStaking.initialize, (m.fund, p.yieldTiers)));
+        m.staking = _proxy(Module.Staking, abi.encodeCall(IFundStaking.initialize, (m.fund, p.yieldCurve)));
         m.governor = _proxy(Module.Governor, abi.encodeCall(IFundGovernor.initialize, (m.fund, _governanceConfig)));
         m.curators = _proxy(
             Module.Curators, abi.encodeCall(IFundCurators.initialize, (m.fund, p.curators, p.minCuratorStakeBps))

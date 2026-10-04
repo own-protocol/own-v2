@@ -2,7 +2,7 @@
 pragma solidity 0.8.28;
 
 import {IFundStaking} from "../../src/interfaces/IFundStaking.sol";
-import {YieldTier} from "../../src/interfaces/types/FundTypes.sol";
+import {YieldPoint} from "../../src/interfaces/types/FundTypes.sol";
 import {FundTestBase} from "../helpers/FundTestBase.sol";
 
 contract FundStakingTest is FundTestBase {
@@ -23,12 +23,13 @@ contract FundStakingTest is FundTestBase {
         assertEq(staking.totalAssets(), staked);
     }
 
-    function test_accrue_payTierRateForPremium() public {
-        // Premium is 30%: tier 1 pays 0.1% a day.
+    function test_accrue_payCurveRateForPremium() public {
+        // Premium is 30%: halfway between 0.1% a day at 10% and 0.2% a day at 50%.
         vm.warp(block.timestamp + 8 hours);
         _refreshFeeds();
         uint256 minted = staking.accrue();
-        assertEq(minted, staked * 10 * 8 hours / (10_000 * 1 days));
+        // The pool TWAP puts the premium within a hair of 30%.
+        assertApproxEqRel(minted, staked * 15 * 8 hours / (10_000 * 1 days), 0.001e18);
         assertEq(staking.totalAssets(), staked + minted);
     }
 
@@ -41,18 +42,18 @@ contract FundStakingTest is FundTestBase {
         assertEq(staking.totalAssets(), assets);
         vm.warp(block.timestamp + 8 hours);
         _refreshFeeds();
-        assertEq(staking.accrue(), assets * 10 / 10_000 / 3);
+        assertApproxEqRel(staking.accrue(), assets * 15 / 10_000 / 3, 0.001e18);
     }
 
-    function test_accrue_higherTierAtHigherPremium() public {
-        _setFeed(address(fund), _navPrice() * 21 / 10); // 110% premium: tier 3, 0.3% a day
+    function test_accrue_lastPointRateAbovePremium() public {
+        _setFeed(address(fund), _navPrice() * 21 / 10); // 110% premium: past the last point, 0.3% a day
         vm.warp(block.timestamp + 8 hours);
         _refreshFeeds();
         uint256 minted = staking.accrue();
         assertEq(minted, staked * 30 * 8 hours / (10_000 * 1 days));
     }
 
-    function test_accrue_noYieldBelowFirstTier() public {
+    function test_accrue_noYieldBelowFirstPoint() public {
         _setFeed(address(fund), _navPrice() * 104 / 100); // 4% premium
         vm.warp(block.timestamp + 1 days);
         _refreshFeeds();
@@ -76,7 +77,7 @@ contract FundStakingTest is FundTestBase {
         vm.warp(block.timestamp + 5 days);
         _refreshFeeds();
         uint256 minted = staking.accrue(); // one distribution period, not five days
-        assertEq(minted, staked * 10 * 8 hours / (10_000 * 1 days));
+        assertApproxEqRel(minted, staked * 15 * 8 hours / (10_000 * 1 days), 0.001e18);
     }
 
     function test_accrue_dilutesNonStakers() public {
@@ -106,7 +107,7 @@ contract FundStakingTest is FundTestBase {
         _refreshFeeds();
         vm.prank(alice);
         uint256 assets = staking.unstake(staked, alice);
-        assertApproxEqAbs(assets, staked + staked * 10 * 8 hours / (10_000 * 1 days), 1);
+        assertApproxEqRel(assets - staked, staked * 15 * 8 hours / (10_000 * 1 days), 0.001e18);
         assertEq(fund.balanceOf(alice), assets);
     }
 
@@ -120,65 +121,68 @@ contract FundStakingTest is FundTestBase {
         staking.unstake(0, bob);
     }
 
-    function test_setYieldTiers_adminOnly() public {
-        YieldTier[] memory tiers = new YieldTier[](1);
-        tiers[0] = YieldTier({minPremiumBps: 500, rateBpsPerDay: 25});
+    function test_setYieldCurve_adminOnly() public {
+        YieldPoint[] memory curve = new YieldPoint[](1);
+        curve[0] = YieldPoint({premiumBps: 500, rateBpsPerDay: 25});
         vm.prank(keeper);
         vm.expectRevert(IFundStaking.NotAdmin.selector);
-        staking.setYieldTiers(tiers);
+        staking.setYieldCurve(curve);
 
         vm.prank(admin);
-        staking.setYieldTiers(tiers);
-        assertEq(staking.rateForPremium(3000), 25);
+        staking.setYieldCurve(curve);
+        assertEq(staking.rateForPremium(3000), 25e14);
     }
 
-    function test_setYieldTiers_rateAboveCap_reverts() public {
-        YieldTier[] memory tiers = new YieldTier[](1);
-        tiers[0] = YieldTier({minPremiumBps: 500, rateBpsPerDay: 301});
+    function test_setYieldCurve_rateAboveCap_reverts() public {
+        YieldPoint[] memory curve = new YieldPoint[](1);
+        curve[0] = YieldPoint({premiumBps: 500, rateBpsPerDay: 301});
         vm.prank(admin);
-        vm.expectRevert(IFundStaking.InvalidTiers.selector);
-        staking.setYieldTiers(tiers);
+        vm.expectRevert(IFundStaking.InvalidYieldCurve.selector);
+        staking.setYieldCurve(curve);
     }
 
-    function test_setYieldTiers_notAscending_reverts() public {
-        YieldTier[] memory tiers = new YieldTier[](2);
-        tiers[0] = YieldTier({minPremiumBps: 500, rateBpsPerDay: 25});
-        tiers[1] = YieldTier({minPremiumBps: 500, rateBpsPerDay: 50});
+    function test_setYieldCurve_notAscending_reverts() public {
+        YieldPoint[] memory curve = new YieldPoint[](2);
+        curve[0] = YieldPoint({premiumBps: 500, rateBpsPerDay: 25});
+        curve[1] = YieldPoint({premiumBps: 500, rateBpsPerDay: 50});
         vm.prank(admin);
-        vm.expectRevert(IFundStaking.InvalidTiers.selector);
-        staking.setYieldTiers(tiers);
+        vm.expectRevert(IFundStaking.InvalidYieldCurve.selector);
+        staking.setYieldCurve(curve);
     }
 
-    function test_rateForPremium_tiers() public view {
+    function test_rateForPremium_interpolatesBetweenPoints() public view {
         assertEq(staking.rateForPremium(-100), 0);
         assertEq(staking.rateForPremium(999), 0);
-        assertEq(staking.rateForPremium(1000), 10);
-        assertEq(staking.rateForPremium(5000), 20);
-        assertEq(staking.rateForPremium(20_000), 30);
+        assertEq(staking.rateForPremium(1000), 10e14);
+        assertEq(staking.rateForPremium(3000), 15e14);
+        assertEq(staking.rateForPremium(5000), 20e14);
+        assertEq(staking.rateForPremium(7500), 25e14);
+        assertEq(staking.rateForPremium(10_000), 30e14);
+        assertEq(staking.rateForPremium(20_000), 30e14);
     }
 
-    function test_setYieldTiers_threePercentADayAllowed() public {
-        YieldTier[] memory tiers = new YieldTier[](1);
-        tiers[0] = YieldTier({minPremiumBps: 500, rateBpsPerDay: 300});
+    function test_setYieldCurve_threePercentADayAllowed() public {
+        YieldPoint[] memory curve = new YieldPoint[](1);
+        curve[0] = YieldPoint({premiumBps: 500, rateBpsPerDay: 300});
         vm.prank(admin);
-        staking.setYieldTiers(tiers);
-        assertEq(staking.rateForPremium(3000), 300);
+        staking.setYieldCurve(curve);
+        assertEq(staking.rateForPremium(3000), 300e14);
     }
 
     function test_maxYieldRate_adminRaisesCap() public {
         vm.prank(admin);
         factory.setMaxYieldRate(500);
-        YieldTier[] memory tiers = new YieldTier[](1);
-        tiers[0] = YieldTier({minPremiumBps: 500, rateBpsPerDay: 500});
+        YieldPoint[] memory curve = new YieldPoint[](1);
+        curve[0] = YieldPoint({premiumBps: 500, rateBpsPerDay: 500});
         vm.prank(admin);
-        staking.setYieldTiers(tiers);
-        assertEq(staking.rateForPremium(3000), 500);
+        staking.setYieldCurve(curve);
+        assertEq(staking.rateForPremium(3000), 500e14);
     }
 
-    function test_maxYieldRate_loweredCapClampsExistingTiers() public {
+    function test_maxYieldRate_loweredCapClampsCurve() public {
         vm.prank(admin);
         factory.setMaxYieldRate(15);
-        assertEq(staking.rateForPremium(20_000), 15);
+        assertEq(staking.rateForPremium(20_000), 15e14);
 
         _setFeed(address(fund), _navPrice() * 21 / 10);
         vm.warp(block.timestamp + 8 hours);
@@ -196,13 +200,52 @@ contract FundStakingTest is FundTestBase {
     }
 
     function test_accrue_fullCapPaysThreePercentADay() public {
-        YieldTier[] memory tiers = new YieldTier[](1);
-        tiers[0] = YieldTier({minPremiumBps: 0, rateBpsPerDay: 300});
+        YieldPoint[] memory curve = new YieldPoint[](1);
+        curve[0] = YieldPoint({premiumBps: 0, rateBpsPerDay: 300});
         vm.prank(admin);
-        staking.setYieldTiers(tiers);
+        staking.setYieldCurve(curve);
         vm.warp(block.timestamp + 8 hours);
         _refreshFeeds();
         assertEq(staking.accrue(), staked * 300 / 10_000 / 3);
+    }
+
+    function _setHump() internal {
+        // Rises to 0.14% a day (about 1% a week) by 10%, holds to 30%, falls to zero at 100%.
+        YieldPoint[] memory curve = new YieldPoint[](4);
+        curve[0] = YieldPoint({premiumBps: 0, rateBpsPerDay: 0});
+        curve[1] = YieldPoint({premiumBps: 1000, rateBpsPerDay: 14});
+        curve[2] = YieldPoint({premiumBps: 3000, rateBpsPerDay: 14});
+        curve[3] = YieldPoint({premiumBps: 10_000, rateBpsPerDay: 0});
+        vm.prank(admin);
+        staking.setYieldCurve(curve);
+    }
+
+    function test_rateForPremium_hump() public {
+        _setHump();
+        assertEq(staking.rateForPremium(-1), 0);
+        assertEq(staking.rateForPremium(0), 0);
+        assertEq(staking.rateForPremium(500), 7e14);
+        assertEq(staking.rateForPremium(1000), 14e14);
+        assertEq(staking.rateForPremium(2000), 14e14);
+        assertEq(staking.rateForPremium(3000), 14e14);
+        assertEq(staking.rateForPremium(6500), 7e14);
+        assertEq(staking.rateForPremium(10_000), 0);
+        assertEq(staking.rateForPremium(15_000), 0);
+    }
+
+    function test_rateForPremium_fallingSlopeRoundsDown() public {
+        _setHump();
+        // 14e14 * 6999 / 7000, rounded down.
+        assertEq(staking.rateForPremium(3001), 14e14 - (uint256(14e14) + 6999) / 7000);
+    }
+
+    function test_accrue_humpPaysLessNearCeiling() public {
+        _setHump();
+        _setFeed(address(fund), _navPrice() * 19 / 10); // 90% premium: 0.02% a day
+        vm.warp(block.timestamp + 8 hours);
+        _refreshFeeds();
+        uint256 minted = staking.accrue();
+        assertApproxEqRel(minted, staked * 2 * 8 hours / (10_000 * 1 days), 0.01e18);
     }
 
     function test_nameFollowsFundMetadata() public {

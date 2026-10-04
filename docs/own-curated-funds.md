@@ -14,7 +14,7 @@ Design source: the "Own Curated Funds: launch, curators, weight votes and bribes
 | `FundFactory` | UUPS. Platform admin hub: launcher whitelist (Own only by default), protocol fee (0.5% default, 5% cap), rebalance routers and limits, launch and governance defaults, staking yield cap (3% a day), curator cap (10), bribe cut (5%, 10% cap), bribe tokens, the listing eligibility list and the platform metadata. Owns the six module beacons, so one call upgrades every fund. |
 | `Fund` | Beacon proxy per fund. The fund token plus custody of the basket and idle USDG: mint, redeem, locks, rebalance, the depositor lock. NAV counts the pool position. |
 | `FundLaunch` | Beacon proxy per fund. Deposit window, withdrawals, early-deposit yield, overweight haircut, the fixed-supply split and pool seeding. |
-| `FundStaking` | Beacon proxy per fund. Staked fund token (e.g. sOCF1) with premium-tiered issuance. |
+| `FundStaking` | Beacon proxy per fund. Staked fund token (e.g. sOCF1) with issuance set by a premium-based yield curve. |
 | `FundGovernor` | Beacon proxy per fund. Staked escrow, the weekly weight vote (gauge) and proposals to list or delist tokens and add, remove or replace curators. |
 | `FundCurators` | Beacon proxy per fund. The curator set, the minimum curator stake and compliance, and the curator fee split. It is the curator fee recipient. |
 | `FundBribes` | Beacon proxy per fund. Bribes on the weekly vote per token per week, and bribes on listing proposals. |
@@ -28,10 +28,10 @@ Design source: the "Own Curated Funds: launch, curators, weight votes and bribes
 1. **Create.** `createFund` is open to the factory owner and whitelisted launchers (the whitelist
    is on and empty by default, so only Own launches). Own sets the name, symbol, logo and
    description, the basket and starting weights, the manager (the Own keeper), the curators (up to
-   the cap) and curator fee (0 to 10%), the minimum curator stake, lock options and yield tiers,
-   the minimum raise, the launch supply (default 100M) and the launch window (default 7 days,
-   1 to 30 allowed). Only the admin can change the metadata, curator fee, lock options and yield
-   tiers afterwards.
+   the cap) and curator fee (0 to 10%), the minimum curator stake, lock options, the yield curve,
+   the mint premium ceiling, the minimum raise, the launch supply (default 100M) and the launch
+   window (default 7 days, 1 to 30 allowed). Only the admin can change the metadata, curator fee,
+   lock options, yield curve and premium ceiling afterwards.
 2. **Deposit window.** Anyone deposits any basket asset with a non-zero weight plus USDG worth 30%
    of it.
    - Deposits can be withdrawn (asset and USDG) until the last 24 hours of the window.
@@ -71,14 +71,24 @@ Design source: the "Own Curated Funds: launch, curators, weight votes and bribes
 
 ## Live
 
-- **Mint** with any basket asset at `max(marketTWAP × (1 − lockDiscount), NAV)`. A lock option earns
-  its discount and holds the tokens until it expires. A mint is never priced below NAV.
+- **Mint** with any basket asset at `max(min(marketTWAP, ceiling) × (1 − lockDiscount), NAV)`, where
+  `ceiling = NAV × (1 + maxPremium)`. A lock option earns its discount and holds the tokens until it
+  expires. A mint is never priced below NAV.
+- **Premium ceiling.** Set per fund by the admin (e.g. 100% = 2x NAV; 0 turns it off). When the
+  market trades above it, anyone can mint at the ceiling and sell into the pool, so arbitrage holds
+  the price near the ceiling, and every such mint adds backing (NAV per token rises). While the
+  ceiling binds, a mint may not take its asset above its target weight, so arbitrageurs cannot skew
+  the basket with whichever asset is cheapest for them.
 - **Redeem** at any time, as above. It needs no oracle and cannot be paused.
 - **Fees.** The protocol fee (0.5%) and the curator fee (set per fund) on pool trades (in USDG
   through the hook), mint and redeem (in fund tokens). The curator fee goes to `FundCurators`.
-- **Staking:** while the market TWAP trades at a premium to NAV, stakers earn the daily rate of the
-  highest tier that premium reaches, paid by minting new fund tokens (capped by the factory's yield
-  cap, 3% a day by default). No yield at or below NAV. Yield accrues every 8 hours at most.
+- **Staking:** while the market TWAP trades at a premium to NAV, stakers earn a daily rate read off
+  the fund's yield curve, paid by minting new fund tokens (capped by the factory's yield cap, 3% a
+  day by default). The curve is up to 8 (premium, daily rate) points, interpolated linearly: no
+  yield below the first point, the last point's rate past the last point. The intended shape is a
+  hump, for example 0 at NAV, about 1% a week from a 10% to a 30% premium, then down to 0 at the
+  ceiling, so yield draws stakers in at a moderate premium and stops fuelling a runaway one. No
+  yield at or below NAV. Yield accrues every 8 hours at most.
 - **Rebalancing:** the manager (Own keeper) swaps between basket assets, and from idle USDG into
   them, through admin-allowed routers: at most 2% loss of oracle value per swap, and at most 10% of
   the basket a day. Assets worth up to 0.1% of the basket count as dust.
@@ -147,7 +157,8 @@ Design source: the "Own Curated Funds: launch, curators, weight votes and bribes
 
 - **Admin (factory owner):** upgrades all modules; sets fees, the whitelist, routers, the LP fee,
   the curator cap, the bribe cut and tokens, the eligibility list, governance rules and each fund's
-  curator fee, minimum curator stake, lock options and yield tiers; adds and removes curators;
+  curator fee, minimum curator stake, lock options, yield curve and premium ceiling; adds and
+  removes curators;
   vetoes proposals; can delist a token directly; can withdraw the pool position back into the fund.
 - **Manager (Own keeper):** trusted only within the rebalance bounds above.
 - **Oracle feeds:** basket prices come from admin-set feeds; the fund's market price and the

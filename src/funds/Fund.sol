@@ -104,6 +104,9 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuard {
     /// @inheritdoc IFund
     mapping(address account => uint256) public override launchLocked;
 
+    /// @inheritdoc IFund
+    uint16 public override maxPremiumBps;
+
     modifier onlyAdmin() {
         if (msg.sender != IFundFactory(factory).owner()) revert NotAdmin();
         _;
@@ -150,6 +153,8 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuard {
         _setCuratorFee(params.curatorFeeBps);
         _setBasket(params.assets, params.weightsBps);
         _setLockOptions(params.lockOptions);
+        maxPremiumBps = params.maxPremiumBps;
+        emit MaxPremiumSet(params.maxPremiumBps);
     }
 
     /// @inheritdoc IFund
@@ -221,7 +226,7 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuard {
         if (mintPaused) revert MintPaused();
 
         // Prices and NAV are read before the deposit lands, so the deposit cannot move them.
-        (uint256 assetPrice, uint256 mintPrice) = _mintPrices(asset, lockOption);
+        (uint256 assetPrice, uint256 mintPrice) = _mintPrices(asset, amount, lockOption);
         uint256 received = _pull(asset, amount);
         shares = _chargeMintFees(_sharesForValue(_value(asset, received, assetPrice), mintPrice));
         if (shares == 0 || shares < minSharesOut) revert Slippage();
@@ -360,6 +365,14 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuard {
         emit MintPausedSet(paused);
     }
 
+    /// @inheritdoc IFund
+    function setMaxPremium(
+        uint16 maxPremiumBps_
+    ) external override onlyAdmin {
+        maxPremiumBps = maxPremiumBps_;
+        emit MaxPremiumSet(maxPremiumBps_);
+    }
+
     /// @notice Token name.
     /// @return The name.
     function name() public view override returns (string memory) {
@@ -488,7 +501,7 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuard {
         uint256 lockOption
     ) external view override returns (uint256 shares, uint256 mintPrice) {
         uint256 assetPrice;
-        (assetPrice, mintPrice) = _mintPrices(asset, lockOption);
+        (assetPrice, mintPrice) = _mintPrices(asset, amount, lockOption);
         uint256 gross = _sharesForValue(_value(asset, amount, assetPrice), mintPrice);
         (uint256 protocolFee, uint256 curatorFee) = _fees(gross);
         shares = gross - protocolFee - curatorFee;
@@ -508,9 +521,12 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuard {
     }
 
     /// @dev Asset price and mint price for a mint. The mint price is the fund token's market TWAP,
-    ///      less the lock discount, but never below NAV (rounded up), so a mint never dilutes.
+    ///      capped at the premium ceiling, less the lock discount, but never below NAV (rounded up),
+    ///      so a mint never dilutes. While the ceiling binds, the deposit may not take its asset above
+    ///      target weight, so arbitrage at the ceiling cannot skew the basket.
     function _mintPrices(
         address asset,
+        uint256 amount,
         uint256 lockOption
     ) internal view returns (uint256 assetPrice, uint256 mintPrice) {
         if (!launched) revert NotLaunched();
@@ -522,11 +538,21 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuard {
         (bool ok, uint256 market) = o.tryPrice(address(this));
         if (!ok) revert NoMarketPrice();
 
-        uint256 discount = lockOption == 0 ? 0 : _lockOptions[lockOption - 1].discountBps;
-        uint256 discounted = Math.mulDiv(market, BPS - discount, BPS, Math.Rounding.Ceil);
         uint256 supply = effectiveSupply();
         uint256 nav = supply == 0 ? 0 : Math.mulDiv(totalValue(), PRECISION, supply, Math.Rounding.Ceil);
+        uint256 ceiling = maxPremiumBps == 0 ? type(uint256).max : Math.mulDiv(nav, BPS + maxPremiumBps, BPS);
+        if (market > ceiling) {
+            market = ceiling;
+            _checkUnderweight(asset, _value(asset, amount, assetPrice), assetPrice, o);
+        }
+        uint256 discount = lockOption == 0 ? 0 : _lockOptions[lockOption - 1].discountBps;
+        uint256 discounted = Math.mulDiv(market, BPS - discount, BPS, Math.Rounding.Ceil);
         mintPrice = discounted > nav ? discounted : nav;
+    }
+
+    function _checkUnderweight(address asset, uint256 deposit, uint256 assetPrice, IFundOracle o) internal view {
+        uint256 held = _value(asset, IERC20(asset).balanceOf(address(this)), assetPrice) + deposit;
+        if (held * BPS > (_valueOf(_assets, o) + deposit) * targetWeightBps[asset]) revert AssetOverweight(asset);
     }
 
     function _pull(address asset, uint256 amount) internal returns (uint256 received) {

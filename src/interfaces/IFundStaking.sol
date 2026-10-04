@@ -1,16 +1,18 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {YieldTier} from "./types/FundTypes.sol";
+import {YieldPoint} from "./types/FundTypes.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
-/// @title IFundStaking — staked fund tokens (e.g. sOCF1) earning premium-tiered yield
+/// @title IFundStaking — staked fund tokens (e.g. sOCF1) earning premium-based yield
 /// @notice Stakers deposit fund tokens and receive vault shares. While the fund trades at a premium
-///         to NAV, the vault mints new fund tokens to itself at the rate of the highest tier the
-///         premium reaches, so each share is worth more fund tokens. No premium, no yield. The new
+///         to NAV, the vault mints new fund tokens to itself at the rate the yield curve gives for
+///         that premium, so each share is worth more fund tokens. No premium, no yield. The new
 ///         tokens have no new backing: non-stakers are diluted, which is the incentive to stake.
-///         Yield accrues before every stake and unstake, so late stakers cannot capture it. Tier
-///         rates are daily and capped by the factory's admin-set yield cap (3% a day by default).
+///         Yield accrues before every stake and unstake, so late stakers cannot capture it. The
+///         curve is a set of (premium, daily rate) points interpolated linearly, so the admin can
+///         shape it as a hump that peaks mid-premium and falls towards the mint ceiling. Rates are
+///         capped by the factory's admin-set yield cap (3% a day by default).
 ///
 ///         Shares staked from launch-locked fund tokens are locked the same way until the fund's
 ///         depositor unlock: they can be deposited in the governor (and come back to the same
@@ -33,18 +35,18 @@ interface IFundStaking is IERC20 {
     /// @notice Emitted when yield accrues.
     /// @param elapsed        Seconds covered.
     /// @param premiumBps     Premium read.
-    /// @param rateBpsPerDay  Daily rate applied.
+    /// @param ratePerDayWad  Daily rate applied, as a fraction of the staked balance (1e18 = 100%).
     /// @param minted         Fund tokens minted to the vault.
-    event YieldAccrued(uint256 elapsed, int256 premiumBps, uint256 rateBpsPerDay, uint256 minted);
+    event YieldAccrued(uint256 elapsed, int256 premiumBps, uint256 ratePerDayWad, uint256 minted);
 
     /// @notice Emitted when an account's locked shares change.
     /// @param account The account.
     /// @param locked  Shares now locked.
     event LockedSharesSet(address indexed account, uint256 locked);
 
-    /// @notice Emitted when the yield tiers change.
-    /// @param tiers New tiers.
-    event YieldTiersSet(YieldTier[] tiers);
+    /// @notice Emitted when the yield curve changes.
+    /// @param curve New curve points.
+    event YieldCurveSet(YieldPoint[] curve);
 
     /// @notice A required address is zero.
     error ZeroAddress();
@@ -55,8 +57,8 @@ interface IFundStaking is IERC20 {
     /// @notice Caller is not the platform admin.
     error NotAdmin();
 
-    /// @notice Tiers are not ascending, or a rate exceeds the factory's yield cap.
-    error InvalidTiers();
+    /// @notice Too many points, premiums not strictly ascending, or a rate above the factory's yield cap.
+    error InvalidYieldCurve();
 
     /// @notice Caller is not the fund's launch module.
     error NotLaunch();
@@ -66,8 +68,8 @@ interface IFundStaking is IERC20 {
 
     /// @notice Initialise a staking proxy. Called once by the factory.
     /// @param fund_  The fund token.
-    /// @param tiers_ Yield tiers set by Own at launch.
-    function initialize(address fund_, YieldTier[] calldata tiers_) external;
+    /// @param curve_ Yield curve set by Own at launch.
+    function initialize(address fund_, YieldPoint[] calldata curve_) external;
 
     /// @notice Stake fund tokens the launch is releasing to a depositor; every share minted is
     ///         locked until the depositor unlock. Launch only.
@@ -100,10 +102,10 @@ interface IFundStaking is IERC20 {
     /// @return minted Fund tokens minted.
     function accrue() external returns (uint256 minted);
 
-    /// @notice Replace the yield tiers. Admin only.
-    /// @param tiers_ New tiers.
-    function setYieldTiers(
-        YieldTier[] calldata tiers_
+    /// @notice Replace the yield curve. Admin only.
+    /// @param curve_ New curve points.
+    function setYieldCurve(
+        YieldPoint[] calldata curve_
     ) external;
 
     /// @notice The fund token.
@@ -119,13 +121,14 @@ interface IFundStaking is IERC20 {
     /// @return Timestamp.
     function lastAccrual() external view returns (uint64);
 
-    /// @notice Yield tiers.
-    /// @return The tiers.
-    function yieldTiers() external view returns (YieldTier[] memory);
+    /// @notice Yield curve points.
+    /// @return The points.
+    function yieldCurve() external view returns (YieldPoint[] memory);
 
-    /// @notice Daily rate paid at a premium, after the factory's yield cap.
+    /// @notice Daily rate paid at a premium: the curve interpolated linearly between its points,
+    ///         after the factory's yield cap.
     /// @param premiumBps Premium over NAV, in basis points.
-    /// @return Rate, in basis points per day.
+    /// @return Rate per day, as a fraction of the staked balance (1e18 = 100%).
     function rateForPremium(
         int256 premiumBps
     ) external view returns (uint256);

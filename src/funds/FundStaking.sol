@@ -5,8 +5,8 @@ import {IFund} from "../interfaces/IFund.sol";
 import {IFundFactory} from "../interfaces/IFundFactory.sol";
 import {IFundGovernor} from "../interfaces/IFundGovernor.sol";
 import {IFundStaking} from "../interfaces/IFundStaking.sol";
-import {YieldTier} from "../interfaces/types/FundTypes.sol";
-import {BPS} from "../interfaces/types/Types.sol";
+import {YieldPoint} from "../interfaces/types/FundTypes.sol";
+import {BPS, PRECISION} from "../interfaces/types/Types.sol";
 import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -15,7 +15,7 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
-/// @title FundStaking — staked fund token vault with premium-tiered issuance
+/// @title FundStaking — staked fund token vault with premium-based issuance
 /// @notice See {IFundStaking}.
 /// @dev Beacon proxy per fund. Share maths uses one virtual share and one virtual asset, which
 ///      makes first-depositor donation attacks unprofitable.
@@ -26,8 +26,10 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuard {
     ///         premium reading never sets the rate for longer than that.
     uint256 public constant MAX_ACCRUAL_PERIOD = 8 hours;
 
-    /// @notice Maximum number of yield tiers.
-    uint256 public constant MAX_TIERS = 8;
+    /// @notice Maximum number of yield curve points.
+    uint256 public constant MAX_YIELD_POINTS = 8;
+
+    uint256 private constant BPS_TO_WAD = PRECISION / BPS;
 
     /// @inheritdoc IFundStaking
     address public override fund;
@@ -35,7 +37,7 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuard {
     /// @inheritdoc IFundStaking
     uint64 public override lastAccrual;
 
-    YieldTier[] private _tiers;
+    YieldPoint[] private _curve;
 
     // Tracked rather than read from the balance, so donated fund tokens earn no yield.
     uint256 private _totalStaked;
@@ -48,11 +50,11 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuard {
     }
 
     /// @inheritdoc IFundStaking
-    function initialize(address fund_, YieldTier[] calldata tiers_) external override initializer {
+    function initialize(address fund_, YieldPoint[] calldata curve_) external override initializer {
         if (fund_ == address(0)) revert ZeroAddress();
         fund = fund_;
         lastAccrual = uint64(block.timestamp);
-        _setTiers(tiers_);
+        _setCurve(curve_);
     }
 
     /// @inheritdoc IFundStaking
@@ -111,12 +113,12 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuard {
     }
 
     /// @inheritdoc IFundStaking
-    function setYieldTiers(
-        YieldTier[] calldata tiers_
+    function setYieldCurve(
+        YieldPoint[] calldata curve_
     ) external override nonReentrant {
         if (msg.sender != IFundFactory(IFund(fund).factory()).owner()) revert NotAdmin();
         _accrue();
-        _setTiers(tiers_);
+        _setCurve(curve_);
     }
 
     /// @notice Share token name, following the fund's current name.
@@ -137,23 +139,33 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuard {
     }
 
     /// @inheritdoc IFundStaking
-    function yieldTiers() external view override returns (YieldTier[] memory) {
-        return _tiers;
+    function yieldCurve() external view override returns (YieldPoint[] memory) {
+        return _curve;
     }
 
     /// @inheritdoc IFundStaking
     function rateForPremium(
         int256 premiumBps
     ) public view override returns (uint256 rate) {
-        uint256 n = _tiers.length;
-        for (uint256 i; i < n; ++i) {
-            if (premiumBps < int256(uint256(_tiers[i].minPremiumBps))) break;
-            rate = _tiers[i].rateBpsPerDay;
+        uint256 n = _curve.length;
+        if (n == 0 || premiumBps < int256(uint256(_curve[0].premiumBps))) return 0;
+        uint256 p = uint256(premiumBps);
+        uint256 i = 1;
+        while (i < n && p >= _curve[i].premiumBps) {
+            ++i;
         }
-        if (rate != 0) {
-            uint256 cap = _maxRate();
-            if (rate > cap) rate = cap;
+        YieldPoint memory lo = _curve[i - 1];
+        rate = uint256(lo.rateBpsPerDay) * BPS_TO_WAD;
+        if (i < n) {
+            YieldPoint memory hi = _curve[i];
+            uint256 span = hi.premiumBps - lo.premiumBps;
+            uint256 hiRate = uint256(hi.rateBpsPerDay) * BPS_TO_WAD;
+            rate = hiRate >= rate
+                ? rate + Math.mulDiv(hiRate - rate, p - lo.premiumBps, span)
+                : rate - Math.mulDiv(rate - hiRate, p - lo.premiumBps, span, Math.Rounding.Ceil);
         }
+        uint256 cap = _maxRate() * BPS_TO_WAD;
+        if (rate > cap) rate = cap;
     }
 
     /// @inheritdoc IFundStaking
@@ -190,7 +202,7 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuard {
         uint256 rate = rateForPremium(premium);
         if (rate == 0) return 0;
 
-        minted = Math.mulDiv(staked, rate * elapsed, BPS * 1 days);
+        minted = Math.mulDiv(staked, rate * elapsed, PRECISION * 1 days);
         if (minted != 0) {
             _totalStaked += minted;
             IFund(fund).moduleMint(address(this), minted);
@@ -233,18 +245,18 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuard {
         return locked;
     }
 
-    function _setTiers(
-        YieldTier[] calldata tiers_
+    function _setCurve(
+        YieldPoint[] calldata curve_
     ) internal {
-        if (tiers_.length > MAX_TIERS) revert InvalidTiers();
+        if (curve_.length > MAX_YIELD_POINTS) revert InvalidYieldCurve();
         uint256 cap = _maxRate();
-        delete _tiers;
-        for (uint256 i; i < tiers_.length; ++i) {
-            if (tiers_[i].rateBpsPerDay > cap) revert InvalidTiers();
-            if (i != 0 && tiers_[i].minPremiumBps <= tiers_[i - 1].minPremiumBps) revert InvalidTiers();
-            _tiers.push(tiers_[i]);
+        delete _curve;
+        for (uint256 i; i < curve_.length; ++i) {
+            if (curve_[i].rateBpsPerDay > cap) revert InvalidYieldCurve();
+            if (i != 0 && curve_[i].premiumBps <= curve_[i - 1].premiumBps) revert InvalidYieldCurve();
+            _curve.push(curve_[i]);
         }
-        emit YieldTiersSet(tiers_);
+        emit YieldCurveSet(curve_);
     }
 
     function _maxRate() internal view returns (uint256) {
