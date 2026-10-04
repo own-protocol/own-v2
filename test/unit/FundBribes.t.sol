@@ -24,6 +24,8 @@ contract FundBribesTest is FundTestBase {
         usdg.approve(address(bribes), type(uint256).max);
 
         _escrow(alice, aliceStake);
+        vm.prank(alice);
+        governor.lockForBribes();
         _voteAll(alice, address(tsla));
         _voteAll(curatorA, address(tsla));
         epoch = governor.currentEpoch() + 1; // alice's stake counts from here
@@ -75,22 +77,57 @@ contract FundBribesTest is FundTestBase {
         bribes.postBribe(address(tsla), epoch, address(usdg), 1000e6);
     }
 
-    function test_claimBribe_splitByShareOfTheTokensVote() public {
+    function test_claimBribe_curatorSliceEarnsNothing() public {
         vm.prank(briber);
         bribes.postBribe(address(tsla), epoch, address(usdg), 1000e6);
         _toNextEpoch();
         _toNextEpoch();
         governor.flip();
 
-        // TSLA's vote: curatorA's 15% slice plus alice's 70% of stakers' votes.
+        // CuratorA's 15% slice voted for TSLA too, but only alice's locked stake is paid.
+        assertGt(governor.votesOf(curatorA, address(tsla), epoch), 0);
         vm.prank(curatorA);
-        uint256 toCurator = bribes.claimBribe(address(tsla), epoch, address(usdg));
+        vm.expectRevert(IFundBribes.NothingToClaim.selector);
+        bribes.claimBribe(address(tsla), epoch, address(usdg));
+        vm.prank(alice);
+        assertEq(bribes.claimBribe(address(tsla), epoch, address(usdg)), 950e6);
+    }
+
+    function test_claimBribe_splitByLockedStake() public {
+        _stakeAndEscrow(bob, 10_000e6);
+        vm.prank(bob);
+        governor.lockForBribes();
+        _voteAll(bob, address(tsla));
+        vm.prank(briber);
+        bribes.postBribe(address(tsla), epoch, address(usdg), 1000e6);
+        _toNextEpoch();
+        _toNextEpoch();
+        governor.flip();
+
+        uint256 bobPower = governor.powerAt(bob, epoch);
+        uint256 total = aliceStake + bobPower;
         vm.prank(alice);
         uint256 toAlice = bribes.claimBribe(address(tsla), epoch, address(usdg));
-        assertApproxEqAbs(toCurator, uint256(950e6) * 15 / 85, 1);
-        assertApproxEqAbs(toAlice, uint256(950e6) * 70 / 85, 1);
-        assertLe(toCurator + toAlice, 950e6);
-        assertEq(usdg.balanceOf(curatorA), toCurator);
+        vm.prank(bob);
+        uint256 toBob = bribes.claimBribe(address(tsla), epoch, address(usdg));
+        assertEq(toAlice, uint256(950e6) * aliceStake / total);
+        assertEq(toBob, uint256(950e6) * bobPower / total);
+        assertLe(toAlice + toBob, 950e6);
+    }
+
+    function test_claimBribe_unlockedStakeEarnsNothing() public {
+        _stakeAndEscrow(bob, 10_000e6);
+        _voteAll(bob, address(tsla));
+        vm.prank(briber);
+        bribes.postBribe(address(tsla), epoch, address(usdg), 1000e6);
+        _toNextEpoch();
+        _toNextEpoch();
+        governor.flip();
+
+        assertGt(governor.votesOf(bob, address(tsla), epoch), 0);
+        assertEq(bribes.claimableBribe(bob, address(tsla), epoch, address(usdg)), 0);
+        vm.prank(alice);
+        assertEq(bribes.claimBribe(address(tsla), epoch, address(usdg)), 950e6);
     }
 
     function test_claimBribe_twice_reverts() public {
@@ -154,6 +191,19 @@ contract FundBribesTest is FundTestBase {
         assertEq(back, 950e6);
         assertEq(usdg.balanceOf(briber), before + 950e6);
         assertEq(bribes.bribeOf(address(pons), epoch, address(usdg)), 0);
+    }
+
+    function test_refundBribe_whenOnlyUnlockedStakeVoted() public {
+        _stakeAndEscrow(bob, 10_000e6);
+        _voteAll(bob, address(pons));
+        vm.prank(briber);
+        bribes.postBribe(address(pons), epoch, address(usdg), 1000e6);
+        _toNextEpoch();
+        _toNextEpoch();
+        governor.flip();
+        assertGt(governor.tokenVotes(address(pons), epoch), 0);
+        vm.prank(briber);
+        assertEq(bribes.refundBribe(address(pons), epoch, address(usdg)), 950e6);
     }
 
     function test_refundBribe_votedToken_reverts() public {
@@ -230,19 +280,41 @@ contract FundBribesTest is FundTestBase {
         bribes.claimListingBribe(id, address(usdg));
         governor.execute(id);
 
-        // Yes: curatorA 15% and alice 70%; curatorB voted no.
+        // Yes: curatorA's slice and alice's locked stake; only the stake is paid.
         vm.prank(curatorA);
-        uint256 a = bribes.claimListingBribe(id, address(usdg));
+        vm.expectRevert(IFundBribes.NothingToClaim.selector);
+        bribes.claimListingBribe(id, address(usdg));
         vm.prank(alice);
-        uint256 b = bribes.claimListingBribe(id, address(usdg));
-        assertApproxEqAbs(a, uint256(1900e6) * 15 / 85, 1);
-        assertApproxEqAbs(b, uint256(1900e6) * 70 / 85, 1);
+        assertEq(bribes.claimListingBribe(id, address(usdg)), 1900e6);
+        vm.prank(briber);
+        vm.expectRevert(IFundBribes.NotRefundable.selector);
+        bribes.refundListingBribe(id, address(usdg));
         vm.prank(curatorB);
         vm.expectRevert(IFundBribes.NothingToClaim.selector);
         bribes.claimListingBribe(id, address(usdg));
         vm.prank(alice);
         vm.expectRevert(IFundBribes.AlreadyClaimed.selector);
         bribes.claimListingBribe(id, address(usdg));
+    }
+
+    function test_listingBribe_refundedWhenExecutedWithoutLockedYes() public {
+        uint256 id = _proposeListing();
+        vm.prank(briber);
+        bribes.postListingBribe(id, address(usdg), 2000e6);
+        // Curators' 30% passes it alone; no locked stake voted yes.
+        vm.prank(curatorA);
+        governor.castVote(id, true);
+        vm.prank(curatorB);
+        governor.castVote(id, true);
+        vm.warp(block.timestamp + 4 days);
+        _refreshFeeds();
+        governor.execute(id);
+
+        vm.prank(curatorA);
+        vm.expectRevert(IFundBribes.NothingToClaim.selector);
+        bribes.claimListingBribe(id, address(usdg));
+        vm.prank(briber);
+        assertEq(bribes.refundListingBribe(id, address(usdg)), 1900e6);
     }
 
     function test_listingBribe_refundedWhenVetoedOrCancelled() public {

@@ -111,6 +111,115 @@ contract FundGovernorTest is FundTestBase {
         assertEq(governor.unlockAt(alice), governor.getProposal(id).endTime);
     }
 
+    // ──────────────────────────────────────────────────────────
+    //  Bribe lock
+    // ──────────────────────────────────────────────────────────
+
+    function test_lockForBribes_setsEpochAndRevertsTwice() public {
+        uint256 e = governor.currentEpoch();
+        vm.expectEmit(address(governor));
+        emit IFundGovernor.BribeLocked(alice, e);
+        vm.prank(alice);
+        governor.lockForBribes();
+        assertEq(governor.bribeLockedFrom(alice), e);
+
+        vm.prank(alice);
+        vm.expectRevert(IFundGovernor.AlreadyBribeLocked.selector);
+        governor.lockForBribes();
+    }
+
+    function test_requestWithdrawal_lockedWaitsBribeLock() public {
+        _escrow(alice, 1000e18);
+        vm.prank(alice);
+        governor.lockForBribes();
+        _toNextEpoch();
+        _toNextEpoch();
+
+        vm.prank(alice);
+        governor.requestWithdrawal(address(staking), 400e18);
+        assertEq(governor.unlockAt(alice), block.timestamp + 28 days);
+        // Stops counting at once, as for any withdrawal.
+        assertEq(governor.powerAt(alice, governor.currentEpoch()), 600e18);
+
+        _toNextEpoch();
+        vm.prank(alice);
+        vm.expectRevert(IFundGovernor.TokensLocked.selector);
+        governor.withdraw(address(staking));
+
+        vm.warp(governor.unlockAt(alice));
+        vm.prank(alice);
+        assertEq(governor.withdraw(address(staking)), 400e18);
+    }
+
+    function test_requestWithdrawal_lockIsRolling() public {
+        _escrow(alice, 1000e18);
+        vm.prank(alice);
+        governor.lockForBribes();
+        // Months later the exit still takes the full lock.
+        vm.warp(block.timestamp + 180 days);
+        vm.prank(alice);
+        governor.requestWithdrawal(address(staking), 1000e18);
+        assertEq(governor.unlockAt(alice), block.timestamp + 28 days);
+    }
+
+    function test_bribeVotes_followLockedStake() public {
+        _escrow(alice, 1000e18);
+        _voteAll(alice, address(tsla));
+        uint256 e = governor.currentEpoch() + 1;
+        assertEq(governor.bribeVotes(address(tsla), e), 0);
+        assertEq(governor.bribeVotesOf(alice, address(tsla), e), 0);
+
+        vm.prank(alice);
+        governor.lockForBribes();
+        assertEq(governor.bribeVotes(address(tsla), e), 1000e18);
+        assertEq(governor.bribeVotesOf(alice, address(tsla), e), 1000e18);
+
+        // Splitting the vote and adding stake move the bribe tally with it.
+        address[] memory t = new address[](2);
+        uint16[] memory w = new uint16[](2);
+        (t[0], t[1], w[0], w[1]) = (address(tsla), address(pons), 6000, 4000);
+        vm.prank(alice);
+        governor.vote(t, w);
+        _escrow(alice, 500e18);
+        assertEq(governor.bribeVotes(address(tsla), e), 900e18);
+        assertEq(governor.bribeVotes(address(pons), e), 600e18);
+
+        vm.prank(alice);
+        governor.requestWithdrawal(address(staking), 1500e18);
+        assertEq(governor.bribeVotes(address(tsla), e), 0);
+        assertEq(governor.bribeVotes(address(pons), e), 0);
+    }
+
+    function test_bribeVotesOf_zeroBeforeLockEpoch() public {
+        _escrow(alice, 1000e18);
+        _voteAll(alice, address(tsla));
+        _toNextEpoch();
+        uint256 before = governor.currentEpoch();
+        _toNextEpoch();
+        vm.prank(alice);
+        governor.lockForBribes();
+        uint256 e = governor.currentEpoch();
+        assertEq(governor.bribeVotesOf(alice, address(tsla), before), 0);
+        assertEq(governor.bribeVotes(address(tsla), before), 0);
+        assertEq(governor.bribeVotesOf(alice, address(tsla), e), 1000e18);
+        assertEq(governor.bribeVotes(address(tsla), e), 1000e18);
+    }
+
+    function test_castVote_curatorSliceNeverCountsForListingBribes() public {
+        _escrow(alice, aliceStake);
+        vm.prank(alice);
+        governor.lockForBribes();
+        vm.warp(block.timestamp + 1);
+        uint256 id = _propose(curatorA, IFundGovernor.ProposalKind.List, address(spare));
+        vm.prank(curatorA);
+        governor.castVote(id, true);
+        vm.prank(alice);
+        governor.castVote(id, true);
+        assertEq(governor.proposalVote(id, curatorA).bribeVotes, 0);
+        assertEq(governor.proposalVote(id, alice).bribeVotes, aliceStake);
+        assertEq(governor.getProposal(id).bribeYesVotes, aliceStake);
+    }
+
     function test_escrowedStakeKeepsEarningYield() public {
         _escrow(alice, aliceStake);
         uint256 e = governor.currentEpoch() + 1;

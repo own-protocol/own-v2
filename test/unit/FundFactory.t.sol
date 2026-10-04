@@ -59,6 +59,7 @@ contract FundFactoryTest is FundTestBase {
         assertEq(gov.votingPeriod, 3 days);
         assertEq(gov.vetoPeriod, 1 days);
         assertEq(gov.executionWindow, 7 days);
+        assertEq(gov.bribeLock, 28 days);
         assertEq(gov.proposalThresholdUsd, 5000e18);
     }
 
@@ -309,6 +310,12 @@ contract FundFactoryTest is FundTestBase {
 
         c = factory.governanceConfig();
         c.maxWeightBps = 999;
+        vm.prank(admin);
+        vm.expectRevert(IFundFactory.InvalidGovernanceConfig.selector);
+        factory.setGovernanceConfig(c);
+
+        c = factory.governanceConfig();
+        c.bribeLock = 365 days + 1;
         vm.prank(admin);
         vm.expectRevert(IFundFactory.InvalidGovernanceConfig.selector);
         factory.setGovernanceConfig(c);

@@ -98,6 +98,11 @@ contract FundGovernor is IFundGovernor, Initializable, ReentrancyGuard {
 
     ProposalBook.Book private _book;
 
+    /// @inheritdoc IFundGovernor
+    mapping(address account => uint32) public override bribeLockedFrom;
+
+    mapping(address token => EpochHistory.History) private _bribeVotes;
+
     modifier onlyAdmin() {
         _checkAdmin();
         _;
@@ -162,6 +167,7 @@ contract FundGovernor is IFundGovernor, Initializable, ReentrancyGuard {
 
         unlockingOf[msg.sender][token] += amount;
         uint256 until = Math.max(Math.max(unlockAt[msg.sender], (e + 1) * EPOCH), _voteLockUntil[msg.sender]);
+        if (bribeLockedFrom[msg.sender] != 0) until = Math.max(until, block.timestamp + _config.bribeLock);
         unlockAt[msg.sender] = uint64(until);
         emit WithdrawalRequested(msg.sender, token, amount, uint64(until));
     }
@@ -178,22 +184,40 @@ contract FundGovernor is IFundGovernor, Initializable, ReentrancyGuard {
         emit Withdrawn(msg.sender, token, amount);
     }
 
+    /// @inheritdoc IFundGovernor
+    function lockForBribes() external override {
+        if (bribeLockedFrom[msg.sender] != 0) revert AlreadyBribeLocked();
+        uint256 e = currentEpoch();
+        EpochHistory.History storage h = _power[msg.sender];
+        uint256 active = h.valueAt(e);
+        uint256 next = h.valueAt(e + 1);
+        Allocation storage al = _latestAlloc(msg.sender);
+        // Re-adding the allocation once locked moves its votes into the bribe tallies as well.
+        _applyAlloc(al, e, active, next, false, false);
+        bribeLockedFrom[msg.sender] = SafeCast.toUint32(e);
+        _applyAlloc(al, e, active, next, true, true);
+        emit BribeLocked(msg.sender, e);
+    }
+
     // ──────────────────────────────────────────────────────────
     //  Gauge
     // ──────────────────────────────────────────────────────────
 
     /// @inheritdoc IFundGovernor
     function vote(address[] calldata tokens, uint16[] calldata weightsBps) external override {
-        IFund f = IFund(fund);
-        if (!f.launched()) revert NotLaunched();
-        _checkAllocation(f, tokens, weightsBps);
+        {
+            IFund f = IFund(fund);
+            if (!f.launched()) revert NotLaunched();
+            _checkAllocation(f, tokens, weightsBps);
+        }
 
         uint256 e = currentEpoch();
         EpochHistory.History storage h = _power[msg.sender];
         uint256 active = h.valueAt(e);
         uint256 next = h.valueAt(e + 1);
+        bool locked = bribeLockedFrom[msg.sender] != 0;
         Allocation storage old = _latestAlloc(msg.sender);
-        _applyAlloc(old, e, active, next, false);
+        _applyAlloc(old, e, active, next, false, locked);
 
         uint32 e32 = SafeCast.toUint32(e);
         uint32[] storage epochs = _allocEpochs[msg.sender];
@@ -201,7 +225,7 @@ contract FundGovernor is IFundGovernor, Initializable, ReentrancyGuard {
         Allocation storage al = _allocs[msg.sender][e32];
         al.tokens = tokens;
         al.weightsBps = weightsBps;
-        _applyAlloc(al, e, active, next, true);
+        _applyAlloc(al, e, active, next, true, locked);
 
         emit Voted(msg.sender, e, tokens, weightsBps);
     }
@@ -250,7 +274,13 @@ contract FundGovernor is IFundGovernor, Initializable, ReentrancyGuard {
     function castVote(uint256 id, bool support_) external override nonReentrant returns (uint256 votes) {
         uint64 endTime;
         (votes, endTime) = ProposalBook.castVote(
-            _book, fund, id, support_, _power[msg.sender].valueAt(currentEpoch() + 1), lastDepositAt[msg.sender]
+            _book,
+            fund,
+            id,
+            support_,
+            _power[msg.sender].valueAt(currentEpoch() + 1),
+            lastDepositAt[msg.sender],
+            bribeLockedFrom[msg.sender] != 0
         );
         if (endTime > _voteLockUntil[msg.sender]) _voteLockUntil[msg.sender] = endTime;
     }
@@ -350,14 +380,7 @@ contract FundGovernor is IFundGovernor, Initializable, ReentrancyGuard {
     /// @inheritdoc IFundGovernor
     function votesOf(address account, address token, uint256 epoch) external view override returns (uint256 votes) {
         if (!_tallied[epoch]) return 0;
-        (address[] memory tokens, uint16[] memory weights) = allocationAt(account, epoch);
-        uint256 bps;
-        for (uint256 i; i < tokens.length; ++i) {
-            if (tokens[i] == token) {
-                bps = weights[i];
-                break;
-            }
-        }
+        uint256 bps = _bpsOf(account, token, epoch);
         if (bps == 0) return 0;
         uint256 slice = _curatorSlice[epoch][account];
         if (slice != 0) votes = slice * bps / BPS;
@@ -371,6 +394,18 @@ contract FundGovernor is IFundGovernor, Initializable, ReentrancyGuard {
     /// @inheritdoc IFundGovernor
     function tokenVotes(address token, uint256 epoch) external view override returns (uint256) {
         return _epochVotes[epoch][token];
+    }
+
+    /// @inheritdoc IFundGovernor
+    function bribeVotesOf(address account, address token, uint256 epoch) external view override returns (uint256) {
+        uint256 from = bribeLockedFrom[account];
+        if (from == 0 || from > epoch) return 0;
+        return _power[account].valueAt(epoch) * _bpsOf(account, token, epoch) / BPS;
+    }
+
+    /// @inheritdoc IFundGovernor
+    function bribeVotes(address token, uint256 epoch) external view override returns (uint256) {
+        return _bribeVotes[token].valueAt(epoch);
     }
 
     /// @inheritdoc IFundGovernor
@@ -467,25 +502,50 @@ contract FundGovernor is IFundGovernor, Initializable, ReentrancyGuard {
         _power[account].set(e, active, next);
         _totalPower.add(e, _delta(oldActive, active), _delta(oldNext, next));
 
+        bool locked = bribeLockedFrom[account] != 0;
         Allocation storage al = _latestAlloc(account);
         uint256 n = al.tokens.length;
         for (uint256 i; i < n; ++i) {
             uint256 bps = al.weightsBps[i];
-            _stakerVotes[al.tokens[i]].add(
-                e, _delta(oldActive * bps / BPS, active * bps / BPS), _delta(oldNext * bps / BPS, next * bps / BPS)
+            _addVotes(
+                al.tokens[i],
+                e,
+                _delta(oldActive * bps / BPS, active * bps / BPS),
+                _delta(oldNext * bps / BPS, next * bps / BPS),
+                locked
             );
         }
     }
 
-    function _applyAlloc(Allocation storage al, uint256 e, uint256 active, uint256 next, bool add) internal {
+    function _applyAlloc(
+        Allocation storage al,
+        uint256 e,
+        uint256 active,
+        uint256 next,
+        bool add,
+        bool locked
+    ) internal {
         uint256 n = al.tokens.length;
         for (uint256 i; i < n; ++i) {
             uint256 bps = al.weightsBps[i];
             int256 dActive = SafeCast.toInt256(active * bps / BPS);
             int256 dNext = SafeCast.toInt256(next * bps / BPS);
-            if (add) _stakerVotes[al.tokens[i]].add(e, dActive, dNext);
-            else _stakerVotes[al.tokens[i]].add(e, -dActive, -dNext);
+            if (add) _addVotes(al.tokens[i], e, dActive, dNext, locked);
+            else _addVotes(al.tokens[i], e, -dActive, -dNext, locked);
         }
+    }
+
+    function _addVotes(address token, uint256 e, int256 dActive, int256 dNext, bool locked) internal {
+        _stakerVotes[token].add(e, dActive, dNext);
+        if (locked) _bribeVotes[token].add(e, dActive, dNext);
+    }
+
+    function _bpsOf(address account, address token, uint256 epoch) internal view returns (uint256) {
+        (address[] memory tokens, uint16[] memory weights) = allocationAt(account, epoch);
+        for (uint256 i; i < tokens.length; ++i) {
+            if (tokens[i] == token) return weights[i];
+        }
+        return 0;
     }
 
     function _latestAlloc(

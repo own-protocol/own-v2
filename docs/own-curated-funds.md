@@ -116,6 +116,10 @@ Design source: the "Own Curated Funds: launch, curators, weight votes and bribes
   A deposit counts from the next epoch. A withdrawal stops counting at once and unlocks at the next
   flip, or at the end of any proposal the account voted on if later. Escrowed stake keeps earning
   staker yield.
+- **Bribe lock.** An account can call `lockForBribes()` to lock its escrow for bribes, from the
+  current week on. Only locked stake earns bribes. The lock is rolling and one-way: every later
+  withdrawal unlocks 4 weeks (`bribeLock`, admin-set per fund, at most a year) after it is
+  requested. Unlocked escrow still votes; it just earns no bribes.
 - **Allocations** spread an account's votes over basket tokens and carry over until changed.
 - **At the flip,** every vote not cast counts as a vote to keep the current weights, then:
   1. a token with under 2% of the vote is targeted at 0;
@@ -146,12 +150,12 @@ Design source: the "Own Curated Funds: launch, curators, weight votes and bribes
 
 - **Weight-vote bribes:** anyone can post a bribe on a basket token for the current or a future
   week, in an admin-listed token (USDG, MONEY) or the bribed token itself. Own takes 5% when it is
-  posted. After the flip, everyone who voted for the token that week (curator slices and stakers)
-  claims in proportion to their share of its vote. If nobody voted for it, or that week was never
-  tallied, the briber takes it back.
-- **Listing bribes:** anyone can post a bribe on an open listing proposal, on the same terms. Yes
-  voters share it if the listing executes; otherwise (defeated, vetoed, cancelled or expired) the
-  briber takes it back.
+  posted. After the flip, the locked stake that voted for the token that week claims in proportion
+  to its votes. Curator base slices never earn bribes; a curator earns only on their own locked
+  stake. If no locked stake voted for it, or that week was never tallied, the briber takes it back.
+- **Listing bribes:** anyone can post a bribe on an open listing proposal, on the same terms. Locked
+  yes stake shares it if the listing executes; otherwise (defeated, vetoed, cancelled, expired, or
+  executed with no locked yes stake) the briber takes it back.
 
 ## Trust and limits
 

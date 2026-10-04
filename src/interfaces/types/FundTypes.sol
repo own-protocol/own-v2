@@ -111,6 +111,7 @@ struct LaunchConfig {
 /// @param votingPeriod        Proposal voting length, in seconds.
 /// @param vetoPeriod          Wait after voting ends in which Own can veto, in seconds.
 /// @param executionWindow     Time after the veto period within which a proposal must execute.
+/// @param bribeLock           Unlock delay, in seconds, on withdrawals by accounts locked for bribes.
 /// @param proposalThresholdUsd Stake (valued at NAV, 18 decimals USD) a non-curator needs to propose.
 struct GovernanceConfig {
     uint16 curatorShareBps;
@@ -122,6 +123,7 @@ struct GovernanceConfig {
     uint32 votingPeriod;
     uint32 vetoPeriod;
     uint32 executionWindow;
+    uint32 bribeLock;
     uint256 proposalThresholdUsd;
 }
 
@@ -136,7 +138,7 @@ library GovernanceConfigLib {
         return c.curatorShareBps <= 5000 && c.minVoteBps <= 1000 && c.maxWeightBps >= 1000 && c.maxWeightBps <= 10_000
             && c.maxWeeklyShiftBps != 0 && c.maxWeeklyShiftBps <= 10_000 && c.dropAfterEpochs != 0 && c.quorumBps != 0
             && c.quorumBps <= 10_000 && c.votingPeriod >= 1 hours && c.votingPeriod <= 30 days && c.vetoPeriod <= 30 days
-            && c.executionWindow >= 1 hours && c.executionWindow <= 30 days;
+            && c.executionWindow >= 1 hours && c.executionWindow <= 30 days && c.bribeLock <= 365 days;
     }
 }
 

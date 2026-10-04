@@ -191,6 +191,7 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
             votingPeriod: 3 days,
             vetoPeriod: 1 days,
             executionWindow: 7 days,
+            bribeLock: 28 days,
             proposalThresholdUsd: 5000e18
         });
         _governanceConfig = gov;

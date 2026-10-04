@@ -15,9 +15,10 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 /// @title FundBribes — weight-vote and listing bribes for one fund
 /// @notice See {IFundBribes}.
 /// @dev Beacon proxy per fund; storage is append-only across upgrades. Votes are read from the
-///      fund's current governor. Each claim is the claimant's share of a total fixed before claims
-///      open (bribes close when the epoch is tallied or the proposal stops being active), rounded
-///      down, so claims never exceed the bribe.
+///      fund's current governor; only stake locked for bribes counts, never curator slices. Each
+///      claim is the claimant's share of a total fixed before claims open (bribes close when the
+///      epoch is tallied or the proposal stops being active), rounded down, so claims never exceed
+///      the bribe.
 contract FundBribes is IFundBribes, Initializable, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
@@ -89,8 +90,9 @@ contract FundBribes is IFundBribes, Initializable, ReentrancyGuard {
         address reward
     ) external override nonReentrant returns (uint256 amount) {
         IFundGovernor gov = _governor();
-        // Refundable when no one voted for the token in a tallied epoch, or the epoch was skipped.
-        bool refundable = gov.isTallied(epoch) ? gov.tokenVotes(token, epoch) == 0 : epoch < gov.nextEpochToTally();
+        // Refundable when no locked stake voted for the token in a tallied epoch, or the epoch was
+        // skipped.
+        bool refundable = gov.isTallied(epoch) ? gov.bribeVotes(token, epoch) == 0 : epoch < gov.nextEpochToTally();
         if (!refundable) revert NotRefundable();
         amount = _bribesBy[epoch][token][reward][msg.sender];
         if (amount == 0) revert NothingToClaim();
@@ -127,9 +129,10 @@ contract FundBribes is IFundBribes, Initializable, ReentrancyGuard {
         IFundGovernor gov = _governor();
         if (gov.state(proposalId) != IFundGovernor.ProposalState.Executed) revert NothingToClaim();
         IFundGovernor.ProposalVote memory v = gov.proposalVote(proposalId, msg.sender);
-        if (!v.voted || !v.support) revert NothingToClaim();
+        if (!v.support || v.bribeVotes == 0) revert NothingToClaim();
         // Rounds down: claims together never exceed the bribe.
-        amount = Math.mulDiv(_listingBribes[proposalId][reward], v.votes, gov.getProposal(proposalId).yesVotes);
+        amount =
+            Math.mulDiv(_listingBribes[proposalId][reward], v.bribeVotes, gov.getProposal(proposalId).bribeYesVotes);
         if (amount == 0) revert NothingToClaim();
         _listingClaimed[proposalId][reward][msg.sender] = true;
         IERC20(reward).safeTransfer(msg.sender, amount);
@@ -141,9 +144,12 @@ contract FundBribes is IFundBribes, Initializable, ReentrancyGuard {
         uint256 proposalId,
         address reward
     ) external override nonReentrant returns (uint256 amount) {
-        IFundGovernor.ProposalState s = _governor().state(proposalId);
+        IFundGovernor gov = _governor();
+        IFundGovernor.ProposalState s = gov.state(proposalId);
+        // An executed listing with no locked yes stake has no one to pay.
+        bool unpaid = s == IFundGovernor.ProposalState.Executed && gov.getProposal(proposalId).bribeYesVotes == 0;
         if (
-            s != IFundGovernor.ProposalState.Defeated && s != IFundGovernor.ProposalState.Vetoed
+            !unpaid && s != IFundGovernor.ProposalState.Defeated && s != IFundGovernor.ProposalState.Vetoed
                 && s != IFundGovernor.ProposalState.Cancelled && s != IFundGovernor.ProposalState.Expired
         ) revert NotRefundable();
         amount = _listingBribesBy[proposalId][reward][msg.sender];
@@ -183,10 +189,10 @@ contract FundBribes is IFundBribes, Initializable, ReentrancyGuard {
         uint256 epoch,
         address reward
     ) internal view returns (uint256) {
-        uint256 total = gov.tokenVotes(token, epoch);
+        uint256 total = gov.bribeVotes(token, epoch);
         if (total == 0) return 0;
         // Rounds down: claims together never exceed the bribe.
-        return Math.mulDiv(_bribes[epoch][token][reward], gov.votesOf(account, token, epoch), total);
+        return Math.mulDiv(_bribes[epoch][token][reward], gov.bribeVotesOf(account, token, epoch), total);
     }
 
     function _pull(address token, address reward, uint256 amount) internal returns (uint256 net, uint256 cut) {

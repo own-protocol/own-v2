@@ -86,7 +86,8 @@ library ProposalBook {
                 noVotes: 0,
                 quorumBps: cfg.quorumBps,
                 vetoPeriod: cfg.vetoPeriod,
-                executionWindow: cfg.executionWindow
+                executionWindow: cfg.executionWindow,
+                bribeYesVotes: 0
             })
         );
         emit IFundGovernor.ProposalCreated(id, msg.sender, kind, target, replacement, endTime);
@@ -95,6 +96,8 @@ library ProposalBook {
     /// @notice Vote on a proposal as `msg.sender`. See {IFundGovernor-castVote}.
     /// @param power       The caller's escrowed power from the next epoch.
     /// @param lastDeposit When the caller last deposited.
+    /// @param bribeLocked Whether the caller is locked for bribes (its stake then counts toward
+    ///                    listing bribes).
     /// @return votes   Votes cast, as a 1e18-scaled share of all possible votes.
     /// @return endTime When voting on the proposal ends.
     function castVote(
@@ -103,7 +106,8 @@ library ProposalBook {
         uint256 id,
         bool support,
         uint256 power,
-        uint64 lastDeposit
+        uint64 lastDeposit,
+        bool bribeLocked
     ) public returns (uint256 votes, uint64 endTime) {
         IFundGovernor.ProposalState s = state(b, id);
         if (s != IFundGovernor.ProposalState.Active) revert IFundGovernor.WrongState(s);
@@ -120,16 +124,20 @@ library ProposalBook {
             }
         }
         uint256 total = p.totalStake;
-        if (total != 0) {
-            votes += Math.mulDiv(uint256(p.stakerShareBps) * BPS_TO_WAD, Math.min(power, total), total);
-        }
+        uint256 stake = Math.min(power, total);
+        if (total != 0) votes += Math.mulDiv(uint256(p.stakerShareBps) * BPS_TO_WAD, stake, total);
         if (votes == 0) revert IFundGovernor.NoVotingPower();
 
         pv.voted = true;
         pv.support = support;
         pv.votes = votes;
-        if (support) p.yesVotes += votes;
-        else p.noVotes += votes;
+        if (bribeLocked && p.stakerShareBps != 0) pv.bribeVotes = stake;
+        if (support) {
+            p.yesVotes += votes;
+            p.bribeYesVotes += pv.bribeVotes;
+        } else {
+            p.noVotes += votes;
+        }
         endTime = p.endTime;
 
         emit IFundGovernor.ProposalVoteCast(id, msg.sender, support, votes);

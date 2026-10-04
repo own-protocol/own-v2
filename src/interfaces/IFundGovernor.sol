@@ -75,6 +75,7 @@ interface IFundGovernor {
     /// @param quorumBps       Yes votes needed, in basis points of all possible votes.
     /// @param vetoPeriod      Veto period after voting.
     /// @param executionWindow Execution window after the veto period.
+    /// @param bribeYesVotes   Yes votes from stake locked for bribes, in staked-token shares.
     struct Proposal {
         ProposalKind kind;
         address proposer;
@@ -93,16 +94,20 @@ interface IFundGovernor {
         uint16 quorumBps;
         uint32 vetoPeriod;
         uint32 executionWindow;
+        uint256 bribeYesVotes;
     }
 
     /// @notice An account's vote on a proposal.
     /// @param voted   Whether it voted.
     /// @param support Yes or no.
     /// @param votes   Its votes, as a 1e18-scaled share of all possible votes.
+    /// @param bribeVotes Its stake counted toward listing bribes, in staked-token shares (0 unless
+    ///                   locked for bribes; never the curator slice).
     struct ProposalVote {
         bool voted;
         bool support;
         uint256 votes;
+        uint256 bribeVotes;
     }
 
     /// @notice Emitted on an escrow deposit.
@@ -118,6 +123,11 @@ interface IFundGovernor {
     /// @param amount   Amount.
     /// @param unlockAt When they can be claimed.
     event WithdrawalRequested(address indexed account, address indexed token, uint256 amount, uint64 unlockAt);
+
+    /// @notice Emitted when an account locks its escrow for bribes.
+    /// @param account The account.
+    /// @param epoch   First epoch whose bribes it earns.
+    event BribeLocked(address indexed account, uint256 epoch);
 
     /// @notice Emitted when unlocked tokens are claimed.
     /// @param account The account.
@@ -208,6 +218,9 @@ interface IFundGovernor {
     /// @notice The tokens are still unlocking.
     error TokensLocked();
 
+    /// @notice The account is already locked for bribes.
+    error AlreadyBribeLocked();
+
     /// @notice The allocation is invalid (unknown or delisted token, duplicate, or weights not
     ///         summing to 10 000).
     error InvalidAllocation();
@@ -260,7 +273,8 @@ interface IFundGovernor {
     function deposit(address token, uint256 amount) external;
 
     /// @notice Stop counting `amount` of escrowed `token` now; it unlocks at the next flip, or when
-    ///         the last proposal the caller voted on ends, if later.
+    ///         the last proposal the caller voted on ends, or `bribeLock` after now for an account
+    ///         locked for bribes, whichever is latest.
     /// @param token  Token.
     /// @param amount Amount.
     function requestWithdrawal(address token, uint256 amount) external;
@@ -271,6 +285,10 @@ interface IFundGovernor {
     function withdraw(
         address token
     ) external returns (uint256 amount);
+
+    /// @notice Lock the caller's escrow for bribes, from the current epoch on. Only locked stake
+    ///         earns bribes, and every later withdrawal by the caller waits `bribeLock`. One-way.
+    function lockForBribes() external;
 
     /// @notice Set the caller's weight allocation (curator slice and stake alike). It counts in the
     ///         current epoch and carries over until changed.
@@ -366,6 +384,28 @@ interface IFundGovernor {
     /// @param epoch The epoch.
     /// @return The votes.
     function tokenVotes(address token, uint256 epoch) external view returns (uint256);
+
+    /// @notice Votes from stake locked for bribes that `account` cast for `token` in `epoch`, in
+    ///         staked-token shares. Curator slices never count.
+    /// @param account The account.
+    /// @param token   The token.
+    /// @param epoch   The epoch.
+    /// @return The votes.
+    function bribeVotesOf(address account, address token, uint256 epoch) external view returns (uint256);
+
+    /// @notice All votes from stake locked for bribes cast for `token` in `epoch`, in staked-token
+    ///         shares. Final once the epoch has ended.
+    /// @param token The token.
+    /// @param epoch The epoch.
+    /// @return The votes.
+    function bribeVotes(address token, uint256 epoch) external view returns (uint256);
+
+    /// @notice The epoch from which `account` is locked for bribes (0 if it is not).
+    /// @param account The account.
+    /// @return The epoch.
+    function bribeLockedFrom(
+        address account
+    ) external view returns (uint32);
 
     /// @notice Escrowed tokens of `account`, including tokens still unlocking (they return to it).
     /// @param account The account.

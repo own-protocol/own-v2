@@ -7,14 +7,16 @@ pragma solidity 0.8.28;
 ///         token itself. Own takes the factory's bribe cut (5% by default, at most 10%) when a
 ///         bribe is posted.
 ///
-///         - Weight-vote bribes are per token per epoch. After the epoch is tallied, everyone who
-///           voted for the token that week (curators' slices and stakers alike) splits the bribe
-///           in proportion to their share of the token's votes. Silent votes earn nothing. If
-///           nobody voted for the token that week, or the epoch was never tallied, the briber
-///           takes the bribe back.
-///         - Listing bribes are per listing proposal. If the listing executes, its yes voters split
-///           the bribe in proportion to their votes; if it fails, is vetoed, cancelled or expires,
-///           the briber takes it back.
+///         Only stake locked for bribes earns them (see {IFundGovernor-lockForBribes}); curators
+///         earn on their own locked stake, never on their base slice.
+///
+///         - Weight-vote bribes are per token per epoch. After the epoch is tallied, the locked
+///           stake that voted for the token that week splits the bribe in proportion to its votes.
+///           Silent votes earn nothing. If no locked stake voted for the token that week, or the
+///           epoch was never tallied, the briber takes the bribe back.
+///         - Listing bribes are per listing proposal. If the listing executes, its locked yes stake
+///           splits the bribe in proportion to its votes; if it fails, is vetoed, cancelled or
+///           expires, or executes with no locked yes stake, the briber takes it back.
 interface IFundBribes {
     /// @notice Emitted when a weight-vote bribe is posted.
     /// @param briber Who posted it.
@@ -124,7 +126,7 @@ interface IFundBribes {
     /// @return amount Amount claimed.
     function claimBribe(address token, uint256 epoch, address reward) external returns (uint256 amount);
 
-    /// @notice Take back the caller's bribe when nobody voted for `token` in `epoch`, or the
+    /// @notice Take back the caller's bribe when no locked stake voted for `token` in `epoch`, or the
     ///         epoch was skipped.
     /// @param token  Basket token.
     /// @param epoch  Epoch.
@@ -145,7 +147,8 @@ interface IFundBribes {
     /// @return amount Amount claimed.
     function claimListingBribe(uint256 proposalId, address reward) external returns (uint256 amount);
 
-    /// @notice Take back the caller's bribe on a listing that failed, was vetoed, cancelled or expired.
+    /// @notice Take back the caller's bribe on a listing that failed, was vetoed, cancelled or expired,
+    ///         or executed with no locked yes stake.
     /// @param proposalId Listing proposal.
     /// @param reward     Token.
     /// @return amount Amount refunded.
