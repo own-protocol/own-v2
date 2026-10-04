@@ -349,6 +349,56 @@ contract FundGovernorTest is FundTestBase {
         assertApproxEqRel(governor.votesOf(alice, address(tsla), e), 0.14e18, 1e12);
     }
 
+    function test_votesOf_silentStakersFollowCurators() public {
+        // Nobody stakes a vote: the stakers' 70% follows the two curators, 35% each.
+        _voteAll(curatorA, address(tsla));
+        _voteAll(curatorB, address(pons));
+        uint256 e = governor.currentEpoch();
+        _toNextEpoch();
+        governor.flip();
+        assertEq(governor.votesOf(curatorA, address(tsla), e), 0.5e18);
+        assertEq(governor.votesOf(curatorB, address(pons), e), 0.5e18);
+        assertEq(governor.tokenVotes(address(tsla), e), 0.5e18);
+        assertEq(governor.tokenVotes(address(pons), e), 0.5e18);
+        assertEq(governor.tokenVotes(address(net), e), 0);
+    }
+
+    function test_votesOf_votingStakersKeepTheirShare() public {
+        // Alice votes a fifth of the staked tokens (14%); the silent 56% follows the curators.
+        _escrow(alice, aliceStake / 5);
+        _voteAll(alice, address(net));
+        _voteAll(curatorA, address(tsla));
+        _voteAll(curatorB, address(tsla));
+        uint256 e = governor.currentEpoch() + 1;
+        _toNextEpoch();
+        _toNextEpoch();
+        governor.flip();
+        assertApproxEqRel(governor.tokenVotes(address(net), e), 0.14e18, 1e12);
+        assertApproxEqRel(governor.tokenVotes(address(tsla), e), 0.86e18, 1e12);
+        assertApproxEqRel(governor.votesOf(curatorA, address(tsla), e), 0.43e18, 1e12);
+    }
+
+    function test_votesOf_silentCuratorsPartHoldsWeights() public {
+        // CuratorB is silent: its slice and its half of the silent stakers keep the weights.
+        _voteAll(curatorA, address(tsla));
+        uint256 e = governor.currentEpoch();
+        _toNextEpoch();
+        governor.flip();
+        assertEq(governor.tokenVotes(address(tsla), e), 0.5e18);
+        assertEq(governor.votesOf(curatorB, address(tsla), e), 0);
+    }
+
+    function test_flip_curatorsSteerSilentMajorityWithinGuardrails() public {
+        _liftCap();
+        _voteAll(curatorA, address(tsla));
+        _voteAll(curatorB, address(tsla));
+        _toNextEpoch();
+        governor.flip();
+        // Every vote is for TSLA, but it still moves only 5 points a week.
+        assertApproxEqAbs(fund.targetWeightBps(address(tsla)), 3500, 1);
+        _assertSum();
+    }
+
     // ──────────────────────────────────────────────────────────
     //  Gauge: flip
     // ──────────────────────────────────────────────────────────

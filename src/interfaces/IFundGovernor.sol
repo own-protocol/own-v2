@@ -6,8 +6,8 @@ import {GovernanceConfig} from "./types/FundTypes.sol";
 /// @title IFundGovernor — a fund's weekly weight vote (gauge) and its proposals
 /// @notice Stakers escrow staked fund tokens (or an admin-listed ERC-4626 wrapper of them) here to
 ///         vote. Curators vote with a fixed base slice. Everything is counted as a share of all
-///         possible votes, and every vote that is not cast counts as a vote to keep the current
-///         weights, so a group's influence is exactly its share of all possible votes.
+///         possible votes. In the weekly gauge, staker votes that are not cast follow the
+///         curators; in proposals they do not count.
 ///
 ///         Weekly gauge (epochs flip Thursday 00:00 UTC):
 ///         - Each curator spreads a slice of `curatorShareBps / curatorCount`. Each staker's votes
@@ -17,8 +17,9 @@ import {GovernanceConfig} from "./types/FundTypes.sol";
 ///         - Escrow timing: a deposit counts from the next epoch; a withdrawal stops counting at
 ///           once, and its tokens unlock at the next flip (or when the last proposal the account
 ///           voted on ends, if later). Escrowed stake keeps earning staker yield.
-///         - At the flip ({flip}) the votes become a target: cast votes as cast, silent votes
-///           spread over the current weights. A token under `minVoteBps` is targeted at 0, no
+///         - At the flip ({flip}) the votes become a target. Silent staker votes are split equally
+///           among the compliant curators and cast as each one voted; what is still silent (a
+///           curator who did not vote, or no compliant curator) is spread over the current weights. A token under `minVoteBps` is targeted at 0, no
 ///           token is targeted above `maxWeightBps`, and every weight moves the same fraction of
 ///           the way to its target, so that none moves more than `maxWeeklyShiftBps`.
 ///         - A token at weight 0 that has stayed under `minVoteBps` for `dropAfterEpochs` weeks
@@ -370,8 +371,8 @@ interface IFundGovernor {
         uint256 epoch
     ) external view returns (bool);
 
-    /// @notice Votes `account` cast for `token` in a tallied `epoch` (curator slice and stake),
-    ///         as a 1e18-scaled share of all possible votes.
+    /// @notice Votes `account` cast for `token` in a tallied `epoch` (curator slice with its part of
+    ///         the silent staker votes, and stake), as a 1e18-scaled share of all possible votes.
     /// @param account The account.
     /// @param token   The token.
     /// @param epoch   The epoch.

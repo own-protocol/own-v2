@@ -121,7 +121,11 @@ Design source: the "Own Curated Funds: launch, curators, weight votes and bribes
   withdrawal unlocks 4 weeks (`bribeLock`, admin-set per fund, at most a year) after it is
   requested. Unlocked escrow still votes; it just earns no bribes.
 - **Allocations** spread an account's votes over basket tokens and carry over until changed.
-- **At the flip,** every vote not cast counts as a vote to keep the current weights, then:
+- **At the flip,** staker votes that were not cast (including staked tokens not escrowed) follow the
+  curators: they are split equally among the compliant curators and cast the way each one voted.
+  What is still silent (a curator who did not vote, or no compliant curator) counts as a vote to
+  keep the current weights. Stakers who vote always keep their own share. Curators earn no bribes
+  on these votes. Proposals do not work this way: there, votes not cast count for nobody. Then:
   1. a token with under 2% of the vote is targeted at 0;
   2. no token is targeted above 25% (or 1 / the number of tokens, if higher); the excess goes to the
      others pro rata;
@@ -129,9 +133,8 @@ Design source: the "Own Curated Funds: launch, curators, weight votes and bribes
      5 points;
   4. a token at weight 0 that is delisted, or has been under 2% for 4 weeks in a row, leaves the
      basket once its balance is dust.
-- Because silent votes hold whatever the weights are, a steady bloc keeps compounding week after
-  week (a steady 10.5% for one token moves it 5 points a week until the 25% cap), so the weights
-  converge toward the split of the votes actually cast.
+- With low staker turnout the curators steer most of the basket, within the guardrails above.
+  Stakers check them by voting their own stake and by replacing curators through proposals.
 
 ## Proposals
 
