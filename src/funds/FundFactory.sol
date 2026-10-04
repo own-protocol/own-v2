@@ -283,20 +283,14 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
     }
 
     /// @inheritdoc IFundFactory
-    function setBribeToken(
-        address token,
-        bool allowed
-    ) external override onlyOwner {
+    function setBribeToken(address token, bool allowed) external override onlyOwner {
         if (token == address(0)) revert ZeroAddress();
         isBribeToken[token] = allowed;
         emit BribeTokenSet(token, allowed);
     }
 
     /// @inheritdoc IFundFactory
-    function setEligibleAsset(
-        address token,
-        bool eligible
-    ) external override onlyOwner {
+    function setEligibleAsset(address token, bool eligible) external override onlyOwner {
         if (token == address(0)) revert ZeroAddress();
         isEligibleAsset[token] = eligible;
         emit EligibleAssetSet(token, eligible);
@@ -311,20 +305,14 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
     }
 
     /// @inheritdoc IFundFactory
-    function setLauncher(
-        address launcher,
-        bool allowed
-    ) external override onlyOwner {
+    function setLauncher(address launcher, bool allowed) external override onlyOwner {
         if (launcher == address(0)) revert ZeroAddress();
         isLauncher[launcher] = allowed;
         emit LauncherSet(launcher, allowed);
     }
 
     /// @inheritdoc IFundFactory
-    function setRouter(
-        address router,
-        bool allowed
-    ) external override onlyOwner {
+    function setRouter(address router, bool allowed) external override onlyOwner {
         if (router == address(0)) revert ZeroAddress();
         isRouter[router] = allowed;
         emit RouterSet(router, allowed);
@@ -355,9 +343,8 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
         if (
             config.duration < 1 days || config.duration > 30 days || config.finalizeGrace < 1 hours
                 || config.finalizeGrace > 30 days || config.usdgRatioBps == 0 || config.usdgRatioBps > BPS
-                || config.launchPremiumBps > BPS || config.earlyYieldBpsPerDay > 100
-                || config.overweightHaircutBps > 5000 || config.withdrawCutoff > config.duration
-                || config.depositorLock > 30 days
+                || config.launchPremiumBps > BPS || config.earlyYieldBpsPerDay > 100 || config.overweightHaircutBps > 5000
+                || config.withdrawCutoff > config.duration || config.depositorLock > 30 days
         ) revert InvalidLaunchConfig();
         _launchConfig = config;
         emit LaunchConfigSet(config);
@@ -390,10 +377,7 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
     }
 
     /// @inheritdoc IFundFactory
-    function upgradeModule(
-        Module module,
-        address implementation
-    ) external override onlyOwner {
+    function upgradeModule(Module module, address implementation) external override onlyOwner {
         UpgradeableBeacon(_beacons[module]).upgradeTo(implementation);
         emit ModuleUpgraded(module, implementation);
     }
@@ -456,10 +440,7 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
         return _beacons[module];
     }
 
-    function _proxy(
-        Module module,
-        bytes memory init
-    ) internal returns (address) {
+    function _proxy(Module module, bytes memory init) internal returns (address) {
         return address(new BeaconProxy(_beacons[module], init));
     }
 

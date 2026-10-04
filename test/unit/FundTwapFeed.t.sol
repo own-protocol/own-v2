@@ -162,10 +162,7 @@ contract FundTwapFeedTest is FundTestBase {
         }
     }
 
-    function _swap(
-        bool buy,
-        int256 amountSpecified
-    ) internal {
+    function _swap(bool buy, int256 amountSpecified) internal {
         bool zeroForOne = buy == usdgIs0;
         vm.prank(trader);
         swapRouter.swap(

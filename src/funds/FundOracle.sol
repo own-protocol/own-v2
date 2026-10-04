@@ -34,11 +34,7 @@ contract FundOracle is IFundOracle {
     }
 
     /// @inheritdoc IFundOracle
-    function setFeed(
-        address asset,
-        address aggregator,
-        uint32 maxStaleness
-    ) external override onlyOwner {
+    function setFeed(address asset, address aggregator, uint32 maxStaleness) external override onlyOwner {
         if (asset == address(0)) revert ZeroAddress();
         if (aggregator == address(0)) {
             delete _feeds[asset];
@@ -115,10 +111,7 @@ contract FundOracle is IFundOracle {
         return _feeds[asset];
     }
 
-    function _normalise(
-        uint256 answer,
-        uint8 dec
-    ) private pure returns (uint256) {
+    function _normalise(uint256 answer, uint8 dec) private pure returns (uint256) {
         if (dec == 18) return answer;
         if (dec < 18) return answer * 10 ** (18 - dec);
         return answer / 10 ** (dec - 18);

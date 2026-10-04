@@ -67,20 +67,14 @@ interface IFundStaking is IERC20 {
     /// @notice Initialise a staking proxy. Called once by the factory.
     /// @param fund_  The fund token.
     /// @param tiers_ Yield tiers set by Own at launch.
-    function initialize(
-        address fund_,
-        YieldTier[] calldata tiers_
-    ) external;
+    function initialize(address fund_, YieldTier[] calldata tiers_) external;
 
     /// @notice Stake fund tokens the launch is releasing to a depositor; every share minted is
     ///         locked until the depositor unlock. Launch only.
     /// @param assets   Fund tokens staked (pulled from the launch).
     /// @param receiver Receiver of the shares.
     /// @return shares Shares minted.
-    function stakeLocked(
-        uint256 assets,
-        address receiver
-    ) external returns (uint256 shares);
+    function stakeLocked(uint256 assets, address receiver) external returns (uint256 shares);
 
     /// @notice Shares of `account` that are still locked (meaningful only before the fund's
     ///         depositor unlock).
@@ -94,19 +88,13 @@ interface IFundStaking is IERC20 {
     /// @param assets   Fund tokens.
     /// @param receiver Receiver of the shares.
     /// @return shares Shares minted.
-    function stake(
-        uint256 assets,
-        address receiver
-    ) external returns (uint256 shares);
+    function stake(uint256 assets, address receiver) external returns (uint256 shares);
 
     /// @notice Unstake shares for fund tokens.
     /// @param shares   Shares burned.
     /// @param receiver Receiver of the fund tokens.
     /// @return assets Fund tokens paid out.
-    function unstake(
-        uint256 shares,
-        address receiver
-    ) external returns (uint256 assets);
+    function unstake(uint256 shares, address receiver) external returns (uint256 assets);
 
     /// @notice Accrue yield up to now. Anyone can call; keepers call it every epoch.
     /// @return minted Fund tokens minted.

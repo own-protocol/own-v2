@@ -69,11 +69,7 @@ interface IFundCurators {
     /// @param fund_        The fund.
     /// @param curators_    Starting curators.
     /// @param minStakeBps_ Minimum stake, in basis points of supply.
-    function initialize(
-        address fund_,
-        address[] calldata curators_,
-        uint16 minStakeBps_
-    ) external;
+    function initialize(address fund_, address[] calldata curators_, uint16 minStakeBps_) external;
 
     /// @notice Add a curator, up to the factory's cap. Admin or governor.
     /// @param curator The curator.
@@ -90,10 +86,7 @@ interface IFundCurators {
     /// @notice Replace a curator with a new one. Admin or governor.
     /// @param curator     The curator leaving.
     /// @param replacement The curator joining.
-    function replaceCurator(
-        address curator,
-        address replacement
-    ) external;
+    function replaceCurator(address curator, address replacement) external;
 
     /// @notice Set the minimum stake. Admin only.
     /// @param minStakeBps_ Minimum, in basis points of supply (at most 10%).
@@ -148,8 +141,5 @@ interface IFundCurators {
     /// @param curator The curator.
     /// @param token   The fund token or USDG.
     /// @return The amount.
-    function claimable(
-        address curator,
-        address token
-    ) external view returns (uint256);
+    function claimable(address curator, address token) external view returns (uint256);
 }

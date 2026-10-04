@@ -16,26 +16,16 @@ contract BasketSwapper is ERC20 {
     Fund internal immutable fund;
     address internal immutable replacement;
 
-    constructor(
-        Fund fund_,
-        address replacement_
-    ) ERC20("Hop", "HOP") {
+    constructor(Fund fund_, address replacement_) ERC20("Hop", "HOP") {
         fund = fund_;
         replacement = replacement_;
     }
 
-    function mint(
-        address to,
-        uint256 amount
-    ) external {
+    function mint(address to, uint256 amount) external {
         _mint(to, amount);
     }
 
-    function _update(
-        address from,
-        address to,
-        uint256 value
-    ) internal override {
+    function _update(address from, address to, uint256 value) internal override {
         super._update(from, to, value);
         if (to == address(fund)) {
             address[] memory a = fund.assets();
@@ -840,7 +830,9 @@ contract FundTest is FundTestBase {
         vm.prank(admin);
         factory.setPlatformMetadata(
             PlatformMetadata({
-                name: "Own Curated Funds", description: "Basket-backed funds on Own.", url: "https://own.money"
+                name: "Own Curated Funds",
+                description: "Basket-backed funds on Own.",
+                url: "https://own.money"
             })
         );
         FundMetadata memory m = fund.metadata();

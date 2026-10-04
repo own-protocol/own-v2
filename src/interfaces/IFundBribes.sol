@@ -115,23 +115,14 @@ interface IFundBribes {
     /// @param reward Token paid.
     /// @param amount Amount sent (Own's cut is taken from it).
     /// @return net Amount bribed after the cut.
-    function postBribe(
-        address token,
-        uint256 epoch,
-        address reward,
-        uint256 amount
-    ) external returns (uint256 net);
+    function postBribe(address token, uint256 epoch, address reward, uint256 amount) external returns (uint256 net);
 
     /// @notice Claim the caller's share of the `reward` bribes for `token` in a tallied `epoch`.
     /// @param token  Basket token.
     /// @param epoch  Epoch.
     /// @param reward Token paid.
     /// @return amount Amount claimed.
-    function claimBribe(
-        address token,
-        uint256 epoch,
-        address reward
-    ) external returns (uint256 amount);
+    function claimBribe(address token, uint256 epoch, address reward) external returns (uint256 amount);
 
     /// @notice Take back the caller's bribe when nobody voted for `token` in `epoch`, or the
     ///         epoch was skipped.
@@ -139,40 +130,26 @@ interface IFundBribes {
     /// @param epoch  Epoch.
     /// @param reward Token.
     /// @return amount Amount refunded.
-    function refundBribe(
-        address token,
-        uint256 epoch,
-        address reward
-    ) external returns (uint256 amount);
+    function refundBribe(address token, uint256 epoch, address reward) external returns (uint256 amount);
 
     /// @notice Post a bribe on an active listing proposal, paid to its yes voters if it executes.
     /// @param proposalId Listing proposal.
     /// @param reward     Token paid.
     /// @param amount     Amount sent (Own's cut is taken from it).
     /// @return net Amount bribed after the cut.
-    function postListingBribe(
-        uint256 proposalId,
-        address reward,
-        uint256 amount
-    ) external returns (uint256 net);
+    function postListingBribe(uint256 proposalId, address reward, uint256 amount) external returns (uint256 net);
 
     /// @notice Claim the caller's share of an executed listing's `reward` bribes.
     /// @param proposalId Listing proposal.
     /// @param reward     Token paid.
     /// @return amount Amount claimed.
-    function claimListingBribe(
-        uint256 proposalId,
-        address reward
-    ) external returns (uint256 amount);
+    function claimListingBribe(uint256 proposalId, address reward) external returns (uint256 amount);
 
     /// @notice Take back the caller's bribe on a listing that failed, was vetoed, cancelled or expired.
     /// @param proposalId Listing proposal.
     /// @param reward     Token.
     /// @return amount Amount refunded.
-    function refundListingBribe(
-        uint256 proposalId,
-        address reward
-    ) external returns (uint256 amount);
+    function refundListingBribe(uint256 proposalId, address reward) external returns (uint256 amount);
 
     /// @notice The fund.
     /// @return The fund.
@@ -183,20 +160,13 @@ interface IFundBribes {
     /// @param epoch  Epoch.
     /// @param reward Token.
     /// @return The amount.
-    function bribeOf(
-        address token,
-        uint256 epoch,
-        address reward
-    ) external view returns (uint256);
+    function bribeOf(address token, uint256 epoch, address reward) external view returns (uint256);
 
     /// @notice Total `reward` bribed on a listing proposal, after Own's cut.
     /// @param proposalId Listing proposal.
     /// @param reward     Token.
     /// @return The amount.
-    function listingBribeOf(
-        uint256 proposalId,
-        address reward
-    ) external view returns (uint256);
+    function listingBribeOf(uint256 proposalId, address reward) external view returns (uint256);
 
     /// @notice What `account` can claim of the `reward` bribes for `token` in `epoch`.
     /// @param account The voter.

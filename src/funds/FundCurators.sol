@@ -92,10 +92,7 @@ contract FundCurators is IFundCurators, Initializable, ReentrancyGuard {
     }
 
     /// @inheritdoc IFundCurators
-    function replaceCurator(
-        address curator,
-        address replacement
-    ) external override onlyAdminOrGovernor {
+    function replaceCurator(address curator, address replacement) external override onlyAdminOrGovernor {
         _distributeAll();
         _remove(curator);
         _add(replacement, type(uint256).max);
@@ -173,10 +170,7 @@ contract FundCurators is IFundCurators, Initializable, ReentrancyGuard {
     }
 
     /// @inheritdoc IFundCurators
-    function claimable(
-        address curator,
-        address token
-    ) external view override returns (uint256 amount) {
+    function claimable(address curator, address token) external view override returns (uint256 amount) {
         _checkFeeToken(token);
         uint256 acc = _accPerCurator[token];
         if (_compliantCount != 0) {
@@ -187,10 +181,7 @@ contract FundCurators is IFundCurators, Initializable, ReentrancyGuard {
         if (_state[curator].compliant) amount += (acc - _debt[curator][token]) / PRECISION;
     }
 
-    function _add(
-        address curator,
-        uint256 cap
-    ) internal {
+    function _add(address curator, uint256 cap) internal {
         if (curator == address(0)) revert ZeroAddress();
         if (_state[curator].active) revert AlreadyCurator();
         if (_curators.length >= cap) revert CuratorCapReached();
@@ -219,10 +210,7 @@ contract FundCurators is IFundCurators, Initializable, ReentrancyGuard {
     }
 
     /// @dev Callers distribute arrived fees first.
-    function _setCompliant(
-        address curator,
-        bool compliant
-    ) internal {
+    function _setCompliant(address curator, bool compliant) internal {
         address[2] memory tokens = _feeTokens();
         for (uint256 i; i < 2; ++i) {
             _settle(curator, tokens[i]);
@@ -234,10 +222,7 @@ contract FundCurators is IFundCurators, Initializable, ReentrancyGuard {
         emit ComplianceSet(curator, compliant);
     }
 
-    function _settle(
-        address curator,
-        address token
-    ) internal {
+    function _settle(address curator, address token) internal {
         uint256 acc = _accPerCurator[token];
         if (_state[curator].compliant) {
             _owed[curator][token] += (acc - _debt[curator][token]) / PRECISION;

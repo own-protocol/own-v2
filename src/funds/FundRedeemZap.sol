@@ -72,11 +72,7 @@ contract FundRedeemZap is IFundRedeemZap, ReentrancyGuard {
         }
     }
 
-    function _returnLeftovers(
-        address[] memory assets,
-        address usdg,
-        address receiver
-    ) internal {
+    function _returnLeftovers(address[] memory assets, address usdg, address receiver) internal {
         for (uint256 i; i < assets.length; ++i) {
             if (assets[i] == usdg) continue;
             uint256 left = IERC20(assets[i]).balanceOf(address(this));

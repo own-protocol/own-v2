@@ -181,11 +181,7 @@ abstract contract FundTestBase is Test {
         return int256(fund.navPerShare() / 1e10);
     }
 
-    function _deposit(
-        address who,
-        address asset,
-        uint256 amount
-    ) internal returns (uint256 usdgPaid) {
+    function _deposit(address who, address asset, uint256 amount) internal returns (uint256 usdgPaid) {
         MockERC20(asset).mint(who, amount);
         usdg.mint(who, 1e30);
         vm.startPrank(who);
@@ -195,10 +191,7 @@ abstract contract FundTestBase is Test {
         vm.stopPrank();
     }
 
-    function _setFeed(
-        address asset,
-        int256 answer
-    ) internal {
+    function _setFeed(address asset, int256 answer) internal {
         MockAggregatorV3 feed = feeds[asset];
         if (address(feed) == address(0)) {
             feed = new MockAggregatorV3(8);
@@ -230,11 +223,7 @@ abstract contract FundTestBase is Test {
     /// @dev Swaps in the fund's pool as `who`, minting whatever it pays.
     /// @param buy             True to swap USDG for fund tokens.
     /// @param amountSpecified Negative for exact input, positive for exact output (v4 convention).
-    function _poolSwap(
-        address who,
-        bool buy,
-        int256 amountSpecified
-    ) internal returns (BalanceDelta delta) {
+    function _poolSwap(address who, bool buy, int256 amountSpecified) internal returns (BalanceDelta delta) {
         if (address(_swapRouter) == address(0)) _swapRouter = new PoolSwapTest(poolManager);
         PoolKey memory key = hook.poolKeyOf(address(fund));
         bool usdgIs0 = Currency.unwrap(key.currency0) == address(usdg);
@@ -260,10 +249,7 @@ abstract contract FundTestBase is Test {
     //  Governance
     // ──────────────────────────────────────────────────────────
 
-    function _escrow(
-        address who,
-        uint256 shares
-    ) internal {
+    function _escrow(address who, uint256 shares) internal {
         vm.startPrank(who);
         staking.approve(address(governor), shares);
         governor.deposit(address(staking), shares);
@@ -271,10 +257,7 @@ abstract contract FundTestBase is Test {
     }
 
     /// @dev Buys fund tokens in the pool with `usdgIn`, stakes them and escrows the shares.
-    function _stakeAndEscrow(
-        address who,
-        uint256 usdgIn
-    ) internal {
+    function _stakeAndEscrow(address who, uint256 usdgIn) internal {
         _poolSwap(who, true, -int256(usdgIn));
         uint256 bal = fund.balanceOf(who);
         vm.startPrank(who);
@@ -285,10 +268,7 @@ abstract contract FundTestBase is Test {
         vm.stopPrank();
     }
 
-    function _voteAll(
-        address who,
-        address token
-    ) internal {
+    function _voteAll(address who, address token) internal {
         address[] memory t = new address[](1);
         uint16[] memory w = new uint16[](1);
         t[0] = token;
@@ -302,11 +282,7 @@ abstract contract FundTestBase is Test {
         _refreshFeeds();
     }
 
-    function _mintAsset(
-        address who,
-        MockERC20 asset,
-        uint256 amount
-    ) internal {
+    function _mintAsset(address who, MockERC20 asset, uint256 amount) internal {
         asset.mint(who, amount);
         vm.prank(who);
         asset.approve(address(fund), amount);

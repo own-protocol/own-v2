@@ -5,8 +5,10 @@ import {IFund} from "../interfaces/IFund.sol";
 import {IFundFactory} from "../interfaces/IFundFactory.sol";
 import {IFundHook} from "../interfaces/IFundHook.sol";
 import {IFundOracle} from "../interfaces/IFundOracle.sol";
+
 import {CreateFundParams, FundMetadata, LockOption} from "../interfaces/types/FundTypes.sol";
 import {BPS, PRECISION} from "../interfaces/types/Types.sol";
+import {FundRebalance} from "./libraries/FundRebalance.sol";
 import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -180,18 +182,12 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuard {
     }
 
     /// @inheritdoc IFund
-    function moduleMint(
-        address to,
-        uint256 amount
-    ) external override onlyModule {
+    function moduleMint(address to, uint256 amount) external override onlyModule {
         _mint(to, amount);
     }
 
     /// @inheritdoc IFund
-    function addLaunchLock(
-        address account,
-        uint256 amount
-    ) external override onlyModule {
+    function addLaunchLock(address account, uint256 amount) external override onlyModule {
         if (block.timestamp >= depositorUnlockAt || amount == 0) return;
         uint256 locked = launchLocked[account] + amount;
         launchLocked[account] = locked;
@@ -199,10 +195,7 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuard {
     }
 
     /// @inheritdoc IFund
-    function releaseLaunchLock(
-        address account,
-        uint256 amount
-    ) external override onlyStaking returns (uint256 moved) {
+    function releaseLaunchLock(address account, uint256 amount) external override onlyStaking returns (uint256 moved) {
         if (block.timestamp >= depositorUnlockAt) return 0;
         uint256 locked = launchLocked[account];
         if (locked == 0) return 0;
@@ -302,40 +295,10 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuard {
     function rebalance(
         RebalanceParams calldata params
     ) external override onlyManager nonReentrant {
-        IFundFactory fac = IFundFactory(factory);
-        if (!fac.isRouter(params.router) || isAsset[params.router] || params.router == address(this)) {
-            revert RouterNotAllowed();
-        }
-        address usdg = fac.usdg();
-        if (
-            (!isAsset[params.sellAsset] && params.sellAsset != usdg) || !isAsset[params.buyAsset]
-                || params.sellAsset == params.buyAsset
-        ) {
-            revert InvalidBasket();
-        }
-        if (params.sellAmount == 0) revert ZeroAmount();
-
-        // Every basket asset plus idle USDG: only the sold one may fall, only the bought one rise.
-        address[] memory tracked = new address[](_assets.length + 1);
-        for (uint256 i; i < _assets.length; ++i) {
-            tracked[i] = _assets[i];
-        }
-        tracked[_assets.length] = usdg;
-        uint256[] memory before = _balances(tracked);
-        uint256 sharesBefore = balanceOf(address(this));
-
-        IERC20(params.sellAsset).forceApprove(params.router, params.sellAmount);
-        (bool success,) = params.router.call(params.data);
-        if (!success) revert RebalanceCallFailed();
-        IERC20(params.sellAsset).forceApprove(params.router, 0);
-
-        (uint256 sold, uint256 bought) = _swapDeltas(params, tracked, before);
-        if (balanceOf(address(this)) < sharesBefore) revert RebalanceInvalid();
-        if (sold > params.sellAmount || bought < params.minBuyAmount) revert RebalanceInvalid();
-
-        _trackRebalanceVolume(fac, _checkSwapValue(fac, params, sold, bought));
-
-        emit Rebalanced(params.sellAsset, sold, params.buyAsset, bought);
+        uint256 volume =
+            FundRebalance.rebalance(factory, _assets, isAsset, params, rebalanceVolume, rebalanceVolumeUpdatedAt);
+        rebalanceVolume = SafeCast.toUint192(volume);
+        rebalanceVolumeUpdatedAt = uint64(block.timestamp);
     }
 
     /// @inheritdoc IFund
@@ -566,75 +529,7 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuard {
         mintPrice = discounted > nav ? discounted : nav;
     }
 
-    function _balances(
-        address[] memory tokens
-    ) internal view returns (uint256[] memory bals) {
-        bals = new uint256[](tokens.length);
-        for (uint256 i; i < tokens.length; ++i) {
-            bals[i] = IERC20(tokens[i]).balanceOf(address(this));
-        }
-    }
-
-    function _swapDeltas(
-        RebalanceParams calldata params,
-        address[] memory tracked,
-        uint256[] memory before
-    ) internal view returns (uint256 sold, uint256 bought) {
-        for (uint256 i; i < tracked.length; ++i) {
-            address a = tracked[i];
-            uint256 afterBal = IERC20(a).balanceOf(address(this));
-            if (a == params.sellAsset) {
-                if (afterBal > before[i]) revert RebalanceInvalid();
-                sold = before[i] - afterBal;
-            } else if (a == params.buyAsset) {
-                if (afterBal < before[i]) revert RebalanceInvalid();
-                bought = afterBal - before[i];
-            } else if (afterBal < before[i]) {
-                revert RebalanceInvalid();
-            }
-        }
-    }
-
-    /// @dev Reverts if the swap lost more than the slippage bound in oracle value; returns the
-    ///      value sold.
-    function _checkSwapValue(
-        IFundFactory fac,
-        RebalanceParams calldata params,
-        uint256 sold,
-        uint256 bought
-    ) internal view returns (uint256 soldValue) {
-        IFundOracle o = IFundOracle(fac.oracle());
-        address usdg = fac.usdg();
-        soldValue = params.sellAsset == usdg
-            ? _usdgValue(usdg, sold)
-            : _value(params.sellAsset, sold, o.price(params.sellAsset));
-        uint256 boughtValue = _value(params.buyAsset, bought, o.price(params.buyAsset));
-        uint256 minValue = Math.mulDiv(soldValue, BPS - fac.maxRebalanceSlippageBps(), BPS, Math.Rounding.Ceil);
-        if (boughtValue < minValue) revert RebalanceInvalid();
-    }
-
-    function _trackRebalanceVolume(
-        IFundFactory fac,
-        uint256 soldValue
-    ) internal {
-        // Measured against the post-trade basket and idle USDG (what the manager can trade), which
-        // differs from pre-trade by at most the slippage bound.
-        address usdg = fac.usdg();
-        uint256 tradable =
-            _valueOf(_assets, IFundOracle(fac.oracle())) + _usdgValue(usdg, IERC20(usdg).balanceOf(address(this)));
-        uint256 cap = Math.mulDiv(tradable, fac.rebalanceVolumeCapBps(), BPS);
-        uint256 drained = Math.mulDiv(cap, block.timestamp - rebalanceVolumeUpdatedAt, 1 days);
-        uint256 volume = rebalanceVolume;
-        volume = (volume > drained ? volume - drained : 0) + soldValue;
-        if (volume > cap) revert RebalanceVolumeExceeded();
-        rebalanceVolume = SafeCast.toUint192(volume);
-        rebalanceVolumeUpdatedAt = uint64(block.timestamp);
-    }
-
-    function _pull(
-        address asset,
-        uint256 amount
-    ) internal returns (uint256 received) {
+    function _pull(address asset, uint256 amount) internal returns (uint256 received) {
         IERC20 token = IERC20(asset);
         uint256 balanceBefore = token.balanceOf(address(this));
         token.safeTransferFrom(msg.sender, address(this), amount);
@@ -649,11 +544,7 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuard {
         net = gross - protocolFee - curatorFee;
     }
 
-    function _issue(
-        address receiver,
-        uint256 shares,
-        uint256 lockOption
-    ) internal returns (uint256 lockId) {
+    function _issue(address receiver, uint256 shares, uint256 lockOption) internal returns (uint256 lockId) {
         if (lockOption == 0) {
             _mint(receiver, shares);
             return NO_LOCK;
@@ -668,10 +559,7 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuard {
         );
     }
 
-    function _redeemAmounts(
-        uint256 net,
-        uint256 supply
-    ) internal view returns (uint256[] memory amounts) {
+    function _redeemAmounts(uint256 net, uint256 supply) internal view returns (uint256[] memory amounts) {
         uint256 n = _assets.length;
         amounts = new uint256[](n);
         if (supply == 0) return amounts;
@@ -688,10 +576,7 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuard {
         curatorFee = Math.mulDiv(shares, curatorFeeBps, BPS);
     }
 
-    function _mintFees(
-        uint256 protocolFee,
-        uint256 curatorFee
-    ) internal {
+    function _mintFees(uint256 protocolFee, uint256 curatorFee) internal {
         if (protocolFee != 0) _mint(IFundFactory(factory).protocolFeeRecipient(), protocolFee);
         if (curatorFee != 0) _mint(curators, curatorFee);
         if (protocolFee != 0 || curatorFee != 0) emit FeesCharged(protocolFee, curatorFee);
@@ -707,11 +592,7 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuard {
 
     /// @dev Launch-locked tokens can leave an account only by being burned (redeem) or through
     ///      the staking module, which first moves the lock onto the stake.
-    function _update(
-        address from,
-        address to,
-        uint256 value
-    ) internal override {
+    function _update(address from, address to, uint256 value) internal override {
         bool lockActive = from != address(0) && block.timestamp < depositorUnlockAt && launchLocked[from] != 0;
         if (lockActive && to != address(0) && balanceOf(from) < value + launchLocked[from]) {
             revert LaunchTokensLocked();
@@ -759,10 +640,7 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuard {
         emit LockOptionsSet(options);
     }
 
-    function _setBasket(
-        address[] calldata assets_,
-        uint16[] calldata weightsBps_
-    ) internal {
+    function _setBasket(address[] calldata assets_, uint16[] calldata weightsBps_) internal {
         uint256 n = assets_.length;
         if (n == 0 || n > MAX_ASSETS || n != weightsBps_.length) revert InvalidBasket();
 
@@ -803,10 +681,7 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuard {
         emit TargetWeightsSet(assets_, weightsBps_);
     }
 
-    function _valueOf(
-        address[] memory assets,
-        IFundOracle o
-    ) internal view returns (uint256 value) {
+    function _valueOf(address[] memory assets, IFundOracle o) internal view returns (uint256 value) {
         uint256 n = assets.length;
         for (uint256 i; i < n; ++i) {
             address a = assets[i];
@@ -815,18 +690,11 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuard {
         }
     }
 
-    function _value(
-        address asset,
-        uint256 amount,
-        uint256 price
-    ) internal view returns (uint256) {
+    function _value(address asset, uint256 amount, uint256 price) internal view returns (uint256) {
         return Math.mulDiv(amount, price, 10 ** IERC20Metadata(asset).decimals());
     }
 
-    function _usdgValue(
-        address usdg,
-        uint256 amount
-    ) internal view returns (uint256) {
+    function _usdgValue(address usdg, uint256 amount) internal view returns (uint256) {
         return Math.mulDiv(amount, PRECISION, 10 ** IERC20Metadata(usdg).decimals());
     }
 
@@ -834,10 +702,7 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuard {
         return IFundFactory(factory).usdg();
     }
 
-    function _sharesForValue(
-        uint256 value,
-        uint256 price
-    ) internal pure returns (uint256) {
+    function _sharesForValue(uint256 value, uint256 price) internal pure returns (uint256) {
         if (price == 0) revert NoMarketPrice();
         return Math.mulDiv(value, PRECISION, price);
     }

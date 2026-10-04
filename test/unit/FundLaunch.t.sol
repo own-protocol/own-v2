@@ -495,7 +495,7 @@ contract FundLaunchTest is FundTestBase {
         (uint160 sqrtPriceX96,,,) = poolManager.getSlot0(key.toId());
         uint256 priceX192 = uint256(sqrtPriceX96) * uint256(sqrtPriceX96);
         return address(usdg) < address(fund)
-            ? Math.mulDiv(1e30, 1 << 192, priceX192)  // currency0 = USDG
+            ? Math.mulDiv(1e30, 1 << 192, priceX192) // currency0 = USDG
             : Math.mulDiv(priceX192, 1e30, 1 << 192); // currency1 = USDG
     }
 }

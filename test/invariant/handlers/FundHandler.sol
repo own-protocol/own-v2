@@ -15,22 +15,13 @@ contract FundHandler is Test {
     uint256 public mints;
     uint256 public redeems;
 
-    constructor(
-        Fund fund_,
-        MockERC20[3] memory assets_,
-        address[3] memory actors_
-    ) {
+    constructor(Fund fund_, MockERC20[3] memory assets_, address[3] memory actors_) {
         fund = fund_;
         assets = assets_;
         actors = actors_;
     }
 
-    function mint(
-        uint256 actorSeed,
-        uint256 assetSeed,
-        uint256 amount,
-        uint256 lockSeed
-    ) external {
+    function mint(uint256 actorSeed, uint256 assetSeed, uint256 amount, uint256 lockSeed) external {
         address actor = actors[actorSeed % 3];
         MockERC20 asset = assets[assetSeed % 3];
         amount = bound(amount, 10 ** asset.decimals() / 100, 10 ** asset.decimals() * 1000);
@@ -42,10 +33,7 @@ contract FundHandler is Test {
         ++mints;
     }
 
-    function redeem(
-        uint256 actorSeed,
-        uint256 amount
-    ) external {
+    function redeem(uint256 actorSeed, uint256 amount) external {
         address actor = actors[actorSeed % 3];
         uint256 bal = fund.balanceOf(actor);
         if (bal == 0) return;
@@ -55,10 +43,7 @@ contract FundHandler is Test {
         ++redeems;
     }
 
-    function claimLocks(
-        uint256 actorSeed,
-        uint256 warpBy
-    ) external {
+    function claimLocks(uint256 actorSeed, uint256 warpBy) external {
         address actor = actors[actorSeed % 3];
         vm.warp(block.timestamp + bound(warpBy, 0, 2 hours));
         IFund.Lock[] memory locks = fund.locksOf(actor);

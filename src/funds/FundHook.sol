@@ -108,10 +108,7 @@ contract FundHook is IFundHook, IHooks, IUnlockCallback {
         _;
     }
 
-    constructor(
-        IPoolManager poolManager_,
-        IFundFactory factory_
-    ) {
+    constructor(IPoolManager poolManager_, IFundFactory factory_) {
         poolManager = poolManager_;
         factory = factory_;
         Hooks.validateHookPermissions(IHooks(address(this)), getHookPermissions());
@@ -140,11 +137,7 @@ contract FundHook is IFundHook, IHooks, IUnlockCallback {
     }
 
     /// @inheritdoc IFundHook
-    function seedPool(
-        address fund,
-        uint256 usdgAmount,
-        uint256 shareAmount
-    ) external override {
+    function seedPool(address fund, uint256 usdgAmount, uint256 shareAmount) external override {
         PoolKey memory key = _keys[fund];
         if (address(key.hooks) == address(0)) revert NotRegistered();
         if (msg.sender != IFund(fund).launch()) revert NotLaunch();
@@ -221,10 +214,7 @@ contract FundHook is IFundHook, IHooks, IUnlockCallback {
     }
 
     /// @inheritdoc IFundHook
-    function withdrawPosition(
-        address fund,
-        uint128 liquidity
-    ) external override {
+    function withdrawPosition(address fund, uint128 liquidity) external override {
         if (msg.sender != factory.owner()) revert NotAdmin();
         PoolConfig storage cfg = _seededConfig(fund);
         if (liquidity == 0 || liquidity > cfg.liquidity) revert InsufficientLiquidity();
@@ -232,10 +222,7 @@ contract FundHook is IFundHook, IHooks, IUnlockCallback {
     }
 
     /// @inheritdoc IFundHook
-    function setLpFee(
-        address fund,
-        uint24 lpFee
-    ) external override {
+    function setLpFee(address fund, uint24 lpFee) external override {
         if (msg.sender != factory.owner()) revert NotAdmin();
         if (lpFee > MAX_LP_FEE) revert LpFeeTooHigh();
         PoolKey memory key = _keys[fund];
@@ -305,11 +292,7 @@ contract FundHook is IFundHook, IHooks, IUnlockCallback {
     }
 
     /// @inheritdoc IHooks
-    function beforeInitialize(
-        address,
-        PoolKey calldata,
-        uint160
-    ) external pure override returns (bytes4) {
+    function beforeInitialize(address, PoolKey calldata, uint160) external pure override returns (bytes4) {
         // The pool manager skips this callback when the hook itself initialises, so any call here
         // is someone else trying to create a pool on this hook.
         revert InitializeNotAllowed();
@@ -352,12 +335,7 @@ contract FundHook is IFundHook, IHooks, IUnlockCallback {
     }
 
     /// @inheritdoc IHooks
-    function afterInitialize(
-        address,
-        PoolKey calldata,
-        uint160,
-        int24
-    ) external pure override returns (bytes4) {
+    function afterInitialize(address, PoolKey calldata, uint160, int24) external pure override returns (bytes4) {
         revert HookNotImplemented();
     }
 
@@ -621,11 +599,7 @@ contract FundHook is IFundHook, IHooks, IUnlockCallback {
         (usdgAmount, fundTokens) = cfg.usdgIsCurrency0 ? (amount0, amount1) : (amount1, amount0);
     }
 
-    function _takeFees(
-        PoolKey calldata key,
-        PoolConfig memory cfg,
-        uint256 amount
-    ) private returns (uint256) {
+    function _takeFees(PoolKey calldata key, PoolConfig memory cfg, uint256 amount) private returns (uint256) {
         // Rounds down: a fee never exceeds the configured share of the USDG leg.
         uint256 protocolFee = Math.mulDiv(amount, factory.protocolFeeBps(), BPS);
         uint256 curatorFee = Math.mulDiv(amount, IFund(cfg.fund).curatorFeeBps(), BPS);
@@ -647,10 +621,7 @@ contract FundHook is IFundHook, IHooks, IUnlockCallback {
         if (usdgDust != 0) IERC20(usdg).safeTransfer(fund, usdgDust);
     }
 
-    function _settle(
-        Currency currency,
-        int128 delta
-    ) private returns (uint256 amount) {
+    function _settle(Currency currency, int128 delta) private returns (uint256 amount) {
         if (delta >= 0) return 0;
         amount = uint256(-int256(delta));
         poolManager.sync(currency);
@@ -658,20 +629,13 @@ contract FundHook is IFundHook, IHooks, IUnlockCallback {
         poolManager.settle();
     }
 
-    function _take(
-        Currency currency,
-        int128 delta,
-        address recipient
-    ) private returns (uint256 amount) {
+    function _take(Currency currency, int128 delta, address recipient) private returns (uint256 amount) {
         if (delta <= 0) return 0;
         amount = uint256(int256(delta));
         poolManager.take(currency, recipient, amount);
     }
 
-    function _sqrtPriceX96(
-        uint256 amount0,
-        uint256 amount1
-    ) private pure returns (uint160) {
+    function _sqrtPriceX96(uint256 amount0, uint256 amount1) private pure returns (uint160) {
         uint256 sqrtPrice = Math.sqrt(Math.mulDiv(amount1, 1 << 192, amount0));
         if (sqrtPrice < TickMath.MIN_SQRT_PRICE || sqrtPrice >= TickMath.MAX_SQRT_PRICE) revert InvalidSeed();
         return uint160(sqrtPrice);

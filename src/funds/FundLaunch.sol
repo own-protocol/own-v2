@@ -112,10 +112,7 @@ contract FundLaunch is IFundLaunch, Initializable, ReentrancyGuard {
     }
 
     /// @inheritdoc IFundLaunch
-    function deposit(
-        address asset,
-        uint256 amount
-    ) external override nonReentrant returns (uint256 usdgPaid) {
+    function deposit(address asset, uint256 amount) external override nonReentrant returns (uint256 usdgPaid) {
         if (status != Status.Open) revert WrongStatus();
         if (block.timestamp >= endTime) revert WindowClosed();
         if (depositsPaused) revert DepositsPaused();
@@ -157,10 +154,7 @@ contract FundLaunch is IFundLaunch, Initializable, ReentrancyGuard {
     }
 
     /// @inheritdoc IFundLaunch
-    function withdraw(
-        address asset,
-        uint256 amount
-    ) external override nonReentrant returns (uint256 usdgReturned) {
+    function withdraw(address asset, uint256 amount) external override nonReentrant returns (uint256 usdgReturned) {
         if (status != Status.Open) revert WrongStatus();
         if (block.timestamp >= withdrawDeadline()) revert WithdrawalsClosed();
         if (amount == 0) revert ZeroAmount();
@@ -303,10 +297,7 @@ contract FundLaunch is IFundLaunch, Initializable, ReentrancyGuard {
     }
 
     /// @inheritdoc IFundLaunch
-    function depositOf(
-        address account,
-        address asset
-    ) external view override returns (Deposit memory) {
+    function depositOf(address account, address asset) external view override returns (Deposit memory) {
         return _deposits[account][asset];
     }
 
@@ -382,11 +373,7 @@ contract FundLaunch is IFundLaunch, Initializable, ReentrancyGuard {
         }
     }
 
-    function _points(
-        address asset,
-        uint256 amount,
-        uint256 timeWeight
-    ) internal view returns (uint256) {
+    function _points(address asset, uint256 amount, uint256 timeWeight) internal view returns (uint256) {
         uint256 bonus = Math.mulDiv(timeWeight, _config.earlyYieldBpsPerDay, BPS * 1 days);
         uint256 value = Math.mulDiv(amount + bonus, closePrice[asset], 10 ** IERC20Metadata(asset).decimals());
         return Math.mulDiv(value, creditedValue[asset], rawValue[asset]);

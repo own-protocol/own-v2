@@ -219,10 +219,7 @@ contract FundHookTest is FundTestBase {
 
     /// @param buy             True to swap USDG for fund tokens.
     /// @param amountSpecified Negative for exact input, positive for exact output (v4 convention).
-    function _swap(
-        bool buy,
-        int256 amountSpecified
-    ) internal returns (BalanceDelta delta) {
+    function _swap(bool buy, int256 amountSpecified) internal returns (BalanceDelta delta) {
         bool zeroForOne = buy == usdgIs0;
         vm.prank(trader);
         delta = swapRouter.swap(

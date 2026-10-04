@@ -48,10 +48,7 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuard {
     }
 
     /// @inheritdoc IFundStaking
-    function initialize(
-        address fund_,
-        YieldTier[] calldata tiers_
-    ) external override initializer {
+    function initialize(address fund_, YieldTier[] calldata tiers_) external override initializer {
         if (fund_ == address(0)) revert ZeroAddress();
         fund = fund_;
         lastAccrual = uint64(block.timestamp);
@@ -59,10 +56,7 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuard {
     }
 
     /// @inheritdoc IFundStaking
-    function stake(
-        uint256 assets,
-        address receiver
-    ) external override nonReentrant returns (uint256 shares) {
+    function stake(uint256 assets, address receiver) external override nonReentrant returns (uint256 shares) {
         if (assets == 0) revert ZeroAmount();
         if (receiver == address(0)) revert ZeroAddress();
         _accrue();
@@ -78,10 +72,7 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuard {
     }
 
     /// @inheritdoc IFundStaking
-    function stakeLocked(
-        uint256 assets,
-        address receiver
-    ) external override nonReentrant returns (uint256 shares) {
+    function stakeLocked(uint256 assets, address receiver) external override nonReentrant returns (uint256 shares) {
         if (msg.sender != IFund(fund).launch()) revert NotLaunch();
         if (assets == 0) revert ZeroAmount();
         if (receiver == address(0)) revert ZeroAddress();
@@ -96,10 +87,7 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuard {
     }
 
     /// @inheritdoc IFundStaking
-    function unstake(
-        uint256 shares,
-        address receiver
-    ) external override nonReentrant returns (uint256 assets) {
+    function unstake(uint256 shares, address receiver) external override nonReentrant returns (uint256 assets) {
         if (shares == 0) revert ZeroAmount();
         if (receiver == address(0)) revert ZeroAddress();
         _accrue();
@@ -213,11 +201,7 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuard {
     /// @dev Locked shares can leave an account only by being burned (unstake, which moves the lock
     ///      back onto the fund tokens) or by going into the governor, which returns them to the
     ///      same account; shares held in the governor still count towards the account's holdings.
-    function _update(
-        address from,
-        address to,
-        uint256 value
-    ) internal override {
+    function _update(address from, address to, uint256 value) internal override {
         uint256 locked = from == address(0) ? 0 : _activeLock(from);
         address gov = locked == 0 ? address(0) : IFund(fund).governor();
         uint256 escrowed = locked == 0 ? 0 : IFundGovernor(gov).escrowOf(from, address(this));
@@ -234,10 +218,7 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuard {
         }
     }
 
-    function _addLock(
-        address account,
-        uint256 shares
-    ) internal {
+    function _addLock(address account, uint256 shares) internal {
         if (block.timestamp >= IFund(fund).depositorUnlockAt()) return;
         uint256 locked = lockedShares[account] + shares;
         lockedShares[account] = locked;

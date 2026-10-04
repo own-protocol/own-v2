@@ -25,9 +25,8 @@ contract FundBribes is IFundBribes, Initializable, ReentrancyGuard {
     address public override fund;
 
     mapping(uint256 epoch => mapping(address token => mapping(address reward => uint256))) private _bribes;
-    mapping(
-        uint256 epoch => mapping(address token => mapping(address reward => mapping(address briber => uint256)))
-    ) private _bribesBy;
+    mapping(uint256 epoch => mapping(address token => mapping(address reward => mapping(address briber => uint256))))
+        private _bribesBy;
     mapping(uint256 epoch => mapping(address token => mapping(address reward => mapping(address account => bool))))
         private _claimed;
 
@@ -153,19 +152,12 @@ contract FundBribes is IFundBribes, Initializable, ReentrancyGuard {
     }
 
     /// @inheritdoc IFundBribes
-    function bribeOf(
-        address token,
-        uint256 epoch,
-        address reward
-    ) external view override returns (uint256) {
+    function bribeOf(address token, uint256 epoch, address reward) external view override returns (uint256) {
         return _bribes[epoch][token][reward];
     }
 
     /// @inheritdoc IFundBribes
-    function listingBribeOf(
-        uint256 proposalId,
-        address reward
-    ) external view override returns (uint256) {
+    function listingBribeOf(uint256 proposalId, address reward) external view override returns (uint256) {
         return _listingBribes[proposalId][reward];
     }
 
@@ -194,11 +186,7 @@ contract FundBribes is IFundBribes, Initializable, ReentrancyGuard {
         return Math.mulDiv(_bribes[epoch][token][reward], gov.votesOf(account, token, epoch), total);
     }
 
-    function _pull(
-        address token,
-        address reward,
-        uint256 amount
-    ) internal returns (uint256 net, uint256 cut) {
+    function _pull(address token, address reward, uint256 amount) internal returns (uint256 net, uint256 cut) {
         if (amount == 0) revert ZeroAmount();
         IFundFactory fac = IFundFactory(IFund(fund).factory());
         if (reward != token && !fac.isBribeToken(reward)) revert RewardNotAllowed();

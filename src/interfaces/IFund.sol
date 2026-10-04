@@ -241,12 +241,7 @@ interface IFund is IERC20 {
     /// @param staking_  Staking module.
     /// @param governor_ Governor.
     /// @param curators_ Curators module (the curator fee recipient).
-    function setModules(
-        address launch_,
-        address staking_,
-        address governor_,
-        address curators_
-    ) external;
+    function setModules(address launch_, address staking_, address governor_, address curators_) external;
 
     /// @notice Mark the fund live after a successful launch. Launch only, once.
     /// @param depositorUnlockAt_ When depositors' launch tokens become transferable.
@@ -257,29 +252,20 @@ interface IFund is IERC20 {
     /// @notice Mint fund tokens without a deposit: launch allocations and staker yield. Modules only.
     /// @param to     Receiver.
     /// @param amount Amount.
-    function moduleMint(
-        address to,
-        uint256 amount
-    ) external;
+    function moduleMint(address to, uint256 amount) external;
 
     /// @notice Lock `amount` more of `account`'s fund tokens until {depositorUnlockAt}. Launch and
     ///         staking only (launch claims, and unstaking locked stake). A no-op once unlocked.
     /// @param account The account.
     /// @param amount  Fund tokens to lock.
-    function addLaunchLock(
-        address account,
-        uint256 amount
-    ) external;
+    function addLaunchLock(address account, uint256 amount) external;
 
     /// @notice Release the part of `account`'s lock that staking `amount` would move out, so the
     ///         staking module can lock the stake instead. Staking only. Unlocked tokens move first.
     /// @param account The staker.
     /// @param amount  Fund tokens being staked.
     /// @return moved Locked fund tokens moving into staking.
-    function releaseLaunchLock(
-        address account,
-        uint256 amount
-    ) external returns (uint256 moved);
+    function releaseLaunchLock(address account, uint256 amount) external returns (uint256 moved);
 
     /// @notice Mint fund tokens by depositing one basket asset.
     /// @param asset        Basket asset deposited (target weight above zero).
@@ -341,10 +327,7 @@ interface IFund is IERC20 {
     ///         New assets need an oracle feed.
     /// @param assets_     Assets.
     /// @param weightsBps_ Target weights (sum 10 000).
-    function setTargetWeights(
-        address[] calldata assets_,
-        uint16[] calldata weightsBps_
-    ) external;
+    function setTargetWeights(address[] calldata assets_, uint16[] calldata weightsBps_) external;
 
     /// @notice Set the curator fee. Admin only.
     /// @param feeBps Fee, in basis points (capped at 10%).

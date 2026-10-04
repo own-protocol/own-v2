@@ -120,11 +120,11 @@ contract DeployFundsRobinhood is Script {
         return PlatformMetadata({
             name: "Own Curated Funds",
             description: "An Own Curated Fund is a token backed by a basket of Robinhood Chain tokens held onchain, "
-            "plus the fund's own USDG pool position. Any holder can redeem it for their share of the backing at any "
-            "time, and stakers earn new fund tokens while it trades above its net asset value. Curators and stakers "
-            "set the basket weights in a weekly vote. "
-            "Own is the DeFi protocol on Robinhood Chain behind eUSD and OwnX. $MONEY is Own's token, "
-            "launched fair on Pons and paired with SPY.",
+                "plus the fund's own USDG pool position. Any holder can redeem it for their share of the backing at any "
+                "time, and stakers earn new fund tokens while it trades above its net asset value. Curators and stakers "
+                "set the basket weights in a weekly vote. "
+                "Own is the DeFi protocol on Robinhood Chain behind eUSD and OwnX. $MONEY is Own's token, "
+                "launched fair on Pons and paired with SPY.",
             url: "https://own.money"
         });
     }

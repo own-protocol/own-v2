@@ -686,11 +686,7 @@ contract FundGovernorTest is FundTestBase {
     //  Helpers
     // ──────────────────────────────────────────────────────────
 
-    function _propose(
-        address who,
-        IFundGovernor.ProposalKind kind,
-        address target
-    ) internal returns (uint256) {
+    function _propose(address who, IFundGovernor.ProposalKind kind, address target) internal returns (uint256) {
         return _propose(who, kind, target, address(0));
     }
 

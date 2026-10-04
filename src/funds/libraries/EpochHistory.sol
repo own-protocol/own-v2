@@ -22,10 +22,7 @@ library EpochHistory {
     /// @param h     The history.
     /// @param epoch The epoch.
     /// @return The value.
-    function valueAt(
-        History storage h,
-        uint256 epoch
-    ) internal view returns (uint256) {
+    function valueAt(History storage h, uint256 epoch) internal view returns (uint256) {
         Checkpoint[] storage cps = h.checkpoints;
         uint256 high = cps.length;
         if (high == 0) return 0;
@@ -48,12 +45,7 @@ library EpochHistory {
     /// @param current   The current epoch.
     /// @param atCurrent Value for the current epoch.
     /// @param atNext    Value from the next epoch on.
-    function set(
-        History storage h,
-        uint256 current,
-        uint256 atCurrent,
-        uint256 atNext
-    ) internal {
+    function set(History storage h, uint256 current, uint256 atCurrent, uint256 atNext) internal {
         Checkpoint[] storage cps = h.checkpoints;
         uint256 len = cps.length;
         // Drop a pending next-epoch checkpoint; it is rewritten below.
@@ -78,22 +70,14 @@ library EpochHistory {
     /// @param current      The current epoch.
     /// @param deltaCurrent Change for the current epoch.
     /// @param deltaNext    Change from the next epoch on.
-    function add(
-        History storage h,
-        uint256 current,
-        int256 deltaCurrent,
-        int256 deltaNext
-    ) internal {
+    function add(History storage h, uint256 current, int256 deltaCurrent, int256 deltaNext) internal {
         if (deltaCurrent == 0 && deltaNext == 0) return;
         uint256 atCurrent = valueAt(h, current);
         uint256 atNext = valueAt(h, current + 1);
         set(h, current, _apply(atCurrent, deltaCurrent), _apply(atNext, deltaNext));
     }
 
-    function _apply(
-        uint256 value,
-        int256 delta
-    ) private pure returns (uint256) {
+    function _apply(uint256 value, int256 delta) private pure returns (uint256) {
         return delta >= 0 ? value + uint256(delta) : value - uint256(-delta);
     }
 }

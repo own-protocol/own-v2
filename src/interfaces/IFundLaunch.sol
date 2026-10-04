@@ -132,20 +132,14 @@ interface IFundLaunch {
     /// @param asset  Basket asset (target weight above zero).
     /// @param amount Amount.
     /// @return usdgPaid USDG pulled with it (rounded up).
-    function deposit(
-        address asset,
-        uint256 amount
-    ) external returns (uint256 usdgPaid);
+    function deposit(address asset, uint256 amount) external returns (uint256 usdgPaid);
 
     /// @notice Withdraw part of a deposit (and its USDG) until the withdrawal cutoff. The amount
     ///         withdrawn forfeits its early-deposit yield.
     /// @param asset  Basket asset.
     /// @param amount Amount.
     /// @return usdgReturned USDG returned with it.
-    function withdraw(
-        address asset,
-        uint256 amount
-    ) external returns (uint256 usdgReturned);
+    function withdraw(address asset, uint256 amount) external returns (uint256 usdgReturned);
 
     /// @notice Close the launch after the window: succeed and seed the pool, or fail. Anyone.
     ///         The keeper should call it right at the close.
@@ -222,10 +216,7 @@ interface IFundLaunch {
     /// @param account The account.
     /// @param asset   The asset.
     /// @return The deposit.
-    function depositOf(
-        address account,
-        address asset
-    ) external view returns (Deposit memory);
+    function depositOf(address account, address asset) external view returns (Deposit memory);
 
     /// @notice Total deposited of an asset.
     /// @param asset The asset.

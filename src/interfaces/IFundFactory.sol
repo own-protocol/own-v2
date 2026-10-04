@@ -188,18 +188,12 @@ interface IFundFactory {
     /// @notice Allow or disallow a token for paying bribes. Owner only.
     /// @param token   The token.
     /// @param allowed Whether allowed.
-    function setBribeToken(
-        address token,
-        bool allowed
-    ) external;
+    function setBribeToken(address token, bool allowed) external;
 
     /// @notice Add or remove a token from the list funds may list. Owner only.
     /// @param token    The token.
     /// @param eligible Whether eligible.
-    function setEligibleAsset(
-        address token,
-        bool eligible
-    ) external;
+    function setEligibleAsset(address token, bool eligible) external;
 
     /// @notice Switch launcher whitelisting on or off. Owner only.
     /// @param enabled Whether only whitelisted launchers may create funds.
@@ -210,18 +204,12 @@ interface IFundFactory {
     /// @notice Add or remove a whitelisted launcher. Owner only.
     /// @param launcher The launcher.
     /// @param allowed  Whether it may create funds.
-    function setLauncher(
-        address launcher,
-        bool allowed
-    ) external;
+    function setLauncher(address launcher, bool allowed) external;
 
     /// @notice Allow or disallow a rebalance router. Owner only.
     /// @param router  The router.
     /// @param allowed Whether funds may rebalance through it.
-    function setRouter(
-        address router,
-        bool allowed
-    ) external;
+    function setRouter(address router, bool allowed) external;
 
     /// @notice Set the maximum oracle-valued loss a rebalance may take. Owner only.
     /// @param slippageBps Bound, in basis points (capped).
@@ -264,10 +252,7 @@ interface IFundFactory {
     /// @notice Point a module beacon at a new implementation, upgrading every fund. Owner only.
     /// @param module         The module.
     /// @param implementation The new implementation.
-    function upgradeModule(
-        Module module,
-        address implementation
-    ) external;
+    function upgradeModule(Module module, address implementation) external;
 
     /// @notice Start a two-step ownership transfer. Owner only.
     /// @param newOwner The pending owner.

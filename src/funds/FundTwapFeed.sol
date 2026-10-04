@@ -37,11 +37,7 @@ contract FundTwapFeed {
     /// @param hook_   The fund hook.
     /// @param fund_   The fund.
     /// @param window_ Minimum averaging period, in seconds.
-    constructor(
-        IFundHook hook_,
-        address fund_,
-        uint32 window_
-    ) {
+    constructor(IFundHook hook_, address fund_, uint32 window_) {
         if (window_ == 0 || window_ > hook_.maxTwapWindow()) revert InvalidWindow();
         PoolKey memory key = hook_.poolKeyOf(fund_);
         if (address(key.hooks) == address(0)) revert NotRegistered();

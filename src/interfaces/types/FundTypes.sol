@@ -112,8 +112,8 @@ library GovernanceConfigLib {
     ) internal pure returns (bool) {
         return c.curatorShareBps <= 5000 && c.minVoteBps <= 1000 && c.maxWeightBps >= 1000 && c.maxWeightBps <= 10_000
             && c.maxWeeklyShiftBps != 0 && c.maxWeeklyShiftBps <= 10_000 && c.dropAfterEpochs != 0 && c.quorumBps != 0
-            && c.quorumBps <= 10_000 && c.votingPeriod >= 1 hours && c.votingPeriod <= 30 days
-            && c.vetoPeriod <= 30 days && c.executionWindow >= 1 hours && c.executionWindow <= 30 days;
+            && c.quorumBps <= 10_000 && c.votingPeriod >= 1 hours && c.votingPeriod <= 30 days && c.vetoPeriod <= 30 days
+            && c.executionWindow >= 1 hours && c.executionWindow <= 30 days;
     }
 }
 

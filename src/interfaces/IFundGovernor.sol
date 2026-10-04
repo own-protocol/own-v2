@@ -252,27 +252,18 @@ interface IFundGovernor {
     /// @notice Initialise a governor proxy. Called once by the factory.
     /// @param fund_   The fund.
     /// @param config_ Governance rules.
-    function initialize(
-        address fund_,
-        GovernanceConfig calldata config_
-    ) external;
+    function initialize(address fund_, GovernanceConfig calldata config_) external;
 
     /// @notice Escrow staked fund tokens (or an allowed wrapper) to vote. Counts from the next epoch.
     /// @param token  Staking module or allowed wrapper.
     /// @param amount Amount.
-    function deposit(
-        address token,
-        uint256 amount
-    ) external;
+    function deposit(address token, uint256 amount) external;
 
     /// @notice Stop counting `amount` of escrowed `token` now; it unlocks at the next flip, or when
     ///         the last proposal the caller voted on ends, if later.
     /// @param token  Token.
     /// @param amount Amount.
-    function requestWithdrawal(
-        address token,
-        uint256 amount
-    ) external;
+    function requestWithdrawal(address token, uint256 amount) external;
 
     /// @notice Claim unlocked tokens to the caller (the account that deposited them).
     /// @param token Token.
@@ -285,10 +276,7 @@ interface IFundGovernor {
     ///         current epoch and carries over until changed.
     /// @param tokens     Basket tokens.
     /// @param weightsBps Share per token (sum 10 000), or both empty to go silent.
-    function vote(
-        address[] calldata tokens,
-        uint16[] calldata weightsBps
-    ) external;
+    function vote(address[] calldata tokens, uint16[] calldata weightsBps) external;
 
     /// @notice Tally the oldest untallied finished epoch, apply the new weights and drop tokens
     ///         that qualify. Anyone can call (the Own keeper in practice); call again to catch up.
@@ -299,20 +287,13 @@ interface IFundGovernor {
     /// @param target      Token to list or delist, or curator to add, remove or replace.
     /// @param replacement New curator for a replacement (zero otherwise).
     /// @return id Proposal id.
-    function propose(
-        ProposalKind kind,
-        address target,
-        address replacement
-    ) external returns (uint256 id);
+    function propose(ProposalKind kind, address target, address replacement) external returns (uint256 id);
 
     /// @notice Vote on a proposal.
     /// @param id      Proposal id.
     /// @param support Yes or no.
     /// @return votes Votes cast, as a 1e18-scaled share of all possible votes.
-    function castVote(
-        uint256 id,
-        bool support
-    ) external returns (uint256 votes);
+    function castVote(uint256 id, bool support) external returns (uint256 votes);
 
     /// @notice Execute a passed proposal after the veto period. Anyone.
     /// @param id Proposal id.
@@ -335,10 +316,7 @@ interface IFundGovernor {
     /// @notice Delist (or relist) a basket token directly. Admin only.
     /// @param token    The token.
     /// @param delisted Whether it is delisted.
-    function setDelisted(
-        address token,
-        bool delisted
-    ) external;
+    function setDelisted(address token, bool delisted) external;
 
     /// @notice Replace the governance rules. Admin only.
     /// @param config_ New rules.
@@ -349,10 +327,7 @@ interface IFundGovernor {
     /// @notice Allow or disallow an ERC-4626 wrapper of the staked fund token. Admin only.
     /// @param wrapper The wrapper.
     /// @param allowed Whether allowed.
-    function setWrapper(
-        address wrapper,
-        bool allowed
-    ) external;
+    function setWrapper(address wrapper, bool allowed) external;
 
     /// @notice The fund.
     /// @return The fund.
@@ -383,39 +358,26 @@ interface IFundGovernor {
     /// @param token   The token.
     /// @param epoch   The epoch.
     /// @return The votes.
-    function votesOf(
-        address account,
-        address token,
-        uint256 epoch
-    ) external view returns (uint256);
+    function votesOf(address account, address token, uint256 epoch) external view returns (uint256);
 
     /// @notice All votes cast for `token` in a tallied `epoch`, as a 1e18-scaled share of all
     ///         possible votes.
     /// @param token The token.
     /// @param epoch The epoch.
     /// @return The votes.
-    function tokenVotes(
-        address token,
-        uint256 epoch
-    ) external view returns (uint256);
+    function tokenVotes(address token, uint256 epoch) external view returns (uint256);
 
     /// @notice Escrowed tokens of `account`, including tokens still unlocking (they return to it).
     /// @param account The account.
     /// @param token   The token.
     /// @return The amount.
-    function escrowOf(
-        address account,
-        address token
-    ) external view returns (uint256);
+    function escrowOf(address account, address token) external view returns (uint256);
 
     /// @notice Tokens of `account` that are unlocking.
     /// @param account The account.
     /// @param token   The token.
     /// @return The amount.
-    function unlockingOf(
-        address account,
-        address token
-    ) external view returns (uint256);
+    function unlockingOf(address account, address token) external view returns (uint256);
 
     /// @notice When the account's unlocking tokens can be claimed.
     /// @param account The account.
@@ -435,10 +397,7 @@ interface IFundGovernor {
     /// @param account The account.
     /// @param epoch   The epoch (at most the next one).
     /// @return The power.
-    function powerAt(
-        address account,
-        uint256 epoch
-    ) external view returns (uint256);
+    function powerAt(address account, uint256 epoch) external view returns (uint256);
 
     /// @notice Total voting power counted in `epoch`, in staked-token shares.
     /// @param epoch The epoch (at most the next one).
@@ -452,10 +411,7 @@ interface IFundGovernor {
     /// @param account The account.
     /// @param epoch   The epoch.
     /// @return The fund tokens.
-    function stakedAssetsAt(
-        address account,
-        uint256 epoch
-    ) external view returns (uint256);
+    function stakedAssetsAt(address account, uint256 epoch) external view returns (uint256);
 
     /// @notice The allocation `account` had in `epoch`.
     /// @param account The account.
@@ -503,10 +459,7 @@ interface IFundGovernor {
     /// @param id      Proposal id.
     /// @param account The account.
     /// @return The vote.
-    function proposalVote(
-        uint256 id,
-        address account
-    ) external view returns (ProposalVote memory);
+    function proposalVote(uint256 id, address account) external view returns (ProposalVote memory);
 
     /// @notice Whether `token` can be escrowed.
     /// @param token The token.

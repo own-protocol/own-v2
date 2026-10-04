@@ -116,11 +116,7 @@ interface IFundHook {
     /// @param fund        The fund.
     /// @param usdgAmount  USDG to add.
     /// @param shareAmount Fund tokens to add.
-    function seedPool(
-        address fund,
-        uint256 usdgAmount,
-        uint256 shareAmount
-    ) external;
+    function seedPool(address fund, uint256 usdgAmount, uint256 shareAmount) external;
 
     /// @notice Collect LP fees earned by the fund's position: USDG to the fund, fund tokens burned.
     ///         Anyone can call.
@@ -150,18 +146,12 @@ interface IFundHook {
     ///         wallet.
     /// @param fund      The fund.
     /// @param liquidity Liquidity to remove.
-    function withdrawPosition(
-        address fund,
-        uint128 liquidity
-    ) external;
+    function withdrawPosition(address fund, uint128 liquidity) external;
 
     /// @notice Set a fund pool's LP fee. Admin only.
     /// @param fund  The fund.
     /// @param lpFee LP fee, in hundredths of a basis point (capped).
-    function setLpFee(
-        address fund,
-        uint24 lpFee
-    ) external;
+    function setLpFee(address fund, uint24 lpFee) external;
 
     /// @notice Time-weighted mean tick of the fund's pool over at least the last `window` seconds.
     ///         The measured period starts at the newest checkpoint at least `window` old, so it can
@@ -172,10 +162,7 @@ interface IFundHook {
     ///                  not yet enough history.
     /// @return meanTick Arithmetic mean tick, rounded towards negative infinity.
     /// @return period   Seconds actually measured.
-    function consult(
-        address fund,
-        uint32 window
-    ) external view returns (bool ok, int24 meanTick, uint32 period);
+    function consult(address fund, uint32 window) external view returns (bool ok, int24 meanTick, uint32 period);
 
     /// @notice Longest window {consult} serves, in seconds.
     /// @return The window.

@@ -58,11 +58,7 @@ interface IFundOracle {
     /// @param asset        The priced token.
     /// @param aggregator   The aggregator, or zero to clear.
     /// @param maxStaleness Maximum answer age, in seconds (ignored when clearing).
-    function setFeed(
-        address asset,
-        address aggregator,
-        uint32 maxStaleness
-    ) external;
+    function setFeed(address asset, address aggregator, uint32 maxStaleness) external;
 
     /// @notice Start a two-step ownership transfer. Owner only.
     /// @param newOwner The pending owner.
