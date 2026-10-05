@@ -69,6 +69,9 @@ contract FundLaunch is IFundLaunch, Initializable, ReentrancyGuard {
     uint256 public override depositorSupply;
 
     /// @inheritdoc IFundLaunch
+    uint256 public override stakedShares;
+
+    /// @inheritdoc IFundLaunch
     uint256 public override poolUsdg;
 
     /// @inheritdoc IFundLaunch
@@ -192,8 +195,12 @@ contract FundLaunch is IFundLaunch, Initializable, ReentrancyGuard {
             if (total != 0) IERC20(a).safeTransfer(fund, total);
         }
 
-        IFund(fund).moduleMint(address(this), depositorShares);
-        IFund(fund).markLaunched(uint64(block.timestamp + _config.depositorLock));
+        IFund f = IFund(fund);
+        f.moduleMint(address(this), depositorShares);
+        f.markLaunched(uint64(block.timestamp + _config.depositorLock));
+        address staking = f.staking();
+        IERC20(fund).forceApprove(staking, depositorShares);
+        stakedShares = IFundStaking(staking).stake(depositorShares, address(this));
 
         emit LaunchSucceeded(raised, pUsdg, depositorShares, pShares);
     }
@@ -229,24 +236,22 @@ contract FundLaunch is IFundLaunch, Initializable, ReentrancyGuard {
     }
 
     /// @inheritdoc IFundLaunch
+    function distribute(
+        address[] calldata accounts
+    ) external override nonReentrant {
+        if (status != Status.Succeeded) revert WrongStatus();
+        for (uint256 i; i < accounts.length; ++i) {
+            if (claimable(accounts[i]) != 0) _settle(accounts[i], true);
+        }
+    }
+
+    /// @inheritdoc IFundLaunch
     function claim(
         bool stake
-    ) external override nonReentrant returns (uint256 shares) {
+    ) external override nonReentrant returns (uint256 amount) {
         if (status != Status.Succeeded) revert WrongStatus();
-        shares = claimable(msg.sender);
-        if (shares == 0) revert NothingToClaim();
-        settled[msg.sender] = true;
-
-        IFund f = IFund(fund);
-        if (stake) {
-            address staking = f.staking();
-            IERC20(fund).forceApprove(staking, shares);
-            IFundStaking(staking).stakeLocked(shares, msg.sender);
-        } else {
-            IERC20(fund).safeTransfer(msg.sender, shares);
-            f.addLaunchLock(msg.sender, shares);
-        }
-        emit Claimed(msg.sender, shares, stake);
+        if (claimable(msg.sender) == 0) revert NothingToClaim();
+        amount = _settle(msg.sender, stake);
     }
 
     /// @inheritdoc IFundLaunch
@@ -328,8 +333,25 @@ contract FundLaunch is IFundLaunch, Initializable, ReentrancyGuard {
             Deposit storage d = _deposits[account][a];
             if (d.amount != 0) points += _points(a, d.amount, d.timeWeight);
         }
-        // Rounds down, so all claims together never exceed the depositor allocation.
-        shares = Math.mulDiv(depositorSupply, points, totalPoints);
+        // Rounds down, so all claims together never exceed the launch's stake.
+        shares = Math.mulDiv(stakedShares, points, totalPoints);
+    }
+
+    /// @dev Hands `account` its staked shares, locked, or unstakes them to it with the launch lock
+    ///      moved onto the fund tokens.
+    function _settle(address account, bool stake) internal returns (uint256 amount) {
+        uint256 shares = claimable(account);
+        settled[account] = true;
+        IFund f = IFund(fund);
+        IFundStaking staking = IFundStaking(f.staking());
+        if (stake) {
+            amount = shares;
+            staking.transferLocked(account, shares);
+        } else {
+            amount = staking.unstake(shares, account);
+            f.addLaunchLock(account, amount);
+        }
+        emit Claimed(account, amount, stake);
     }
 
     /// @dev Records closing prices and raw values; returns the raise V.

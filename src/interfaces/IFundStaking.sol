@@ -72,12 +72,11 @@ interface IFundStaking is IERC20 {
     /// @param curve_ Yield curve set by Own at launch.
     function initialize(address fund_, YieldPoint[] calldata curve_) external;
 
-    /// @notice Stake fund tokens the launch is releasing to a depositor; every share minted is
-    ///         locked until the depositor unlock. Launch only.
-    /// @param assets   Fund tokens staked (pulled from the launch).
-    /// @param receiver Receiver of the shares.
-    /// @return shares Shares minted.
-    function stakeLocked(uint256 assets, address receiver) external returns (uint256 shares);
+    /// @notice Hand a depositor their share of the stake the launch made at the close; every share
+    ///         moved is locked until the depositor unlock. Launch only.
+    /// @param to     The depositor.
+    /// @param shares Shares moved from the launch.
+    function transferLocked(address to, uint256 shares) external;
 
     /// @notice Shares of `account` that are still locked (meaningful only before the fund's
     ///         depositor unlock).

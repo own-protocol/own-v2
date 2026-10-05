@@ -125,7 +125,10 @@ contract FundLaunchTest is FundTestBase {
         assertApproxEqAbs(launch.depositorSupply(), DEPOSITOR_SHARES, 1);
         assertEq(launch.poolUsdg(), 25_000e6);
         assertEq(fund.totalSupply(), launch.depositorSupply());
-        assertEq(fund.balanceOf(address(launch)), launch.depositorSupply());
+        // The whole depositor allocation is staked by the launch at the close.
+        assertEq(fund.balanceOf(address(staking)), launch.depositorSupply());
+        assertEq(staking.balanceOf(address(launch)), launch.stakedShares());
+        assertEq(launch.stakedShares(), launch.depositorSupply());
 
         assertEq(net.balanceOf(address(fund)), 120e9);
         assertEq(pons.balanceOf(address(fund)), 1_500_000e18);
@@ -495,6 +498,65 @@ contract FundLaunchTest is FundTestBase {
         launch.claim(false);
     }
 
+    function test_distribute_pushesStakedLockedShares() public {
+        _finalizeTwoDepositors();
+        uint256 aliceShares = launch.claimable(alice);
+        uint256 bobShares = launch.claimable(bob);
+        address[] memory accounts = new address[](3);
+        accounts[0] = alice;
+        accounts[1] = bob;
+        accounts[2] = attacker; // nothing to claim: skipped
+        vm.prank(attacker);
+        launch.distribute(accounts);
+
+        assertEq(staking.balanceOf(alice), aliceShares);
+        assertEq(staking.balanceOf(bob), bobShares);
+        assertEq(staking.lockedShares(alice), aliceShares);
+        assertEq(staking.lockedShares(bob), bobShares);
+        assertTrue(launch.settled(alice));
+        assertEq(staking.balanceOf(attacker), 0);
+
+        // Running it again is a no-op, and a pushed depositor has nothing left to claim.
+        launch.distribute(accounts);
+        assertEq(staking.balanceOf(alice), aliceShares);
+        vm.prank(alice);
+        vm.expectRevert(IFundLaunch.NothingToClaim.selector);
+        launch.claim(true);
+    }
+
+    function test_distribute_beforeSuccess_reverts() public {
+        vm.expectRevert(IFundLaunch.WrongStatus.selector);
+        launch.distribute(new address[](0));
+    }
+
+    function test_autoStake_earnsYieldBeforeDepositorsAct() public {
+        _finalizeTwoDepositors();
+        vm.prank(keeper);
+        launch.seedPool();
+        _setFeed(address(fund), _navPrice() * 13 / 10);
+
+        uint256 aliceShares = launch.claimable(alice);
+        uint256 valueAtClose = staking.convertToAssets(aliceShares);
+        vm.warp(block.timestamp + 8 hours);
+        _refreshFeeds();
+        staking.accrue();
+
+        // Alice did nothing, yet her allocation grew; the push hands over the grown shares.
+        assertGt(staking.convertToAssets(aliceShares), valueAtClose);
+        address[] memory accounts = new address[](1);
+        accounts[0] = alice;
+        launch.distribute(accounts);
+        assertEq(staking.balanceOf(alice), aliceShares);
+    }
+
+    function test_autoStake_launchHoldsWholeStakeUntilPushed() public {
+        _finalizeTwoDepositors();
+        // Nobody has claimed: the launch holds the whole stake and casts no votes, so in the weekly
+        // vote it counts as silent stake, which follows the curators.
+        assertEq(staking.totalSupply(), launch.stakedShares());
+        assertEq(governor.escrowOf(address(launch), address(staking)), 0);
+    }
+
     function test_claim_lockedTokensCannotMoveForSevenDays() public {
         _finalizeTwoDepositors();
         vm.prank(alice);
@@ -551,7 +613,6 @@ contract FundLaunchTest is FundTestBase {
         assertEq(shares, expected);
         assertEq(staking.balanceOf(bob), shares);
         assertEq(staking.lockedShares(bob), shares);
-        assertEq(fund.balanceOf(address(staking)), shares);
 
         vm.prank(bob);
         vm.expectRevert(IFundStaking.SharesLocked.selector);
@@ -614,7 +675,7 @@ contract FundLaunchTest is FundTestBase {
         vm.prank(bob);
         launch.claim(true);
         assertLe(fund.balanceOf(alice) + staking.totalAssets(), launch.depositorSupply());
-        assertApproxEqAbs(fund.balanceOf(address(launch)), 0, 10);
+        assertApproxEqAbs(staking.balanceOf(address(launch)), 0, 10);
     }
 
     function test_depositValues_reportsTargetsAndValues() public {

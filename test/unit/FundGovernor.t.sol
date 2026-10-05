@@ -375,7 +375,7 @@ contract FundGovernorTest is FundTestBase {
         staking.stake(bal, bob);
         vm.stopPrank();
         uint256 id = _propose(curatorA, IFundGovernor.ProposalKind.List, address(spare));
-        assertEq(governor.getProposal(id).totalStake, aliceStake);
+        assertApproxEqAbs(governor.getProposal(id).totalStake, aliceStake, 1);
     }
 
     function test_votesOf_silentStakersFollowCurators() public {
@@ -625,7 +625,8 @@ contract FundGovernorTest is FundTestBase {
         assertEq(p.endTime, block.timestamp + 3 days);
         assertEq(p.curatorShareBps, 3000);
         assertEq(p.stakerShareBps, 7000);
-        assertEq(p.totalStake, aliceStake);
+        // The launch keeps a wei of unclaimable rounding dust staked.
+        assertApproxEqAbs(p.totalStake, aliceStake, 1);
         assertEq(p.quorumBps, 2000);
         assertEq(uint8(governor.state(id)), uint8(IFundGovernor.ProposalState.Active));
     }

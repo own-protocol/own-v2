@@ -18,9 +18,16 @@ contract FundStakingTest is FundTestBase {
         bobLiquid = launch.claim(false);
     }
 
+    function test_transferLocked_notLaunch_reverts() public {
+        vm.prank(alice);
+        vm.expectRevert(IFundStaking.NotLaunch.selector);
+        staking.transferLocked(bob, 1);
+    }
+
     function test_stake_oneToOneInitially() public view {
         assertEq(staking.balanceOf(alice), staked);
-        assertEq(staking.totalAssets(), staked);
+        // The launch keeps a wei of unclaimable rounding dust staked.
+        assertApproxEqAbs(staking.totalAssets(), staked, 1);
     }
 
     function test_accrue_payCurveRateForPremium() public {
@@ -30,7 +37,7 @@ contract FundStakingTest is FundTestBase {
         uint256 minted = staking.accrue();
         // The pool TWAP puts the premium within a hair of 30%.
         assertApproxEqRel(minted, staked * 15 * 8 hours / (10_000 * 1 days), 0.001e18);
-        assertEq(staking.totalAssets(), staked + minted);
+        assertApproxEqAbs(staking.totalAssets(), staked + minted, 1);
     }
 
     function test_accrue_donationEarnsNoYield() public {

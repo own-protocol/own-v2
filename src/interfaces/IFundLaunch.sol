@@ -23,8 +23,12 @@ import {LaunchConfig} from "./types/FundTypes.sol";
 ///         - At the close everything moves to the fund and depositors can claim. The manager then
 ///           rebalances to the target weights and to at least P of idle USDG, free of the daily
 ///           volume cap, and calls {seedPool}. Until then nobody can trade or mint; redeeming works.
-///         - Depositors' tokens stay non-transferable for `depositorLock` after the close; they can
-///           be staked (here or later) and redeemed meanwhile.
+///         - Auto-stake: at the close the launch stakes the whole depositor allocation, so it earns
+///           staker yield from then on and its votes follow the curators until its owners vote.
+///           Anyone (the keeper in practice) pushes each depositor's staked shares to them with
+///           {distribute}; a depositor can also {claim} their own, staked or as fund tokens.
+///         - Depositors' shares (or tokens) stay locked for `depositorLock` after the close; they
+///           can be unstaked to the same account and redeemed meanwhile.
 interface IFundLaunch {
     /// @notice Launch lifecycle.
     enum Status {
@@ -63,11 +67,11 @@ interface IFundLaunch {
     /// @param shares     Fund tokens added.
     event PoolSeeded(uint256 usdgAmount, uint256 shares);
 
-    /// @notice Emitted when a depositor claims fund tokens.
+    /// @notice Emitted when a depositor receives their allocation.
     /// @param account Depositor.
-    /// @param shares  Fund tokens.
-    /// @param staked  Whether they were staked on the depositor's behalf.
-    event Claimed(address indexed account, uint256 shares, bool staked);
+    /// @param amount  Staked shares, or fund tokens when not staked.
+    /// @param staked  Whether they stayed staked.
+    event Claimed(address indexed account, uint256 amount, bool staked);
 
     /// @notice Emitted when a depositor is refunded.
     /// @param account Depositor.
@@ -148,12 +152,20 @@ interface IFundLaunch {
     /// @notice Mark the launch failed when nobody finalized it in time. Anyone.
     function markFailed() external;
 
-    /// @notice Claim the caller's fund tokens after a successful launch, optionally staked.
-    /// @param stake Whether to stake them on the caller's behalf.
-    /// @return shares Fund tokens claimed.
+    /// @notice Push depositors their staked, locked shares. Anyone. Accounts with nothing to
+    ///         claim are skipped.
+    /// @param accounts Depositors.
+    function distribute(
+        address[] calldata accounts
+    ) external;
+
+    /// @notice Claim the caller's allocation after a successful launch: the staked shares, or with
+    ///         `stake` false the fund tokens behind them (locked until the depositor unlock).
+    /// @param stake Whether to keep them staked.
+    /// @return amount Staked shares, or fund tokens when not staked.
     function claim(
         bool stake
-    ) external returns (uint256 shares);
+    ) external returns (uint256 amount);
 
     /// @notice Take back the caller's deposits after a failed launch.
     function refund() external;
@@ -203,6 +215,10 @@ interface IFundLaunch {
     /// @notice Fund tokens allocated to depositors (set at success).
     /// @return The amount.
     function depositorSupply() external view returns (uint256);
+
+    /// @notice Staked shares the launch got for the depositor allocation at the close.
+    /// @return The shares.
+    function stakedShares() external view returns (uint256);
 
     /// @notice USDG set aside at the close to seed the pool.
     /// @return The amount.
@@ -266,9 +282,9 @@ interface IFundLaunch {
         view
         returns (address[] memory assets, uint256[] memory values, uint16[] memory weightsBps);
 
-    /// @notice Fund tokens the account can claim (zero unless the launch succeeded).
+    /// @notice Staked shares the account can claim (zero unless the launch succeeded).
     /// @param account The account.
-    /// @return shares Fund tokens.
+    /// @return shares Staked shares.
     function claimable(
         address account
     ) external view returns (uint256 shares);

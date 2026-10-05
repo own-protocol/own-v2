@@ -67,13 +67,14 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuard {
 
     /// @inheritdoc IFundStaking
     function stake(uint256 assets, address receiver) external override nonReentrant returns (uint256 shares) {
-        return _stake(assets, receiver, false);
+        return _stake(assets, receiver);
     }
 
     /// @inheritdoc IFundStaking
-    function stakeLocked(uint256 assets, address receiver) external override nonReentrant returns (uint256 shares) {
+    function transferLocked(address to, uint256 shares) external override nonReentrant {
         if (msg.sender != IFund(fund).launch()) revert NotLaunch();
-        return _stake(assets, receiver, true);
+        _transfer(msg.sender, to, shares);
+        _addLock(to, shares);
     }
 
     /// @inheritdoc IFundStaking
@@ -182,18 +183,15 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuard {
 
     /// @dev With `allLocked` every new share is locked; otherwise as many as the launch-locked fund
     ///      tokens moved in, rounded up so a locked deposit never yields an unlocked share.
-    function _stake(uint256 assets, address receiver, bool allLocked) internal returns (uint256 shares) {
+    function _stake(uint256 assets, address receiver) internal returns (uint256 shares) {
         if (assets == 0) revert ZeroAmount();
         if (receiver == address(0)) revert ZeroAddress();
         _accrue();
         shares = convertToShares(assets);
         if (shares == 0) revert ZeroAmount();
         _totalStaked += assets;
-        uint256 locked = shares;
-        if (!allLocked) {
-            uint256 moved = IFund(fund).releaseLaunchLock(msg.sender, assets);
-            locked = Math.min(Math.mulDiv(shares, moved, assets, Math.Rounding.Ceil), shares);
-        }
+        uint256 moved = IFund(fund).releaseLaunchLock(msg.sender, assets);
+        uint256 locked = Math.min(Math.mulDiv(shares, moved, assets, Math.Rounding.Ceil), shares);
         IERC20(fund).safeTransferFrom(msg.sender, address(this), assets);
         _mint(receiver, shares);
         if (locked != 0) _addLock(receiver, locked);

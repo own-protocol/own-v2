@@ -59,10 +59,14 @@ Design source: the "Own Curated Funds: launch, curators, weight votes and bribes
    adds P of the fund's USDG and the M tokens as the fund's position, so the pool opens at 1.3 ×
    NAV. Redemptions before seeding shrink P and M in proportion. Before seeding nobody can trade
    or mint and stakers earn nothing; redeeming works.
-5. **Claim.** Depositors claim their tokens, liquid or staked. Locked tokens cannot be transferred
-   or sold for 7 days, but they can be staked, escrowed in the governor and redeemed at NAV.
-   Unstaking during the lock keeps the tokens locked and pays only to the staker's own account.
-   Tokens bought later are never locked.
+5. **Auto-stake, no claim needed.** At the close the launch stakes the whole depositor allocation,
+   so it earns staker yield from then on (once the pool gives a market price) and, until its
+   owners vote, counts as silent stake whose weekly votes follow the curators. Anyone (the keeper)
+   calls `distribute(accounts)` to push each depositor's staked shares, locked for 7 days; a
+   depositor can also `claim` their own, staked or as fund tokens. Locked shares and tokens cannot
+   be transferred or sold for 7 days, but they can be escrowed in the governor and redeemed at
+   NAV. Unstaking during the lock keeps the tokens locked and pays only to the staker's own
+   account. Tokens bought later are never locked.
 
 ## The fund's pool position
 
@@ -185,7 +189,8 @@ Design source: the "Own Curated Funds: launch, curators, weight votes and bribes
 - **Manager (Own keeper):** trusted only within the rebalance bounds above. Between the launch
   close and pool seeding it is trusted more: no daily volume cap, only the 2% per-swap bound, so
   it should finish the launch rebalance and seed promptly. Its launch jobs are `finalize()` as
-  soon as the window ends or the target raise is reached, then the rebalance and `seedPool()`.
+  soon as the window ends or the target raise is reached, then the rebalance, `seedPool()` and
+  `distribute()` in batches.
 - **Oracle feeds:** basket prices come from admin-set feeds; the fund's market price and the
   position value come from its own pool TWAP. Redeem depends on neither.
 - **USDG:** treated as $1.
