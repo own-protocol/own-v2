@@ -63,7 +63,8 @@ library GaugeMath {
     }
 
     /// @notice Moves every weight the same fraction of the way to its target, so that none moves
-    ///         more than the weekly shift; rounding dust goes to the largest weight.
+    ///         more than the weekly shift; rounding dust goes to the largest remainders, one basis
+    ///         point each, so no weight ends more than a point above its exact value (or its cap).
     /// @param current  Current weights (bps, summing to 10 000).
     /// @param t        Targets (WAD).
     /// @param shiftBps Largest move allowed for any weight.
@@ -85,17 +86,24 @@ library GaugeMath {
         uint256 k = maxDiff <= shift ? WAD : Math.mulDiv(shift, WAD, maxDiff);
 
         uint256 sum;
-        uint256 largest;
+        uint256[] memory rem = new uint256[](n);
         for (uint256 j; j < n; ++j) {
             uint256 old = uint256(current[j]) * BPS_TO_WAD;
             uint256 w = t[j] >= old
                 ? old + Math.mulDiv(t[j] - old, k, WAD)
                 : old - Math.mulDiv(old - t[j], k, WAD, Math.Rounding.Ceil);
             weights[j] = uint16(w / BPS_TO_WAD);
+            rem[j] = w % BPS_TO_WAD;
             sum += weights[j];
-            if (weights[j] > weights[largest]) largest = j;
         }
-        weights[largest] += uint16(BPS - sum);
+        for (uint256 left = BPS - sum; left != 0; --left) {
+            uint256 best;
+            for (uint256 j = 1; j < n; ++j) {
+                if (rem[j] > rem[best]) best = j;
+            }
+            ++weights[best];
+            rem[best] = 0;
+        }
     }
 
     /// @dev Caps every target at `cap`, handing the excess to the uncapped targets pro rata.

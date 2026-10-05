@@ -445,7 +445,7 @@ contract FundGovernorTest is FundTestBase {
         // With three tokens the cap is a third; NET starts at 40% and moves toward it.
         _toNextEpoch();
         governor.flip();
-        assertEq(fund.targetWeightBps(address(net)), 3502);
+        assertEq(fund.targetWeightBps(address(net)), 3500);
         for (uint256 i; i < 3; ++i) {
             _toNextEpoch();
             governor.flip();
