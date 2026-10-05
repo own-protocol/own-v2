@@ -46,6 +46,7 @@ contract DeployFundsRobinhood is Script {
     uint256 constant ROBINHOOD_CHAIN_ID = 4663;
 
     address constant POOL_MANAGER = 0x8366a39CC670B4001A1121B8F6A443A643e40951;
+    address constant POSITION_MANAGER = 0x58daec3116aae6D93017bAAea7749052E8a04fA7;
     address constant USDG = 0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168;
 
     uint160 constant HOOK_FLAGS = Hooks.BEFORE_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG
@@ -54,6 +55,7 @@ contract DeployFundsRobinhood is Script {
     function run() external {
         require(block.chainid == ROBINHOOD_CHAIN_ID, "RPC is not Robinhood Chain (4663)");
         require(POOL_MANAGER.code.length > 0, "no v4 PoolManager");
+        require(POSITION_MANAGER.code.length > 0, "no v4 PositionManager");
         require(CREATE2_FACTORY.code.length > 0, "no CREATE2 deployer");
 
         uint256 key = vm.envUint("DEPLOYER_PRIVATE_KEY_ROBINHOOD");
@@ -107,7 +109,7 @@ contract DeployFundsRobinhood is Script {
         address[6] memory impls = [
             address(new Fund()),
             address(new FundLaunch()),
-            address(new FundStaking()),
+            address(new FundStaking(POSITION_MANAGER)),
             address(new FundGovernor()),
             address(new FundCurators()),
             address(new FundBribes())

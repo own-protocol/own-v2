@@ -14,7 +14,7 @@ Design source: the "Own Curated Funds: launch, curators, weight votes and bribes
 | `FundFactory` | UUPS. Platform admin hub: launcher whitelist (Own only by default), protocol fee (0.5% default, 5% cap), rebalance routers and limits, launch and governance defaults, staking yield cap (3% a day), curator cap (10), bribe cut (5%, 10% cap), bribe tokens, the listing eligibility list and the platform metadata. Owns the six module beacons, so one call upgrades every fund. |
 | `Fund` | Beacon proxy per fund. The fund token plus custody of the basket and idle USDG: mint, redeem, locks, rebalance, the depositor lock. NAV counts the pool position. |
 | `FundLaunch` | Beacon proxy per fund. Deposit window (any basket token or USDG), early close at the target raise, early-deposit yield, overweight haircut, the fixed-supply split and pool seeding after the launch rebalance. |
-| `FundStaking` | Beacon proxy per fund. Staked fund token (e.g. sOCF1) with issuance set by a premium-based yield curve. |
+| `FundStaking` | Beacon proxy per fund. Staked fund token (e.g. sOCF1) with issuance set by a premium-based yield curve, and staking of full-range Uniswap v4 LP position NFTs in the fund's pool. |
 | `FundGovernor` | Beacon proxy per fund. Staked escrow, the weekly weight vote (gauge) and proposals to list or delist tokens and add, remove or replace curators. |
 | `FundCurators` | Beacon proxy per fund. The curator set, the minimum curator stake and compliance, and the curator fee split. It is the curator fee recipient. |
 | `FundBribes` | Beacon proxy per fund. Bribes on the weekly vote per token per week, and bribes on listing proposals. |
@@ -103,6 +103,16 @@ Design source: the "Own Curated Funds: launch, curators, weight votes and bribes
   hump, for example 0 at NAV, about 1% a week from a 10% to a 30% premium, then down to 0 at the
   ceiling, so yield draws stakers in at a moderate premium and stops fuelling a runaway one. No
   yield at or below NAV. Yield accrues every 8 hours at most.
+- **LP staking:** LPs stake their Uniswap v4 position NFT in `FundStaking` (`stakePosition`, or
+  send it with the PositionManager's `safeTransferFrom`). Only full-range positions in the fund's
+  pool qualify, so every staked position holds the same fund tokens per unit of liquidity and one
+  yield-per-liquidity counter pays them all fairly. A staked position earns the staking rate on the
+  fund tokens it holds, valued at the pool's 30-minute TWAP; its USDG side earns nothing. The yield
+  is minted with the stakers' yield, held in `FundStaking` and claimed in fund tokens
+  (`claimPositionYield`, or on `unstakePosition`). The position's swap fees stay the LP's: they can
+  collect them while staked (`collectPositionFees`) or after unstaking. Staked positions do not
+  vote and earn no bribes. The admin can return a position NFT that reached `FundStaking` without
+  being staked (`recoverPosition`).
 - **Rebalancing:** the manager (Own keeper) swaps between basket assets, and from idle USDG into
   them, through admin-allowed routers: at most 2% loss of oracle value per swap, and at most 10% of
   the basket a day (a running total that drains at the full cap per day). Assets worth up to 0.1%
@@ -196,7 +206,9 @@ Design source: the "Own Curated Funds: launch, curators, weight votes and bribes
 - **USDG:** treated as $1.
 - **Hook address:** the hook must be deployed (CREATE2-mined) at an address whose low bits encode
   `beforeInitialize | beforeSwap | afterSwap | beforeSwapReturnDelta | afterSwapReturnDelta`.
-  The Uniswap v4 PoolManager on Robinhood Chain is `0x8366a39cc670b4001a1121b8f6a443a643e40951`.
+  The Uniswap v4 PoolManager on Robinhood Chain is `0x8366a39cc670b4001a1121b8f6a443a643e40951`
+  and the PositionManager (LP position NFTs, set in the `FundStaking` implementation) is
+  `0x58daec3116aae6d93017baaea7749052e8a04fa7`.
 
 ## Deployment
 
@@ -212,3 +224,6 @@ ownership to `FUNDS_ADMIN` (two-step). After a fund launches,
   `test/helpers/v4/PoolManagerBytecode.sol` (v4-core pins solc 0.8.26; this repo pins 0.8.28).
 - `test/invariant/FundInvariant.t.sol` checks that mints and redeems never lower NAV per token
   (beyond the position valuation's rounding) and that locked mints stay fully held.
+- `test/unit/FundStakingLp.t.sol` uses `test/helpers/MockPositionManager.sol`;
+  `test/fork/FundLpStakingRobinhoodFork.t.sol` (needs `ROBINHOOD_RPC`) mints, stakes, trades
+  against, collects fees from and unstakes a position through the live PositionManager.

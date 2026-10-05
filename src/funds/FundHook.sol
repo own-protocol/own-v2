@@ -334,9 +334,17 @@ contract FundHook is IFundHook, IUnlockCallback {
     function positionAmounts(
         address fund
     ) external view override returns (uint256 usdgAmount, uint256 fundTokens) {
+        return liquidityAmounts(fund, _pools[fund].liquidity);
+    }
+
+    /// @inheritdoc IFundHook
+    function liquidityAmounts(
+        address fund,
+        uint128 liquidity
+    ) public view override returns (uint256 usdgAmount, uint256 fundTokens) {
         Pool storage pool = _pools[fund];
-        if (!pool.seeded || pool.liquidity == 0) return (0, 0);
-        return _amountsAt(fund, _positionTick(pool, fund), pool.liquidity);
+        if (!pool.seeded || liquidity == 0) return (0, 0);
+        return _amountsAt(fund, _positionTick(pool, fund), liquidity);
     }
 
     /// @notice Callbacks this hook enables; its deployed address must encode exactly these.

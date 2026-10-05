@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
+import {IPositionManager} from "./external/IPositionManager.sol";
 import {YieldPoint} from "./types/FundTypes.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {IERC721Receiver} from "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
 
 /// @title IFundStaking — staked fund tokens (e.g. sOCF1) earning premium-based yield
 /// @notice Stakers deposit fund tokens and receive vault shares. While the fund trades at a premium
@@ -17,7 +19,12 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 ///         Shares staked from launch-locked fund tokens are locked the same way until the fund's
 ///         depositor unlock: they can be deposited in the governor (and come back to the same
 ///         account) or unstaked (the fund tokens come back locked), but not transferred.
-interface IFundStaking is IERC20 {
+///
+///         LPs can stake their Uniswap v4 position NFT for a full-range position in the fund's
+///         pool. It earns the same daily rate on the fund tokens it holds (valued at the pool TWAP;
+///         its USDG earns nothing), paid in fund tokens they claim. The position's swap fees stay
+///         theirs: they can collect them while staked or after. Staked positions do not vote.
+interface IFundStaking is IERC20, IERC721Receiver {
     /// @notice Emitted on a stake.
     /// @param sender   Payer of the fund tokens.
     /// @param receiver Receiver of the shares.
@@ -36,8 +43,32 @@ interface IFundStaking is IERC20 {
     /// @param elapsed        Seconds covered.
     /// @param premiumBps     Premium read.
     /// @param ratePerDayWad  Daily rate applied, as a fraction of the staked balance (1e18 = 100%).
-    /// @param minted         Fund tokens minted to the vault.
-    event YieldAccrued(uint256 elapsed, int256 premiumBps, uint256 ratePerDayWad, uint256 minted);
+    /// @param minted         Fund tokens minted to the vault for stakers.
+    /// @param lpMinted       Fund tokens minted for staked LP positions.
+    event YieldAccrued(uint256 elapsed, int256 premiumBps, uint256 ratePerDayWad, uint256 minted, uint256 lpMinted);
+
+    /// @notice Emitted when an LP position is staked.
+    /// @param owner     Owner credited with the position.
+    /// @param tokenId   The position.
+    /// @param liquidity Its liquidity.
+    event PositionStaked(address indexed owner, uint256 indexed tokenId, uint128 liquidity);
+
+    /// @notice Emitted when an LP position is unstaked.
+    /// @param owner   Its owner.
+    /// @param tokenId The position.
+    /// @param to      Receiver of the position.
+    event PositionUnstaked(address indexed owner, uint256 indexed tokenId, address to);
+
+    /// @notice Emitted when a staked position's yield is paid.
+    /// @param tokenId The position.
+    /// @param to      Receiver.
+    /// @param amount  Fund tokens paid.
+    event PositionYieldClaimed(uint256 indexed tokenId, address indexed to, uint256 amount);
+
+    /// @notice Emitted when a staked position's swap fees are collected.
+    /// @param tokenId The position.
+    /// @param to      Receiver.
+    event PositionFeesCollected(uint256 indexed tokenId, address indexed to);
 
     /// @notice Emitted when an account's locked shares change.
     /// @param account The account.
@@ -66,6 +97,21 @@ interface IFundStaking is IERC20 {
     /// @notice The transfer would move shares that are still locked, or would unstake them to
     ///         another account.
     error SharesLocked();
+
+    /// @notice An ERC-721 arrived from a contract other than the PositionManager.
+    error NotPositionManager();
+
+    /// @notice The position is not in the fund's pool.
+    error NotFundPosition();
+
+    /// @notice The position is not full range.
+    error NotFullRange();
+
+    /// @notice Caller did not stake the position.
+    error NotPositionOwner();
+
+    /// @notice The position is staked, so it cannot be recovered.
+    error PositionIsStaked();
 
     /// @notice Initialise a staking proxy. Called once by the factory.
     /// @param fund_  The fund token.
@@ -99,8 +145,62 @@ interface IFundStaking is IERC20 {
     function unstake(uint256 shares, address receiver) external returns (uint256 assets);
 
     /// @notice Accrue yield up to now. Anyone can call; keepers call it every epoch.
-    /// @return minted Fund tokens minted.
+    /// @return minted Fund tokens minted for stakers (staked LP positions' yield is in the event).
     function accrue() external returns (uint256 minted);
+
+    /// @notice Stake a full-range position in the fund's pool. The caller must own it and have
+    ///         approved this contract; sending it with the PositionManager's `safeTransferFrom`
+    ///         does the same in one step.
+    /// @param tokenId The position.
+    function stakePosition(
+        uint256 tokenId
+    ) external;
+
+    /// @notice Return a staked position with its yield. Its swap fees stay on the position.
+    /// @param tokenId The position.
+    /// @param to      Receiver of the position and the yield.
+    /// @return paid Fund tokens paid.
+    function unstakePosition(uint256 tokenId, address to) external returns (uint256 paid);
+
+    /// @notice Claim a staked position's yield.
+    /// @param tokenId The position.
+    /// @param to      Receiver.
+    /// @return paid Fund tokens paid.
+    function claimPositionYield(uint256 tokenId, address to) external returns (uint256 paid);
+
+    /// @notice Collect a staked position's swap fees, in both currencies.
+    /// @param tokenId The position.
+    /// @param to      Receiver.
+    function collectPositionFees(uint256 tokenId, address to) external;
+
+    /// @notice Return a position NFT that reached this contract without being staked (for example
+    ///         minted straight to it). Admin only.
+    /// @param tokenId The position.
+    /// @param to      Receiver.
+    function recoverPosition(uint256 tokenId, address to) external;
+
+    /// @notice The Uniswap v4 PositionManager whose positions can be staked.
+    /// @return The PositionManager.
+    function positionManager() external view returns (IPositionManager);
+
+    /// @notice Liquidity of all staked positions.
+    /// @return The liquidity.
+    function lpLiquidity() external view returns (uint128);
+
+    /// @notice A staked position.
+    /// @param tokenId The position.
+    /// @return owner     Who staked it (zero if not staked).
+    /// @return liquidity Its liquidity.
+    function positionOf(
+        uint256 tokenId
+    ) external view returns (address owner, uint128 liquidity);
+
+    /// @notice A staked position's unclaimed yield (excluding unaccrued yield).
+    /// @param tokenId The position.
+    /// @return Fund tokens.
+    function pendingPositionYield(
+        uint256 tokenId
+    ) external view returns (uint256);
 
     /// @notice Replace the yield curve. Admin only.
     /// @param curve_ New curve points.

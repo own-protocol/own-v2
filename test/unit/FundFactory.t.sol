@@ -241,7 +241,7 @@ contract FundFactoryTest is FundTestBase {
         address[6] memory impls = [
             address(new Fund()),
             address(new FundLaunch()),
-            address(new FundStaking()),
+            address(new FundStaking(positionManager)),
             address(new FundGovernor()),
             address(new FundCurators()),
             address(new FundBribes())

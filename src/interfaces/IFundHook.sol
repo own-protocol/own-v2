@@ -199,4 +199,15 @@ interface IFundHook {
     function positionAmounts(
         address fund
     ) external view returns (uint256 usdgAmount, uint256 fundTokens);
+
+    /// @notice Amounts in a full-range position of `liquidity` in the fund's pool, valued at the
+    ///         same TWAP as {positionAmounts}. Zero before seeding.
+    /// @param fund      The fund.
+    /// @param liquidity The liquidity.
+    /// @return usdgAmount USDG in the position.
+    /// @return fundTokens Fund tokens in the position.
+    function liquidityAmounts(
+        address fund,
+        uint128 liquidity
+    ) external view returns (uint256 usdgAmount, uint256 fundTokens);
 }

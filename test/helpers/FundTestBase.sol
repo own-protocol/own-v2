@@ -18,6 +18,7 @@ import {CreateFundParams, LockOption, YieldPoint} from "../../src/interfaces/typ
 import {Actors} from "./Actors.sol";
 import {MockAggregatorV3} from "./MockAggregatorV3.sol";
 import {MockERC20} from "./MockERC20.sol";
+import {MockPositionManager} from "./MockPositionManager.sol";
 import {PoolManagerBytecode} from "./v4/PoolManagerBytecode.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import {Test} from "forge-std/Test.sol";
@@ -42,6 +43,7 @@ abstract contract FundTestBase is Test {
     address internal attacker = Actors.ATTACKER;
 
     IPoolManager internal poolManager;
+    address internal positionManager;
     FundOracle internal oracle;
     FundFactory internal factory;
     FundHook internal hook;
@@ -66,7 +68,8 @@ abstract contract FundTestBase is Test {
     function setUp() public virtual {
         vm.warp(1_000_000);
 
-        poolManager = IPoolManager(PoolManagerBytecode.deploy(admin));
+        poolManager = _deployPoolManager();
+        positionManager = _deployPositionManager();
         oracle = new FundOracle(admin);
 
         usdg = new MockERC20("Global Dollar", "USDG", 6);
@@ -84,7 +87,7 @@ abstract contract FundTestBase is Test {
         address[6] memory impls = [
             address(new Fund()),
             address(new FundLaunch()),
-            address(new FundStaking()),
+            address(new FundStaking(positionManager)),
             address(new FundGovernor()),
             address(new FundCurators()),
             address(new FundBribes())
@@ -103,6 +106,14 @@ abstract contract FundTestBase is Test {
         factory.setHook(hookAddr);
         factory.setLauncher(launcher, true);
         vm.stopPrank();
+    }
+
+    function _deployPoolManager() internal virtual returns (IPoolManager) {
+        return IPoolManager(PoolManagerBytecode.deploy(admin));
+    }
+
+    function _deployPositionManager() internal virtual returns (address) {
+        return address(new MockPositionManager());
     }
 
     // ──────────────────────────────────────────────────────────

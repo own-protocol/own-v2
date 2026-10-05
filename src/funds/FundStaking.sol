@@ -4,10 +4,13 @@ pragma solidity 0.8.28;
 import {IFund} from "../interfaces/IFund.sol";
 import {IFundFactory} from "../interfaces/IFundFactory.sol";
 import {IFundGovernor} from "../interfaces/IFundGovernor.sol";
+import {IFundHook} from "../interfaces/IFundHook.sol";
 import {IFundStaking} from "../interfaces/IFundStaking.sol";
+import {IPositionManager} from "../interfaces/external/IPositionManager.sol";
 import {BPS_TO_WAD, YieldPoint} from "../interfaces/types/FundTypes.sol";
 import {PRECISION} from "../interfaces/types/Types.sol";
 import {EpochHistory} from "./libraries/EpochHistory.sol";
+import {PositionFees} from "./libraries/PositionFees.sol";
 import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -15,14 +18,20 @@ import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IER
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+import {TickMath} from "v4-core/src/libraries/TickMath.sol";
+import {PoolId, PoolIdLibrary} from "v4-core/src/types/PoolId.sol";
+import {PoolKey} from "v4-core/src/types/PoolKey.sol";
 
 /// @title FundStaking — staked fund token vault with premium-based issuance
 /// @notice See {IFundStaking}.
 /// @dev Beacon proxy per fund. Share maths uses one virtual share and one virtual asset, which
-///      makes first-depositor donation attacks unprofitable.
+///      makes first-depositor donation attacks unprofitable. Staked LP positions are paid from one
+///      yield-per-liquidity counter: every full-range position holds the same fund tokens per unit
+///      of liquidity at a given price, so the counter pays each in proportion to its fund tokens.
 contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuard {
     using SafeERC20 for IERC20;
     using EpochHistory for EpochHistory.History;
+    using PoolIdLibrary for PoolKey;
 
     /// @notice Longest period one accrual covers. Yield is distributed every 8 hours, so one
     ///         premium reading never sets the rate for longer than that.
@@ -33,6 +42,17 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuard {
 
     // Same weekly epoch as the governor's.
     uint256 private constant EPOCH = 1 weeks;
+
+    uint256 private constant Q128 = 1 << 128;
+
+    struct LpPosition {
+        address owner;
+        uint128 liquidity;
+        uint256 paid;
+    }
+
+    /// @inheritdoc IFundStaking
+    IPositionManager public immutable override positionManager;
 
     /// @inheritdoc IFundStaking
     address public override fund;
@@ -52,7 +72,20 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuard {
 
     EpochHistory.History private _supply;
 
-    constructor() ERC20("", "") {
+    /// @inheritdoc IFundStaking
+    uint128 public override lpLiquidity;
+
+    // Fund tokens owed per unit of staked LP liquidity since launch, Q128.
+    uint256 private _lpYieldPerLiquidity;
+
+    mapping(uint256 tokenId => LpPosition) private _positions;
+
+    /// @param positionManager_ The Uniswap v4 PositionManager whose positions can be staked.
+    constructor(
+        address positionManager_
+    ) ERC20("", "") {
+        if (positionManager_ == address(0)) revert ZeroAddress();
+        positionManager = IPositionManager(positionManager_);
         _disableInitializers();
     }
 
@@ -98,6 +131,64 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuard {
     }
 
     /// @inheritdoc IFundStaking
+    function stakePosition(
+        uint256 tokenId
+    ) external override nonReentrant {
+        positionManager.transferFrom(msg.sender, address(this), tokenId);
+        _stakePosition(tokenId, msg.sender);
+    }
+
+    /// @notice Stakes a position sent with `safeTransferFrom`, for the address it came from.
+    /// @param from    Previous owner, credited with the position.
+    /// @param tokenId The position.
+    /// @return The receiver selector.
+    function onERC721Received(
+        address,
+        address from,
+        uint256 tokenId,
+        bytes calldata
+    ) external override nonReentrant returns (bytes4) {
+        if (msg.sender != address(positionManager)) revert NotPositionManager();
+        _stakePosition(tokenId, from);
+        return this.onERC721Received.selector;
+    }
+
+    /// @inheritdoc IFundStaking
+    function unstakePosition(uint256 tokenId, address to) external override nonReentrant returns (uint256 paid) {
+        if (to == address(0)) revert ZeroAddress();
+        LpPosition storage p = _ownedPosition(tokenId);
+        _accrue();
+        paid = _payPosition(tokenId, p, to);
+        lpLiquidity -= p.liquidity;
+        delete _positions[tokenId];
+        positionManager.safeTransferFrom(address(this), to, tokenId);
+        emit PositionUnstaked(msg.sender, tokenId, to);
+    }
+
+    /// @inheritdoc IFundStaking
+    function claimPositionYield(uint256 tokenId, address to) external override nonReentrant returns (uint256 paid) {
+        if (to == address(0)) revert ZeroAddress();
+        LpPosition storage p = _ownedPosition(tokenId);
+        _accrue();
+        paid = _payPosition(tokenId, p, to);
+    }
+
+    /// @inheritdoc IFundStaking
+    function collectPositionFees(uint256 tokenId, address to) external override nonReentrant {
+        if (to == address(0)) revert ZeroAddress();
+        _ownedPosition(tokenId);
+        PositionFees.collect(positionManager, tokenId, to);
+        emit PositionFeesCollected(tokenId, to);
+    }
+
+    /// @inheritdoc IFundStaking
+    function recoverPosition(uint256 tokenId, address to) external override nonReentrant {
+        if (msg.sender != _factory.owner()) revert NotAdmin();
+        if (_positions[tokenId].owner != address(0)) revert PositionIsStaked();
+        positionManager.safeTransferFrom(address(this), to, tokenId);
+    }
+
+    /// @inheritdoc IFundStaking
     function accrue() external override nonReentrant returns (uint256 minted) {
         return _accrue();
     }
@@ -133,6 +224,22 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuard {
         uint256 epoch
     ) external view override returns (uint256) {
         return _supply.valueAt(epoch);
+    }
+
+    /// @inheritdoc IFundStaking
+    function positionOf(
+        uint256 tokenId
+    ) external view override returns (address owner, uint128 liquidity) {
+        LpPosition storage p = _positions[tokenId];
+        return (p.owner, p.liquidity);
+    }
+
+    /// @inheritdoc IFundStaking
+    function pendingPositionYield(
+        uint256 tokenId
+    ) external view override returns (uint256) {
+        LpPosition storage p = _positions[tokenId];
+        return Math.mulDiv(p.liquidity, _lpYieldPerLiquidity - p.paid, Q128);
     }
 
     /// @inheritdoc IFundStaking
@@ -198,9 +305,10 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuard {
         emit Staked(msg.sender, receiver, assets, shares);
     }
 
-    /// @dev Mints the yield owed since the last accrual, at the rate of the premium read now.
-    ///      No yield without a fresh premium reading; the period is still consumed, so a stale
-    ///      oracle can only withhold yield, never inflate it later.
+    /// @dev Mints the yield owed since the last accrual, at the rate of the premium read now, to
+    ///      stakers and to staked LP positions (on their fund tokens at the pool TWAP; LP yield is
+    ///      held here until claimed). No yield without a fresh premium reading; the period is still
+    ///      consumed, so a stale oracle can only withhold yield, never inflate it later.
     function _accrue() internal returns (uint256 minted) {
         uint256 last = lastAccrual;
         if (block.timestamp <= last) return 0;
@@ -209,19 +317,64 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuard {
         lastAccrual = uint64(block.timestamp);
 
         uint256 staked = totalAssets();
-        if (staked == 0 || totalSupply() == 0) return 0;
+        bool stakers = staked != 0 && totalSupply() != 0;
+        uint128 lpLiq = lpLiquidity;
+        if (!stakers && lpLiq == 0) return 0;
 
         (bool ok, int256 premium) = IFund(fund).premiumBps();
         if (!ok) return 0;
         uint256 rate = rateForPremium(premium);
         if (rate == 0) return 0;
 
-        minted = Math.mulDiv(staked, rate * elapsed, PRECISION * 1 days);
-        if (minted != 0) {
+        if (stakers) {
+            minted = Math.mulDiv(staked, rate * elapsed, PRECISION * 1 days);
             _totalStaked += minted;
-            IFund(fund).moduleMint(address(this), minted);
         }
-        emit YieldAccrued(elapsed, premium, rate, minted);
+        uint256 lpMinted;
+        if (lpLiq != 0) {
+            (, uint256 lpTokens) = IFundHook(_factory.hook()).liquidityAmounts(fund, lpLiq);
+            lpMinted = Math.mulDiv(lpTokens, rate * elapsed, PRECISION * 1 days);
+            _lpYieldPerLiquidity += Math.mulDiv(lpMinted, Q128, lpLiq);
+        }
+        if (minted + lpMinted != 0) IFund(fund).moduleMint(address(this), minted + lpMinted);
+        emit YieldAccrued(elapsed, premium, rate, minted, lpMinted);
+    }
+
+    /// @dev Takes custody of a full-range position in the fund's pool. Its liquidity cannot change
+    ///      while staked: only the owner (this contract) can modify it.
+    function _stakePosition(uint256 tokenId, address owner) internal {
+        (PoolKey memory key, uint256 info) = positionManager.getPoolAndPositionInfo(tokenId);
+        PoolKey memory fundKey = IFundHook(_factory.hook()).poolKeyOf(fund);
+        if (address(fundKey.hooks) == address(0) || PoolId.unwrap(key.toId()) != PoolId.unwrap(fundKey.toId())) {
+            revert NotFundPosition();
+        }
+        // PositionInfo packs tick lower at bits 8-31 and tick upper at bits 32-55.
+        if (
+            int24(uint24(info >> 8)) != TickMath.minUsableTick(key.tickSpacing)
+                || int24(uint24(info >> 32)) != TickMath.maxUsableTick(key.tickSpacing)
+        ) revert NotFullRange();
+        uint128 liquidity = positionManager.getPositionLiquidity(tokenId);
+        if (liquidity == 0) revert ZeroAmount();
+        _accrue();
+        lpLiquidity += liquidity;
+        _positions[tokenId] = LpPosition({owner: owner, liquidity: liquidity, paid: _lpYieldPerLiquidity});
+        emit PositionStaked(owner, tokenId, liquidity);
+    }
+
+    function _ownedPosition(
+        uint256 tokenId
+    ) internal view returns (LpPosition storage p) {
+        p = _positions[tokenId];
+        if (p.owner != msg.sender) revert NotPositionOwner();
+    }
+
+    function _payPosition(uint256 tokenId, LpPosition storage p, address to) internal returns (uint256 paid) {
+        uint256 acc = _lpYieldPerLiquidity;
+        // Rounds down: positions are never paid more than was minted for them.
+        paid = Math.mulDiv(p.liquidity, acc - p.paid, Q128);
+        p.paid = acc;
+        if (paid != 0) IERC20(fund).safeTransfer(to, paid);
+        emit PositionYieldClaimed(tokenId, to, paid);
     }
 
     /// @dev Locked shares can leave an account only by being burned (unstake, which moves the lock
