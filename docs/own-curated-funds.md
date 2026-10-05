@@ -179,7 +179,9 @@ Design source: the "Own Curated Funds: launch, curators, weight votes and bribes
   the curator cap, the bribe cut and tokens, the eligibility list, governance rules and each fund's
   curator fee, minimum curator stake, lock options, yield curve and premium ceiling; adds and
   removes curators;
-  vetoes proposals; can delist a token directly; can withdraw the pool position back into the fund.
+  vetoes proposals; can delist a token directly; can withdraw the pool position back into the fund;
+  can sweep tokens the fund holds that are not backing (stray tokens, a dropped asset's dust), but
+  never a basket asset, USDG or the fund token.
 - **Manager (Own keeper):** trusted only within the rebalance bounds above. Between the launch
   close and pool seeding it is trusted more: no daily volume cap, only the 2% per-swap bound, so
   it should finish the launch rebalance and seed promptly. Its launch jobs are `finalize()` as

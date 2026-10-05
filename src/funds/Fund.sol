@@ -386,6 +386,17 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuard {
         emit MaxPremiumSet(maxPremiumBps_);
     }
 
+    /// @inheritdoc IFund
+    function sweep(address token, address to) external override onlyAdmin nonReentrant returns (uint256 amount) {
+        if (to == address(0)) revert ZeroAddress();
+        if (_basket[token].listed || token == address(this) || token == IFundFactory(factory).usdg()) {
+            revert NotSweepable(token);
+        }
+        amount = IERC20(token).balanceOf(address(this));
+        IERC20(token).safeTransfer(to, amount);
+        emit Swept(token, to, amount);
+    }
+
     /// @notice Token name.
     /// @return The name.
     function name() public view override returns (string memory) {

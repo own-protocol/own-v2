@@ -952,4 +952,40 @@ contract FundTest is FundTestBase {
         vm.expectRevert(IFund.ZeroAddress.selector);
         fund.setGovernor(address(0));
     }
+
+    // ──────────────────────────────────────────────────────────
+    //  sweep
+    // ──────────────────────────────────────────────────────────
+
+    function test_sweep_strayToken() public {
+        spare.mint(address(fund), 50e18);
+        uint256 navBefore = fund.navPerShare();
+        vm.prank(admin);
+        uint256 amount = fund.sweep(address(spare), protocolTreasury);
+        assertEq(amount, 50e18);
+        assertEq(spare.balanceOf(protocolTreasury), 50e18);
+        assertEq(spare.balanceOf(address(fund)), 0);
+        assertEq(fund.navPerShare(), navBefore);
+    }
+
+    function test_sweep_backing_reverts() public {
+        address[3] memory backing = [address(net), address(usdg), address(fund)];
+        for (uint256 i; i < backing.length; ++i) {
+            vm.prank(admin);
+            vm.expectRevert(abi.encodeWithSelector(IFund.NotSweepable.selector, backing[i]));
+            fund.sweep(backing[i], admin);
+        }
+    }
+
+    function test_sweep_notAdmin_reverts() public {
+        vm.prank(keeper);
+        vm.expectRevert(IFund.NotAdmin.selector);
+        fund.sweep(address(spare), keeper);
+    }
+
+    function test_sweep_zeroRecipient_reverts() public {
+        vm.prank(admin);
+        vm.expectRevert(IFund.ZeroAddress.selector);
+        fund.sweep(address(spare), address(0));
+    }
 }

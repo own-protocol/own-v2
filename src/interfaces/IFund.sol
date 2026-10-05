@@ -133,6 +133,12 @@ interface IFund is IERC20 {
     /// @param paused Whether minting is paused.
     event MintPausedSet(bool paused);
 
+    /// @notice Emitted when the admin sweeps a token that is not backing.
+    /// @param token  The token.
+    /// @param to     Recipient.
+    /// @param amount Amount sent.
+    event Swept(address indexed token, address indexed to, uint256 amount);
+
     /// @notice Emitted when the mint premium ceiling changes.
     /// @param maxPremiumBps New ceiling, in basis points over NAV (0 for none).
     event MaxPremiumSet(uint16 maxPremiumBps);
@@ -199,6 +205,10 @@ interface IFund is IERC20 {
 
     /// @notice Basket asset list or weights are invalid.
     error InvalidBasket();
+
+    /// @notice The token is backing (a basket asset, USDG or the fund token) and cannot be swept.
+    /// @param token The token.
+    error NotSweepable(address token);
 
     /// @notice An asset with more than a dust balance cannot be removed from the basket.
     /// @param asset The asset.
@@ -395,6 +405,14 @@ interface IFund is IERC20 {
     function setMaxPremium(
         uint16 maxPremiumBps_
     ) external;
+
+    /// @notice Send the fund's whole balance of a token that is not backing to `to`: tokens sent to
+    ///         the fund by mistake, or dust left by a dropped asset. Admin only. Basket assets, USDG
+    ///         and the fund token cannot be swept.
+    /// @param token The token.
+    /// @param to    Recipient.
+    /// @return amount Amount sent.
+    function sweep(address token, address to) external returns (uint256 amount);
 
     /// @notice The factory.
     /// @return The factory.
