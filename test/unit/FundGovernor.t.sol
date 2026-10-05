@@ -349,6 +349,35 @@ contract FundGovernorTest is FundTestBase {
         assertApproxEqRel(governor.votesOf(alice, address(tsla), e), 0.14e18, 1e12);
     }
 
+    function test_flip_stakeJustBeforeFlip_doesNotDiluteVoters() public {
+        _escrow(alice, aliceStake / 5);
+        _voteAll(alice, address(tsla));
+        uint256 e = governor.currentEpoch() + 1;
+        _toNextEpoch();
+        _toNextEpoch();
+
+        // Bob stakes all his tokens, flips and unstakes in one go: the epoch's staked supply holds.
+        uint256 bal = fund.balanceOf(bob);
+        vm.startPrank(bob);
+        fund.approve(address(staking), bal);
+        uint256 shares = staking.stake(bal, bob);
+        governor.flip();
+        staking.unstake(shares, bob);
+        vm.stopPrank();
+        assertApproxEqRel(governor.votesOf(alice, address(tsla), e), 0.14e18, 1e12);
+    }
+
+    function test_propose_stakeJustBefore_doesNotRaiseTotalStake() public {
+        _toNextEpoch();
+        uint256 bal = fund.balanceOf(bob);
+        vm.startPrank(bob);
+        fund.approve(address(staking), bal);
+        staking.stake(bal, bob);
+        vm.stopPrank();
+        uint256 id = _propose(curatorA, IFundGovernor.ProposalKind.List, address(spare));
+        assertEq(governor.getProposal(id).totalStake, aliceStake);
+    }
+
     function test_votesOf_silentStakersFollowCurators() public {
         // Nobody stakes a vote: the stakers' 70% follows the two curators, 35% each.
         _voteAll(curatorA, address(tsla));
@@ -588,6 +617,7 @@ contract FundGovernorTest is FundTestBase {
     // ──────────────────────────────────────────────────────────
 
     function test_propose_curatorCanPropose() public {
+        _toNextEpoch(); // stake counts from the week after it is made
         uint256 id = _propose(curatorA, IFundGovernor.ProposalKind.List, address(spare));
         IFundGovernor.Proposal memory p = governor.getProposal(id);
         assertEq(p.proposer, curatorA);
@@ -749,6 +779,7 @@ contract FundGovernorTest is FundTestBase {
     }
 
     function test_curatorChange_stakersDecideAlone() public {
+        _toNextEpoch();
         _escrow(alice, aliceStake / 2);
         vm.warp(block.timestamp + 1);
         uint256 id = _propose(curatorA, IFundGovernor.ProposalKind.AddCurator, newCurator);

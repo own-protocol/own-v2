@@ -191,9 +191,9 @@ contract FundLaunchTest is FundTestBase {
         _finalizeTwoDepositors();
         vm.prank(alice);
         uint256 shares = launch.claim(false);
-        // Alice brought $60k of assets and $18k of USDG; bob's haircut adds a sliver.
+        // Alice brought $60k of assets and $18k of USDG; bob's $200 haircut adds a sliver.
         uint256 aliceValue = Math.mulDiv(shares, fund.navPerShare(), 1e18);
-        assertApproxEqRel(aliceValue, uint256(78_000e18) * 100_000 / 99_800, 1e14);
+        assertApproxEqRel(aliceValue, uint256(78_000e18) * 130_000 / 129_800, 1e14);
     }
 
     function test_finalize_overweightHaircutGoesToOthers() public {
@@ -205,8 +205,9 @@ contract FundLaunchTest is FundTestBase {
 
         uint256 aliceShares = launch.claimable(alice);
         uint256 bobShares = launch.claimable(bob);
-        assertApproxEqRel(aliceShares, launch.depositorSupply() * 60_000 / 99_800, 1e12);
-        assertApproxEqRel(bobShares, launch.depositorSupply() * 39_800 / 99_800, 1e12);
+        // Points are credited value plus USDG paid: alice 60k + 18k, bob 39.8k + 12k.
+        assertApproxEqRel(aliceShares, launch.depositorSupply() * 78_000 / 129_800, 1e12);
+        assertApproxEqRel(bobShares, launch.depositorSupply() * 51_800 / 129_800, 1e12);
     }
 
     function test_finalize_earlyDepositEarnsExtraTokens() public {
@@ -229,6 +230,33 @@ contract FundLaunchTest is FundTestBase {
         assertApproxEqRel(a * 1e18 / b, 1.035e18, 1e12);
         assertLe(a + b, launch.depositorSupply());
         assertApproxEqAbs(a + b, launch.depositorSupply(), 10);
+    }
+
+    function test_finalize_pointsCountUsdgPaid_notDepositTimePrice() public {
+        // Bob deposits the same basket while TSLA is 20% down, so he pays less USDG for it.
+        vm.warp(launch.endTime() - 1);
+        _refreshFeeds();
+        uint256 usdgA = _deposit(alice, address(net), 50e9);
+        usdgA += _deposit(alice, address(pons), 750_000e18);
+        usdgA += _deposit(alice, address(tsla), 37.5e18);
+        int256 tslaPrice = feeds[address(tsla)].answer();
+        _setFeed(address(tsla), tslaPrice * 8 / 10);
+        uint256 usdgB = _deposit(bob, address(net), 50e9);
+        usdgB += _deposit(bob, address(pons), 750_000e18);
+        usdgB += _deposit(bob, address(tsla), 37.5e18);
+        assertLt(usdgB, usdgA);
+        _setFeed(address(tsla), tslaPrice);
+        vm.warp(launch.endTime());
+        _refreshFeeds();
+        launch.finalize();
+
+        uint256 half = (
+            launch.creditedValue(address(net)) + launch.creditedValue(address(pons))
+                + launch.creditedValue(address(tsla))
+        ) / 2;
+        uint256 a = launch.claimable(alice);
+        uint256 b = launch.claimable(bob);
+        assertApproxEqRel(a * 1e18 / b, (half + usdgA * 1e12) * 1e18 / (half + usdgB * 1e12), 1e12);
     }
 
     function test_finalize_usdgDonatedToHook_goesToFund() public {
@@ -434,6 +462,21 @@ contract FundLaunchTest is FundTestBase {
         _passDepositorLock();
         vm.prank(bob);
         fund.transfer(alice, assets);
+    }
+
+    function test_claim_lockedSharesUnstakeOnlyToSelf() public {
+        _finalizeTwoDepositors();
+        vm.prank(bob);
+        uint256 shares = launch.claim(true);
+        vm.prank(bob);
+        vm.expectRevert(IFundStaking.SharesLocked.selector);
+        staking.unstake(1, alice);
+
+        _passDepositorLock();
+        vm.prank(bob);
+        uint256 assets = staking.unstake(shares, alice);
+        assertEq(fund.launchLocked(alice), 0);
+        assertEq(fund.balanceOf(alice), assets);
     }
 
     function test_claim_lockedTokensCanBeStaked() public {

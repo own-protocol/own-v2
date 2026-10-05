@@ -264,7 +264,7 @@ contract FundGovernor is IFundGovernor, Initializable, ReentrancyGuard {
         uint256 next = currentEpoch() + 1;
         ProposalBook.Context memory ctx = ProposalBook.Context({
             power: _power[msg.sender].valueAt(next),
-            totalStake: _stakedSupplyNow(f, next),
+            totalStake: Math.max(_stakedSupplyNow(f, next - 1), _totalPower.valueAt(next)),
             targetDelisted: delisted[target]
         });
         id = ProposalBook.propose(_book, fund, _config, ctx, kind, target, replacement);
@@ -709,10 +709,11 @@ contract FundGovernor is IFundGovernor, Initializable, ReentrancyGuard {
     }
 
     /// @dev All staked tokens, the stakers' "all possible votes": stake that is not escrowed here
-    ///      counts as silent. Read when the epoch is tallied (or the proposal opens); never below the
-    ///      escrowed power, so no voter's share can exceed the stakers' share.
+    ///      counts as silent. Taken from the staking module's per-epoch record, which stake made
+    ///      during an epoch never raises; never below the escrowed power, so no voter's share can
+    ///      exceed the stakers' share.
     function _stakedSupplyNow(IFund f, uint256 epoch) internal view returns (uint256) {
-        return Math.max(IERC20(f.staking()).totalSupply(), _totalPower.valueAt(epoch));
+        return Math.max(IFundStaking(f.staking()).totalSupplyAt(epoch), _totalPower.valueAt(epoch));
     }
 
     function _checkAdmin() internal view {

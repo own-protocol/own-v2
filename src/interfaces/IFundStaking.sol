@@ -63,7 +63,8 @@ interface IFundStaking is IERC20 {
     /// @notice Caller is not the fund's launch module.
     error NotLaunch();
 
-    /// @notice The transfer would move shares that are still locked.
+    /// @notice The transfer would move shares that are still locked, or would unstake them to
+    ///         another account.
     error SharesLocked();
 
     /// @notice Initialise a staking proxy. Called once by the factory.
@@ -92,7 +93,7 @@ interface IFundStaking is IERC20 {
     /// @return shares Shares minted.
     function stake(uint256 assets, address receiver) external returns (uint256 shares);
 
-    /// @notice Unstake shares for fund tokens.
+    /// @notice Unstake shares for fund tokens. Locked shares can be unstaked only to the caller.
     /// @param shares   Shares burned.
     /// @param receiver Receiver of the fund tokens.
     /// @return assets Fund tokens paid out.
@@ -138,6 +139,14 @@ interface IFundStaking is IERC20 {
     /// @return Shares.
     function convertToShares(
         uint256 assets
+    ) external view returns (uint256);
+
+    /// @notice Shares counted as staked in weekly `epoch`: shares minted count from the next epoch,
+    ///         shares burned leave at once.
+    /// @param epoch The epoch.
+    /// @return Staked shares.
+    function totalSupplyAt(
+        uint256 epoch
     ) external view returns (uint256);
 
     /// @notice Fund tokens for `shares` at the current exchange rate (excluding unaccrued yield).

@@ -7,6 +7,7 @@ import {IFundGovernor} from "../interfaces/IFundGovernor.sol";
 import {IFundStaking} from "../interfaces/IFundStaking.sol";
 import {BPS_TO_WAD, YieldPoint} from "../interfaces/types/FundTypes.sol";
 import {PRECISION} from "../interfaces/types/Types.sol";
+import {EpochHistory} from "./libraries/EpochHistory.sol";
 import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -21,6 +22,7 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 ///      makes first-depositor donation attacks unprofitable.
 contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuard {
     using SafeERC20 for IERC20;
+    using EpochHistory for EpochHistory.History;
 
     /// @notice Longest period one accrual covers. Yield is distributed every 8 hours, so one
     ///         premium reading never sets the rate for longer than that.
@@ -28,6 +30,9 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuard {
 
     /// @notice Maximum number of yield curve points.
     uint256 public constant MAX_YIELD_POINTS = 8;
+
+    // Same weekly epoch as the governor's.
+    uint256 private constant EPOCH = 1 weeks;
 
     /// @inheritdoc IFundStaking
     address public override fund;
@@ -44,6 +49,8 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuard {
     mapping(address account => uint256) public override lockedShares;
 
     IFundFactory private _factory;
+
+    EpochHistory.History private _supply;
 
     constructor() ERC20("", "") {
         _disableInitializers();
@@ -81,6 +88,7 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuard {
         IERC20(fund).safeTransfer(receiver, assets);
         if (lockedBefore != 0) {
             uint256 lockedAfter = lockedShares[msg.sender];
+            if (lockedAfter != lockedBefore && receiver != msg.sender) revert SharesLocked();
             // Rounds up: unstaking locked shares never yields unlocked fund tokens.
             uint256 lockedAssets = Math.mulDiv(assets, lockedBefore - lockedAfter, shares, Math.Rounding.Ceil);
             IFund(fund).addLaunchLock(receiver, Math.min(lockedAssets, assets));
@@ -117,6 +125,13 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuard {
     /// @inheritdoc IFundStaking
     function totalAssets() public view override returns (uint256) {
         return _totalStaked;
+    }
+
+    /// @inheritdoc IFundStaking
+    function totalSupplyAt(
+        uint256 epoch
+    ) external view override returns (uint256) {
+        return _supply.valueAt(epoch);
     }
 
     /// @inheritdoc IFundStaking
@@ -229,6 +244,15 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuard {
                 emit LockedSharesSet(from, held);
             }
         }
+        if (from == address(0) || to == address(0)) _recordSupply();
+    }
+
+    /// @dev New shares count from the next epoch; burned shares leave the current epoch at once, so
+    ///      staking and unstaking within an epoch never raises that epoch's supply.
+    function _recordSupply() internal {
+        uint256 e = block.timestamp / EPOCH;
+        uint256 live = totalSupply();
+        _supply.set(e, Math.min(_supply.valueAt(e), live), live);
     }
 
     function _addLock(address account, uint256 shares) internal {

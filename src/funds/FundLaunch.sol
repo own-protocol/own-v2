@@ -328,12 +328,15 @@ contract FundLaunch is IFundLaunch, Initializable, ReentrancyGuard {
     ) public view override returns (uint256 shares) {
         if (status != Status.Succeeded || settled[account] || totalPoints == 0) return 0;
         uint256 points;
+        uint256 usdgPaid;
         uint256 n = _launchAssets.length;
         for (uint256 i; i < n; ++i) {
             address a = _launchAssets[i];
             Deposit storage d = _deposits[account][a];
+            usdgPaid += d.usdg;
             if (d.amount != 0) points += _points(a, d.amount, d.timeWeight);
         }
+        points += _usdgPoints(usdgPaid);
         // Rounds down, so all claims together never exceed the depositor allocation.
         shares = Math.mulDiv(depositorSupply, points, totalPoints);
     }
@@ -371,11 +374,22 @@ contract FundLaunch is IFundLaunch, Initializable, ReentrancyGuard {
             creditedValue[a] = value - Math.mulDiv(over, haircut, BPS, Math.Rounding.Ceil);
             points += _points(a, totalDeposited[a], totalTimeWeight[a]);
         }
+        points += _usdgPoints(totalUsdg);
     }
 
+    /// @dev The USDG actually paid is added on top (see _usdgPoints), so USDG priced at deposit time
+    ///      buys no extra share; the early bonus covers the USDG part of the deposit too.
     function _points(address asset, uint256 amount, uint256 timeWeight) internal view returns (uint256) {
         uint256 bonus = Math.mulDiv(timeWeight, _config.earlyYieldBpsPerDay, BPS * 1 days);
-        uint256 value = Math.mulDiv(amount + bonus, closePrice[asset], 10 ** IERC20Metadata(asset).decimals());
-        return Math.mulDiv(value, creditedValue[asset], rawValue[asset]);
+        uint256 scale = 10 ** IERC20Metadata(asset).decimals();
+        uint256 value = Math.mulDiv(amount + bonus, closePrice[asset], scale);
+        return Math.mulDiv(value, creditedValue[asset], rawValue[asset])
+            + Math.mulDiv(bonus, closePrice[asset] * _config.usdgRatioBps, scale * BPS);
+    }
+
+    function _usdgPoints(
+        uint256 amount
+    ) internal view returns (uint256) {
+        return Math.mulDiv(amount, PRECISION, 10 ** IERC20Metadata(_factory.usdg()).decimals());
     }
 }

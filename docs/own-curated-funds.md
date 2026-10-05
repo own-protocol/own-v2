@@ -47,12 +47,13 @@ Design source: the "Own Curated Funds: launch, curators, weight votes and bribes
      withheld credit goes to the other depositors.
    - **Fixed supply S is split** so that the pool opens at 1.3 × NAV: the pool gets
      M = U·S / (1.3·(R + U) + U) tokens plus all of U, and depositors share C = S − M in
-     proportion to their points (closing value + early yield, after the haircut). With a 30% USDG
-     ratio M is about 15% of S.
+     proportion to their points (closing value + USDG paid + early yield, after the haircut). With
+     a 30% USDG ratio M is about 15% of S.
    - The basket goes to the fund, the pool is seeded, and depositor tokens are locked for 7 days.
 4. **Claim.** Depositors claim their tokens, liquid or staked. Locked tokens cannot be transferred
    or sold for 7 days, but they can be staked, escrowed in the governor and redeemed at NAV.
-   Unstaking during the lock keeps the tokens locked. Tokens bought later are never locked.
+   Unstaking during the lock keeps the tokens locked and pays only to the staker's own account.
+   Tokens bought later are never locked.
 
 ## The fund's pool position
 
@@ -111,7 +112,9 @@ Design source: the "Own Curated Funds: launch, curators, weight votes and bribes
 - **Who votes.** Curators together hold 30% of the vote, split equally, as base slices. Stakers hold
   70%: each staker's votes are worth 70% × (its staked tokens escrowed in the governor ÷ all staked
   tokens). Staked tokens that are not escrowed, and unstaked tokens, do not vote. A curator's own
-  escrowed stake votes on the staker side as well.
+  escrowed stake votes on the staker side as well. "All staked tokens" is the week's record: new
+  stake counts from the next week, unstaking leaves at once, so staking just before a flip changes
+  nothing.
 - **Escrow.** Stakers deposit staked fund tokens (or an admin-listed ERC-4626 wrapper of them).
   A deposit counts from the next epoch. A withdrawal stops counting at once and unlocks at the next
   flip, or at the end of any proposal the account voted on if later. Escrowed stake keeps earning
@@ -143,8 +146,8 @@ Design source: the "Own Curated Funds: launch, curators, weight votes and bribes
 - **Kinds:** list a token (it must have an oracle feed and be on the admin's eligibility list; it
   joins at weight 0), delist a token (target forced to 0, removed once dust), and add, remove or
   replace a curator (within the cap).
-- **Voting** runs 3 days with the same 30:70 split, measured against all staked tokens when the
-  proposal opens. Curators do not vote on curator changes; stakers decide those alone. Only stake
+- **Voting** runs 3 days with the same 30:70 split, measured against all staked tokens in the
+  week the proposal opens. Curators do not vote on curator changes; stakers decide those alone. Only stake
   escrowed before the proposal opened can vote.
 - **Passing:** yes beats no, and yes is at least 20% of all possible votes. Own can veto during the
   next day, then anyone executes within 7 days. Execution re-checks that the change is still valid.
