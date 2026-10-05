@@ -50,6 +50,9 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
     /// @notice Launch window used when a fund sets none.
     uint32 public constant DEFAULT_LAUNCH_DURATION = 7 days;
 
+    /// @notice Hard cap on the share of a raise that seeds the pool.
+    uint16 public constant MAX_POOL_USDG_BPS = 5000;
+
     /// @inheritdoc IFundFactory
     address public override owner;
 
@@ -168,11 +171,10 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
         LaunchConfig memory cfg = LaunchConfig({
             duration: DEFAULT_LAUNCH_DURATION,
             finalizeGrace: 7 days,
-            usdgRatioBps: 3000,
+            poolUsdgBps: 1000,
             launchPremiumBps: 3000,
             earlyYieldBpsPerDay: 50,
             overweightHaircutBps: 500,
-            withdrawCutoff: 1 days,
             depositorLock: 7 days
         });
         _launchConfig = cfg;
@@ -226,11 +228,18 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
         if (hook == address(0)) revert HookNotSet();
         LaunchConfig memory cfg = _launchConfig;
         if (p.launchDuration != 0) cfg.duration = p.launchDuration;
-        if (cfg.duration < 1 days || cfg.duration > 30 days) revert InvalidLaunchConfig();
+        if (p.poolUsdgBps != 0) cfg.poolUsdgBps = p.poolUsdgBps;
+        if (
+            cfg.duration < 1 days || cfg.duration > 30 days || cfg.poolUsdgBps > MAX_POOL_USDG_BPS
+                || (p.targetRaiseUsd != 0 && p.targetRaiseUsd < p.minRaiseUsd)
+        ) revert InvalidLaunchConfig();
         uint256 supply = p.launchSupply == 0 ? DEFAULT_LAUNCH_SUPPLY : p.launchSupply;
 
         m.fund = _proxy(Module.Fund, abi.encodeCall(IFund.initialize, (p)));
-        m.launch = _proxy(Module.Launch, abi.encodeCall(IFundLaunch.initialize, (m.fund, p.minRaiseUsd, supply, cfg)));
+        m.launch = _proxy(
+            Module.Launch,
+            abi.encodeCall(IFundLaunch.initialize, (m.fund, p.minRaiseUsd, p.targetRaiseUsd, supply, cfg))
+        );
         m.staking = _proxy(Module.Staking, abi.encodeCall(IFundStaking.initialize, (m.fund, p.yieldCurve)));
         m.governor = _proxy(Module.Governor, abi.encodeCall(IFundGovernor.initialize, (m.fund, _governanceConfig)));
         m.curators = _proxy(
@@ -343,9 +352,9 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
     ) external override onlyOwner {
         if (
             config.duration < 1 days || config.duration > 30 days || config.finalizeGrace < 1 hours
-                || config.finalizeGrace > 30 days || config.usdgRatioBps == 0 || config.usdgRatioBps > BPS
+                || config.finalizeGrace > 30 days || config.poolUsdgBps == 0 || config.poolUsdgBps > MAX_POOL_USDG_BPS
                 || config.launchPremiumBps > BPS || config.earlyYieldBpsPerDay > 100 || config.overweightHaircutBps > 5000
-                || config.withdrawCutoff > config.duration || config.depositorLock > 30 days
+                || config.depositorLock > 30 days
         ) revert InvalidLaunchConfig();
         _launchConfig = config;
         emit LaunchConfigSet(config);

@@ -42,11 +42,10 @@ contract FundFactoryTest is FundTestBase {
         LaunchConfig memory cfg = factory.launchConfig();
         assertEq(cfg.duration, 7 days);
         assertEq(cfg.finalizeGrace, 7 days);
-        assertEq(cfg.usdgRatioBps, 3000);
+        assertEq(cfg.poolUsdgBps, 1000);
         assertEq(cfg.launchPremiumBps, 3000);
         assertEq(cfg.earlyYieldBpsPerDay, 50);
         assertEq(cfg.overweightHaircutBps, 500);
-        assertEq(cfg.withdrawCutoff, 1 days);
         assertEq(cfg.depositorLock, 7 days);
 
         GovernanceConfig memory gov = factory.governanceConfig();
@@ -113,6 +112,36 @@ contract FundFactoryTest is FundTestBase {
         _createFund(p);
         assertEq(launch.endTime(), block.timestamp + 3 days);
         assertEq(launch.config().duration, 3 days);
+    }
+
+    function test_createFund_poolShareAndTarget() public {
+        CreateFundParams memory p = _defaultParams();
+        p.poolUsdgBps = 0;
+        p.targetRaiseUsd = 50_000e18;
+        _createFund(p);
+        assertEq(launch.config().poolUsdgBps, 1000);
+        assertEq(launch.targetRaiseUsd(), 50_000e18);
+        assertEq(launch.minRaiseUsd(), 10_000e18);
+
+        p.poolUsdgBps = 2500;
+        _createFund(p);
+        assertEq(launch.config().poolUsdgBps, 2500);
+    }
+
+    function test_createFund_poolShareAboveCap_reverts() public {
+        CreateFundParams memory p = _defaultParams();
+        p.poolUsdgBps = 5001;
+        vm.prank(admin);
+        vm.expectRevert(IFundFactory.InvalidLaunchConfig.selector);
+        factory.createFund(p);
+    }
+
+    function test_createFund_targetBelowMinimum_reverts() public {
+        CreateFundParams memory p = _defaultParams();
+        p.targetRaiseUsd = p.minRaiseUsd - 1;
+        vm.prank(admin);
+        vm.expectRevert(IFundFactory.InvalidLaunchConfig.selector);
+        factory.createFund(p);
     }
 
     function test_createFund_windowOutOfRange_reverts() public {
@@ -372,14 +401,14 @@ contract FundFactoryTest is FundTestBase {
         _createFund();
         address firstLaunch = address(launch);
         LaunchConfig memory cfg = factory.launchConfig();
-        cfg.usdgRatioBps = 2000;
+        cfg.launchPremiumBps = 2000;
         cfg.earlyYieldBpsPerDay = 25;
         vm.prank(admin);
         factory.setLaunchConfig(cfg);
-        assertEq(launch.config().usdgRatioBps, 3000);
+        assertEq(launch.config().launchPremiumBps, 3000);
         _createFund();
         assertTrue(address(launch) != firstLaunch);
-        assertEq(launch.config().usdgRatioBps, 2000);
+        assertEq(launch.config().launchPremiumBps, 2000);
         assertEq(launch.config().earlyYieldBpsPerDay, 25);
     }
 
@@ -393,13 +422,13 @@ contract FundFactoryTest is FundTestBase {
         factory.setLaunchConfig(cfg);
 
         cfg = factory.launchConfig();
-        cfg.usdgRatioBps = 0;
+        cfg.poolUsdgBps = 0;
         vm.prank(admin);
         vm.expectRevert(IFundFactory.InvalidLaunchConfig.selector);
         factory.setLaunchConfig(cfg);
 
         cfg = factory.launchConfig();
-        cfg.withdrawCutoff = cfg.duration + 1;
+        cfg.poolUsdgBps = 5001;
         vm.prank(admin);
         vm.expectRevert(IFundFactory.InvalidLaunchConfig.selector);
         factory.setLaunchConfig(cfg);

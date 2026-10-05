@@ -251,6 +251,12 @@ interface IFund is IERC20 {
     /// @param curators_ Curators module (the curator fee recipient).
     function setModules(address launch_, address staking_, address governor_, address curators_) external;
 
+    /// @notice Send idle USDG to the hook to seed the fund's pool. Launch only.
+    /// @param amount USDG amount.
+    function sendPoolUsdg(
+        uint256 amount
+    ) external;
+
     /// @notice Mark the fund live after a successful launch. Launch only, once.
     /// @param depositorUnlockAt_ When depositors' launch tokens become transferable.
     function markLaunched(
@@ -323,7 +329,9 @@ interface IFund is IERC20 {
     ///         router. Manager only. Each swap
     ///         may lose at most the factory's slippage bound in oracle value, and the value sold is
     ///         rate limited: at most the daily cap at once, with the allowance refilling linearly
-    ///         over a day. This bounds what a manager can leak through bad fills.
+    ///         over a day. This bounds what a manager can leak through bad fills. Until the fund's
+    ///         pool is seeded (the launch rebalance) a swap may also buy USDG, and the cap does not
+    ///         apply.
     /// @param params Swap parameters.
     function rebalance(
         RebalanceParams calldata params

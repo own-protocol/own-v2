@@ -793,7 +793,7 @@ contract FundGovernorTest is FundTestBase {
 
         vm.prank(alice);
         uint256 votes = governor.castVote(id, true);
-        assertEq(votes, 0.5e18); // half of all staked tokens
+        assertApproxEqAbs(votes, 0.5e18, 1); // half of all staked tokens
         vm.warp(block.timestamp + 4 days);
         governor.execute(id);
         assertTrue(curators.isCurator(newCurator));

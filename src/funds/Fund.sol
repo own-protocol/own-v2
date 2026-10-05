@@ -188,6 +188,15 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuard {
     }
 
     /// @inheritdoc IFund
+    function sendPoolUsdg(
+        uint256 amount
+    ) external override {
+        if (msg.sender != launch) revert NotLaunch();
+        IFundFactory fac = IFundFactory(factory);
+        IERC20(fac.usdg()).safeTransfer(fac.hook(), amount);
+    }
+
+    /// @inheritdoc IFund
     function moduleMint(address to, uint256 amount) external override onlyModule {
         _mint(to, amount);
     }

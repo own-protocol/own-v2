@@ -4,25 +4,27 @@ pragma solidity 0.8.28;
 import {LaunchConfig} from "./types/FundTypes.sol";
 
 /// @title IFundLaunch — the deposit window that starts a fund
-/// @notice For the fund's window (7 days by default), anyone deposits any basket asset plus USDG
-///         worth `usdgRatioBps` of the asset's value. Deposits can be withdrawn until
-///         `withdrawCutoff` before the close; after that they are final.
+/// @notice For the fund's window (7 days by default), anyone deposits any basket asset or USDG.
+///         Deposits are final.
 ///
 ///         - Early-deposit yield: each deposit earns `earlyYieldBpsPerDay` of its value per day it
-///           sits in the window, paid as extra launch tokens out of the fixed supply. Withdrawing
-///           forfeits it on the amount withdrawn.
-///         - At the close assets are valued at closing oracle prices: basket value R, USDG U. Below
-///           the minimum raise the launch fails at once and everyone is refunded.
-///         - Overweight haircut: an asset's value above its target weight of R is credited at
+///           sits in the window, paid as extra launch tokens out of the fixed supply.
+///         - Close: at the end of the window, or as soon as the deposits are worth the fund's target
+///           raise. Assets are valued at closing oracle prices and USDG at $1, raise V. Below the
+///           minimum raise the launch fails at once and everyone is refunded.
+///         - Overweight haircut: value above an asset's target share of V is credited at
 ///           `1 - overweightHaircutBps`, shared by that asset's depositors; the tokens held back go
-///           to the other depositors.
-///         - The fixed supply S is split so the pool opens at `launchPremiumBps` over NAV: the
-///           fund's pool position gets M fund tokens plus all of U, and depositors share S - M in
-///           proportion to their credited value plus early yield. The fund owns the position and
-///           counts its USDG as backing, so NAV = (R + U) / (S - M) and depositors get exactly what
-///           they brought at NAV.
-///         - Depositors' tokens stay non-transferable for `depositorLock` after launch; they can be
-///           staked (here or later) and redeemed meanwhile.
+///           to the other depositors. USDG's target share is `poolUsdgBps`, the basket's the rest.
+///         - Pool: P = `poolUsdgBps` of V seeds the pool. The fixed supply S is split so the pool
+///           opens at `launchPremiumBps` over NAV: the pool gets M fund tokens and depositors share
+///           S - M in proportion to their credited value plus early yield. The fund owns the
+///           position and counts its USDG as backing, so NAV = V / (S - M) and depositors get
+///           exactly what they brought at NAV.
+///         - At the close everything moves to the fund and depositors can claim. The manager then
+///           rebalances to the target weights and to at least P of idle USDG, free of the daily
+///           volume cap, and calls {seedPool}. Until then nobody can trade or mint; redeeming works.
+///         - Depositors' tokens stay non-transferable for `depositorLock` after the close; they can
+///           be staked (here or later) and redeemed meanwhile.
 interface IFundLaunch {
     /// @notice Launch lifecycle.
     enum Status {
@@ -33,38 +35,33 @@ interface IFundLaunch {
 
     /// @notice One account's deposits of one asset.
     /// @param amount     Asset amount.
-    /// @param usdg       USDG paid with it.
     /// @param timeWeight Sum of amount × seconds left in the window at each deposit.
     struct Deposit {
         uint256 amount;
-        uint256 usdg;
         uint256 timeWeight;
     }
 
     /// @notice Emitted on a deposit.
     /// @param account Depositor.
-    /// @param asset   Basket asset.
-    /// @param amount  Asset amount received.
-    /// @param usdg    USDG received with it.
-    event Deposited(address indexed account, address indexed asset, uint256 amount, uint256 usdg);
-
-    /// @notice Emitted on a withdrawal.
-    /// @param account Depositor.
-    /// @param asset   Basket asset.
-    /// @param amount  Asset amount returned.
-    /// @param usdg    USDG returned with it.
-    event Withdrawn(address indexed account, address indexed asset, uint256 amount, uint256 usdg);
+    /// @param asset   Basket asset or USDG.
+    /// @param amount  Amount received.
+    event Deposited(address indexed account, address indexed asset, uint256 amount);
 
     /// @notice Emitted when the launch succeeds.
-    /// @param basketValue     Basket value at closing prices, 18 decimals USD.
-    /// @param usdgValue       USDG raised, 18 decimals USD.
+    /// @param raised          Value raised at closing prices, 18 decimals USD.
+    /// @param poolUsdg        USDG set aside to seed the pool.
     /// @param depositorShares Fund tokens allocated to depositors.
-    /// @param poolShares      Fund tokens in the fund's pool position.
-    event LaunchSucceeded(uint256 basketValue, uint256 usdgValue, uint256 depositorShares, uint256 poolShares);
+    /// @param poolShares      Fund tokens set aside for the pool.
+    event LaunchSucceeded(uint256 raised, uint256 poolUsdg, uint256 depositorShares, uint256 poolShares);
 
     /// @notice Emitted when the launch fails.
-    /// @param basketValue Basket value at closing prices (zero when marked failed after the grace period).
-    event LaunchFailed(uint256 basketValue);
+    /// @param raised Value raised at closing prices (zero when marked failed after the grace period).
+    event LaunchFailed(uint256 raised);
+
+    /// @notice Emitted when the pool is seeded.
+    /// @param usdgAmount USDG added.
+    /// @param shares     Fund tokens added.
+    event PoolSeeded(uint256 usdgAmount, uint256 shares);
 
     /// @notice Emitted when a depositor claims fund tokens.
     /// @param account Depositor.
@@ -85,14 +82,17 @@ interface IFundLaunch {
     /// @notice The window is closed.
     error WindowClosed();
 
-    /// @notice The window is still open.
+    /// @notice The window is still open and the target raise is not reached.
     error WindowOpen();
 
-    /// @notice Deposits can no longer be withdrawn.
-    error WithdrawalsClosed();
+    /// @notice The pool is already seeded.
+    error AlreadySeeded();
 
-    /// @notice More than the account deposited.
-    error InsufficientDeposit();
+    /// @notice The fund holds less idle USDG than the pool needs.
+    error InsufficientPoolUsdg();
+
+    /// @notice Caller is neither the fund's manager nor the platform admin.
+    error NotManager();
 
     /// @notice The launch is not in the required status.
     error WrongStatus();
@@ -117,33 +117,33 @@ interface IFundLaunch {
     error NotAdmin();
 
     /// @notice Initialise a launch proxy. Called once by the factory.
-    /// @param fund_         The fund.
-    /// @param minRaiseUsd_  Minimum basket value to raise, 18 decimals USD.
-    /// @param launchSupply_ Fixed fund token supply created at launch.
-    /// @param config_       Launch rules (with this fund's duration).
+    /// @param fund_           The fund.
+    /// @param minRaiseUsd_    Minimum value to raise, 18 decimals USD.
+    /// @param targetRaiseUsd_ Raise at which the launch can close early, 18 decimals USD (0 for none).
+    /// @param launchSupply_   Fixed fund token supply created at launch.
+    /// @param config_         Launch rules (with this fund's duration and pool share).
     function initialize(
         address fund_,
         uint256 minRaiseUsd_,
+        uint256 targetRaiseUsd_,
         uint256 launchSupply_,
         LaunchConfig calldata config_
     ) external;
 
-    /// @notice Deposit a basket asset plus its USDG during the window.
-    /// @param asset  Basket asset (target weight above zero).
+    /// @notice Deposit a basket asset or USDG during the window. Deposits are final.
+    /// @param asset  Basket asset (target weight above zero) or USDG.
     /// @param amount Amount.
-    /// @return usdgPaid USDG pulled with it (rounded up).
-    function deposit(address asset, uint256 amount) external returns (uint256 usdgPaid);
+    /// @return received Amount received.
+    function deposit(address asset, uint256 amount) external returns (uint256 received);
 
-    /// @notice Withdraw part of a deposit (and its USDG) until the withdrawal cutoff. The amount
-    ///         withdrawn forfeits its early-deposit yield.
-    /// @param asset  Basket asset.
-    /// @param amount Amount.
-    /// @return usdgReturned USDG returned with it.
-    function withdraw(address asset, uint256 amount) external returns (uint256 usdgReturned);
-
-    /// @notice Close the launch after the window: succeed and seed the pool, or fail. Anyone.
-    ///         The keeper should call it right at the close.
+    /// @notice Close the launch: succeed and hand everything to the fund, or fail. Anyone, after the
+    ///         window, or before it ends once the deposits are worth the target raise at live prices.
+    ///         The keeper should call it as soon as either holds.
     function finalize() external;
+
+    /// @notice Seed the fund's pool after the close, once the manager has rebalanced the fund to hold
+    ///         the pool's USDG. Scaled down by any redemptions since the close. Manager or admin.
+    function seedPool() external;
 
     /// @notice Mark the launch failed when nobody finalized it in time. Anyone.
     function markFailed() external;
@@ -180,35 +180,51 @@ interface IFundLaunch {
     /// @return The timestamp.
     function endTime() external view returns (uint64);
 
-    /// @notice Last moment deposits can be withdrawn.
+    /// @notice When the launch closed (set at success).
     /// @return The timestamp.
-    function withdrawDeadline() external view returns (uint64);
+    function closedAt() external view returns (uint64);
 
     /// @notice Last moment the launch can be finalized.
     /// @return The timestamp.
     function finalizeDeadline() external view returns (uint64);
 
-    /// @notice Minimum basket value to raise, 18 decimals USD.
+    /// @notice Minimum value to raise, 18 decimals USD.
     /// @return The minimum.
     function minRaiseUsd() external view returns (uint256);
+
+    /// @notice Raise at which the launch can close early, 18 decimals USD (0 for none).
+    /// @return The target.
+    function targetRaiseUsd() external view returns (uint256);
 
     /// @notice Fixed fund token supply created at launch.
     /// @return The supply.
     function launchSupply() external view returns (uint256);
 
-    /// @notice Total USDG deposited.
-    /// @return The amount.
-    function totalUsdg() external view returns (uint256);
-
     /// @notice Fund tokens allocated to depositors (set at success).
     /// @return The amount.
     function depositorSupply() external view returns (uint256);
+
+    /// @notice USDG set aside at the close to seed the pool.
+    /// @return The amount.
+    function poolUsdg() external view returns (uint256);
+
+    /// @notice Fund tokens set aside at the close for the pool.
+    /// @return The amount.
+    function poolShares() external view returns (uint256);
+
+    /// @notice Whether the pool has been seeded.
+    /// @return True once seeded.
+    function poolSeeded() external view returns (bool);
+
+    /// @notice Live value deposited, at current oracle prices, 18 decimals USD.
+    /// @return value The value.
+    function raisedValue() external view returns (uint256 value);
 
     /// @notice Launch rules.
     /// @return The rules.
     function config() external view returns (LaunchConfig memory);
 
-    /// @notice Assets accepted at launch (the basket at creation).
+    /// @notice Assets accepted at launch: the basket at creation, then USDG.
     /// @return The assets.
     function launchAssets() external view returns (address[] memory);
 
@@ -239,11 +255,12 @@ interface IFundLaunch {
         address account
     ) external view returns (bool);
 
-    /// @notice Live value deposited per launch asset and its target weight, for showing which
-    ///         assets are above target. Values use current oracle prices (zero when unavailable).
-    /// @return assets     Launch assets.
+    /// @notice Live value deposited per launch asset and its target share of the raise, for showing
+    ///         which assets are above target. Values use current oracle prices (zero when
+    ///         unavailable), USDG at $1.
+    /// @return assets     Launch assets (USDG last).
     /// @return values     Value deposited per asset, 18 decimals USD.
-    /// @return weightsBps Target weight per asset.
+    /// @return weightsBps Target share of the raise per asset.
     function depositValues()
         external
         view

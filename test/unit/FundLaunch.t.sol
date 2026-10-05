@@ -4,7 +4,9 @@ pragma solidity 0.8.28;
 import {IFund} from "../../src/interfaces/IFund.sol";
 import {IFundLaunch} from "../../src/interfaces/IFundLaunch.sol";
 import {IFundStaking} from "../../src/interfaces/IFundStaking.sol";
+import {CreateFundParams} from "../../src/interfaces/types/FundTypes.sol";
 import {FundTestBase} from "../helpers/FundTestBase.sol";
+import {MockSwapRouter} from "../helpers/MockSwapRouter.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {StateLibrary} from "v4-core/src/libraries/StateLibrary.sol";
 import {PoolIdLibrary} from "v4-core/src/types/PoolId.sol";
@@ -14,34 +16,47 @@ contract FundLaunchTest is FundTestBase {
     using PoolIdLibrary for PoolKey;
     using StateLibrary for *;
 
-    // Basket $100k, USDG $30k, supply 130k: M = 30k * 130k / (1.3 * 130k + 30k).
-    uint256 internal constant POOL_SHARES = uint256(30_000e18) * 130_000e18 / 199_000e18;
+    // Raise $125k, pool share 20% (P = $25k), supply 130k: M = 25k * 130k / (1.3 * 125k + 25k).
+    uint256 internal constant POOL_SHARES = uint256(25_000e18) * 130_000e18 / 187_500e18;
     uint256 internal constant DEPOSITOR_SHARES = 130_000e18 - POOL_SHARES;
+
+    MockSwapRouter internal router;
 
     function setUp() public override {
         super.setUp();
         _createFund();
+        router = new MockSwapRouter();
+        vm.prank(admin);
+        factory.setRouter(address(router), true);
     }
 
     // ──────────────────────────────────────────────────────────
     //  deposit
     // ──────────────────────────────────────────────────────────
 
-    function test_deposit_pullsThirtyPercentUsdg() public {
-        uint256 paid = _deposit(alice, address(net), 10e9); // 10 NET at $300 = $3,000
-        assertEq(paid, 900e6);
+    function test_deposit_basketAsset() public {
+        uint256 received = _deposit(alice, address(net), 10e9);
+        assertEq(received, 10e9);
         IFundLaunch.Deposit memory d = launch.depositOf(alice, address(net));
         assertEq(d.amount, 10e9);
-        assertEq(d.usdg, 900e6);
         assertEq(d.timeWeight, 10e9 * 7 days);
         assertEq(launch.totalDeposited(address(net)), 10e9);
-        assertEq(launch.totalUsdg(), 900e6);
-        assertEq(usdg.balanceOf(address(launch)), 900e6);
+        assertEq(net.balanceOf(address(launch)), 10e9);
+        assertEq(usdg.balanceOf(address(launch)), 0);
     }
 
-    function test_deposit_roundsUsdgUp() public {
-        uint256 paid = _deposit(alice, address(pons), 1e10); // $0.0000002 of PONS
-        assertEq(paid, 1);
+    function test_deposit_usdgAlone() public {
+        _deposit(alice, address(usdg), 5000e6);
+        assertEq(launch.depositOf(alice, address(usdg)).amount, 5000e6);
+        assertEq(launch.totalDeposited(address(usdg)), 5000e6);
+        assertEq(usdg.balanceOf(address(launch)), 5000e6);
+        assertEq(launch.raisedValue(), 5000e18);
+    }
+
+    function test_deposit_needsNoPrice() public {
+        vm.warp(block.timestamp + STALENESS + 1);
+        _deposit(alice, address(net), 1e9);
+        assertEq(launch.totalDeposited(address(net)), 1e9);
     }
 
     function test_deposit_windowClosed_reverts() public {
@@ -58,12 +73,6 @@ contract FundLaunchTest is FundTestBase {
         launch.deposit(address(spare), 1e18);
     }
 
-    function test_deposit_usdg_reverts() public {
-        vm.prank(alice);
-        vm.expectRevert(abi.encodeWithSelector(IFundLaunch.AssetNotAccepted.selector, address(usdg)));
-        launch.deposit(address(usdg), 1e6);
-    }
-
     function test_deposit_zero_reverts() public {
         vm.prank(alice);
         vm.expectRevert(IFundLaunch.ZeroAmount.selector);
@@ -78,71 +87,17 @@ contract FundLaunchTest is FundTestBase {
         launch.deposit(address(net), 1e9);
     }
 
+    function test_deposit_afterFinalize_reverts() public {
+        _finalizeTwoDepositors();
+        vm.prank(alice);
+        vm.expectRevert(IFundLaunch.WrongStatus.selector);
+        launch.deposit(address(net), 1e9);
+    }
+
     function test_setDepositsPaused_notAdmin_reverts() public {
         vm.prank(keeper);
         vm.expectRevert(IFundLaunch.NotAdmin.selector);
         launch.setDepositsPaused(true);
-    }
-
-    function test_deposit_stalePrice_reverts() public {
-        vm.warp(block.timestamp + STALENESS + 1);
-        net.mint(alice, 1e9);
-        vm.prank(alice);
-        vm.expectRevert();
-        launch.deposit(address(net), 1e9);
-    }
-
-    // ──────────────────────────────────────────────────────────
-    //  withdraw
-    // ──────────────────────────────────────────────────────────
-
-    function test_withdraw_returnsAssetAndUsdgAndForfeitsEarlyYield() public {
-        _deposit(alice, address(net), 10e9);
-        uint256 usdgBefore = usdg.balanceOf(alice);
-        vm.warp(block.timestamp + 2 days);
-        vm.prank(alice);
-        uint256 back = launch.withdraw(address(net), 4e9);
-
-        assertEq(back, 360e6);
-        assertEq(net.balanceOf(alice), 4e9);
-        assertEq(usdg.balanceOf(alice), usdgBefore + 360e6);
-        IFundLaunch.Deposit memory d = launch.depositOf(alice, address(net));
-        assertEq(d.amount, 6e9);
-        assertEq(d.usdg, 540e6);
-        // The time weight left belongs to the tokens that stayed, from when they came in.
-        assertEq(d.timeWeight, 6e9 * 7 days);
-        assertEq(launch.totalDeposited(address(net)), 6e9);
-        assertEq(launch.totalUsdg(), 540e6);
-        assertEq(launch.totalTimeWeight(address(net)), 6e9 * 7 days);
-    }
-
-    function test_withdraw_inLastDay_reverts() public {
-        _deposit(alice, address(net), 10e9);
-        vm.warp(launch.withdrawDeadline());
-        vm.prank(alice);
-        vm.expectRevert(IFundLaunch.WithdrawalsClosed.selector);
-        launch.withdraw(address(net), 1e9);
-        assertEq(launch.withdrawDeadline(), launch.endTime() - 1 days);
-    }
-
-    function test_withdraw_moreThanDeposited_reverts() public {
-        _deposit(alice, address(net), 10e9);
-        vm.prank(alice);
-        vm.expectRevert(IFundLaunch.InsufficientDeposit.selector);
-        launch.withdraw(address(net), 10e9 + 1);
-    }
-
-    function test_withdraw_zero_reverts() public {
-        vm.prank(alice);
-        vm.expectRevert(IFundLaunch.ZeroAmount.selector);
-        launch.withdraw(address(net), 0);
-    }
-
-    function test_withdraw_afterFinalize_reverts() public {
-        _finalizeTwoDepositors();
-        vm.prank(alice);
-        vm.expectRevert(IFundLaunch.WrongStatus.selector);
-        launch.withdraw(address(net), 1e9);
     }
 
     // ──────────────────────────────────────────────────────────
@@ -150,76 +105,83 @@ contract FundLaunchTest is FundTestBase {
     // ──────────────────────────────────────────────────────────
 
     function test_finalize_windowOpen_reverts() public {
+        _deposit(alice, address(net), 1000e9);
+        _refreshFeeds();
         vm.expectRevert(IFundLaunch.WindowOpen.selector);
         launch.finalize();
     }
 
-    function test_finalize_success_sizesPoolAtPremium() public {
+    function test_finalize_success_handsEverythingToFundWithoutPool() public {
         _finalizeTwoDepositors();
 
         assertEq(uint8(launch.status()), uint8(IFundLaunch.Status.Succeeded));
+        assertEq(launch.closedAt(), block.timestamp);
         assertTrue(fund.launched());
         assertEq(fund.depositorUnlockAt(), block.timestamp + 7 days);
+        assertFalse(hook.isSeeded(address(fund)));
+        assertFalse(launch.poolSeeded());
 
-        assertApproxEqAbs(launch.depositorSupply(), DEPOSITOR_SHARES, 1e6);
+        assertApproxEqAbs(launch.poolShares(), POOL_SHARES, 1);
+        assertApproxEqAbs(launch.depositorSupply(), DEPOSITOR_SHARES, 1);
+        assertEq(launch.poolUsdg(), 25_000e6);
+        assertEq(fund.totalSupply(), launch.depositorSupply());
         assertEq(fund.balanceOf(address(launch)), launch.depositorSupply());
-        // Full-range liquidity rounding leaves a few wei of fund tokens, which the hook burns.
-        assertApproxEqAbs(fund.totalSupply(), 130_000e18, 1e7);
-        assertApproxEqAbs(fund.balanceOf(address(poolManager)), POOL_SHARES, 1e7);
-        assertApproxEqAbs(usdg.balanceOf(address(poolManager)), 30_000e6, 1);
-        assertEq(fund.balanceOf(address(hook)), 0);
-        assertEq(usdg.balanceOf(address(hook)), 0);
-        assertTrue(hook.isSeeded(address(fund)));
 
-        // Basket moved into the fund.
         assertEq(net.balanceOf(address(fund)), 120e9);
         assertEq(pons.balanceOf(address(fund)), 1_500_000e18);
         assertEq(tsla.balanceOf(address(fund)), 85e18);
+        assertEq(fund.idleUsdg(), 25_000e6);
 
-        // The pool position counts: NAV = $130k over the depositors' tokens only.
-        // The position is valued at the TWAP tick, a fraction of a basis point off the seed price.
-        assertApproxEqRel(fund.effectiveSupply(), launch.depositorSupply(), 1e14);
-        assertApproxEqRel(fund.totalValue(), 130_000e18, 1e14);
-        uint256 nav = fund.navPerShare();
-        assertApproxEqRel(nav, uint256(130_000e18) * 1e18 / DEPOSITOR_SHARES, 1e14);
-
-        // Pool opens at 1.3x NAV.
-        assertApproxEqRel(_poolPrice(), nav * 13 / 10, 1e14);
+        // NAV = $125k over the depositors' tokens only.
+        assertEq(fund.totalValue(), 125_000e18);
+        assertEq(fund.navPerShare(), Math.mulDiv(125_000e18, 1e18, launch.depositorSupply()));
     }
 
     function test_finalize_depositorsGetNavEqualToWhatTheyBrought() public {
         _finalizeTwoDepositors();
         vm.prank(alice);
         uint256 shares = launch.claim(false);
-        // Alice brought $60k of assets and $18k of USDG; bob's $200 haircut adds a sliver.
+        // Alice brought $75k; bob's $200 haircut adds a sliver.
         uint256 aliceValue = Math.mulDiv(shares, fund.navPerShare(), 1e18);
-        assertApproxEqRel(aliceValue, uint256(78_000e18) * 130_000 / 129_800, 1e14);
+        assertApproxEqRel(aliceValue, uint256(75_000e18) * 125_000 / 124_800, 1e12);
     }
 
     function test_finalize_overweightHaircutGoesToOthers() public {
         _finalizeTwoDepositors();
-        // TSLA is $34k against a $30k target: bob's TSLA credit loses 5% of the $4k over.
+        // Basket targets are 80% of the weights: TSLA is $34k against $30k, bob loses 5% of $4k.
         assertEq(launch.rawValue(address(tsla)), 34_000e18);
         assertEq(launch.creditedValue(address(tsla)), 33_800e18);
         assertEq(launch.creditedValue(address(net)), 36_000e18);
+        // USDG sits exactly on its 20% target.
+        assertEq(launch.creditedValue(address(usdg)), 25_000e18);
 
-        uint256 aliceShares = launch.claimable(alice);
-        uint256 bobShares = launch.claimable(bob);
-        // Points are credited value plus USDG paid: alice 60k + 18k, bob 39.8k + 12k.
-        assertApproxEqRel(aliceShares, launch.depositorSupply() * 78_000 / 129_800, 1e12);
-        assertApproxEqRel(bobShares, launch.depositorSupply() * 51_800 / 129_800, 1e12);
+        assertApproxEqRel(launch.claimable(alice), launch.depositorSupply() * 75_000 / 124_800, 1e12);
+        assertApproxEqRel(launch.claimable(bob), launch.depositorSupply() * 49_800 / 124_800, 1e12);
+    }
+
+    function test_finalize_usdgAboveItsTargetIsHaircut() public {
+        vm.warp(launch.endTime() - 1);
+        _refreshFeeds();
+        _deposit(alice, address(net), 100e9); // $30k
+        _deposit(bob, address(usdg), 20_000e6);
+        vm.warp(launch.endTime());
+        _refreshFeeds();
+        launch.finalize();
+
+        // Raise $50k. USDG target 20% = $10k, $10k over; NET target 32% = $16k, $14k over.
+        assertEq(launch.creditedValue(address(usdg)), 19_500e18);
+        assertEq(launch.creditedValue(address(net)), 29_300e18);
+        assertApproxEqRel(launch.claimable(bob), launch.depositorSupply() * 19_500 / 48_800, 1e12);
     }
 
     function test_finalize_earlyDepositEarnsExtraTokens() public {
-        // Same basket from both, alice at the open and bob at the close.
+        // Same deposits from both, alice at the open and bob at the close.
         _deposit(alice, address(net), 50e9);
-        _deposit(alice, address(pons), 750_000e18);
-        _deposit(alice, address(tsla), 37.5e18);
+        _deposit(alice, address(usdg), 10_000e6);
         vm.warp(launch.endTime() - 1);
         _refreshFeeds();
         _deposit(bob, address(net), 50e9);
-        _deposit(bob, address(pons), 750_000e18);
-        _deposit(bob, address(tsla), 37.5e18);
+        _deposit(bob, address(usdg), 10_000e6);
         vm.warp(launch.endTime());
         _refreshFeeds();
         launch.finalize();
@@ -232,55 +194,23 @@ contract FundLaunchTest is FundTestBase {
         assertApproxEqAbs(a + b, launch.depositorSupply(), 10);
     }
 
-    function test_finalize_pointsCountUsdgPaid_notDepositTimePrice() public {
-        // Bob deposits the same basket while TSLA is 20% down, so he pays less USDG for it.
-        vm.warp(launch.endTime() - 1);
-        _refreshFeeds();
-        uint256 usdgA = _deposit(alice, address(net), 50e9);
-        usdgA += _deposit(alice, address(pons), 750_000e18);
-        usdgA += _deposit(alice, address(tsla), 37.5e18);
-        int256 tslaPrice = feeds[address(tsla)].answer();
-        _setFeed(address(tsla), tslaPrice * 8 / 10);
-        uint256 usdgB = _deposit(bob, address(net), 50e9);
-        usdgB += _deposit(bob, address(pons), 750_000e18);
-        usdgB += _deposit(bob, address(tsla), 37.5e18);
-        assertLt(usdgB, usdgA);
-        _setFeed(address(tsla), tslaPrice);
-        vm.warp(launch.endTime());
-        _refreshFeeds();
-        launch.finalize();
-
-        uint256 half = (
-            launch.creditedValue(address(net)) + launch.creditedValue(address(pons))
-                + launch.creditedValue(address(tsla))
-        ) / 2;
-        uint256 a = launch.claimable(alice);
-        uint256 b = launch.claimable(bob);
-        assertApproxEqRel(a * 1e18 / b, (half + usdgA * 1e12) * 1e18 / (half + usdgB * 1e12), 1e12);
-    }
-
-    function test_finalize_usdgDonatedToHook_goesToFund() public {
-        _deposit(alice, address(net), 100e9);
-        _deposit(alice, address(pons), 1_500_000e18);
-        _deposit(bob, address(net), 20e9);
-        _deposit(bob, address(tsla), 85e18);
-        usdg.mint(address(hook), 1000e6);
-        vm.warp(launch.endTime());
-        _refreshFeeds();
-        launch.finalize();
-
-        assertEq(uint8(launch.status()), uint8(IFundLaunch.Status.Succeeded));
-        assertEq(usdg.balanceOf(address(hook)), 0);
-        assertApproxEqAbs(fund.idleUsdg(), 1000e6, 1);
-    }
-
     function test_finalize_belowMinimum_fails() public {
-        _deposit(alice, address(net), 10e9); // $3k < $10k minimum
+        _deposit(alice, address(net), 10e9); // $3k
+        _deposit(alice, address(usdg), 6000e6); // $9k < $10k minimum
         vm.warp(launch.endTime());
         _refreshFeeds();
         launch.finalize();
         assertEq(uint8(launch.status()), uint8(IFundLaunch.Status.Failed));
         assertFalse(fund.launched());
+    }
+
+    function test_finalize_usdgCountsTowardMinimum() public {
+        _deposit(alice, address(net), 10e9); // $3k
+        _deposit(alice, address(usdg), 7000e6);
+        vm.warp(launch.endTime());
+        _refreshFeeds();
+        launch.finalize();
+        assertEq(uint8(launch.status()), uint8(IFundLaunch.Status.Succeeded));
     }
 
     function test_finalize_twice_reverts() public {
@@ -301,16 +231,209 @@ contract FundLaunchTest is FundTestBase {
     }
 
     function test_finalize_usesClosingPrices() public {
-        _deposit(alice, address(net), 100e9); // $30k at deposit, $9k USDG
+        _deposit(alice, address(net), 100e9); // $30k at deposit
+        _deposit(alice, address(usdg), 9000e6);
         vm.warp(launch.endTime());
         _refreshFeeds();
         _setFeed(address(net), 150e8); // halves by the close
         launch.finalize();
         assertEq(launch.closePrice(address(net)), 150e18);
         assertEq(launch.rawValue(address(net)), 15_000e18);
-        // NAV is still what went in: $15k of NET plus the $9k USDG.
-        assertApproxEqRel(fund.totalValue(), 24_000e18, 1e14);
+        assertEq(fund.totalValue(), 24_000e18);
         assertEq(launch.claimable(alice), launch.depositorSupply());
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  early close at the target raise
+    // ──────────────────────────────────────────────────────────
+
+    function test_finalize_targetReached_closesEarly() public {
+        _createTargetFund(100_000e18);
+        _deposit(alice, address(net), 200e9); // $60k at the open
+        vm.warp(block.timestamp + 2 days);
+        _refreshFeeds();
+        _deposit(bob, address(usdg), 40_000e6);
+        assertEq(launch.raisedValue(), 100_000e18);
+
+        launch.finalize();
+        assertEq(uint8(launch.status()), uint8(IFundLaunch.Status.Succeeded));
+        assertEq(launch.closedAt(), block.timestamp);
+        assertLt(block.timestamp, launch.endTime());
+
+        // The early bonus runs to the actual close: two days at 0.5% on alice's $60k, none for bob.
+        // NET target is 80% of 40% = $32k of $100k, so alice's $28k over is haircut 5% ($1.4k).
+        uint256 alicePoints = 58_600e18 + Math.mulDiv(60_000e18, 100, 10_000) * 58_600 / 60_000;
+        uint256 bobPoints = 40_000e18 - 1000e18; // $20k over USDG's $20k target, 5% off
+        assertApproxEqRel(launch.claimable(alice) * 1e18 / launch.claimable(bob), alicePoints * 1e18 / bobPoints, 1e12);
+    }
+
+    function test_finalize_belowTarget_beforeEnd_reverts() public {
+        _createTargetFund(100_000e18);
+        _deposit(alice, address(usdg), 99_999e6);
+        vm.expectRevert(IFundLaunch.WindowOpen.selector);
+        launch.finalize();
+    }
+
+    function test_finalize_targetCheckedAtClosingPrices() public {
+        _createTargetFund(100_000e18);
+        _deposit(alice, address(net), 340e9); // $102k
+        assertGe(launch.raisedValue(), 100_000e18);
+        _setFeed(address(net), 290e8); // now $98.6k
+        vm.expectRevert(IFundLaunch.WindowOpen.selector);
+        launch.finalize();
+    }
+
+    function test_finalize_noTarget_neverClosesEarly() public {
+        _deposit(alice, address(usdg), 1_000_000e6);
+        vm.expectRevert(IFundLaunch.WindowOpen.selector);
+        launch.finalize();
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  launch rebalance and seedPool
+    // ──────────────────────────────────────────────────────────
+
+    function test_seedPool_opensAtPremiumWithFixedSupply() public {
+        _finalizeTwoDepositors();
+        uint256 nav = fund.navPerShare();
+        vm.prank(keeper);
+        launch.seedPool();
+
+        assertTrue(launch.poolSeeded());
+        assertTrue(hook.isSeeded(address(fund)));
+        // Full-range liquidity rounding leaves a few wei of fund tokens, which the hook burns.
+        assertApproxEqAbs(fund.totalSupply(), 130_000e18, 1e7);
+        assertApproxEqAbs(fund.balanceOf(address(poolManager)), POOL_SHARES, 1e7);
+        assertApproxEqAbs(usdg.balanceOf(address(poolManager)), 25_000e6, 1);
+        assertEq(fund.balanceOf(address(hook)), 0);
+        assertEq(usdg.balanceOf(address(hook)), 0);
+        assertApproxEqAbs(fund.idleUsdg(), 0, 1);
+
+        // The position counts: NAV is unchanged by seeding, and the pool opens at 1.3x it.
+        assertApproxEqRel(fund.effectiveSupply(), launch.depositorSupply(), 1e14);
+        assertApproxEqRel(fund.totalValue(), 125_000e18, 1e14);
+        assertApproxEqRel(fund.navPerShare(), nav, 1e14);
+        assertApproxEqRel(_poolPrice(), nav * 13 / 10, 1e14);
+    }
+
+    function test_seedPool_byAdmin() public {
+        _finalizeTwoDepositors();
+        vm.prank(admin);
+        launch.seedPool();
+        assertTrue(hook.isSeeded(address(fund)));
+    }
+
+    function test_seedPool_notManager_reverts() public {
+        _finalizeTwoDepositors();
+        vm.prank(attacker);
+        vm.expectRevert(IFundLaunch.NotManager.selector);
+        launch.seedPool();
+    }
+
+    function test_seedPool_beforeSuccess_reverts() public {
+        vm.prank(keeper);
+        vm.expectRevert(IFundLaunch.WrongStatus.selector);
+        launch.seedPool();
+    }
+
+    function test_seedPool_twice_reverts() public {
+        _finalizeTwoDepositors();
+        vm.startPrank(keeper);
+        launch.seedPool();
+        vm.expectRevert(IFundLaunch.AlreadySeeded.selector);
+        launch.seedPool();
+        vm.stopPrank();
+    }
+
+    function test_seedPool_shortOfUsdg_rebalanceSellsTokensFirst() public {
+        // Tokens only: $100k NET + $25k PONS, no USDG. The pool needs $25k.
+        vm.warp(launch.endTime() - 1);
+        _refreshFeeds();
+        _deposit(alice, address(net), 333e9 + 333e6); // $100k
+        _deposit(bob, address(pons), 1_250_000e18); // $25k
+        vm.warp(launch.endTime());
+        _refreshFeeds();
+        launch.finalize();
+
+        vm.prank(keeper);
+        vm.expectRevert(IFundLaunch.InsufficientPoolUsdg.selector);
+        launch.seedPool();
+
+        // One $25k sale, 2.5x the 10% daily cap, is allowed before the pool opens.
+        usdg.mint(address(router), 25_000e6);
+        IFund.RebalanceParams memory p = IFund.RebalanceParams({
+            sellAsset: address(net),
+            sellAmount: 83_333_333_334,
+            buyAsset: address(usdg),
+            minBuyAmount: 25_000e6,
+            router: address(router),
+            data: abi.encodeCall(MockSwapRouter.swap, (address(net), 83_333_333_334, address(usdg), 25_000e6))
+        });
+        vm.prank(keeper);
+        fund.rebalance(p);
+        assertEq(fund.idleUsdg(), 25_000e6);
+
+        vm.prank(keeper);
+        launch.seedPool();
+        assertTrue(hook.isSeeded(address(fund)));
+
+        // Once the pool is open, buying USDG is not a rebalance any more.
+        _refreshFeeds();
+        usdg.mint(address(router), 300e6);
+        p.sellAmount = 1e9;
+        p.minBuyAmount = 300e6;
+        p.data = abi.encodeCall(MockSwapRouter.swap, (address(net), 1e9, address(usdg), 300e6));
+        vm.prank(keeper);
+        vm.expectRevert(IFund.InvalidBasket.selector);
+        fund.rebalance(p);
+    }
+
+    function test_launchRebalance_ignoresVolumeCap_thenCapApplies() public {
+        _finalizeTwoDepositors();
+        tsla.mint(address(router), 1000e18);
+        vm.startPrank(keeper);
+        // $24k of NET for TSLA in one swap: about twice the 10% daily cap on ~$125k.
+        fund.rebalance(_netForTsla(80e9, 59.2e18));
+        assertEq(fund.rebalanceVolume(), 0);
+        launch.seedPool();
+        vm.stopPrank();
+
+        _refreshFeeds();
+        vm.prank(keeper);
+        vm.expectRevert(IFund.RebalanceVolumeExceeded.selector);
+        fund.rebalance(_netForTsla(40e9, 29.6e18));
+    }
+
+    function test_seedPool_afterRedemptions_scalesPoolDown() public {
+        _finalizeTwoDepositors();
+        vm.prank(alice);
+        uint256 shares = launch.claim(false);
+        vm.prank(alice);
+        fund.redeem(shares / 2, alice, new uint256[](0), 0);
+        uint256 supply = fund.totalSupply();
+        uint256 expectedUsdg = Math.mulDiv(launch.poolUsdg(), supply, launch.depositorSupply());
+        uint256 nav = fund.navPerShare();
+
+        vm.prank(keeper);
+        launch.seedPool();
+        assertApproxEqAbs(usdg.balanceOf(address(poolManager)), expectedUsdg, 1);
+        assertApproxEqRel(_poolPrice(), nav * 13 / 10, 1e14);
+    }
+
+    function test_beforeSeed_mintBlocked_redeemOpen() public {
+        _finalizeTwoDepositors();
+        _mintAsset(bob, net, 1e9);
+        vm.prank(bob);
+        vm.expectRevert(IFund.NoMarketPrice.selector);
+        fund.mint(address(net), 1e9, 0, 0, bob);
+
+        vm.prank(alice);
+        uint256 shares = launch.claim(false);
+        uint256 usdgBefore = usdg.balanceOf(alice);
+        vm.prank(alice);
+        fund.redeem(shares, alice, new uint256[](0), 0);
+        assertGt(usdg.balanceOf(alice), usdgBefore);
+        assertGt(net.balanceOf(alice), 0);
     }
 
     // ──────────────────────────────────────────────────────────
@@ -324,35 +447,20 @@ contract FundLaunchTest is FundTestBase {
     }
 
     function test_refund_afterFailure_returnsEverything() public {
-        uint256 paid = _deposit(alice, address(net), 10e9);
-        uint256 usdgBefore = usdg.balanceOf(alice);
+        _deposit(alice, address(net), 10e9);
+        _deposit(alice, address(usdg), 500e6);
         vm.warp(launch.finalizeDeadline() + 1);
         launch.markFailed();
 
         vm.prank(alice);
         launch.refund();
         assertEq(net.balanceOf(alice), 10e9);
-        assertEq(usdg.balanceOf(alice), usdgBefore + paid);
+        assertEq(usdg.balanceOf(alice), 500e6);
         assertTrue(launch.settled(alice));
 
         vm.prank(alice);
         vm.expectRevert(IFundLaunch.NothingToClaim.selector);
         launch.refund();
-    }
-
-    function test_refund_afterPartialWithdraw_returnsTheRest() public {
-        _deposit(alice, address(net), 10e9);
-        vm.prank(alice);
-        launch.withdraw(address(net), 4e9);
-        uint256 usdgBefore = usdg.balanceOf(alice);
-        vm.warp(launch.endTime());
-        _refreshFeeds();
-        launch.finalize(); // $1.8k < minimum
-        vm.prank(alice);
-        launch.refund();
-        assertEq(net.balanceOf(alice), 10e9);
-        assertEq(usdg.balanceOf(alice), usdgBefore + 540e6);
-        assertEq(usdg.balanceOf(address(launch)), 0);
     }
 
     function test_refund_whileOpen_reverts() public {
@@ -420,6 +528,8 @@ contract FundLaunchTest is FundTestBase {
 
     function test_claim_lockOnlyCoversLaunchTokens() public {
         _finalizeTwoDepositors();
+        vm.prank(keeper);
+        launch.seedPool();
         vm.prank(alice);
         uint256 shares = launch.claim(false);
         // Tokens bought later move freely; the launch tokens stay put.
@@ -510,14 +620,20 @@ contract FundLaunchTest is FundTestBase {
     function test_depositValues_reportsTargetsAndValues() public {
         _deposit(alice, address(net), 100e9);
         _deposit(bob, address(tsla), 10e18);
+        _deposit(bob, address(usdg), 2000e6);
         (address[] memory assets, uint256[] memory values, uint16[] memory weights) = launch.depositValues();
-        assertEq(assets.length, 3);
+        assertEq(assets.length, 4);
         assertEq(assets[0], address(net));
+        assertEq(assets[3], address(usdg));
         assertEq(values[0], 30_000e18);
         assertEq(values[1], 0);
         assertEq(values[2], 4000e18);
-        assertEq(weights[0], 4000);
-        assertEq(weights[2], 3000);
+        assertEq(values[3], 2000e18);
+        // Basket weights take the 80% left after USDG's 20% pool share.
+        assertEq(weights[0], 3200);
+        assertEq(weights[2], 2400);
+        assertEq(weights[3], 2000);
+        assertEq(launch.raisedValue(), 36_000e18);
     }
 
     function _finalizeTwoDepositors() internal {
@@ -525,11 +641,32 @@ contract FundLaunchTest is FundTestBase {
         _refreshFeeds();
         _deposit(alice, address(net), 100e9);
         _deposit(alice, address(pons), 1_500_000e18);
+        _deposit(alice, address(usdg), 15_000e6);
         _deposit(bob, address(net), 20e9);
         _deposit(bob, address(tsla), 85e18);
+        _deposit(bob, address(usdg), 10_000e6);
         vm.warp(launch.endTime());
         _refreshFeeds();
         launch.finalize();
+    }
+
+    function _createTargetFund(
+        uint256 target
+    ) internal {
+        CreateFundParams memory p = _defaultParams();
+        p.targetRaiseUsd = target;
+        _createFund(p);
+    }
+
+    function _netForTsla(uint256 netIn, uint256 tslaOut) internal view returns (IFund.RebalanceParams memory) {
+        return IFund.RebalanceParams({
+            sellAsset: address(net),
+            sellAmount: netIn,
+            buyAsset: address(tsla),
+            minBuyAmount: tslaOut,
+            router: address(router),
+            data: abi.encodeCall(MockSwapRouter.swap, (address(net), netIn, address(tsla), tslaOut))
+        });
     }
 
     /// @dev Pool spot price in USD per fund token, 18 decimals.

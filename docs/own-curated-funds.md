@@ -13,7 +13,7 @@ Design source: the "Own Curated Funds: launch, curators, weight votes and bribes
 | --- | --- |
 | `FundFactory` | UUPS. Platform admin hub: launcher whitelist (Own only by default), protocol fee (0.5% default, 5% cap), rebalance routers and limits, launch and governance defaults, staking yield cap (3% a day), curator cap (10), bribe cut (5%, 10% cap), bribe tokens, the listing eligibility list and the platform metadata. Owns the six module beacons, so one call upgrades every fund. |
 | `Fund` | Beacon proxy per fund. The fund token plus custody of the basket and idle USDG: mint, redeem, locks, rebalance, the depositor lock. NAV counts the pool position. |
-| `FundLaunch` | Beacon proxy per fund. Deposit window, withdrawals, early-deposit yield, overweight haircut, the fixed-supply split and pool seeding. |
+| `FundLaunch` | Beacon proxy per fund. Deposit window (any basket token or USDG), early close at the target raise, early-deposit yield, overweight haircut, the fixed-supply split and pool seeding after the launch rebalance. |
 | `FundStaking` | Beacon proxy per fund. Staked fund token (e.g. sOCF1) with issuance set by a premium-based yield curve. |
 | `FundGovernor` | Beacon proxy per fund. Staked escrow, the weekly weight vote (gauge) and proposals to list or delist tokens and add, remove or replace curators. |
 | `FundCurators` | Beacon proxy per fund. The curator set, the minimum curator stake and compliance, and the curator fee split. It is the curator fee recipient. |
@@ -29,28 +29,37 @@ Design source: the "Own Curated Funds: launch, curators, weight votes and bribes
    is on and empty by default, so only Own launches). Own sets the name, symbol, logo and
    description, the basket and starting weights, the manager (the Own keeper), the curators (up to
    the cap) and curator fee (0 to 10%), the minimum curator stake, lock options, the yield curve,
-   the mint premium ceiling, the minimum raise, the launch supply (default 100M) and the launch
-   window (default 7 days, 1 to 30 allowed). Only the admin can change the metadata, curator fee,
-   lock options, yield curve and premium ceiling afterwards.
-2. **Deposit window.** Anyone deposits any basket asset with a non-zero weight plus USDG worth 30%
-   of it.
-   - Deposits can be withdrawn (asset and USDG) until the last 24 hours of the window.
+   the mint premium ceiling, the minimum raise, the target raise (optional), the pool's USDG share
+   (default 10%, at most 50%), the launch supply (default 100M) and the launch window (default 7
+   days, 1 to 30 allowed). Only the admin can change the metadata, curator fee, lock options,
+   yield curve and premium ceiling afterwards.
+2. **Deposit window.** Anyone deposits any basket asset with a non-zero weight, or USDG, on its
+   own. Deposits are final: there are no withdrawals.
    - **Early-deposit yield:** each deposit earns 0.5% a day of its amount until the close, paid as
-     extra launch tokens out of the fixed supply. Withdrawing forfeits it for what is withdrawn.
-   - `depositValues()` shows each asset's value against its target weight, so the launch page can
-     flag overweight assets live.
-3. **Finalize** (anyone, at or after the close, within 7 days). Assets are valued at closing oracle
-   prices: basket value R and USDG U.
-   - If R is below the minimum raise the launch fails and everyone is refunded in full. If nobody
+     extra launch tokens out of the fixed supply.
+   - `depositValues()` shows each asset's value against its target share, and `raisedValue()` the
+     live total, so the launch page can flag overweight assets and track the target.
+3. **Finalize** (anyone): at or after the end of the window (within 7 days), or earlier as soon as
+   the deposits are worth the target raise. Assets are valued at closing oracle prices and USDG at
+   $1: raise V. The target is checked at those closing prices.
+   - If V is below the minimum raise the launch fails and everyone is refunded in full. If nobody
      finalizes within 7 days of the close, anyone can mark it failed.
-   - **Overweight haircut:** value above an asset's target weight of R is credited at 95%. The
-     withheld credit goes to the other depositors.
-   - **Fixed supply S is split** so that the pool opens at 1.3 × NAV: the pool gets
-     M = U·S / (1.3·(R + U) + U) tokens plus all of U, and depositors share C = S − M in
-     proportion to their points (closing value + USDG paid + early yield, after the haircut). With
-     a 30% USDG ratio M is about 15% of S.
-   - The basket goes to the fund, the pool is seeded, and depositor tokens are locked for 7 days.
-4. **Claim.** Depositors claim their tokens, liquid or staked. Locked tokens cannot be transferred
+   - **Overweight haircut:** USDG's target share of V is the pool share (10%) and the basket assets
+     split the rest by weight. Value above an asset's (or USDG's) target is credited at 95%, since
+     the fund pays to rebalance it. The withheld credit goes to the other depositors.
+   - **Fixed supply S is split** so that the pool will open at 1.3 × NAV. The pool gets
+     P = 10% of V in USDG and M = P·S / (1.3·V + P) tokens (about 7% of S); depositors share
+     C = S − M in proportion to their points (closing value + early yield, after the haircut).
+   - Everything deposited moves to the fund, depositors can claim, and their tokens are locked for
+     7 days. NAV is V / C. The pool is not open yet.
+4. **Launch rebalance and pool seeding.** The manager rebalances the fund to its target weights and
+   to at least P of idle USDG, selling basket tokens for USDG if the USDG deposits fall short.
+   Until the pool is seeded the rebalance may buy USDG and the daily volume cap does not apply
+   (the 2% per-swap loss bound still does). The manager (or admin) then calls `seedPool()`, which
+   adds P of the fund's USDG and the M tokens as the fund's position, so the pool opens at 1.3 ×
+   NAV. Redemptions before seeding shrink P and M in proportion. Before seeding nobody can trade
+   or mint and stakers earn nothing; redeeming works.
+5. **Claim.** Depositors claim their tokens, liquid or staked. Locked tokens cannot be transferred
    or sold for 7 days, but they can be staked, escrowed in the governor and redeemed at NAV.
    Unstaking during the lock keeps the tokens locked and pays only to the staker's own account.
    Tokens bought later are never locked.
@@ -92,7 +101,8 @@ Design source: the "Own Curated Funds: launch, curators, weight votes and bribes
   yield at or below NAV. Yield accrues every 8 hours at most.
 - **Rebalancing:** the manager (Own keeper) swaps between basket assets, and from idle USDG into
   them, through admin-allowed routers: at most 2% loss of oracle value per swap, and at most 10% of
-  the basket a day. Assets worth up to 0.1% of the basket count as dust.
+  the basket a day (a running total that drains at the full cap per day). Assets worth up to 0.1%
+  of the basket count as dust. The launch rebalance before the pool opens is the exception above.
 
 ## Curators
 
@@ -170,7 +180,10 @@ Design source: the "Own Curated Funds: launch, curators, weight votes and bribes
   curator fee, minimum curator stake, lock options, yield curve and premium ceiling; adds and
   removes curators;
   vetoes proposals; can delist a token directly; can withdraw the pool position back into the fund.
-- **Manager (Own keeper):** trusted only within the rebalance bounds above.
+- **Manager (Own keeper):** trusted only within the rebalance bounds above. Between the launch
+  close and pool seeding it is trusted more: no daily volume cap, only the 2% per-swap bound, so
+  it should finish the launch rebalance and seed promptly. Its launch jobs are `finalize()` as
+  soon as the window ends or the target raise is reached, then the rebalance and `seedPool()`.
 - **Oracle feeds:** basket prices come from admin-set feeds; the fund's market price and the
   position value come from its own pool TWAP. Redeem depends on neither.
 - **USDG:** treated as $1.

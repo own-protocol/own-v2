@@ -143,9 +143,13 @@ contract FundHookTest is FundTestBase {
         vm.prank(admin);
         hook.setLpFee(address(fund), 2500);
         _deposit(alice, address(net), 400e9);
+        _deposit(alice, address(usdg), 30_000e6);
         vm.warp(launch.endTime());
         _refreshFeeds();
         launch.finalize();
+        assertFalse(hook.isSeeded(address(fund)));
+        vm.prank(keeper);
+        launch.seedPool();
         assertTrue(hook.isSeeded(address(fund)));
     }
 

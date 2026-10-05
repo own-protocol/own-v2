@@ -67,23 +67,23 @@ contract FundTest is FundTestBase {
 
     function test_nav_countsPoolUsdgAndExcludesPoolTokens() public view {
         (uint256 positionUsdg, uint256 positionTokens) = fund.positionAmounts();
-        assertApproxEqRel(positionUsdg, 30_000e6, 1e15);
+        assertApproxEqRel(positionUsdg, 25_000e6, 1e15);
         assertApproxEqRel(positionTokens, 130_000e18 - launch.depositorSupply(), 1e15);
         assertApproxEqRel(fund.effectiveSupply(), launch.depositorSupply(), 1e15);
-        assertApproxEqRel(fund.totalValue(), 130_000e18, 1e15);
+        assertApproxEqRel(fund.totalValue(), 125_000e18, 1e15);
         // Depositors get exactly what they brought, at NAV.
-        assertApproxEqRel(fund.navPerShare(), uint256(130_000e18) * 1e18 / launch.depositorSupply(), 1e15);
+        assertApproxEqRel(fund.navPerShare(), uint256(125_000e18) * 1e18 / launch.depositorSupply(), 1e15);
         assertApproxEqAbs(fund.totalSupply(), 130_000e18, 1e6); // seeding dust is burned
     }
 
     function test_depositors_getWhatTheyBroughtAtNav() public view {
         uint256 nav = fund.navPerShare();
-        // alice brought $60k of basket and $18k of USDG, and gains the $200 of credit bob's
-        // overweight TSLA lost.
-        assertApproxEqRel(aliceShares * nav / 1e18, uint256(78_000e18) * 100_000 / 99_800, 1e15);
-        // bob brought $40k and $12k, less 5% of TSLA's $4k over target ($200 of basket credit).
-        assertLt(bobShares * nav / 1e18, 52_000e18);
-        assertGt(bobShares * nav / 1e18, 51_600e18);
+        // alice brought $60k of basket and $15k of USDG, and gains a share of the $200 of credit
+        // bob's overweight TSLA lost.
+        assertApproxEqRel(aliceShares * nav / 1e18, uint256(75_000e18) * 125_000 / 124_800, 1e15);
+        // bob brought $40k and $10k, less 5% of TSLA's $4k over target ($200 of credit).
+        assertLt(bobShares * nav / 1e18, 50_000e18);
+        assertGt(bobShares * nav / 1e18, 49_600e18);
     }
 
     function test_premium_thirtyPercentAtLaunch() public view {
@@ -444,7 +444,7 @@ contract FundTest is FundTestBase {
         hook.withdrawPosition(address(fund), liquidity);
 
         assertEq(hook.positionLiquidity(address(fund)), 0);
-        assertApproxEqRel(fund.idleUsdg(), 30_000e6, 1e15);
+        assertApproxEqRel(fund.idleUsdg(), 25_000e6, 1e15);
         assertApproxEqRel(fund.totalSupply(), launch.depositorSupply(), 1e15);
         assertApproxEqRel(fund.navPerShare(), navBefore, 1e15);
         assertEq(usdg.balanceOf(admin), 0);

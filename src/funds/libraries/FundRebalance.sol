@@ -3,6 +3,7 @@ pragma solidity 0.8.28;
 
 import {IFund} from "../../interfaces/IFund.sol";
 import {IFundFactory} from "../../interfaces/IFundFactory.sol";
+import {IFundHook} from "../../interfaces/IFundHook.sol";
 import {IFundOracle} from "../../interfaces/IFundOracle.sol";
 import {BasketEntry} from "../../interfaces/types/FundTypes.sol";
 import {BPS, PRECISION} from "../../interfaces/types/Types.sol";
@@ -18,7 +19,8 @@ library FundRebalance {
     using SafeERC20 for IERC20;
 
     /// @notice Swap through an allowed router within the slippage and daily volume bounds. See
-    ///         {IFund-rebalance}.
+    ///         {IFund-rebalance}. Until the fund's pool is seeded (the launch rebalance) the swap may
+    ///         buy USDG and the volume cap does not apply.
     /// @param factory         The fund's factory.
     /// @param assets          The basket.
     /// @param basket          Basket membership.
@@ -39,8 +41,10 @@ library FundRebalance {
             revert IFund.RouterNotAllowed();
         }
         address usdg = fac.usdg();
+        bool launching = !IFundHook(fac.hook()).isSeeded(address(this));
         if (
-            (!basket[params.sellAsset].listed && params.sellAsset != usdg) || !basket[params.buyAsset].listed
+            (!basket[params.sellAsset].listed && params.sellAsset != usdg)
+                || (!basket[params.buyAsset].listed && !(launching && params.buyAsset == usdg))
                 || params.sellAsset == params.buyAsset
         ) {
             revert IFund.InvalidBasket();
@@ -56,7 +60,8 @@ library FundRebalance {
         tracked[n] = usdg;
         (uint256 sold, uint256 bought) = _swap(params, tracked);
 
-        newVolume = _trackVolume(fac, tracked, _checkSwapValue(fac, params, sold, bought), volume, volumeUpdatedAt);
+        uint256 soldValue = _checkSwapValue(fac, params, sold, bought);
+        newVolume = launching ? volume : _trackVolume(fac, tracked, soldValue, volume, volumeUpdatedAt);
 
         emit IFund.Rebalanced(params.sellAsset, sold, params.buyAsset, bought);
     }
@@ -116,10 +121,10 @@ library FundRebalance {
         uint256 bought
     ) private view returns (uint256 soldValue) {
         IFundOracle o = IFundOracle(fac.oracle());
-        soldValue = params.sellAsset == fac.usdg()
-            ? _value(params.sellAsset, sold, PRECISION)
-            : _value(params.sellAsset, sold, o.price(params.sellAsset));
-        uint256 boughtValue = _value(params.buyAsset, bought, o.price(params.buyAsset));
+        address usdg = fac.usdg();
+        soldValue = _value(params.sellAsset, sold, params.sellAsset == usdg ? PRECISION : o.price(params.sellAsset));
+        uint256 boughtValue =
+            _value(params.buyAsset, bought, params.buyAsset == usdg ? PRECISION : o.price(params.buyAsset));
         uint256 minValue = Math.mulDiv(soldValue, BPS - fac.maxRebalanceSlippageBps(), BPS, Math.Rounding.Ceil);
         if (boughtValue < minValue) revert IFund.RebalanceInvalid();
     }

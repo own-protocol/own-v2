@@ -131,6 +131,7 @@ abstract contract FundTestBase is Test {
         p.minRaiseUsd = 10_000e18;
         p.launchSupply = 130_000e18;
         p.launchDuration = 7 days;
+        p.poolUsdgBps = 2000;
         p.lockOptions = new LockOption[](2);
         p.lockOptions[0] = LockOption({duration: 7 days, discountBps: 500});
         p.lockOptions[1] = LockOption({duration: 30 days, discountBps: 1000});
@@ -157,22 +158,28 @@ abstract contract FundTestBase is Test {
         bribes = FundBribes(m.bribes);
     }
 
-    /// @dev Creates the fund, takes $36k NET + $30k PONS + $34k TSLA from alice and bob one second
-    ///      before the close (negligible early yield; TSLA is $4k over its 30% target, so bob's
-    ///      credit loses 5% of that), and finalizes. Basket R = $100k, USDG U = $30k, supply S = 130k: the pool gets
-    ///      M = U * S / (1.3 * (R + U) + U) = ~19 598 tokens, depositors share ~110 402, NAV is
-    ///      $130k / 110.4k = ~$1.1775 and the pool opens at 1.3x that.
+    /// @dev Creates the fund, takes $36k NET + $30k PONS + $34k TSLA + $25k USDG from alice and bob
+    ///      one second before the close (negligible early yield), finalizes and seeds the pool. Raise
+    ///      V = $125k and the pool share is 20%, so the USDG deposited is exactly the pool's P = $25k
+    ///      and no rebalance is needed. Basket targets are 80% of the weights: TSLA is $4k over its
+    ///      $30k target, so bob's credit loses 5% of that. Supply S = 130k: the pool gets
+    ///      M = P * S / (1.3 * V + P) = ~17 333 tokens, depositors share ~112 667, NAV is
+    ///      $125k / 112.67k = ~$1.1095 and the pool opens at 1.3x that.
     function _launchDefault() internal {
         _createFund();
         vm.warp(launch.endTime() - 1);
         _refreshFeeds();
         _deposit(alice, address(net), 100e9); // $30k
         _deposit(alice, address(pons), 1_500_000e18); // $30k
+        _deposit(alice, address(usdg), 15_000e6);
         _deposit(bob, address(net), 20e9); // $6k
         _deposit(bob, address(tsla), 85e18); // $34k
+        _deposit(bob, address(usdg), 10_000e6);
         vm.warp(launch.endTime());
         _refreshFeeds();
         launch.finalize();
+        vm.prank(keeper);
+        launch.seedPool();
         _setFeed(address(fund), _navPrice() * 13 / 10);
     }
 
@@ -181,13 +188,11 @@ abstract contract FundTestBase is Test {
         return int256(fund.navPerShare() / 1e10);
     }
 
-    function _deposit(address who, address asset, uint256 amount) internal returns (uint256 usdgPaid) {
+    function _deposit(address who, address asset, uint256 amount) internal returns (uint256 received) {
         MockERC20(asset).mint(who, amount);
-        usdg.mint(who, 1e30);
         vm.startPrank(who);
         MockERC20(asset).approve(address(launch), amount);
-        usdg.approve(address(launch), type(uint256).max);
-        usdgPaid = launch.deposit(asset, amount);
+        received = launch.deposit(asset, amount);
         vm.stopPrank();
     }
 

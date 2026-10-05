@@ -53,9 +53,11 @@ struct YieldPoint {
 /// @param curators           Starting curators (at most the factory's curator cap).
 /// @param curatorFeeBps      Curator fee on pool trades, mints and redeems (0 to 10%).
 /// @param minCuratorStakeBps Share of supply each curator must keep staked in the governor.
-/// @param minRaiseUsd        Minimum basket value (18 decimals USD) the launch must raise.
+/// @param minRaiseUsd        Minimum value (18 decimals USD) the launch must raise.
+/// @param targetRaiseUsd     Raise at which the launch can close before the window ends (0 for none).
 /// @param launchSupply       Fixed fund token supply created at launch (0 for the default 100M).
 /// @param launchDuration     Deposit window length, in seconds (0 for the default 7 days).
+/// @param poolUsdgBps        Share of the raise that seeds the pool in USDG (0 for the default 10%).
 /// @param lockOptions        Mint-with-lock options.
 /// @param yieldCurve         Staker-yield curve by premium.
 /// @param maxPremiumBps      Mint premium ceiling, in basis points over NAV (0 for none).
@@ -71,33 +73,34 @@ struct CreateFundParams {
     uint16 curatorFeeBps;
     uint16 minCuratorStakeBps;
     uint256 minRaiseUsd;
+    uint256 targetRaiseUsd;
     uint256 launchSupply;
     uint32 launchDuration;
+    uint16 poolUsdgBps;
     LockOption[] lockOptions;
     YieldPoint[] yieldCurve;
     uint16 maxPremiumBps;
 }
 
 /// @notice Launch rules. The factory holds the defaults; each launch snapshots them with its own
-///         duration and supply.
+///         duration, pool share and supply.
 /// @param duration            Deposit window length, in seconds (1 to 30 days).
 /// @param finalizeGrace       Time after the window closes within which finalization must happen,
 ///                            otherwise the launch can be marked failed and refunded.
-/// @param usdgRatioBps        USDG each depositor adds, as basis points of their deposit's value.
+/// @param poolUsdgBps         Share of the raise, in basis points, that seeds the pool in USDG; it is
+///                            also USDG's target weight for the overweight haircut.
 /// @param launchPremiumBps    Premium over NAV at which the pool opens.
 /// @param earlyYieldBpsPerDay Extra launch tokens per day a deposit sits in the window, in basis
 ///                            points of its value.
 /// @param overweightHaircutBps Haircut on deposit value above an asset's target weight of the raise.
-/// @param withdrawCutoff      Deposits can be withdrawn until this long before the window closes.
 /// @param depositorLock       How long depositors' launch tokens stay non-transferable.
 struct LaunchConfig {
     uint32 duration;
     uint32 finalizeGrace;
-    uint16 usdgRatioBps;
+    uint16 poolUsdgBps;
     uint16 launchPremiumBps;
     uint16 earlyYieldBpsPerDay;
     uint16 overweightHaircutBps;
-    uint32 withdrawCutoff;
     uint32 depositorLock;
 }
 
