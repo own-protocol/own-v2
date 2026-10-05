@@ -330,10 +330,11 @@ contract FundGovernorTest is FundTestBase {
         _toNextEpoch();
         governor.flip(); // tallies e
 
-        // curatorA: half of the curators' 30%. Alice: all the staked tokens, so the stakers' 70%.
-        assertEq(governor.votesOf(curatorA, address(tsla), e), 0.15e18);
+        // curatorA: a third of the curators' 30% (the protocol curator holds another third). Alice:
+        // all the staked tokens, so the stakers' 70%.
+        assertEq(governor.votesOf(curatorA, address(tsla), e), 0.09999e18);
         assertApproxEqAbs(governor.votesOf(alice, address(tsla), e), 0.7e18, 1);
-        assertApproxEqAbs(governor.tokenVotes(address(tsla), e), 0.85e18, 1);
+        assertApproxEqAbs(governor.tokenVotes(address(tsla), e), 0.79999e18, 1);
         assertEq(governor.votesOf(curatorB, address(tsla), e), 0);
         assertEq(governor.votesOf(alice, address(net), e), 0);
     }
@@ -379,21 +380,23 @@ contract FundGovernorTest is FundTestBase {
     }
 
     function test_votesOf_silentStakersFollowCurators() public {
-        // Nobody stakes a vote: the stakers' 70% follows the two curators, 35% each.
+        // Nobody stakes a vote: the stakers' 70% follows the curators, a third each with the protocol
+        // curator, whose silent third keeps the weights.
         _voteAll(curatorA, address(tsla));
         _voteAll(curatorB, address(pons));
         uint256 e = governor.currentEpoch();
         _toNextEpoch();
         governor.flip();
-        assertEq(governor.votesOf(curatorA, address(tsla), e), 0.5e18);
-        assertEq(governor.votesOf(curatorB, address(pons), e), 0.5e18);
-        assertEq(governor.tokenVotes(address(tsla), e), 0.5e18);
-        assertEq(governor.tokenVotes(address(pons), e), 0.5e18);
+        assertEq(governor.votesOf(curatorA, address(tsla), e), 0.3333e18);
+        assertEq(governor.votesOf(curatorB, address(pons), e), 0.3333e18);
+        assertEq(governor.tokenVotes(address(tsla), e), 0.3333e18);
+        assertEq(governor.tokenVotes(address(pons), e), 0.3333e18);
         assertEq(governor.tokenVotes(address(net), e), 0);
     }
 
     function test_votesOf_votingStakersKeepTheirShare() public {
-        // Alice votes a fifth of the staked tokens (14%); the silent 56% follows the curators.
+        // Alice votes a fifth of the staked tokens (14%); the silent 56% follows the curators, a third
+        // each with the silent protocol curator.
         _escrow(alice, aliceStake / 5);
         _voteAll(alice, address(net));
         _voteAll(curatorA, address(tsla));
@@ -403,17 +406,18 @@ contract FundGovernorTest is FundTestBase {
         _toNextEpoch();
         governor.flip();
         assertApproxEqRel(governor.tokenVotes(address(net), e), 0.14e18, 1e12);
-        assertApproxEqRel(governor.tokenVotes(address(tsla), e), 0.86e18, 1e12);
-        assertApproxEqRel(governor.votesOf(curatorA, address(tsla), e), 0.43e18, 1e12);
+        assertApproxEqRel(governor.tokenVotes(address(tsla), e), 0.86e18 * 6666 / 10_000, 1e12);
+        assertApproxEqRel(governor.votesOf(curatorA, address(tsla), e), 0.86e18 * 3333 / 10_000, 1e12);
     }
 
     function test_votesOf_silentCuratorsPartHoldsWeights() public {
-        // CuratorB is silent: its slice and its half of the silent stakers keep the weights.
+        // CuratorB and the protocol curator are silent: their slices and thirds of the silent stakers
+        // keep the weights.
         _voteAll(curatorA, address(tsla));
         uint256 e = governor.currentEpoch();
         _toNextEpoch();
         governor.flip();
-        assertEq(governor.tokenVotes(address(tsla), e), 0.5e18);
+        assertEq(governor.tokenVotes(address(tsla), e), 0.3333e18);
         assertEq(governor.votesOf(curatorB, address(tsla), e), 0);
     }
 
@@ -684,7 +688,8 @@ contract FundGovernorTest is FundTestBase {
         assertEq(fund.targetWeightBps(address(spare)), 0);
         assertEq(fund.targetWeightBps(address(net)), 4000);
         IFundGovernor.Proposal memory p = governor.getProposal(id);
-        assertEq(p.yesVotes, 0.3e18);
+        // The two curators' two thirds of the curators' 30%; the protocol curator did not vote.
+        assertEq(p.yesVotes, uint256(0.3e18) * 6667 / 10_000);
     }
 
     function test_list_oneCuratorBelowQuorum_defeated() public {
@@ -801,6 +806,48 @@ contract FundGovernorTest is FundTestBase {
         assertEq(curators.curatorCount(), 3);
     }
 
+    function test_curatorChange_usesCuratorQuorum() public {
+        GovernanceConfig memory c = governor.config();
+        c.curatorQuorumBps = 6000;
+        vm.prank(admin);
+        governor.setConfig(c);
+        _toNextEpoch();
+        _escrow(alice, aliceStake / 2);
+        vm.warp(block.timestamp + 1);
+
+        uint256 listing = _propose(curatorA, IFundGovernor.ProposalKind.List, address(spare));
+        assertEq(governor.getProposal(listing).quorumBps, 2000);
+        uint256 id = _propose(alice, IFundGovernor.ProposalKind.RemoveCurator, curatorB);
+        assertEq(governor.getProposal(id).quorumBps, 6000);
+        vm.prank(alice);
+        governor.castVote(id, true); // half of the staked tokens, under 60%
+        vm.warp(block.timestamp + 3 days);
+        assertEq(uint8(governor.state(id)), uint8(IFundGovernor.ProposalState.Defeated));
+    }
+
+    function test_curatorChange_protocolCuratorCannotBeRemoved() public {
+        _escrow(alice, aliceStake);
+        vm.warp(block.timestamp + 1);
+        _refreshFeeds();
+        vm.startPrank(alice);
+        vm.expectRevert(IFundGovernor.InvalidProposal.selector);
+        governor.propose(IFundGovernor.ProposalKind.RemoveCurator, protocolCurator, address(0));
+        vm.expectRevert(IFundGovernor.InvalidProposal.selector);
+        governor.propose(IFundGovernor.ProposalKind.ReplaceCurator, protocolCurator, newCurator);
+        vm.stopPrank();
+        vm.prank(admin);
+        vm.expectRevert(IFundCurators.NotCurator.selector);
+        curators.removeCurator(protocolCurator);
+    }
+
+    function test_castVote_protocolCuratorHoldsAThirdOfTheSlice() public {
+        uint256 id = _propose(curatorA, IFundGovernor.ProposalKind.List, address(spare));
+        vm.prank(protocolCurator);
+        assertEq(governor.castVote(id, true), uint256(0.3e18) * 3333 / 10_000);
+        vm.prank(curatorA);
+        assertEq(governor.castVote(id, true), uint256(0.3e18) * 6667 / 10_000 / 2);
+    }
+
     function test_curatorChange_removeAndReplace() public {
         _escrow(alice, aliceStake);
         vm.warp(block.timestamp + 1);
@@ -831,18 +878,33 @@ contract FundGovernorTest is FundTestBase {
         governor.execute(id);
     }
 
-    function test_noCurators_stakersHoldTheWholeVote() public {
+    function test_noCurators_protocolCuratorKeepsItsSlice() public {
         vm.startPrank(admin);
         curators.removeCurator(curatorA);
         curators.removeCurator(curatorB);
         vm.stopPrank();
         _escrow(alice, aliceStake);
         _voteAll(alice, address(tsla));
+        _voteAll(protocolCurator, address(pons));
         uint256 e = governor.currentEpoch() + 1;
         _toNextEpoch();
         _toNextEpoch();
         governor.flip();
-        assertApproxEqAbs(governor.votesOf(alice, address(tsla), e), WAD, 1);
+        assertApproxEqAbs(governor.votesOf(alice, address(tsla), e), 0.7e18, 1);
+        assertEq(governor.votesOf(protocolCurator, address(pons), e), uint256(0.3e18) * 3333 / 10_000);
+    }
+
+    function test_votesOf_protocolCuratorThirdOfSliceAndSilent() public {
+        _voteAll(protocolCurator, address(pons));
+        _voteAll(curatorA, address(tsla));
+        _voteAll(curatorB, address(tsla));
+        uint256 e = governor.currentEpoch();
+        _toNextEpoch();
+        governor.flip();
+        // Nobody staked a vote: the protocol curator holds a third of the 30% slice and of the silent 70%.
+        assertEq(governor.votesOf(protocolCurator, address(pons), e), 0.3333e18);
+        assertEq(governor.votesOf(curatorA, address(tsla), e), 0.3333e18);
+        assertEq(governor.tokenVotes(address(tsla), e), 0.6666e18);
     }
 
     // ──────────────────────────────────────────────────────────

@@ -427,13 +427,12 @@ contract FundHook is IFundHook, IUnlockCallback {
     }
 
     function _takeFees(address fund, Currency usdg, uint256 amount) private returns (uint256) {
-        // Rounds down: a fee never exceeds the configured share of the USDG leg.
-        uint256 protocolFee = Math.mulDiv(amount, factory.protocolFeeBps(), BPS);
-        uint256 curatorFee = Math.mulDiv(amount, IFund(fund).curatorFeeBps(), BPS);
-        if (protocolFee != 0) poolManager.take(usdg, factory.protocolFeeRecipient(), protocolFee);
-        if (curatorFee != 0) poolManager.take(usdg, IFund(fund).curators(), curatorFee);
-        if (protocolFee != 0 || curatorFee != 0) emit SwapFeesTaken(fund, protocolFee, curatorFee);
-        return protocolFee + curatorFee;
+        // Rounds down: the fee never exceeds the configured share of the USDG leg.
+        uint256 fee = Math.mulDiv(amount, IFund(fund).feeBps(), BPS);
+        if (fee == 0) return 0;
+        poolManager.take(usdg, IFund(fund).curators(), fee);
+        emit SwapFeesTaken(fund, fee);
+        return fee;
     }
 
     // Sweeps the whole balance: the hook holds nothing between seeds, so anything else was donated.

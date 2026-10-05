@@ -20,7 +20,7 @@ contract FundHookTest is FundTestBase {
     address internal trader = makeAddr("trader");
 
     // 0.5% protocol + 1% curator
-    uint256 internal constant FEE_BPS = 150;
+    uint256 internal constant FEE_BPS = 100;
 
     function setUp() public override {
         super.setUp();
@@ -50,7 +50,6 @@ contract FundHookTest is FundTestBase {
         _swap(true, -int256(1000e6));
 
         assertEq(usdgBefore - usdg.balanceOf(trader), 1000e6); // pays exactly what was specified
-        assertEq(usdg.balanceOf(protocolTreasury), 5e6);
         assertEq(usdg.balanceOf(address(curators)), 10e6);
         assertGt(fund.balanceOf(trader), 10_000e18);
     }
@@ -62,8 +61,7 @@ contract FundHookTest is FundTestBase {
 
         assertEq(fund.balanceOf(trader) - sharesBefore, 500e18);
         uint256 paid = usdgBefore - usdg.balanceOf(trader);
-        uint256 poolIn = paid - usdg.balanceOf(protocolTreasury) - usdg.balanceOf(address(curators));
-        assertEq(usdg.balanceOf(protocolTreasury), poolIn * 50 / 10_000);
+        uint256 poolIn = paid - usdg.balanceOf(address(curators));
         assertEq(usdg.balanceOf(address(curators)), poolIn * 100 / 10_000);
         assertEq(uint256(-int256(_usdgDelta(delta))), paid);
     }
@@ -73,9 +71,7 @@ contract FundHookTest is FundTestBase {
         _swap(false, -int256(1000e18));
 
         uint256 received = usdg.balanceOf(trader) - usdgBefore;
-        uint256 fees = usdg.balanceOf(protocolTreasury) + usdg.balanceOf(address(curators));
-        uint256 gross = received + fees;
-        assertEq(usdg.balanceOf(protocolTreasury), gross * 50 / 10_000);
+        uint256 gross = received + usdg.balanceOf(address(curators));
         assertEq(usdg.balanceOf(address(curators)), gross * 100 / 10_000);
         assertEq(fund.balanceOf(trader), 9000e18);
     }
@@ -85,19 +81,19 @@ contract FundHookTest is FundTestBase {
         _swap(false, int256(500e6));
 
         assertEq(usdg.balanceOf(trader) - usdgBefore, 500e6);
-        assertEq(usdg.balanceOf(protocolTreasury), 500e6 * 50 / 10_000);
         assertEq(usdg.balanceOf(address(curators)), 500e6 * 100 / 10_000);
     }
 
     function test_fees_followAdminChanges() public {
-        vm.startPrank(admin);
-        factory.setProtocolFee(100);
-        fund.setCuratorFee(0);
-        vm.stopPrank();
-
+        vm.prank(admin);
+        fund.setFee(0);
         _swap(true, -int256(1000e6));
-        assertEq(usdg.balanceOf(protocolTreasury), 10e6);
         assertEq(usdg.balanceOf(address(curators)), 0);
+
+        vm.prank(admin);
+        fund.setFee(250);
+        _swap(true, -int256(1000e6));
+        assertEq(usdg.balanceOf(address(curators)), 25e6);
     }
 
     function test_roundTrip_costsAboutTheFees() public {
@@ -106,7 +102,7 @@ contract FundHookTest is FundTestBase {
         _swap(true, -int256(1000e6));
         _swap(false, -int256(fund.balanceOf(trader) - sharesBefore));
         uint256 lost = usdgBefore - usdg.balanceOf(trader);
-        // two 1.5% legs, plus a little price impact
+        // two 1% legs, plus a little price impact
         assertApproxEqRel(lost, 1000e6 * 2 * FEE_BPS / 10_000, 0.05e18);
     }
 
@@ -120,8 +116,8 @@ contract FundHookTest is FundTestBase {
 
         _swap(true, -int256(10_000e6));
         (uint256 usdgFees,) = hook.collectLpFees(address(fund));
-        // 0.3% of the USDG that reached the pool (the hook's 1.5% is taken first)
-        assertApproxEqAbs(usdgFees, (10_000e6 - 150e6) * 3000 / 1e6, 2);
+        // 0.3% of the USDG that reached the pool (the hook's 1% is taken first)
+        assertApproxEqAbs(usdgFees, (10_000e6 - 100e6) * 3000 / 1e6, 2);
         assertEq(usdg.balanceOf(address(fund)), usdgFees);
         assertGt(hook.positionLiquidity(address(fund)), 0);
     }

@@ -14,7 +14,7 @@ import {IFund} from "../../src/interfaces/IFund.sol";
 import {IFundFactory} from "../../src/interfaces/IFundFactory.sol";
 import {IFundLaunch} from "../../src/interfaces/IFundLaunch.sol";
 import {IFundStaking} from "../../src/interfaces/IFundStaking.sol";
-import {CreateFundParams, LockOption, YieldPoint} from "../../src/interfaces/types/FundTypes.sol";
+import {CreateFundParams, LaunchConfig, LockOption, YieldPoint} from "../../src/interfaces/types/FundTypes.sol";
 import {Actors} from "./Actors.sol";
 import {MockAggregatorV3} from "./MockAggregatorV3.sol";
 import {MockERC20} from "./MockERC20.sol";
@@ -33,7 +33,7 @@ import {PoolKey} from "v4-core/src/types/PoolKey.sol";
 /// @title FundTestBase — deploys the fund platform on a real Uniswap v4 PoolManager
 abstract contract FundTestBase is Test {
     address internal admin = Actors.ADMIN;
-    address internal protocolTreasury = Actors.FEE_RECIPIENT;
+    address internal protocolCurator = Actors.FEE_RECIPIENT;
     address internal keeper = makeAddr("keeper");
     address internal curatorA = makeAddr("curatorA");
     address internal curatorB = makeAddr("curatorB");
@@ -93,7 +93,7 @@ abstract contract FundTestBase is Test {
             address(new FundBribes())
         ];
         bytes memory init =
-            abi.encodeCall(FundFactory.initialize, (admin, address(oracle), address(usdg), protocolTreasury, impls));
+            abi.encodeCall(FundFactory.initialize, (admin, address(oracle), address(usdg), protocolCurator, impls));
         factory = FundFactory(address(new ERC1967Proxy(address(factoryImpl), init)));
 
         uint160 flags = Hooks.BEFORE_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG
@@ -105,6 +105,10 @@ abstract contract FundTestBase is Test {
         vm.startPrank(admin);
         factory.setHook(hookAddr);
         factory.setLauncher(launcher, true);
+        // Most tests use a 1.3x opening premium; launches open at NAV by default.
+        LaunchConfig memory lc = factory.launchConfig();
+        lc.launchPremiumBps = 3000;
+        factory.setLaunchConfig(lc);
         vm.stopPrank();
     }
 
@@ -137,7 +141,7 @@ abstract contract FundTestBase is Test {
         p.curators = new address[](2);
         p.curators[0] = curatorA;
         p.curators[1] = curatorB;
-        p.curatorFeeBps = 100;
+        p.feeBps = 100;
         p.minCuratorStakeBps = 50;
         p.minRaiseUsd = 10_000e18;
         p.launchSupply = 130_000e18;
@@ -147,9 +151,9 @@ abstract contract FundTestBase is Test {
         p.lockOptions[0] = LockOption({duration: 7 days, discountBps: 500});
         p.lockOptions[1] = LockOption({duration: 30 days, discountBps: 1000});
         p.yieldCurve = new YieldPoint[](3);
-        p.yieldCurve[0] = YieldPoint({premiumBps: 1000, rateBpsPerDay: 10});
-        p.yieldCurve[1] = YieldPoint({premiumBps: 5000, rateBpsPerDay: 20});
-        p.yieldCurve[2] = YieldPoint({premiumBps: 10_000, rateBpsPerDay: 30});
+        p.yieldCurve[0] = YieldPoint({premiumBps: 1000, rateBpsPerYear: 3650});
+        p.yieldCurve[1] = YieldPoint({premiumBps: 5000, rateBpsPerYear: 7300});
+        p.yieldCurve[2] = YieldPoint({premiumBps: 10_000, rateBpsPerYear: 10_950});
     }
 
     function _createFund() internal {
@@ -296,6 +300,27 @@ abstract contract FundTestBase is Test {
     function _toNextEpoch() internal {
         vm.warp((governor.currentEpoch() + 1) * 1 weeks);
         _refreshFeeds();
+    }
+
+    /// @dev Gives `who` the slice a mint of `navShares` needs and approves the fund for it.
+    function _fundSlice(
+        address who,
+        uint256 navShares,
+        uint256 lockOption
+    ) internal returns (uint256[] memory amounts) {
+        uint256 usdgAmount;
+        (,, amounts, usdgAmount) = fund.previewMint(navShares, lockOption);
+        address[] memory a = fund.assets();
+        for (uint256 i; i < a.length; ++i) {
+            _mintAsset(who, MockERC20(a[i]), amounts[i]);
+        }
+        _mintAsset(who, usdg, usdgAmount);
+    }
+
+    function _mintAs(address who, uint256 navShares, uint256 lockOption) internal returns (uint256 shares) {
+        _fundSlice(who, navShares, lockOption);
+        vm.prank(who);
+        shares = fund.mint(navShares, lockOption, 0, who);
     }
 
     function _mintAsset(address who, MockERC20 asset, uint256 amount) internal {

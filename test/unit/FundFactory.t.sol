@@ -30,20 +30,20 @@ contract FundV2Mock is Fund {
 contract FundFactoryTest is FundTestBase {
     function test_initialize_defaults() public view {
         assertEq(factory.owner(), admin);
-        assertEq(factory.protocolFeeBps(), 50);
-        assertEq(factory.protocolFeeRecipient(), protocolTreasury);
+        assertEq(factory.protocolCurator(), protocolCurator);
+        assertEq(factory.protocolCuratorShareBps(), 3333);
         assertTrue(factory.whitelistEnabled());
         assertEq(factory.maxRebalanceSlippageBps(), 200);
         assertEq(factory.hook(), address(hook));
-        assertEq(factory.maxYieldRateBpsPerDay(), 300);
+        assertEq(factory.maxYieldRateBpsPerYear(), 300 * 365);
         assertEq(factory.curatorCap(), 10);
-        assertEq(factory.bribeCutBps(), 500);
+        assertEq(factory.bribeCutBps(), 1500);
 
         LaunchConfig memory cfg = factory.launchConfig();
         assertEq(cfg.duration, 7 days);
         assertEq(cfg.finalizeGrace, 7 days);
         assertEq(cfg.poolUsdgBps, 1000);
-        assertEq(cfg.launchPremiumBps, 3000);
+        assertEq(cfg.launchPremiumBps, 3000); // FundTestBase's; see test_initialize_launchesAtNav
         assertEq(cfg.earlyYieldBpsPerDay, 50);
         assertEq(cfg.overweightHaircutBps, 500);
         assertEq(cfg.depositorLock, 7 days);
@@ -55,6 +55,7 @@ contract FundFactoryTest is FundTestBase {
         assertEq(gov.maxWeeklyShiftBps, 500);
         assertEq(gov.dropAfterEpochs, 4);
         assertEq(gov.quorumBps, 2000);
+        assertEq(gov.curatorQuorumBps, 2000);
         assertEq(gov.votingPeriod, 3 days);
         assertEq(gov.vetoPeriod, 1 days);
         assertEq(gov.executionWindow, 7 days);
@@ -81,7 +82,7 @@ contract FundFactoryTest is FundTestBase {
         assertEq(fund.governor(), address(governor));
         assertEq(fund.curators(), address(curators));
         assertEq(fund.manager(), keeper);
-        assertEq(fund.curatorFeeBps(), 100);
+        assertEq(fund.feeBps(), 100);
         assertEq(governor.fund(), address(fund));
         assertEq(curators.fund(), address(fund));
         assertEq(bribes.fund(), address(fund));
@@ -183,7 +184,7 @@ contract FundFactoryTest is FundTestBase {
 
     function test_createFund_tierAboveYieldCap_reverts() public {
         CreateFundParams memory p = _defaultParams();
-        p.yieldCurve[2] = YieldPoint({premiumBps: 10_000, rateBpsPerDay: 301});
+        p.yieldCurve[2] = YieldPoint({premiumBps: 10_000, rateBpsPerYear: 301 * 365});
         vm.prank(admin);
         vm.expectRevert();
         factory.createFund(p);
@@ -212,9 +213,9 @@ contract FundFactoryTest is FundTestBase {
         assertTrue(factory.isFund(m.fund));
     }
 
-    function test_createFund_curatorFeeAboveTenPercent_reverts() public {
+    function test_createFund_feeAboveTenPercent_reverts() public {
         CreateFundParams memory p = _defaultParams();
-        p.curatorFeeBps = 1001;
+        p.feeBps = 1001;
         vm.prank(admin);
         vm.expectRevert();
         factory.createFund(p);
@@ -237,7 +238,19 @@ contract FundFactoryTest is FundTestBase {
         factory.createFund(p);
     }
 
+    function test_initialize_launchesAtNav() public {
+        assertEq(_bareFactory().launchConfig().launchPremiumBps, 0);
+    }
+
     function test_createFund_hookNotSet_reverts() public {
+        FundFactory bare = _bareFactory();
+        CreateFundParams memory p = _defaultParams();
+        vm.prank(admin);
+        vm.expectRevert(FundFactory.HookNotSet.selector);
+        bare.createFund(p);
+    }
+
+    function _bareFactory() internal returns (FundFactory bare) {
         address[6] memory impls = [
             address(new Fund()),
             address(new FundLaunch()),
@@ -246,20 +259,16 @@ contract FundFactoryTest is FundTestBase {
             address(new FundCurators()),
             address(new FundBribes())
         ];
-        FundFactory bare = FundFactory(
+        bare = FundFactory(
             address(
                 new ERC1967Proxy(
                     address(new FundFactory()),
                     abi.encodeCall(
-                        FundFactory.initialize, (admin, address(oracle), address(usdg), protocolTreasury, impls)
+                        FundFactory.initialize, (admin, address(oracle), address(usdg), protocolCurator, impls)
                     )
                 )
             )
         );
-        CreateFundParams memory p = _defaultParams();
-        vm.prank(admin);
-        vm.expectRevert(FundFactory.HookNotSet.selector);
-        bare.createFund(p);
     }
 
     function test_setHook_once() public {
@@ -279,12 +288,12 @@ contract FundFactoryTest is FundTestBase {
         assertEq(factory.curatorCap(), 3);
     }
 
-    function test_setBribeCut_cappedAtTenPercent() public {
+    function test_setBribeCut_cappedAtTwentyFivePercent() public {
         vm.startPrank(admin);
-        factory.setBribeCut(1000);
-        assertEq(factory.bribeCutBps(), 1000);
+        factory.setBribeCut(2500);
+        assertEq(factory.bribeCutBps(), 2500);
         vm.expectRevert(IFundFactory.FeeTooHigh.selector);
-        factory.setBribeCut(1001);
+        factory.setBribeCut(2501);
         vm.stopPrank();
     }
 
@@ -307,10 +316,10 @@ contract FundFactoryTest is FundTestBase {
         factory.setMaxYieldRate(100);
         vm.startPrank(admin);
         vm.expectRevert(IFundFactory.InvalidYieldCap.selector);
-        factory.setMaxYieldRate(10_001);
-        factory.setMaxYieldRate(100);
+        factory.setMaxYieldRate(10_000 * 365 + 1);
+        factory.setMaxYieldRate(900);
         vm.stopPrank();
-        assertEq(factory.maxYieldRateBpsPerDay(), 100);
+        assertEq(factory.maxYieldRateBpsPerYear(), 900);
     }
 
     function test_setGovernanceConfig_appliesToNewFunds() public {
@@ -361,21 +370,33 @@ contract FundFactoryTest is FundTestBase {
         assertEq(factory.platformMetadata().name, "Own Curated Funds");
     }
 
-    function test_setProtocolFee_capped() public {
+    function test_setProtocolCurator() public {
+        address next = makeAddr("nextProtocolCurator");
         vm.startPrank(admin);
-        factory.setProtocolFee(500);
-        assertEq(factory.protocolFeeBps(), 500);
+        vm.expectRevert(IFundFactory.ZeroAddress.selector);
+        factory.setProtocolCurator(address(0));
+        vm.expectEmit(address(factory));
+        emit IFundFactory.ProtocolCuratorSet(next);
+        factory.setProtocolCurator(next);
+        vm.stopPrank();
+        assertEq(factory.protocolCurator(), next);
+    }
+
+    function test_setProtocolCuratorShare_capped() public {
+        vm.startPrank(admin);
+        factory.setProtocolCuratorShare(5000);
+        assertEq(factory.protocolCuratorShareBps(), 5000);
         vm.expectRevert(IFundFactory.FeeTooHigh.selector);
-        factory.setProtocolFee(501);
+        factory.setProtocolCuratorShare(5001);
         vm.stopPrank();
     }
 
     function test_adminSetters_onlyOwner() public {
         vm.startPrank(attacker);
         vm.expectRevert(IFundFactory.NotOwner.selector);
-        factory.setProtocolFee(10);
+        factory.setProtocolCuratorShare(10);
         vm.expectRevert(IFundFactory.NotOwner.selector);
-        factory.setProtocolFeeRecipient(attacker);
+        factory.setProtocolCurator(attacker);
         vm.expectRevert(IFundFactory.NotOwner.selector);
         factory.setWhitelistEnabled(false);
         vm.expectRevert(IFundFactory.NotOwner.selector);

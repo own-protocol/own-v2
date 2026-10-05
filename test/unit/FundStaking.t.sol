@@ -16,6 +16,9 @@ contract FundStakingTest is FundTestBase {
         staked = launch.claim(true);
         vm.prank(bob);
         bobLiquid = launch.claim(false);
+        // Most tests check the stakers' rate alone; the curator share on top has its own tests.
+        vm.prank(admin);
+        staking.setCuratorYield(0, 0);
     }
 
     function test_transferLocked_notLaunch_reverts() public {
@@ -130,19 +133,19 @@ contract FundStakingTest is FundTestBase {
 
     function test_setYieldCurve_adminOnly() public {
         YieldPoint[] memory curve = new YieldPoint[](1);
-        curve[0] = YieldPoint({premiumBps: 500, rateBpsPerDay: 25});
+        curve[0] = YieldPoint({premiumBps: 500, rateBpsPerYear: 25 * 365});
         vm.prank(keeper);
         vm.expectRevert(IFundStaking.NotAdmin.selector);
         staking.setYieldCurve(curve);
 
         vm.prank(admin);
         staking.setYieldCurve(curve);
-        assertEq(staking.rateForPremium(3000), 25e14);
+        assertEq(staking.rateForPremium(3000), 25 * 365e14);
     }
 
     function test_setYieldCurve_rateAboveCap_reverts() public {
         YieldPoint[] memory curve = new YieldPoint[](1);
-        curve[0] = YieldPoint({premiumBps: 500, rateBpsPerDay: 301});
+        curve[0] = YieldPoint({premiumBps: 500, rateBpsPerYear: 301 * 365});
         vm.prank(admin);
         vm.expectRevert(IFundStaking.InvalidYieldCurve.selector);
         staking.setYieldCurve(curve);
@@ -150,8 +153,8 @@ contract FundStakingTest is FundTestBase {
 
     function test_setYieldCurve_notAscending_reverts() public {
         YieldPoint[] memory curve = new YieldPoint[](2);
-        curve[0] = YieldPoint({premiumBps: 500, rateBpsPerDay: 25});
-        curve[1] = YieldPoint({premiumBps: 500, rateBpsPerDay: 50});
+        curve[0] = YieldPoint({premiumBps: 500, rateBpsPerYear: 25 * 365});
+        curve[1] = YieldPoint({premiumBps: 500, rateBpsPerYear: 50 * 365});
         vm.prank(admin);
         vm.expectRevert(IFundStaking.InvalidYieldCurve.selector);
         staking.setYieldCurve(curve);
@@ -160,36 +163,36 @@ contract FundStakingTest is FundTestBase {
     function test_rateForPremium_interpolatesBetweenPoints() public view {
         assertEq(staking.rateForPremium(-100), 0);
         assertEq(staking.rateForPremium(999), 0);
-        assertEq(staking.rateForPremium(1000), 10e14);
-        assertEq(staking.rateForPremium(3000), 15e14);
-        assertEq(staking.rateForPremium(5000), 20e14);
-        assertEq(staking.rateForPremium(7500), 25e14);
-        assertEq(staking.rateForPremium(10_000), 30e14);
-        assertEq(staking.rateForPremium(20_000), 30e14);
+        assertEq(staking.rateForPremium(1000), 10 * 365e14);
+        assertEq(staking.rateForPremium(3000), 15 * 365e14);
+        assertEq(staking.rateForPremium(5000), 20 * 365e14);
+        assertEq(staking.rateForPremium(7500), 25 * 365e14);
+        assertEq(staking.rateForPremium(10_000), 30 * 365e14);
+        assertEq(staking.rateForPremium(20_000), 30 * 365e14);
     }
 
     function test_setYieldCurve_threePercentADayAllowed() public {
         YieldPoint[] memory curve = new YieldPoint[](1);
-        curve[0] = YieldPoint({premiumBps: 500, rateBpsPerDay: 300});
+        curve[0] = YieldPoint({premiumBps: 500, rateBpsPerYear: 300 * 365});
         vm.prank(admin);
         staking.setYieldCurve(curve);
-        assertEq(staking.rateForPremium(3000), 300e14);
+        assertEq(staking.rateForPremium(3000), 300 * 365e14);
     }
 
     function test_maxYieldRate_adminRaisesCap() public {
         vm.prank(admin);
-        factory.setMaxYieldRate(500);
+        factory.setMaxYieldRate(500 * 365);
         YieldPoint[] memory curve = new YieldPoint[](1);
-        curve[0] = YieldPoint({premiumBps: 500, rateBpsPerDay: 500});
+        curve[0] = YieldPoint({premiumBps: 500, rateBpsPerYear: 500 * 365});
         vm.prank(admin);
         staking.setYieldCurve(curve);
-        assertEq(staking.rateForPremium(3000), 500e14);
+        assertEq(staking.rateForPremium(3000), 500 * 365e14);
     }
 
     function test_maxYieldRate_loweredCapClampsCurve() public {
         vm.prank(admin);
-        factory.setMaxYieldRate(15);
-        assertEq(staking.rateForPremium(20_000), 15e14);
+        factory.setMaxYieldRate(15 * 365);
+        assertEq(staking.rateForPremium(20_000), 15 * 365e14);
 
         _setFeed(address(fund), _navPrice() * 21 / 10);
         vm.warp(block.timestamp + 8 hours);
@@ -208,7 +211,7 @@ contract FundStakingTest is FundTestBase {
 
     function test_accrue_fullCapPaysThreePercentADay() public {
         YieldPoint[] memory curve = new YieldPoint[](1);
-        curve[0] = YieldPoint({premiumBps: 0, rateBpsPerDay: 300});
+        curve[0] = YieldPoint({premiumBps: 0, rateBpsPerYear: 300 * 365});
         vm.prank(admin);
         staking.setYieldCurve(curve);
         vm.warp(block.timestamp + 8 hours);
@@ -219,10 +222,10 @@ contract FundStakingTest is FundTestBase {
     function _setHump() internal {
         // Rises to 0.14% a day (about 1% a week) by 10%, holds to 30%, falls to zero at 100%.
         YieldPoint[] memory curve = new YieldPoint[](4);
-        curve[0] = YieldPoint({premiumBps: 0, rateBpsPerDay: 0});
-        curve[1] = YieldPoint({premiumBps: 1000, rateBpsPerDay: 14});
-        curve[2] = YieldPoint({premiumBps: 3000, rateBpsPerDay: 14});
-        curve[3] = YieldPoint({premiumBps: 10_000, rateBpsPerDay: 0});
+        curve[0] = YieldPoint({premiumBps: 0, rateBpsPerYear: 0});
+        curve[1] = YieldPoint({premiumBps: 1000, rateBpsPerYear: 14 * 365});
+        curve[2] = YieldPoint({premiumBps: 3000, rateBpsPerYear: 14 * 365});
+        curve[3] = YieldPoint({premiumBps: 10_000, rateBpsPerYear: 0});
         vm.prank(admin);
         staking.setYieldCurve(curve);
     }
@@ -231,11 +234,11 @@ contract FundStakingTest is FundTestBase {
         _setHump();
         assertEq(staking.rateForPremium(-1), 0);
         assertEq(staking.rateForPremium(0), 0);
-        assertEq(staking.rateForPremium(500), 7e14);
-        assertEq(staking.rateForPremium(1000), 14e14);
-        assertEq(staking.rateForPremium(2000), 14e14);
-        assertEq(staking.rateForPremium(3000), 14e14);
-        assertEq(staking.rateForPremium(6500), 7e14);
+        assertEq(staking.rateForPremium(500), 7 * 365e14);
+        assertEq(staking.rateForPremium(1000), 14 * 365e14);
+        assertEq(staking.rateForPremium(2000), 14 * 365e14);
+        assertEq(staking.rateForPremium(3000), 14 * 365e14);
+        assertEq(staking.rateForPremium(6500), 7 * 365e14);
         assertEq(staking.rateForPremium(10_000), 0);
         assertEq(staking.rateForPremium(15_000), 0);
     }
@@ -243,7 +246,7 @@ contract FundStakingTest is FundTestBase {
     function test_rateForPremium_fallingSlopeRoundsDown() public {
         _setHump();
         // 14e14 * 6999 / 7000, rounded down.
-        assertEq(staking.rateForPremium(3001), 14e14 - (uint256(14e14) + 6999) / 7000);
+        assertEq(staking.rateForPremium(3001), 14 * 365e14 - (uint256(14 * 365e14) + 6999) / 7000);
     }
 
     function test_accrue_humpPaysLessNearCeiling() public {
@@ -253,6 +256,69 @@ contract FundStakingTest is FundTestBase {
         _refreshFeeds();
         uint256 minted = staking.accrue();
         assertApproxEqRel(minted, staked * 2 * 8 hours / (10_000 * 1 days), 0.01e18);
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Curator yield, minted on top
+    // ──────────────────────────────────────────────────────────
+
+    function test_curatorYield_defaultFifteenPercent() public {
+        _createFund();
+        assertEq(staking.curatorYieldBps(), 1500);
+        assertEq(staking.curatorYieldCapBps(), 0);
+    }
+
+    function test_curatorYield_mintedOnTopOfStakers() public {
+        vm.prank(admin);
+        staking.setCuratorYield(1500, 0);
+        vm.warp(block.timestamp + 8 hours);
+        _refreshFeeds();
+        uint256 minted = staking.accrue();
+        uint256 base = staked * 15 * 8 hours / (10_000 * 1 days);
+        assertApproxEqRel(minted, base * 115 / 100, 0.001e18);
+
+        // Stakers keep the full curve rate; the curators' shares are worth the 15% on top.
+        assertApproxEqRel(staking.convertToAssets(staking.balanceOf(alice)) - staked, base, 0.001e18);
+        uint256 curatorShares = staking.balanceOf(address(curators));
+        assertApproxEqRel(staking.convertToAssets(curatorShares), base * 15 / 100, 0.001e18);
+        assertApproxEqAbs(staking.totalAssets(), staked + minted, 1);
+    }
+
+    function test_curatorYield_capped() public {
+        vm.prank(admin);
+        staking.setCuratorYield(1500, 100); // at most 1% of the staked balance a year
+        vm.warp(block.timestamp + 8 hours);
+        _refreshFeeds();
+        uint256 minted = staking.accrue();
+        uint256 base = staked * 15 * 8 hours / (10_000 * 1 days);
+        uint256 cap = staked * 100 * 8 hours / (10_000 * 365 days);
+        assertApproxEqRel(minted, base + cap, 0.001e18);
+        assertApproxEqRel(staking.convertToAssets(staking.balanceOf(address(curators))), cap, 0.001e18);
+    }
+
+    function test_curatorYield_noneWithoutStakerYield() public {
+        vm.prank(admin);
+        staking.setCuratorYield(1500, 0);
+        _setFeed(address(fund), _navPrice() * 104 / 100); // under the curve's first point
+        vm.warp(block.timestamp + 1 days);
+        _refreshFeeds();
+        assertEq(staking.accrue(), 0);
+        assertEq(staking.balanceOf(address(curators)), 0);
+    }
+
+    function test_setCuratorYield_adminOnlyAndBounded() public {
+        vm.prank(curatorA);
+        vm.expectRevert(IFundStaking.NotAdmin.selector);
+        staking.setCuratorYield(1000, 0);
+        vm.startPrank(admin);
+        vm.expectRevert(IFundStaking.InvalidCuratorYield.selector);
+        staking.setCuratorYield(5001, 0);
+        vm.expectEmit(address(staking));
+        emit IFundStaking.CuratorYieldSet(5000, 200);
+        staking.setCuratorYield(5000, 200);
+        vm.stopPrank();
+        assertEq(staking.curatorYieldBps(), 5000);
+        assertEq(staking.curatorYieldCapBps(), 200);
     }
 
     function test_nameFollowsFundMetadata() public {

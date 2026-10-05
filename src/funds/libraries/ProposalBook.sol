@@ -64,8 +64,15 @@ library ProposalBook {
         id = b.proposals.length;
         b.open[msg.sender] = id + 1;
         bool curatorChange = kind >= IFundGovernor.ProposalKind.AddCurator;
-        uint16 curatorShare = curatorChange || cur.curatorCount() == 0 ? 0 : cfg.curatorShareBps;
-        if (curatorShare != 0) b.curators[id] = cur.curators();
+        uint16 curatorShare = curatorChange ? 0 : cfg.curatorShareBps;
+        if (curatorShare != 0) {
+            address[] memory cs = cur.curators();
+            address[] storage snapshot = b.curators[id];
+            snapshot.push(cur.protocolCurator());
+            for (uint256 i; i < cs.length; ++i) {
+                snapshot.push(cs[i]);
+            }
+        }
 
         uint64 endTime = uint64(block.timestamp + cfg.votingPeriod);
         b.proposals.push(
@@ -84,7 +91,7 @@ library ProposalBook {
                 totalStake: ctx.totalStake,
                 yesVotes: 0,
                 noVotes: 0,
-                quorumBps: cfg.quorumBps,
+                quorumBps: curatorChange ? cfg.curatorQuorumBps : cfg.quorumBps,
                 vetoPeriod: cfg.vetoPeriod,
                 executionWindow: cfg.executionWindow,
                 bribeYesVotes: 0
@@ -116,13 +123,7 @@ library ProposalBook {
         if (pv.voted) revert IFundGovernor.AlreadyVoted();
         if (lastDeposit >= p.startTime) revert IFundGovernor.DepositedAfterProposal();
 
-        if (p.curatorShareBps != 0) {
-            address[] storage cs = b.curators[id];
-            IFundCurators cur = IFundCurators(IFund(fund).curators());
-            if (_contains(cs, msg.sender) && cur.isCurator(msg.sender) && cur.isCompliant(msg.sender)) {
-                votes = uint256(p.curatorShareBps) * BPS_TO_WAD / cs.length;
-            }
-        }
+        if (p.curatorShareBps != 0) votes = _curatorVotes(b.curators[id], fund, p.curatorShareBps);
         uint256 total = p.totalStake;
         uint256 stake = Math.min(power, total);
         if (total != 0) votes += Math.mulDiv(uint256(p.stakerShareBps) * BPS_TO_WAD, stake, total);
@@ -226,8 +227,21 @@ library ProposalBook {
         if (kind == IFundGovernor.ProposalKind.AddCurator) {
             return !cur.isCurator(target) && cur.curatorCount() < fac.curatorCap();
         }
+        if (target == cur.protocolCurator()) return false;
         if (kind == IFundGovernor.ProposalKind.RemoveCurator) return cur.isCurator(target);
         return cur.isCurator(target) && replacement != address(0) && !cur.isCurator(replacement);
+    }
+
+    /// @dev The caller's part of a proposal's curator slice: the protocol share for the protocol
+    ///      curator at the proposal (first in the snapshot), an equal part of the rest for each other
+    ///      curator in the snapshot that is still a compliant curator.
+    function _curatorVotes(address[] storage cs, address fund, uint16 curatorShareBps) private view returns (uint256) {
+        IFundCurators cur = IFundCurators(IFund(fund).curators());
+        uint256 protocolShare = IFundFactory(IFund(fund).factory()).protocolCuratorShareBps();
+        uint256 slice = uint256(curatorShareBps) * BPS_TO_WAD;
+        if (msg.sender == cs[0]) return slice * protocolShare / BPS;
+        if (!_contains(cs, msg.sender) || !cur.isCurator(msg.sender) || !cur.isCompliant(msg.sender)) return 0;
+        return slice * (BPS - protocolShare) / BPS / (cs.length - 1);
     }
 
     function _contains(address[] storage list, address a) private view returns (bool) {

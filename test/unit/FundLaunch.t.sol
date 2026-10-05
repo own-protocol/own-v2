@@ -4,7 +4,7 @@ pragma solidity 0.8.28;
 import {IFund} from "../../src/interfaces/IFund.sol";
 import {IFundLaunch} from "../../src/interfaces/IFundLaunch.sol";
 import {IFundStaking} from "../../src/interfaces/IFundStaking.sol";
-import {CreateFundParams} from "../../src/interfaces/types/FundTypes.sol";
+import {CreateFundParams, LaunchConfig} from "../../src/interfaces/types/FundTypes.sol";
 import {FundTestBase} from "../helpers/FundTestBase.sol";
 import {MockSwapRouter} from "../helpers/MockSwapRouter.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
@@ -407,6 +407,20 @@ contract FundLaunchTest is FundTestBase {
         fund.rebalance(_netForTsla(40e9, 29.6e18));
     }
 
+    function test_seedPool_atNavWithoutPremium() public {
+        LaunchConfig memory lc = factory.launchConfig();
+        lc.launchPremiumBps = 0;
+        vm.prank(admin);
+        factory.setLaunchConfig(lc);
+        _createFund();
+        _finalizeTwoDepositors();
+        uint256 nav = fund.navPerShare();
+        vm.prank(keeper);
+        launch.seedPool();
+        assertApproxEqRel(_poolPrice(), nav, 1e14);
+        assertApproxEqRel(fund.navPerShare(), nav, 1e14);
+    }
+
     function test_seedPool_afterRedemptions_scalesPoolDown() public {
         _finalizeTwoDepositors();
         vm.prank(alice);
@@ -425,10 +439,9 @@ contract FundLaunchTest is FundTestBase {
 
     function test_beforeSeed_mintBlocked_redeemOpen() public {
         _finalizeTwoDepositors();
-        _mintAsset(bob, net, 1e9);
         vm.prank(bob);
         vm.expectRevert(IFund.NoMarketPrice.selector);
-        fund.mint(address(net), 1e9, 0, 0, bob);
+        fund.mint(1e18, 0, 0, bob);
 
         vm.prank(alice);
         uint256 shares = launch.claim(false);

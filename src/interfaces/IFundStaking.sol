@@ -7,21 +7,26 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC721Receiver} from "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
 
 /// @title IFundStaking — staked fund tokens (e.g. sOCF1) earning premium-based yield
-/// @notice Stakers deposit fund tokens and receive vault shares. While the fund trades at a premium
-///         to NAV, the vault mints new fund tokens to itself at the rate the yield curve gives for
-///         that premium, so each share is worth more fund tokens. No premium, no yield. The new
-///         tokens have no new backing: non-stakers are diluted, which is the incentive to stake.
+/// @notice Stakers deposit fund tokens and receive vault shares. The vault mints new fund tokens to
+///         itself at the rate the yield curve gives for the fund's premium over NAV, so each share
+///         is worth more fund tokens; nothing below the curve's first point. The new tokens have no
+///         new backing: non-stakers are diluted, which is the incentive to stake.
 ///         Yield accrues before every stake and unstake, so late stakers cannot capture it. The
-///         curve is a set of (premium, daily rate) points interpolated linearly, so the admin can
-///         shape it as a hump that peaks mid-premium and falls towards the mint ceiling. Rates are
-///         capped by the factory's admin-set yield cap (3% a day by default).
+///         curve is a set of (premium, yearly rate) points interpolated linearly, so the admin can
+///         shape it, for example paying a base rate at NAV and peaking mid-premium. Rates are
+///         capped by the factory's admin-set yield cap (109 500 bps a year, 3% a day, by default).
+///
+///         The curators get a share of the stakers' yield minted on top of it (15% by default,
+///         admin-set per fund, optionally capped at a yearly share of the staked balance), so
+///         stakers keep the full rate. It is paid to the curators module as shares, so it stays
+///         staked.
 ///
 ///         Shares staked from launch-locked fund tokens are locked the same way until the fund's
 ///         depositor unlock: they can be deposited in the governor (and come back to the same
 ///         account) or unstaked (the fund tokens come back locked), but not transferred.
 ///
 ///         LPs can stake their Uniswap v4 position NFT for a full-range position in the fund's
-///         pool. It earns the same daily rate on the fund tokens it holds (valued at the pool TWAP;
+///         pool. It earns the same yearly rate on the fund tokens it holds (valued at the pool TWAP;
 ///         its USDG earns nothing), paid in fund tokens they claim. The position's swap fees stay
 ///         theirs: they can collect them while staked or after. Staked positions do not vote.
 interface IFundStaking is IERC20, IERC721Receiver {
@@ -42,10 +47,23 @@ interface IFundStaking is IERC20, IERC721Receiver {
     /// @notice Emitted when yield accrues.
     /// @param elapsed        Seconds covered.
     /// @param premiumBps     Premium read.
-    /// @param ratePerDayWad  Daily rate applied, as a fraction of the staked balance (1e18 = 100%).
-    /// @param minted         Fund tokens minted to the vault for stakers.
+    /// @param ratePerYearWad Yearly rate applied, as a fraction of the staked balance (1e18 = 100%).
+    /// @param minted         Fund tokens minted to the vault: the stakers' yield plus the curators' share.
     /// @param lpMinted       Fund tokens minted for staked LP positions.
-    event YieldAccrued(uint256 elapsed, int256 premiumBps, uint256 ratePerDayWad, uint256 minted, uint256 lpMinted);
+    /// @param curatorShares  Shares minted to the curators module for their share.
+    event YieldAccrued(
+        uint256 elapsed,
+        int256 premiumBps,
+        uint256 ratePerYearWad,
+        uint256 minted,
+        uint256 lpMinted,
+        uint256 curatorShares
+    );
+
+    /// @notice Emitted when the curators' share of staker yield changes.
+    /// @param shareBps      Curators' yield as a share of the stakers' yield, in basis points.
+    /// @param capBpsPerYear Cap, in basis points of the staked balance a year (0 for none).
+    event CuratorYieldSet(uint16 shareBps, uint16 capBpsPerYear);
 
     /// @notice Emitted when an LP position is staked.
     /// @param owner     Owner credited with the position.
@@ -90,6 +108,9 @@ interface IFundStaking is IERC20, IERC721Receiver {
 
     /// @notice Too many points, premiums not strictly ascending, or a rate above the factory's yield cap.
     error InvalidYieldCurve();
+
+    /// @notice The curators' share of staker yield is above its cap.
+    error InvalidCuratorYield();
 
     /// @notice Caller is not the fund's launch module.
     error NotLaunch();
@@ -208,6 +229,21 @@ interface IFundStaking is IERC20, IERC721Receiver {
         YieldPoint[] calldata curve_
     ) external;
 
+    /// @notice Set the curators' yield, minted on top of the stakers' yield. Admin only; yield up to
+    ///         now accrues first.
+    /// @param shareBps      Curators' yield as a share of the stakers' yield, in basis points (at
+    ///                      most 50%).
+    /// @param capBpsPerYear Cap on it, in basis points of the staked balance a year (0 for none).
+    function setCuratorYield(uint16 shareBps, uint16 capBpsPerYear) external;
+
+    /// @notice The curators' yield as a share of the stakers' yield, in basis points.
+    /// @return The share.
+    function curatorYieldBps() external view returns (uint16);
+
+    /// @notice Cap on the curators' share, in basis points of the staked balance a year (0 for none).
+    /// @return The cap.
+    function curatorYieldCapBps() external view returns (uint16);
+
     /// @notice The fund token.
     /// @return The fund.
     function fund() external view returns (address);
@@ -225,10 +261,10 @@ interface IFundStaking is IERC20, IERC721Receiver {
     /// @return The points.
     function yieldCurve() external view returns (YieldPoint[] memory);
 
-    /// @notice Daily rate paid at a premium: the curve interpolated linearly between its points,
+    /// @notice Yearly rate paid at a premium: the curve interpolated linearly between its points,
     ///         after the factory's yield cap.
     /// @param premiumBps Premium over NAV, in basis points.
-    /// @return Rate per day, as a fraction of the staked balance (1e18 = 100%).
+    /// @return Rate per year, as a fraction of the staked balance (1e18 = 100%).
     function rateForPremium(
         int256 premiumBps
     ) external view returns (uint256);

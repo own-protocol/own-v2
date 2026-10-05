@@ -7,8 +7,8 @@ import {CreateFundParams, GovernanceConfig, LaunchConfig, PlatformMetadata} from
 /// @notice Every fund is six beacon proxies (fund token + basket, launch, staking, governor,
 ///         curators, bribes) sharing the platform's oracle, USDG and pool hook. The factory owner
 ///         is the platform admin (Own): it launches funds (the launcher whitelist stays in the code,
-///         empty by default, so launches can be opened up later), and sets the protocol fee,
-///         rebalance routers, launch and governance defaults, the curator cap, the bribe cut and
+///         empty by default, so launches can be opened up later), and sets the protocol curator
+///         (Own's seat among every fund's curators) and its share, rebalance routers, launch and governance defaults, the curator cap, the bribe cut and
 ///         bribe tokens, the list of tokens eligible for listing, the staking yield cap and the
 ///         platform metadata. It upgrades every fund at once through the beacons.
 interface IFundFactory {
@@ -44,13 +44,13 @@ interface IFundFactory {
     /// @param launcher The caller that created it.
     event FundCreated(address indexed fund, FundModules modules, address indexed launcher);
 
-    /// @notice Emitted when the protocol fee changes.
-    /// @param feeBps New fee, in basis points.
-    event ProtocolFeeSet(uint16 feeBps);
+    /// @notice Emitted when the protocol curator changes.
+    /// @param curator New protocol curator.
+    event ProtocolCuratorSet(address curator);
 
-    /// @notice Emitted when the protocol fee recipient changes.
-    /// @param recipient New recipient.
-    event ProtocolFeeRecipientSet(address recipient);
+    /// @notice Emitted when the protocol curator's share changes.
+    /// @param shareBps New share of the curators' votes and income, in basis points.
+    event ProtocolCuratorShareSet(uint16 shareBps);
 
     /// @notice Emitted when the curator cap changes.
     /// @param cap New cap per fund.
@@ -97,8 +97,8 @@ interface IFundFactory {
     event LaunchConfigSet(LaunchConfig config);
 
     /// @notice Emitted when the staking yield cap changes.
-    /// @param rateBpsPerDay New cap, in basis points of the staked balance per day.
-    event MaxYieldRateSet(uint16 rateBpsPerDay);
+    /// @param rateBpsPerYear New cap, in basis points of the staked balance per year.
+    event MaxYieldRateSet(uint32 rateBpsPerYear);
 
     /// @notice Emitted when the governance parameters for new funds change.
     /// @param config New parameters.
@@ -154,23 +154,27 @@ interface IFundFactory {
 
     /// @notice Create a fund with all its modules. The owner, or (while whitelisting is on) a
     ///         whitelisted launcher; anyone once whitelisting is off. The launch window opens
-    ///         immediately. A zero launch supply or duration takes the default (100M tokens, 7 days).
+    ///         immediately. A zero launch supply, duration or fee takes the default (100M tokens,
+    ///         7 days, 1%).
     /// @param params Fund parameters.
     /// @return modules The fund's contracts.
     function createFund(
         CreateFundParams calldata params
     ) external returns (FundModules memory modules);
 
-    /// @notice Set the protocol fee charged on pool trades, mints and redeems. Owner only.
-    /// @param feeBps Fee, in basis points (capped).
-    function setProtocolFee(
-        uint16 feeBps
+    /// @notice Set the protocol curator, Own's seat among every fund's curators. Owner only. It
+    ///         cannot be removed from a fund, needs no stake and takes its share of the curators'
+    ///         votes and income in every fund.
+    /// @param curator The protocol curator.
+    function setProtocolCurator(
+        address curator
     ) external;
 
-    /// @notice Set the protocol fee recipient. Owner only.
-    /// @param recipient The recipient.
-    function setProtocolFeeRecipient(
-        address recipient
+    /// @notice Set the protocol curator's share of the curators' votes and income in every fund.
+    ///         Owner only.
+    /// @param shareBps Share, in basis points (at most 50%).
+    function setProtocolCuratorShare(
+        uint16 shareBps
     ) external;
 
     /// @notice Set the maximum number of curators per fund. Owner only.
@@ -179,8 +183,8 @@ interface IFundFactory {
         uint8 cap
     ) external;
 
-    /// @notice Set Own's cut of every bribe. Owner only.
-    /// @param cutBps Cut, in basis points (at most 10%).
+    /// @notice Set the curators' cut of every bribe. Owner only.
+    /// @param cutBps Cut, in basis points (at most 25%).
     function setBribeCut(
         uint16 cutBps
     ) external;
@@ -230,11 +234,12 @@ interface IFundFactory {
         LaunchConfig calldata config
     ) external;
 
-    /// @notice Set the highest daily rate any staking yield tier may pay. Owner only. Applies to
-    ///         every fund at once: tiers above a lowered cap pay the cap.
-    /// @param rateBpsPerDay Cap, in basis points of the staked balance per day (at most 10 000).
+    /// @notice Set the highest yearly rate any staking yield point may pay. Owner only. Applies to
+    ///         every fund at once: points above a lowered cap pay the cap.
+    /// @param rateBpsPerYear Cap, in basis points of the staked balance per year (at most 36 500 000,
+    ///                       100% a day).
     function setMaxYieldRate(
-        uint16 rateBpsPerDay
+        uint32 rateBpsPerYear
     ) external;
 
     /// @notice Set the governance parameters used by funds created from now on. Owner only.
@@ -284,19 +289,19 @@ interface IFundFactory {
     /// @return The hook.
     function hook() external view returns (address);
 
-    /// @notice Protocol fee, in basis points.
-    /// @return The fee.
-    function protocolFeeBps() external view returns (uint16);
+    /// @notice The protocol curator, Own's seat among every fund's curators.
+    /// @return The protocol curator.
+    function protocolCurator() external view returns (address);
 
-    /// @notice Protocol fee recipient.
-    /// @return The recipient.
-    function protocolFeeRecipient() external view returns (address);
+    /// @notice The protocol curator's share of the curators' votes and income, in basis points.
+    /// @return The share.
+    function protocolCuratorShareBps() external view returns (uint16);
 
     /// @notice Maximum number of curators per fund.
     /// @return The cap.
     function curatorCap() external view returns (uint8);
 
-    /// @notice Own's cut of every bribe, in basis points.
+    /// @notice The curators' cut of every bribe, in basis points.
     /// @return The cut.
     function bribeCutBps() external view returns (uint16);
 
@@ -351,9 +356,9 @@ interface IFundFactory {
     /// @return The parameters.
     function launchConfig() external view returns (LaunchConfig memory);
 
-    /// @notice Highest daily rate a staking yield tier may pay, in basis points.
+    /// @notice Highest yearly rate a staking yield point may pay, in basis points.
     /// @return The cap.
-    function maxYieldRateBpsPerDay() external view returns (uint16);
+    function maxYieldRateBpsPerYear() external view returns (uint32);
 
     /// @notice Governance parameters used by funds created from now on.
     /// @return The parameters.

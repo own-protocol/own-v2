@@ -141,13 +141,15 @@ contract FundStakingLpTest is FundTestBase {
         uint256 pending = staking.pendingPositionYield(id);
         // Premium is ~30%: 0.15% a day, the same rate stakers get on their fund tokens.
         assertApproxEqRel(pending, tokens * 15 * 8 hours / (10_000 * 1 days), 0.001e18);
-        assertApproxEqRel(pending * 1e18 / tokens, minted * 1e18 / staked, 1e9);
+        // LP yield carries no curator share on top.
+        assertApproxEqRel(pending * 1e18 / tokens, minted * 1e18 / staked * 100 / 115, 1e9);
     }
 
     function test_yield_stakersUnaffected() public {
         _stake(carol, liq);
         uint256 minted = _accrueAfter(8 hours);
-        assertApproxEqRel(minted, staked * 15 * 8 hours / (10_000 * 1 days), 0.001e18);
+        // Stakers' yield plus the curators' 15% on top.
+        assertApproxEqRel(minted, staked * 15 * 8 hours / (10_000 * 1 days) * 115 / 100, 0.001e18);
         assertApproxEqAbs(staking.totalAssets(), staked + minted, 1);
     }
 

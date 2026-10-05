@@ -35,14 +35,49 @@ contract FundBribesTest is FundTestBase {
     //  Weight-vote bribes
     // ──────────────────────────────────────────────────────────
 
-    function test_postBribe_takesFivePercentCut() public {
-        uint256 treasuryBefore = usdg.balanceOf(protocolTreasury);
+    function test_postBribe_curatorsTakeFifteenPercent() public {
+        uint256 before = usdg.balanceOf(address(curators));
         vm.prank(briber);
         uint256 net = bribes.postBribe(address(tsla), epoch, address(usdg), 1000e6);
-        assertEq(net, 950e6);
-        assertEq(bribes.bribeOf(address(tsla), epoch, address(usdg)), 950e6);
-        assertEq(usdg.balanceOf(protocolTreasury) - treasuryBefore, 50e6);
-        assertEq(usdg.balanceOf(address(bribes)), 950e6);
+        assertEq(net, 850e6);
+        assertEq(bribes.bribeOf(address(tsla), epoch, address(usdg)), 850e6);
+        assertEq(usdg.balanceOf(address(curators)) - before, 150e6);
+        assertEq(usdg.balanceOf(address(bribes)), 850e6);
+    }
+
+    function test_postBribe_cutInNewTokenRegisteredWithCurators() public {
+        vm.prank(admin);
+        factory.setBribeToken(address(spare), true);
+        spare.mint(briber, 100e18);
+        vm.startPrank(briber);
+        spare.approve(address(bribes), 100e18);
+        bribes.postBribe(address(tsla), epoch, address(spare), 100e18);
+        vm.stopPrank();
+        address[] memory r = curators.rewardTokens();
+        assertEq(r.length, 4); // the fund token, USDG, staking shares, then registered tokens
+        assertEq(r[3], address(spare));
+        // Protocol curator a third, curatorA and curatorB the rest equally.
+        assertApproxEqAbs(curators.claimable(protocolCurator, address(spare)), 15e18 * 3333 / 10_000, 1);
+        assertApproxEqAbs(curators.claimable(curatorA, address(spare)), (15e18 - 15e18 * 3333 / 10_000) / 2, 1);
+    }
+
+    function test_postBribe_cutInBribedToken_registered() public {
+        tsla.mint(briber, 1e18);
+        vm.startPrank(briber);
+        tsla.approve(address(bribes), 1e18);
+        bribes.postBribe(address(tsla), epoch, address(tsla), 1e18);
+        vm.stopPrank();
+        assertEq(curators.rewardTokens()[3], address(tsla));
+        assertEq(tsla.balanceOf(address(curators)), 0.15e18);
+    }
+
+    function test_postBribe_rewardIsOtherBasketAsset_reverts() public {
+        pons.mint(briber, 1e18);
+        vm.startPrank(briber);
+        pons.approve(address(bribes), 1e18);
+        vm.expectRevert(IFundBribes.RewardNotAllowed.selector);
+        bribes.postBribe(address(tsla), epoch, address(pons), 1e18);
+        vm.stopPrank();
     }
 
     function test_postBribe_inTheBribedToken() public {
@@ -51,7 +86,7 @@ contract FundBribesTest is FundTestBase {
         tsla.approve(address(bribes), 1e18);
         bribes.postBribe(address(tsla), epoch, address(tsla), 1e18);
         vm.stopPrank();
-        assertEq(bribes.bribeOf(address(tsla), epoch, address(tsla)), 0.95e18);
+        assertEq(bribes.bribeOf(address(tsla), epoch, address(tsla)), 0.85e18);
     }
 
     function test_postBribe_rewardNotAllowed_reverts() public {
@@ -90,7 +125,7 @@ contract FundBribesTest is FundTestBase {
         vm.expectRevert(IFundBribes.NothingToClaim.selector);
         bribes.claimBribe(address(tsla), epoch, address(usdg));
         vm.prank(alice);
-        assertEq(bribes.claimBribe(address(tsla), epoch, address(usdg)), 950e6);
+        assertEq(bribes.claimBribe(address(tsla), epoch, address(usdg)), 850e6);
     }
 
     function test_claimBribe_splitByLockedStake() public {
@@ -110,9 +145,9 @@ contract FundBribesTest is FundTestBase {
         uint256 toAlice = bribes.claimBribe(address(tsla), epoch, address(usdg));
         vm.prank(bob);
         uint256 toBob = bribes.claimBribe(address(tsla), epoch, address(usdg));
-        assertEq(toAlice, uint256(950e6) * aliceStake / total);
-        assertEq(toBob, uint256(950e6) * bobPower / total);
-        assertLe(toAlice + toBob, 950e6);
+        assertEq(toAlice, uint256(850e6) * aliceStake / total);
+        assertEq(toBob, uint256(850e6) * bobPower / total);
+        assertLe(toAlice + toBob, 850e6);
     }
 
     function test_claimBribe_unlockedStakeEarnsNothing() public {
@@ -127,7 +162,7 @@ contract FundBribesTest is FundTestBase {
         assertGt(governor.votesOf(bob, address(tsla), epoch), 0);
         assertEq(bribes.claimableBribe(bob, address(tsla), epoch, address(usdg)), 0);
         vm.prank(alice);
-        assertEq(bribes.claimBribe(address(tsla), epoch, address(usdg)), 950e6);
+        assertEq(bribes.claimBribe(address(tsla), epoch, address(usdg)), 850e6);
     }
 
     function test_claimBribe_twice_reverts() public {
@@ -188,8 +223,8 @@ contract FundBribesTest is FundTestBase {
         uint256 before = usdg.balanceOf(briber);
         vm.prank(briber);
         uint256 back = bribes.refundBribe(address(pons), epoch, address(usdg));
-        assertEq(back, 950e6);
-        assertEq(usdg.balanceOf(briber), before + 950e6);
+        assertEq(back, 850e6);
+        assertEq(usdg.balanceOf(briber), before + 850e6);
         assertEq(bribes.bribeOf(address(pons), epoch, address(usdg)), 0);
     }
 
@@ -203,7 +238,7 @@ contract FundBribesTest is FundTestBase {
         governor.flip();
         assertGt(governor.tokenVotes(address(pons), epoch), 0);
         vm.prank(briber);
-        assertEq(bribes.refundBribe(address(pons), epoch, address(usdg)), 950e6);
+        assertEq(bribes.refundBribe(address(pons), epoch, address(usdg)), 850e6);
     }
 
     function test_refundBribe_votedToken_reverts() public {
@@ -227,7 +262,7 @@ contract FundBribesTest is FundTestBase {
         governor.flip();
         assertFalse(governor.isTallied(current));
         vm.prank(briber);
-        assertEq(bribes.refundBribe(address(tsla), current, address(usdg)), 950e6);
+        assertEq(bribes.refundBribe(address(tsla), current, address(usdg)), 850e6);
     }
 
     // ──────────────────────────────────────────────────────────
@@ -238,8 +273,8 @@ contract FundBribesTest is FundTestBase {
         uint256 id = _proposeListing();
         vm.prank(briber);
         uint256 net = bribes.postListingBribe(id, address(usdg), 2000e6);
-        assertEq(net, 1900e6);
-        assertEq(bribes.listingBribeOf(id, address(usdg)), 1900e6);
+        assertEq(net, 1700e6);
+        assertEq(bribes.listingBribeOf(id, address(usdg)), 1700e6);
 
         vm.prank(curatorA);
         governor.castVote(id, true);
@@ -255,7 +290,7 @@ contract FundBribesTest is FundTestBase {
         vm.expectRevert(IFundBribes.NothingToClaim.selector);
         bribes.claimListingBribe(id, address(usdg));
         vm.prank(briber);
-        assertEq(bribes.refundListingBribe(id, address(usdg)), 1900e6);
+        assertEq(bribes.refundListingBribe(id, address(usdg)), 1700e6);
     }
 
     function test_listingBribe_claimedAfterExecution() public {
@@ -285,7 +320,7 @@ contract FundBribesTest is FundTestBase {
         vm.expectRevert(IFundBribes.NothingToClaim.selector);
         bribes.claimListingBribe(id, address(usdg));
         vm.prank(alice);
-        assertEq(bribes.claimListingBribe(id, address(usdg)), 1900e6);
+        assertEq(bribes.claimListingBribe(id, address(usdg)), 1700e6);
         vm.prank(briber);
         vm.expectRevert(IFundBribes.NotRefundable.selector);
         bribes.refundListingBribe(id, address(usdg));
@@ -314,7 +349,7 @@ contract FundBribesTest is FundTestBase {
         vm.expectRevert(IFundBribes.NothingToClaim.selector);
         bribes.claimListingBribe(id, address(usdg));
         vm.prank(briber);
-        assertEq(bribes.refundListingBribe(id, address(usdg)), 1900e6);
+        assertEq(bribes.refundListingBribe(id, address(usdg)), 1700e6);
     }
 
     function test_listingBribe_refundedWhenVetoedOrCancelled() public {
@@ -324,7 +359,7 @@ contract FundBribesTest is FundTestBase {
         vm.prank(admin);
         governor.veto(id);
         vm.prank(briber);
-        assertEq(bribes.refundListingBribe(id, address(usdg)), 950e6);
+        assertEq(bribes.refundListingBribe(id, address(usdg)), 850e6);
         vm.prank(briber);
         vm.expectRevert(IFundBribes.NothingToClaim.selector);
         bribes.refundListingBribe(id, address(usdg));
@@ -337,7 +372,7 @@ contract FundBribesTest is FundTestBase {
         spare.approve(address(bribes), 100e18);
         bribes.postListingBribe(id, address(spare), 100e18);
         vm.stopPrank();
-        assertEq(bribes.listingBribeOf(id, address(spare)), 95e18);
+        assertEq(bribes.listingBribeOf(id, address(spare)), 85e18);
     }
 
     function test_listingBribe_notAListingOrClosed_reverts() public {

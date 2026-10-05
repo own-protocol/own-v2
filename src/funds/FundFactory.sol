@@ -29,17 +29,20 @@ import {UUPSUpgradeable} from "@openzeppelin/contracts/proxy/utils/UUPSUpgradeab
 ///      {upgradeModule}. The hook is wired once after deployment ({setHook}) because its address
 ///      must be mined against the factory address.
 contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
-    /// @notice Hard cap on the protocol fee.
-    uint16 public constant MAX_PROTOCOL_FEE_BPS = 500;
+    /// @notice Hard cap on the protocol curator's share.
+    uint16 public constant MAX_PROTOCOL_CURATOR_SHARE_BPS = 5000;
 
     /// @notice Hard cap on the rebalance slippage bound.
     uint16 public constant MAX_REBALANCE_SLIPPAGE_BPS = 1000;
 
-    /// @notice Default staking yield cap: 3% a day.
-    uint16 public constant DEFAULT_MAX_YIELD_RATE_BPS_PER_DAY = 300;
+    /// @notice Default staking yield cap: 109 500 bps a year (3% a day).
+    uint32 public constant DEFAULT_MAX_YIELD_RATE_BPS_PER_YEAR = 300 * 365;
+
+    /// @notice Hard cap on the staking yield cap: 3 650 000 bps a year (100% a day).
+    uint32 public constant MAX_YIELD_RATE_BPS_PER_YEAR = 10_000 * 365;
 
     /// @notice Hard cap on the bribe cut.
-    uint16 public constant MAX_BRIBE_CUT_BPS = 1000;
+    uint16 public constant MAX_BRIBE_CUT_BPS = 2500;
 
     /// @notice Hard cap on the curator cap.
     uint8 public constant MAX_CURATOR_CAP = 50;
@@ -69,10 +72,10 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
     address public override hook;
 
     /// @inheritdoc IFundFactory
-    uint16 public override protocolFeeBps;
+    uint16 public override protocolCuratorShareBps;
 
     /// @inheritdoc IFundFactory
-    address public override protocolFeeRecipient;
+    address public override protocolCurator;
 
     /// @inheritdoc IFundFactory
     bool public override whitelistEnabled;
@@ -97,7 +100,7 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
     mapping(Module module => address) private _beacons;
 
     /// @inheritdoc IFundFactory
-    uint16 public override maxYieldRateBpsPerDay;
+    uint32 public override maxYieldRateBpsPerYear;
 
     GovernanceConfig private _governanceConfig;
     PlatformMetadata private _platformMetadata;
@@ -139,17 +142,16 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
     /// @param owner_                 Platform admin.
     /// @param oracle_                Shared price oracle.
     /// @param usdg_                  USDG token.
-    /// @param protocolFeeRecipient_  Protocol fee recipient (Own's treasury; also gets the bribe cut).
+    /// @param protocolCurator_       Protocol curator: Own's seat among every fund's curators.
     /// @param impls                  Implementations, indexed by {Module}.
     function initialize(
         address owner_,
         address oracle_,
         address usdg_,
-        address protocolFeeRecipient_,
+        address protocolCurator_,
         address[6] calldata impls
     ) external initializer {
-        if (owner_ == address(0) || oracle_ == address(0) || usdg_ == address(0) || protocolFeeRecipient_ == address(0))
-        {
+        if (owner_ == address(0) || oracle_ == address(0) || usdg_ == address(0) || protocolCurator_ == address(0)) {
             revert ZeroAddress();
         }
         owner = owner_;
@@ -157,10 +159,10 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
         oracle = oracle_;
         usdg = usdg_;
 
-        protocolFeeBps = 50;
-        emit ProtocolFeeSet(50);
-        protocolFeeRecipient = protocolFeeRecipient_;
-        emit ProtocolFeeRecipientSet(protocolFeeRecipient_);
+        protocolCurator = protocolCurator_;
+        emit ProtocolCuratorSet(protocolCurator_);
+        protocolCuratorShareBps = 3333;
+        emit ProtocolCuratorShareSet(3333);
         whitelistEnabled = true;
         emit WhitelistEnabledSet(true);
         maxRebalanceSlippageBps = 200;
@@ -172,7 +174,7 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
             duration: DEFAULT_LAUNCH_DURATION,
             finalizeGrace: 7 days,
             poolUsdgBps: 1000,
-            launchPremiumBps: 3000,
+            launchPremiumBps: 0,
             earlyYieldBpsPerDay: 50,
             overweightHaircutBps: 500,
             depositorLock: 7 days
@@ -180,8 +182,8 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
         _launchConfig = cfg;
         emit LaunchConfigSet(cfg);
 
-        maxYieldRateBpsPerDay = DEFAULT_MAX_YIELD_RATE_BPS_PER_DAY;
-        emit MaxYieldRateSet(DEFAULT_MAX_YIELD_RATE_BPS_PER_DAY);
+        maxYieldRateBpsPerYear = DEFAULT_MAX_YIELD_RATE_BPS_PER_YEAR;
+        emit MaxYieldRateSet(DEFAULT_MAX_YIELD_RATE_BPS_PER_YEAR);
 
         GovernanceConfig memory gov = GovernanceConfig({
             curatorShareBps: 3000,
@@ -190,6 +192,7 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
             maxWeeklyShiftBps: 500,
             dropAfterEpochs: 4,
             quorumBps: 2000,
+            curatorQuorumBps: 2000,
             votingPeriod: 3 days,
             vetoPeriod: 1 days,
             executionWindow: 7 days,
@@ -201,8 +204,8 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
 
         curatorCap = 10;
         emit CuratorCapSet(10);
-        bribeCutBps = 500;
-        emit BribeCutSet(500);
+        bribeCutBps = 1500;
+        emit BribeCutSet(1500);
 
         for (uint256 i; i < 6; ++i) {
             _beacons[Module(i)] = address(new UpgradeableBeacon(impls[i], address(this)));
@@ -257,21 +260,21 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
     }
 
     /// @inheritdoc IFundFactory
-    function setProtocolFee(
-        uint16 feeBps
+    function setProtocolCurator(
+        address curator
     ) external override onlyOwner {
-        if (feeBps > MAX_PROTOCOL_FEE_BPS) revert FeeTooHigh();
-        protocolFeeBps = feeBps;
-        emit ProtocolFeeSet(feeBps);
+        if (curator == address(0)) revert ZeroAddress();
+        protocolCurator = curator;
+        emit ProtocolCuratorSet(curator);
     }
 
     /// @inheritdoc IFundFactory
-    function setProtocolFeeRecipient(
-        address recipient
+    function setProtocolCuratorShare(
+        uint16 shareBps
     ) external override onlyOwner {
-        if (recipient == address(0)) revert ZeroAddress();
-        protocolFeeRecipient = recipient;
-        emit ProtocolFeeRecipientSet(recipient);
+        if (shareBps > MAX_PROTOCOL_CURATOR_SHARE_BPS) revert FeeTooHigh();
+        protocolCuratorShareBps = shareBps;
+        emit ProtocolCuratorShareSet(shareBps);
     }
 
     /// @inheritdoc IFundFactory
@@ -362,11 +365,11 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
 
     /// @inheritdoc IFundFactory
     function setMaxYieldRate(
-        uint16 rateBpsPerDay
+        uint32 rateBpsPerYear
     ) external override onlyOwner {
-        if (rateBpsPerDay > BPS) revert InvalidYieldCap();
-        maxYieldRateBpsPerDay = rateBpsPerDay;
-        emit MaxYieldRateSet(rateBpsPerDay);
+        if (rateBpsPerYear > MAX_YIELD_RATE_BPS_PER_YEAR) revert InvalidYieldCap();
+        maxYieldRateBpsPerYear = rateBpsPerYear;
+        emit MaxYieldRateSet(rateBpsPerYear);
     }
 
     /// @inheritdoc IFundFactory

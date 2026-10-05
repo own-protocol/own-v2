@@ -4,8 +4,10 @@ pragma solidity 0.8.28;
 /// @title IFundBribes — bribes on a fund's weight vote and on its listing proposals
 /// @notice Anyone can post a bribe, typically a token team wanting its token listed or
 ///         up-weighted. Bribes are paid in admin-listed tokens (e.g. USDG, MONEY) or in the bribed
-///         token itself. Own takes the factory's bribe cut (5% by default, at most 10%) when a
-///         bribe is posted.
+///         token itself when it is a basket token or eligible for listing. The curators take the
+///         factory's bribe cut (15% by default, at most 25%) when a bribe is posted: it goes to the
+///         fund's curators module, which gives the protocol curator its share and splits the rest
+///         among the other curators.
 ///
 ///         Only stake locked for bribes earns them (see {IFundGovernor-lockForBribes}); curators
 ///         earn on their own locked stake, never on their base slice.
@@ -23,8 +25,8 @@ interface IFundBribes {
     /// @param token  Basket token bribed for.
     /// @param epoch  Epoch it pays for.
     /// @param reward Token paid.
-    /// @param amount Amount after Own's cut.
-    /// @param cut    Own's cut.
+    /// @param amount Amount after the curators' cut.
+    /// @param cut    The curators' cut.
     event BribePosted(
         address indexed briber,
         address indexed token,
@@ -58,8 +60,8 @@ interface IFundBribes {
     /// @param briber     Who posted it.
     /// @param proposalId Listing proposal.
     /// @param reward     Token paid.
-    /// @param amount     Amount after Own's cut.
-    /// @param cut        Own's cut.
+    /// @param amount     Amount after the curators' cut.
+    /// @param cut        The curators' cut.
     event ListingBribePosted(
         address indexed briber, uint256 indexed proposalId, address reward, uint256 amount, uint256 cut
     );
@@ -84,7 +86,8 @@ interface IFundBribes {
     /// @notice An amount is zero.
     error ZeroAmount();
 
-    /// @notice The reward token is neither admin-listed nor the bribed token.
+    /// @notice The reward token is neither admin-listed nor the bribed token (a basket token or one
+    ///         eligible for listing).
     error RewardNotAllowed();
 
     /// @notice The epoch is already tallied or in the past.
@@ -115,7 +118,7 @@ interface IFundBribes {
     /// @param token  Basket token.
     /// @param epoch  Epoch.
     /// @param reward Token paid.
-    /// @param amount Amount sent (Own's cut is taken from it).
+    /// @param amount Amount sent (the curators' cut is taken from it).
     /// @return net Amount bribed after the cut.
     function postBribe(address token, uint256 epoch, address reward, uint256 amount) external returns (uint256 net);
 
@@ -137,7 +140,7 @@ interface IFundBribes {
     /// @notice Post a bribe on an active listing proposal, paid to its yes voters if it executes.
     /// @param proposalId Listing proposal.
     /// @param reward     Token paid.
-    /// @param amount     Amount sent (Own's cut is taken from it).
+    /// @param amount     Amount sent (the curators' cut is taken from it).
     /// @return net Amount bribed after the cut.
     function postListingBribe(uint256 proposalId, address reward, uint256 amount) external returns (uint256 net);
 
@@ -158,14 +161,14 @@ interface IFundBribes {
     /// @return The fund.
     function fund() external view returns (address);
 
-    /// @notice Total `reward` bribed for `token` in `epoch`, after Own's cut.
+    /// @notice Total `reward` bribed for `token` in `epoch`, after the curators' cut.
     /// @param token  Basket token.
     /// @param epoch  Epoch.
     /// @param reward Token.
     /// @return The amount.
     function bribeOf(address token, uint256 epoch, address reward) external view returns (uint256);
 
-    /// @notice Total `reward` bribed on a listing proposal, after Own's cut.
+    /// @notice Total `reward` bribed on a listing proposal, after the curators' cut.
     /// @param proposalId Listing proposal.
     /// @param reward     Token.
     /// @return The amount.

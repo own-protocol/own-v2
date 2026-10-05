@@ -35,8 +35,11 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuard {
     /// @notice Maximum number of basket assets (bounds every loop over the basket).
     uint256 public constant MAX_ASSETS = MAX_BASKET_ASSETS;
 
-    /// @notice Hard cap on the curator fee.
-    uint16 public constant MAX_CURATOR_FEE_BPS = 1000;
+    /// @notice Hard cap on the fund fee.
+    uint16 public constant MAX_FEE_BPS = 1000;
+
+    /// @notice Fund fee used when a fund is created without one: 1%.
+    uint16 public constant DEFAULT_FEE_BPS = 100;
 
     /// @notice Hard cap on a lock option's discount.
     uint16 public constant MAX_LOCK_DISCOUNT_BPS = 5000;
@@ -71,7 +74,7 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuard {
     bool public override mintPaused;
 
     /// @inheritdoc IFund
-    uint16 public override curatorFeeBps;
+    uint16 public override feeBps;
 
     /// @inheritdoc IFund
     uint64 public override depositorUnlockAt;
@@ -151,7 +154,7 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuard {
         _setMetadata(params.name, params.symbol, params.logoURI, params.description);
         manager = params.manager;
         emit ManagerSet(params.manager);
-        _setCuratorFee(params.curatorFeeBps);
+        _setFee(params.feeBps == 0 ? DEFAULT_FEE_BPS : params.feeBps);
         _setBasket(params.assets, params.weightsBps);
         _setLockOptions(params.lockOptions);
         maxPremiumBps = params.maxPremiumBps;
@@ -225,24 +228,28 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuard {
 
     /// @inheritdoc IFund
     function mint(
-        address asset,
-        uint256 amount,
+        uint256 navShares,
         uint256 lockOption,
         uint256 minSharesOut,
         address receiver
     ) external override nonReentrant returns (uint256 shares) {
-        if (amount == 0) revert ZeroAmount();
+        if (navShares == 0) revert ZeroAmount();
         if (receiver == address(0)) revert ZeroAddress();
         if (mintPaused) revert MintPaused();
 
-        // Prices and NAV are read before the deposit lands, so the deposit cannot move them.
-        (uint256 assetPrice, uint256 mintPrice) = _mintPrices(asset, amount, lockOption);
-        uint256 received = _pull(asset, amount);
-        shares = _chargeMintFees(_sharesForValue(_value(asset, received, assetPrice), mintPrice));
+        // The slice and the prices are read before anything is pulled, so the deposit cannot move them.
+        (uint256 gross, uint256 mintPrice, uint256[] memory amounts, uint256 usdgAmount) =
+            _mintQuote(navShares, lockOption);
+        address[] memory basket = _assets;
+        for (uint256 i; i < basket.length; ++i) {
+            _pull(basket[i], amounts[i]);
+        }
+        _pull(IFundFactory(factory).usdg(), usdgAmount);
+        shares = _chargeMintFees(gross);
         if (shares == 0 || shares < minSharesOut) revert Slippage();
         uint256 lockId = _issue(receiver, shares, lockOption);
 
-        emit Minted(msg.sender, receiver, asset, received, shares, mintPrice, lockId);
+        emit Minted(msg.sender, receiver, navShares, shares, mintPrice, lockId);
     }
 
     /// @inheritdoc IFund
@@ -262,8 +269,8 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuard {
         uint256 supply;
         uint256 idle;
         {
-            (uint256 protocolFee, uint256 curatorFee) = _fees(shares);
-            net = shares - protocolFee - curatorFee;
+            uint256 fee = _fee(shares);
+            net = shares - fee;
             (, supply) = _poolAndSupply();
             (amounts, idle) = _redeemAmounts(basket, usdg, net, supply);
             for (uint256 i; i < minAmountsOut.length; ++i) {
@@ -272,7 +279,7 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuard {
 
             // Burning everything and minting the fees back moves locked launch tokens only by burning.
             _burn(msg.sender, shares);
-            _mintFees(protocolFee, curatorFee);
+            _mintFee(fee);
         }
 
         for (uint256 i; i < basket.length; ++i) {
@@ -329,10 +336,10 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuard {
     }
 
     /// @inheritdoc IFund
-    function setCuratorFee(
-        uint16 feeBps
+    function setFee(
+        uint16 feeBps_
     ) external override onlyAdmin {
-        _setCuratorFee(feeBps);
+        _setFee(feeBps_);
     }
 
     /// @inheritdoc IFund
@@ -510,23 +517,24 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuard {
 
     /// @inheritdoc IFund
     function previewMint(
-        address asset,
-        uint256 amount,
+        uint256 navShares,
         uint256 lockOption
-    ) external view override returns (uint256 shares, uint256 mintPrice) {
-        uint256 assetPrice;
-        (assetPrice, mintPrice) = _mintPrices(asset, amount, lockOption);
-        uint256 gross = _sharesForValue(_value(asset, amount, assetPrice), mintPrice);
-        (uint256 protocolFee, uint256 curatorFee) = _fees(gross);
-        shares = gross - protocolFee - curatorFee;
+    )
+        external
+        view
+        override
+        returns (uint256 shares, uint256 mintPrice, uint256[] memory amounts, uint256 usdgAmount)
+    {
+        uint256 gross;
+        (gross, mintPrice, amounts, usdgAmount) = _mintQuote(navShares, lockOption);
+        shares = gross - _fee(gross);
     }
 
     /// @inheritdoc IFund
     function previewRedeem(
         uint256 shares
     ) external view override returns (uint256[] memory amounts, uint256 usdgAmount) {
-        (uint256 protocolFee, uint256 curatorFee) = _fees(shares);
-        uint256 net = shares - protocolFee - curatorFee;
+        uint256 net = shares - _fee(shares);
         (uint256 poolUsdg, uint256 supply) = _poolAndSupply();
         (amounts, usdgAmount) = _redeemAmounts(_assets, IFundFactory(factory).usdg(), net, supply);
         usdgAmount += Math.mulDiv(poolUsdg, net, supply);
@@ -536,73 +544,74 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuard {
         if (msg.sender != IFundFactory(factory).owner()) revert NotAdmin();
     }
 
-    /// @dev Asset price and mint price for a mint. The mint price is the fund token's market TWAP,
-    ///      capped at the premium ceiling, less the lock discount, but never below NAV (rounded up),
-    ///      so a mint never dilutes. While the ceiling binds, the deposit may not take its asset above
-    ///      target weight, so arbitrage at the ceiling cannot skew the basket.
-    function _mintPrices(
-        address asset,
-        uint256 amount,
+    /// @dev A mint of `navShares`: the depositor brings `navShares / supply` of every basket asset
+    ///      and of the fund's USDG (idle plus the pool position's), each rounded up, so no oracle
+    ///      values the deposit and the basket keeps its proportions. The fund tokens issued are
+    ///      `navShares` scaled down by the mint price over NAV: the market TWAP, capped at the premium
+    ///      ceiling, less the lock discount, never below NAV. A mispriced oracle can only cost the
+    ///      minter, never dilute holders.
+    function _mintQuote(
+        uint256 navShares,
         uint256 lockOption
-    ) internal view returns (uint256 assetPrice, uint256 mintPrice) {
+    ) internal view returns (uint256 gross, uint256 mintPrice, uint256[] memory amounts, uint256 usdgAmount) {
         if (!launched) revert NotLaunched();
-        BasketEntry memory entry = _basket[asset];
-        if (!entry.listed || entry.weightBps == 0) revert AssetNotMintable(asset);
         if (lockOption > _lockOptions.length) revert InvalidLockOption();
-
-        IFundOracle o = IFundOracle(IFundFactory(factory).oracle());
-        assetPrice = o.price(asset);
-        (bool ok, uint256 market) = o.tryPrice(address(this));
-        if (!ok) revert NoMarketPrice();
-
-        (uint256 nav, uint256 basket) = _mintNav();
-        uint256 ceiling = maxPremiumBps == 0 ? type(uint256).max : Math.mulDiv(nav, BPS + maxPremiumBps, BPS);
-        if (market > ceiling) {
-            market = ceiling;
-            // Without supply NAV counts nothing, so the basket is valued here.
-            if (nav == 0) (, basket) = _basketValue(_assets, o, false);
-            _checkUnderweight(asset, entry.weightBps, amount, assetPrice, basket);
-        }
-        uint256 discount = lockOption == 0 ? 0 : _lockOptions[lockOption - 1].discountBps;
-        uint256 discounted = Math.mulDiv(market, BPS - discount, BPS, Math.Rounding.Ceil);
-        mintPrice = discounted > nav ? discounted : nav;
-    }
-
-    /// @dev NAV per token rounded up, and the basket value it counts; both 0 without supply.
-    function _mintNav() internal view returns (uint256 nav, uint256 basket) {
         (uint256 poolUsdg, uint256 supply) = _poolAndSupply();
-        if (supply == 0) return (0, 0);
-        uint256 value;
-        (basket, value) = _totalValue(IFundFactory(factory), poolUsdg);
-        nav = Math.mulDiv(value, PRECISION, supply, Math.Rounding.Ceil);
+        if (supply == 0) revert EmptyFund();
+        uint256 nav;
+        (nav, mintPrice) = _mintPrice(poolUsdg, supply, lockOption);
+        // Rounds down: the minter never receives more than its slice is worth at the mint price.
+        gross = nav == 0 ? 0 : Math.mulDiv(navShares, nav, mintPrice);
+        (amounts, usdgAmount) = _mintAmounts(navShares, poolUsdg, supply);
     }
 
-    /// @dev Reverts if depositing `amount` would take `asset` above its target weight of the basket.
-    function _checkUnderweight(
-        address asset,
-        uint256 weightBps,
-        uint256 amount,
-        uint256 assetPrice,
-        uint256 basket
-    ) internal view {
-        uint256 deposit = _value(asset, amount, assetPrice);
-        uint256 held = _value(asset, IERC20(asset).balanceOf(address(this)), assetPrice) + deposit;
-        if (held * BPS > (basket + deposit) * weightBps) revert AssetOverweight(asset);
+    function _mintPrice(
+        uint256 poolUsdg,
+        uint256 supply,
+        uint256 lockOption
+    ) internal view returns (uint256 nav, uint256 mintPrice) {
+        IFundFactory fac = IFundFactory(factory);
+        (bool ok, uint256 market) = IFundOracle(fac.oracle()).tryPrice(address(this));
+        if (!ok) revert NoMarketPrice();
+        (, uint256 total) = _totalValue(fac, poolUsdg);
+        nav = Math.mulDiv(total, PRECISION, supply, Math.Rounding.Ceil);
+        if (maxPremiumBps != 0) market = Math.min(market, Math.mulDiv(nav, BPS + maxPremiumBps, BPS));
+        uint256 discount = lockOption == 0 ? 0 : _lockOptions[lockOption - 1].discountBps;
+        mintPrice = Math.max(Math.mulDiv(market, BPS - discount, BPS, Math.Rounding.Ceil), nav);
     }
 
-    function _pull(address asset, uint256 amount) internal returns (uint256 received) {
+    function _mintAmounts(
+        uint256 navShares,
+        uint256 poolUsdg,
+        uint256 supply
+    ) internal view returns (uint256[] memory amounts, uint256 usdgAmount) {
+        address[] memory basket = _assets;
+        amounts = new uint256[](basket.length);
+        for (uint256 i; i < basket.length; ++i) {
+            amounts[i] = Math.mulDiv(IERC20(basket[i]).balanceOf(address(this)), navShares, supply, Math.Rounding.Ceil);
+        }
+        usdgAmount = Math.mulDiv(
+            IERC20(IFundFactory(factory).usdg()).balanceOf(address(this)) + poolUsdg,
+            navShares,
+            supply,
+            Math.Rounding.Ceil
+        );
+    }
+
+    function _pull(address asset, uint256 amount) internal {
+        if (amount == 0) return;
         IERC20 token = IERC20(asset);
         uint256 balanceBefore = token.balanceOf(address(this));
         token.safeTransferFrom(msg.sender, address(this), amount);
-        received = token.balanceOf(address(this)) - balanceBefore;
+        if (token.balanceOf(address(this)) - balanceBefore < amount) revert Slippage();
     }
 
     function _chargeMintFees(
         uint256 gross
     ) internal returns (uint256 net) {
-        (uint256 protocolFee, uint256 curatorFee) = _fees(gross);
-        _mintFees(protocolFee, curatorFee);
-        net = gross - protocolFee - curatorFee;
+        uint256 fee = _fee(gross);
+        _mintFee(fee);
+        net = gross - fee;
     }
 
     function _issue(address receiver, uint256 shares, uint256 lockOption) internal returns (uint256 lockId) {
@@ -637,25 +646,26 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuard {
         idle = Math.mulDiv(IERC20(usdg).balanceOf(address(this)), net, supply);
     }
 
-    function _fees(
+    function _fee(
         uint256 shares
-    ) internal view returns (uint256 protocolFee, uint256 curatorFee) {
-        protocolFee = Math.mulDiv(shares, IFundFactory(factory).protocolFeeBps(), BPS);
-        curatorFee = Math.mulDiv(shares, curatorFeeBps, BPS);
+    ) internal view returns (uint256) {
+        return Math.mulDiv(shares, feeBps, BPS);
     }
 
-    function _mintFees(uint256 protocolFee, uint256 curatorFee) internal {
-        if (protocolFee != 0) _mint(IFundFactory(factory).protocolFeeRecipient(), protocolFee);
-        if (curatorFee != 0) _mint(curators, curatorFee);
-        if (protocolFee != 0 || curatorFee != 0) emit FeesCharged(protocolFee, curatorFee);
-    }
-
-    function _setCuratorFee(
-        uint16 feeBps
+    function _mintFee(
+        uint256 fee
     ) internal {
-        if (feeBps > MAX_CURATOR_FEE_BPS) revert FeeTooHigh();
-        curatorFeeBps = feeBps;
-        emit CuratorFeeSet(feeBps);
+        if (fee == 0) return;
+        _mint(curators, fee);
+        emit FeesCharged(fee);
+    }
+
+    function _setFee(
+        uint16 feeBps_
+    ) internal {
+        if (feeBps_ > MAX_FEE_BPS) revert FeeTooHigh();
+        feeBps = feeBps_;
+        emit FeeSet(feeBps_);
     }
 
     /// @dev Launch-locked tokens can leave an account only by being burned (redeem) or through
@@ -798,10 +808,5 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuard {
 
     function _value(address asset, uint256 amount, uint256 price) internal view returns (uint256) {
         return Math.mulDiv(amount, price, 10 ** IERC20Metadata(asset).decimals());
-    }
-
-    function _sharesForValue(uint256 value, uint256 price) internal pure returns (uint256) {
-        if (price == 0) revert NoMarketPrice();
-        return Math.mulDiv(value, PRECISION, price);
     }
 }

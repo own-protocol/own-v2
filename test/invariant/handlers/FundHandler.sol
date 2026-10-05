@@ -3,6 +3,7 @@ pragma solidity 0.8.28;
 
 import {Fund} from "../../../src/funds/Fund.sol";
 import {IFund} from "../../../src/interfaces/IFund.sol";
+import {IFundFactory} from "../../../src/interfaces/IFundFactory.sol";
 import {MockERC20} from "../../helpers/MockERC20.sol";
 import {Test} from "forge-std/Test.sol";
 
@@ -10,6 +11,7 @@ import {Test} from "forge-std/Test.sol";
 contract FundHandler is Test {
     Fund internal fund;
     MockERC20[3] internal assets;
+    MockERC20 internal usdg;
     address[3] internal actors;
 
     uint256 public mints;
@@ -18,17 +20,22 @@ contract FundHandler is Test {
     constructor(Fund fund_, MockERC20[3] memory assets_, address[3] memory actors_) {
         fund = fund_;
         assets = assets_;
+        usdg = MockERC20(IFundFactory(fund_.factory()).usdg());
         actors = actors_;
     }
 
-    function mint(uint256 actorSeed, uint256 assetSeed, uint256 amount, uint256 lockSeed) external {
+    function mint(uint256 actorSeed, uint256 navShares, uint256 lockSeed) external {
         address actor = actors[actorSeed % 3];
-        MockERC20 asset = assets[assetSeed % 3];
-        amount = bound(amount, 10 ** asset.decimals() / 100, 10 ** asset.decimals() * 1000);
-        asset.mint(actor, amount);
+        navShares = bound(navShares, 1e15, 10_000e18);
+        (,, uint256[] memory amounts, uint256 usdgAmount) = fund.previewMint(navShares, lockSeed % 3);
         vm.startPrank(actor);
-        asset.approve(address(fund), amount);
-        fund.mint(address(asset), amount, lockSeed % 3, 0, actor);
+        for (uint256 i; i < 3; ++i) {
+            assets[i].mint(actor, amounts[i]);
+            assets[i].approve(address(fund), amounts[i]);
+        }
+        usdg.mint(actor, usdgAmount);
+        usdg.approve(address(fund), usdgAmount);
+        fund.mint(navShares, lockSeed % 3, 0, actor);
         vm.stopPrank();
         ++mints;
     }

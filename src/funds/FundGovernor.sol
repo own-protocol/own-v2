@@ -577,15 +577,13 @@ contract FundGovernor is IFundGovernor, Initializable, ReentrancyGuard {
     // ──────────────────────────────────────────────────────────
 
     /// @dev Votes cast per basket token in epoch `e`, as shares of all possible votes. Silent staker
-    ///      votes follow the compliant curators, split equally, so each voting compliant curator
-    ///      casts its slice plus its part of them. Records what bribe claims need: the stakers' share
-    ///      and the totals.
+    ///      votes follow the curators (see {IFundCurators-voteShares}), so each voting curator casts
+    ///      its part of the base slice plus its part of them. Records what bribe claims need: the
+    ///      stakers' share and the totals.
     function _castVotes(IFund f, uint256 e, address[] memory assets) internal returns (uint256[] memory votes) {
         uint256 n = assets.length;
         votes = new uint256[](n);
-        IFundCurators cur = IFundCurators(f.curators());
-        address[] memory cs = cur.curators();
-        uint256 curatorWad = cs.length == 0 ? 0 : uint256(_config.curatorShareBps) * BPS_TO_WAD;
+        uint256 curatorWad = uint256(_config.curatorShareBps) * BPS_TO_WAD;
         uint256 silent = WAD - curatorWad;
         _stakerShareWad[e] = silent;
 
@@ -598,34 +596,25 @@ contract FundGovernor is IFundGovernor, Initializable, ReentrancyGuard {
                 silent -= votes[j];
             }
         }
-        if (cs.length != 0) _curatorVotes(cur, cs, e, assets, votes, curatorWad / cs.length, silent);
+        _curatorVotes(IFundCurators(f.curators()), e, assets, votes, curatorWad, silent);
         for (uint256 j; j < n; ++j) {
             _epochVotes[e][assets[j]] = votes[j];
         }
     }
 
-    /// @dev Adds each voting compliant curator's slice plus its equal part of the silent staker votes.
+    /// @dev Adds each voting curator's part of the base slice and of the silent staker votes.
     function _curatorVotes(
         IFundCurators cur,
-        address[] memory cs,
         uint256 e,
         address[] memory assets,
         uint256[] memory votes,
-        uint256 slice,
+        uint256 curatorWad,
         uint256 silent
     ) internal {
-        uint256 m;
-        bool[] memory compliant = new bool[](cs.length);
+        (address[] memory cs, uint256[] memory baseBps, uint256[] memory silentBps) = cur.voteShares();
         for (uint256 c; c < cs.length; ++c) {
-            if (cur.isCompliant(cs[c])) {
-                compliant[c] = true;
-                ++m;
-            }
-        }
-        if (m == 0) return;
-        uint256 power = slice + silent / m;
-        for (uint256 c; c < cs.length; ++c) {
-            if (!compliant[c]) continue;
+            uint256 power = (curatorWad * baseBps[c] + silent * silentBps[c]) / BPS;
+            if (power == 0) continue;
             (address[] memory tokens, uint16[] memory weights) = allocationAt(cs[c], e);
             if (tokens.length == 0) continue;
             _curatorSlice[e][cs[c]] = power;

@@ -3,6 +3,7 @@ pragma solidity 0.8.28;
 
 import {IFund} from "../interfaces/IFund.sol";
 import {IFundBribes} from "../interfaces/IFundBribes.sol";
+import {IFundCurators} from "../interfaces/IFundCurators.sol";
 import {IFundFactory} from "../interfaces/IFundFactory.sol";
 import {IFundGovernor} from "../interfaces/IFundGovernor.sol";
 import {BPS} from "../interfaces/types/Types.sol";
@@ -198,16 +199,23 @@ contract FundBribes is IFundBribes, Initializable, ReentrancyGuard {
     function _pull(address token, address reward, uint256 amount) internal returns (uint256 net, uint256 cut) {
         if (amount == 0) revert ZeroAmount();
         IFundFactory fac = _factory;
-        if (reward != token && !fac.isBribeToken(reward)) revert RewardNotAllowed();
+        if (
+            !fac.isBribeToken(reward)
+                && (reward != token || (!fac.isEligibleAsset(token) && !IFund(fund).isAsset(token)))
+        ) revert RewardNotAllowed();
         IERC20 r = IERC20(reward);
         uint256 balanceBefore = r.balanceOf(address(this));
         r.safeTransferFrom(msg.sender, address(this), amount);
         uint256 received = r.balanceOf(address(this)) - balanceBefore;
-        // Rounds down: Own's cut never exceeds its configured share.
+        // Rounds down: the curators' cut never exceeds its configured share.
         cut = Math.mulDiv(received, fac.bribeCutBps(), BPS);
         net = received - cut;
         if (net == 0) revert ZeroAmount();
-        if (cut != 0) r.safeTransfer(fac.protocolFeeRecipient(), cut);
+        if (cut != 0) {
+            address cur = IFund(fund).curators();
+            IFundCurators(cur).registerRewardToken(reward);
+            r.safeTransfer(cur, cut);
+        }
     }
 
     function _governor() internal view returns (IFundGovernor) {

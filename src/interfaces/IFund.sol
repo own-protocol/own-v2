@@ -14,11 +14,13 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 ///         - Redeem: burn fund tokens for a pro-rata slice of every basket asset, of idle USDG and of
 ///           the pool position (its USDG paid out, its fund tokens burned), at any time. The basket
 ///           part needs no oracle and nothing can pause it.
-///         - Mint: deposit one basket asset at its oracle value, priced at the fund token's market
-///           TWAP (optionally discounted in exchange for a lock), never below NAV.
-///         - Fees: the protocol fee and the curator fee are charged in fund tokens on mints and
-///           redeems (and in USDG on pool trades, by the hook). The curator fee goes to the fund's
-///           curators module, which splits it among the curators.
+///         - Mint: deposit a slice of everything the fund holds (every basket asset and USDG, in
+///           proportion), so no oracle values the deposit. It is priced at the fund token's market
+///           TWAP (optionally discounted in exchange for a lock), never below NAV. The mint zap
+///           builds the slice from a single token.
+///         - Fee: one fund fee is charged in fund tokens on mints and redeems (and in USDG on pool
+///           trades, by the hook). It all goes to the fund's curators module, which splits it
+///           between the protocol curator and the other curators.
 ///         - Portfolio changes (assets and target weights) come only from the fund's governor
 ///           (the weekly weight vote and listing proposals). The admin can swap the governor.
 ///         - The manager (the Own keeper) rebalances towards the targets through admin-allowed
@@ -50,19 +52,17 @@ interface IFund is IERC20 {
         bytes data;
     }
 
-    /// @notice Emitted on a mint with a basket asset.
+    /// @notice Emitted on a mint.
     /// @param sender     Depositor.
     /// @param receiver   Receiver of the minted (or locked) fund tokens.
-    /// @param asset      Asset deposited.
-    /// @param amount     Amount received by the fund.
-    /// @param shares     Fund tokens minted to the receiver (after fees).
+    /// @param navShares  Size of the slice deposited, in fund tokens at NAV.
+    /// @param shares     Fund tokens minted to the receiver (after the fee).
     /// @param mintPrice  Price per fund token, 18 decimals USD.
     /// @param lockId     Lock index for the receiver, or type(uint256).max when unlocked.
     event Minted(
         address indexed sender,
         address indexed receiver,
-        address indexed asset,
-        uint256 amount,
+        uint256 navShares,
         uint256 shares,
         uint256 mintPrice,
         uint256 lockId
@@ -78,10 +78,9 @@ interface IFund is IERC20 {
         address indexed sender, address indexed receiver, uint256 shares, uint256[] amounts, uint256 usdgAmount
     );
 
-    /// @notice Emitted when fees are charged in fund tokens.
-    /// @param protocolFee Fund tokens to the protocol fee recipient.
-    /// @param curatorFee  Fund tokens to the curators module.
-    event FeesCharged(uint256 protocolFee, uint256 curatorFee);
+    /// @notice Emitted when the fund fee is charged in fund tokens.
+    /// @param fee Fund tokens to the curators module.
+    event FeesCharged(uint256 fee);
 
     /// @notice Emitted when a locked mint is claimed.
     /// @param account Owner of the lock.
@@ -101,9 +100,9 @@ interface IFund is IERC20 {
     /// @param weightsBps Target weights.
     event TargetWeightsSet(address[] assets, uint16[] weightsBps);
 
-    /// @notice Emitted when the curator fee changes.
+    /// @notice Emitted when the fund fee changes.
     /// @param feeBps Fee, in basis points.
-    event CuratorFeeSet(uint16 feeBps);
+    event FeeSet(uint16 feeBps);
 
     /// @notice Emitted when an account's locked launch tokens change.
     /// @param account The account.
@@ -195,13 +194,9 @@ interface IFund is IERC20 {
     /// @notice Minting is paused.
     error MintPaused();
 
-    /// @notice The asset is not in the basket, or has a zero target weight.
-    /// @param asset The asset.
-    error AssetNotMintable(address asset);
-
-    /// @notice A mint at the premium ceiling would take the asset above its target weight.
-    /// @param asset The asset.
-    error AssetOverweight(address asset);
+    /// @notice The fund has no supply outside its pool position, so there is nothing to take a
+    ///         slice of.
+    error EmptyFund();
 
     /// @notice Basket asset list or weights are invalid.
     error InvalidBasket();
@@ -220,7 +215,7 @@ interface IFund is IERC20 {
     /// @notice A lock option is invalid.
     error InvalidLockOptions();
 
-    /// @notice The curator fee is above its cap.
+    /// @notice The fund fee is above its cap.
     error FeeTooHigh();
 
     /// @notice Output is below the caller's minimum.
@@ -291,16 +286,18 @@ interface IFund is IERC20 {
     /// @return moved Locked fund tokens moving into staking.
     function releaseLaunchLock(address account, uint256 amount) external returns (uint256 moved);
 
-    /// @notice Mint fund tokens by depositing one basket asset.
-    /// @param asset        Basket asset deposited (target weight above zero).
-    /// @param amount       Amount deposited.
+    /// @notice Mint fund tokens by depositing a slice of the fund: `navShares / supply` (supply
+    ///         outside the pool position) of every basket asset's balance and of the fund's USDG,
+    ///         idle plus the pool position's, each rounded up. Pulled from the caller, which must
+    ///         have approved the fund; {previewMint} gives the amounts.
+    /// @param navShares    Size of the slice, in fund tokens at NAV. The receiver gets this scaled
+    ///                     down by the mint price over NAV, less the fee.
     /// @param lockOption   0 for no lock, otherwise 1 + index into {lockOptions}.
-    /// @param minSharesOut Minimum fund tokens to the receiver, after fees.
+    /// @param minSharesOut Minimum fund tokens to the receiver, after the fee.
     /// @param receiver     Receiver of the fund tokens (or owner of the lock).
     /// @return shares Fund tokens minted to the receiver or its lock.
     function mint(
-        address asset,
-        uint256 amount,
+        uint256 navShares,
         uint256 lockOption,
         uint256 minSharesOut,
         address receiver
@@ -355,9 +352,10 @@ interface IFund is IERC20 {
     /// @param weightsBps_ Target weights (sum 10 000).
     function setTargetWeights(address[] calldata assets_, uint16[] calldata weightsBps_) external;
 
-    /// @notice Set the curator fee. Admin only.
+    /// @notice Set the fund fee, charged on pool trades, mints and redeems and paid to the
+    ///         curators. Admin only.
     /// @param feeBps Fee, in basis points (capped at 10%).
-    function setCuratorFee(
+    function setFee(
         uint16 feeBps
     ) external;
 
@@ -400,7 +398,7 @@ interface IFund is IERC20 {
 
     /// @notice Set the mint premium ceiling. Admin only. Minting is priced at no more than NAV plus
     ///         this premium, so arbitrage (mint at the ceiling, sell into the pool) holds the market
-    ///         price near it. While it binds, a mint may not take its asset above target weight.
+    ///         price near it.
     /// @param maxPremiumBps_ Ceiling, in basis points over NAV (10 000 = 2x NAV); 0 for none.
     function setMaxPremium(
         uint16 maxPremiumBps_
@@ -458,13 +456,13 @@ interface IFund is IERC20 {
     /// @return The ceiling.
     function maxPremiumBps() external view returns (uint16);
 
-    /// @notice Curators module: the curator fee recipient.
+    /// @notice Curators module: the fund fee recipient.
     /// @return The curators module.
     function curators() external view returns (address);
 
-    /// @notice Curator fee, in basis points.
+    /// @notice Fund fee, in basis points.
     /// @return The fee.
-    function curatorFeeBps() external view returns (uint16);
+    function feeBps() external view returns (uint16);
 
     /// @notice When depositors' launch tokens become transferable (0 before launch).
     /// @return The timestamp.
@@ -544,16 +542,16 @@ interface IFund is IERC20 {
     function premiumBps() external view returns (bool ok, int256 premiumBps);
 
     /// @notice Quote a mint.
-    /// @param asset      Basket asset.
-    /// @param amount     Amount deposited.
+    /// @param navShares  Size of the slice, in fund tokens at NAV.
     /// @param lockOption 0 for no lock, otherwise 1 + index into {lockOptions}.
-    /// @return shares    Fund tokens to the receiver, after fees.
-    /// @return mintPrice Price per fund token, 18 decimals USD.
+    /// @return shares     Fund tokens to the receiver, after the fee.
+    /// @return mintPrice  Price per fund token, 18 decimals USD.
+    /// @return amounts    Amount of each basket asset the mint pulls, in {assets} order.
+    /// @return usdgAmount USDG the mint pulls.
     function previewMint(
-        address asset,
-        uint256 amount,
+        uint256 navShares,
         uint256 lockOption
-    ) external view returns (uint256 shares, uint256 mintPrice);
+    ) external view returns (uint256 shares, uint256 mintPrice, uint256[] memory amounts, uint256 usdgAmount);
 
     /// @notice Quote a redeem (the USDG figure assumes the pool's spot price equals its TWAP).
     /// @param shares Fund tokens redeemed, fees included.

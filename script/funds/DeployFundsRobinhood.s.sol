@@ -10,6 +10,8 @@ import {FundFactory} from "../../src/funds/FundFactory.sol";
 import {FundGovernor} from "../../src/funds/FundGovernor.sol";
 import {FundHook} from "../../src/funds/FundHook.sol";
 import {FundLaunch} from "../../src/funds/FundLaunch.sol";
+
+import {FundMintZap} from "../../src/funds/FundMintZap.sol";
 import {FundOracle} from "../../src/funds/FundOracle.sol";
 import {FundRedeemZap} from "../../src/funds/FundRedeemZap.sol";
 import {FundStaking} from "../../src/funds/FundStaking.sol";
@@ -31,12 +33,12 @@ import {Hooks} from "v4-core/src/libraries/Hooks.sol";
 ///        2. Admin sets a feed for every basket asset: oracle.setFeed(asset, aggregator, staleness).
 ///        3. Admin allows rebalance / zap routers: factory.setRouter(router, true).
 ///        4. Admin fills the listing eligibility list: factory.setEligibleAsset(token, true).
-///        5. Admin creates the fund (curators, curator fee, minimum curator stake of 0.5% = 50 bps,
+///        5. Admin creates the fund (curators, fund fee, minimum curator stake of 0.5% = 50 bps,
 ///           the Own keeper as manager); after launch run AddFundTwapFeedRobinhood for its TWAP.
 ///        6. The keeper finalizes each launch at its close and calls governor.flip() every
 ///           Thursday 00:00 UTC.
 ///
-/// Env: DEPLOYER_PRIVATE_KEY_ROBINHOOD, FUNDS_ADMIN, PROTOCOL_FEE_RECIPIENT,
+/// Env: DEPLOYER_PRIVATE_KEY_ROBINHOOD, FUNDS_ADMIN, PROTOCOL_CURATOR,
 ///      MONEY_TOKEN (optional, allowed as a bribe token)
 ///
 /// Usage:
@@ -61,13 +63,13 @@ contract DeployFundsRobinhood is Script {
         uint256 key = vm.envUint("DEPLOYER_PRIVATE_KEY_ROBINHOOD");
         address deployer = vm.addr(key);
         address admin = vm.envAddress("FUNDS_ADMIN");
-        address protocolFeeRecipient = vm.envAddress("PROTOCOL_FEE_RECIPIENT");
+        address protocolCurator = vm.envAddress("PROTOCOL_CURATOR");
         address money = vm.envOr("MONEY_TOKEN", address(0));
 
         vm.startBroadcast(key);
 
         FundOracle oracle = new FundOracle(deployer);
-        FundFactory factory = _deployFactory(deployer, address(oracle), protocolFeeRecipient);
+        FundFactory factory = _deployFactory(deployer, address(oracle), protocolCurator);
 
         bytes memory args = abi.encode(IPoolManager(POOL_MANAGER), IFundFactory(address(factory)));
         (address mined, bytes32 salt) = HookMiner.find(CREATE2_FACTORY, HOOK_FLAGS, type(FundHook).creationCode, args);
@@ -80,6 +82,7 @@ contract DeployFundsRobinhood is Script {
         if (money != address(0)) factory.setBribeToken(money, true);
 
         FundRedeemZap zap = new FundRedeemZap(address(factory));
+        FundMintZap mintZap = new FundMintZap(address(factory));
 
         if (admin != deployer) {
             factory.transferOwnership(admin);
@@ -92,6 +95,7 @@ contract DeployFundsRobinhood is Script {
         console.log("FundFactory     ", address(factory));
         console.log("FundHook        ", address(hook));
         console.log("FundRedeemZap   ", address(zap));
+        console.log("FundMintZap     ", address(mintZap));
         console.log("Fund beacon     ", factory.beacon(IFundFactory.Module.Fund));
         console.log("Launch beacon   ", factory.beacon(IFundFactory.Module.Launch));
         console.log("Staking beacon  ", factory.beacon(IFundFactory.Module.Staking));
@@ -101,11 +105,7 @@ contract DeployFundsRobinhood is Script {
         if (admin != deployer) console.log("Pending owner (must accept on factory and oracle):", admin);
     }
 
-    function _deployFactory(
-        address owner,
-        address oracle,
-        address protocolFeeRecipient
-    ) internal returns (FundFactory) {
+    function _deployFactory(address owner, address oracle, address protocolCurator) internal returns (FundFactory) {
         address[6] memory impls = [
             address(new Fund()),
             address(new FundLaunch()),
@@ -114,7 +114,7 @@ contract DeployFundsRobinhood is Script {
             address(new FundCurators()),
             address(new FundBribes())
         ];
-        bytes memory init = abi.encodeCall(FundFactory.initialize, (owner, oracle, USDG, protocolFeeRecipient, impls));
+        bytes memory init = abi.encodeCall(FundFactory.initialize, (owner, oracle, USDG, protocolCurator, impls));
         return FundFactory(address(new ERC1967Proxy(address(new FundFactory()), init)));
     }
 

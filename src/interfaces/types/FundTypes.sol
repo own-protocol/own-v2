@@ -29,17 +29,17 @@ struct LockOption {
     uint16 discountBps;
 }
 
-/// @notice One point on the staker-yield curve. Stakers earn, in new fund tokens, a daily rate
+/// @notice One point on the staker-yield curve. Stakers earn, in new fund tokens, a yearly rate
 ///         interpolated linearly between the points around the fund's premium over NAV: nothing
 ///         below the first point, the last point's rate from the last point on. A hump (rising to
 ///         a peak, then falling to zero towards the mint ceiling) keeps yield from feeding a
 ///         runaway premium.
 /// @param premiumBps     Premium, in basis points of NAV (strictly ascending across points).
-/// @param rateBpsPerDay  Daily rate at that premium, in basis points of the staked balance (capped
-///                       by the factory).
+/// @param rateBpsPerYear Yearly rate (APR) at that premium, in basis points of the staked balance
+///                       (capped by the factory).
 struct YieldPoint {
     uint16 premiumBps;
-    uint16 rateBpsPerDay;
+    uint32 rateBpsPerYear;
 }
 
 /// @notice Everything Own chooses when creating a fund.
@@ -51,7 +51,8 @@ struct YieldPoint {
 /// @param weightsBps         Starting target weight per asset; sums to 10 000.
 /// @param manager            The Own keeper that rebalances the basket.
 /// @param curators           Starting curators (at most the factory's curator cap).
-/// @param curatorFeeBps      Curator fee on pool trades, mints and redeems (0 to 10%).
+/// @param feeBps             Fund fee on pool trades, mints and redeems, all paid to the curators
+///                           (0 for the default 1%, at most 10%).
 /// @param minCuratorStakeBps Share of supply each curator must keep staked in the governor.
 /// @param minRaiseUsd        Minimum value (18 decimals USD) the launch must raise.
 /// @param targetRaiseUsd     Raise at which the launch can close before the window ends (0 for none).
@@ -70,7 +71,7 @@ struct CreateFundParams {
     uint16[] weightsBps;
     address manager;
     address[] curators;
-    uint16 curatorFeeBps;
+    uint16 feeBps;
     uint16 minCuratorStakeBps;
     uint256 minRaiseUsd;
     uint256 targetRaiseUsd;
@@ -110,7 +111,8 @@ struct LaunchConfig {
 /// @param maxWeightBps        Cap on any token's target weight.
 /// @param maxWeeklyShiftBps   Largest move of any weight in one week.
 /// @param dropAfterEpochs     Consecutive weeks under `minVoteBps` after which a token is dropped.
-/// @param quorumBps           Yes votes a proposal needs, as a share of all possible votes.
+/// @param quorumBps           Yes votes a listing or delisting needs, as a share of all possible votes.
+/// @param curatorQuorumBps    Yes votes a curator change needs, as a share of all staked tokens.
 /// @param votingPeriod        Proposal voting length, in seconds.
 /// @param vetoPeriod          Wait after voting ends in which Own can veto, in seconds.
 /// @param executionWindow     Time after the veto period within which a proposal must execute.
@@ -123,6 +125,7 @@ struct GovernanceConfig {
     uint16 maxWeeklyShiftBps;
     uint8 dropAfterEpochs;
     uint16 quorumBps;
+    uint16 curatorQuorumBps;
     uint32 votingPeriod;
     uint32 vetoPeriod;
     uint32 executionWindow;
@@ -140,8 +143,9 @@ library GovernanceConfigLib {
     ) internal pure returns (bool) {
         return c.curatorShareBps <= 5000 && c.minVoteBps <= 1000 && c.maxWeightBps >= 1000 && c.maxWeightBps <= 10_000
             && c.maxWeeklyShiftBps != 0 && c.maxWeeklyShiftBps <= 10_000 && c.dropAfterEpochs != 0 && c.quorumBps != 0
-            && c.quorumBps <= 10_000 && c.votingPeriod >= 1 hours && c.votingPeriod <= 30 days && c.vetoPeriod <= 30 days
-            && c.executionWindow >= 1 hours && c.executionWindow <= 30 days && c.bribeLock <= 365 days;
+            && c.quorumBps <= 10_000 && c.curatorQuorumBps != 0 && c.curatorQuorumBps <= 10_000 && c.votingPeriod >= 1 hours
+            && c.votingPeriod <= 30 days && c.vetoPeriod <= 30 days && c.executionWindow >= 1 hours
+            && c.executionWindow <= 30 days && c.bribeLock <= 365 days;
     }
 }
 

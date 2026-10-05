@@ -2,13 +2,14 @@
 pragma solidity 0.8.28;
 
 import {IFund} from "../interfaces/IFund.sol";
+import {IFundCurators} from "../interfaces/IFundCurators.sol";
 import {IFundFactory} from "../interfaces/IFundFactory.sol";
 import {IFundGovernor} from "../interfaces/IFundGovernor.sol";
 import {IFundHook} from "../interfaces/IFundHook.sol";
 import {IFundStaking} from "../interfaces/IFundStaking.sol";
 import {IPositionManager} from "../interfaces/external/IPositionManager.sol";
 import {BPS_TO_WAD, YieldPoint} from "../interfaces/types/FundTypes.sol";
-import {PRECISION} from "../interfaces/types/Types.sol";
+import {BPS, PRECISION} from "../interfaces/types/Types.sol";
 import {EpochHistory} from "./libraries/EpochHistory.sol";
 import {PositionFees} from "./libraries/PositionFees.sol";
 import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
@@ -39,6 +40,14 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuard {
 
     /// @notice Maximum number of yield curve points.
     uint256 public constant MAX_YIELD_POINTS = 8;
+
+    /// @notice Curators' share of staker yield a new fund starts with: 15%.
+    uint16 public constant DEFAULT_CURATOR_YIELD_BPS = 1500;
+
+    /// @notice Hard cap on the curators' share of staker yield.
+    uint16 public constant MAX_CURATOR_YIELD_BPS = 5000;
+
+    uint256 private constant YEAR = 365 days;
 
     // Same weekly epoch as the governor's.
     uint256 private constant EPOCH = 1 weeks;
@@ -80,6 +89,12 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuard {
 
     mapping(uint256 tokenId => LpPosition) private _positions;
 
+    /// @inheritdoc IFundStaking
+    uint16 public override curatorYieldBps;
+
+    /// @inheritdoc IFundStaking
+    uint16 public override curatorYieldCapBps;
+
     /// @param positionManager_ The Uniswap v4 PositionManager whose positions can be staked.
     constructor(
         address positionManager_
@@ -96,6 +111,7 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuard {
         _factory = IFundFactory(IFund(fund_).factory());
         lastAccrual = uint64(block.timestamp);
         _setCurve(curve_);
+        _setCuratorYield(DEFAULT_CURATOR_YIELD_BPS, 0);
     }
 
     /// @inheritdoc IFundStaking
@@ -202,6 +218,13 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuard {
         _setCurve(curve_);
     }
 
+    /// @inheritdoc IFundStaking
+    function setCuratorYield(uint16 shareBps, uint16 capBpsPerYear) external override nonReentrant {
+        if (msg.sender != _factory.owner()) revert NotAdmin();
+        _accrue();
+        _setCuratorYield(shareBps, capBpsPerYear);
+    }
+
     /// @notice Share token name, following the fund's current name.
     /// @return The name.
     function name() public view override returns (string memory) {
@@ -259,11 +282,11 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuard {
             ++i;
         }
         YieldPoint memory lo = _curve[i - 1];
-        rate = uint256(lo.rateBpsPerDay) * BPS_TO_WAD;
+        rate = uint256(lo.rateBpsPerYear) * BPS_TO_WAD;
         if (i < n) {
             YieldPoint memory hi = _curve[i];
             uint256 span = hi.premiumBps - lo.premiumBps;
-            uint256 hiRate = uint256(hi.rateBpsPerDay) * BPS_TO_WAD;
+            uint256 hiRate = uint256(hi.rateBpsPerYear) * BPS_TO_WAD;
             rate = hiRate >= rate
                 ? rate + Math.mulDiv(hiRate - rate, p - lo.premiumBps, span)
                 : rate - Math.mulDiv(rate - hiRate, p - lo.premiumBps, span, Math.Rounding.Ceil);
@@ -307,8 +330,10 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuard {
 
     /// @dev Mints the yield owed since the last accrual, at the rate of the premium read now, to
     ///      stakers and to staked LP positions (on their fund tokens at the pool TWAP; LP yield is
-    ///      held here until claimed). No yield without a fresh premium reading; the period is still
-    ///      consumed, so a stale oracle can only withhold yield, never inflate it later.
+    ///      held here until claimed). The curators get `curatorYieldBps` of the stakers' yield minted
+    ///      on top (capped by `curatorYieldCapBps` of the staked balance a year when set), paid to the
+    ///      curators module as shares, so it stays staked. No yield without a fresh premium reading; the period is
+    ///      still consumed, so a stale oracle can only withhold yield, never inflate it later.
     function _accrue() internal returns (uint256 minted) {
         uint256 last = lastAccrual;
         if (block.timestamp <= last) return 0;
@@ -326,18 +351,30 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuard {
         uint256 rate = rateForPremium(premium);
         if (rate == 0) return 0;
 
+        uint256 curatorShares;
         if (stakers) {
-            minted = Math.mulDiv(staked, rate * elapsed, PRECISION * 1 days);
+            uint256 stakerYield = Math.mulDiv(staked, rate * elapsed, PRECISION * YEAR);
+            uint256 cut = Math.mulDiv(stakerYield, curatorYieldBps, BPS);
+            uint256 cap = curatorYieldCapBps;
+            if (cap != 0) cut = Math.min(cut, Math.mulDiv(staked, cap * elapsed, BPS * YEAR));
+            // Priced after the stakers' yield lands, so the shares are worth `cut`, rounded down.
+            if (cut != 0) curatorShares = Math.mulDiv(cut, totalSupply() + 1, staked + stakerYield + 1);
+            minted = stakerYield + cut;
             _totalStaked += minted;
         }
         uint256 lpMinted;
         if (lpLiq != 0) {
             (, uint256 lpTokens) = IFundHook(_factory.hook()).liquidityAmounts(fund, lpLiq);
-            lpMinted = Math.mulDiv(lpTokens, rate * elapsed, PRECISION * 1 days);
+            lpMinted = Math.mulDiv(lpTokens, rate * elapsed, PRECISION * YEAR);
             _lpYieldPerLiquidity += Math.mulDiv(lpMinted, Q128, lpLiq);
         }
         if (minted + lpMinted != 0) IFund(fund).moduleMint(address(this), minted + lpMinted);
-        emit YieldAccrued(elapsed, premium, rate, minted, lpMinted);
+        if (curatorShares != 0) {
+            address cur = IFund(fund).curators();
+            _mint(cur, curatorShares);
+            IFundCurators(cur).notifyYield();
+        }
+        emit YieldAccrued(elapsed, premium, rate, minted, lpMinted, curatorShares);
     }
 
     /// @dev Takes custody of a full-range position in the fund's pool. Its liquidity cannot change
@@ -428,14 +465,21 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuard {
         uint256 cap = _maxRate();
         delete _curve;
         for (uint256 i; i < curve_.length; ++i) {
-            if (curve_[i].rateBpsPerDay > cap) revert InvalidYieldCurve();
+            if (curve_[i].rateBpsPerYear > cap) revert InvalidYieldCurve();
             if (i != 0 && curve_[i].premiumBps <= curve_[i - 1].premiumBps) revert InvalidYieldCurve();
             _curve.push(curve_[i]);
         }
         emit YieldCurveSet(curve_);
     }
 
+    function _setCuratorYield(uint16 shareBps, uint16 capBpsPerYear) internal {
+        if (shareBps > MAX_CURATOR_YIELD_BPS) revert InvalidCuratorYield();
+        curatorYieldBps = shareBps;
+        curatorYieldCapBps = capBpsPerYear;
+        emit CuratorYieldSet(shareBps, capBpsPerYear);
+    }
+
     function _maxRate() internal view returns (uint256) {
-        return _factory.maxYieldRateBpsPerDay();
+        return _factory.maxYieldRateBpsPerYear();
     }
 }

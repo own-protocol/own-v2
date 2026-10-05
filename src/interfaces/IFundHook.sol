@@ -7,8 +7,8 @@ import {PoolKey} from "v4-core/src/types/PoolKey.sol";
 /// @title IFundHook — Uniswap v4 hook for every fund's USDG pool
 /// @notice One hook serves all funds. Each fund gets one dynamic-fee pool against USDG that only
 ///         this hook can initialise. The hook:
-///         - takes the protocol fee and the fund's curator fee in USDG on every swap, on top of the
-///           pool's LP fee, and sends them straight to their recipients;
+///         - takes the fund fee in USDG on every swap, on top of the pool's LP fee, and sends it
+///           straight to the fund's curators module;
 ///         - holds each fund's launch liquidity as a full-range position on the fund's behalf. The
 ///           fund counts it as backing (at the pool TWAP). It leaves the pool only through the
 ///           fund's redeems (a pro-rata slice) or an admin withdrawal, and both return it to the
@@ -31,11 +31,10 @@ interface IFundHook {
     /// @param shares    Fund tokens added.
     event PoolSeeded(address indexed fund, uint128 liquidity, uint256 usdg, uint256 shares);
 
-    /// @notice Emitted when USDG fees are taken on a swap.
-    /// @param fund        The fund.
-    /// @param protocolFee USDG to the protocol fee recipient.
-    /// @param curatorFee  USDG to the curators module.
-    event SwapFeesTaken(address indexed fund, uint256 protocolFee, uint256 curatorFee);
+    /// @notice Emitted when the fund fee is taken in USDG on a swap.
+    /// @param fund The fund.
+    /// @param fee  USDG to the fund's curators module.
+    event SwapFeesTaken(address indexed fund, uint256 fee);
 
     /// @notice Emitted when LP fees on the fund's position are collected.
     /// @param fund       The fund.
