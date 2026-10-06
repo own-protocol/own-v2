@@ -28,7 +28,7 @@ import {PoolKey} from "v4-core/src/types/PoolKey.sol";
 
 /// @title FundHook — Uniswap v4 hook and liquidity locker for fund pools
 /// @notice See {IFundHook}.
-/// @dev Runs behind an ERC-1967 proxy (UUPS) upgraded by the factory owner; storage is
+/// @dev Runs behind an ERC-1967 proxy (UUPS) upgraded by the registry ADMIN; storage is
 ///      append-only across upgrades. The proxy must be deployed at an address whose low bits
 ///      encode exactly {getHookPermissions} (mined with CREATE2); the pool manager calls only
 ///      those callbacks, so only they are implemented. Every pool is the fund token against USDG
@@ -211,7 +211,7 @@ contract FundHook is IFundHook, IUnlockCallback, Initializable, UUPSUpgradeable 
 
     /// @inheritdoc IFundHook
     function withdrawPosition(address fund, uint128 liquidity) external override {
-        if (msg.sender != factory.owner()) revert NotAdmin();
+        if (!factory.isAdmin(msg.sender)) revert NotAdmin();
         Pool storage pool = _seeded(fund);
         if (liquidity == 0 || liquidity > pool.liquidity) revert InsufficientLiquidity();
         _reduce(fund, pool, liquidity, fund, 0);
@@ -219,7 +219,7 @@ contract FundHook is IFundHook, IUnlockCallback, Initializable, UUPSUpgradeable 
 
     /// @inheritdoc IFundHook
     function setLpFee(address fund, uint24 lpFee) external override {
-        if (msg.sender != factory.owner()) revert NotAdmin();
+        if (!factory.isAdmin(msg.sender)) revert NotAdmin();
         if (lpFee > MAX_LP_FEE) revert LpFeeTooHigh();
         Pool storage pool = _pools[fund];
         if (!pool.registered) revert NotRegistered();
@@ -517,11 +517,11 @@ contract FundHook is IFundHook, IUnlockCallback, Initializable, UUPSUpgradeable 
         if (delta < 0 && delta % elapsed != 0) meanTick--;
     }
 
-    /// @dev UUPS upgrade gate: the factory owner.
+    /// @dev UUPS upgrade gate: the registry ADMIN.
     function _authorizeUpgrade(
         address
     ) internal view override {
-        if (msg.sender != factory.owner()) revert NotAdmin();
+        if (!factory.isAdmin(msg.sender)) revert NotAdmin();
     }
 
     function _amountsAt(

@@ -5,8 +5,8 @@ import {CreateFundParams, GovernanceConfig, LaunchConfig, PlatformMetadata} from
 
 /// @title IFundFactory — creates Own Curated Funds and holds platform-wide settings
 /// @notice Every fund is six beacon proxies (fund token + basket, launch, staking, governor,
-///         curators, bribes) sharing the platform's oracle, USDG and pool hook. The factory owner
-///         is the platform admin (Own): it launches funds (the launcher whitelist stays in the code,
+///         curators, bribes) sharing the platform's oracle, USDG and pool hook. The registry's
+///         ADMIN role is the platform admin (Own): it launches funds (the launcher whitelist stays in the code,
 ///         empty by default, so launches can be opened up later), and sets the protocol curator
 ///         (Own's seat among every fund's curators) and its share, rebalance routers, launch and governance defaults, the curator cap, the bribe cut and
 ///         bribe tokens, the list of tokens eligible for listing, the staking yield cap and the
@@ -117,22 +117,10 @@ interface IFundFactory {
     /// @param implementation The new implementation.
     event ModuleUpgraded(Module indexed module, address implementation);
 
-    /// @notice Emitted when a two-step ownership transfer starts.
-    /// @param newOwner The pending owner.
-    event OwnershipTransferStarted(address indexed newOwner);
+    /// @notice Caller does not hold the protocol ADMIN role.
+    error NotAdmin();
 
-    /// @notice Emitted when ownership changes.
-    /// @param previousOwner The previous owner.
-    /// @param newOwner      The new owner.
-    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
-
-    /// @notice Caller is not the owner.
-    error NotOwner();
-
-    /// @notice Caller is not the pending owner.
-    error NotPendingOwner();
-
-    /// @notice Caller is neither the owner nor a whitelisted launcher while whitelisting is on.
+    /// @notice Caller is neither an admin nor a whitelisted launcher while whitelisting is on.
     error NotLauncher();
 
     /// @notice The curator cap is out of range.
@@ -156,7 +144,7 @@ interface IFundFactory {
     /// @notice A governance parameter is out of range.
     error InvalidGovernanceConfig();
 
-    /// @notice Create a fund with all its modules. The owner, or (while whitelisting is on) a
+    /// @notice Create a fund with all its modules. An admin, or (while whitelisting is on) a
     ///         whitelisted launcher; anyone once whitelisting is off. The launch window opens
     ///         immediately. A zero launch supply, duration or fee takes the default (100M tokens,
     ///         7 days, 1%).
@@ -166,14 +154,14 @@ interface IFundFactory {
         CreateFundParams calldata params
     ) external returns (FundModules memory modules);
 
-    /// @notice Set the price oracle every fund reads. Owner only. The new oracle must already price
+    /// @notice Set the price oracle every fund reads. Admin only. The new oracle must already price
     ///         every basket asset and fund token in use, or mints, NAV reads and listings revert.
     /// @param oracle_ The oracle.
     function setOracle(
         address oracle_
     ) external;
 
-    /// @notice Set the protocol curator, Own's seat among every fund's curators. Owner only. It
+    /// @notice Set the protocol curator, Own's seat among every fund's curators. Admin only. It
     ///         cannot be removed from a fund, needs no stake and takes its share of the curators'
     ///         votes and income in every fund.
     /// @param curator The protocol curator.
@@ -182,70 +170,70 @@ interface IFundFactory {
     ) external;
 
     /// @notice Set the protocol curator's share of the curators' votes and income in every fund.
-    ///         Owner only.
+    ///         Admin only.
     /// @param shareBps Share, in basis points (at most 50%).
     function setProtocolCuratorShare(
         uint16 shareBps
     ) external;
 
-    /// @notice Set the maximum number of curators per fund. Owner only.
+    /// @notice Set the maximum number of curators per fund. Admin only.
     /// @param cap Cap (1 to 50).
     function setCuratorCap(
         uint8 cap
     ) external;
 
-    /// @notice Set the curators' cut of every bribe. Owner only.
+    /// @notice Set the curators' cut of every bribe. Admin only.
     /// @param cutBps Cut, in basis points (at most 25%).
     function setBribeCut(
         uint16 cutBps
     ) external;
 
-    /// @notice Allow or disallow a token for paying bribes. Owner only.
+    /// @notice Allow or disallow a token for paying bribes. Admin only.
     /// @param token   The token.
     /// @param allowed Whether allowed.
     function setBribeToken(address token, bool allowed) external;
 
-    /// @notice Add or remove a token from the list funds may list. Owner only.
+    /// @notice Add or remove a token from the list funds may list. Admin only.
     /// @param token    The token.
     /// @param eligible Whether eligible.
     function setEligibleAsset(address token, bool eligible) external;
 
-    /// @notice Switch launcher whitelisting on or off. Owner only.
+    /// @notice Switch launcher whitelisting on or off. Admin only.
     /// @param enabled Whether only whitelisted launchers may create funds.
     function setWhitelistEnabled(
         bool enabled
     ) external;
 
-    /// @notice Add or remove a whitelisted launcher. Owner only.
+    /// @notice Add or remove a whitelisted launcher. Admin only.
     /// @param launcher The launcher.
     /// @param allowed  Whether it may create funds.
     function setLauncher(address launcher, bool allowed) external;
 
-    /// @notice Allow or disallow a rebalance router. Owner only.
+    /// @notice Allow or disallow a rebalance router. Admin only.
     /// @param router  The router.
     /// @param allowed Whether funds may rebalance through it.
     function setRouter(address router, bool allowed) external;
 
-    /// @notice Set the maximum oracle-valued loss a rebalance may take. Owner only.
+    /// @notice Set the maximum oracle-valued loss a rebalance may take. Admin only.
     /// @param slippageBps Bound, in basis points (capped).
     function setMaxRebalanceSlippage(
         uint16 slippageBps
     ) external;
 
-    /// @notice Set how much of a fund's basket value its manager may rebalance per day. Owner only.
+    /// @notice Set how much of a fund's basket value its manager may rebalance per day. Admin only.
     /// @param capBps Cap, in basis points of basket value (at most 10 000).
     function setRebalanceVolumeCap(
         uint16 capBps
     ) external;
 
-    /// @notice Set the launch defaults used by funds created from now on. Owner only. The duration
+    /// @notice Set the launch defaults used by funds created from now on. Admin only. The duration
     ///         here is the default window; each fund may set its own.
     /// @param config New parameters.
     function setLaunchConfig(
         LaunchConfig calldata config
     ) external;
 
-    /// @notice Set the highest yearly rate any staking yield point may pay. Owner only. Applies to
+    /// @notice Set the highest yearly rate any staking yield point may pay. Admin only. Applies to
     ///         every fund at once: points above a lowered cap pay the cap.
     /// @param rateBpsPerYear Cap, in basis points of the staked balance per year (at most 36 500 000,
     ///                       100% a day).
@@ -253,40 +241,42 @@ interface IFundFactory {
         uint32 rateBpsPerYear
     ) external;
 
-    /// @notice Set the governance parameters used by funds created from now on. Owner only.
+    /// @notice Set the governance parameters used by funds created from now on. Admin only.
     /// @param config New parameters.
     function setGovernanceConfig(
         GovernanceConfig calldata config
     ) external;
 
-    /// @notice Set the platform metadata every fund shows. Owner only.
+    /// @notice Set the platform metadata every fund shows. Admin only.
     /// @param metadata New metadata.
     function setPlatformMetadata(
         PlatformMetadata calldata metadata
     ) external;
 
-    /// @notice Point a module beacon at a new implementation, upgrading every fund. Owner only.
+    /// @notice Point a module beacon at a new implementation, upgrading every fund. Admin only.
     /// @param module         The module.
     /// @param implementation The new implementation.
     function upgradeModule(Module module, address implementation) external;
 
-    /// @notice Start a two-step ownership transfer. Owner only.
-    /// @param newOwner The pending owner.
-    function transferOwnership(
-        address newOwner
-    ) external;
+    /// @notice The protocol registry whose roles administer the factory, the hook and every fund.
+    /// @return The registry.
+    function registry() external view returns (address);
 
-    /// @notice Accept a pending ownership transfer. Pending owner only.
-    function acceptOwnership() external;
+    /// @notice Whether `account` holds the registry's ADMIN role: the admin of the factory, the
+    ///         hook and every fund, launch, staking vault, governor and curator set.
+    /// @param account The account.
+    /// @return True if it is an admin.
+    function isAdmin(
+        address account
+    ) external view returns (bool);
 
-    /// @notice Platform admin; also the admin of every fund, launch, staking vault, governor and
-    ///         the hook.
-    /// @return The owner.
-    function owner() external view returns (address);
-
-    /// @notice Pending owner of a two-step transfer.
-    /// @return The pending owner.
-    function pendingOwner() external view returns (address);
+    /// @notice Whether `account` holds the registry's OPERATOR or ADMIN role; operators flip the
+    ///         instant pause levers (fund mints, launch deposits).
+    /// @param account The account.
+    /// @return True if it is an operator or admin.
+    function isOperator(
+        address account
+    ) external view returns (bool);
 
     /// @notice The shared price oracle.
     /// @return The oracle.

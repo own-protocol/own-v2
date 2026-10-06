@@ -20,7 +20,7 @@ Updated 2026-10-05 for commit 10b22fb (curator yield, protocol curator, in-kind 
 | `FundGovernor` | Beacon proxy per fund. Staked escrow, the weekly weight vote (gauge) and proposals to list or delist tokens and add, remove or replace curators. |
 | `FundCurators` | Beacon proxy per fund. The curator set (with the protocol curator), the minimum curator stake and compliance, and the curators' income: the fund fee, the curator yield (30-day unlocks, forfeits on removal) and the bribe cut, split between the protocol curator and the others. |
 | `FundBribes` | Beacon proxy per fund. Bribes on the weekly vote per token per week, and bribes on listing proposals. The curators' cut goes to `FundCurators`. |
-| `FundHook` | UUPS, upgraded by the factory owner; the proxy sits at the mined hook address. One Uniswap v4 hook for every fund pool: the fund fee in USDG on swaps, admin-set LP fee, the TWAP, and the fund's own pool position. |
+| `FundHook` | UUPS, upgraded by the registry ADMIN; the proxy sits at the mined hook address. One Uniswap v4 hook for every fund pool: the fund fee in USDG on swaps, admin-set LP fee, the TWAP, and the fund's own pool position. |
 | `FundOracle` | Per-asset Chainlink-style feeds. A fund token's own market price is read through the same surface. |
 | `FundTwapFeed` | Per fund. Serves the fund's pool TWAP (recorded by the hook) as an aggregator. |
 | `FundRedeemZap` | Redeem a fund token and swap the basket to USDG through allowed routers in one transaction. |
@@ -28,7 +28,7 @@ Updated 2026-10-05 for commit 10b22fb (curator yield, protocol curator, in-kind 
 
 ## Launch
 
-1. **Create.** `createFund` is open to the factory owner and whitelisted launchers (the whitelist
+1. **Create.** `createFund` is open to admins and whitelisted launchers (the whitelist
    is on and empty by default, so only Own launches). Own sets the name, symbol, logo and
    description, the basket and starting weights, the manager (the Own keeper), the curators (up to
    the cap; the protocol curator is a curator of every fund on top) and the fund fee (default 1%,
@@ -231,13 +231,18 @@ Updated 2026-10-05 for commit 10b22fb (curator yield, protocol curator, in-kind 
 
 ## Trust and limits
 
-- **Admin (factory owner):** upgrades the factory, the hook and all modules; sets the price
-  oracle, the protocol curator and its share, the whitelist, routers, the LP fee, the curator cap, the bribe cut and tokens, the eligibility list,
-  the yield cap, governance rules and each fund's fee, curator yield, minimum curator stake, lock
-  options, yield curve and premium ceiling; adds and removes curators (never the protocol curator);
-  vetoes proposals; can delist a token directly; can withdraw the pool position back into the fund;
-  can sweep tokens the fund holds that are not backing (stray tokens, a dropped asset's dust), but
-  never a basket asset, USDG or the fund token.
+- **Admin (ProtocolRegistry `ADMIN` role, the same admins as eUSD):** no fund contract stores
+  its own admin; each checks the registry on every call, so granting or revoking `ADMIN` there
+  (through the timelocked `PROTOCOL_ADMIN`) changes who administers every fund at once. Admins
+  upgrade the factory, the hook and all modules; set the price oracle and feeds, the protocol
+  curator and its share, the whitelist, routers, the LP fee, the curator cap, the bribe cut and
+  tokens, the eligibility list, the yield cap, governance rules and each fund's fee, curator
+  yield, minimum curator stake, lock options, yield curve and premium ceiling; add and remove
+  curators (never the protocol curator); veto proposals; can delist a token directly; can
+  withdraw the pool position back into the fund; can sweep tokens the fund holds that are not
+  backing (stray tokens, a dropped asset's dust), but never a basket asset, USDG or the fund token.
+- **Operator (registry `OPERATOR` role, or an admin):** pauses and unpauses fund mints and launch
+  deposits. Redeeming cannot be paused.
 - **Manager (Own keeper):** trusted only within the rebalance bounds above. Between the launch
   close and pool seeding it is trusted more: no daily volume cap, only the 2% per-swap bound, so
   it should finish the launch rebalance and seed promptly. Its launch jobs are `finalize()` as
@@ -257,8 +262,9 @@ Updated 2026-10-05 for commit 10b22fb (curator yield, protocol curator, in-kind 
 
 `script/funds/DeployFundsRobinhood.s.sol` deploys the oracle, the six module implementations, the
 factory (with `PROTOCOL_CURATOR` as the protocol curator), the hook (mining its CREATE2 salt with
-`script/funds/HookMiner.sol`) and the redeem and mint zaps, wires the hook and platform metadata, allows USDG (and MONEY, if given) as bribe tokens, and hands
-ownership to `FUNDS_ADMIN` (two-step). After a fund launches,
+`script/funds/HookMiner.sol`) and the redeem and mint zaps, all administered by the ProtocolRegistry at `PROTOCOL_REGISTRY_ROBINHOOD`. It wires the hook and
+platform metadata and allows USDG (and MONEY, if given) as bribe tokens when the deployer holds
+`ADMIN`; otherwise it prints those calls for an admin's Safe. After a fund launches,
 `script/funds/AddFundTwapFeedRobinhood.s.sol` deploys its TWAP feed and registers it in the oracle.
 
 ## Tests

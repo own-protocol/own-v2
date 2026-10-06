@@ -94,10 +94,19 @@ contract FundLaunchTest is FundTestBase {
         launch.deposit(address(net), 1e9);
     }
 
-    function test_setDepositsPaused_notAdmin_reverts() public {
+    function test_setDepositsPaused_notOperator_reverts() public {
         vm.prank(keeper);
-        vm.expectRevert(IFundLaunch.NotAdmin.selector);
+        vm.expectRevert(IFundLaunch.NotOperator.selector);
         launch.setDepositsPaused(true);
+    }
+
+    function test_setDepositsPaused_operator() public {
+        vm.prank(operator);
+        launch.setDepositsPaused(true);
+        assertTrue(launch.depositsPaused());
+        vm.prank(operator);
+        launch.setDepositsPaused(false);
+        assertFalse(launch.depositsPaused());
     }
 
     // ──────────────────────────────────────────────────────────

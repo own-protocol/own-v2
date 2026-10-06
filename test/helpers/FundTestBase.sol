@@ -14,7 +14,9 @@ import {IFund} from "../../src/interfaces/IFund.sol";
 import {IFundFactory} from "../../src/interfaces/IFundFactory.sol";
 import {IFundLaunch} from "../../src/interfaces/IFundLaunch.sol";
 import {IFundStaking} from "../../src/interfaces/IFundStaking.sol";
+
 import {CreateFundParams, LaunchConfig, LockOption, YieldPoint} from "../../src/interfaces/types/FundTypes.sol";
+import {ProtocolRegistry} from "../../src/registry/ProtocolRegistry.sol";
 import {Actors} from "./Actors.sol";
 import {MockAggregatorV3} from "./MockAggregatorV3.sol";
 import {MockERC20} from "./MockERC20.sol";
@@ -33,6 +35,7 @@ import {PoolKey} from "v4-core/src/types/PoolKey.sol";
 /// @title FundTestBase — deploys the fund platform on a real Uniswap v4 PoolManager
 abstract contract FundTestBase is Test {
     address internal admin = Actors.ADMIN;
+    address internal operator = makeAddr("operator");
     address internal protocolCurator = Actors.FEE_RECIPIENT;
     address internal keeper = makeAddr("keeper");
     address internal curatorA = makeAddr("curatorA");
@@ -44,6 +47,7 @@ abstract contract FundTestBase is Test {
 
     IPoolManager internal poolManager;
     address internal positionManager;
+    ProtocolRegistry internal registry;
     FundOracle internal oracle;
     FundFactory internal factory;
     FundHook internal hook;
@@ -70,7 +74,12 @@ abstract contract FundTestBase is Test {
 
         poolManager = _deployPoolManager();
         positionManager = _deployPositionManager();
-        oracle = new FundOracle(admin);
+        registry = new ProtocolRegistry(admin, 2 days, 2 minutes);
+        vm.startPrank(admin);
+        registry.grantRole(keccak256("ADMIN"), admin);
+        registry.grantRole(keccak256("OPERATOR"), operator);
+        vm.stopPrank();
+        oracle = new FundOracle(address(registry));
 
         usdg = new MockERC20("Global Dollar", "USDG", 6);
         net = new MockERC20("NetNet", "NET", 9);
@@ -92,8 +101,9 @@ abstract contract FundTestBase is Test {
             address(new FundCurators()),
             address(new FundBribes())
         ];
-        bytes memory init =
-            abi.encodeCall(FundFactory.initialize, (admin, address(oracle), address(usdg), protocolCurator, impls));
+        bytes memory init = abi.encodeCall(
+            FundFactory.initialize, (address(registry), address(oracle), address(usdg), protocolCurator, impls)
+        );
         factory = FundFactory(address(new ERC1967Proxy(address(factoryImpl), init)));
 
         uint160 flags = Hooks.BEFORE_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG

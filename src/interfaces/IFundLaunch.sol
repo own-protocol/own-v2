@@ -120,6 +120,9 @@ interface IFundLaunch {
     /// @notice Caller is not the platform admin.
     error NotAdmin();
 
+    /// @notice Caller is neither a protocol operator nor an admin.
+    error NotOperator();
+
     /// @notice Initialise a launch proxy. Called once by the factory.
     /// @param fund_           The fund.
     /// @param minRaiseUsd_    Minimum value to raise, 18 decimals USD.
@@ -170,7 +173,7 @@ interface IFundLaunch {
     /// @notice Take back the caller's deposits after a failed launch.
     function refund() external;
 
-    /// @notice Pause or unpause deposits. Admin only.
+    /// @notice Pause or unpause deposits. Operator or admin.
     /// @param paused Whether paused.
     function setDepositsPaused(
         bool paused

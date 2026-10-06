@@ -29,7 +29,7 @@ contract FundV2Mock is Fund {
 
 contract FundFactoryTest is FundTestBase {
     function test_initialize_defaults() public view {
-        assertEq(factory.owner(), admin);
+        assertEq(factory.registry(), address(registry));
         assertEq(factory.protocolCurator(), protocolCurator);
         assertEq(factory.protocolCuratorShareBps(), 3333);
         assertTrue(factory.whitelistEnabled());
@@ -264,7 +264,8 @@ contract FundFactoryTest is FundTestBase {
                 new ERC1967Proxy(
                     address(new FundFactory()),
                     abi.encodeCall(
-                        FundFactory.initialize, (admin, address(oracle), address(usdg), protocolCurator, impls)
+                        FundFactory.initialize,
+                        (address(registry), address(oracle), address(usdg), protocolCurator, impls)
                     )
                 )
             )
@@ -312,7 +313,7 @@ contract FundFactoryTest is FundTestBase {
 
     function test_setMaxYieldRate_ownerOnlyAndBounded() public {
         vm.prank(attacker);
-        vm.expectRevert(IFundFactory.NotOwner.selector);
+        vm.expectRevert(IFundFactory.NotAdmin.selector);
         factory.setMaxYieldRate(100);
         vm.startPrank(admin);
         vm.expectRevert(IFundFactory.InvalidYieldCap.selector);
@@ -363,7 +364,7 @@ contract FundFactoryTest is FundTestBase {
         PlatformMetadata memory m =
             PlatformMetadata({name: "Own Curated Funds", description: "About Own.", url: "https://own.money"});
         vm.prank(attacker);
-        vm.expectRevert(IFundFactory.NotOwner.selector);
+        vm.expectRevert(IFundFactory.NotAdmin.selector);
         factory.setPlatformMetadata(m);
         vm.prank(admin);
         factory.setPlatformMetadata(m);
@@ -385,7 +386,7 @@ contract FundFactoryTest is FundTestBase {
     function test_setOracle() public {
         address next = makeAddr("nextOracle");
         vm.prank(attacker);
-        vm.expectRevert(IFundFactory.NotOwner.selector);
+        vm.expectRevert(IFundFactory.NotAdmin.selector);
         factory.setOracle(next);
 
         vm.startPrank(admin);
@@ -409,27 +410,27 @@ contract FundFactoryTest is FundTestBase {
 
     function test_adminSetters_onlyOwner() public {
         vm.startPrank(attacker);
-        vm.expectRevert(IFundFactory.NotOwner.selector);
+        vm.expectRevert(IFundFactory.NotAdmin.selector);
         factory.setProtocolCuratorShare(10);
-        vm.expectRevert(IFundFactory.NotOwner.selector);
+        vm.expectRevert(IFundFactory.NotAdmin.selector);
         factory.setProtocolCurator(attacker);
-        vm.expectRevert(IFundFactory.NotOwner.selector);
+        vm.expectRevert(IFundFactory.NotAdmin.selector);
         factory.setWhitelistEnabled(false);
-        vm.expectRevert(IFundFactory.NotOwner.selector);
+        vm.expectRevert(IFundFactory.NotAdmin.selector);
         factory.setLauncher(attacker, true);
-        vm.expectRevert(IFundFactory.NotOwner.selector);
+        vm.expectRevert(IFundFactory.NotAdmin.selector);
         factory.setRouter(attacker, true);
-        vm.expectRevert(IFundFactory.NotOwner.selector);
+        vm.expectRevert(IFundFactory.NotAdmin.selector);
         factory.setMaxRebalanceSlippage(10);
-        vm.expectRevert(IFundFactory.NotOwner.selector);
+        vm.expectRevert(IFundFactory.NotAdmin.selector);
         factory.setCuratorCap(5);
-        vm.expectRevert(IFundFactory.NotOwner.selector);
+        vm.expectRevert(IFundFactory.NotAdmin.selector);
         factory.setBribeCut(100);
-        vm.expectRevert(IFundFactory.NotOwner.selector);
+        vm.expectRevert(IFundFactory.NotAdmin.selector);
         factory.setBribeToken(attacker, true);
-        vm.expectRevert(IFundFactory.NotOwner.selector);
+        vm.expectRevert(IFundFactory.NotAdmin.selector);
         factory.setEligibleAsset(attacker, true);
-        vm.expectRevert(IFundFactory.NotOwner.selector);
+        vm.expectRevert(IFundFactory.NotAdmin.selector);
         factory.upgradeModule(IFundFactory.Module.Fund, address(1));
         vm.stopPrank();
     }
@@ -520,22 +521,36 @@ contract FundFactoryTest is FundTestBase {
         assertEq(UpgradeableBeacon(factory.beacon(IFundFactory.Module.Bribes)).implementation(), impl);
     }
 
-    function test_ownership_twoStep() public {
+    function test_roles_followRegistry() public {
+        assertTrue(factory.isAdmin(admin));
+        assertTrue(factory.isOperator(admin));
+        assertTrue(factory.isOperator(operator));
+        assertFalse(factory.isAdmin(operator));
+        assertFalse(factory.isOperator(alice));
+
+        vm.startPrank(admin);
+        registry.grantRole(keccak256("ADMIN"), alice);
+        registry.revokeRole(keccak256("ADMIN"), admin);
+        vm.stopPrank();
+
         vm.prank(admin);
-        factory.transferOwnership(alice);
-        assertEq(factory.owner(), admin);
-        vm.prank(bob);
-        vm.expectRevert(IFundFactory.NotPendingOwner.selector);
-        factory.acceptOwnership();
+        vm.expectRevert(IFundFactory.NotAdmin.selector);
+        factory.setCuratorCap(5);
         vm.prank(alice);
-        factory.acceptOwnership();
-        assertEq(factory.owner(), alice);
+        factory.setCuratorCap(5);
+        assertEq(factory.curatorCap(), 5);
     }
 
-    function test_upgradeFactory_onlyOwner() public {
+    function test_operator_cannotAdmin() public {
+        vm.prank(operator);
+        vm.expectRevert(IFundFactory.NotAdmin.selector);
+        factory.setCuratorCap(5);
+    }
+
+    function test_upgradeFactory_onlyAdmin() public {
         address impl = address(new FundFactory());
         vm.prank(attacker);
-        vm.expectRevert(IFundFactory.NotOwner.selector);
+        vm.expectRevert(IFundFactory.NotAdmin.selector);
         factory.upgradeToAndCall(impl, "");
         vm.prank(admin);
         factory.upgradeToAndCall(impl, "");

@@ -7,11 +7,12 @@ import {FundOracle} from "../../src/funds/FundOracle.sol";
 import {FundTwapFeed} from "../../src/funds/FundTwapFeed.sol";
 import {IFundFactory} from "../../src/interfaces/IFundFactory.sol";
 import {IFundHook} from "../../src/interfaces/IFundHook.sol";
+import {IProtocolRegistry} from "../../src/interfaces/IProtocolRegistry.sol";
 
 /// @title AddFundTwapFeedRobinhood — price a fund token off its own pool TWAP
 /// @notice Deploys a FundTwapFeed for FUND and registers it in the FundOracle, which mint pricing
-///         and the staking premium read. The oracle call needs the oracle owner: executed directly
-///         when the deployer owns it, otherwise printed as a ready-to-paste Safe call. No keeper is
+///         and the staking premium read. The oracle call needs the registry ADMIN role: executed
+///         directly when the deployer holds it, otherwise printed as a ready-to-paste Safe call. No keeper is
 ///         needed; swaps update the TWAP, and anyone may call hook.poke(fund) while trading is quiet.
 ///
 /// Env: DEPLOYER_PRIVATE_KEY_ROBINHOOD, FUND_FACTORY, FUND,
@@ -33,16 +34,16 @@ contract AddFundTwapFeedRobinhood is Script {
         require(factory.isFund(fund), "not a fund");
 
         FundOracle oracle = FundOracle(factory.oracle());
-        bool ownsOracle = oracle.owner() == vm.addr(key);
+        bool isAdmin = IProtocolRegistry(oracle.registry()).hasRole(keccak256("ADMIN"), vm.addr(key));
 
         vm.startBroadcast(key);
         FundTwapFeed feed = new FundTwapFeed(IFundHook(factory.hook()), fund, window);
-        if (ownsOracle) oracle.setFeed(fund, address(feed), staleness);
+        if (isAdmin) oracle.setFeed(fund, address(feed), staleness);
         vm.stopBroadcast();
 
         console.log("FundTwapFeed", address(feed));
-        if (!ownsOracle) {
-            console.log("Oracle owner must call on", address(oracle));
+        if (!isAdmin) {
+            console.log("An ADMIN must call on", address(oracle));
             console.logBytes(abi.encodeCall(FundOracle.setFeed, (fund, address(feed), staleness)));
         }
     }

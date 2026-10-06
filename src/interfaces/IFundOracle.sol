@@ -21,20 +21,8 @@ interface IFundOracle {
     /// @param maxStaleness Maximum answer age, in seconds.
     event FeedSet(address indexed asset, address aggregator, uint32 maxStaleness);
 
-    /// @notice Emitted when a two-step ownership transfer starts.
-    /// @param newOwner The pending owner.
-    event OwnershipTransferStarted(address indexed newOwner);
-
-    /// @notice Emitted when ownership changes.
-    /// @param previousOwner The previous owner.
-    /// @param newOwner      The new owner.
-    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
-
-    /// @notice Caller is not the owner.
-    error NotOwner();
-
-    /// @notice Caller is not the pending owner.
-    error NotPendingOwner();
+    /// @notice Caller does not hold the protocol ADMIN role.
+    error NotAdmin();
 
     /// @notice A required address is zero.
     error ZeroAddress();
@@ -54,20 +42,11 @@ interface IFundOracle {
     /// @param asset The asset.
     error InvalidPrice(address asset);
 
-    /// @notice Set, replace or clear (aggregator zero) the feed for `asset`. Owner only.
+    /// @notice Set, replace or clear (aggregator zero) the feed for `asset`. Protocol ADMIN only.
     /// @param asset        The priced token.
     /// @param aggregator   The aggregator, or zero to clear.
     /// @param maxStaleness Maximum answer age, in seconds (ignored when clearing).
     function setFeed(address asset, address aggregator, uint32 maxStaleness) external;
-
-    /// @notice Start a two-step ownership transfer. Owner only.
-    /// @param newOwner The pending owner.
-    function transferOwnership(
-        address newOwner
-    ) external;
-
-    /// @notice Accept a pending ownership transfer. Pending owner only.
-    function acceptOwnership() external;
 
     /// @notice USD price of one whole `asset`, 18 decimals. Reverts when missing, stale or invalid.
     /// @param asset The asset.
@@ -98,11 +77,7 @@ interface IFundOracle {
         address asset
     ) external view returns (Feed memory);
 
-    /// @notice Current owner.
-    /// @return The owner.
-    function owner() external view returns (address);
-
-    /// @notice Pending owner of a two-step transfer.
-    /// @return The pending owner.
-    function pendingOwner() external view returns (address);
+    /// @notice The protocol registry whose ADMIN role administers this oracle.
+    /// @return The registry.
+    function registry() external view returns (address);
 }

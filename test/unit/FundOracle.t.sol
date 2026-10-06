@@ -3,11 +3,13 @@ pragma solidity 0.8.28;
 
 import {FundOracle} from "../../src/funds/FundOracle.sol";
 import {IFundOracle} from "../../src/interfaces/IFundOracle.sol";
+import {ProtocolRegistry} from "../../src/registry/ProtocolRegistry.sol";
 import {Actors} from "../helpers/Actors.sol";
 import {MockAggregatorV3} from "../helpers/MockAggregatorV3.sol";
 import {Test} from "forge-std/Test.sol";
 
 contract FundOracleTest is Test {
+    ProtocolRegistry internal registry;
     FundOracle internal oracle;
     MockAggregatorV3 internal feed8;
     MockAggregatorV3 internal feed20;
@@ -17,7 +19,10 @@ contract FundOracleTest is Test {
 
     function setUp() public {
         vm.warp(1_000_000);
-        oracle = new FundOracle(admin);
+        registry = new ProtocolRegistry(admin, 2 days, 2 minutes);
+        vm.prank(admin);
+        registry.grantRole(keccak256("ADMIN"), admin);
+        oracle = new FundOracle(address(registry));
         feed8 = new MockAggregatorV3(8);
         feed20 = new MockAggregatorV3(20);
         feed8.setAnswer(300e8, block.timestamp);
@@ -76,19 +81,29 @@ contract FundOracleTest is Test {
         oracle.setFeed(asset, address(feed8), 0);
     }
 
-    function test_setFeed_notOwner_reverts() public {
-        vm.expectRevert(IFundOracle.NotOwner.selector);
+    function test_setFeed_notAdmin_reverts() public {
+        vm.expectRevert(IFundOracle.NotAdmin.selector);
         oracle.setFeed(asset, address(feed8), 1);
     }
 
-    function test_ownership_twoStep() public {
+    function test_setFeed_followsRegistryAdmin() public {
         address next = makeAddr("next");
+        vm.startPrank(admin);
+        registry.grantRole(keccak256("ADMIN"), next);
+        registry.revokeRole(keccak256("ADMIN"), admin);
+        vm.stopPrank();
+
         vm.prank(admin);
-        oracle.transferOwnership(next);
-        vm.expectRevert(IFundOracle.NotPendingOwner.selector);
-        oracle.acceptOwnership();
+        vm.expectRevert(IFundOracle.NotAdmin.selector);
+        oracle.setFeed(asset, address(feed8), 1);
         vm.prank(next);
-        oracle.acceptOwnership();
-        assertEq(oracle.owner(), next);
+        oracle.setFeed(asset, address(feed8), 1);
+        assertEq(oracle.feedOf(asset).maxStaleness, 1);
+        assertEq(oracle.registry(), address(registry));
+    }
+
+    function test_constructor_zeroRegistry_reverts() public {
+        vm.expectRevert(IFundOracle.ZeroAddress.selector);
+        new FundOracle(address(0));
     }
 }

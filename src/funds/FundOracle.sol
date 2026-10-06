@@ -2,6 +2,7 @@
 pragma solidity 0.8.28;
 
 import {IFundOracle} from "../interfaces/IFundOracle.sol";
+import {IProtocolRegistry} from "../interfaces/IProtocolRegistry.sol";
 
 interface IAggregatorV3 {
     function decimals() external view returns (uint8);
@@ -10,31 +11,30 @@ interface IAggregatorV3 {
 
 /// @title FundOracle — per-asset USD price registry for Own Curated Funds
 /// @notice See {IFundOracle}. Never reads onchain spot prices: every value comes from an
-///         owner-configured aggregator with a staleness bound.
+///         admin-configured aggregator with a staleness bound.
+/// @dev Administered by the ProtocolRegistry's ADMIN role.
 contract FundOracle is IFundOracle {
-    /// @inheritdoc IFundOracle
-    address public override owner;
+    bytes32 private constant ADMIN = keccak256("ADMIN");
 
     /// @inheritdoc IFundOracle
-    address public override pendingOwner;
+    address public immutable override registry;
 
     mapping(address asset => Feed) private _feeds;
 
-    modifier onlyOwner() {
-        if (msg.sender != owner) revert NotOwner();
+    modifier onlyAdmin() {
+        if (!IProtocolRegistry(registry).hasRole(ADMIN, msg.sender)) revert NotAdmin();
         _;
     }
 
     constructor(
-        address owner_
+        address registry_
     ) {
-        if (owner_ == address(0)) revert ZeroAddress();
-        owner = owner_;
-        emit OwnershipTransferred(address(0), owner_);
+        if (registry_ == address(0)) revert ZeroAddress();
+        registry = registry_;
     }
 
     /// @inheritdoc IFundOracle
-    function setFeed(address asset, address aggregator, uint32 maxStaleness) external override onlyOwner {
+    function setFeed(address asset, address aggregator, uint32 maxStaleness) external override onlyAdmin {
         if (asset == address(0)) revert ZeroAddress();
         if (aggregator == address(0)) {
             delete _feeds[asset];
@@ -44,23 +44,6 @@ contract FundOracle is IFundOracle {
         if (maxStaleness == 0) revert InvalidStaleness();
         _feeds[asset] = Feed({aggregator: aggregator, maxStaleness: maxStaleness});
         emit FeedSet(asset, aggregator, maxStaleness);
-    }
-
-    /// @inheritdoc IFundOracle
-    function transferOwnership(
-        address newOwner
-    ) external override onlyOwner {
-        if (newOwner == address(0)) revert ZeroAddress();
-        pendingOwner = newOwner;
-        emit OwnershipTransferStarted(newOwner);
-    }
-
-    /// @inheritdoc IFundOracle
-    function acceptOwnership() external override {
-        if (msg.sender != pendingOwner) revert NotPendingOwner();
-        emit OwnershipTransferred(owner, msg.sender);
-        owner = msg.sender;
-        pendingOwner = address(0);
     }
 
     /// @inheritdoc IFundOracle

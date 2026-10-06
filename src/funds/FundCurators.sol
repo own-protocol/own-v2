@@ -71,12 +71,12 @@ contract FundCurators is IFundCurators, Initializable, ReentrancyGuard {
     uint256 private _accAtPeriodStart;
 
     modifier onlyAdmin() {
-        if (msg.sender != _factory.owner()) revert NotAdmin();
+        if (!_factory.isAdmin(msg.sender)) revert NotAdmin();
         _;
     }
 
     modifier onlyAdminOrGovernor() {
-        if (msg.sender != _factory.owner() && msg.sender != IFund(fund).governor()) revert NotAdminOrGovernor();
+        if (msg.sender != IFund(fund).governor() && !_factory.isAdmin(msg.sender)) revert NotAdminOrGovernor();
         _;
     }
 

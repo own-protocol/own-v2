@@ -208,7 +208,7 @@ contract FundLaunch is IFundLaunch, Initializable, ReentrancyGuard {
     /// @inheritdoc IFundLaunch
     function seedPool() external override nonReentrant {
         IFund f = IFund(fund);
-        if (msg.sender != f.manager() && msg.sender != _factory.owner()) revert NotManager();
+        if (msg.sender != f.manager() && !_factory.isAdmin(msg.sender)) revert NotManager();
         if (status != Status.Succeeded) revert WrongStatus();
         if (poolSeeded) revert AlreadySeeded();
 
@@ -277,7 +277,7 @@ contract FundLaunch is IFundLaunch, Initializable, ReentrancyGuard {
     function setDepositsPaused(
         bool paused
     ) external override {
-        if (msg.sender != _factory.owner()) revert NotAdmin();
+        if (!_factory.isOperator(msg.sender)) revert NotOperator();
         depositsPaused = paused;
     }
 

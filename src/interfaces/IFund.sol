@@ -149,6 +149,9 @@ interface IFund is IERC20 {
     /// @notice Caller is not the platform admin.
     error NotAdmin();
 
+    /// @notice Caller is neither a protocol operator nor an admin.
+    error NotOperator();
+
     /// @notice Caller is not the factory.
     error NotFactory();
 
@@ -390,7 +393,7 @@ interface IFund is IERC20 {
         address manager_
     ) external;
 
-    /// @notice Pause or unpause minting. Admin only. Redeeming cannot be paused.
+    /// @notice Pause or unpause minting. Operator or admin. Redeeming cannot be paused.
     /// @param paused Whether minting is paused.
     function setMintPaused(
         bool paused

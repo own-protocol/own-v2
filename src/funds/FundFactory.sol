@@ -9,6 +9,7 @@ import {IFundGovernor} from "../interfaces/IFundGovernor.sol";
 import {IFundHook} from "../interfaces/IFundHook.sol";
 import {IFundLaunch} from "../interfaces/IFundLaunch.sol";
 import {IFundStaking} from "../interfaces/IFundStaking.sol";
+import {IProtocolRegistry} from "../interfaces/IProtocolRegistry.sol";
 import {
     CreateFundParams,
     GovernanceConfig,
@@ -25,10 +26,13 @@ import {UUPSUpgradeable} from "@openzeppelin/contracts/proxy/utils/UUPSUpgradeab
 /// @title FundFactory — Own Curated Funds platform hub
 /// @notice See {IFundFactory}.
 /// @dev Runs behind an ERC-1967 proxy (UUPS); storage is append-only across upgrades. It owns
-///      the six module beacons, so the factory owner upgrades every fund through
+///      the six module beacons, so the registry ADMIN upgrades every fund through
 ///      {upgradeModule}. The hook is wired once after deployment ({setHook}) because its address
 ///      must be mined against the factory address.
 contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
+    bytes32 private constant ADMIN_ROLE = keccak256("ADMIN");
+    bytes32 private constant OPERATOR_ROLE = keccak256("OPERATOR");
+
     /// @notice Hard cap on the protocol curator's share.
     uint16 public constant MAX_PROTOCOL_CURATOR_SHARE_BPS = 5000;
 
@@ -57,10 +61,7 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
     uint16 public constant MAX_POOL_USDG_BPS = 5000;
 
     /// @inheritdoc IFundFactory
-    address public override owner;
-
-    /// @inheritdoc IFundFactory
-    address public override pendingOwner;
+    address public override registry;
 
     /// @inheritdoc IFundFactory
     address public override oracle;
@@ -129,8 +130,8 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
     /// @notice The hook is not wired yet.
     error HookNotSet();
 
-    modifier onlyOwner() {
-        if (msg.sender != owner) revert NotOwner();
+    modifier onlyAdmin() {
+        if (!isAdmin(msg.sender)) revert NotAdmin();
         _;
     }
 
@@ -139,23 +140,22 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
     }
 
     /// @notice Initialise the factory proxy.
-    /// @param owner_                 Platform admin.
+    /// @param registry_              Protocol registry; its ADMIN and OPERATOR roles run the platform.
     /// @param oracle_                Shared price oracle.
     /// @param usdg_                  USDG token.
     /// @param protocolCurator_       Protocol curator: Own's seat among every fund's curators.
     /// @param impls                  Implementations, indexed by {Module}.
     function initialize(
-        address owner_,
+        address registry_,
         address oracle_,
         address usdg_,
         address protocolCurator_,
         address[6] calldata impls
     ) external initializer {
-        if (owner_ == address(0) || oracle_ == address(0) || usdg_ == address(0) || protocolCurator_ == address(0)) {
+        if (registry_ == address(0) || oracle_ == address(0) || usdg_ == address(0) || protocolCurator_ == address(0)) {
             revert ZeroAddress();
         }
-        owner = owner_;
-        emit OwnershipTransferred(address(0), owner_);
+        registry = registry_;
         oracle = oracle_;
         emit OracleSet(oracle_);
         usdg = usdg_;
@@ -213,11 +213,11 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
         }
     }
 
-    /// @notice Wire the pool hook. Owner only, once.
+    /// @notice Wire the pool hook. Admin only, once.
     /// @param hook_ The hook (deployed against this factory).
     function setHook(
         address hook_
-    ) external onlyOwner {
+    ) external onlyAdmin {
         if (hook != address(0)) revert HookAlreadySet();
         if (hook_ == address(0)) revert ZeroAddress();
         hook = hook_;
@@ -228,7 +228,7 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
     function createFund(
         CreateFundParams calldata p
     ) external override returns (FundModules memory m) {
-        if (msg.sender != owner && whitelistEnabled && !isLauncher[msg.sender]) revert NotLauncher();
+        if (!isAdmin(msg.sender) && whitelistEnabled && !isLauncher[msg.sender]) revert NotLauncher();
         if (hook == address(0)) revert HookNotSet();
         LaunchConfig memory cfg = _launchConfig;
         if (p.launchDuration != 0) cfg.duration = p.launchDuration;
@@ -263,7 +263,7 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
     /// @inheritdoc IFundFactory
     function setOracle(
         address oracle_
-    ) external override onlyOwner {
+    ) external override onlyAdmin {
         if (oracle_ == address(0)) revert ZeroAddress();
         oracle = oracle_;
         emit OracleSet(oracle_);
@@ -272,7 +272,7 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
     /// @inheritdoc IFundFactory
     function setProtocolCurator(
         address curator
-    ) external override onlyOwner {
+    ) external override onlyAdmin {
         if (curator == address(0)) revert ZeroAddress();
         protocolCurator = curator;
         emit ProtocolCuratorSet(curator);
@@ -281,7 +281,7 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
     /// @inheritdoc IFundFactory
     function setProtocolCuratorShare(
         uint16 shareBps
-    ) external override onlyOwner {
+    ) external override onlyAdmin {
         if (shareBps > MAX_PROTOCOL_CURATOR_SHARE_BPS) revert FeeTooHigh();
         protocolCuratorShareBps = shareBps;
         emit ProtocolCuratorShareSet(shareBps);
@@ -290,7 +290,7 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
     /// @inheritdoc IFundFactory
     function setCuratorCap(
         uint8 cap
-    ) external override onlyOwner {
+    ) external override onlyAdmin {
         if (cap == 0 || cap > MAX_CURATOR_CAP) revert InvalidCuratorCap();
         curatorCap = cap;
         emit CuratorCapSet(cap);
@@ -299,21 +299,21 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
     /// @inheritdoc IFundFactory
     function setBribeCut(
         uint16 cutBps
-    ) external override onlyOwner {
+    ) external override onlyAdmin {
         if (cutBps > MAX_BRIBE_CUT_BPS) revert FeeTooHigh();
         bribeCutBps = cutBps;
         emit BribeCutSet(cutBps);
     }
 
     /// @inheritdoc IFundFactory
-    function setBribeToken(address token, bool allowed) external override onlyOwner {
+    function setBribeToken(address token, bool allowed) external override onlyAdmin {
         if (token == address(0)) revert ZeroAddress();
         isBribeToken[token] = allowed;
         emit BribeTokenSet(token, allowed);
     }
 
     /// @inheritdoc IFundFactory
-    function setEligibleAsset(address token, bool eligible) external override onlyOwner {
+    function setEligibleAsset(address token, bool eligible) external override onlyAdmin {
         if (token == address(0)) revert ZeroAddress();
         isEligibleAsset[token] = eligible;
         emit EligibleAssetSet(token, eligible);
@@ -322,20 +322,20 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
     /// @inheritdoc IFundFactory
     function setWhitelistEnabled(
         bool enabled
-    ) external override onlyOwner {
+    ) external override onlyAdmin {
         whitelistEnabled = enabled;
         emit WhitelistEnabledSet(enabled);
     }
 
     /// @inheritdoc IFundFactory
-    function setLauncher(address launcher, bool allowed) external override onlyOwner {
+    function setLauncher(address launcher, bool allowed) external override onlyAdmin {
         if (launcher == address(0)) revert ZeroAddress();
         isLauncher[launcher] = allowed;
         emit LauncherSet(launcher, allowed);
     }
 
     /// @inheritdoc IFundFactory
-    function setRouter(address router, bool allowed) external override onlyOwner {
+    function setRouter(address router, bool allowed) external override onlyAdmin {
         if (router == address(0)) revert ZeroAddress();
         isRouter[router] = allowed;
         emit RouterSet(router, allowed);
@@ -344,7 +344,7 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
     /// @inheritdoc IFundFactory
     function setMaxRebalanceSlippage(
         uint16 slippageBps
-    ) external override onlyOwner {
+    ) external override onlyAdmin {
         if (slippageBps > MAX_REBALANCE_SLIPPAGE_BPS) revert InvalidSlippage();
         maxRebalanceSlippageBps = slippageBps;
         emit MaxRebalanceSlippageSet(slippageBps);
@@ -353,7 +353,7 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
     /// @inheritdoc IFundFactory
     function setRebalanceVolumeCap(
         uint16 capBps
-    ) external override onlyOwner {
+    ) external override onlyAdmin {
         if (capBps > BPS) revert InvalidSlippage();
         rebalanceVolumeCapBps = capBps;
         emit RebalanceVolumeCapSet(capBps);
@@ -362,7 +362,7 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
     /// @inheritdoc IFundFactory
     function setLaunchConfig(
         LaunchConfig calldata config
-    ) external override onlyOwner {
+    ) external override onlyAdmin {
         if (
             config.duration < 1 days || config.duration > 30 days || config.finalizeGrace < 1 hours
                 || config.finalizeGrace > 30 days || config.poolUsdgBps == 0 || config.poolUsdgBps > MAX_POOL_USDG_BPS
@@ -376,7 +376,7 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
     /// @inheritdoc IFundFactory
     function setMaxYieldRate(
         uint32 rateBpsPerYear
-    ) external override onlyOwner {
+    ) external override onlyAdmin {
         if (rateBpsPerYear > MAX_YIELD_RATE_BPS_PER_YEAR) revert InvalidYieldCap();
         maxYieldRateBpsPerYear = rateBpsPerYear;
         emit MaxYieldRateSet(rateBpsPerYear);
@@ -385,7 +385,7 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
     /// @inheritdoc IFundFactory
     function setGovernanceConfig(
         GovernanceConfig calldata config
-    ) external override onlyOwner {
+    ) external override onlyAdmin {
         if (!GovernanceConfigLib.isValid(config)) revert InvalidGovernanceConfig();
         _governanceConfig = config;
         emit GovernanceConfigSet(config);
@@ -394,32 +394,29 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
     /// @inheritdoc IFundFactory
     function setPlatformMetadata(
         PlatformMetadata calldata metadata
-    ) external override onlyOwner {
+    ) external override onlyAdmin {
         _platformMetadata = metadata;
         emit PlatformMetadataSet(metadata);
     }
 
     /// @inheritdoc IFundFactory
-    function upgradeModule(Module module, address implementation) external override onlyOwner {
+    function upgradeModule(Module module, address implementation) external override onlyAdmin {
         UpgradeableBeacon(_beacons[module]).upgradeTo(implementation);
         emit ModuleUpgraded(module, implementation);
     }
 
     /// @inheritdoc IFundFactory
-    function transferOwnership(
-        address newOwner
-    ) external override onlyOwner {
-        if (newOwner == address(0)) revert ZeroAddress();
-        pendingOwner = newOwner;
-        emit OwnershipTransferStarted(newOwner);
+    function isAdmin(
+        address account
+    ) public view override returns (bool) {
+        return IProtocolRegistry(registry).hasRole(ADMIN_ROLE, account);
     }
 
     /// @inheritdoc IFundFactory
-    function acceptOwnership() external override {
-        if (msg.sender != pendingOwner) revert NotPendingOwner();
-        emit OwnershipTransferred(owner, msg.sender);
-        owner = msg.sender;
-        pendingOwner = address(0);
+    function isOperator(
+        address account
+    ) external view override returns (bool) {
+        return IProtocolRegistry(registry).hasRole(OPERATOR_ROLE, account) || isAdmin(account);
     }
 
     /// @inheritdoc IFundFactory
@@ -470,5 +467,5 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
     /// @dev UUPS upgrade gate.
     function _authorizeUpgrade(
         address
-    ) internal view override onlyOwner {}
+    ) internal view override onlyAdmin {}
 }

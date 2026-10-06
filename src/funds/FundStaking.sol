@@ -199,7 +199,7 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuard {
 
     /// @inheritdoc IFundStaking
     function recoverPosition(uint256 tokenId, address to) external override nonReentrant {
-        if (msg.sender != _factory.owner()) revert NotAdmin();
+        if (!_factory.isAdmin(msg.sender)) revert NotAdmin();
         if (_positions[tokenId].owner != address(0)) revert PositionIsStaked();
         positionManager.safeTransferFrom(address(this), to, tokenId);
     }
@@ -213,14 +213,14 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuard {
     function setYieldCurve(
         YieldPoint[] calldata curve_
     ) external override nonReentrant {
-        if (msg.sender != _factory.owner()) revert NotAdmin();
+        if (!_factory.isAdmin(msg.sender)) revert NotAdmin();
         _accrue();
         _setCurve(curve_);
     }
 
     /// @inheritdoc IFundStaking
     function setCuratorYield(uint16 shareBps, uint16 capBpsPerYear) external override nonReentrant {
-        if (msg.sender != _factory.owner()) revert NotAdmin();
+        if (!_factory.isAdmin(msg.sender)) revert NotAdmin();
         _accrue();
         _setCuratorYield(shareBps, capBpsPerYear);
     }

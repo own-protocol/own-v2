@@ -380,7 +380,8 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuard {
     /// @inheritdoc IFund
     function setMintPaused(
         bool paused
-    ) external override onlyAdmin {
+    ) external override {
+        if (!IFundFactory(factory).isOperator(msg.sender)) revert NotOperator();
         mintPaused = paused;
         emit MintPausedSet(paused);
     }
@@ -541,7 +542,7 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuard {
     }
 
     function _checkAdmin() internal view {
-        if (msg.sender != IFundFactory(factory).owner()) revert NotAdmin();
+        if (!IFundFactory(factory).isAdmin(msg.sender)) revert NotAdmin();
     }
 
     /// @dev A mint of `navShares`: the depositor brings `navShares / supply` of every basket asset

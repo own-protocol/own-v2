@@ -706,7 +706,7 @@ contract FundGovernor is IFundGovernor, Initializable, ReentrancyGuard {
     }
 
     function _checkAdmin() internal view {
-        if (msg.sender != IFundFactory(IFund(fund).factory()).owner()) revert NotAdmin();
+        if (!IFundFactory(IFund(fund).factory()).isAdmin(msg.sender)) revert NotAdmin();
     }
 
     function _setConfig(

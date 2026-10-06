@@ -296,6 +296,15 @@ contract FundTest is FundTestBase {
         fund.mint(1e18, 0, 0, alice);
     }
 
+    function test_setMintPaused_operatorOnly() public {
+        vm.prank(keeper);
+        vm.expectRevert(IFund.NotOperator.selector);
+        fund.setMintPaused(true);
+        vm.prank(operator);
+        fund.setMintPaused(true);
+        assertTrue(fund.mintPaused());
+    }
+
     function test_mint_paused_reverts() public {
         vm.prank(admin);
         fund.setMintPaused(true);

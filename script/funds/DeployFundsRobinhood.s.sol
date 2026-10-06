@@ -16,6 +16,7 @@ import {FundOracle} from "../../src/funds/FundOracle.sol";
 import {FundRedeemZap} from "../../src/funds/FundRedeemZap.sol";
 import {FundStaking} from "../../src/funds/FundStaking.sol";
 import {IFundFactory} from "../../src/interfaces/IFundFactory.sol";
+import {IProtocolRegistry} from "../../src/interfaces/IProtocolRegistry.sol";
 import {PlatformMetadata} from "../../src/interfaces/types/FundTypes.sol";
 import {HookMiner} from "./HookMiner.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
@@ -24,12 +25,14 @@ import {Hooks} from "v4-core/src/libraries/Hooks.sol";
 
 /// @title DeployFundsRobinhood — Own Curated Funds platform on Robinhood Chain
 /// @notice Deploys the oracle, the six module implementations, the factory proxy, the Uniswap v4
-///         hook proxy (UUPS) at a mined CREATE2 address, and the redeem-to-USDG zap. Wires the
-///         hook, sets the platform metadata, allows USDG (and MONEY, if given) as bribe tokens,
-///         then starts the two-step ownership handover of the factory and oracle to FUNDS_ADMIN.
+///         hook proxy (UUPS) at a mined CREATE2 address, and the mint and redeem zaps. The
+///         factory, hook and oracle are administered by the ProtocolRegistry's ADMIN role (pauses
+///         also by OPERATOR). Wiring the hook, the platform metadata and the USDG (and MONEY, if
+///         given) bribe tokens needs ADMIN: executed directly when the deployer holds it,
+///         otherwise printed as ready-to-paste Safe calls.
 ///
 /// @dev Post-deploy checklist:
-///        1. FUNDS_ADMIN calls acceptOwnership() on the factory and on the oracle.
+///        1. If the deployer is not an ADMIN, an ADMIN executes the printed wiring calls in order.
 ///        2. Admin sets a feed for every basket asset: oracle.setFeed(asset, aggregator, staleness).
 ///        3. Admin allows rebalance / zap routers: factory.setRouter(router, true).
 ///        4. Admin fills the listing eligibility list: factory.setEligibleAsset(token, true).
@@ -38,7 +41,7 @@ import {Hooks} from "v4-core/src/libraries/Hooks.sol";
 ///        6. The keeper finalizes each launch at its close and calls governor.flip() every
 ///           Thursday 00:00 UTC.
 ///
-/// Env: DEPLOYER_PRIVATE_KEY_ROBINHOOD, FUNDS_ADMIN, PROTOCOL_CURATOR,
+/// Env: DEPLOYER_PRIVATE_KEY_ROBINHOOD, PROTOCOL_REGISTRY_ROBINHOOD, PROTOCOL_CURATOR,
 ///      MONEY_TOKEN (optional, allowed as a bribe token)
 ///
 /// Usage:
@@ -62,14 +65,15 @@ contract DeployFundsRobinhood is Script {
 
         uint256 key = vm.envUint("DEPLOYER_PRIVATE_KEY_ROBINHOOD");
         address deployer = vm.addr(key);
-        address admin = vm.envAddress("FUNDS_ADMIN");
+        IProtocolRegistry registry = IProtocolRegistry(vm.envAddress("PROTOCOL_REGISTRY_ROBINHOOD"));
+        bool isAdmin = registry.hasRole(keccak256("ADMIN"), deployer);
         address protocolCurator = vm.envAddress("PROTOCOL_CURATOR");
         address money = vm.envOr("MONEY_TOKEN", address(0));
 
         vm.startBroadcast(key);
 
-        FundOracle oracle = new FundOracle(deployer);
-        FundFactory factory = _deployFactory(deployer, address(oracle), protocolCurator);
+        FundOracle oracle = new FundOracle(address(registry));
+        FundFactory factory = _deployFactory(address(registry), address(oracle), protocolCurator);
 
         FundHook hookImpl = new FundHook(IPoolManager(POOL_MANAGER), IFundFactory(address(factory)));
         bytes memory hookInit = abi.encodeCall(FundHook.initialize, ());
@@ -79,17 +83,13 @@ contract DeployFundsRobinhood is Script {
         FundHook hook = FundHook(address(new ERC1967Proxy{salt: salt}(address(hookImpl), hookInit)));
         require(address(hook) == mined, "hook address mismatch");
 
-        factory.setHook(address(hook));
-        factory.setPlatformMetadata(_platformMetadata());
-        factory.setBribeToken(USDG, true);
-        if (money != address(0)) factory.setBribeToken(money, true);
-
         FundRedeemZap zap = new FundRedeemZap(address(factory));
         FundMintZap mintZap = new FundMintZap(address(factory));
 
-        if (admin != deployer) {
-            factory.transferOwnership(admin);
-            oracle.transferOwnership(admin);
+        bytes[] memory wiring = _wiring(address(hook), money);
+        for (uint256 i; i < wiring.length && isAdmin; ++i) {
+            (bool ok,) = address(factory).call(wiring[i]);
+            require(ok, "wiring call failed");
         }
 
         vm.stopBroadcast();
@@ -106,10 +106,23 @@ contract DeployFundsRobinhood is Script {
         console.log("Governor beacon ", factory.beacon(IFundFactory.Module.Governor));
         console.log("Curators beacon ", factory.beacon(IFundFactory.Module.Curators));
         console.log("Bribes beacon   ", factory.beacon(IFundFactory.Module.Bribes));
-        if (admin != deployer) console.log("Pending owner (must accept on factory and oracle):", admin);
+        if (!isAdmin) {
+            console.log("Deployer is not an ADMIN; an ADMIN must call, in order, on", address(factory));
+            for (uint256 i; i < wiring.length; ++i) {
+                console.logBytes(wiring[i]);
+            }
+        }
     }
 
-    function _deployFactory(address owner, address oracle, address protocolCurator) internal returns (FundFactory) {
+    function _wiring(address hook, address money) internal pure returns (bytes[] memory calls) {
+        calls = new bytes[](money == address(0) ? 3 : 4);
+        calls[0] = abi.encodeCall(FundFactory.setHook, (hook));
+        calls[1] = abi.encodeCall(FundFactory.setPlatformMetadata, (_platformMetadata()));
+        calls[2] = abi.encodeCall(FundFactory.setBribeToken, (USDG, true));
+        if (money != address(0)) calls[3] = abi.encodeCall(FundFactory.setBribeToken, (money, true));
+    }
+
+    function _deployFactory(address registry, address oracle, address protocolCurator) internal returns (FundFactory) {
         address[6] memory impls = [
             address(new Fund()),
             address(new FundLaunch()),
@@ -118,7 +131,7 @@ contract DeployFundsRobinhood is Script {
             address(new FundCurators()),
             address(new FundBribes())
         ];
-        bytes memory init = abi.encodeCall(FundFactory.initialize, (owner, oracle, USDG, protocolCurator, impls));
+        bytes memory init = abi.encodeCall(FundFactory.initialize, (registry, oracle, USDG, protocolCurator, impls));
         return FundFactory(address(new ERC1967Proxy(address(new FundFactory()), init)));
     }
 
