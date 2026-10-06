@@ -1,12 +1,12 @@
 # Own Protocol v2 — Audit Report & Remediation Status (Pass 6)
 
-**Branch:** `money-market-funds` · **Commit:** `3a96ffe` · **Last updated:** 2026-10-06
+**Branch:** `money-market-funds` · **Audited commit:** `3a96ffe` · **Last updated:** 2026-10-06 (A6-H-01, A6-H-02, A6-M-05 fixed in `e4a69df`)
 
 Multi-agent audit (solidity-auditor v4, 12-agent pipeline — 9 specialty attackers + 3 gap-hunters)
 of every Own Curated Funds contract, run in **loop mode with 2 passes**: pass 2 was handed what
 pass 1 found and told to spend its effort on new ground while still re-reporting anything it hit
-again. IDs are new in this pass (`A6-`). **Nothing has been fixed** — every item below is Open
-until it is reviewed and a fix is chosen.
+again. IDs are new in this pass (`A6-`). Both Highs are fixed in `e4a69df`, and A6-M-05 with them; every other
+item is Open until it is reviewed and a fix is chosen.
 
 Every one of the 24 agent runs (12 per pass) returned results. Seven pass-1 agents were blocked
 by the API's `[reasoning_extraction]` safeguard on Opus and finished on Fable (see Coverage).
@@ -78,20 +78,20 @@ dead agent" was overridden because every agent had to finish.
 | Severity | Total | Fixed | Open | By design |
 | -------- | ----- | ----- | ---- | --------- |
 | Critical | 0     | 0     | 0    | —         |
-| High     | 2     | 0     | 2    | —         |
-| Medium   | 9     | 0     | 9    | —         |
+| High     | 2     | 2     | 0    | —         |
+| Medium   | 9     | 1     | 8    | —         |
 | Low      | 4     | 0     | 4    | —         |
 | Info     | 0     | 0     | 0    | —         |
 
 | ID      | Severity | Finding                                                                          | Conf | Status |
 | ------- | -------- | -------------------------------------------------------------------------------- | ---- | ------ |
-| A6-H-01 | High     | `finalize` reverts after `endTime`, so a launch without an early close always fails | 100 | Open |
-| A6-H-02 | High     | Launch-epoch proposals count only escrowed power, so one holder passes any proposal | 90 | Open |
+| A6-H-01 | High     | `finalize` reverts after `endTime`, so a launch without an early close always fails | 100 | Fixed |
+| A6-H-02 | High     | Launch-epoch proposals count only escrowed power, so one holder passes any proposal | 90 | Fixed |
 | A6-M-01 | Medium   | A 30-minute pool crash shrinks the redeem supply and over-pays the basket         | 75   | Open |
 | A6-M-02 | Medium   | Right after seeding the position TWAP covers seconds; one block sets redeem supply | 75  | Open |
 | A6-M-03 | Medium   | Dust bribes fill the 32 reward-token slots; later bribes in new tokens revert     | 90   | Open |
 | A6-M-04 | Medium   | Compliance uses live supply, so mint → flip → redeem fails an honest curator      | 80   | Open |
-| A6-M-05 | Medium   | A flip in the launch epoch uses up every curator's grace week                     | 80   | Open |
+| A6-M-05 | Medium   | A flip in the launch epoch uses up every curator's grace week                     | 80   | Fixed |
 | A6-M-06 | Medium   | One premium reading prices up to 8 h of staking yield; caller picks the moment    | 80   | Open |
 | A6-M-07 | Medium   | One paused / blacklisting basket token blocks every redeem                        | 80   | Open |
 | A6-M-08 | Medium   | After `setGovernor`, bribers refund bribes that voters already claimed            | 75   | Open |
@@ -103,7 +103,7 @@ dead agent" was overridden because every agent had to finish.
 
 ---
 
-## A6-H-01 — `finalize` reverts after `endTime`, so a launch without an early close always fails (High, Open)
+## A6-H-01 — `finalize` reverts after `endTime`, so a launch without an early close always fails (High, Fixed 2026-10-06)
 
 `FundLaunch._points` (`src/funds/FundLaunch.sol:393`), reached from `finalize` (`:178`).
 Raised by 10/12 agents in pass 1 and 8/12 in pass 2; four agents ran a Foundry PoC on a scratch
@@ -132,11 +132,15 @@ finalizes after `vm.warp(launch.endTime())` exactly (`test/helpers/FundTestBase.
 `test/unit/FundLaunch.t.sol:170,188,203,213,221,239,357,722`), which hides it. Recovery after
 deploy would need a Launch beacon upgrade.
 
-**Suggested fix:** clamp the unserved time to zero —
-`timeWeight - amount * (closedAt < endTime ? endTime - closedAt : 0)` — or store
-`closedAt = min(block.timestamp, endTime)`. Add a test that finalizes at `endTime + 1`.
+**Fix (`e4a69df`):** `_points` now treats the unserved time as zero when the launch closes at or
+after `endTime` (`closedAt < endTime ? endTime - closedAt : 0`), so a late finalize credits the whole
+window. `closedAt` still records the real close time. The early close at the target raise is
+unchanged: once `targetRaiseUsd` is reached, finalize works at any time, before or after
+`endTime`. Deposits still stay open until `endTime` after the target is hit. New test
+`test_finalize_afterEndTime_servesTheWholeWindow` finalizes a day late (it reverted with
+Panic `0x11` before the fix) and checks the early-deposit bonus is still exactly 1.035x.
 
-## A6-H-02 — Launch-epoch proposals count only escrowed power, so one holder passes any proposal (High, Open)
+## A6-H-02 — Launch-epoch proposals count only escrowed power, so one holder passes any proposal (High, Fixed 2026-10-06)
 
 `FundGovernor.propose` (`src/funds/FundGovernor.sol:267`) with `FundStaking._recordSupply` and
 `EpochHistory.set`. Pass 2 (math-precision) as a finding, trust-gap / invariant as leads;
@@ -162,9 +166,19 @@ vesting yield. The only defence is an Own veto inside the 1-day veto period. The
 denominator would let a `List` or `Delist` proposal pass on the staker slice with only the
 curators' 30% able to oppose.
 
-**Suggested fix:** include the live staked supply in the proposal denominator, e.g. take the
-max with `staking.totalSupply()` (or skip the launch epoch for proposals). Re-check the gauge
-tally (`_castVotes`) for the same zero record in `E`.
+**Fix (`e4a69df`, Bhargav's direction):** governance starts the epoch after launch. `propose` reverts
+`GovernanceNotStarted` while the staked-supply record for the current epoch is empty, which is
+exactly the launch epoch. From `E + 1` that record holds the real staked supply (launch depositors
+are auto-staked), so a $5k holder is a small share of the vote. The first `flip` likewise waits
+for an epoch with a record, so it tallies `E + 1` (callable from `E + 2`) instead of `E − 1` or
+`E`. That also removes the launch-epoch path of A6-M-05: compliance is never checked for an epoch
+in which no stake can count. A replacement governor (`setGovernor`) still starts at the previous
+epoch, because the staking record exists there. The check reads the existing staking record
+rather than storing the launch epoch, which keeps `FundGovernor` under 24KB (94 bytes spare).
+New tests in `FundGovernorLaunchEpochTest`: a holder with 6,000 escrowed shares cannot propose in
+`E`, and in `E + 1` their `ReplaceCurator` proposal is measured against all staked tokens and is
+defeated; the first flip skips `E` and tallies `E + 1`. Governor, curator and bribe tests that
+proposed or flipped in the launch epoch now start one epoch later.
 
 ## A6-M-01 — A 30-minute pool crash shrinks the redeem supply and over-pays the basket (Medium, Open)
 
@@ -254,7 +268,7 @@ script comment documents 50 bps (`DeployFundsRobinhood.s.sol:36`).
 **Suggested fix:** compare against a fund-supply checkpoint for the tallied epoch (an
 `EpochHistory` of `Fund.totalSupply`, minimum-in-epoch like staking).
 
-## A6-M-05 — A flip in the launch epoch uses up every curator's grace week (Medium, Open)
+## A6-M-05 — A flip in the launch epoch uses up every curator's grace week (Medium, Fixed 2026-10-06)
 
 `FundGovernor.flip` (`src/funds/FundGovernor.sol:234`). Pass 2 math-precision.
 
@@ -268,8 +282,10 @@ and curators have no proposal votes. Without the early call, the keeper's first 
 checks the zero-stake epoch `E` and burns the grace week by itself. Only live when
 `minStakeBps > 0`.
 
-**Suggested fix:** skip the compliance check (and the first tally) for epochs at or before the
-launch epoch.
+**Fix (`e4a69df`, with A6-H-02):** the first `flip` waits for an epoch with a staking record, so
+it tallies the epoch after launch, not `E − 1` or `E`. No curator is checked for an epoch in which
+their stake could not count yet, and the grace week is only spent by a curator who is really
+under the minimum at `E + 1`. Covered by `test_flip_firstTalliesTheEpochAfterLaunch`.
 
 ## A6-M-06 — One premium reading prices up to 8 h of staking yield; caller picks the moment (Medium, Open)
 
