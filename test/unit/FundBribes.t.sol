@@ -376,6 +376,7 @@ contract FundBribesTest is FundTestBase {
     }
 
     function test_listingBribe_notAListingOrClosed_reverts() public {
+        _toNextEpoch();
         vm.prank(curatorA);
         uint256 id = governor.propose(IFundGovernor.ProposalKind.Delist, address(pons), address(0));
         vm.prank(briber);
@@ -390,7 +391,7 @@ contract FundBribesTest is FundTestBase {
     }
 
     function _proposeListing() internal returns (uint256) {
-        vm.warp(block.timestamp + 1); // alice's deposit must predate the proposal
+        _toNextEpoch(); // proposals open the epoch after launch
         return _proposeListingBy(curatorA);
     }
 

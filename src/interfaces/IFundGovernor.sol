@@ -210,6 +210,9 @@ interface IFundGovernor {
     /// @notice The fund has not launched.
     error NotLaunched();
 
+    /// @notice Proposals open from the epoch after launch, once staking has a record.
+    error GovernanceNotStarted();
+
     /// @notice The token cannot be escrowed.
     error NotVoteToken();
 

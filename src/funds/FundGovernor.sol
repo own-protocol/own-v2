@@ -237,7 +237,9 @@ contract FundGovernor is IFundGovernor, Initializable, ReentrancyGuard {
         uint256 current = currentEpoch();
         uint256 e = nextEpochToTally;
         if (e == 0) e = current - 1;
-        if (e >= current) revert NothingToTally();
+        // The launch epoch has no staking record (launch stake counts from the next epoch), so the
+        // first tally waits for an epoch with one.
+        if (e >= current || nextEpochToTally == 0 && _stakedSupplyNow(f, e) == 0) revert NothingToTally();
         nextEpochToTally = e + 1;
         _tallied[e] = true;
 
@@ -262,9 +264,12 @@ contract FundGovernor is IFundGovernor, Initializable, ReentrancyGuard {
         IFund f = IFund(fund);
         if (!f.launched()) revert NotLaunched();
         uint256 next = currentEpoch() + 1;
+        uint256 staked = _stakedSupplyNow(f, next - 1);
+        // Empty in the launch epoch, whose stake only counts from the next one.
+        if (staked == 0) revert GovernanceNotStarted();
         ProposalBook.Context memory ctx = ProposalBook.Context({
             power: _power[msg.sender].valueAt(next),
-            totalStake: Math.max(_stakedSupplyNow(f, next - 1), _totalPower.valueAt(next)),
+            totalStake: Math.max(staked, _totalPower.valueAt(next)),
             targetDelisted: delisted[target]
         });
         id = ProposalBook.propose(_book, fund, _config, ctx, kind, target, replacement);

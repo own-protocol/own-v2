@@ -389,8 +389,10 @@ contract FundLaunch is IFundLaunch, Initializable, ReentrancyGuard {
     }
 
     /// @dev Time weights run to the scheduled end; an early close takes off the part never served.
+    ///      A close after the end (the usual case) served the whole window.
     function _points(address asset, uint256 amount, uint256 timeWeight) internal view returns (uint256) {
-        uint256 served = timeWeight - amount * (endTime - closedAt);
+        uint256 unserved = closedAt < endTime ? endTime - closedAt : 0;
+        uint256 served = timeWeight - amount * unserved;
         uint256 bonus = Math.mulDiv(served, _config.earlyYieldBpsPerDay, BPS * 1 days);
         uint256 value = Math.mulDiv(amount + bonus, closePrice[asset], 10 ** IERC20Metadata(asset).decimals());
         return Math.mulDiv(value, creditedValue[asset], rawValue[asset]);

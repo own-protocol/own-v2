@@ -31,6 +31,8 @@ contract FundGovernorTest is FundTestBase {
         launch.claim(false);
         vm.prank(admin);
         factory.setEligibleAsset(address(spare), true);
+        // Governance starts the epoch after launch.
+        _toNextEpoch();
     }
 
     // ──────────────────────────────────────────────────────────
@@ -99,12 +101,12 @@ contract FundGovernorTest is FundTestBase {
 
     function test_withdraw_waitsForVotedProposalToEnd() public {
         _escrow(alice, aliceStake);
-        vm.warp(block.timestamp + 1);
+        // Propose late in the epoch, so the vote ends after the next flip.
+        uint256 e = governor.currentEpoch();
+        vm.warp((e + 1) * 1 weeks - 2 days);
         uint256 id = _propose(curatorA, IFundGovernor.ProposalKind.List, address(spare));
         vm.prank(alice);
         governor.castVote(id, true);
-        // Move to the last day of the epoch, so the vote ends after the next flip.
-        uint256 e = governor.currentEpoch();
         vm.warp((e + 1) * 1 weeks - 1 days);
         vm.prank(alice);
         governor.requestWithdrawal(address(staking), 1e18);
@@ -712,7 +714,9 @@ contract FundGovernorTest is FundTestBase {
         governor.castVote(id, true);
         vm.prank(alice);
         uint256 votes = governor.castVote(id, false);
-        assertEq(votes, 0.7e18);
+        // Alice holds nearly all staked tokens.
+        assertEq(votes, 0.7e18 * aliceStake / governor.getProposal(id).totalStake);
+        assertGt(votes, 0.69e18);
         vm.warp(block.timestamp + 3 days);
         assertEq(uint8(governor.state(id)), uint8(IFundGovernor.ProposalState.Defeated));
     }
@@ -991,5 +995,61 @@ contract FundGovernorTest is FundTestBase {
             sum += fund.targetWeightBps(a[i]);
         }
         assertEq(sum, 10_000);
+    }
+}
+
+/// @dev Governance in the launch epoch, whose staking record is empty (A6-H-02).
+contract FundGovernorLaunchEpochTest is FundTestBase {
+    uint256 internal aliceStake;
+    address internal newCurator = makeAddr("newCurator");
+
+    function setUp() public override {
+        super.setUp();
+        _launchDefault();
+        vm.prank(alice);
+        aliceStake = launch.claim(true);
+        vm.prank(bob);
+        launch.claim(false);
+    }
+
+    function test_propose_inLaunchEpoch_reverts_thenSmallHolderCannotPassAlone() public {
+        uint256 bobStake = 6000e18; // just over the $5k threshold
+        vm.startPrank(bob);
+        fund.approve(address(staking), bobStake);
+        staking.stake(bobStake, bob);
+        vm.stopPrank();
+        _escrow(bob, bobStake);
+        vm.warp(block.timestamp + 1);
+        _refreshFeeds();
+
+        vm.prank(bob);
+        vm.expectRevert(IFundGovernor.GovernanceNotStarted.selector);
+        governor.propose(IFundGovernor.ProposalKind.ReplaceCurator, curatorA, newCurator);
+
+        _toNextEpoch();
+        vm.prank(bob);
+        uint256 id = governor.propose(IFundGovernor.ProposalKind.ReplaceCurator, curatorA, newCurator);
+        assertGe(governor.getProposal(id).totalStake, aliceStake + bobStake);
+        vm.prank(bob);
+        uint256 votes = governor.castVote(id, true);
+        assertLt(votes, 0.2e18);
+        vm.warp(block.timestamp + 3 days);
+        assertEq(uint8(governor.state(id)), uint8(IFundGovernor.ProposalState.Defeated));
+    }
+
+    function test_flip_firstTalliesTheEpochAfterLaunch() public {
+        uint256 launchEpoch = governor.currentEpoch();
+        vm.expectRevert(IFundGovernor.NothingToTally.selector);
+        governor.flip();
+
+        _toNextEpoch();
+        vm.expectRevert(IFundGovernor.NothingToTally.selector);
+        governor.flip();
+
+        _toNextEpoch();
+        governor.flip();
+        assertFalse(governor.isTallied(launchEpoch));
+        assertTrue(governor.isTallied(launchEpoch + 1));
+        assertEq(governor.nextEpochToTally(), launchEpoch + 2);
     }
 }

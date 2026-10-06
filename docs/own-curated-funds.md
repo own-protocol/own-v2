@@ -166,7 +166,9 @@ Updated 2026-10-05 for commit 10b22fb (curator yield, protocol curator, in-kind 
 ## Weekly weight vote (gauge)
 
 - Epochs run a week and flip Thursday 00:00 UTC. Anyone (the keeper in practice) calls
-  `governor.flip()`; skipped weeks are tallied one call at a time, oldest first.
+  `governor.flip()`; skipped weeks are tallied one call at a time, oldest first. Governance starts
+  the week after launch: launch stake only counts from then, so the first flip tallies that week
+  and proposals open in it.
 - **Who votes.** Curators together hold 30% of the vote as base slices: the protocol curator a third
   of it (10% of the vote), every other compliant curator an equal part of the rest. Stakers hold
   70%: each staker's votes are worth 70% × (its staked tokens escrowed in the governor ÷ all staked

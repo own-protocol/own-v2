@@ -206,6 +206,24 @@ contract FundLaunchTest is FundTestBase {
         assertApproxEqAbs(a + b, launch.depositorSupply(), 10);
     }
 
+    function test_finalize_afterEndTime_servesTheWholeWindow() public {
+        _deposit(alice, address(net), 50e9);
+        _deposit(alice, address(usdg), 10_000e6);
+        vm.warp(launch.endTime() - 1);
+        _refreshFeeds();
+        _deposit(bob, address(net), 50e9);
+        _deposit(bob, address(usdg), 10_000e6);
+        vm.warp(launch.endTime() + 1 days);
+        _refreshFeeds();
+        launch.finalize();
+
+        assertEq(uint8(launch.status()), uint8(IFundLaunch.Status.Succeeded));
+        uint256 a = launch.claimable(alice);
+        uint256 b = launch.claimable(bob);
+        assertApproxEqRel(a * 1e18 / b, 1.035e18, 1e12);
+        assertApproxEqAbs(a + b, launch.depositorSupply(), 10);
+    }
+
     function test_finalize_belowMinimum_fails() public {
         _deposit(alice, address(net), 10e9); // $3k
         _deposit(alice, address(usdg), 6000e6); // $9k < $10k minimum

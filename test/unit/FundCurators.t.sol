@@ -16,6 +16,8 @@ contract FundCuratorsTest is FundTestBase {
     function setUp() public override {
         super.setUp();
         _launchDefault();
+        // Governance starts the epoch after launch.
+        _toNextEpoch();
     }
 
     function test_initialize_setsCuratorsAllCompliant() public view {
