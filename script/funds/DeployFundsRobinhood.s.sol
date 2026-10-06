@@ -24,9 +24,9 @@ import {Hooks} from "v4-core/src/libraries/Hooks.sol";
 
 /// @title DeployFundsRobinhood — Own Curated Funds platform on Robinhood Chain
 /// @notice Deploys the oracle, the six module implementations, the factory proxy, the Uniswap v4
-///         hook at a mined CREATE2 address, and the redeem-to-USDG zap. Wires the hook, sets the
-///         platform metadata, allows USDG (and MONEY, if given) as bribe tokens, then starts the
-///         two-step ownership handover of the factory and oracle to FUNDS_ADMIN.
+///         hook proxy (UUPS) at a mined CREATE2 address, and the redeem-to-USDG zap. Wires the
+///         hook, sets the platform metadata, allows USDG (and MONEY, if given) as bribe tokens,
+///         then starts the two-step ownership handover of the factory and oracle to FUNDS_ADMIN.
 ///
 /// @dev Post-deploy checklist:
 ///        1. FUNDS_ADMIN calls acceptOwnership() on the factory and on the oracle.
@@ -71,9 +71,12 @@ contract DeployFundsRobinhood is Script {
         FundOracle oracle = new FundOracle(deployer);
         FundFactory factory = _deployFactory(deployer, address(oracle), protocolCurator);
 
-        bytes memory args = abi.encode(IPoolManager(POOL_MANAGER), IFundFactory(address(factory)));
-        (address mined, bytes32 salt) = HookMiner.find(CREATE2_FACTORY, HOOK_FLAGS, type(FundHook).creationCode, args);
-        FundHook hook = new FundHook{salt: salt}(IPoolManager(POOL_MANAGER), IFundFactory(address(factory)));
+        FundHook hookImpl = new FundHook(IPoolManager(POOL_MANAGER), IFundFactory(address(factory)));
+        bytes memory hookInit = abi.encodeCall(FundHook.initialize, ());
+        bytes memory args = abi.encode(address(hookImpl), hookInit);
+        (address mined, bytes32 salt) =
+            HookMiner.find(CREATE2_FACTORY, HOOK_FLAGS, type(ERC1967Proxy).creationCode, args);
+        FundHook hook = FundHook(address(new ERC1967Proxy{salt: salt}(address(hookImpl), hookInit)));
         require(address(hook) == mined, "hook address mismatch");
 
         factory.setHook(address(hook));
@@ -94,6 +97,7 @@ contract DeployFundsRobinhood is Script {
         console.log("FundOracle      ", address(oracle));
         console.log("FundFactory     ", address(factory));
         console.log("FundHook        ", address(hook));
+        console.log("FundHook impl   ", address(hookImpl));
         console.log("FundRedeemZap   ", address(zap));
         console.log("FundMintZap     ", address(mintZap));
         console.log("Fund beacon     ", factory.beacon(IFundFactory.Module.Fund));

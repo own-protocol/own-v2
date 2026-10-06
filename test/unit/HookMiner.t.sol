@@ -5,7 +5,7 @@ import {HookMiner} from "../../script/funds/HookMiner.sol";
 import {FundHook} from "../../src/funds/FundHook.sol";
 import {IFundFactory} from "../../src/interfaces/IFundFactory.sol";
 import {FundTestBase} from "../helpers/FundTestBase.sol";
-import {IPoolManager} from "v4-core/src/interfaces/IPoolManager.sol";
+import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import {Hooks} from "v4-core/src/libraries/Hooks.sol";
 
 contract CREATE2Deployer {
@@ -28,10 +28,12 @@ contract HookMinerTest is FundTestBase {
         CREATE2Deployer deployer = new CREATE2Deployer();
         uint160 flags = Hooks.BEFORE_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG
             | Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG | Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG;
-        bytes memory args = abi.encode(poolManager, IFundFactory(address(factory)));
-        (address mined, bytes32 salt) = HookMiner.find(address(deployer), flags, type(FundHook).creationCode, args);
+        address impl = address(new FundHook(poolManager, IFundFactory(address(factory))));
+        bytes memory args = abi.encode(impl, abi.encodeCall(FundHook.initialize, ()));
+        bytes memory code = type(ERC1967Proxy).creationCode;
+        (address mined, bytes32 salt) = HookMiner.find(address(deployer), flags, code, args);
 
-        (bool ok, bytes memory ret) = address(deployer).call(abi.encodePacked(salt, type(FundHook).creationCode, args));
+        (bool ok, bytes memory ret) = address(deployer).call(abi.encodePacked(salt, code, args));
         assertTrue(ok);
         assertEq(address(bytes20(ret)), mined);
         assertEq(uint160(mined) & Hooks.ALL_HOOK_MASK, flags);

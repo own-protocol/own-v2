@@ -1,10 +1,16 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
+import {FundHook} from "../../src/funds/FundHook.sol";
+import {IFundFactory} from "../../src/interfaces/IFundFactory.sol";
 import {IFundHook} from "../../src/interfaces/IFundHook.sol";
 import {FundTestBase} from "../helpers/FundTestBase.sol";
+import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
+import {ERC1967Utils} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Utils.sol";
+import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
 import {IHooks} from "v4-core/src/interfaces/IHooks.sol";
 import {IPoolManager} from "v4-core/src/interfaces/IPoolManager.sol";
+import {Hooks} from "v4-core/src/libraries/Hooks.sol";
 import {LPFeeLibrary} from "v4-core/src/libraries/LPFeeLibrary.sol";
 import {TickMath} from "v4-core/src/libraries/TickMath.sol";
 import {PoolModifyLiquidityTest} from "v4-core/src/test/PoolModifyLiquidityTest.sol";
@@ -120,6 +126,53 @@ contract FundHookTest is FundTestBase {
         assertApproxEqAbs(usdgFees, (10_000e6 - 100e6) * 3000 / 1e6, 2);
         assertEq(usdg.balanceOf(address(fund)), usdgFees);
         assertGt(hook.positionLiquidity(address(fund)), 0);
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Proxy and upgrades
+    // ──────────────────────────────────────────────────────────
+
+    function test_initialize_implementationLocked() public {
+        FundHook impl = new FundHook(poolManager, IFundFactory(address(factory)));
+        vm.expectRevert(Initializable.InvalidInitialization.selector);
+        impl.initialize();
+    }
+
+    function test_initialize_onlyOnce() public {
+        vm.expectRevert(Initializable.InvalidInitialization.selector);
+        hook.initialize();
+    }
+
+    function test_initialize_addressWithoutFlags_reverts() public {
+        address impl = address(new FundHook(poolManager, IFundFactory(address(factory))));
+        bytes memory init = abi.encodeCall(FundHook.initialize, ());
+        address predicted = vm.computeCreateAddress(address(this), vm.getNonce(address(this)));
+        vm.expectRevert(abi.encodeWithSelector(Hooks.HookAddressNotValid.selector, predicted));
+        new ERC1967Proxy(impl, init);
+    }
+
+    function test_upgrade_notAdmin_reverts() public {
+        address impl = address(new FundHook(poolManager, IFundFactory(address(factory))));
+        vm.prank(attacker);
+        vm.expectRevert(IFundHook.NotAdmin.selector);
+        hook.upgradeToAndCall(impl, "");
+    }
+
+    function test_upgrade_keepsPoolsAndTrading() public {
+        uint128 liquidity = hook.positionLiquidity(address(fund));
+        assertGt(liquidity, 0);
+        address impl = address(new FundHook(poolManager, IFundFactory(address(factory))));
+
+        vm.prank(admin);
+        hook.upgradeToAndCall(impl, "");
+
+        assertEq(address(uint160(uint256(vm.load(address(hook), ERC1967Utils.IMPLEMENTATION_SLOT)))), impl);
+        assertTrue(hook.isSeeded(address(fund)));
+        assertEq(hook.positionLiquidity(address(fund)), liquidity);
+        assertEq(keccak256(abi.encode(hook.poolKeyOf(address(fund)))), keccak256(abi.encode(key)));
+
+        _swap(true, -int256(1000e6));
+        assertEq(usdg.balanceOf(address(curators)), 10e6);
     }
 
     function test_setLpFee_notAdmin_reverts() public {

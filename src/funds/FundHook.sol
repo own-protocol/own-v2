@@ -6,6 +6,8 @@ import {IFundFactory} from "../interfaces/IFundFactory.sol";
 import {IFundHook} from "../interfaces/IFundHook.sol";
 import {BPS} from "../interfaces/types/Types.sol";
 import {FullRangeLiquidity} from "./libraries/FullRangeLiquidity.sol";
+import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
+import {UUPSUpgradeable} from "@openzeppelin/contracts/proxy/utils/UUPSUpgradeable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
@@ -26,10 +28,12 @@ import {PoolKey} from "v4-core/src/types/PoolKey.sol";
 
 /// @title FundHook — Uniswap v4 hook and liquidity locker for fund pools
 /// @notice See {IFundHook}.
-/// @dev Must be deployed at an address whose low bits encode exactly {getHookPermissions}
-///      (mined with CREATE2); the pool manager calls only those callbacks, so only they are
-///      implemented. Every pool is the fund token against USDG with this hook, a dynamic fee and
-///      {TICK_SPACING}, so a fund's pool key is derived rather than stored. Swap fees are taken in
+/// @dev Runs behind an ERC-1967 proxy (UUPS) upgraded by the factory owner; storage is
+///      append-only across upgrades. The proxy must be deployed at an address whose low bits
+///      encode exactly {getHookPermissions} (mined with CREATE2); the pool manager calls only
+///      those callbacks, so only they are implemented. Every pool is the fund token against USDG
+///      with this hook, a dynamic fee and {TICK_SPACING}, so a fund's pool key is derived rather
+///      than stored. Swap fees are taken in
 ///      USDG whichever side the trader specifies:
 ///      - USDG is the specified side (exact USDG in, or exact USDG out): {beforeSwap} returns a
 ///        specified delta, so the pool swaps the amount net of (or grossed up by) the fee;
@@ -45,7 +49,7 @@ import {PoolKey} from "v4-core/src/types/PoolKey.sol";
 ///      The fund's position is this hook's full-range position (salt 0) in the fund's pool. It is
 ///      valued at the pool TWAP: price manipulation inside a block never moves it, because the
 ///      accumulator only adds a tick once it has held across a block boundary.
-contract FundHook is IFundHook, IUnlockCallback {
+contract FundHook is IFundHook, IUnlockCallback, Initializable, UUPSUpgradeable {
     using SafeERC20 for IERC20;
     using PoolIdLibrary for PoolKey;
     using BalanceDeltaLibrary for BalanceDelta;
@@ -118,6 +122,11 @@ contract FundHook is IFundHook, IUnlockCallback {
         poolManager = poolManager_;
         factory = factory_;
         _usdg = factory_.usdg();
+        _disableInitializers();
+    }
+
+    /// @inheritdoc IFundHook
+    function initialize() external override initializer {
         Hooks.validateHookPermissions(IHooks(address(this)), getHookPermissions());
     }
 
@@ -506,6 +515,13 @@ contract FundHook is IFundHook, IUnlockCallback {
         int56 elapsed = int56(uint56(period));
         meanTick = int24(delta / elapsed);
         if (delta < 0 && delta % elapsed != 0) meanTick--;
+    }
+
+    /// @dev UUPS upgrade gate: the factory owner.
+    function _authorizeUpgrade(
+        address
+    ) internal view override {
+        if (msg.sender != factory.owner()) revert NotAdmin();
     }
 
     function _amountsAt(

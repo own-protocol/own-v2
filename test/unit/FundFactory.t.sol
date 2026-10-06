@@ -382,6 +382,22 @@ contract FundFactoryTest is FundTestBase {
         assertEq(factory.protocolCurator(), next);
     }
 
+    function test_setOracle() public {
+        address next = makeAddr("nextOracle");
+        vm.prank(attacker);
+        vm.expectRevert(IFundFactory.NotOwner.selector);
+        factory.setOracle(next);
+
+        vm.startPrank(admin);
+        vm.expectRevert(IFundFactory.ZeroAddress.selector);
+        factory.setOracle(address(0));
+        vm.expectEmit(address(factory));
+        emit IFundFactory.OracleSet(next);
+        factory.setOracle(next);
+        vm.stopPrank();
+        assertEq(factory.oracle(), next);
+    }
+
     function test_setProtocolCuratorShare_capped() public {
         vm.startPrank(admin);
         factory.setProtocolCuratorShare(5000);

@@ -20,7 +20,7 @@ Updated 2026-10-05 for commit 10b22fb (curator yield, protocol curator, in-kind 
 | `FundGovernor` | Beacon proxy per fund. Staked escrow, the weekly weight vote (gauge) and proposals to list or delist tokens and add, remove or replace curators. |
 | `FundCurators` | Beacon proxy per fund. The curator set (with the protocol curator), the minimum curator stake and compliance, and the curators' income: the fund fee, the curator yield (30-day unlocks, forfeits on removal) and the bribe cut, split between the protocol curator and the others. |
 | `FundBribes` | Beacon proxy per fund. Bribes on the weekly vote per token per week, and bribes on listing proposals. The curators' cut goes to `FundCurators`. |
-| `FundHook` | One Uniswap v4 hook for every fund pool: the fund fee in USDG on swaps, admin-set LP fee, the TWAP, and the fund's own pool position. |
+| `FundHook` | UUPS, upgraded by the factory owner; the proxy sits at the mined hook address. One Uniswap v4 hook for every fund pool: the fund fee in USDG on swaps, admin-set LP fee, the TWAP, and the fund's own pool position. |
 | `FundOracle` | Per-asset Chainlink-style feeds. A fund token's own market price is read through the same surface. |
 | `FundTwapFeed` | Per fund. Serves the fund's pool TWAP (recorded by the hook) as an aggregator. |
 | `FundRedeemZap` | Redeem a fund token and swap the basket to USDG through allowed routers in one transaction. |
@@ -231,8 +231,8 @@ Updated 2026-10-05 for commit 10b22fb (curator yield, protocol curator, in-kind 
 
 ## Trust and limits
 
-- **Admin (factory owner):** upgrades all modules; sets the protocol curator and its share, the
-  whitelist, routers, the LP fee, the curator cap, the bribe cut and tokens, the eligibility list,
+- **Admin (factory owner):** upgrades the factory, the hook and all modules; sets the price
+  oracle, the protocol curator and its share, the whitelist, routers, the LP fee, the curator cap, the bribe cut and tokens, the eligibility list,
   the yield cap, governance rules and each fund's fee, curator yield, minimum curator stake, lock
   options, yield curve and premium ceiling; adds and removes curators (never the protocol curator);
   vetoes proposals; can delist a token directly; can withdraw the pool position back into the fund;

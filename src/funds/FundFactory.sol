@@ -157,6 +157,7 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
         owner = owner_;
         emit OwnershipTransferred(address(0), owner_);
         oracle = oracle_;
+        emit OracleSet(oracle_);
         usdg = usdg_;
 
         protocolCurator = protocolCurator_;
@@ -257,6 +258,15 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
         _funds.push(m.fund);
 
         emit FundCreated(m.fund, m, msg.sender);
+    }
+
+    /// @inheritdoc IFundFactory
+    function setOracle(
+        address oracle_
+    ) external override onlyOwner {
+        if (oracle_ == address(0)) revert ZeroAddress();
+        oracle = oracle_;
+        emit OracleSet(oracle_);
     }
 
     /// @inheritdoc IFundFactory

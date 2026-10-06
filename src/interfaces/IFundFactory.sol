@@ -44,6 +44,10 @@ interface IFundFactory {
     /// @param launcher The caller that created it.
     event FundCreated(address indexed fund, FundModules modules, address indexed launcher);
 
+    /// @notice Emitted when the price oracle changes.
+    /// @param oracle New oracle.
+    event OracleSet(address oracle);
+
     /// @notice Emitted when the protocol curator changes.
     /// @param curator New protocol curator.
     event ProtocolCuratorSet(address curator);
@@ -161,6 +165,13 @@ interface IFundFactory {
     function createFund(
         CreateFundParams calldata params
     ) external returns (FundModules memory modules);
+
+    /// @notice Set the price oracle every fund reads. Owner only. The new oracle must already price
+    ///         every basket asset and fund token in use, or mints, NAV reads and listings revert.
+    /// @param oracle_ The oracle.
+    function setOracle(
+        address oracle_
+    ) external;
 
     /// @notice Set the protocol curator, Own's seat among every fund's curators. Owner only. It
     ///         cannot be removed from a fund, needs no stake and takes its share of the curators'

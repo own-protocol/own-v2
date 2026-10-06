@@ -99,7 +99,10 @@ abstract contract FundTestBase is Test {
         uint160 flags = Hooks.BEFORE_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG
             | Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG | Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG;
         address hookAddr = address((uint160(0x4444) << 144) | flags);
-        deployCodeTo("FundHook.sol:FundHook", abi.encode(poolManager, factory), hookAddr);
+        address hookImpl = address(new FundHook(poolManager, factory));
+        deployCodeTo(
+            "ERC1967Proxy.sol:ERC1967Proxy", abi.encode(hookImpl, abi.encodeCall(FundHook.initialize, ())), hookAddr
+        );
         hook = FundHook(hookAddr);
 
         vm.startPrank(admin);
