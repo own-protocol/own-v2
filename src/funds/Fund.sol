@@ -5,6 +5,7 @@ import {IFund} from "../interfaces/IFund.sol";
 import {IFundFactory} from "../interfaces/IFundFactory.sol";
 import {IFundHook} from "../interfaces/IFundHook.sol";
 import {IFundOracle} from "../interfaces/IFundOracle.sol";
+import {IFundStaking} from "../interfaces/IFundStaking.sol";
 
 import {
     BasketEntry,
@@ -89,8 +90,6 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuard {
     mapping(address asset => BasketEntry) private _basket;
 
     LockOption[] private _lockOptions;
-
-    mapping(address account => Lock[]) private _locks;
 
     /// @notice When {rebalanceVolume} was last updated.
     uint64 public rebalanceVolumeUpdatedAt;
@@ -300,23 +299,6 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuard {
     }
 
     /// @inheritdoc IFund
-    function claimLocks(
-        uint256[] calldata lockIds
-    ) external override nonReentrant returns (uint256 amount) {
-        Lock[] storage locks = _locks[msg.sender];
-        for (uint256 i; i < lockIds.length; ++i) {
-            uint256 id = lockIds[i];
-            if (id >= locks.length) revert LockNotClaimable(id);
-            Lock memory lock = locks[id];
-            if (lock.amount == 0 || block.timestamp < lock.unlockAt) revert LockNotClaimable(id);
-            locks[id].amount = 0;
-            amount += lock.amount;
-            emit LockClaimed(msg.sender, id, lock.amount);
-        }
-        if (amount != 0) _transfer(address(this), msg.sender, amount);
-    }
-
-    /// @inheritdoc IFund
     function rebalance(
         RebalanceParams calldata params
     ) external override onlyManager nonReentrant {
@@ -436,13 +418,6 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuard {
     /// @inheritdoc IFund
     function lockOptions() external view override returns (LockOption[] memory) {
         return _lockOptions;
-    }
-
-    /// @inheritdoc IFund
-    function locksOf(
-        address account
-    ) external view override returns (Lock[] memory) {
-        return _locks[account];
     }
 
     /// @inheritdoc IFund
@@ -620,13 +595,10 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuard {
             _mint(receiver, shares);
             return NO_LOCK;
         }
-        _mint(address(this), shares);
-        lockId = _locks[receiver].length;
-        _locks[receiver].push(
-            Lock({
-                amount: SafeCast.toUint128(shares),
-                unlockAt: SafeCast.toUint64(block.timestamp + _lockOptions[lockOption - 1].duration)
-            })
+        address stakingModule = staking;
+        _mint(stakingModule, shares);
+        lockId = IFundStaking(stakingModule).stakeLocked(
+            receiver, shares, SafeCast.toUint64(block.timestamp + _lockOptions[lockOption - 1].duration)
         );
     }
 

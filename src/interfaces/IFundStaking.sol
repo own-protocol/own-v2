@@ -25,11 +25,22 @@ import {IERC721Receiver} from "@openzeppelin/contracts/token/ERC721/IERC721Recei
 ///         depositor unlock: they can be deposited in the governor (and come back to the same
 ///         account) or unstaked (the fund tokens come back locked), but not transferred.
 ///
+///         A mint with a lock option is staked here at once and held for its owner until the lock
+///         ends, so the locked tokens earn the staker yield; the owner then claims the shares.
+///
 ///         LPs can stake their Uniswap v4 position NFT for a full-range position in the fund's
 ///         pool. It earns the same yearly rate on the fund tokens it holds (valued at the pool TWAP;
 ///         its USDG earns nothing), paid in fund tokens they claim. The position's swap fees stay
 ///         theirs: they can collect them while staked or after. Staked positions do not vote.
 interface IFundStaking is IERC20, IERC721Receiver {
+    /// @notice A locked mint, staked and held here until it unlocks.
+    /// @param shares   Shares held (zero once claimed).
+    /// @param unlockAt When they can be claimed.
+    struct Lock {
+        uint128 shares;
+        uint64 unlockAt;
+    }
+
     /// @notice Emitted on a stake.
     /// @param sender   Payer of the fund tokens.
     /// @param receiver Receiver of the shares.
@@ -93,6 +104,20 @@ interface IFundStaking is IERC20, IERC721Receiver {
     /// @param locked  Shares now locked.
     event LockedSharesSet(address indexed account, uint256 locked);
 
+    /// @notice Emitted when a locked mint is staked.
+    /// @param account  Owner of the lock.
+    /// @param lockId   Lock index.
+    /// @param assets   Fund tokens staked.
+    /// @param shares   Shares held.
+    /// @param unlockAt When they can be claimed.
+    event MintLocked(address indexed account, uint256 indexed lockId, uint256 assets, uint256 shares, uint64 unlockAt);
+
+    /// @notice Emitted when a locked mint is claimed.
+    /// @param account Owner of the lock.
+    /// @param lockId  Lock index.
+    /// @param shares  Shares released.
+    event LockClaimed(address indexed account, uint256 indexed lockId, uint256 shares);
+
     /// @notice Emitted when the yield curve changes.
     /// @param curve New curve points.
     event YieldCurveSet(YieldPoint[] curve);
@@ -114,6 +139,13 @@ interface IFundStaking is IERC20, IERC721Receiver {
 
     /// @notice Caller is not the fund's launch module.
     error NotLaunch();
+
+    /// @notice Caller is not the fund.
+    error NotFund();
+
+    /// @notice The lock does not exist, is already claimed or has not ended.
+    /// @param lockId Lock index.
+    error LockNotClaimable(uint256 lockId);
 
     /// @notice The transfer would move shares that are still locked, or would unstake them to
     ///         another account.
@@ -144,6 +176,28 @@ interface IFundStaking is IERC20, IERC721Receiver {
     /// @param to     The depositor.
     /// @param shares Shares moved from the launch.
     function transferLocked(address to, uint256 shares) external;
+
+    /// @notice Stake fund tokens the fund just minted here for a locked mint, and hold the shares
+    ///         for `account` until `unlockAt`. Fund only.
+    /// @param account  Owner of the lock.
+    /// @param assets   Fund tokens minted here.
+    /// @param unlockAt When the shares can be claimed.
+    /// @return lockId Lock index for `account`.
+    function stakeLocked(address account, uint256 assets, uint64 unlockAt) external returns (uint256 lockId);
+
+    /// @notice Release the caller's ended locks as shares.
+    /// @param lockIds Lock indices.
+    /// @return shares Shares released.
+    function claimLocks(
+        uint256[] calldata lockIds
+    ) external returns (uint256 shares);
+
+    /// @notice Locked mints owned by `account`.
+    /// @param account The owner.
+    /// @return The locks.
+    function locksOf(
+        address account
+    ) external view returns (Lock[] memory);
 
     /// @notice Shares of `account` that are still locked (meaningful only before the fund's
     ///         depositor unlock).

@@ -16,8 +16,8 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 ///           part needs no oracle and nothing can pause it.
 ///         - Mint: deposit a slice of everything the fund holds (every basket asset and USDG, in
 ///           proportion), so no oracle values the deposit. It is priced at the fund token's market
-///           TWAP (optionally discounted in exchange for a lock), never below NAV. The mint zap
-///           builds the slice from a single token.
+///           TWAP (optionally discounted in exchange for a lock, staked while locked), never
+///           below NAV. The mint zap builds the slice from a single token.
 ///         - Fee: one fund fee is charged in fund tokens on mints and redeems (and in USDG on pool
 ///           trades, by the hook). It all goes to the fund's curators module, which splits it
 ///           between the protocol curator and the other curators.
@@ -28,14 +28,6 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 ///         - Depositors' launch tokens cannot be transferred for the launch's lock period; they can
 ///           still be staked and redeemed.
 interface IFund is IERC20 {
-    /// @notice A locked mint.
-    /// @param amount   Fund tokens locked (zero once claimed).
-    /// @param unlockAt When they can be claimed.
-    struct Lock {
-        uint128 amount;
-        uint64 unlockAt;
-    }
-
     /// @notice A swap between two basket assets.
     /// @param sellAsset    Asset sold.
     /// @param sellAmount   Maximum amount sold (the router is approved for exactly this).
@@ -54,11 +46,12 @@ interface IFund is IERC20 {
 
     /// @notice Emitted on a mint.
     /// @param sender     Depositor.
-    /// @param receiver   Receiver of the minted (or locked) fund tokens.
+    /// @param receiver   Receiver of the minted fund tokens, or owner of the staked lock.
     /// @param navShares  Size of the slice deposited, in fund tokens at NAV.
     /// @param shares     Fund tokens minted to the receiver (after the fee).
     /// @param mintPrice  Price per fund token, 18 decimals USD.
-    /// @param lockId     Lock index for the receiver, or type(uint256).max when unlocked.
+    /// @param lockId     The receiver's lock index in the staking module, or type(uint256).max when
+    ///                   unlocked.
     event Minted(
         address indexed sender,
         address indexed receiver,
@@ -81,12 +74,6 @@ interface IFund is IERC20 {
     /// @notice Emitted when the fund fee is charged in fund tokens.
     /// @param fee Fund tokens to the curators module.
     event FeesCharged(uint256 fee);
-
-    /// @notice Emitted when a locked mint is claimed.
-    /// @param account Owner of the lock.
-    /// @param lockId  Lock index.
-    /// @param amount  Fund tokens released.
-    event LockClaimed(address indexed account, uint256 indexed lockId, uint256 amount);
 
     /// @notice Emitted on a rebalance.
     /// @param sellAsset Asset sold.
@@ -227,10 +214,6 @@ interface IFund is IERC20 {
     /// @notice `minAmountsOut` length does not match the basket.
     error LengthMismatch();
 
-    /// @notice The lock is not claimable yet or was already claimed.
-    /// @param lockId The lock.
-    error LockNotClaimable(uint256 lockId);
-
     /// @notice The router is not allowed.
     error RouterNotAllowed();
 
@@ -297,8 +280,10 @@ interface IFund is IERC20 {
     ///                     down by the mint price over NAV, less the fee.
     /// @param lockOption   0 for no lock, otherwise 1 + index into {lockOptions}.
     /// @param minSharesOut Minimum fund tokens to the receiver, after the fee.
-    /// @param receiver     Receiver of the fund tokens (or owner of the lock).
-    /// @return shares Fund tokens minted to the receiver or its lock.
+    /// @param receiver     Receiver of the fund tokens, or owner of the lock. A locked mint is
+    ///                     staked at once and its shares held for the receiver until the lock
+    ///                     ends (see {IFundStaking-claimLocks}), so it earns the staker yield.
+    /// @return shares Fund tokens minted to the receiver or staked for its lock.
     function mint(
         uint256 navShares,
         uint256 lockOption,
@@ -327,13 +312,6 @@ interface IFund is IERC20 {
     function burn(
         uint256 amount
     ) external;
-
-    /// @notice Release unlocked locked mints to the caller.
-    /// @param lockIds Lock indices.
-    /// @return amount Fund tokens released.
-    function claimLocks(
-        uint256[] calldata lockIds
-    ) external returns (uint256 amount);
 
     /// @notice Swap a basket asset (or idle USDG) into another basket asset through an allowed
     ///         router. Manager only. Each swap
@@ -522,13 +500,6 @@ interface IFund is IERC20 {
     /// @notice Mint-with-lock options.
     /// @return The options.
     function lockOptions() external view returns (LockOption[] memory);
-
-    /// @notice Locks owned by `account`.
-    /// @param account The owner.
-    /// @return The locks.
-    function locksOf(
-        address account
-    ) external view returns (Lock[] memory);
 
     /// @notice Backing value: basket, idle USDG and the pool position's USDG, 18 decimals USD.
     ///         Reverts if any asset's price is unavailable.

@@ -2,8 +2,8 @@
 pragma solidity 0.8.28;
 
 import {Fund} from "../../../src/funds/Fund.sol";
-import {IFund} from "../../../src/interfaces/IFund.sol";
 import {IFundFactory} from "../../../src/interfaces/IFundFactory.sol";
+import {IFundStaking} from "../../../src/interfaces/IFundStaking.sol";
 import {MockERC20} from "../../helpers/MockERC20.sol";
 import {Test} from "forge-std/Test.sol";
 
@@ -53,17 +53,18 @@ contract FundHandler is Test {
     function claimLocks(uint256 actorSeed, uint256 warpBy) external {
         address actor = actors[actorSeed % 3];
         vm.warp(block.timestamp + bound(warpBy, 0, 2 hours));
-        IFund.Lock[] memory locks = fund.locksOf(actor);
+        IFundStaking staking = IFundStaking(fund.staking());
+        IFundStaking.Lock[] memory locks = staking.locksOf(actor);
         uint256 n;
         for (uint256 i; i < locks.length; ++i) {
-            if (locks[i].amount != 0 && locks[i].unlockAt <= block.timestamp) ++n;
+            if (locks[i].shares != 0 && locks[i].unlockAt <= block.timestamp) ++n;
         }
         uint256[] memory ids = new uint256[](n);
         n = 0;
         for (uint256 i; i < locks.length; ++i) {
-            if (locks[i].amount != 0 && locks[i].unlockAt <= block.timestamp) ids[n++] = i;
+            if (locks[i].shares != 0 && locks[i].unlockAt <= block.timestamp) ids[n++] = i;
         }
         vm.prank(actor);
-        fund.claimLocks(ids);
+        staking.claimLocks(ids);
     }
 }

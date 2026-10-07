@@ -97,8 +97,9 @@ Updated 2026-10-05 for commit 10b22fb (curator yield, protocol curator, in-kind 
   `mintPrice = max(min(marketTWAP, ceiling) × (1 − lockDiscount), NAV)` and
   `ceiling = NAV × (1 + maxPremium)`. No oracle values the deposit, minters cannot pick what the
   fund buys, and a mint never dilutes holders. `previewMint(navShares, lockOption)` returns
-  `(shares, mintPrice, amounts, usdgAmount)`. A lock option earns its discount and holds the tokens
-  until it expires. Minting needs the pool's market price, so it opens once the pool is seeded.
+  `(shares, mintPrice, amounts, usdgAmount)`. A lock option earns its discount; the tokens are staked
+  at once and the shares held in the staking module until the lock ends, so they earn the staker
+  yield. `FundStaking.claimLocks` then releases the shares (`locksOf` lists an account's locks). Minting needs the pool's market price, so it opens once the pool is seeded.
 - **Mint zap:** `FundMintZap.zapMint` takes one token, runs the caller's swaps through
   admin-allowed routers into the slice, mints, and refunds whatever is left. The minter pays the
   swap slippage, not the fund's holders.
@@ -274,7 +275,7 @@ platform metadata and allows USDG (and MONEY, if given) as bribe tokens when the
 - `test/unit/Fund*.t.sol` run against a real v4 PoolManager, deployed from precompiled bytecode in
   `test/helpers/v4/PoolManagerBytecode.sol` (v4-core pins solc 0.8.26; this repo pins 0.8.28).
 - `test/invariant/FundInvariant.t.sol` checks that mints and redeems never lower NAV per token
-  (beyond the position valuation's rounding) and that locked mints stay fully held.
+  (beyond the position valuation's rounding) and that locked mints stay fully held as staked shares.
 - `test/unit/FundStakingLp.t.sol` uses `test/helpers/MockPositionManager.sol`;
   `test/fork/FundLpStakingRobinhoodFork.t.sol` (needs `ROBINHOOD_RPC`) mints, stakes, trades
   against, collects fees from and unstakes a position through the live PositionManager.

@@ -192,33 +192,43 @@ contract FundTest is FundTestBase {
         assertGe(fund.navPerShare() + 1, navBefore);
     }
 
-    function test_mint_withLock_discountedAndLocked() public {
+    function test_mint_withLock_discountedAndStaked() public {
         uint256 nav = _mintNav();
         uint256 market = uint256(feeds[address(fund)].answer()) * 1e10;
+        uint256 heldBefore = staking.balanceOf(address(staking));
         uint256 shares = _mintAs(alice, 1000e18, 1); // 7 days, 5% off
 
         uint256 gross = Math.mulDiv(1000e18, nav, Math.mulDiv(market, 95, 100, Math.Rounding.Ceil));
         assertEq(shares, gross - gross * 100 / 10_000);
         assertEq(fund.balanceOf(alice), aliceShares);
 
-        IFund.Lock[] memory locks = fund.locksOf(alice);
+        IFundStaking.Lock[] memory locks = staking.locksOf(alice);
         assertEq(locks.length, 1);
-        assertEq(locks[0].amount, shares);
         assertEq(locks[0].unlockAt, block.timestamp + 7 days);
+        assertEq(staking.balanceOf(address(staking)) - heldBefore, locks[0].shares);
+        assertApproxEqAbs(staking.convertToAssets(locks[0].shares), shares, 1);
 
         uint256[] memory ids = new uint256[](1);
         vm.prank(alice);
-        vm.expectRevert(abi.encodeWithSelector(IFund.LockNotClaimable.selector, 0));
-        fund.claimLocks(ids);
+        vm.expectRevert(abi.encodeWithSelector(IFundStaking.LockNotClaimable.selector, 0));
+        staking.claimLocks(ids);
 
         vm.warp(block.timestamp + 7 days);
+        _refreshFeeds();
+        staking.accrue();
         vm.prank(alice);
-        assertEq(fund.claimLocks(ids), shares);
-        assertEq(fund.balanceOf(alice), aliceShares + shares);
+        assertEq(staking.claimLocks(ids), locks[0].shares);
+        assertEq(staking.balanceOf(alice), locks[0].shares);
+        assertGt(staking.convertToAssets(locks[0].shares), shares);
 
         vm.prank(alice);
-        vm.expectRevert(abi.encodeWithSelector(IFund.LockNotClaimable.selector, 0));
-        fund.claimLocks(ids);
+        vm.expectRevert(abi.encodeWithSelector(IFundStaking.LockNotClaimable.selector, 0));
+        staking.claimLocks(ids);
+    }
+
+    function test_stakeLocked_onlyFund_reverts() public {
+        vm.expectRevert(IFundStaking.NotFund.selector);
+        staking.stakeLocked(alice, 1e18, uint64(block.timestamp));
     }
 
     function test_mint_marketBelowNav_pricedAtNav() public {

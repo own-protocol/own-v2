@@ -4,6 +4,7 @@ pragma solidity 0.8.28;
 import {FundMintZap} from "../../src/funds/FundMintZap.sol";
 import {IFund} from "../../src/interfaces/IFund.sol";
 import {IFundMintZap} from "../../src/interfaces/IFundMintZap.sol";
+import {IFundStaking} from "../../src/interfaces/IFundStaking.sol";
 import {FundTestBase} from "../helpers/FundTestBase.sol";
 import {MockERC20} from "../helpers/MockERC20.sol";
 import {MockSwapRouter} from "../helpers/MockSwapRouter.sol";
@@ -76,9 +77,9 @@ contract FundMintZapTest is FundTestBase {
         IFundMintZap.Swap[] memory sw = _swaps(0);
         vm.prank(alice);
         uint256 shares = zap.zapMint(address(fund), address(usdg), PAY, sw, NAV_SHARES, 1, 0, bob);
-        IFund.Lock[] memory locks = fund.locksOf(bob);
+        IFundStaking.Lock[] memory locks = staking.locksOf(bob);
         assertEq(locks.length, 1);
-        assertEq(locks[0].amount, shares);
+        assertApproxEqAbs(staking.convertToAssets(locks[0].shares), shares, 1);
         _assertZapEmpty();
     }
 

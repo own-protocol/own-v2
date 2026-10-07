@@ -19,6 +19,7 @@ import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IER
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {TickMath} from "v4-core/src/libraries/TickMath.sol";
 import {PoolId, PoolIdLibrary} from "v4-core/src/types/PoolId.sol";
 import {PoolKey} from "v4-core/src/types/PoolKey.sol";
@@ -95,6 +96,8 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuard {
     /// @inheritdoc IFundStaking
     uint16 public override curatorYieldCapBps;
 
+    mapping(address account => Lock[]) private _locks;
+
     /// @param positionManager_ The Uniswap v4 PositionManager whose positions can be staked.
     constructor(
         address positionManager_
@@ -124,6 +127,40 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuard {
         if (msg.sender != IFund(fund).launch()) revert NotLaunch();
         _transfer(msg.sender, to, shares);
         _addLock(to, shares);
+    }
+
+    /// @inheritdoc IFundStaking
+    function stakeLocked(
+        address account,
+        uint256 assets,
+        uint64 unlockAt
+    ) external override nonReentrant returns (uint256 lockId) {
+        if (msg.sender != fund) revert NotFund();
+        _accrue();
+        uint256 shares = convertToShares(assets);
+        if (shares == 0) revert ZeroAmount();
+        _totalStaked += assets;
+        _mint(address(this), shares);
+        lockId = _locks[account].length;
+        _locks[account].push(Lock({shares: SafeCast.toUint128(shares), unlockAt: unlockAt}));
+        emit MintLocked(account, lockId, assets, shares, unlockAt);
+    }
+
+    /// @inheritdoc IFundStaking
+    function claimLocks(
+        uint256[] calldata lockIds
+    ) external override nonReentrant returns (uint256 shares) {
+        Lock[] storage locks = _locks[msg.sender];
+        for (uint256 i; i < lockIds.length; ++i) {
+            uint256 id = lockIds[i];
+            if (id >= locks.length) revert LockNotClaimable(id);
+            Lock memory lock = locks[id];
+            if (lock.shares == 0 || block.timestamp < lock.unlockAt) revert LockNotClaimable(id);
+            locks[id].shares = 0;
+            shares += lock.shares;
+            emit LockClaimed(msg.sender, id, lock.shares);
+        }
+        if (shares != 0) _transfer(address(this), msg.sender, shares);
     }
 
     /// @inheritdoc IFundStaking
@@ -263,6 +300,13 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuard {
     ) external view override returns (uint256) {
         LpPosition storage p = _positions[tokenId];
         return Math.mulDiv(p.liquidity, _lpYieldPerLiquidity - p.paid, Q128);
+    }
+
+    /// @inheritdoc IFundStaking
+    function locksOf(
+        address account
+    ) external view override returns (Lock[] memory) {
+        return _locks[account];
     }
 
     /// @inheritdoc IFundStaking
