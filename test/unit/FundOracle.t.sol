@@ -69,6 +69,23 @@ contract FundOracleTest is Test {
         assertEq(value, 300e18);
     }
 
+    function test_setFeed_readsDecimalsOnce() public {
+        vm.mockCallRevert(address(feed8), abi.encodeWithSignature("decimals()"), "");
+        assertEq(oracle.price(asset), 300e18);
+        (bool ok, uint256 value) = oracle.tryPrice(asset);
+        assertTrue(ok);
+        assertEq(value, 300e18);
+        IFundOracle.Feed memory f = oracle.feedOf(asset);
+        assertEq(f.aggregator, address(feed8));
+        assertEq(f.maxStaleness, 1 hours);
+    }
+
+    function test_setFeed_aggregatorWithoutDecimals_reverts() public {
+        vm.prank(admin);
+        vm.expectRevert();
+        oracle.setFeed(asset, makeAddr("notAnAggregator"), 1 hours);
+    }
+
     function test_setFeed_clear() public {
         vm.prank(admin);
         oracle.setFeed(asset, address(0), 0);

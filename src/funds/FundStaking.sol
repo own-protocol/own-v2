@@ -70,6 +70,9 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuard {
     /// @inheritdoc IFundStaking
     uint64 public override lastAccrual;
 
+    // The fund's depositorUnlockAt, which never changes once set at launch; zero until first read.
+    uint32 private _unlockAt;
+
     YieldPoint[] private _curve;
 
     // Tracked rather than read from the balance, so donated fund tokens earn no yield.
@@ -364,7 +367,7 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuard {
         shares = convertToShares(assets);
         if (shares == 0) revert ZeroAmount();
         _totalStaked += assets;
-        uint256 moved = IFund(fund).releaseLaunchLock(msg.sender, assets);
+        uint256 moved = block.timestamp < _depositorUnlockAt() ? IFund(fund).releaseLaunchLock(msg.sender, assets) : 0;
         uint256 locked = Math.min(Math.mulDiv(shares, moved, assets, Math.Rounding.Ceil), shares);
         IERC20(fund).safeTransferFrom(msg.sender, address(this), assets);
         _mint(receiver, shares);
@@ -488,7 +491,7 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuard {
     }
 
     function _addLock(address account, uint256 shares) internal {
-        if (block.timestamp >= IFund(fund).depositorUnlockAt()) return;
+        if (block.timestamp >= _depositorUnlockAt()) return;
         uint256 locked = lockedShares[account] + shares;
         lockedShares[account] = locked;
         emit LockedSharesSet(account, locked);
@@ -496,10 +499,18 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuard {
 
     function _activeLock(
         address account
-    ) internal view returns (uint256) {
+    ) internal returns (uint256) {
         uint256 locked = lockedShares[account];
-        if (locked == 0 || block.timestamp >= IFund(fund).depositorUnlockAt()) return 0;
+        if (locked == 0 || block.timestamp >= _depositorUnlockAt()) return 0;
         return locked;
+    }
+
+    function _depositorUnlockAt() internal returns (uint256 at) {
+        at = _unlockAt;
+        if (at == 0) {
+            at = IFund(fund).depositorUnlockAt();
+            if (at != 0 && at <= type(uint32).max) _unlockAt = uint32(at);
+        }
     }
 
     function _setCurve(

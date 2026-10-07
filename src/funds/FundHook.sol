@@ -85,7 +85,9 @@ contract FundHook is IFundHook, IUnlockCallback, Initializable, UUPSUpgradeable 
     }
 
     /// @dev The first slot holds the pool's flags and the latest accumulator checkpoint, so a swap
-    ///      reads both with one storage load.
+    ///      reads both with one storage load. The second caches the fund's curators module and when
+    ///      the newest ring checkpoint was taken; both are zero for a pool seeded before they existed
+    ///      and are filled on first use.
     struct Pool {
         bool registered;
         bool seeded;
@@ -96,6 +98,8 @@ contract FundHook is IFundHook, IUnlockCallback, Initializable, UUPSUpgradeable 
         uint8 index;
         // The tick at the start of the latest observed block, for a zero-length TWAP period.
         int24 blockTick;
+        address curators;
+        uint32 ringAt;
         Observation[OBSERVATION_SLOTS] ring;
     }
 
@@ -158,6 +162,8 @@ contract FundHook is IFundHook, IUnlockCallback, Initializable, UUPSUpgradeable 
         pool.blockTick = poolManager.initialize(key, sqrtPrice);
         pool.observedAt = uint32(block.timestamp);
         pool.ring[0] = Observation({timestamp: uint32(block.timestamp), tickCumulative: 0});
+        pool.ringAt = uint32(block.timestamp);
+        pool.curators = IFund(fund).curators();
         if (pool.lpFee != 0) poolManager.updateDynamicLPFee(key, pool.lpFee);
 
         uint128 liquidity = FullRangeLiquidity.liquidityForAmounts(sqrtPrice, _sqrtLower, _sqrtUpper, amount0, amount1);
@@ -275,11 +281,12 @@ contract FundHook is IFundHook, IUnlockCallback, Initializable, UUPSUpgradeable 
         bytes calldata
     ) external onlyPoolManager returns (bytes4, BeforeSwapDelta, uint24) {
         (address fund, bool usdgIs0) = _fundOf(key);
-        _observe(_pools[fund], key.toId());
+        Pool storage pool = _pools[fund];
+        _observe(pool, key.toId());
         bool specifiedIs0 = (params.amountSpecified < 0) == params.zeroForOne;
         if (specifiedIs0 != usdgIs0) return (IHooks.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
         uint256 amount = params.amountSpecified < 0 ? uint256(-params.amountSpecified) : uint256(params.amountSpecified);
-        uint256 fee = _takeFees(fund, usdgIs0 ? key.currency0 : key.currency1, amount);
+        uint256 fee = _takeFees(fund, pool, usdgIs0 ? key.currency0 : key.currency1, amount);
         return (IHooks.beforeSwap.selector, toBeforeSwapDelta(SafeCast.toInt128(SafeCast.toInt256(fee)), 0), 0);
     }
 
@@ -296,7 +303,7 @@ contract FundHook is IFundHook, IUnlockCallback, Initializable, UUPSUpgradeable 
         if (specifiedIs0 == usdgIs0) return (IHooks.afterSwap.selector, 0);
         int128 usdgDelta = usdgIs0 ? delta.amount0() : delta.amount1();
         uint256 amount = usdgDelta < 0 ? uint256(-int256(usdgDelta)) : uint256(int256(usdgDelta));
-        uint256 fee = _takeFees(fund, usdgIs0 ? key.currency0 : key.currency1, amount);
+        uint256 fee = _takeFees(fund, _pools[fund], usdgIs0 ? key.currency0 : key.currency1, amount);
         return (IHooks.afterSwap.selector, SafeCast.toInt128(SafeCast.toInt256(fee)));
     }
 
@@ -387,9 +394,12 @@ contract FundHook is IFundHook, IUnlockCallback, Initializable, UUPSUpgradeable 
         pool.tickCumulative = cumulative;
         pool.blockTick = tick;
         uint256 index = pool.index;
-        if (nowTs - pool.ring[index].timestamp >= OBSERVATION_INTERVAL) {
+        uint32 ringAt = pool.ringAt;
+        if (ringAt == 0) ringAt = pool.ring[index].timestamp;
+        if (nowTs - ringAt >= OBSERVATION_INTERVAL) {
             index = (index + 1) % OBSERVATION_SLOTS;
             pool.index = uint8(index);
+            pool.ringAt = nowTs;
             pool.ring[index] = Observation({timestamp: nowTs, tickCumulative: cumulative});
         }
     }
@@ -435,11 +445,16 @@ contract FundHook is IFundHook, IUnlockCallback, Initializable, UUPSUpgradeable 
         return abi.encode(paid, all - paid, burned);
     }
 
-    function _takeFees(address fund, Currency usdg, uint256 amount) private returns (uint256) {
+    function _takeFees(address fund, Pool storage pool, Currency usdg, uint256 amount) private returns (uint256) {
         // Rounds down: the fee never exceeds the configured share of the USDG leg.
         uint256 fee = Math.mulDiv(amount, IFund(fund).feeBps(), BPS);
         if (fee == 0) return 0;
-        poolManager.take(usdg, IFund(fund).curators(), fee);
+        address cur = pool.curators;
+        if (cur == address(0)) {
+            cur = IFund(fund).curators();
+            pool.curators = cur;
+        }
+        poolManager.take(usdg, cur, fee);
         emit SwapFeesTaken(fund, fee);
         return fee;
     }

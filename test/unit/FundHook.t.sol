@@ -175,6 +175,41 @@ contract FundHookTest is FundTestBase {
         assertEq(usdg.balanceOf(address(curators)), 10e6);
     }
 
+    function test_seedPool_cachesCuratorsAndCheckpointTime() public view {
+        uint256 slot1 = uint256(vm.load(address(hook), _poolSlot1()));
+        assertEq(address(uint160(slot1 >> 32)), address(curators));
+        assertEq(uint32(slot1 >> 192), uint32(launch.closedAt()));
+    }
+
+    function test_poolSeededBeforeCaches_fillsThemOnUse() public {
+        _swap(true, -int256(1000e6));
+        uint256 checkpointAt = block.timestamp;
+        // A pool seeded before the cache fields existed has them zero.
+        bytes32 slot = _poolSlot1();
+        uint256 slot1 = uint256(vm.load(address(hook), slot));
+        assertEq(uint8(slot1), 1);
+        vm.store(address(hook), slot, bytes32(slot1 & type(uint32).max));
+
+        vm.warp(checkpointAt + 1 minutes);
+        _swap(true, -int256(1000e6));
+        assertEq(usdg.balanceOf(address(curators)), 20e6);
+        slot1 = uint256(vm.load(address(hook), slot));
+        assertEq(address(uint160(slot1 >> 32)), address(curators));
+        // Under the checkpoint interval since the last checkpoint, read from the ring: none taken.
+        assertEq(uint32(slot1 >> 192), 0);
+        assertEq(uint8(slot1), 1);
+
+        vm.warp(checkpointAt + 6 minutes);
+        _swap(false, -int256(100e18));
+        slot1 = uint256(vm.load(address(hook), slot));
+        assertEq(uint32(slot1 >> 192), uint32(block.timestamp));
+        assertEq(uint8(slot1), 2);
+    }
+
+    function _poolSlot1() internal view returns (bytes32) {
+        return bytes32(uint256(keccak256(abi.encode(address(fund), uint256(0)))) + 1);
+    }
+
     function test_setLpFee_notAdmin_reverts() public {
         vm.prank(keeper);
         vm.expectRevert(IFundHook.NotAdmin.selector);

@@ -134,7 +134,7 @@ contract FundCurators is IFundCurators, Initializable, ReentrancyGuard {
         address staking = _staking();
         if (msg.sender != staking) revert NotStaking();
         // Not guarded: staking calls back here while {_forfeit} unstakes, which keeps `_reserved` exact.
-        _distribute(staking);
+        _distribute(staking, staking);
     }
 
     /// @inheritdoc IFundCurators
@@ -142,7 +142,7 @@ contract FundCurators is IFundCurators, Initializable, ReentrancyGuard {
         address token
     ) external override {
         if (msg.sender != _factory.modulesOf(fund).bribes) revert NotBribes();
-        if (_isRewardToken[token] || _isCoreToken(token)) return;
+        if (_isRewardToken[token] || _isCoreToken(token, _staking())) return;
         if (_rewardTokens.length >= MAX_REWARD_TOKENS) revert TooManyRewardTokens();
         _isRewardToken[token] = true;
         _rewardTokens.push(token);
@@ -178,10 +178,11 @@ contract FundCurators is IFundCurators, Initializable, ReentrancyGuard {
     function claim(
         address token
     ) external override nonReentrant returns (uint256 amount) {
-        _checkToken(token);
-        _distribute(token);
-        _settle(msg.sender, token);
-        if (token == _staking()) _rollVest(msg.sender);
+        address staking = _staking();
+        _checkToken(token, staking);
+        _distribute(token, staking);
+        _settle(msg.sender, token, staking);
+        if (token == staking) _rollVest(msg.sender, staking);
         amount = _owed[msg.sender][token];
         _owed[msg.sender][token] = 0;
         if (msg.sender == _factory.protocolCurator()) {
@@ -255,7 +256,8 @@ contract FundCurators is IFundCurators, Initializable, ReentrancyGuard {
 
     /// @inheritdoc IFundCurators
     function claimable(address curator, address token) external view override returns (uint256 amount) {
-        _checkToken(token);
+        address staking = _staking();
+        _checkToken(token, staking);
         uint256 fresh = _fresh(token);
         uint256 count = _compliantCount;
         uint256 toProtocol = count == 0 ? fresh : Math.mulDiv(fresh, _factory.protocolCuratorShareBps(), BPS);
@@ -266,7 +268,7 @@ contract FundCurators is IFundCurators, Initializable, ReentrancyGuard {
         if (curator == _factory.protocolCurator()) amount += _protocolOwed[token] + toProtocol;
         if (!_state[curator].compliant) return amount;
         uint256 debt = _debt[curator][token];
-        if (token == _staking()) {
+        if (token == staking) {
             Vest memory v = _vest[curator];
             if (v.period < _period()) amount += v.amount;
             uint256 boundary = _periodStartAcc(_accPerCurator[token]);
@@ -317,20 +319,17 @@ contract FundCurators is IFundCurators, Initializable, ReentrancyGuard {
                 break;
             }
         }
-        _forfeit(curator);
+        _forfeit(curator, tokens[2]);
         emit CuratorRemoved(curator);
     }
 
     /// @dev Burns the staked fund tokens the curator earned this period, which raises NAV for every
     ///      holder; earlier periods have unlocked and stay claimable.
-    function _forfeit(
-        address curator
-    ) internal {
-        _rollVest(curator);
+    function _forfeit(address curator, address staking) internal {
+        _rollVest(curator, staking);
         uint256 shares = _vest[curator].amount;
         if (shares == 0) return;
         delete _vest[curator];
-        address staking = _staking();
         // Unstaking accrues first, which can mint new shares here and call {notifyYield}; the shares
         // leave `_reserved` only once they are gone, so that new income is the only fresh balance.
         uint256 assets = IFundStaking(staking).unstake(shares, address(this));
@@ -339,10 +338,11 @@ contract FundCurators is IFundCurators, Initializable, ReentrancyGuard {
         emit YieldForfeited(curator, shares, assets);
     }
 
-    /// @dev Callers distribute arrived income first.
+    /// @dev Callers distribute arrived income first. `tokens` is {_allTokens} (staked fund tokens
+    ///      third), or empty while initialising.
     function _setCompliant(address curator, bool compliant, address[] memory tokens) internal {
         for (uint256 i; i < tokens.length; ++i) {
-            _settle(curator, tokens[i]);
+            _settle(curator, tokens[i], tokens[2]);
             _debt[curator][tokens[i]] = _accPerCurator[tokens[i]];
         }
         _state[curator].compliant = compliant;
@@ -353,16 +353,16 @@ contract FundCurators is IFundCurators, Initializable, ReentrancyGuard {
 
     /// @dev Staked fund tokens shared out before the current period began are unlocked; the rest
     ///      vest until it ends.
-    function _settle(address curator, address token) internal {
+    function _settle(address curator, address token, address staking) internal {
         uint256 acc = _accPerCurator[token];
         uint256 debt = _debt[curator][token];
         _debt[curator][token] = acc;
         if (!_state[curator].compliant || acc == debt) return;
-        if (token != _staking()) {
+        if (token != staking) {
             _owed[curator][token] += (acc - debt) / PRECISION;
             return;
         }
-        _rollVest(curator);
+        _rollVest(curator, staking);
         uint256 boundary = _periodStartAcc(acc);
         if (boundary > debt) _owed[curator][token] += (boundary - debt) / PRECISION;
         uint256 current = (acc - Math.max(debt, boundary)) / PRECISION;
@@ -381,30 +381,26 @@ contract FundCurators is IFundCurators, Initializable, ReentrancyGuard {
     }
 
     /// @dev Moves staked fund tokens earned in a past period to what the curator can claim.
-    function _rollVest(
-        address curator
-    ) internal {
+    function _rollVest(address curator, address staking) internal {
         Vest memory v = _vest[curator];
         if (v.amount == 0 || v.period >= _period()) return;
         delete _vest[curator];
-        _owed[curator][_staking()] += v.amount;
+        _owed[curator][staking] += v.amount;
     }
 
     /// @dev Returns every tracked token.
     function _distributeAll() internal returns (address[] memory tokens) {
         tokens = _allTokens();
         for (uint256 i; i < tokens.length; ++i) {
-            _distribute(tokens[i]);
+            _distribute(tokens[i], tokens[2]);
         }
     }
 
-    function _distribute(
-        address token
-    ) internal {
+    function _distribute(address token, address staking) internal {
         uint256 fresh = _fresh(token);
         if (fresh == 0) return;
         _reserved[token] += fresh;
-        if (token == _staking() && _accPeriod != _period()) {
+        if (token == staking && _accPeriod != _period()) {
             _accPeriod = _period();
             _accAtPeriodStart = _accPerCurator[token];
         }
@@ -434,16 +430,12 @@ contract FundCurators is IFundCurators, Initializable, ReentrancyGuard {
         emit MinStakeSet(minStakeBps_);
     }
 
-    function _checkToken(
-        address token
-    ) internal view {
-        if (!_isRewardToken[token] && !_isCoreToken(token)) revert NotFeeToken();
+    function _checkToken(address token, address staking) internal view {
+        if (!_isRewardToken[token] && !_isCoreToken(token, staking)) revert NotFeeToken();
     }
 
-    function _isCoreToken(
-        address token
-    ) internal view returns (bool) {
-        return token == fund || token == _factory.usdg() || token == _staking();
+    function _isCoreToken(address token, address staking) internal view returns (bool) {
+        return token == fund || token == staking || token == _factory.usdg();
     }
 
     /// @dev The fund token, USDG, staked fund tokens, then the bribe reward tokens.

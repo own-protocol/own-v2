@@ -12,14 +12,21 @@ interface IAggregatorV3 {
 /// @title FundOracle — per-asset USD price registry for Own Curated Funds
 /// @notice See {IFundOracle}. Never reads onchain spot prices: every value comes from an
 ///         admin-configured aggregator with a staleness bound.
-/// @dev Administered by the ProtocolRegistry's ADMIN role.
+/// @dev Administered by the ProtocolRegistry's ADMIN role. An aggregator's decimals are read once,
+///      when its feed is set.
 contract FundOracle is IFundOracle {
     bytes32 private constant ADMIN = keccak256("ADMIN");
+
+    struct StoredFeed {
+        address aggregator;
+        uint32 maxStaleness;
+        uint8 decimals;
+    }
 
     /// @inheritdoc IFundOracle
     address public immutable override registry;
 
-    mapping(address asset => Feed) private _feeds;
+    mapping(address asset => StoredFeed) private _feeds;
 
     modifier onlyAdmin() {
         if (!IProtocolRegistry(registry).hasRole(ADMIN, msg.sender)) revert NotAdmin();
@@ -42,7 +49,11 @@ contract FundOracle is IFundOracle {
             return;
         }
         if (maxStaleness == 0) revert InvalidStaleness();
-        _feeds[asset] = Feed({aggregator: aggregator, maxStaleness: maxStaleness});
+        _feeds[asset] = StoredFeed({
+            aggregator: aggregator,
+            maxStaleness: maxStaleness,
+            decimals: IAggregatorV3(aggregator).decimals()
+        });
         emit FeedSet(asset, aggregator, maxStaleness);
     }
 
@@ -50,19 +61,19 @@ contract FundOracle is IFundOracle {
     function price(
         address asset
     ) external view override returns (uint256) {
-        Feed memory feed = _feeds[asset];
+        StoredFeed memory feed = _feeds[asset];
         if (feed.aggregator == address(0)) revert NoFeed(asset);
         (, int256 answer,, uint256 updatedAt,) = IAggregatorV3(feed.aggregator).latestRoundData();
         if (answer <= 0) revert InvalidPrice(asset);
         if (updatedAt > block.timestamp || block.timestamp - updatedAt > feed.maxStaleness) revert StalePrice(asset);
-        return _normalise(uint256(answer), IAggregatorV3(feed.aggregator).decimals());
+        return _normalise(uint256(answer), feed.decimals);
     }
 
     /// @inheritdoc IFundOracle
     function tryPrice(
         address asset
     ) external view override returns (bool ok, uint256 value) {
-        Feed memory feed = _feeds[asset];
+        StoredFeed memory feed = _feeds[asset];
         if (feed.aggregator == address(0)) return (false, 0);
         try IAggregatorV3(feed.aggregator).latestRoundData() returns (
             uint80, int256 answer, uint256, uint256 updatedAt, uint80
@@ -70,11 +81,7 @@ contract FundOracle is IFundOracle {
             if (answer <= 0 || updatedAt > block.timestamp || block.timestamp - updatedAt > feed.maxStaleness) {
                 return (false, 0);
             }
-            try IAggregatorV3(feed.aggregator).decimals() returns (uint8 dec) {
-                return (true, _normalise(uint256(answer), dec));
-            } catch {
-                return (false, 0);
-            }
+            return (true, _normalise(uint256(answer), feed.decimals));
         } catch {
             return (false, 0);
         }
@@ -91,7 +98,8 @@ contract FundOracle is IFundOracle {
     function feedOf(
         address asset
     ) external view override returns (Feed memory) {
-        return _feeds[asset];
+        StoredFeed storage feed = _feeds[asset];
+        return Feed({aggregator: feed.aggregator, maxStaleness: feed.maxStaleness});
     }
 
     function _normalise(uint256 answer, uint8 dec) private pure returns (uint256) {

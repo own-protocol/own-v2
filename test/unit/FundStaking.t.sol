@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
+import {IFund} from "../../src/interfaces/IFund.sol";
 import {IFundStaking} from "../../src/interfaces/IFundStaking.sol";
 import {YieldPoint} from "../../src/interfaces/types/FundTypes.sol";
 import {FundTestBase} from "../helpers/FundTestBase.sol";
@@ -25,6 +26,28 @@ contract FundStakingTest is FundTestBase {
         vm.prank(alice);
         vm.expectRevert(IFundStaking.NotLaunch.selector);
         staking.transferLocked(bob, 1);
+    }
+
+    function test_depositorUnlockAt_cachedFromTheFund() public {
+        // Slot 5 packs fund, lastAccrual and the cached unlock time.
+        uint256 slot5 = uint256(vm.load(address(staking), bytes32(uint256(5))));
+        assertEq(address(uint160(slot5)), address(fund));
+        assertEq(uint32(slot5 >> 224), fund.depositorUnlockAt());
+    }
+
+    function test_stake_afterUnlock_skipsLaunchLockRelease() public {
+        uint256 amount = bobLiquid / 2;
+        vm.startPrank(bob);
+        fund.approve(address(staking), bobLiquid);
+        uint256 lockedStake = staking.stake(amount, bob);
+        vm.stopPrank();
+        assertEq(staking.lockedShares(bob), lockedStake);
+
+        _passDepositorLock();
+        vm.prank(bob);
+        vm.expectCall(address(fund), abi.encodeWithSelector(IFund.releaseLaunchLock.selector), 0);
+        staking.stake(amount, bob);
+        assertEq(staking.lockedShares(bob), lockedStake);
     }
 
     function test_stake_oneToOneInitially() public view {

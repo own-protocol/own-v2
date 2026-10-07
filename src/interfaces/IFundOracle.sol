@@ -43,6 +43,7 @@ interface IFundOracle {
     error InvalidPrice(address asset);
 
     /// @notice Set, replace or clear (aggregator zero) the feed for `asset`. Protocol ADMIN only.
+    ///         The aggregator's decimals are read here, so set the feed again if they ever change.
     /// @param asset        The priced token.
     /// @param aggregator   The aggregator, or zero to clear.
     /// @param maxStaleness Maximum answer age, in seconds (ignored when clearing).
