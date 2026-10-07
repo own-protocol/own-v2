@@ -1,14 +1,16 @@
 // SPDX-License-Identifier: BUSL-1.1
 pragma solidity 0.8.28;
 
-import {BPS_TO_WAD, WAD} from "../../interfaces/types/FundTypes.sol";
+import {IFund} from "../../interfaces/IFund.sol";
+import {IFundGovernor} from "../../interfaces/IFundGovernor.sol";
+import {BPS_TO_WAD, GovernanceConfig, WAD} from "../../interfaces/types/FundTypes.sol";
 import {BPS} from "../../interfaces/types/Types.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 /// @title GaugeMath — turns a week's votes into new target weights
 /// @notice Shares of the vote and targets are 1e18-scaled ("WAD"): 1e18 is every possible vote.
-///         External library, linked at deployment, so the governor stays under the contract size
-///         limit.
+///         External library, linked at deployment and run in the governor's context
+///         (delegatecall), so the governor stays under the contract size limit.
 library GaugeMath {
     /// @notice Targets: cast votes plus silent votes spread at the current weights, then the
     ///         minimum-vote and cap guardrails.
@@ -25,7 +27,7 @@ library GaugeMath {
         bool[] memory delisted,
         uint256 minVoteBps,
         uint256 maxWeightBps
-    ) public pure returns (uint256[] memory t, bool[] memory low) {
+    ) internal pure returns (uint256[] memory t, bool[] memory low) {
         uint256 n = votes.length;
         t = new uint256[](n);
         low = new bool[](n);
@@ -73,7 +75,7 @@ library GaugeMath {
         uint16[] memory current,
         uint256[] memory t,
         uint256 shiftBps
-    ) public pure returns (uint16[] memory weights) {
+    ) internal pure returns (uint16[] memory weights) {
         uint256 n = current.length;
         weights = new uint16[](n);
         uint256 maxDiff;
@@ -103,6 +105,89 @@ library GaugeMath {
             }
             ++weights[best];
             rem[best] = 0;
+        }
+    }
+
+    /// @notice Settle a tallied epoch: move the basket toward the vote's targets, drop what has
+    ///         left it and set the fund's new weights. See {IFundGovernor-flip}.
+    /// @param delisted  The governor's delisted tokens.
+    /// @param lowStreak The governor's low-vote streaks, updated here.
+    /// @param cfg       The governor's config.
+    /// @param f         The fund.
+    /// @param e         The tallied epoch.
+    /// @param assets    The basket.
+    /// @param votes     Votes cast per basket token (WAD).
+    function settle(
+        mapping(address => bool) storage delisted,
+        mapping(address => uint256) storage lowStreak,
+        GovernanceConfig storage cfg,
+        IFund f,
+        uint256 e,
+        address[] memory assets,
+        uint256[] memory votes
+    ) public {
+        uint16[] memory weights = _weights(delisted, lowStreak, cfg, f, assets, votes);
+        (address[] memory kept, uint16[] memory keptWeights) =
+            _drop(delisted, lowStreak, f, assets, weights, cfg.dropAfterEpochs);
+        f.setTargetWeights(kept, keptWeights);
+        emit IFundGovernor.EpochTallied(e, kept, keptWeights);
+    }
+
+    /// @dev The weights after this week's move, with each token's low-vote streak updated.
+    function _weights(
+        mapping(address => bool) storage delisted,
+        mapping(address => uint256) storage lowStreak,
+        GovernanceConfig storage cfg,
+        IFund f,
+        address[] memory assets,
+        uint256[] memory votes
+    ) private returns (uint16[] memory weights) {
+        uint256 n = assets.length;
+        uint16[] memory current = new uint16[](n);
+        bool[] memory isDelisted = new bool[](n);
+        for (uint256 j; j < n; ++j) {
+            current[j] = f.targetWeightBps(assets[j]);
+            isDelisted[j] = delisted[assets[j]];
+        }
+        (uint256[] memory t, bool[] memory low) = targets(votes, current, isDelisted, cfg.minVoteBps, cfg.maxWeightBps);
+        for (uint256 j; j < n; ++j) {
+            if (low[j]) ++lowStreak[assets[j]];
+            else lowStreak[assets[j]] = 0;
+        }
+        weights = move(current, t, cfg.maxWeeklyShiftBps);
+    }
+
+    /// @dev Removes tokens at weight 0 that are delisted or have been under the minimum vote for
+    ///      `dropAfter` weeks, once their balance is dust.
+    function _drop(
+        mapping(address => bool) storage delisted,
+        mapping(address => uint256) storage lowStreak,
+        IFund f,
+        address[] memory assets,
+        uint16[] memory weights,
+        uint256 dropAfter
+    ) private returns (address[] memory kept, uint16[] memory keptWeights) {
+        uint256 n = assets.length;
+        bool[] memory dropped = new bool[](n);
+        uint256 count;
+        for (uint256 j; j < n; ++j) {
+            address a = assets[j];
+            if (weights[j] == 0 && (delisted[a] || lowStreak[a] >= dropAfter) && f.isDust(a)) {
+                dropped[j] = true;
+                delisted[a] = false;
+                lowStreak[a] = 0;
+            } else {
+                ++count;
+            }
+        }
+        kept = new address[](count);
+        keptWeights = new uint16[](count);
+        uint256 k;
+        for (uint256 j; j < n; ++j) {
+            if (dropped[j]) continue;
+            kept[k] = assets[j];
+            keptWeights[k] = weights[j];
+            ++k;
         }
     }
 

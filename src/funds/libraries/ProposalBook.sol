@@ -9,6 +9,7 @@ import {IFundOracle} from "../../interfaces/IFundOracle.sol";
 import {IFundStaking} from "../../interfaces/IFundStaking.sol";
 import {BPS_TO_WAD, GovernanceConfig, MAX_BASKET_ASSETS} from "../../interfaces/types/FundTypes.sol";
 import {BPS, PRECISION} from "../../interfaces/types/Types.sol";
+import {EpochHistory} from "./EpochHistory.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 /// @title ProposalBook — the governor's proposals: raising, voting, state and execution checks
@@ -16,6 +17,11 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 ///         so the governor stays under the contract size limit. `msg.sender` is the governor's
 ///         caller and calls to the curators module come from the governor.
 library ProposalBook {
+    using EpochHistory for EpochHistory.History;
+
+    // Same weekly epoch as the governor's.
+    uint256 private constant EPOCH = 1 weeks;
+
     struct Book {
         IFundGovernor.Proposal[] proposals;
         mapping(uint256 id => address[]) curators;
@@ -34,15 +40,42 @@ library ProposalBook {
     }
 
     /// @notice Raise a proposal as `msg.sender`. See {IFundGovernor-propose}.
+    /// @param power      The caller's power history.
+    /// @param totalPower The governor's total power history.
     function propose(
         Book storage b,
+        GovernanceConfig storage cfg,
+        mapping(address => bool) storage delisted,
+        EpochHistory.History storage power,
+        EpochHistory.History storage totalPower,
         address fund,
-        GovernanceConfig memory cfg,
-        Context memory ctx,
         IFundGovernor.ProposalKind kind,
         address target,
         address replacement
     ) public returns (uint256 id) {
+        IFund f = IFund(fund);
+        if (!f.launched()) revert IFundGovernor.NotLaunched();
+        uint256 next = block.timestamp / EPOCH + 1;
+        // Empty in the launch epoch, whose stake only counts from the next one.
+        uint256 staked = Math.max(IFundStaking(f.staking()).totalSupplyAt(next - 1), totalPower.valueAt(next - 1));
+        if (staked == 0) revert IFundGovernor.GovernanceNotStarted();
+        Context memory ctx = Context({
+            power: power.valueAt(next),
+            totalStake: Math.max(staked, totalPower.valueAt(next)),
+            targetDelisted: delisted[target]
+        });
+        id = _propose(b, fund, cfg, ctx, kind, target, replacement);
+    }
+
+    function _propose(
+        Book storage b,
+        address fund,
+        GovernanceConfig storage cfg,
+        Context memory ctx,
+        IFundGovernor.ProposalKind kind,
+        address target,
+        address replacement
+    ) private returns (uint256 id) {
         IFund f = IFund(fund);
         IFundCurators cur = IFundCurators(f.curators());
         if (!cur.isCurator(msg.sender)) {
@@ -100,14 +133,41 @@ library ProposalBook {
         emit IFundGovernor.ProposalCreated(id, msg.sender, kind, target, replacement, endTime);
     }
 
-    /// @notice Vote on a proposal as `msg.sender`. See {IFundGovernor-castVote}.
+    /// @notice Vote as `msg.sender` and extend its vote lock to the proposal's end. See
+    ///         {IFundGovernor-castVote}.
+    /// @param power The caller's power history.
+    /// @return votes Votes cast, as a 1e18-scaled share of all possible votes.
+    function castVote(
+        Book storage b,
+        EpochHistory.History storage power,
+        mapping(address => uint64) storage lastDepositAt,
+        mapping(address => uint32) storage bribeLockedFrom,
+        mapping(address => uint64) storage voteLockUntil,
+        address fund,
+        uint256 id,
+        bool support
+    ) public returns (uint256 votes) {
+        uint64 endTime;
+        (votes, endTime) = _castVote(
+            b,
+            fund,
+            id,
+            support,
+            power.valueAt(block.timestamp / EPOCH + 1),
+            lastDepositAt[msg.sender],
+            bribeLockedFrom[msg.sender] != 0
+        );
+        if (endTime > voteLockUntil[msg.sender]) voteLockUntil[msg.sender] = endTime;
+    }
+
+    /// @dev Records the vote.
     /// @param power       The caller's escrowed power from the next epoch.
     /// @param lastDeposit When the caller last deposited.
     /// @param bribeLocked Whether the caller is locked for bribes (its stake then counts toward
     ///                    listing bribes).
     /// @return votes   Votes cast, as a 1e18-scaled share of all possible votes.
     /// @return endTime When voting on the proposal ends.
-    function castVote(
+    function _castVote(
         Book storage b,
         address fund,
         uint256 id,
@@ -115,7 +175,7 @@ library ProposalBook {
         uint256 power,
         uint64 lastDeposit,
         bool bribeLocked
-    ) public returns (uint256 votes, uint64 endTime) {
+    ) private returns (uint256 votes, uint64 endTime) {
         IFundGovernor.ProposalState s = state(b, id);
         if (s != IFundGovernor.ProposalState.Active) revert IFundGovernor.WrongState(s);
         IFundGovernor.Proposal storage p = b.proposals[id];
@@ -132,10 +192,11 @@ library ProposalBook {
         pv.voted = true;
         pv.support = support;
         pv.votes = votes;
-        if (bribeLocked && p.stakerShareBps != 0) pv.bribeVotes = stake;
+        uint256 bribe = bribeLocked && p.stakerShareBps != 0 ? stake : 0;
+        if (bribe != 0) pv.bribeVotes = bribe;
         if (support) {
             p.yesVotes += votes;
-            p.bribeYesVotes += pv.bribeVotes;
+            if (bribe != 0) p.bribeYesVotes += bribe;
         } else {
             p.noVotes += votes;
         }
@@ -144,29 +205,46 @@ library ProposalBook {
         emit IFundGovernor.ProposalVoteCast(id, msg.sender, support, votes);
     }
 
-    /// @notice Mark an executable proposal executed, re-check it and apply curator changes. Token
-    ///         listings and delistings are left to the governor, which returns them.
-    /// @return kind   What the proposal does.
-    /// @return target Token or curator.
+    /// @notice Mark an executable proposal executed, re-check it and apply it. See
+    ///         {IFundGovernor-execute}.
     function execute(
         Book storage b,
+        mapping(address => bool) storage delisted,
+        mapping(address => uint256) storage lowStreak,
         address fund,
-        uint256 id,
-        bool targetDelisted
-    ) public returns (IFundGovernor.ProposalKind kind, address target) {
+        uint256 id
+    ) public {
         IFundGovernor.ProposalState s = state(b, id);
         if (s != IFundGovernor.ProposalState.Executable) revert IFundGovernor.WrongState(s);
         IFundGovernor.Proposal storage p = b.proposals[id];
         p.executed = true;
-        kind = p.kind;
-        target = p.target;
-        if (!isValid(fund, kind, target, p.replacement, targetDelisted)) revert IFundGovernor.InvalidProposal();
+        IFundGovernor.ProposalKind kind = p.kind;
+        address target = p.target;
+        if (!isValid(fund, kind, target, p.replacement, delisted[target])) revert IFundGovernor.InvalidProposal();
 
-        IFundCurators cur = IFundCurators(IFund(fund).curators());
+        IFund f = IFund(fund);
+        IFundCurators cur = IFundCurators(f.curators());
         if (kind == IFundGovernor.ProposalKind.AddCurator) cur.addCurator(target);
         else if (kind == IFundGovernor.ProposalKind.RemoveCurator) cur.removeCurator(target);
         else if (kind == IFundGovernor.ProposalKind.ReplaceCurator) cur.replaceCurator(target, p.replacement);
         emit IFundGovernor.ProposalExecuted(id);
+        if (kind == IFundGovernor.ProposalKind.List) {
+            address[] memory current = f.assets();
+            uint256 n = current.length;
+            address[] memory assets = new address[](n + 1);
+            uint16[] memory weights = new uint16[](n + 1);
+            for (uint256 i; i < n; ++i) {
+                assets[i] = current[i];
+                weights[i] = f.targetWeightBps(current[i]);
+            }
+            assets[n] = target;
+            delisted[target] = false;
+            lowStreak[target] = 0;
+            f.setTargetWeights(assets, weights);
+        } else if (kind == IFundGovernor.ProposalKind.Delist) {
+            delisted[target] = true;
+            emit IFundGovernor.DelistedSet(target, true);
+        }
     }
 
     /// @notice Cancel an active proposal as its proposer.
@@ -236,11 +314,15 @@ library ProposalBook {
     ///      curator at the proposal (first in the snapshot), an equal part of the rest for each other
     ///      curator in the snapshot that is still a compliant curator.
     function _curatorVotes(address[] storage cs, address fund, uint16 curatorShareBps) private view returns (uint256) {
-        IFundCurators cur = IFundCurators(IFund(fund).curators());
+        bool isProtocol = msg.sender == cs[0];
+        if (!isProtocol) {
+            if (!_contains(cs, msg.sender)) return 0;
+            IFundCurators cur = IFundCurators(IFund(fund).curators());
+            if (!cur.isCurator(msg.sender) || !cur.isCompliant(msg.sender)) return 0;
+        }
         uint256 protocolShare = IFundFactory(IFund(fund).factory()).protocolCuratorShareBps();
         uint256 slice = uint256(curatorShareBps) * BPS_TO_WAD;
-        if (msg.sender == cs[0]) return slice * protocolShare / BPS;
-        if (!_contains(cs, msg.sender) || !cur.isCurator(msg.sender) || !cur.isCompliant(msg.sender)) return 0;
+        if (isProtocol) return slice * protocolShare / BPS;
         return slice * (BPS - protocolShare) / BPS / (cs.length - 1);
     }
 

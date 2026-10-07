@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
+import {IFund} from "../../src/interfaces/IFund.sol";
 import {IFundCurators} from "../../src/interfaces/IFundCurators.sol";
 import {IFundGovernor} from "../../src/interfaces/IFundGovernor.sol";
 import {GovernanceConfig} from "../../src/interfaces/types/FundTypes.sol";
@@ -8,6 +9,7 @@ import {FundTestBase} from "../helpers/FundTestBase.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {ERC4626} from "@openzeppelin/contracts/token/ERC20/extensions/ERC4626.sol";
+import {Vm} from "forge-std/Vm.sol";
 
 contract WrappedStake is ERC4626 {
     constructor(
@@ -460,6 +462,27 @@ contract FundGovernorTest is FundTestBase {
         _assertSum();
     }
 
+    function test_flip_talliesFromGovernorAfterSettingWeights() public {
+        _toNextEpoch();
+        uint256 e = governor.currentEpoch() - 1;
+        vm.recordLogs();
+        governor.flip();
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        Vm.Log memory set = logs[logs.length - 2];
+        Vm.Log memory tallied = logs[logs.length - 1];
+        assertEq(set.emitter, address(fund));
+        assertEq(set.topics[0], IFund.TargetWeightsSet.selector);
+        assertEq(tallied.emitter, address(governor));
+        assertEq(tallied.topics[0], IFundGovernor.EpochTallied.selector);
+        assertEq(tallied.topics[1], bytes32(e));
+        assertEq(tallied.data, set.data);
+        (address[] memory assets, uint16[] memory weights) = abi.decode(tallied.data, (address[], uint16[]));
+        assertEq(assets, fund.assets());
+        for (uint256 i; i < assets.length; ++i) {
+            assertEq(weights[i], fund.targetWeightBps(assets[i]));
+        }
+    }
+
     function test_flip_oncePerEpoch() public {
         _toNextEpoch();
         governor.flip();
@@ -774,6 +797,17 @@ contract FundGovernorTest is FundTestBase {
         vm.warp(block.timestamp + 4 days);
         governor.execute(id);
         assertTrue(governor.delisted(address(pons)));
+    }
+
+    function test_delist_emitsFromGovernorAfterExecuted() public {
+        uint256 id = _propose(curatorA, IFundGovernor.ProposalKind.Delist, address(pons));
+        _curatorsYes(id);
+        vm.warp(block.timestamp + 4 days);
+        vm.expectEmit(address(governor));
+        emit IFundGovernor.ProposalExecuted(id);
+        vm.expectEmit(address(governor));
+        emit IFundGovernor.DelistedSet(address(pons), true);
+        governor.execute(id);
     }
 
     function test_cancel_byProposerOnly() public {

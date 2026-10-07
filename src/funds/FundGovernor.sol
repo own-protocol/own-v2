@@ -22,7 +22,7 @@ import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
 import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {ReentrancyGuardTransient} from "@openzeppelin/contracts/utils/ReentrancyGuardTransient.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 
@@ -35,7 +35,7 @@ import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 ///      `sum(floor(power * weightBps / BPS))`. Every change rewrites only the current epoch and the
 ///      next one, keeping each aggregate exactly equal to the sum of its accounts' contributions.
 ///      Shares of the vote are 1e18-scaled ("WAD"): 1e18 is every possible vote.
-contract FundGovernor is IFundGovernor, Initializable, ReentrancyGuard {
+contract FundGovernor is IFundGovernor, Initializable, ReentrancyGuardTransient {
     using SafeERC20 for IERC20;
     using EpochHistory for EpochHistory.History;
 
@@ -113,7 +113,7 @@ contract FundGovernor is IFundGovernor, Initializable, ReentrancyGuard {
     }
 
     /// @inheritdoc IFundGovernor
-    function initialize(address fund_, GovernanceConfig calldata config_) external override initializer {
+    function initialize(address fund_, GovernanceConfig memory config_) public override initializer {
         if (fund_ == address(0)) revert ZeroAddress();
         fund = fund_;
         _setConfig(config_);
@@ -191,11 +191,9 @@ contract FundGovernor is IFundGovernor, Initializable, ReentrancyGuard {
         EpochHistory.History storage h = _power[msg.sender];
         uint256 active = h.valueAt(e);
         uint256 next = h.valueAt(e + 1);
-        Allocation storage al = _latestAlloc(msg.sender);
-        // Re-adding the allocation once locked moves its votes into the bribe tallies as well.
-        _applyAlloc(al, e, active, next, false, false);
         bribeLockedFrom[msg.sender] = SafeCast.toUint32(e);
-        _applyAlloc(al, e, active, next, true, true);
+        // The allocation's votes join the bribe tallies; the staker tallies already hold them.
+        _applyAlloc(_latestAlloc(msg.sender), e, active, next, true, true, false);
         emit BribeLocked(msg.sender, e);
     }
 
@@ -217,7 +215,7 @@ contract FundGovernor is IFundGovernor, Initializable, ReentrancyGuard {
         uint256 next = h.valueAt(e + 1);
         bool locked = bribeLockedFrom[msg.sender] != 0;
         Allocation storage old = _latestAlloc(msg.sender);
-        _applyAlloc(old, e, active, next, false, locked);
+        _applyAlloc(old, e, active, next, false, locked, true);
 
         uint32 e32 = SafeCast.toUint32(e);
         uint32[] storage epochs = _allocEpochs[msg.sender];
@@ -225,7 +223,7 @@ contract FundGovernor is IFundGovernor, Initializable, ReentrancyGuard {
         Allocation storage al = _allocs[msg.sender][e32];
         al.tokens = tokens;
         al.weightsBps = weightsBps;
-        _applyAlloc(al, e, active, next, true, locked);
+        _applyAlloc(al, e, active, next, true, locked, true);
 
         emit Voted(msg.sender, e, tokens, weightsBps);
     }
@@ -243,16 +241,12 @@ contract FundGovernor is IFundGovernor, Initializable, ReentrancyGuard {
         nextEpochToTally = e + 1;
         _tallied[e] = true;
 
-        IFundCurators(f.curators()).checkCompliance(e);
+        IFundCurators cur = IFundCurators(f.curators());
+        cur.checkCompliance(e);
 
         address[] memory assets = f.assets();
-        uint256[] memory votes = _castVotes(f, e, assets);
-        (uint256[] memory targets, uint16[] memory weightsNow) = _targets(f, assets, votes);
-        uint16[] memory weights = GaugeMath.move(weightsNow, targets, _config.maxWeeklyShiftBps);
-        (address[] memory kept, uint16[] memory keptWeights) = _drop(f, assets, weights);
-        f.setTargetWeights(kept, keptWeights);
-
-        emit EpochTallied(e, kept, keptWeights);
+        uint256[] memory votes = _castVotes(f, cur, e, assets);
+        GaugeMath.settle(delisted, lowStreak, _config, f, e, assets, votes);
     }
 
     // ──────────────────────────────────────────────────────────
@@ -261,47 +255,23 @@ contract FundGovernor is IFundGovernor, Initializable, ReentrancyGuard {
 
     /// @inheritdoc IFundGovernor
     function propose(ProposalKind kind, address target, address replacement) external override returns (uint256 id) {
-        IFund f = IFund(fund);
-        if (!f.launched()) revert NotLaunched();
-        uint256 next = currentEpoch() + 1;
-        uint256 staked = _stakedSupplyNow(f, next - 1);
-        // Empty in the launch epoch, whose stake only counts from the next one.
-        if (staked == 0) revert GovernanceNotStarted();
-        ProposalBook.Context memory ctx = ProposalBook.Context({
-            power: _power[msg.sender].valueAt(next),
-            totalStake: Math.max(staked, _totalPower.valueAt(next)),
-            targetDelisted: delisted[target]
-        });
-        id = ProposalBook.propose(_book, fund, _config, ctx, kind, target, replacement);
+        id = ProposalBook.propose(
+            _book, _config, delisted, _power[msg.sender], _totalPower, fund, kind, target, replacement
+        );
     }
 
     /// @inheritdoc IFundGovernor
     function castVote(uint256 id, bool support_) external override nonReentrant returns (uint256 votes) {
-        uint64 endTime;
-        (votes, endTime) = ProposalBook.castVote(
-            _book,
-            fund,
-            id,
-            support_,
-            _power[msg.sender].valueAt(currentEpoch() + 1),
-            lastDepositAt[msg.sender],
-            bribeLockedFrom[msg.sender] != 0
+        votes = ProposalBook.castVote(
+            _book, _power[msg.sender], lastDepositAt, bribeLockedFrom, _voteLockUntil, fund, id, support_
         );
-        if (endTime > _voteLockUntil[msg.sender]) _voteLockUntil[msg.sender] = endTime;
     }
 
     /// @inheritdoc IFundGovernor
     function execute(
         uint256 id
     ) external override nonReentrant {
-        address pending = id < _book.proposals.length ? _book.proposals[id].target : address(0);
-        (ProposalKind kind, address target) = ProposalBook.execute(_book, fund, id, delisted[pending]);
-        if (kind == ProposalKind.List) {
-            _list(IFund(fund), target);
-        } else if (kind == ProposalKind.Delist) {
-            delisted[target] = true;
-            emit DelistedSet(target, true);
-        }
+        ProposalBook.execute(_book, delisted, lowStreak, fund, id);
     }
 
     /// @inheritdoc IFundGovernor
@@ -331,8 +301,8 @@ contract FundGovernor is IFundGovernor, Initializable, ReentrancyGuard {
 
     /// @inheritdoc IFundGovernor
     function setConfig(
-        GovernanceConfig calldata config_
-    ) external override onlyAdmin {
+        GovernanceConfig memory config_
+    ) public override onlyAdmin {
         _setConfig(config_);
     }
 
@@ -517,31 +487,35 @@ contract FundGovernor is IFundGovernor, Initializable, ReentrancyGuard {
                 e,
                 _delta(oldActive * bps / BPS, active * bps / BPS),
                 _delta(oldNext * bps / BPS, next * bps / BPS),
-                locked
+                locked,
+                true
             );
         }
     }
 
+    /// @dev Adds (or removes) an allocation's votes to the staker tallies when `staker` and to the
+    ///      bribe tallies when `locked`. Powers come from a uint224 history, so the casts are safe.
     function _applyAlloc(
         Allocation storage al,
         uint256 e,
         uint256 active,
         uint256 next,
         bool add,
-        bool locked
+        bool locked,
+        bool staker
     ) internal {
         uint256 n = al.tokens.length;
         for (uint256 i; i < n; ++i) {
             uint256 bps = al.weightsBps[i];
-            int256 dActive = SafeCast.toInt256(active * bps / BPS);
-            int256 dNext = SafeCast.toInt256(next * bps / BPS);
-            if (add) _addVotes(al.tokens[i], e, dActive, dNext, locked);
-            else _addVotes(al.tokens[i], e, -dActive, -dNext, locked);
+            int256 dActive = int256(active * bps / BPS);
+            int256 dNext = int256(next * bps / BPS);
+            if (!add) (dActive, dNext) = (-dActive, -dNext);
+            _addVotes(al.tokens[i], e, dActive, dNext, locked, staker);
         }
     }
 
-    function _addVotes(address token, uint256 e, int256 dActive, int256 dNext, bool locked) internal {
-        _stakerVotes[token].add(e, dActive, dNext);
+    function _addVotes(address token, uint256 e, int256 dActive, int256 dNext, bool locked, bool staker) internal {
+        if (staker) _stakerVotes[token].add(e, dActive, dNext);
         if (locked) _bribeVotes[token].add(e, dActive, dNext);
     }
 
@@ -585,7 +559,12 @@ contract FundGovernor is IFundGovernor, Initializable, ReentrancyGuard {
     ///      votes follow the curators (see {IFundCurators-voteShares}), so each voting curator casts
     ///      its part of the base slice plus its part of them. Records what bribe claims need: the
     ///      stakers' share and the totals.
-    function _castVotes(IFund f, uint256 e, address[] memory assets) internal returns (uint256[] memory votes) {
+    function _castVotes(
+        IFund f,
+        IFundCurators cur,
+        uint256 e,
+        address[] memory assets
+    ) internal returns (uint256[] memory votes) {
         uint256 n = assets.length;
         votes = new uint256[](n);
         uint256 curatorWad = uint256(_config.curatorShareBps) * BPS_TO_WAD;
@@ -601,7 +580,7 @@ contract FundGovernor is IFundGovernor, Initializable, ReentrancyGuard {
                 silent -= votes[j];
             }
         }
-        _curatorVotes(IFundCurators(f.curators()), e, assets, votes, curatorWad, silent);
+        _curatorVotes(cur, e, assets, votes, curatorWad, silent);
         for (uint256 j; j < n; ++j) {
             _epochVotes[e][assets[j]] = votes[j];
         }
@@ -630,77 +609,9 @@ contract FundGovernor is IFundGovernor, Initializable, ReentrancyGuard {
         }
     }
 
-    /// @dev Targets for the tally, with each token's low-vote streak updated.
-    function _targets(
-        IFund f,
-        address[] memory assets,
-        uint256[] memory votes
-    ) internal returns (uint256[] memory t, uint16[] memory current) {
-        uint256 n = assets.length;
-        current = new uint16[](n);
-        bool[] memory isDelisted = new bool[](n);
-        for (uint256 j; j < n; ++j) {
-            current[j] = f.targetWeightBps(assets[j]);
-            isDelisted[j] = delisted[assets[j]];
-        }
-        bool[] memory low;
-        (t, low) = GaugeMath.targets(votes, current, isDelisted, _config.minVoteBps, _config.maxWeightBps);
-        for (uint256 j; j < n; ++j) {
-            if (low[j]) ++lowStreak[assets[j]];
-            else lowStreak[assets[j]] = 0;
-        }
-    }
-
-    /// @dev Removes tokens at weight 0 that are delisted or have been under the minimum vote for
-    ///      `dropAfterEpochs` weeks, once their balance is dust.
-    function _drop(
-        IFund f,
-        address[] memory assets,
-        uint16[] memory weights
-    ) internal returns (address[] memory kept, uint16[] memory keptWeights) {
-        uint256 n = assets.length;
-        bool[] memory dropped = new bool[](n);
-        uint256 count;
-        uint256 dropAfter = _config.dropAfterEpochs;
-        for (uint256 j; j < n; ++j) {
-            address a = assets[j];
-            if (weights[j] == 0 && (delisted[a] || lowStreak[a] >= dropAfter) && f.isDust(a)) {
-                dropped[j] = true;
-                delisted[a] = false;
-                lowStreak[a] = 0;
-            } else {
-                ++count;
-            }
-        }
-        kept = new address[](count);
-        keptWeights = new uint16[](count);
-        uint256 k;
-        for (uint256 j; j < n; ++j) {
-            if (dropped[j]) continue;
-            kept[k] = assets[j];
-            keptWeights[k] = weights[j];
-            ++k;
-        }
-    }
-
     // ──────────────────────────────────────────────────────────
-    //  Internal: proposals
+    //  Internal: helpers
     // ──────────────────────────────────────────────────────────
-
-    function _list(IFund f, address token) internal {
-        address[] memory current = f.assets();
-        uint256 n = current.length;
-        address[] memory assets = new address[](n + 1);
-        uint16[] memory weights = new uint16[](n + 1);
-        for (uint256 i; i < n; ++i) {
-            assets[i] = current[i];
-            weights[i] = f.targetWeightBps(current[i]);
-        }
-        assets[n] = token;
-        delisted[token] = false;
-        lowStreak[token] = 0;
-        f.setTargetWeights(assets, weights);
-    }
 
     /// @dev All staked tokens, the stakers' "all possible votes": stake that is not escrowed here
     ///      counts as silent. Taken from the staking module's per-epoch record, which stake made
@@ -715,7 +626,7 @@ contract FundGovernor is IFundGovernor, Initializable, ReentrancyGuard {
     }
 
     function _setConfig(
-        GovernanceConfig calldata config_
+        GovernanceConfig memory config_
     ) internal {
         if (!GovernanceConfigLib.isValid(config_)) revert InvalidConfig();
         _config = config_;
@@ -729,7 +640,8 @@ contract FundGovernor is IFundGovernor, Initializable, ReentrancyGuard {
         return type(uint256).max;
     }
 
+    // Both values come from (or were just written to) a uint224 history, so they fit int256.
     function _delta(uint256 from, uint256 to) internal pure returns (int256) {
-        return SafeCast.toInt256(to) - SafeCast.toInt256(from);
+        return int256(to) - int256(from);
     }
 }
