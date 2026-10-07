@@ -718,6 +718,41 @@ contract FundLaunchTest is FundTestBase {
         assertApproxEqAbs(staking.balanceOf(address(launch)), 0, 10);
     }
 
+    function test_claim_assetWorthUnderOneWeiEarnsNothingAndDoesNotBlock() public {
+        address carol = makeAddr("carol");
+        vm.warp(launch.endTime() - 1);
+        _refreshFeeds();
+        _deposit(alice, address(net), 100e9);
+        _deposit(alice, address(usdg), 15_000e6);
+        _deposit(bob, address(tsla), 85e18);
+        _deposit(bob, address(usdg), 10_000e6);
+        // 49 wei of PONS at $0.02 a token: the asset's whole raise is worth under 1 wei of USD.
+        _deposit(bob, address(pons), 24);
+        _deposit(carol, address(pons), 25);
+        _deposit(carol, address(usdg), 1000e6);
+        vm.warp(launch.endTime());
+        _refreshFeeds();
+        launch.finalize();
+        assertEq(uint8(launch.status()), uint8(IFundLaunch.Status.Succeeded));
+        assertEq(launch.rawValue(address(pons)), 0);
+
+        uint256 bobShares = launch.claimable(bob);
+        assertGt(bobShares, 0);
+        vm.prank(bob);
+        assertEq(launch.claim(true), bobShares);
+
+        uint256 aliceShares = launch.claimable(alice);
+        uint256 carolShares = launch.claimable(carol);
+        assertGt(carolShares, 0);
+        address[] memory accounts = new address[](2);
+        accounts[0] = alice;
+        accounts[1] = carol;
+        launch.distribute(accounts);
+        assertEq(staking.balanceOf(alice), aliceShares);
+        assertEq(staking.balanceOf(carol), carolShares);
+        assertLe(aliceShares + bobShares + carolShares, launch.stakedShares());
+    }
+
     function test_depositValues_reportsTargetsAndValues() public {
         _deposit(alice, address(net), 100e9);
         _deposit(bob, address(tsla), 10e18);
