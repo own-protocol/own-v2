@@ -136,7 +136,7 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
     error HookNotSet();
 
     modifier onlyAdmin() {
-        if (!isAdmin(msg.sender)) revert NotAdmin();
+        _onlyAdmin();
         _;
     }
 
@@ -224,7 +224,7 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
         address hook_
     ) external onlyAdmin {
         if (hook != address(0)) revert HookAlreadySet();
-        if (hook_ == address(0)) revert ZeroAddress();
+        _nonZero(hook_);
         hook = hook_;
         emit HookSet(hook_);
     }
@@ -244,7 +244,8 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
         ) revert InvalidLaunchConfig();
         uint256 supply = p.launchSupply == 0 ? DEFAULT_LAUNCH_SUPPLY : p.launchSupply;
 
-        m.fund = _proxy(Module.Fund, abi.encodeCall(IFund.initialize, (p)));
+        // initialize takes the same single argument, so createFund's calldata is forwarded as is.
+        m.fund = _proxy(Module.Fund, bytes.concat(IFund.initialize.selector, msg.data[4:]));
         m.launch = _proxy(
             Module.Launch,
             abi.encodeCall(IFundLaunch.initialize, (m.fund, p.minRaiseUsd, p.targetRaiseUsd, supply, cfg))
@@ -269,7 +270,7 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
     function setOracle(
         address oracle_
     ) external override onlyAdmin {
-        if (oracle_ == address(0)) revert ZeroAddress();
+        _nonZero(oracle_);
         oracle = oracle_;
         emit OracleSet(oracle_);
     }
@@ -278,7 +279,7 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
     function setAuctions(
         address auctions_
     ) external override onlyAdmin {
-        if (auctions_ == address(0)) revert ZeroAddress();
+        _nonZero(auctions_);
         auctions = auctions_;
         emit AuctionsSet(auctions_);
     }
@@ -295,7 +296,7 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
     function setProtocolCurator(
         address curator
     ) external override onlyAdmin {
-        if (curator == address(0)) revert ZeroAddress();
+        _nonZero(curator);
         protocolCurator = curator;
         emit ProtocolCuratorSet(curator);
     }
@@ -329,14 +330,14 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
 
     /// @inheritdoc IFundFactory
     function setBribeToken(address token, bool allowed) external override onlyAdmin {
-        if (token == address(0)) revert ZeroAddress();
+        _nonZero(token);
         isBribeToken[token] = allowed;
         emit BribeTokenSet(token, allowed);
     }
 
     /// @inheritdoc IFundFactory
     function setEligibleAsset(address token, bool eligible) external override onlyAdmin {
-        if (token == address(0)) revert ZeroAddress();
+        _nonZero(token);
         isEligibleAsset[token] = eligible;
         emit EligibleAssetSet(token, eligible);
     }
@@ -351,14 +352,14 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
 
     /// @inheritdoc IFundFactory
     function setLauncher(address launcher, bool allowed) external override onlyAdmin {
-        if (launcher == address(0)) revert ZeroAddress();
+        _nonZero(launcher);
         isLauncher[launcher] = allowed;
         emit LauncherSet(launcher, allowed);
     }
 
     /// @inheritdoc IFundFactory
     function setRouter(address router, bool allowed) external override onlyAdmin {
-        if (router == address(0)) revert ZeroAddress();
+        _nonZero(router);
         isRouter[router] = allowed;
         emit RouterSet(router, allowed);
     }
@@ -417,7 +418,10 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
     function setPlatformMetadata(
         PlatformMetadata calldata metadata
     ) external override onlyAdmin {
-        _platformMetadata = metadata;
+        PlatformMetadata storage pm = _platformMetadata;
+        pm.name = metadata.name;
+        pm.description = metadata.description;
+        pm.url = metadata.url;
         emit PlatformMetadataSet(metadata);
     }
 
@@ -496,4 +500,14 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
     function _authorizeUpgrade(
         address
     ) internal view override onlyAdmin {}
+
+    function _onlyAdmin() private view {
+        if (!isAdmin(msg.sender)) revert NotAdmin();
+    }
+
+    function _nonZero(
+        address account
+    ) private pure {
+        if (account == address(0)) revert ZeroAddress();
+    }
 }

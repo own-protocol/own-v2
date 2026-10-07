@@ -8,6 +8,7 @@ import {FundFactory} from "../../src/funds/FundFactory.sol";
 import {FundGovernor} from "../../src/funds/FundGovernor.sol";
 import {FundLaunch} from "../../src/funds/FundLaunch.sol";
 import {FundStaking} from "../../src/funds/FundStaking.sol";
+import {IFund} from "../../src/interfaces/IFund.sol";
 import {IFundCurators} from "../../src/interfaces/IFundCurators.sol";
 import {IFundFactory} from "../../src/interfaces/IFundFactory.sol";
 import {
@@ -19,6 +20,7 @@ import {
 } from "../../src/interfaces/types/FundTypes.sol";
 import {FundTestBase} from "../helpers/FundTestBase.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
+import {BeaconProxy} from "@openzeppelin/contracts/proxy/beacon/BeaconProxy.sol";
 import {UpgradeableBeacon} from "@openzeppelin/contracts/proxy/beacon/UpgradeableBeacon.sol";
 
 contract FundV2Mock is Fund {
@@ -373,6 +375,42 @@ contract FundFactoryTest is FundTestBase {
         vm.prank(admin);
         factory.setPlatformMetadata(m);
         assertEq(factory.platformMetadata().name, "Own Curated Funds");
+        assertEq(factory.platformMetadata().description, "About Own.");
+        assertEq(factory.platformMetadata().url, "https://own.money");
+
+        m = PlatformMetadata({name: "Own", description: "", url: "https://own.money/funds"});
+        vm.prank(admin);
+        factory.setPlatformMetadata(m);
+        assertEq(keccak256(abi.encode(factory.platformMetadata())), keccak256(abi.encode(m)));
+    }
+
+    function test_createFund_initializesFundWithItsParams() public {
+        CreateFundParams memory p = _defaultParams();
+        p.description = "A longer description that does not fit in one storage slot, to cover long strings.";
+        p.feeBps = 250;
+        p.maxPremiumBps = 1500;
+        vm.prank(admin);
+        Fund f = Fund(factory.createFund(p).fund);
+
+        // The same params ABI-encoded for initialize, as the factory used to send them.
+        address fundBeacon = factory.beacon(IFundFactory.Module.Fund);
+        vm.prank(address(factory));
+        Fund ref = Fund(address(new BeaconProxy(fundBeacon, abi.encodeCall(IFund.initialize, (p)))));
+        assertEq(f.factory(), ref.factory());
+        assertEq(keccak256(abi.encode(f.metadata())), keccak256(abi.encode(ref.metadata())));
+        assertEq(f.manager(), ref.manager());
+        assertEq(f.feeBps(), ref.feeBps());
+        assertEq(f.feeBps(), 250);
+        assertEq(f.maxPremiumBps(), ref.maxPremiumBps());
+        assertEq(f.assets(), ref.assets());
+        address[] memory assets = f.assets();
+        for (uint256 i; i < assets.length; ++i) {
+            assertEq(f.targetWeightBps(assets[i]), ref.targetWeightBps(assets[i]));
+            assertEq(f.targetWeightBps(assets[i]), p.weightsBps[i]);
+        }
+        assertEq(keccak256(abi.encode(f.lockOptions())), keccak256(abi.encode(ref.lockOptions())));
+        assertEq(keccak256(abi.encode(f.lockOptions())), keccak256(abi.encode(p.lockOptions)));
+        assertEq(f.description(), p.description);
     }
 
     function test_setProtocolCurator() public {

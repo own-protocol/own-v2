@@ -140,7 +140,8 @@ contract FundLaunch is IFundLaunch, Initializable, ReentrancyGuard {
         if (block.timestamp >= endTime) revert WindowClosed();
         if (depositsPaused) revert DepositsPaused();
         if (amount == 0) revert ZeroAmount();
-        if (asset != _usdg && (!IFund(fund).isAsset(asset) || IFund(fund).targetWeightBps(asset) == 0)) {
+        // Only listed assets have a weight.
+        if (asset != _usdg && IFund(fund).targetWeightBps(asset) == 0) {
             revert AssetNotAccepted(asset);
         }
 
@@ -240,8 +241,10 @@ contract FundLaunch is IFundLaunch, Initializable, ReentrancyGuard {
         address[] calldata accounts
     ) external override nonReentrant {
         if (status != Status.Succeeded) revert WrongStatus();
+        IFundStaking staking = IFundStaking(IFund(fund).staking());
         for (uint256 i; i < accounts.length; ++i) {
-            if (claimable(accounts[i]) != 0) _settle(accounts[i], true);
+            uint256 shares = claimable(accounts[i]);
+            if (shares != 0) _settle(staking, accounts[i], shares, true);
         }
     }
 
@@ -250,8 +253,9 @@ contract FundLaunch is IFundLaunch, Initializable, ReentrancyGuard {
         bool stake
     ) external override nonReentrant returns (uint256 amount) {
         if (status != Status.Succeeded) revert WrongStatus();
-        if (claimable(msg.sender) == 0) revert NothingToClaim();
-        amount = _settle(msg.sender, stake);
+        uint256 shares = claimable(msg.sender);
+        if (shares == 0) revert NothingToClaim();
+        amount = _settle(IFundStaking(IFund(fund).staking()), msg.sender, shares, stake);
     }
 
     /// @inheritdoc IFundLaunch
@@ -307,17 +311,19 @@ contract FundLaunch is IFundLaunch, Initializable, ReentrancyGuard {
         uint256 n = assets.length;
         values = new uint256[](n);
         weightsBps = new uint16[](n);
+        IFundOracle o = _oracle();
         for (uint256 i; i < n; ++i) {
             weightsBps[i] = uint16(_targetBps(assets[i]));
-            values[i] = _liveValue(assets[i]);
+            values[i] = _liveValue(o, assets[i]);
         }
     }
 
     /// @inheritdoc IFundLaunch
     function raisedValue() public view override returns (uint256 value) {
         uint256 n = _launchAssets.length;
+        IFundOracle o = _oracle();
         for (uint256 i; i < n; ++i) {
-            value += _liveValue(_launchAssets[i]);
+            value += _liveValue(o, _launchAssets[i]);
         }
     }
 
@@ -337,26 +343,28 @@ contract FundLaunch is IFundLaunch, Initializable, ReentrancyGuard {
         shares = Math.mulDiv(stakedShares, points, totalPoints);
     }
 
-    /// @dev Hands `account` its staked shares, locked, or unstakes them to it with the launch lock
-    ///      moved onto the fund tokens.
-    function _settle(address account, bool stake) internal returns (uint256 amount) {
-        uint256 shares = claimable(account);
+    /// @dev Hands `account` its claimable `shares` staked, locked, or unstakes them to it with the
+    ///      launch lock moved onto the fund tokens.
+    function _settle(
+        IFundStaking staking,
+        address account,
+        uint256 shares,
+        bool stake
+    ) internal returns (uint256 amount) {
         settled[account] = true;
-        IFund f = IFund(fund);
-        IFundStaking staking = IFundStaking(f.staking());
         if (stake) {
             amount = shares;
             staking.transferLocked(account, shares);
         } else {
             amount = staking.unstake(shares, account);
-            f.addLaunchLock(account, amount);
+            IFund(fund).addLaunchLock(account, amount);
         }
         emit Claimed(account, amount, stake);
     }
 
     /// @dev Records closing prices and raw values; returns the raise V.
     function _closeValues() internal returns (uint256 raised) {
-        IFundOracle o = IFundOracle(_factory.oracle());
+        IFundOracle o = _oracle();
         uint256 n = _launchAssets.length;
         for (uint256 i; i < n; ++i) {
             address a = _launchAssets[i];
@@ -411,12 +419,14 @@ contract FundLaunch is IFundLaunch, Initializable, ReentrancyGuard {
     }
 
     /// @dev Zero when the asset has no fresh price.
-    function _liveValue(
-        address asset
-    ) internal view returns (uint256) {
+    function _liveValue(IFundOracle o, address asset) internal view returns (uint256) {
         bool ok = true;
         uint256 price = PRECISION;
-        if (asset != _usdg) (ok, price) = IFundOracle(_factory.oracle()).tryPrice(asset);
+        if (asset != _usdg) (ok, price) = o.tryPrice(asset);
         return ok ? Math.mulDiv(totalDeposited[asset], price, 10 ** IERC20Metadata(asset).decimals()) : 0;
+    }
+
+    function _oracle() internal view returns (IFundOracle) {
+        return IFundOracle(_factory.oracle());
     }
 }

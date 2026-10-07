@@ -77,15 +77,14 @@ contract FundAuctions is IFundAuctions, ReentrancyGuard {
         if (!fac.isFund(fund)) revert NotFund();
         _checkManager(fac, fund);
         if (!IFundHook(fac.hook()).isSeeded(fund)) revert NotSeeded();
-        _checkAssets(fac, fund, sellAsset, buyAsset);
+        _checkAssets(fund, sellAsset, buyAsset);
         if (amount == 0 || amount > IERC20(sellAsset).balanceOf(fund)) revert ZeroAmount();
 
         IFundOracle o = IFundOracle(fac.oracle());
-        address usdg = _usdg;
         uint256 rate = Math.mulDiv(
-            _price(o, usdg, sellAsset) * 10 ** IERC20Metadata(buyAsset).decimals(),
+            _price(o, sellAsset) * 10 ** IERC20Metadata(buyAsset).decimals(),
             PRECISION,
-            _price(o, usdg, buyAsset) * 10 ** IERC20Metadata(sellAsset).decimals()
+            _price(o, buyAsset) * 10 ** IERC20Metadata(sellAsset).decimals()
         );
         uint256 startPrice = Math.mulDiv(rate, BPS + startPremiumBps, BPS);
         // Rounds up: the floor never sits below the oracle bound.
@@ -134,9 +133,10 @@ contract FundAuctions is IFundAuctions, ReentrancyGuard {
         IFundFactory fac = IFundFactory(factory);
         address fund = l.fund;
         (address sellAsset, address buyAsset) = (l.sellAsset, l.buyAsset);
-        _checkAssets(fac, fund, sellAsset, buyAsset);
-        uint256 soldValue = _checkValue(fac, sellAsset, amount, buyAsset, payment);
-        _trackVolume(fac, fund, soldValue);
+        _checkAssets(fund, sellAsset, buyAsset);
+        IFundOracle o = IFundOracle(fac.oracle());
+        uint256 soldValue = _checkValue(o, sellAsset, amount, buyAsset, payment);
+        _trackVolume(fac, o, fund, soldValue);
         l.remaining -= uint128(amount);
 
         uint256 before = IERC20(buyAsset).balanceOf(fund);
@@ -182,7 +182,8 @@ contract FundAuctions is IFundAuctions, ReentrancyGuard {
         address fund
     ) external view override returns (uint256) {
         Volume memory v = _volume[fund];
-        uint256 cap = _cap(IFundFactory(factory), fund);
+        IFundFactory fac = IFundFactory(factory);
+        uint256 cap = _cap(fac, IFundOracle(fac.oracle()), fund);
         uint256 drained = Math.mulDiv(cap, block.timestamp - v.updatedAt, 1 days);
         return v.amount > drained ? v.amount - drained : 0;
     }
@@ -212,9 +213,9 @@ contract FundAuctions is IFundAuctions, ReentrancyGuard {
         if (msg.sender != IFund(fund).manager() && !fac.isAdmin(msg.sender)) revert NotManager();
     }
 
-    function _checkAssets(IFundFactory fac, address fund, address sellAsset, address buyAsset) internal view {
+    function _checkAssets(address fund, address sellAsset, address buyAsset) internal view {
         IFund f = IFund(fund);
-        if (sellAsset == buyAsset || (!f.isAsset(sellAsset) && sellAsset != _usdg) || !f.isAsset(buyAsset)) {
+        if (sellAsset == buyAsset || (sellAsset != _usdg && !f.isAsset(sellAsset)) || !f.isAsset(buyAsset)) {
             revert InvalidAssets();
         }
     }
@@ -222,33 +223,30 @@ contract FundAuctions is IFundAuctions, ReentrancyGuard {
     /// @dev Re-checks the fill against the live oracle with the floor discount; returns the value
     ///      sold.
     function _checkValue(
-        IFundFactory fac,
+        IFundOracle o,
         address sellAsset,
         uint256 amount,
         address buyAsset,
         uint256 payment
     ) internal view returns (uint256 soldValue) {
-        IFundOracle o = IFundOracle(fac.oracle());
-        address usdg = _usdg;
-        soldValue = _value(sellAsset, amount, _price(o, usdg, sellAsset));
-        uint256 paidValue = _value(buyAsset, payment, _price(o, usdg, buyAsset));
+        soldValue = _value(sellAsset, amount, _price(o, sellAsset));
+        uint256 paidValue = _value(buyAsset, payment, _price(o, buyAsset));
         uint256 minValue = Math.mulDiv(soldValue, BPS - floorDiscountBps, BPS, Math.Rounding.Ceil);
         if (paidValue < minValue) revert BelowOracleBound();
     }
 
     /// @dev The same daily cap as the fund's router swaps, measured against the fund's basket and
     ///      idle USDG, tracked separately for auctions.
-    function _trackVolume(IFundFactory fac, address fund, uint256 soldValue) internal {
+    function _trackVolume(IFundFactory fac, IFundOracle o, address fund, uint256 soldValue) internal {
         Volume memory v = _volume[fund];
-        uint256 cap = _cap(fac, fund);
+        uint256 cap = _cap(fac, o, fund);
         uint256 drained = Math.mulDiv(cap, block.timestamp - v.updatedAt, 1 days);
         uint256 volume = (v.amount > drained ? v.amount - drained : 0) + soldValue;
         if (volume > cap) revert VolumeExceeded();
         _volume[fund] = Volume({amount: SafeCast.toUint192(volume), updatedAt: uint64(block.timestamp)});
     }
 
-    function _cap(IFundFactory fac, address fund) internal view returns (uint256) {
-        IFundOracle o = IFundOracle(fac.oracle());
+    function _cap(IFundFactory fac, IFundOracle o, address fund) internal view returns (uint256) {
         address[] memory assets = IFund(fund).assets();
         uint256 tradable;
         for (uint256 i; i < assets.length; ++i) {
@@ -260,8 +258,8 @@ contract FundAuctions is IFundAuctions, ReentrancyGuard {
         return Math.mulDiv(tradable, fac.rebalanceVolumeCapBps(), BPS);
     }
 
-    function _price(IFundOracle o, address usdg, address asset) internal view returns (uint256) {
-        return asset == usdg ? PRECISION : o.price(asset);
+    function _price(IFundOracle o, address asset) internal view returns (uint256) {
+        return asset == _usdg ? PRECISION : o.price(asset);
     }
 
     function _value(address asset, uint256 amount, uint256 price) internal view returns (uint256) {
