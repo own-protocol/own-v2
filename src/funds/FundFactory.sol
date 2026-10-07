@@ -123,6 +123,8 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
     /// @inheritdoc IFundFactory
     address public override auctions;
 
+    address private _sweepRecipient;
+
     /// @notice Emitted once, when the hook is wired.
     /// @param hook The hook.
     event HookSet(address hook);
@@ -282,6 +284,14 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
     }
 
     /// @inheritdoc IFundFactory
+    function setSweepRecipient(
+        address recipient
+    ) external override onlyAdmin {
+        _sweepRecipient = recipient;
+        emit SweepRecipientSet(recipient);
+    }
+
+    /// @inheritdoc IFundFactory
     function setProtocolCurator(
         address curator
     ) external override onlyAdmin {
@@ -415,6 +425,12 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
     function upgradeModule(Module module, address implementation) external override onlyAdmin {
         UpgradeableBeacon(_beacons[module]).upgradeTo(implementation);
         emit ModuleUpgraded(module, implementation);
+    }
+
+    /// @inheritdoc IFundFactory
+    function sweepRecipient() external view override returns (address) {
+        address recipient = _sweepRecipient;
+        return recipient != address(0) ? recipient : IProtocolRegistry(registry).treasury();
     }
 
     /// @inheritdoc IFundFactory

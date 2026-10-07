@@ -52,6 +52,10 @@ interface IFundFactory {
     /// @param auctions New auction house.
     event AuctionsSet(address auctions);
 
+    /// @notice Emitted when the sweep recipient changes.
+    /// @param recipient New recipient (zero for the registry treasury).
+    event SweepRecipientSet(address recipient);
+
     /// @notice Emitted when the protocol curator changes.
     /// @param curator New protocol curator.
     event ProtocolCuratorSet(address curator);
@@ -162,6 +166,12 @@ interface IFundFactory {
     /// @param auctions_ The auction house.
     function setAuctions(
         address auctions_
+    ) external;
+
+    /// @notice Set where funds sweep tokens that are not backing. Admin only.
+    /// @param recipient The wallet, or zero for the registry treasury.
+    function setSweepRecipient(
+        address recipient
     ) external;
 
     /// @notice Set the price oracle every fund reads. Admin only. The new oracle must already price
@@ -295,6 +305,11 @@ interface IFundFactory {
     /// @notice The auction house every fund rebalances through (zero until set).
     /// @return The auction house.
     function auctions() external view returns (address);
+
+    /// @notice Where funds sweep tokens that are not backing: the admin-set wallet, else the
+    ///         registry treasury.
+    /// @return The recipient.
+    function sweepRecipient() external view returns (address);
 
     /// @notice The USDG token every pool is paired with.
     /// @return USDG.

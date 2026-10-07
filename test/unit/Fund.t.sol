@@ -2,7 +2,9 @@
 pragma solidity 0.8.28;
 
 import {Fund} from "../../src/funds/Fund.sol";
+
 import {IFund} from "../../src/interfaces/IFund.sol";
+import {IFundFactory} from "../../src/interfaces/IFundFactory.sol";
 import {IFundHook} from "../../src/interfaces/IFundHook.sol";
 import {IFundStaking} from "../../src/interfaces/IFundStaking.sol";
 import {CreateFundParams, FundMetadata, LockOption, PlatformMetadata} from "../../src/interfaces/types/FundTypes.sol";
@@ -1018,35 +1020,65 @@ contract FundTest is FundTestBase {
     //  sweep
     // ──────────────────────────────────────────────────────────
 
-    function test_sweep_strayToken() public {
+    function test_sweep_strayToken_toTreasuryByDefault() public {
+        address treasury = makeAddr("treasury");
+        vm.mockCall(address(registry), abi.encodeWithSignature("treasury()"), abi.encode(treasury));
         spare.mint(address(fund), 50e18);
         uint256 navBefore = fund.navPerShare();
         vm.prank(admin);
-        uint256 amount = fund.sweep(address(spare), protocolCurator);
+        uint256 amount = fund.sweep(address(spare));
         assertEq(amount, 50e18);
-        assertEq(spare.balanceOf(protocolCurator), 50e18);
+        assertEq(spare.balanceOf(treasury), 50e18);
         assertEq(spare.balanceOf(address(fund)), 0);
         assertEq(fund.navPerShare(), navBefore);
     }
 
+    function test_sweep_toAdminSetRecipient() public {
+        address wallet = makeAddr("wallet");
+        vm.prank(admin);
+        factory.setSweepRecipient(wallet);
+        assertEq(factory.sweepRecipient(), wallet);
+        spare.mint(address(fund), 50e18);
+        vm.prank(admin);
+        fund.sweep(address(spare));
+        assertEq(spare.balanceOf(wallet), 50e18);
+    }
+
+    function test_setSweepRecipient_notAdmin_reverts() public {
+        vm.prank(keeper);
+        vm.expectRevert(IFundFactory.NotAdmin.selector);
+        factory.setSweepRecipient(keeper);
+    }
+
     function test_sweep_backing_reverts() public {
+        vm.prank(admin);
+        factory.setSweepRecipient(admin);
         address[3] memory backing = [address(net), address(usdg), address(fund)];
         for (uint256 i; i < backing.length; ++i) {
             vm.prank(admin);
             vm.expectRevert(abi.encodeWithSelector(IFund.NotSweepable.selector, backing[i]));
-            fund.sweep(backing[i], admin);
+            fund.sweep(backing[i]);
         }
     }
 
-    function test_sweep_notAdmin_reverts() public {
-        vm.prank(keeper);
-        vm.expectRevert(IFund.NotAdmin.selector);
-        fund.sweep(address(spare), keeper);
+    function test_sweep_byOperator() public {
+        vm.prank(admin);
+        factory.setSweepRecipient(admin);
+        spare.mint(address(fund), 5e18);
+        vm.prank(operator);
+        fund.sweep(address(spare));
+        assertEq(spare.balanceOf(admin), 5e18);
     }
 
-    function test_sweep_zeroRecipient_reverts() public {
+    function test_sweep_notOperator_reverts() public {
+        vm.prank(keeper);
+        vm.expectRevert(IFund.NotOperator.selector);
+        fund.sweep(address(spare));
+    }
+
+    function test_sweep_noRecipient_reverts() public {
         vm.prank(admin);
         vm.expectRevert(IFund.ZeroAddress.selector);
-        fund.sweep(address(spare), address(0));
+        fund.sweep(address(spare));
     }
 }

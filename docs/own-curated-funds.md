@@ -254,10 +254,12 @@ Updated 2026-10-07: Dutch-auction rebalancing with admin router swaps as the fal
   tokens, the eligibility list, the yield cap, governance rules and each fund's fee, curator
   yield, minimum curator stake, lock options, yield curve and premium ceiling; add and remove
   curators (never the protocol curator); veto proposals; can delist a token directly; can
-  withdraw the pool position back into the fund; can sweep tokens the fund holds that are not
-  backing (stray tokens, a dropped asset's dust), but never a basket asset, USDG or the fund token.
+  withdraw the pool position back into the fund; set the sweep recipient
+  (`factory.setSweepRecipient`; the registry treasury until set).
 - **Operator (registry `OPERATOR` role, or an admin):** pauses and unpauses fund mints and launch
-  deposits. Redeeming cannot be paused.
+  deposits, and sweeps tokens the fund holds that are not backing (stray tokens, a dropped asset's
+  dust, rewards a basket asset pays out such as stock tokens) to the sweep recipient, never a basket
+  asset, USDG or the fund token. Redeeming cannot be paused.
 - **Manager (Own keeper):** trusted only within the rebalance bounds above. After seeding it only
   opens and cancels auction lots; it can no longer swap. Between the launch
   close and pool seeding it is trusted more: no daily volume cap, only the 2% per-swap bound, so

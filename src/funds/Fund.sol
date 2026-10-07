@@ -383,9 +383,14 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuard {
     }
 
     /// @inheritdoc IFund
-    function sweep(address token, address to) external override onlyAdmin nonReentrant returns (uint256 amount) {
+    function sweep(
+        address token
+    ) external override nonReentrant returns (uint256 amount) {
+        IFundFactory fac = IFundFactory(factory);
+        if (!fac.isOperator(msg.sender)) revert NotOperator();
+        address to = fac.sweepRecipient();
         if (to == address(0)) revert ZeroAddress();
-        if (_basket[token].listed || token == address(this) || token == IFundFactory(factory).usdg()) {
+        if (_basket[token].listed || token == address(this) || token == fac.usdg()) {
             revert NotSweepable(token);
         }
         amount = IERC20(token).balanceOf(address(this));

@@ -121,7 +121,7 @@ interface IFund is IERC20 {
     /// @param paused Whether minting is paused.
     event MintPausedSet(bool paused);
 
-    /// @notice Emitted when the admin sweeps a token that is not backing.
+    /// @notice Emitted when an operator sweeps a token that is not backing.
     /// @param token  The token.
     /// @param to     Recipient.
     /// @param amount Amount sent.
@@ -399,13 +399,16 @@ interface IFund is IERC20 {
         uint16 maxPremiumBps_
     ) external;
 
-    /// @notice Send the fund's whole balance of a token that is not backing to `to`: tokens sent to
-    ///         the fund by mistake, or dust left by a dropped asset. Admin only. Basket assets, USDG
-    ///         and the fund token cannot be swept.
+    /// @notice Send the fund's whole balance of a token that is not backing to the factory's sweep
+    ///         recipient (the registry treasury unless the admin set another wallet): tokens sent to
+    ///         the fund by mistake, dust left by a dropped asset, or rewards paid out by a basket
+    ///         asset (e.g. stock tokens) for redistribution. Operator (registry OPERATOR or ADMIN).
+    ///         Basket assets, USDG and the fund token cannot be swept.
     /// @param token The token.
-    /// @param to    Recipient.
     /// @return amount Amount sent.
-    function sweep(address token, address to) external returns (uint256 amount);
+    function sweep(
+        address token
+    ) external returns (uint256 amount);
 
     /// @notice The factory.
     /// @return The factory.
