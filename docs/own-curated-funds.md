@@ -268,7 +268,8 @@ Updated 2026-10-07: Dutch-auction rebalancing with admin router swaps as the fal
   `distribute()` in batches.
 - **Price keeper:** pushes hub prices for assets without a Chainlink feed, bounded per push by
   `maxMoveBps`; the admin can push any price to recover from a large real move.
-- **Oracle feeds:** basket prices come from admin-set feeds (Chainlink, or `FundPriceHub` feeds);
+- **Oracle feeds:** basket prices come from admin-set feeds (Chainlink, or `FundPriceHub` feeds),
+  whose decimals are read once when the feed is set (set it again if they ever change);
   the fund's market price and the position value come from its own pool TWAP. Mint deposits are taken in kind, so no oracle values
   them (the oracles only set NAV and the mint price). Redeem depends on neither.
 - **USDG:** treated as $1.
@@ -280,8 +281,9 @@ Updated 2026-10-07: Dutch-auction rebalancing with admin router swaps as the fal
 
 ## Deployment
 
-`script/funds/DeployFundsRobinhood.s.sol` deploys the oracle, the six module implementations, the
-factory (with `PROTOCOL_CURATOR` as the protocol curator), the hook (mining its CREATE2 salt with
+`script/funds/DeployFundsRobinhood.s.sol` deploys the oracle, the six module implementations (the
+`Fund` implementation takes USDG in its constructor and only initializes from a factory with the
+same USDG), the factory (with `PROTOCOL_CURATOR` as the protocol curator), the hook (mining its CREATE2 salt with
 `script/funds/HookMiner.sol`), the redeem and mint zaps, the auction house and the price hub (with
 `PRICE_KEEPER` as its keeper), all administered by the ProtocolRegistry at
 `PROTOCOL_REGISTRY_ROBINHOOD`. It wires the hook, the auction house and platform metadata and
