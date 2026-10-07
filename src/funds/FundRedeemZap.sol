@@ -6,11 +6,11 @@ import {IFundFactory} from "../interfaces/IFundFactory.sol";
 import {IFundRedeemZap} from "../interfaces/IFundRedeemZap.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {ReentrancyGuardTransient} from "@openzeppelin/contracts/utils/ReentrancyGuardTransient.sol";
 
 /// @title FundRedeemZap — redeem to USDG
 /// @notice See {IFundRedeemZap}.
-contract FundRedeemZap is IFundRedeemZap, ReentrancyGuard {
+contract FundRedeemZap is IFundRedeemZap, ReentrancyGuardTransient {
     using SafeERC20 for IERC20;
 
     /// @inheritdoc IFundRedeemZap

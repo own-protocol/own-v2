@@ -10,7 +10,7 @@ import {BPS, PRECISION} from "../interfaces/types/Types.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {ReentrancyGuardTransient} from "@openzeppelin/contracts/utils/ReentrancyGuardTransient.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 
@@ -18,7 +18,7 @@ import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 /// @notice See {IFundAuctions}.
 /// @dev Holds no tokens: a fill pulls the payment from the filler into the fund, then the fund
 ///      pays the sold asset out to the filler.
-contract FundAuctions is IFundAuctions, ReentrancyGuard {
+contract FundAuctions is IFundAuctions, ReentrancyGuardTransient {
     using SafeERC20 for IERC20;
 
     /// @notice Hard cap on the start premium.

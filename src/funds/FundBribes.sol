@@ -10,7 +10,7 @@ import {BPS} from "../interfaces/types/Types.sol";
 import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {ReentrancyGuardTransient} from "@openzeppelin/contracts/utils/ReentrancyGuardTransient.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 /// @title FundBribes — weight-vote and listing bribes for one fund
@@ -20,7 +20,7 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 ///      claim is the claimant's share of a total fixed before claims open (bribes close when the
 ///      epoch is tallied or the proposal stops being active), rounded down, so claims never exceed
 ///      the bribe.
-contract FundBribes is IFundBribes, Initializable, ReentrancyGuard {
+contract FundBribes is IFundBribes, Initializable, ReentrancyGuardTransient {
     using SafeERC20 for IERC20;
 
     /// @inheritdoc IFundBribes

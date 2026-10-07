@@ -21,7 +21,7 @@ import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {ReentrancyGuardTransient} from "@openzeppelin/contracts/utils/ReentrancyGuardTransient.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 
@@ -30,7 +30,7 @@ import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 /// @dev Deployed as a beacon proxy per fund by {FundFactory}; storage is append-only across
 ///      upgrades. The ERC-20 name and symbol live in this contract's storage because the inherited
 ///      ones are constructor-set on the implementation.
-contract Fund is IFund, ERC20, Initializable, ReentrancyGuard {
+contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
     using SafeERC20 for IERC20;
 
     /// @notice Maximum number of basket assets (bounds every loop over the basket).

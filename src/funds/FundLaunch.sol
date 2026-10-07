@@ -13,7 +13,7 @@ import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.s
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {ReentrancyGuardTransient} from "@openzeppelin/contracts/utils/ReentrancyGuardTransient.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 /// @title FundLaunch — deposit window, graduation and pool seeding for one fund
@@ -29,7 +29,7 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 ///      (amount + timeWeight * earlyYieldRate) * price * credit, where credit is the asset's
 ///      post-haircut value over its raw value. Depositors share C in proportion to points. USDG is
 ///      the last launch asset, priced at $1.
-contract FundLaunch is IFundLaunch, Initializable, ReentrancyGuard {
+contract FundLaunch is IFundLaunch, Initializable, ReentrancyGuardTransient {
     using SafeERC20 for IERC20;
 
     /// @inheritdoc IFundLaunch

@@ -17,7 +17,7 @@ import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {ReentrancyGuardTransient} from "@openzeppelin/contracts/utils/ReentrancyGuardTransient.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {TickMath} from "v4-core/src/libraries/TickMath.sol";
@@ -30,7 +30,7 @@ import {PoolKey} from "v4-core/src/types/PoolKey.sol";
 ///      makes first-depositor donation attacks unprofitable. Staked LP positions are paid from one
 ///      yield-per-liquidity counter: every full-range position holds the same fund tokens per unit
 ///      of liquidity at a given price, so the counter pays each in proportion to its fund tokens.
-contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuard {
+contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuardTransient {
     using SafeERC20 for IERC20;
     using EpochHistory for EpochHistory.History;
     using PoolIdLibrary for PoolKey;

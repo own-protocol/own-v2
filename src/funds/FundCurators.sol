@@ -10,7 +10,7 @@ import {BPS, PRECISION} from "../interfaces/types/Types.sol";
 import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {ReentrancyGuardTransient} from "@openzeppelin/contracts/utils/ReentrancyGuardTransient.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 
@@ -22,7 +22,7 @@ import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 ///      curators compliant at that moment (all of it goes to the protocol curator while none is).
 ///      Every change to the compliant set first distributes what has arrived, so income always goes
 ///      to the curators that were compliant when it came in.
-contract FundCurators is IFundCurators, Initializable, ReentrancyGuard {
+contract FundCurators is IFundCurators, Initializable, ReentrancyGuardTransient {
     using SafeERC20 for IERC20;
 
     /// @notice Hard cap on the minimum stake.
