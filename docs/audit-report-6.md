@@ -1,6 +1,6 @@
 # Own Protocol v2 — Audit Report & Remediation Status (Pass 6)
 
-**Branch:** `money-market-funds` · **Audited commit:** `3a96ffe` · **Last updated:** 2026-10-06 (A6-H-01, A6-H-02, A6-M-05 fixed in `e4a69df`)
+**Branch:** `money-market-funds` · **Audited commit:** `3a96ffe` · **Last updated:** 2026-10-07 (A6-H-01, A6-H-02, A6-M-05 fixed in `e4a69df`; A6-L-02 in `5db4443`)
 
 Multi-agent audit (solidity-auditor v4, 12-agent pipeline — 9 specialty attackers + 3 gap-hunters)
 of every Own Curated Funds contract, run in **loop mode with 2 passes**: pass 2 was handed what
@@ -80,7 +80,7 @@ dead agent" was overridden because every agent had to finish.
 | Critical | 0     | 0     | 0    | —         |
 | High     | 2     | 2     | 0    | —         |
 | Medium   | 9     | 1     | 8    | —         |
-| Low      | 4     | 0     | 4    | —         |
+| Low      | 4     | 1     | 3    | —         |
 | Info     | 0     | 0     | 0    | —         |
 
 | ID      | Severity | Finding                                                                          | Conf | Status |
@@ -97,7 +97,7 @@ dead agent" was overridden because every agent had to finish.
 | A6-M-08 | Medium   | After `setGovernor`, bribers refund bribes that voters already claimed            | 75   | Open |
 | A6-M-09 | Medium   | `stake` moves the caller's launch lock onto any receiver                          | 85   | Open |
 | A6-L-01 | Low      | A bribe posted before a failed launch can never be refunded                       | 80   | Open |
-| A6-L-02 | Low      | A reward token whose balance drops below `_reserved` blocks flip and curator changes | 75 | Open |
+| A6-L-02 | Low      | A reward token whose balance drops below `_reserved` blocks flip and curator changes | 75 | Fixed |
 | A6-L-03 | Low      | Mint charges pool USDG at the TWAP, so a minter after a 30-minute dump underpays   | 65   | Open |
 | A6-L-04 | Low      | Before seeding, every rebalance swap skips the daily volume cap (manager-only)    | lead | Open |
 
@@ -371,7 +371,7 @@ exit; the cut has already gone to the curators module.
 **Suggested fix:** revert `postBribe` (and `postListingBribe`) until `launched`, or refund when
 the launch status is Failed.
 
-## A6-L-02 — A reward token whose balance drops below `_reserved` blocks flip and curator changes (Low, Open)
+## A6-L-02 — A reward token whose balance drops below `_reserved` blocks flip and curator changes (Low, Fixed 2026-10-07)
 
 `FundCurators._distribute` (`src/funds/FundCurators.sol:404`) and `_distributeAll`. 4 agents in
 pass 1, 1 in pass 2.
@@ -385,6 +385,11 @@ behaves this way.
 
 **Suggested fix:** `fresh = bal > reserved ? bal − reserved : 0`, clamp `_reserved` down to the
 balance, and add an unregister path.
+
+**Fix (`5db4443`):** a balance below `_reserved` now counts as zero new income in `_distribute`,
+`claimable` and `lockedYieldOf`, so a shortfall no longer reverts flip, curator changes or claims.
+Still open: a token whose `balanceOf` itself reverts would still block `_distributeAll`, and there
+is no way to unregister a reward token (see A6-M-03).
 
 ## A6-L-03 — Mint charges pool USDG at the TWAP, so a minter after a 30-minute dump underpays (Low, Open)
 
@@ -445,7 +450,8 @@ seed deadline after which anyone may seed.
   (10-04 Low #6, now early-close only). (2 agents)
 - **Dust deposit of a cheap asset divides by zero in that depositor's claim** —
   `FundLaunch.claimable`; self-harm plus any `distribute` batch that includes the account
-  (10-04 Low #7). (6 agents)
+  (10-04 Low #7). (6 agents) **Fixed in `894d35c`** (an asset worth under 1 wei of USD earns no
+  points, so no division by zero).
 - **Launch pays recorded amounts** — `FundLaunch.refund` / `finalize`; a balance-lowering stock
   token blocks finalize and the last refunds.
 - **Delisted token keeps its weight when every other token is under the minimum vote** —
