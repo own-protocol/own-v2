@@ -22,6 +22,10 @@ import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.s
 import {UpgradeableBeacon} from "@openzeppelin/contracts/proxy/beacon/UpgradeableBeacon.sol";
 
 contract FundV2Mock is Fund {
+    constructor(
+        address usdg_
+    ) Fund(usdg_) {}
+
     function version() external pure returns (uint256) {
         return 2;
     }
@@ -252,7 +256,7 @@ contract FundFactoryTest is FundTestBase {
 
     function _bareFactory() internal returns (FundFactory bare) {
         address[6] memory impls = [
-            address(new Fund()),
+            address(new Fund(address(usdg))),
             address(new FundLaunch()),
             address(new FundStaking(positionManager)),
             address(new FundGovernor()),
@@ -502,7 +506,7 @@ contract FundFactoryTest is FundTestBase {
 
     function test_upgradeModule_upgradesExistingFunds() public {
         _createFund();
-        FundV2Mock v2 = new FundV2Mock();
+        FundV2Mock v2 = new FundV2Mock(address(usdg));
         vm.prank(admin);
         factory.upgradeModule(IFundFactory.Module.Fund, address(v2));
         assertEq(UpgradeableBeacon(factory.beacon(IFundFactory.Module.Fund)).implementation(), address(v2));

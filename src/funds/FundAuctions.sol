@@ -41,6 +41,8 @@ contract FundAuctions is IFundAuctions, ReentrancyGuard {
     /// @inheritdoc IFundAuctions
     address public immutable override factory;
 
+    address private immutable _usdg;
+
     /// @inheritdoc IFundAuctions
     uint16 public override startPremiumBps;
 
@@ -60,6 +62,7 @@ contract FundAuctions is IFundAuctions, ReentrancyGuard {
     constructor(address factory_, uint16 startPremiumBps_, uint16 floorDiscountBps_, uint32 duration_) {
         if (factory_ == address(0)) revert ZeroAddress();
         factory = factory_;
+        _usdg = IFundFactory(factory_).usdg();
         _setConfig(startPremiumBps_, floorDiscountBps_, duration_);
     }
 
@@ -78,7 +81,7 @@ contract FundAuctions is IFundAuctions, ReentrancyGuard {
         if (amount == 0 || amount > IERC20(sellAsset).balanceOf(fund)) revert ZeroAmount();
 
         IFundOracle o = IFundOracle(fac.oracle());
-        address usdg = fac.usdg();
+        address usdg = _usdg;
         uint256 rate = Math.mulDiv(
             _price(o, usdg, sellAsset) * 10 ** IERC20Metadata(buyAsset).decimals(),
             PRECISION,
@@ -211,7 +214,7 @@ contract FundAuctions is IFundAuctions, ReentrancyGuard {
 
     function _checkAssets(IFundFactory fac, address fund, address sellAsset, address buyAsset) internal view {
         IFund f = IFund(fund);
-        if (sellAsset == buyAsset || (!f.isAsset(sellAsset) && sellAsset != fac.usdg()) || !f.isAsset(buyAsset)) {
+        if (sellAsset == buyAsset || (!f.isAsset(sellAsset) && sellAsset != _usdg) || !f.isAsset(buyAsset)) {
             revert InvalidAssets();
         }
     }
@@ -226,7 +229,7 @@ contract FundAuctions is IFundAuctions, ReentrancyGuard {
         uint256 payment
     ) internal view returns (uint256 soldValue) {
         IFundOracle o = IFundOracle(fac.oracle());
-        address usdg = fac.usdg();
+        address usdg = _usdg;
         soldValue = _value(sellAsset, amount, _price(o, usdg, sellAsset));
         uint256 paidValue = _value(buyAsset, payment, _price(o, usdg, buyAsset));
         uint256 minValue = Math.mulDiv(soldValue, BPS - floorDiscountBps, BPS, Math.Rounding.Ceil);
@@ -252,7 +255,7 @@ contract FundAuctions is IFundAuctions, ReentrancyGuard {
             uint256 bal = IERC20(assets[i]).balanceOf(fund);
             if (bal != 0) tradable += _value(assets[i], bal, o.price(assets[i]));
         }
-        address usdg = fac.usdg();
+        address usdg = _usdg;
         tradable += _value(usdg, IERC20(usdg).balanceOf(fund), PRECISION);
         return Math.mulDiv(tradable, fac.rebalanceVolumeCapBps(), BPS);
     }

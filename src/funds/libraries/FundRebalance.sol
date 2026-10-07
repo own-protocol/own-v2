@@ -22,6 +22,7 @@ library FundRebalance {
     ///         {IFund-rebalance}. Until the fund's pool is seeded (the launch rebalance) the swap may
     ///         buy USDG and the volume cap does not apply.
     /// @param factory         The fund's factory.
+    /// @param usdg            The factory's USDG.
     /// @param assets          The basket.
     /// @param basket          Basket membership.
     /// @param params          The swap.
@@ -30,6 +31,7 @@ library FundRebalance {
     /// @return newVolume Volume after this swap.
     function rebalance(
         address factory,
+        address usdg,
         address[] storage assets,
         mapping(address => BasketEntry) storage basket,
         IFund.RebalanceParams calldata params,
@@ -40,7 +42,6 @@ library FundRebalance {
         if (!fac.isRouter(params.router) || basket[params.router].listed || params.router == address(this)) {
             revert IFund.RouterNotAllowed();
         }
-        address usdg = fac.usdg();
         bool launching = !IFundHook(fac.hook()).isSeeded(address(this));
         if (
             (!basket[params.sellAsset].listed && params.sellAsset != usdg)
@@ -58,12 +59,13 @@ library FundRebalance {
             tracked[i] = assets[i];
         }
         tracked[n] = usdg;
-        (uint256 sold, uint256 bought) = _swap(params, tracked);
-
-        uint256 soldValue = _checkSwapValue(fac, params, sold, bought);
+        uint256 soldValue;
+        {
+            (uint256 sold, uint256 bought) = _swap(params, tracked);
+            soldValue = _checkSwapValue(fac, usdg, params, sold, bought);
+            emit IFund.Rebalanced(params.sellAsset, sold, params.buyAsset, bought);
+        }
         newVolume = launching ? volume : _trackVolume(fac, tracked, soldValue, volume, volumeUpdatedAt);
-
-        emit IFund.Rebalanced(params.sellAsset, sold, params.buyAsset, bought);
     }
 
     function _swap(
@@ -116,12 +118,12 @@ library FundRebalance {
     ///      value sold.
     function _checkSwapValue(
         IFundFactory fac,
+        address usdg,
         IFund.RebalanceParams calldata params,
         uint256 sold,
         uint256 bought
     ) private view returns (uint256 soldValue) {
         IFundOracle o = IFundOracle(fac.oracle());
-        address usdg = fac.usdg();
         soldValue = _value(params.sellAsset, sold, params.sellAsset == usdg ? PRECISION : o.price(params.sellAsset));
         uint256 boughtValue =
             _value(params.buyAsset, bought, params.buyAsset == usdg ? PRECISION : o.price(params.buyAsset));

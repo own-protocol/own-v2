@@ -143,7 +143,7 @@ contract DeployFundsRobinhood is Script {
 
     function _deployFactory(address registry, address oracle, address protocolCurator) internal returns (FundFactory) {
         address[6] memory impls = [
-            address(new Fund()),
+            address(new Fund(USDG)),
             address(new FundLaunch()),
             address(new FundStaking(POSITION_MANAGER)),
             address(new FundGovernor()),

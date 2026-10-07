@@ -16,12 +16,15 @@ contract FundRedeemZap is IFundRedeemZap, ReentrancyGuard {
     /// @inheritdoc IFundRedeemZap
     address public immutable override factory;
 
+    address private immutable _usdg;
+
     /// @param factory_ The fund factory.
     constructor(
         address factory_
     ) {
         if (factory_ == address(0)) revert ZeroAddress();
         factory = factory_;
+        _usdg = IFundFactory(factory_).usdg();
     }
 
     /// @inheritdoc IFundRedeemZap
@@ -38,7 +41,7 @@ contract FundRedeemZap is IFundRedeemZap, ReentrancyGuard {
         address[] memory assets = IFund(fund).assets();
         if (routes.length != assets.length) revert LengthMismatch();
 
-        IERC20 usdg = IERC20(fac.usdg());
+        IERC20 usdg = IERC20(_usdg);
         IERC20(fund).safeTransferFrom(msg.sender, address(this), shares);
         (uint256[] memory amounts,) = IFund(fund).redeem(shares, address(this), new uint256[](0), 0);
         _swap(fac, fund, address(usdg), assets, amounts, routes);

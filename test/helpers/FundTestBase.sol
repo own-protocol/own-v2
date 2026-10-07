@@ -94,7 +94,7 @@ abstract contract FundTestBase is Test {
 
         FundFactory factoryImpl = new FundFactory();
         address[6] memory impls = [
-            address(new Fund()),
+            address(new Fund(address(usdg))),
             address(new FundLaunch()),
             address(new FundStaking(positionManager)),
             address(new FundGovernor()),

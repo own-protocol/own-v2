@@ -16,12 +16,15 @@ contract FundMintZap is IFundMintZap, ReentrancyGuard {
     /// @inheritdoc IFundMintZap
     address public immutable override factory;
 
+    address private immutable _usdg;
+
     /// @param factory_ The fund factory.
     constructor(
         address factory_
     ) {
         if (factory_ == address(0)) revert ZeroAddress();
         factory = factory_;
+        _usdg = IFundFactory(factory_).usdg();
     }
 
     /// @inheritdoc IFundMintZap
@@ -50,7 +53,7 @@ contract FundMintZap is IFundMintZap, ReentrancyGuard {
         }
 
         address[] memory assets = IFund(fund).assets();
-        address usdg = fac.usdg();
+        address usdg = _usdg;
         _approveAll(fund, assets, usdg, true);
         shares = IFund(fund).mint(navShares, lockOption, minSharesOut, receiver);
         _approveAll(fund, assets, usdg, false);

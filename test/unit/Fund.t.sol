@@ -10,6 +10,8 @@ import {IFundStaking} from "../../src/interfaces/IFundStaking.sol";
 import {CreateFundParams, FundMetadata, LockOption, PlatformMetadata} from "../../src/interfaces/types/FundTypes.sol";
 import {FundTestBase} from "../helpers/FundTestBase.sol";
 import {MockSwapRouter} from "../helpers/MockSwapRouter.sol";
+import {BeaconProxy} from "@openzeppelin/contracts/proxy/beacon/BeaconProxy.sol";
+import {UpgradeableBeacon} from "@openzeppelin/contracts/proxy/beacon/UpgradeableBeacon.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
@@ -950,9 +952,22 @@ contract FundTest is FundTestBase {
     }
 
     function test_implementation_cannotBeInitialized() public {
-        Fund impl = new Fund();
+        Fund impl = new Fund(address(usdg));
         vm.expectRevert();
         impl.initialize(_defaultParams());
+    }
+
+    function test_constructor_zeroUsdg_reverts() public {
+        vm.expectRevert(IFund.ZeroAddress.selector);
+        new Fund(address(0));
+    }
+
+    function test_initialize_factoryWithOtherUsdg_reverts() public {
+        Fund impl = new Fund(address(spare));
+        UpgradeableBeacon beacon = new UpgradeableBeacon(address(impl), address(this));
+        vm.prank(address(factory));
+        vm.expectRevert(IFund.NotFactory.selector);
+        new BeaconProxy(address(beacon), abi.encodeCall(IFund.initialize, (_defaultParams())));
     }
 
     function test_metadata() public view {
