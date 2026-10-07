@@ -303,6 +303,27 @@ contract FundCuratorsTest is FundTestBase {
         assertEq(curators.rewardTokens().length, 35);
     }
 
+    function test_rewardTokenBelowReserved_doesNotBlock() public {
+        vm.prank(address(bribes));
+        curators.registerRewardToken(address(spare));
+        spare.mint(address(curators), 1000e18);
+        // Adding a curator shares out the balance, reserving all of it.
+        vm.prank(admin);
+        curators.addCurator(curatorC);
+        uint256 owed = curators.claimable(curatorA, address(spare));
+        assertApproxEqAbs(owed, _curatorPart(1000e18, 2), 1);
+
+        // The token rebases down below what is reserved: no new income, and nothing reverts.
+        spare.burn(address(curators), 400e18);
+        assertEq(curators.claimable(curatorA, address(spare)), owed);
+        vm.prank(admin);
+        curators.removeCurator(curatorC);
+        _toNextEpoch();
+        governor.flip();
+        vm.prank(curatorA);
+        assertEq(curators.claim(address(spare)), owed);
+    }
+
     function test_setMinStake_adminOnlyAndCapped() public {
         vm.prank(curatorA);
         vm.expectRevert(IFundCurators.NotAdmin.selector);

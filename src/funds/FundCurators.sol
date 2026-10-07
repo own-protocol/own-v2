@@ -256,7 +256,7 @@ contract FundCurators is IFundCurators, Initializable, ReentrancyGuard {
     /// @inheritdoc IFundCurators
     function claimable(address curator, address token) external view override returns (uint256 amount) {
         _checkToken(token);
-        uint256 fresh = IERC20(token).balanceOf(address(this)) - _reserved[token];
+        uint256 fresh = _fresh(token);
         uint256 count = _compliantCount;
         uint256 toProtocol = count == 0 ? fresh : Math.mulDiv(fresh, _factory.protocolCuratorShareBps(), BPS);
         uint256 acc = _accPerCurator[token];
@@ -285,7 +285,7 @@ contract FundCurators is IFundCurators, Initializable, ReentrancyGuard {
         uint256 q = _period();
         if (v.period == q) shares = v.amount;
         if (_state[curator].compliant) {
-            uint256 fresh = IERC20(staking).balanceOf(address(this)) - _reserved[staking];
+            uint256 fresh = _fresh(staking);
             uint256 toProtocol = Math.mulDiv(fresh, _factory.protocolCuratorShareBps(), BPS);
             uint256 acc = _accPerCurator[staking];
             uint256 start = Math.max(_debt[curator][staking], _periodStartAcc(acc));
@@ -401,7 +401,7 @@ contract FundCurators is IFundCurators, Initializable, ReentrancyGuard {
     function _distribute(
         address token
     ) internal {
-        uint256 fresh = IERC20(token).balanceOf(address(this)) - _reserved[token];
+        uint256 fresh = _fresh(token);
         if (fresh == 0) return;
         _reserved[token] += fresh;
         if (token == _staking() && _accPeriod != _period()) {
@@ -414,6 +414,16 @@ contract FundCurators is IFundCurators, Initializable, ReentrancyGuard {
         _protocolOwed[token] += toProtocol;
         // Rounds down; the remainder stays reserved and is never paid out.
         if (fresh > toProtocol) _accPerCurator[token] += Math.mulDiv(fresh - toProtocol, PRECISION, count);
+    }
+
+    /// @dev Income not yet shared out; none while the balance is below what is owed (a token that
+    ///      rebased down or charged a transfer fee).
+    function _fresh(
+        address token
+    ) internal view returns (uint256) {
+        uint256 bal = IERC20(token).balanceOf(address(this));
+        uint256 reserved = _reserved[token];
+        return bal > reserved ? bal - reserved : 0;
     }
 
     function _setMinStake(
