@@ -24,6 +24,9 @@ contract FundAuctions is IFundAuctions, ReentrancyGuard {
     /// @notice Hard cap on the start premium.
     uint16 public constant MAX_START_PREMIUM_BPS = 5000;
 
+    /// @notice Hard cap on the floor discount.
+    uint16 public constant MAX_FLOOR_DISCOUNT_BPS = 1000;
+
     /// @notice Shortest auction.
     uint32 public constant MIN_DURATION = 15 minutes;
 
@@ -42,18 +45,22 @@ contract FundAuctions is IFundAuctions, ReentrancyGuard {
     uint16 public override startPremiumBps;
 
     /// @inheritdoc IFundAuctions
+    uint16 public override floorDiscountBps;
+
+    /// @inheritdoc IFundAuctions
     uint32 public override duration;
 
     Lot[] private _lots;
     mapping(address fund => Volume) private _volume;
 
     /// @param factory_         The fund factory.
-    /// @param startPremiumBps_ Start price above the oracle rate.
-    /// @param duration_        Auction length.
-    constructor(address factory_, uint16 startPremiumBps_, uint32 duration_) {
+    /// @param startPremiumBps_  Start price above the oracle rate.
+    /// @param floorDiscountBps_ Floor price below the oracle rate.
+    /// @param duration_         Auction length.
+    constructor(address factory_, uint16 startPremiumBps_, uint16 floorDiscountBps_, uint32 duration_) {
         if (factory_ == address(0)) revert ZeroAddress();
         factory = factory_;
-        _setConfig(startPremiumBps_, duration_);
+        _setConfig(startPremiumBps_, floorDiscountBps_, duration_);
     }
 
     /// @inheritdoc IFundAuctions
@@ -79,7 +86,7 @@ contract FundAuctions is IFundAuctions, ReentrancyGuard {
         );
         uint256 startPrice = Math.mulDiv(rate, BPS + startPremiumBps, BPS);
         // Rounds up: the floor never sits below the oracle bound.
-        uint256 floorPrice = Math.mulDiv(rate, BPS - fac.maxRebalanceSlippageBps(), BPS, Math.Rounding.Ceil);
+        uint256 floorPrice = Math.mulDiv(rate, BPS - floorDiscountBps, BPS, Math.Rounding.Ceil);
         if (floorPrice == 0) revert ZeroAmount();
 
         uint64 endTime = uint64(block.timestamp + duration);
@@ -138,9 +145,9 @@ contract FundAuctions is IFundAuctions, ReentrancyGuard {
     }
 
     /// @inheritdoc IFundAuctions
-    function setConfig(uint16 startPremiumBps_, uint32 duration_) external override {
+    function setConfig(uint16 startPremiumBps_, uint16 floorDiscountBps_, uint32 duration_) external override {
         if (!IFundFactory(factory).isAdmin(msg.sender)) revert NotAdmin();
-        _setConfig(startPremiumBps_, duration_);
+        _setConfig(startPremiumBps_, floorDiscountBps_, duration_);
     }
 
     /// @inheritdoc IFundAuctions
@@ -209,8 +216,8 @@ contract FundAuctions is IFundAuctions, ReentrancyGuard {
         }
     }
 
-    /// @dev Re-checks the fill against the live oracle with the rebalance slippage bound; returns
-    ///      the value sold.
+    /// @dev Re-checks the fill against the live oracle with the floor discount; returns the value
+    ///      sold.
     function _checkValue(
         IFundFactory fac,
         address sellAsset,
@@ -222,7 +229,7 @@ contract FundAuctions is IFundAuctions, ReentrancyGuard {
         address usdg = fac.usdg();
         soldValue = _value(sellAsset, amount, _price(o, usdg, sellAsset));
         uint256 paidValue = _value(buyAsset, payment, _price(o, usdg, buyAsset));
-        uint256 minValue = Math.mulDiv(soldValue, BPS - fac.maxRebalanceSlippageBps(), BPS, Math.Rounding.Ceil);
+        uint256 minValue = Math.mulDiv(soldValue, BPS - floorDiscountBps, BPS, Math.Rounding.Ceil);
         if (paidValue < minValue) revert BelowOracleBound();
     }
 
@@ -258,12 +265,16 @@ contract FundAuctions is IFundAuctions, ReentrancyGuard {
         return Math.mulDiv(amount, price, 10 ** IERC20Metadata(asset).decimals());
     }
 
-    function _setConfig(uint16 startPremiumBps_, uint32 duration_) internal {
-        if (startPremiumBps_ > MAX_START_PREMIUM_BPS || duration_ < MIN_DURATION || duration_ > MAX_DURATION) {
+    function _setConfig(uint16 startPremiumBps_, uint16 floorDiscountBps_, uint32 duration_) internal {
+        if (
+            startPremiumBps_ > MAX_START_PREMIUM_BPS || floorDiscountBps_ > MAX_FLOOR_DISCOUNT_BPS
+                || duration_ < MIN_DURATION || duration_ > MAX_DURATION
+        ) {
             revert InvalidConfig();
         }
         startPremiumBps = startPremiumBps_;
+        floorDiscountBps = floorDiscountBps_;
         duration = duration_;
-        emit AuctionConfigSet(startPremiumBps_, duration_);
+        emit AuctionConfigSet(startPremiumBps_, floorDiscountBps_, duration_);
     }
 }

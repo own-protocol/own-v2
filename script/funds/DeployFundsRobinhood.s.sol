@@ -60,7 +60,8 @@ contract DeployFundsRobinhood is Script {
     address constant POSITION_MANAGER = 0x58daec3116aae6D93017bAAea7749052E8a04fA7;
     address constant USDG = 0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168;
 
-    uint16 constant AUCTION_START_PREMIUM_BPS = 300;
+    uint16 constant AUCTION_START_PREMIUM_BPS = 200;
+    uint16 constant AUCTION_FLOOR_DISCOUNT_BPS = 300;
     uint32 constant AUCTION_DURATION = 4 hours;
     uint16 constant HUB_MAX_MOVE_BPS = 3000;
 
@@ -134,7 +135,8 @@ contract DeployFundsRobinhood is Script {
     function _deployPeripherals(address factory, address registry) internal returns (address, address) {
         console.log("FundRedeemZap   ", address(new FundRedeemZap(factory)));
         console.log("FundMintZap     ", address(new FundMintZap(factory)));
-        FundAuctions auctions = new FundAuctions(factory, AUCTION_START_PREMIUM_BPS, AUCTION_DURATION);
+        FundAuctions auctions =
+            new FundAuctions(factory, AUCTION_START_PREMIUM_BPS, AUCTION_FLOOR_DISCOUNT_BPS, AUCTION_DURATION);
         FundPriceHub hub = new FundPriceHub(registry, vm.envAddress("PRICE_KEEPER"), HUB_MAX_MOVE_BPS);
         return (address(auctions), address(hub));
     }

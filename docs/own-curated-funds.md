@@ -140,11 +140,12 @@ Updated 2026-10-07: Dutch-auction rebalancing with admin router swaps as the fal
   being staked (`recoverPosition`).
 - **Rebalancing (Dutch auctions):** once the pool is seeded the manager (Own keeper) rebalances by
   opening auction lots in `FundAuctions`: sell an amount of one basket asset (or idle USDG) for
-  another basket asset. The price starts 3% above the oracle rate and falls linearly over 4 hours
-  (admin-set, 0-50% and 15 minutes to 7 days) to a floor 2% below it; anyone buys any part of a lot
-  at the current price, paying the fund first. The fund names its price, so nobody can front-run a
-  market order and fillers bring liquidity from any venue. Every fill is re-checked against the
-  live oracle with the same 2% bound and counts toward a 10%-of-the-basket daily cap (a running
+  another basket asset. The price starts 2% above the oracle rate and falls linearly over 4 hours
+  to a floor 3% below it (admin-set with `setConfig`: start premium up to 50%, floor discount up to
+  10%, 15 minutes to 7 days); anyone buys any part of a lot at the current price, paying the fund
+  first. The fund names its price, so nobody can front-run a market order and fillers bring
+  liquidity from any venue. Every fill is re-checked against the live oracle with the same floor
+  discount and counts toward a 10%-of-the-basket daily cap (a running
   total that drains at the full cap per day), tracked separately from router swaps. The manager or
   the admin can cancel a lot.
 - **Router swaps (admin fallback):** after seeding only the admin can swap between basket assets,

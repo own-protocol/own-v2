@@ -11,7 +11,8 @@ contract FundAuctionsTest is FundTestBase {
     FundAuctions internal auctions;
     address internal filler = makeAddr("filler");
 
-    uint16 internal constant PREMIUM = 300;
+    uint16 internal constant PREMIUM = 200;
+    uint16 internal constant FLOOR = 300;
     uint32 internal constant DURATION = 4 hours;
 
     // 1e18 NET units (1e9 NET) priced in TSLA units: $300 / $400 per whole token.
@@ -20,7 +21,7 @@ contract FundAuctionsTest is FundTestBase {
     function setUp() public override {
         super.setUp();
         _launchDefault();
-        auctions = new FundAuctions(address(factory), PREMIUM, DURATION);
+        auctions = new FundAuctions(address(factory), PREMIUM, FLOOR, DURATION);
         vm.prank(admin);
         factory.setAuctions(address(auctions));
         tsla.mint(filler, 1000e18);
@@ -41,8 +42,8 @@ contract FundAuctionsTest is FundTestBase {
         assertEq(l.fund, address(fund));
         assertEq(l.remaining, 10e9);
         assertEq(l.endTime, block.timestamp + DURATION);
-        assertEq(l.startPrice, RATE * 10_300 / 10_000);
-        assertEq(l.floorPrice, RATE * 9800 / 10_000);
+        assertEq(l.startPrice, RATE * 10_200 / 10_000);
+        assertEq(l.floorPrice, RATE * 9700 / 10_000);
         assertEq(auctions.currentPrice(id), l.startPrice);
     }
 
@@ -54,8 +55,8 @@ contract FundAuctionsTest is FundTestBase {
         vm.prank(filler);
         uint256 paid = auctions.fill(id, 4e9, type(uint256).max);
 
-        // 4 NET at the start price: 3 TSLA plus the 3% premium.
-        assertEq(paid, 3.09e18);
+        // 4 NET at the start price: 3 TSLA plus the 2% premium.
+        assertEq(paid, 3.06e18);
         assertEq(net.balanceOf(filler), 4e9);
         assertEq(net.balanceOf(address(fund)), netBefore - 4e9);
         assertEq(tsla.balanceOf(address(fund)), tslaBefore + paid);
@@ -92,7 +93,7 @@ contract FundAuctionsTest is FundTestBase {
         uint256 id = _open(10e9);
         vm.prank(filler);
         vm.expectRevert(IFundAuctions.Slippage.selector);
-        auctions.fill(id, 4e9, 3.09e18 - 1);
+        auctions.fill(id, 4e9, 3.06e18 - 1);
     }
 
     function test_fill_oracleMovedAgainstLot_reverts() public {
@@ -184,7 +185,7 @@ contract FundAuctionsTest is FundTestBase {
         vm.prank(filler);
         uint256 paid = auctions.fill(id, 1000e6, type(uint256).max);
         // $1,000 for 2.5 TSLA plus the premium.
-        assertEq(paid, Math.mulDiv(1000e6, uint256(0.0025e30) * 10_300 / 10_000, 1e18, Math.Rounding.Ceil));
+        assertEq(paid, Math.mulDiv(1000e6, uint256(0.0025e30) * 10_200 / 10_000, 1e18, Math.Rounding.Ceil));
         assertEq(usdg.balanceOf(filler), 1000e6);
     }
 
@@ -197,16 +198,32 @@ contract FundAuctionsTest is FundTestBase {
     function test_setConfig_adminOnlyAndBounded() public {
         vm.prank(attacker);
         vm.expectRevert(IFundAuctions.NotAdmin.selector);
-        auctions.setConfig(100, 1 hours);
+        auctions.setConfig(100, 500, 1 hours);
 
         vm.startPrank(admin);
         vm.expectRevert(IFundAuctions.InvalidConfig.selector);
-        auctions.setConfig(5001, 1 hours);
+        auctions.setConfig(5001, 500, 1 hours);
         vm.expectRevert(IFundAuctions.InvalidConfig.selector);
-        auctions.setConfig(100, 14 minutes);
-        auctions.setConfig(100, 1 hours);
+        auctions.setConfig(100, 1001, 1 hours);
+        vm.expectRevert(IFundAuctions.InvalidConfig.selector);
+        auctions.setConfig(100, 500, 14 minutes);
+        auctions.setConfig(100, 500, 1 hours);
         vm.stopPrank();
         assertEq(auctions.startPremiumBps(), 100);
+        assertEq(auctions.floorDiscountBps(), 500);
         assertEq(auctions.duration(), 1 hours);
+    }
+
+    function test_floorDiscount_setsFloorAndFillBound() public {
+        vm.prank(admin);
+        auctions.setConfig(PREMIUM, 500, DURATION);
+        uint256 id = _open(10e9);
+        assertEq(auctions.lot(id).floorPrice, RATE * 9500 / 10_000);
+
+        // NET up 6%: a start-price fill is 3.8% under the live oracle, inside the 5% bound but
+        // outside the default 3%.
+        _setFeed(address(net), 318e8);
+        vm.prank(filler);
+        auctions.fill(id, 1e9, type(uint256).max);
     }
 }

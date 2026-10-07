@@ -10,10 +10,9 @@ pragma solidity 0.8.28;
 ///         take a lot as soon as it is fairly priced: no front-running of a market order, and
 ///         fillers bring liquidity from any venue.
 ///
-///         Bounds, the same as the manager's router swaps: the floor is the oracle rate less the
-///         factory's maximum rebalance slippage, every fill is re-checked against the live oracle
-///         with the same bound, and the value sold per fund is rate limited by the factory's daily
-///         volume cap (refilling linearly over a day). Lots open only once the fund's pool is
+///         Bounds: the floor is the oracle rate less the admin-set floor discount, every fill is
+///         re-checked against the live oracle with the same bound, and the value sold per fund is
+///         rate limited by the factory's daily volume cap (refilling linearly over a day). Lots open only once the fund's pool is
 ///         seeded; the launch rebalance stays a router swap.
 interface IFundAuctions {
     /// @notice An auction lot.
@@ -68,9 +67,10 @@ interface IFundAuctions {
     event LotCancelled(uint256 indexed id);
 
     /// @notice Emitted when the auction parameters change.
-    /// @param startPremiumBps Start price above the oracle rate, in basis points.
-    /// @param duration        Auction length, in seconds.
-    event AuctionConfigSet(uint16 startPremiumBps, uint32 duration);
+    /// @param startPremiumBps  Start price above the oracle rate, in basis points.
+    /// @param floorDiscountBps Floor price below the oracle rate, in basis points.
+    /// @param duration         Auction length, in seconds.
+    event AuctionConfigSet(uint16 startPremiumBps, uint16 floorDiscountBps, uint32 duration);
 
     /// @notice A required address is zero.
     error ZeroAddress();
@@ -93,7 +93,7 @@ interface IFundAuctions {
     /// @notice The assets are not a basket asset (or USDG) sold for a different basket asset.
     error InvalidAssets();
 
-    /// @notice Premium or duration out of range.
+    /// @notice Premium, floor discount or duration out of range.
     error InvalidConfig();
 
     /// @notice The lot does not exist, has ended, was cancelled or is sold out.
@@ -138,9 +138,11 @@ interface IFundAuctions {
     function fill(uint256 id, uint256 amount, uint256 maxPayment) external returns (uint256 payment);
 
     /// @notice Set the auction parameters. Admin only.
-    /// @param startPremiumBps Start price above the oracle rate (at most 50%).
-    /// @param duration        Auction length (15 minutes to 7 days).
-    function setConfig(uint16 startPremiumBps, uint32 duration) external;
+    /// @param startPremiumBps  Start price above the oracle rate (at most 50%).
+    /// @param floorDiscountBps Floor price below the oracle rate, also the bound every fill is
+    ///                         re-checked against (at most 10%).
+    /// @param duration         Auction length (15 minutes to 7 days).
+    function setConfig(uint16 startPremiumBps, uint16 floorDiscountBps, uint32 duration) external;
 
     /// @notice The factory whose funds this house serves.
     /// @return The factory.
@@ -149,6 +151,10 @@ interface IFundAuctions {
     /// @notice Start price above the oracle rate, in basis points.
     /// @return The premium.
     function startPremiumBps() external view returns (uint16);
+
+    /// @notice Floor price below the oracle rate, in basis points.
+    /// @return The discount.
+    function floorDiscountBps() external view returns (uint16);
 
     /// @notice Auction length, in seconds.
     /// @return The duration.
