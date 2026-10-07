@@ -537,7 +537,7 @@ contract FundTest is FundTestBase {
         uint256 tslaBefore = tsla.balanceOf(address(fund));
 
         // Sell 10 NET ($3,000) for 7.4 TSLA ($2,960): 1.33% below oracle value, inside the 2% bound.
-        vm.prank(keeper);
+        vm.prank(admin);
         fund.rebalance(_swap(10e9, 7.4e18, 7.4e18));
 
         assertEq(net.balanceOf(address(fund)), netBefore - 10e9);
@@ -548,7 +548,7 @@ contract FundTest is FundTestBase {
     function test_rebalance_dailyVolumeCapped() public {
         tsla.mint(address(router), 100e18);
         // 3 x $3,000 = $9,000 fits under 10% of the ~$100k basket; a fourth does not.
-        vm.startPrank(keeper);
+        vm.startPrank(admin);
         fund.rebalance(_swap(10e9, 7.4e18, 7.4e18));
         fund.rebalance(_swap(10e9, 7.4e18, 7.4e18));
         fund.rebalance(_swap(10e9, 7.4e18, 7.4e18));
@@ -558,13 +558,13 @@ contract FundTest is FundTestBase {
 
         vm.warp(block.timestamp + 1 days);
         _refreshFeeds();
-        vm.prank(keeper);
+        vm.prank(admin);
         fund.rebalance(_swap(10e9, 7.4e18, 7.4e18));
     }
 
     function test_rebalance_allowanceRefillsLinearly() public {
         tsla.mint(address(router), 100e18);
-        vm.startPrank(keeper);
+        vm.startPrank(admin);
         fund.rebalance(_swap(10e9, 7.4e18, 7.4e18));
         fund.rebalance(_swap(10e9, 7.4e18, 7.4e18));
         fund.rebalance(_swap(10e9, 7.4e18, 7.4e18));
@@ -573,7 +573,7 @@ contract FundTest is FundTestBase {
         // Half a day drains ~$5k of the ~$9k used: one more $3k sale fits, a second does not.
         vm.warp(block.timestamp + 12 hours);
         _refreshFeeds();
-        vm.startPrank(keeper);
+        vm.startPrank(admin);
         fund.rebalance(_swap(10e9, 7.4e18, 7.4e18));
         vm.expectRevert(IFund.RebalanceVolumeExceeded.selector);
         fund.rebalance(_swap(10e9, 7.4e18, 7.4e18));
@@ -597,7 +597,7 @@ contract FundTest is FundTestBase {
             router: address(router),
             data: abi.encodeCall(MockSwapRouter.swap, (address(tsla), tslaHeld, address(hop), 1))
         });
-        vm.prank(keeper);
+        vm.prank(admin);
         vm.expectRevert(IFund.RebalanceCallFailed.selector);
         fund.rebalance(p);
     }
@@ -605,14 +605,14 @@ contract FundTest is FundTestBase {
     function test_rebalance_tooMuchValueLost_reverts() public {
         tsla.mint(address(router), 100e18);
         // 7 TSLA = $2,800, 6.7% below the $3,000 sold.
-        vm.prank(keeper);
+        vm.prank(admin);
         vm.expectRevert(IFund.RebalanceInvalid.selector);
         fund.rebalance(_swap(10e9, 7e18, 7e18));
     }
 
     function test_rebalance_belowMinBuy_reverts() public {
         tsla.mint(address(router), 100e18);
-        vm.prank(keeper);
+        vm.prank(admin);
         vm.expectRevert(IFund.RebalanceInvalid.selector);
         fund.rebalance(_swap(10e9, 7.4e18, 7.5e18));
     }
@@ -620,7 +620,7 @@ contract FundTest is FundTestBase {
     function test_rebalance_routerNotAllowed_reverts() public {
         vm.prank(admin);
         factory.setRouter(address(router), false);
-        vm.prank(keeper);
+        vm.prank(admin);
         vm.expectRevert(IFund.RouterNotAllowed.selector);
         fund.rebalance(_swap(10e9, 7.4e18, 7.4e18));
     }
@@ -631,10 +631,17 @@ contract FundTest is FundTestBase {
         fund.rebalance(_swap(10e9, 7.4e18, 7.4e18));
     }
 
+    function test_rebalance_managerAfterSeeding_reverts() public {
+        tsla.mint(address(router), 100e18);
+        vm.prank(keeper);
+        vm.expectRevert(IFund.NotManager.selector);
+        fund.rebalance(_swap(10e9, 7.4e18, 7.4e18));
+    }
+
     function test_rebalance_routerCallFails_reverts() public {
         IFund.RebalanceParams memory p = _swap(10e9, 7.4e18, 7.4e18);
         p.data = abi.encodeCall(MockSwapRouter.alwaysReverts, ());
-        vm.prank(keeper);
+        vm.prank(admin);
         vm.expectRevert(IFund.RebalanceCallFailed.selector);
         fund.rebalance(p);
     }
@@ -671,7 +678,7 @@ contract FundTest is FundTestBase {
             router: address(router),
             data: abi.encodeCall(MockSwapRouter.swap, (address(usdg), 2000e6, address(tsla), 4.95e18))
         });
-        vm.prank(keeper);
+        vm.prank(admin);
         fund.rebalance(p);
         assertEq(fund.idleUsdg(), idle - 2000e6);
         assertEq(tsla.balanceOf(address(fund)), tslaBefore + 4.95e18);

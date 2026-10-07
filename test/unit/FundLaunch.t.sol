@@ -413,7 +413,7 @@ contract FundLaunchTest is FundTestBase {
         p.sellAmount = 1e9;
         p.minBuyAmount = 300e6;
         p.data = abi.encodeCall(MockSwapRouter.swap, (address(net), 1e9, address(usdg), 300e6));
-        vm.prank(keeper);
+        vm.prank(admin);
         vm.expectRevert(IFund.InvalidBasket.selector);
         fund.rebalance(p);
     }
@@ -429,7 +429,7 @@ contract FundLaunchTest is FundTestBase {
         vm.stopPrank();
 
         _refreshFeeds();
-        vm.prank(keeper);
+        vm.prank(admin);
         vm.expectRevert(IFund.RebalanceVolumeExceeded.selector);
         fund.rebalance(_netForTsla(40e9, 29.6e18));
     }

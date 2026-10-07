@@ -2,9 +2,9 @@
 pragma solidity 0.8.28;
 
 /// @title IFundOracle — USD prices for fund basket assets and fund tokens
-/// @notice One Chainlink-style aggregator per asset (keeper-pushed TWAP feeds such as
-///         `MoneyPriceFeed`, or real Chainlink feeds for stock tokens), normalised to 18 decimals.
-///         A fund token's own market price (the TWAP of its pool, pushed by our keeper) is read
+/// @notice One Chainlink-style aggregator per asset (real Chainlink feeds, or `FundPriceHub` feeds
+///         for assets without one), normalised to 18 decimals.
+///         A fund token's own market price (its pool TWAP, served by `FundTwapFeed`) is read
 ///         through the same surface, keyed by the fund token address.
 interface IFundOracle {
     /// @notice Price source for one asset.

@@ -120,6 +120,9 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
 
     mapping(address fund => FundModules) private _modules;
 
+    /// @inheritdoc IFundFactory
+    address public override auctions;
+
     /// @notice Emitted once, when the hook is wired.
     /// @param hook The hook.
     event HookSet(address hook);
@@ -267,6 +270,15 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
         if (oracle_ == address(0)) revert ZeroAddress();
         oracle = oracle_;
         emit OracleSet(oracle_);
+    }
+
+    /// @inheritdoc IFundFactory
+    function setAuctions(
+        address auctions_
+    ) external override onlyAdmin {
+        if (auctions_ == address(0)) revert ZeroAddress();
+        auctions = auctions_;
+        emit AuctionsSet(auctions_);
     }
 
     /// @inheritdoc IFundFactory

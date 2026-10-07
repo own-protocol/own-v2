@@ -7,7 +7,7 @@ NAV. Curators and stakers set the basket weights in a weekly vote, and anyone ca
 
 Design source: the "Own Curated Funds: launch, curators, weight votes and bribes" spec.
 
-Updated 2026-10-05 for commit 10b22fb (curator yield, protocol curator, in-kind mint, single fund fee).
+Updated 2026-10-07: Dutch-auction rebalancing with admin router swaps as the fallback, and the keeper-pushed price hub.
 
 ## Contracts (`src/funds/`)
 
@@ -22,6 +22,8 @@ Updated 2026-10-05 for commit 10b22fb (curator yield, protocol curator, in-kind 
 | `FundBribes` | Beacon proxy per fund. Bribes on the weekly vote per token per week, and bribes on listing proposals. The curators' cut goes to `FundCurators`. |
 | `FundHook` | UUPS, upgraded by the registry ADMIN; the proxy sits at the mined hook address. One Uniswap v4 hook for every fund pool: the fund fee in USDG on swaps, admin-set LP fee, the TWAP, and the fund's own pool position. |
 | `FundOracle` | Per-asset Chainlink-style feeds. A fund token's own market price is read through the same surface. |
+| `FundPriceHub` | One for the platform. Keeper-pushed USD prices for basket assets with no Chainlink feed (Pons tokens, VIRTUAL): the keeper samples each token's Uniswap v4 pool, converts its pair (ETH, SPY, NVDA...) to USD with Chainlink and pushes a 30-minute TWAP. A keeper push moving more than `maxMoveBps` (30% at deploy) is skipped; admin pushes are not bounded. `createFeed(asset)` deploys a `FundPriceFeed` the oracle reads like any Chainlink aggregator. |
+| `FundAuctions` | One for the platform. Dutch auctions for rebalancing after the pool is seeded (below). |
 | `FundTwapFeed` | Per fund. Serves the fund's pool TWAP (recorded by the hook) as an aggregator. |
 | `FundRedeemZap` | Redeem a fund token and swap the basket to USDG through allowed routers in one transaction. |
 | `FundMintZap` | Pay one token, swap it through allowed routers into the slice a mint needs, mint, and refund what is left, in one transaction. Holds nothing between transactions. |
@@ -136,10 +138,19 @@ Updated 2026-10-05 for commit 10b22fb (curator yield, protocol curator, in-kind 
   vote and earn no bribes, and no curator yield is minted on top of their yield. The admin can
   return a position NFT that reached `FundStaking` without
   being staked (`recoverPosition`).
-- **Rebalancing:** the manager (Own keeper) swaps between basket assets, and from idle USDG into
-  them, through admin-allowed routers: at most 2% loss of oracle value per swap, and at most 10% of
-  the basket a day (a running total that drains at the full cap per day). Assets worth up to 0.1%
-  of the basket count as dust. The launch rebalance before the pool opens is the exception above.
+- **Rebalancing (Dutch auctions):** once the pool is seeded the manager (Own keeper) rebalances by
+  opening auction lots in `FundAuctions`: sell an amount of one basket asset (or idle USDG) for
+  another basket asset. The price starts 3% above the oracle rate and falls linearly over 4 hours
+  (admin-set, 0-50% and 15 minutes to 7 days) to a floor 2% below it; anyone buys any part of a lot
+  at the current price, paying the fund first. The fund names its price, so nobody can front-run a
+  market order and fillers bring liquidity from any venue. Every fill is re-checked against the
+  live oracle with the same 2% bound and counts toward a 10%-of-the-basket daily cap (a running
+  total that drains at the full cap per day), tracked separately from router swaps. The manager or
+  the admin can cancel a lot.
+- **Router swaps (admin fallback):** after seeding only the admin can swap between basket assets,
+  and from idle USDG into them, through admin-allowed routers: at most 2% loss of oracle value per
+  swap and at most 10% of the basket a day. Before seeding the manager uses the same swaps for the
+  launch rebalance (above). Assets worth up to 0.1% of the basket count as dust.
 
 ## Curators
 
@@ -246,13 +257,16 @@ Updated 2026-10-05 for commit 10b22fb (curator yield, protocol curator, in-kind 
   backing (stray tokens, a dropped asset's dust), but never a basket asset, USDG or the fund token.
 - **Operator (registry `OPERATOR` role, or an admin):** pauses and unpauses fund mints and launch
   deposits. Redeeming cannot be paused.
-- **Manager (Own keeper):** trusted only within the rebalance bounds above. Between the launch
+- **Manager (Own keeper):** trusted only within the rebalance bounds above. After seeding it only
+  opens and cancels auction lots; it can no longer swap. Between the launch
   close and pool seeding it is trusted more: no daily volume cap, only the 2% per-swap bound, so
   it should finish the launch rebalance and seed promptly. Its launch jobs are `finalize()` as
   soon as the window ends or the target raise is reached, then the rebalance, `seedPool()` and
   `distribute()` in batches.
-- **Oracle feeds:** basket prices come from admin-set feeds; the fund's market price and the
-  position value come from its own pool TWAP. Mint deposits are taken in kind, so no oracle values
+- **Price keeper:** pushes hub prices for assets without a Chainlink feed, bounded per push by
+  `maxMoveBps`; the admin can push any price to recover from a large real move.
+- **Oracle feeds:** basket prices come from admin-set feeds (Chainlink, or `FundPriceHub` feeds);
+  the fund's market price and the position value come from its own pool TWAP. Mint deposits are taken in kind, so no oracle values
   them (the oracles only set NAV and the mint price). Redeem depends on neither.
 - **USDG:** treated as $1.
 - **Hook address:** the hook must be deployed (CREATE2-mined) at an address whose low bits encode
@@ -265,9 +279,11 @@ Updated 2026-10-05 for commit 10b22fb (curator yield, protocol curator, in-kind 
 
 `script/funds/DeployFundsRobinhood.s.sol` deploys the oracle, the six module implementations, the
 factory (with `PROTOCOL_CURATOR` as the protocol curator), the hook (mining its CREATE2 salt with
-`script/funds/HookMiner.sol`) and the redeem and mint zaps, all administered by the ProtocolRegistry at `PROTOCOL_REGISTRY_ROBINHOOD`. It wires the hook and
-platform metadata and allows USDG (and MONEY, if given) as bribe tokens when the deployer holds
-`ADMIN`; otherwise it prints those calls for an admin's Safe. After a fund launches,
+`script/funds/HookMiner.sol`), the redeem and mint zaps, the auction house and the price hub (with
+`PRICE_KEEPER` as its keeper), all administered by the ProtocolRegistry at
+`PROTOCOL_REGISTRY_ROBINHOOD`. It wires the hook, the auction house and platform metadata and
+allows USDG (and MONEY, if given) as bribe tokens when the deployer holds `ADMIN`; otherwise it
+prints those calls for an admin's Safe. After a fund launches,
 `script/funds/AddFundTwapFeedRobinhood.s.sol` deploys its TWAP feed and registers it in the oracle.
 
 ## Tests

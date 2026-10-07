@@ -48,6 +48,10 @@ interface IFundFactory {
     /// @param oracle New oracle.
     event OracleSet(address oracle);
 
+    /// @notice Emitted when the auction house changes.
+    /// @param auctions New auction house.
+    event AuctionsSet(address auctions);
+
     /// @notice Emitted when the protocol curator changes.
     /// @param curator New protocol curator.
     event ProtocolCuratorSet(address curator);
@@ -153,6 +157,12 @@ interface IFundFactory {
     function createFund(
         CreateFundParams calldata params
     ) external returns (FundModules memory modules);
+
+    /// @notice Set the auction house funds rebalance through. Admin only.
+    /// @param auctions_ The auction house.
+    function setAuctions(
+        address auctions_
+    ) external;
 
     /// @notice Set the price oracle every fund reads. Admin only. The new oracle must already price
     ///         every basket asset and fund token in use, or mints, NAV reads and listings revert.
@@ -281,6 +291,10 @@ interface IFundFactory {
     /// @notice The shared price oracle.
     /// @return The oracle.
     function oracle() external view returns (address);
+
+    /// @notice The auction house every fund rebalances through (zero until set).
+    /// @return The auction house.
+    function auctions() external view returns (address);
 
     /// @notice The USDG token every pool is paired with.
     /// @return USDG.

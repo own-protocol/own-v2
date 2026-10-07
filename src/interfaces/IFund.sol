@@ -23,8 +23,10 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 ///           between the protocol curator and the other curators.
 ///         - Portfolio changes (assets and target weights) come only from the fund's governor
 ///           (the weekly weight vote and listing proposals). The admin can swap the governor.
-///         - The manager (the Own keeper) rebalances towards the targets through admin-allowed
-///           routers, bounded by oracle value.
+///         - Rebalancing towards the targets runs through Dutch auctions (see {IFundAuctions}): the
+///           manager (the Own keeper) opens lots, anyone fills them, bounded by oracle value. Router
+///           swaps are the manager's tool only before the pool is seeded; after that they are an
+///           admin fallback.
 ///         - Depositors' launch tokens cannot be transferred for the launch's lock period; they can
 ///           still be staked and redeemed.
 interface IFund is IERC20 {
@@ -159,6 +161,9 @@ interface IFund is IERC20 {
 
     /// @notice Caller is not the staking module.
     error NotStaking();
+
+    /// @notice Caller is not the factory's auction house.
+    error NotAuctions();
 
     /// @notice The transfer would move launch tokens that are still locked.
     error LaunchTokensLocked();
@@ -314,7 +319,9 @@ interface IFund is IERC20 {
     ) external;
 
     /// @notice Swap a basket asset (or idle USDG) into another basket asset through an allowed
-    ///         router. Manager only. Each swap
+    ///         router. The manager before the pool is seeded (the launch rebalance), the admin at
+    ///         any time: after seeding, rebalancing runs through auctions and this is the admin's
+    ///         fallback. Each swap
     ///         may lose at most the factory's slippage bound in oracle value, and the value sold is
     ///         rate limited: at most the daily cap at once, with the allowance refilling linearly
     ///         over a day. This bounds what a manager can leak through bad fills. Until the fund's
@@ -324,6 +331,13 @@ interface IFund is IERC20 {
     function rebalance(
         RebalanceParams calldata params
     ) external;
+
+    /// @notice Pay `amount` of `asset` to the filler of an auction lot, after the auction house has
+    ///         collected the fill's payment into the fund. Auction house only.
+    /// @param asset  Basket asset or USDG sold.
+    /// @param to     The filler.
+    /// @param amount Amount sold.
+    function auctionPayout(address asset, address to, uint256 amount) external;
 
     /// @notice Replace the basket's asset list and target weights. Governor only, after launch.
     ///         Assets still held cannot be dropped (vote their weight to zero, rebalance out, then

@@ -125,11 +125,6 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuard {
         _;
     }
 
-    modifier onlyManager() {
-        if (msg.sender != manager) revert NotManager();
-        _;
-    }
-
     modifier onlyGovernor() {
         if (msg.sender != governor) revert NotGovernor();
         _;
@@ -301,11 +296,22 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuard {
     /// @inheritdoc IFund
     function rebalance(
         RebalanceParams calldata params
-    ) external override onlyManager nonReentrant {
+    ) external override nonReentrant {
+        IFundFactory fac = IFundFactory(factory);
+        if (!fac.isAdmin(msg.sender) && (msg.sender != manager || IFundHook(fac.hook()).isSeeded(address(this)))) {
+            revert NotManager();
+        }
         uint256 volume =
             FundRebalance.rebalance(factory, _assets, _basket, params, rebalanceVolume, rebalanceVolumeUpdatedAt);
         rebalanceVolume = SafeCast.toUint192(volume);
         rebalanceVolumeUpdatedAt = uint64(block.timestamp);
+    }
+
+    /// @inheritdoc IFund
+    function auctionPayout(address asset, address to, uint256 amount) external override nonReentrant {
+        if (msg.sender != IFundFactory(factory).auctions()) revert NotAuctions();
+        if (asset == address(this)) revert InvalidBasket();
+        IERC20(asset).safeTransfer(to, amount);
     }
 
     /// @inheritdoc IFund
