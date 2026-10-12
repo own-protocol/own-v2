@@ -6,15 +6,29 @@ import {YieldPoint} from "./types/FundTypes.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC721Receiver} from "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
 
-/// @title IFundStaking — staked fund tokens (e.g. sOCF1) earning premium-based yield
-/// @notice Stakers deposit fund tokens and receive vault shares. The vault mints new fund tokens to
-///         itself at the rate the yield curve gives for the fund's premium over NAV, so each share
-///         is worth more fund tokens; nothing below the curve's first point. The new tokens have no
-///         new backing: non-stakers are diluted, which is the incentive to stake.
-///         Yield accrues before every stake and unstake, so late stakers cannot capture it. The
-///         curve is a set of (premium, yearly rate) points interpolated linearly, so the admin can
-///         shape it, for example paying a base rate at NAV and peaking mid-premium. Rates are
-///         capped by the factory's admin-set yield cap (109 500 bps a year, 3% a day, by default).
+/// @title IFundStaking — staked fund tokens (e.g. sOCF1) earning tiered yield, Premium Boosts and
+///        the Premium Pot
+/// @notice Stakers deposit fund tokens and receive vault shares. Three kinds of yield:
+///
+///         - Tier yield: the vault mints new fund tokens to itself at the yearly rate of the fund's
+///           level, the highest tier point at or below the fund's premium over NAV (by default 12%
+///           from NAV, 24% from 1.25x NAV, 48% from 2x NAV; nothing below NAV), so each share is
+///           worth more fund tokens. The new tokens have no new backing: non-stakers are diluted,
+///           which is the incentive to stake. Yield accrues before every stake and unstake, so late
+///           stakers cannot capture it. Rates are capped by the factory's admin-set yield cap.
+///         - Premium Pot: part of the premium the hook captures on pool buys sits in the fund's
+///           reserve and drips to all stakers over the drip period (7 days by default): each accrual
+///           mints the dripped dollars' worth of fund tokens at NAV into the vault and moves the
+///           same dollars from the reserve into backing, so NAV does not move. Variable, never
+///           promised; with less than one whole share staked the drip goes to backing.
+///         - Premium Boost: a direct mint ({IFund-mint}) is staked here for the minter, locked for the
+///           fund's mint lock, and carries a personal boost: a dollar budget (the boost share of the
+///           premium it paid over NAV, held in the fund's reserve) paid at a fixed dollar speed (a
+///           yearly rate on the mint payment) as new staked shares at NAV, until the budget is used.
+///           It is settled lazily: on stake, unstake, redeem, transfer, a new direct mint, or
+///           {settleBoost}. The boost belongs to the minter: shares that leave the account (unstaked,
+///           redeemed or transferred; the governor excepted) scale it down, and the unpaid budget of
+///           what left goes to backing. It never comes back.
 ///
 ///         The curators get a share of the stakers' yield minted on top of it (15% by default,
 ///         admin-set per fund, optionally capped at a yearly share of the staked balance), so
@@ -25,20 +39,30 @@ import {IERC721Receiver} from "@openzeppelin/contracts/token/ERC721/IERC721Recei
 ///         depositor unlock: they can be deposited in the governor (and come back to the same
 ///         account) or unstaked (the fund tokens come back locked), but not transferred.
 ///
-///         A mint with a lock option is staked here at once and held for its owner until the lock
-///         ends, so the locked tokens earn the staker yield; the owner then claims the shares.
-///
 ///         LPs can stake their Uniswap v4 position NFT for a full-range position in the fund's
 ///         pool. It earns the same yearly rate on the fund tokens it holds (valued at the pool TWAP;
 ///         its USDG earns nothing), paid in fund tokens they claim. The position's swap fees stay
 ///         theirs: they can collect them while staked or after. Staked positions do not vote.
 interface IFundStaking is IERC20, IERC721Receiver {
-    /// @notice A locked mint, staked and held here until it unlocks.
-    /// @param shares   Shares held (zero once claimed).
-    /// @param unlockAt When they can be claimed.
-    struct Lock {
+    /// @notice An account's lock on shares from direct mints. Locked shares can be redeemed (see
+    ///         {redeem}) or escrowed in the governor, but not transferred or unstaked.
+    /// @param shares   Shares locked.
+    /// @param unlockAt When the lock ends.
+    struct MintLock {
         uint128 shares;
         uint64 unlockAt;
+    }
+
+    /// @notice An account's Premium Boost from direct mints.
+    /// @param usdPerSec  Payout speed, 18 decimals USD a second (summed over its direct mints).
+    /// @param usdLeft    Budget still to pay, held in the fund's reserve.
+    /// @param shares     Shares carrying the boost; holding fewer scales it down.
+    /// @param lastSettle Last settlement time.
+    struct Boost {
+        uint128 usdPerSec;
+        uint128 usdLeft;
+        uint128 shares;
+        uint64 lastSettle;
     }
 
     /// @notice Emitted on a stake.
@@ -104,19 +128,49 @@ interface IFundStaking is IERC20, IERC721Receiver {
     /// @param locked  Shares now locked.
     event LockedSharesSet(address indexed account, uint256 locked);
 
-    /// @notice Emitted when a locked mint is staked.
-    /// @param account  Owner of the lock.
-    /// @param lockId   Lock index.
-    /// @param assets   Fund tokens staked.
-    /// @param shares   Shares held.
-    /// @param unlockAt When they can be claimed.
-    event MintLocked(address indexed account, uint256 indexed lockId, uint256 assets, uint256 shares, uint64 unlockAt);
+    /// @notice Emitted when an account's mint lock changes.
+    /// @param account  The account.
+    /// @param shares   Shares locked.
+    /// @param unlockAt When the lock ends.
+    event MintLockSet(address indexed account, uint256 shares, uint64 unlockAt);
 
-    /// @notice Emitted when a locked mint is claimed.
-    /// @param account Owner of the lock.
-    /// @param lockId  Lock index.
-    /// @param shares  Shares released.
-    event LockClaimed(address indexed account, uint256 indexed lockId, uint256 shares);
+    /// @notice Emitted when a direct mint adds to an account's boost.
+    /// @param account    The account.
+    /// @param budgetUsd  Budget added, 18 decimals USD.
+    /// @param usdPerSec  Payout speed now.
+    /// @param usdLeft    Budget left now.
+    /// @param shares     Shares carrying the boost now.
+    event BoostAdded(address indexed account, uint256 budgetUsd, uint256 usdPerSec, uint256 usdLeft, uint256 shares);
+
+    /// @notice Emitted when an account's boost is paid.
+    /// @param account The account.
+    /// @param usd     Dollars paid, 18 decimals.
+    /// @param assets  Fund tokens minted into the vault at NAV.
+    /// @param shares  Shares minted to the account.
+    event BoostPaid(address indexed account, uint256 usd, uint256 assets, uint256 shares);
+
+    /// @notice Emitted when shares leaving an account scale its boost down.
+    /// @param account   The account.
+    /// @param forfeited Budget released into backing, 18 decimals USD.
+    /// @param usdLeft   Budget left.
+    event BoostForfeited(address indexed account, uint256 forfeited, uint256 usdLeft);
+
+    /// @notice Emitted when the Premium Pot is topped up.
+    /// @param usd     Dollars added, 18 decimals.
+    /// @param potLeft Dollars left to drip.
+    /// @param potEnd  When the drip ends.
+    event PotAdded(uint256 usd, uint256 potLeft, uint64 potEnd);
+
+    /// @notice Emitted when the dripped pot is paid.
+    /// @param usd    Dollars released from the reserve, 18 decimals.
+    /// @param assets Fund tokens minted into the vault at NAV (zero when it went to backing).
+    event PotReleased(uint256 usd, uint256 assets);
+
+    /// @notice Emitted when the boost and pot settings change.
+    /// @param boostShareBps        Share of a direct mint's premium paid back as boost.
+    /// @param boostSpeedBpsPerYear Boost speed, a yearly rate on the mint payment.
+    /// @param potDripPeriod        Drip period of each pot top-up.
+    event PremiumConfigSet(uint16 boostShareBps, uint32 boostSpeedBpsPerYear, uint32 potDripPeriod);
 
     /// @notice Emitted when the yield curve changes.
     /// @param curve New curve points.
@@ -143,9 +197,8 @@ interface IFundStaking is IERC20, IERC721Receiver {
     /// @notice Caller is not the fund.
     error NotFund();
 
-    /// @notice The lock does not exist, is already claimed or has not ended.
-    /// @param lockId Lock index.
-    error LockNotClaimable(uint256 lockId);
+    /// @notice A boost or pot setting is out of bounds.
+    error InvalidPremiumConfig();
 
     /// @notice The transfer would move shares that are still locked, or would unstake them to
     ///         another account.
@@ -166,9 +219,10 @@ interface IFundStaking is IERC20, IERC721Receiver {
     /// @notice The position is staked, so it cannot be recovered.
     error PositionIsStaked();
 
-    /// @notice Initialise a staking proxy. Called once by the factory.
+    /// @notice Initialise a staking proxy. Called once by the factory. Boost and pot settings start
+    ///         at the factory's defaults.
     /// @param fund_  The fund token.
-    /// @param curve_ Yield curve set by Own at launch.
+    /// @param curve_ Yield tiers set by Own at launch (empty for the factory's default tiers).
     function initialize(address fund_, YieldPoint[] calldata curve_) external;
 
     /// @notice Hand a depositor their share of the stake the launch made at the close; every share
@@ -177,27 +231,105 @@ interface IFundStaking is IERC20, IERC721Receiver {
     /// @param shares Shares moved from the launch.
     function transferLocked(address to, uint256 shares) external;
 
-    /// @notice Stake fund tokens the fund just minted here for a locked mint, and hold the shares
-    ///         for `account` until `unlockAt`. Fund only.
-    /// @param account  Owner of the lock.
-    /// @param assets   Fund tokens minted here.
-    /// @param unlockAt When the shares can be claimed.
-    /// @return lockId Lock index for `account`.
-    function stakeLocked(address account, uint256 assets, uint64 unlockAt) external returns (uint256 lockId);
-
-    /// @notice Release the caller's ended locks as shares.
-    /// @param lockIds Lock indices.
-    /// @return shares Shares released.
-    function claimLocks(
-        uint256[] calldata lockIds
+    /// @notice Stake fund tokens the fund just minted here for a direct mint: the shares go to
+    ///         `account`, locked until `unlockAt` (one lock per account: a mint during a running
+    ///         lock joins it, and the lock ends at the share-weighted average of the two ends), and its boost grows by `budgetUsd`, paid at
+    ///         the boost speed on `paymentUsd`. Settles the account's boost first. Fund only.
+    /// @param account    The minter.
+    /// @param assets     Fund tokens minted here.
+    /// @param paymentUsd Value paid, 18 decimals USD.
+    /// @param budgetUsd  Boost budget the fund reserved, 18 decimals USD.
+    /// @param unlockAt   When the lock ends (no lock if not in the future).
+    /// @return shares Shares minted to `account`.
+    function stakeMinted(
+        address account,
+        uint256 assets,
+        uint256 paymentUsd,
+        uint256 budgetUsd,
+        uint64 unlockAt
     ) external returns (uint256 shares);
 
-    /// @notice Locked mints owned by `account`.
-    /// @param account The owner.
-    /// @return The locks.
-    function locksOf(
+    /// @notice Top up the Premium Pot with `usd` the fund just reserved: everything not yet dripped
+    ///         drips again over a full drip period from now. Fund only.
+    /// @param usd Dollars added, 18 decimals.
+    function addPot(
+        uint256 usd
+    ) external;
+
+    /// @notice Pay `account`'s boost owed up to now. Anyone can call.
+    /// @param account The account.
+    function settleBoost(
         address account
-    ) external view returns (Lock[] memory);
+    ) external;
+
+    /// @notice Redeem shares straight for the fund's basket at NAV (see {IFund-redeem}), also while
+    ///         they are mint-locked or launch-locked. Settles the caller's boost first; the shares
+    ///         redeemed scale it down.
+    /// @param shares        Shares burned.
+    /// @param receiver      Receiver of the basket assets and USDG.
+    /// @param minAmountsOut Per-asset minimum, in the fund's asset order (empty to skip).
+    /// @param minUsdgOut    Minimum USDG paid out.
+    /// @return amounts    Amount of each asset paid out.
+    /// @return usdgAmount USDG paid out.
+    function redeem(
+        uint256 shares,
+        address receiver,
+        uint256[] calldata minAmountsOut,
+        uint256 minUsdgOut
+    ) external returns (uint256[] memory amounts, uint256 usdgAmount);
+
+    /// @notice Set the boost and pot settings. Admin only. A new speed applies to later mints; a new
+    ///         drip period to later pot top-ups.
+    /// @param boostShareBps_        Share of a direct mint's premium paid back as boost (at most 100%).
+    /// @param boostSpeedBpsPerYear_ Boost speed, a yearly rate on the mint payment (non-zero, at most
+    ///                              1 000 000 bps).
+    /// @param potDripPeriod_        Drip period (1 hour to 365 days).
+    function setPremiumConfig(uint16 boostShareBps_, uint32 boostSpeedBpsPerYear_, uint32 potDripPeriod_) external;
+
+    /// @notice `account`'s boost.
+    /// @param account The account.
+    /// @return The boost.
+    function boostOf(
+        address account
+    ) external view returns (Boost memory);
+
+    /// @notice `account`'s boost owed since its last settlement, 18 decimals USD.
+    /// @param account The account.
+    /// @return The dollars owed.
+    function pendingBoost(
+        address account
+    ) external view returns (uint256);
+
+    /// @notice `account`'s mint lock.
+    /// @param account The account.
+    /// @return The lock.
+    function mintLockOf(
+        address account
+    ) external view returns (MintLock memory);
+
+    /// @notice Share of a direct mint's premium paid back as boost, in basis points.
+    /// @return The share.
+    function boostShareBps() external view returns (uint16);
+
+    /// @notice Boost speed, a yearly rate on the mint payment, in basis points.
+    /// @return The speed.
+    function boostSpeedBpsPerYear() external view returns (uint32);
+
+    /// @notice Drip period of each Premium Pot top-up, in seconds.
+    /// @return The period.
+    function potDripPeriod() external view returns (uint32);
+
+    /// @notice Premium Pot dollars not yet dripped, as of the last checkpoint, 18 decimals.
+    /// @return The dollars.
+    function potLeft() external view returns (uint128);
+
+    /// @notice When the pot's current drip ends.
+    /// @return The timestamp.
+    function potEnd() external view returns (uint64);
+
+    /// @notice Pot dollars dripped but not yet paid (waiting for a NAV reading), 18 decimals.
+    /// @return The dollars.
+    function potPending() external view returns (uint256);
 
     /// @notice Shares of `account` that are still locked (meaningful only before the fund's
     ///         depositor unlock).
@@ -213,7 +345,9 @@ interface IFundStaking is IERC20, IERC721Receiver {
     /// @return shares Shares minted.
     function stake(uint256 assets, address receiver) external returns (uint256 shares);
 
-    /// @notice Unstake shares for fund tokens. Locked shares can be unstaked only to the caller.
+    /// @notice Unstake shares for fund tokens. Launch-locked shares can be unstaked only to the
+    ///         caller; mint-locked shares cannot be unstaked until their lock ends. Settles the
+    ///         caller's boost first; the shares unstaked scale it down.
     /// @param shares   Shares burned.
     /// @param receiver Receiver of the fund tokens.
     /// @return assets Fund tokens paid out.
@@ -277,8 +411,8 @@ interface IFundStaking is IERC20, IERC721Receiver {
         uint256 tokenId
     ) external view returns (uint256);
 
-    /// @notice Replace the yield curve. Admin only.
-    /// @param curve_ New curve points.
+    /// @notice Replace the yield tiers. Admin only.
+    /// @param curve_ New tier points.
     function setYieldCurve(
         YieldPoint[] calldata curve_
     ) external;
@@ -315,8 +449,8 @@ interface IFundStaking is IERC20, IERC721Receiver {
     /// @return The points.
     function yieldCurve() external view returns (YieldPoint[] memory);
 
-    /// @notice Yearly rate paid at a premium: the curve interpolated linearly between its points,
-    ///         after the factory's yield cap.
+    /// @notice Yearly rate paid at a premium: the rate of the highest tier point at or below it
+    ///         (zero below the first), after the factory's yield cap.
     /// @param premiumBps Premium over NAV, in basis points.
     /// @return Rate per year, as a fraction of the staked balance (1e18 = 100%).
     function rateForPremium(

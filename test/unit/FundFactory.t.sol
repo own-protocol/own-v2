@@ -388,7 +388,6 @@ contract FundFactoryTest is FundTestBase {
         CreateFundParams memory p = _defaultParams();
         p.description = "A longer description that does not fit in one storage slot, to cover long strings.";
         p.feeBps = 250;
-        p.maxPremiumBps = 1500;
         vm.prank(admin);
         Fund f = Fund(factory.createFund(p).fund);
 
@@ -401,15 +400,14 @@ contract FundFactoryTest is FundTestBase {
         assertEq(f.manager(), ref.manager());
         assertEq(f.feeBps(), ref.feeBps());
         assertEq(f.feeBps(), 250);
-        assertEq(f.maxPremiumBps(), ref.maxPremiumBps());
+        assertEq(f.mintLock(), ref.mintLock());
+        assertEq(f.mintAdjustmentBps(), ref.mintAdjustmentBps());
         assertEq(f.assets(), ref.assets());
         address[] memory assets = f.assets();
         for (uint256 i; i < assets.length; ++i) {
             assertEq(f.targetWeightBps(assets[i]), ref.targetWeightBps(assets[i]));
             assertEq(f.targetWeightBps(assets[i]), p.weightsBps[i]);
         }
-        assertEq(keccak256(abi.encode(f.lockOptions())), keccak256(abi.encode(ref.lockOptions())));
-        assertEq(keccak256(abi.encode(f.lockOptions())), keccak256(abi.encode(p.lockOptions)));
         assertEq(f.description(), p.description);
     }
 

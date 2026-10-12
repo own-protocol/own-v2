@@ -20,20 +20,76 @@ struct BasketEntry {
     uint16 weightBps;
 }
 
-/// @notice A mint-with-lock option: the minter accepts a lock on the minted fund tokens in exchange
-///         for a discount to the fund token's market price.
-/// @param duration    Lock length, in seconds (non-zero).
-/// @param discountBps Discount to the market price, in basis points.
-struct LockOption {
-    uint32 duration;
-    uint16 discountBps;
+/// @notice One step of a fund's pool issuance curve: from `premiumBps` over NAV upwards (until the
+///         next step), the hook issues `densityBps` of circulating supply per doubling of price.
+/// @param premiumBps Premium over NAV, in basis points, at which the step starts (strictly
+///                   ascending across steps; the first applies from the issuance start).
+/// @param densityBps Supply issued per doubling of price, in basis points of circulating supply.
+struct IssuanceStep {
+    uint32 premiumBps;
+    uint16 densityBps;
 }
 
-/// @notice One point on the staker-yield curve. Stakers earn, in new fund tokens, a yearly rate
-///         interpolated linearly between the points around the fund's premium over NAV: nothing
-///         below the first point, the last point's rate from the last point on. A hump (rising to
-///         a peak, then falling to zero towards the mint ceiling) keeps yield from feeding a
-///         runaway premium.
+/// @notice A fund's pool issuance settings, kept by the hook.
+/// @param startBps    Premium over NAV, in basis points, below which nothing is issued.
+/// @param potShareBps Share of the premium on issued tokens that goes to the Premium Pot.
+/// @param steps       Density steps by premium.
+struct IssuanceConfig {
+    uint16 startBps;
+    uint16 potShareBps;
+    IssuanceStep[] steps;
+}
+
+/// @notice A fund's direct mint and Premium Boost settings, kept by the fund and its staking
+///         module. The factory holds the defaults every new fund starts with.
+/// @param mintLock             How long a direct mint's stake stays locked, in seconds (may be 0).
+/// @param mintAdjustmentBps    Signed adjustment to the pool price a direct mint pays, in basis
+///                             points: positive is a markup, negative a discount. Never below NAV.
+/// @param boostShareBps        Share of a direct mint's premium paid back as the minter's boost.
+/// @param boostSpeedBpsPerYear Speed of the boost, a yearly rate on the mint payment.
+/// @param potDripPeriod        Period over which each Premium Pot top-up drips to stakers.
+/// @param issuanceStartBps     Default issuance start, in basis points over NAV.
+/// @param potShareBps          Default share of the issuance premium that goes to the pot.
+struct PremiumConfig {
+    uint32 mintLock;
+    int16 mintAdjustmentBps;
+    uint16 boostShareBps;
+    uint32 boostSpeedBpsPerYear;
+    uint32 potDripPeriod;
+    uint16 issuanceStartBps;
+    uint16 potShareBps;
+}
+
+/// @title PremiumConfigLib — bounds shared by the factory and every fund
+library PremiumConfigLib {
+    /// @notice Whether `c` is within bounds.
+    /// @param c The settings.
+    /// @return True if valid.
+    function isValid(
+        PremiumConfig memory c
+    ) internal pure returns (bool) {
+        return c.mintLock <= 365 days && c.mintAdjustmentBps >= -5000 && c.mintAdjustmentBps <= 10_000
+            && c.boostShareBps <= 10_000 && c.boostSpeedBpsPerYear != 0 && c.boostSpeedBpsPerYear <= 1_000_000
+            && c.potDripPeriod >= 1 hours && c.potDripPeriod <= 365 days && c.potShareBps <= 10_000;
+    }
+
+    /// @notice Whether issuance `steps` are within bounds: at most 8, premiums strictly ascending,
+    ///         each density at most 50% of supply per doubling.
+    /// @param steps The steps.
+    /// @return True if valid.
+    function stepsValid(
+        IssuanceStep[] memory steps
+    ) internal pure returns (bool) {
+        if (steps.length > 8) return false;
+        for (uint256 i; i < steps.length; ++i) {
+            if (steps[i].densityBps > 5000 || (i != 0 && steps[i].premiumBps <= steps[i - 1].premiumBps)) return false;
+        }
+        return true;
+    }
+}
+
+/// @notice One level of the staker-yield tiers. Stakers earn, in new fund tokens, the yearly rate of
+///         the highest point at or below the fund's premium over NAV: nothing below the first point.
 /// @param premiumBps     Premium, in basis points of NAV (strictly ascending across points).
 /// @param rateBpsPerYear Yearly rate (APR) at that premium, in basis points of the staked balance
 ///                       (capped by the factory).
@@ -59,9 +115,7 @@ struct YieldPoint {
 /// @param launchSupply       Fixed fund token supply created at launch (0 for the default 100M).
 /// @param launchDuration     Deposit window length, in seconds (0 for the default 7 days).
 /// @param poolUsdgBps        Share of the raise that seeds the pool in USDG (0 for the default 10%).
-/// @param lockOptions        Mint-with-lock options.
-/// @param yieldCurve         Staker-yield curve by premium.
-/// @param maxPremiumBps      Mint premium ceiling, in basis points over NAV (0 for none).
+/// @param yieldCurve         Staker-yield tiers by premium (empty for the factory's default tiers).
 struct CreateFundParams {
     string name;
     string symbol;
@@ -78,9 +132,7 @@ struct CreateFundParams {
     uint256 launchSupply;
     uint32 launchDuration;
     uint16 poolUsdgBps;
-    LockOption[] lockOptions;
     YieldPoint[] yieldCurve;
-    uint16 maxPremiumBps;
 }
 
 /// @notice Launch rules. The factory holds the defaults; each launch snapshots them with its own

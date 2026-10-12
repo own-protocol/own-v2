@@ -57,12 +57,12 @@ contract FundStakingTest is FundTestBase {
     }
 
     function test_accrue_payCurveRateForPremium() public {
-        // Premium is 30%: halfway between 0.1% a day at 10% and 0.2% a day at 50%.
+        // Premium is 30%: the tier from 10% pays 0.1% a day until the next one at 50%.
         vm.warp(block.timestamp + 8 hours);
         _refreshFeeds();
         uint256 minted = staking.accrue();
         // The pool TWAP puts the premium within a hair of 30%.
-        assertApproxEqRel(minted, staked * 15 * 8 hours / (10_000 * 1 days), 0.001e18);
+        assertApproxEqRel(minted, staked * 10 * 8 hours / (10_000 * 1 days), 0.001e18);
         assertApproxEqAbs(staking.totalAssets(), staked + minted, 1);
     }
 
@@ -75,7 +75,7 @@ contract FundStakingTest is FundTestBase {
         assertEq(staking.totalAssets(), assets);
         vm.warp(block.timestamp + 8 hours);
         _refreshFeeds();
-        assertApproxEqRel(staking.accrue(), assets * 15 / 10_000 / 3, 0.001e18);
+        assertApproxEqRel(staking.accrue(), assets * 10 / 10_000 / 3, 0.001e18);
     }
 
     function test_accrue_lastPointRateAbovePremium() public {
@@ -110,7 +110,7 @@ contract FundStakingTest is FundTestBase {
         vm.warp(block.timestamp + 5 days);
         _refreshFeeds();
         uint256 minted = staking.accrue(); // one distribution period, not five days
-        assertApproxEqRel(minted, staked * 15 * 8 hours / (10_000 * 1 days), 0.001e18);
+        assertApproxEqRel(minted, staked * 10 * 8 hours / (10_000 * 1 days), 0.001e18);
     }
 
     function test_accrue_dilutesNonStakers() public {
@@ -140,7 +140,7 @@ contract FundStakingTest is FundTestBase {
         _refreshFeeds();
         vm.prank(alice);
         uint256 assets = staking.unstake(staked, alice);
-        assertApproxEqRel(assets - staked, staked * 15 * 8 hours / (10_000 * 1 days), 0.001e18);
+        assertApproxEqRel(assets - staked, staked * 10 * 8 hours / (10_000 * 1 days), 0.001e18);
         assertEq(fund.balanceOf(alice), assets);
     }
 
@@ -183,13 +183,14 @@ contract FundStakingTest is FundTestBase {
         staking.setYieldCurve(curve);
     }
 
-    function test_rateForPremium_interpolatesBetweenPoints() public view {
+    function test_rateForPremium_stepsBetweenLevels() public view {
         assertEq(staking.rateForPremium(-100), 0);
         assertEq(staking.rateForPremium(999), 0);
         assertEq(staking.rateForPremium(1000), 10 * 365e14);
-        assertEq(staking.rateForPremium(3000), 15 * 365e14);
+        assertEq(staking.rateForPremium(3000), 10 * 365e14);
+        assertEq(staking.rateForPremium(4999), 10 * 365e14);
         assertEq(staking.rateForPremium(5000), 20 * 365e14);
-        assertEq(staking.rateForPremium(7500), 25 * 365e14);
+        assertEq(staking.rateForPremium(9999), 20 * 365e14);
         assertEq(staking.rateForPremium(10_000), 30 * 365e14);
         assertEq(staking.rateForPremium(20_000), 30 * 365e14);
     }
@@ -242,43 +243,51 @@ contract FundStakingTest is FundTestBase {
         assertEq(staking.accrue(), staked * 300 / 10_000 / 3);
     }
 
-    function _setHump() internal {
-        // Rises to 0.14% a day (about 1% a week) by 10%, holds to 30%, falls to zero at 100%.
-        YieldPoint[] memory curve = new YieldPoint[](4);
-        curve[0] = YieldPoint({premiumBps: 0, rateBpsPerYear: 0});
-        curve[1] = YieldPoint({premiumBps: 1000, rateBpsPerYear: 14 * 365});
-        curve[2] = YieldPoint({premiumBps: 3000, rateBpsPerYear: 14 * 365});
-        curve[3] = YieldPoint({premiumBps: 10_000, rateBpsPerYear: 0});
+    function _setSpecTiers(
+        uint16 base
+    ) internal {
+        // 12% APR up to 1.25x NAV (or `base`), 24% to 2x, 48% above.
+        YieldPoint[] memory curve = new YieldPoint[](3);
+        curve[0] = YieldPoint({premiumBps: 0, rateBpsPerYear: base});
+        curve[1] = YieldPoint({premiumBps: 2500, rateBpsPerYear: 2400});
+        curve[2] = YieldPoint({premiumBps: 10_000, rateBpsPerYear: 4800});
         vm.prank(admin);
         staking.setYieldCurve(curve);
     }
 
-    function test_rateForPremium_hump() public {
-        _setHump();
+    function test_rateForPremium_specTiers() public {
+        _setSpecTiers(1200);
         assertEq(staking.rateForPremium(-1), 0);
+        assertEq(staking.rateForPremium(0), 1200e14);
+        assertEq(staking.rateForPremium(2499), 1200e14);
+        assertEq(staking.rateForPremium(2500), 2400e14);
+        assertEq(staking.rateForPremium(9999), 2400e14);
+        assertEq(staking.rateForPremium(10_000), 4800e14);
+        assertEq(staking.rateForPremium(90_000), 4800e14);
+    }
+
+    function test_rateForPremium_zeroBaseKeepsUpperTiers() public {
+        _setSpecTiers(0);
         assertEq(staking.rateForPremium(0), 0);
-        assertEq(staking.rateForPremium(500), 7 * 365e14);
-        assertEq(staking.rateForPremium(1000), 14 * 365e14);
-        assertEq(staking.rateForPremium(2000), 14 * 365e14);
-        assertEq(staking.rateForPremium(3000), 14 * 365e14);
-        assertEq(staking.rateForPremium(6500), 7 * 365e14);
-        assertEq(staking.rateForPremium(10_000), 0);
-        assertEq(staking.rateForPremium(15_000), 0);
+        assertEq(staking.rateForPremium(2499), 0);
+        assertEq(staking.rateForPremium(2500), 2400e14);
+        assertEq(staking.rateForPremium(10_000), 4800e14);
     }
 
-    function test_rateForPremium_fallingSlopeRoundsDown() public {
-        _setHump();
-        // 14e14 * 6999 / 7000, rounded down.
-        assertEq(staking.rateForPremium(3001), 14 * 365e14 - (uint256(14 * 365e14) + 6999) / 7000);
-    }
-
-    function test_accrue_humpPaysLessNearCeiling() public {
-        _setHump();
-        _setFeed(address(fund), _navPrice() * 19 / 10); // 90% premium: 0.02% a day
+    function test_accrue_zeroBaseUpperTierPays() public {
+        _setSpecTiers(0);
+        _setFeed(address(fund), _navPrice() * 15 / 10); // 50% premium: the 24% tier
         vm.warp(block.timestamp + 8 hours);
         _refreshFeeds();
-        uint256 minted = staking.accrue();
-        assertApproxEqRel(minted, staked * 2 * 8 hours / (10_000 * 1 days), 0.01e18);
+        assertApproxEqRel(staking.accrue(), staked * 2400 * 8 hours / (10_000 * 365 days), 0.001e18);
+
+        _setFeed(address(fund), _navPrice() * 11 / 10); // 10% premium: the zero base
+        vm.warp(block.timestamp + 8 hours);
+        _refreshFeeds();
+        staking.accrue();
+        vm.warp(block.timestamp + 8 hours);
+        _refreshFeeds();
+        assertEq(staking.accrue(), 0);
     }
 
     // ──────────────────────────────────────────────────────────
@@ -297,7 +306,7 @@ contract FundStakingTest is FundTestBase {
         vm.warp(block.timestamp + 8 hours);
         _refreshFeeds();
         uint256 minted = staking.accrue();
-        uint256 base = staked * 15 * 8 hours / (10_000 * 1 days);
+        uint256 base = staked * 10 * 8 hours / (10_000 * 1 days);
         assertApproxEqRel(minted, base * 115 / 100, 0.001e18);
 
         // Stakers keep the full curve rate; the curators' shares are worth the 15% on top.
@@ -313,7 +322,7 @@ contract FundStakingTest is FundTestBase {
         vm.warp(block.timestamp + 8 hours);
         _refreshFeeds();
         uint256 minted = staking.accrue();
-        uint256 base = staked * 15 * 8 hours / (10_000 * 1 days);
+        uint256 base = staked * 10 * 8 hours / (10_000 * 1 days);
         uint256 cap = staked * 100 * 8 hours / (10_000 * 365 days);
         assertApproxEqRel(minted, base + cap, 0.001e18);
         assertApproxEqRel(staking.convertToAssets(staking.balanceOf(address(curators))), cap, 0.001e18);

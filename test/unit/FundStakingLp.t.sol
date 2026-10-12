@@ -139,8 +139,8 @@ contract FundStakingLpTest is FundTestBase {
         assertEq(tokens, ownTokens);
         uint256 minted = _accrueAfter(8 hours);
         uint256 pending = staking.pendingPositionYield(id);
-        // Premium is ~30%: 0.15% a day, the same rate stakers get on their fund tokens.
-        assertApproxEqRel(pending, tokens * 15 * 8 hours / (10_000 * 1 days), 0.001e18);
+        // Premium is ~30%: 0.1% a day, the same rate stakers get on their fund tokens.
+        assertApproxEqRel(pending, tokens * 10 * 8 hours / (10_000 * 1 days), 0.001e18);
         // LP yield carries no curator share on top.
         assertApproxEqRel(pending * 1e18 / tokens, minted * 1e18 / staked * 100 / 115, 1e9);
     }
@@ -149,7 +149,7 @@ contract FundStakingLpTest is FundTestBase {
         _stake(carol, liq);
         uint256 minted = _accrueAfter(8 hours);
         // Stakers' yield plus the curators' 15% on top.
-        assertApproxEqRel(minted, staked * 15 * 8 hours / (10_000 * 1 days) * 115 / 100, 0.001e18);
+        assertApproxEqRel(minted, staked * 10 * 8 hours / (10_000 * 1 days) * 115 / 100, 0.001e18);
         assertApproxEqAbs(staking.totalAssets(), staked + minted, 1);
     }
 
@@ -198,7 +198,7 @@ contract FundStakingLpTest is FundTestBase {
         uint256 id = _stake(carol, liq);
         _accrueAfter(8 hours);
         assertApproxEqRel(
-            staking.pendingPositionYield(id), _fundTokensIn(liq) * 15 * 8 hours / (10_000 * 1 days), 0.001e18
+            staking.pendingPositionYield(id), _fundTokensIn(liq) * 10 * 8 hours / (10_000 * 1 days), 0.001e18
         );
     }
 

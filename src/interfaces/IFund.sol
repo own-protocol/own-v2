@@ -1,23 +1,31 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {CreateFundParams, FundMetadata, LockOption} from "./types/FundTypes.sol";
+import {CreateFundParams, FundMetadata} from "./types/FundTypes.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 /// @title IFund — an Own Curated Fund token and the basket that backs it
 /// @notice The fund token is a plain ERC-20 backed by a basket of tokens held in this contract, any
 ///         idle USDG the fund holds, and the fund's own position in its USDG pool.
 ///
-///         - NAV per token = (basket + idle USDG + the USDG in the fund's pool position) divided by
-///           (supply minus the fund tokens in that position). The position is valued at the pool
-///           TWAP, never the spot price.
+///         - NAV per token = (basket + idle USDG + the USDG in the fund's pool position - the
+///           reserve) divided by (supply minus the fund tokens in that position). The position is
+///           valued at the pool TWAP, never the spot price.
+///         - Reserve: a dollar amount of the fund's holdings set aside for promised payouts (direct
+///           minters' Premium Boost budgets and the Premium Pot). It is not counted in NAV and
+///           redeems never take it; the staking module moves it into backing as it pays out (each
+///           payout mints tokens at NAV, so NAV does not move) or as boosts are forfeited (NAV rises).
 ///         - Redeem: burn fund tokens for a pro-rata slice of every basket asset, of idle USDG and of
-///           the pool position (its USDG paid out, its fund tokens burned), at any time. The basket
-///           part needs no oracle and nothing can pause it.
-///         - Mint: deposit a slice of everything the fund holds (every basket asset and USDG, in
-///           proportion), so no oracle values the deposit. It is priced at the fund token's market
-///           TWAP (optionally discounted in exchange for a lock, staked while locked), never
-///           below NAV. The mint zap builds the slice from a single token.
+///           the pool position (its USDG paid out, its fund tokens burned), at any time, less the
+///           reserve's part. Nothing can pause it; while the reserve holds anything it needs every
+///           basket price.
+///         - Mint: deposit a slice of everything backing the fund (every basket asset and USDG, in
+///           proportion), so no oracle values the deposit. It is priced at the higher of the pool's
+///           spot price and TWAP, adjusted by a signed admin setting, never below NAV, and staked at
+///           once for the receiver, locked for the fund's mint lock. The minter earns a Premium
+///           Boost on it (see {IFundStaking}). The mint zap builds the slice from a single token.
+///         - Pool issuance: on buys above NAV the hook fills part of the buy with new fund tokens;
+///           their USDG comes here, with part of the premium set aside for the Premium Pot.
 ///         - Fee: one fund fee is charged in fund tokens on mints and redeems (and in USDG on pool
 ///           trades, by the hook). It all goes to the fund's curators module, which splits it
 ///           between the protocol curator and the other curators.
@@ -48,20 +56,29 @@ interface IFund is IERC20 {
 
     /// @notice Emitted on a mint.
     /// @param sender     Depositor.
-    /// @param receiver   Receiver of the minted fund tokens, or owner of the staked lock.
+    /// @param receiver   Owner of the staked, locked mint.
     /// @param navShares  Size of the slice deposited, in fund tokens at NAV.
-    /// @param shares     Fund tokens minted to the receiver (after the fee).
+    /// @param shares     Fund tokens staked for the receiver (after the fee).
     /// @param mintPrice  Price per fund token, 18 decimals USD.
-    /// @param lockId     The receiver's lock index in the staking module, or type(uint256).max when
-    ///                   unlocked.
+    /// @param boostUsd   Boost budget reserved for the receiver, 18 decimals USD.
     event Minted(
         address indexed sender,
         address indexed receiver,
         uint256 navShares,
         uint256 shares,
         uint256 mintPrice,
-        uint256 lockId
+        uint256 boostUsd
     );
+
+    /// @notice Emitted when the hook issues fund tokens into a pool buy.
+    /// @param shares Fund tokens issued.
+    /// @param potUsd Premium added to the reserve for the Premium Pot, 18 decimals USD.
+    event Issued(uint256 shares, uint256 potUsd);
+
+    /// @notice Emitted when the staking module moves reserve into backing.
+    /// @param usd    Reserve released, 18 decimals USD.
+    /// @param shares Fund tokens minted to the staking module against it (zero for a forfeit).
+    event ReserveReleased(uint256 usd, uint256 shares);
 
     /// @notice Emitted on a redeem.
     /// @param sender     Holder that redeemed.
@@ -98,9 +115,10 @@ interface IFund is IERC20 {
     /// @param locked  Fund tokens now locked.
     event LaunchLockSet(address indexed account, uint256 locked);
 
-    /// @notice Emitted when the lock options change.
-    /// @param options New options.
-    event LockOptionsSet(LockOption[] options);
+    /// @notice Emitted when the direct mint settings change.
+    /// @param lock          Lock on a direct mint's stake, in seconds.
+    /// @param adjustmentBps Signed adjustment to the pool price, in basis points.
+    event MintConfigSet(uint32 lock, int16 adjustmentBps);
 
     /// @notice Emitted when the manager changes.
     /// @param manager New manager.
@@ -126,10 +144,6 @@ interface IFund is IERC20 {
     /// @param to     Recipient.
     /// @param amount Amount sent.
     event Swept(address indexed token, address indexed to, uint256 amount);
-
-    /// @notice Emitted when the mint premium ceiling changes.
-    /// @param maxPremiumBps New ceiling, in basis points over NAV (0 for none).
-    event MaxPremiumSet(uint16 maxPremiumBps);
 
     /// @notice Emitted once, when the launch succeeds and the fund goes live.
     /// @param depositorUnlockAt When depositors' launch tokens become transferable.
@@ -164,6 +178,9 @@ interface IFund is IERC20 {
 
     /// @notice Caller is not the factory's auction house.
     error NotAuctions();
+
+    /// @notice Caller is not the pool hook.
+    error NotHook();
 
     /// @notice The transfer would move launch tokens that are still locked.
     error LaunchTokensLocked();
@@ -204,11 +221,8 @@ interface IFund is IERC20 {
     /// @param asset The asset.
     error AssetHasBalance(address asset);
 
-    /// @notice The lock option does not exist.
-    error InvalidLockOption();
-
-    /// @notice A lock option is invalid.
-    error InvalidLockOptions();
+    /// @notice The mint lock or adjustment is out of bounds.
+    error InvalidMintConfig();
 
     /// @notice The fund fee is above its cap.
     error FeeTooHigh();
@@ -277,24 +291,30 @@ interface IFund is IERC20 {
     /// @return moved Locked fund tokens moving into staking.
     function releaseLaunchLock(address account, uint256 amount) external returns (uint256 moved);
 
-    /// @notice Mint fund tokens by depositing a slice of the fund: `navShares / supply` (supply
-    ///         outside the pool position) of every basket asset's balance and of the fund's USDG,
-    ///         idle plus the pool position's, each rounded up. Pulled from the caller, which must
-    ///         have approved the fund; {previewMint} gives the amounts.
+    /// @notice Direct mint: deposit a slice of the fund worth `navShares` at NAV (that share of
+    ///         every basket asset's balance and of the fund's USDG, idle plus the pool position's,
+    ///         the reserve's part left out, each rounded up). Pulled from the caller, which must have
+    ///         approved the fund; {previewMint} gives the amounts. The fund tokens are staked for the
+    ///         receiver and locked for {mintLock} (see {IFundStaking-stakeMinted}); the receiver earns
+    ///         a Premium Boost of the staking module's boost share of the premium paid over NAV.
     /// @param navShares    Size of the slice, in fund tokens at NAV. The receiver gets this scaled
     ///                     down by the mint price over NAV, less the fee.
-    /// @param lockOption   0 for no lock, otherwise 1 + index into {lockOptions}.
-    /// @param minSharesOut Minimum fund tokens to the receiver, after the fee.
-    /// @param receiver     Receiver of the fund tokens, or owner of the lock. A locked mint is
-    ///                     staked at once and its shares held for the receiver until the lock
-    ///                     ends (see {IFundStaking-claimLocks}), so it earns the staker yield.
-    /// @return shares Fund tokens minted to the receiver or staked for its lock.
-    function mint(
-        uint256 navShares,
-        uint256 lockOption,
-        uint256 minSharesOut,
-        address receiver
-    ) external returns (uint256 shares);
+    /// @param minSharesOut Minimum fund tokens staked for the receiver, after the fee.
+    /// @param receiver     Owner of the stake.
+    /// @return shares Fund tokens staked for the receiver.
+    function mint(uint256 navShares, uint256 minSharesOut, address receiver) external returns (uint256 shares);
+
+    /// @notice Mint fund tokens the hook issues into a pool buy, whose USDG the hook has paid here,
+    ///         and set `potUsd` of it aside in the reserve for the Premium Pot. Hook only.
+    /// @param shares Fund tokens minted to the hook.
+    /// @param potUsd Premium for the pot, 18 decimals USD.
+    function hookIssue(uint256 shares, uint256 potUsd) external;
+
+    /// @notice Move `usd` of the reserve into backing, minting `shares` to the staking module
+    ///         against it (a boost or pot payout at NAV), or none for a forfeit. Staking only.
+    /// @param usd    Reserve released, 18 decimals USD.
+    /// @param shares Fund tokens minted to the staking module.
+    function releaseReserve(uint256 usd, uint256 shares) external;
 
     /// @notice Redeem fund tokens for a pro-rata slice of every basket asset, of idle USDG and of
     ///         the fund's pool position. The position slice pays its USDG (at most its TWAP value,
@@ -354,11 +374,11 @@ interface IFund is IERC20 {
         uint16 feeBps
     ) external;
 
-    /// @notice Replace the mint-with-lock options. Admin only.
-    /// @param options New options.
-    function setLockOptions(
-        LockOption[] calldata options
-    ) external;
+    /// @notice Set the direct mint settings. Admin only.
+    /// @param lock          Lock on a direct mint's stake, in seconds (0 to 365 days).
+    /// @param adjustmentBps Signed adjustment to the pool price, in basis points (-5 000 to 10 000):
+    ///                      positive is a markup, negative a discount. The price is never below NAV.
+    function setMintConfig(uint32 lock, int16 adjustmentBps) external;
 
     /// @notice Replace the governor, e.g. with a quadratic, futarchy or bribe-market module.
     ///         Admin only.
@@ -385,18 +405,10 @@ interface IFund is IERC20 {
         address manager_
     ) external;
 
-    /// @notice Pause or unpause minting. Operator or admin. Redeeming cannot be paused.
+    /// @notice Close or open the direct mint door. Operator or admin. Redeeming cannot be paused.
     /// @param paused Whether minting is paused.
     function setMintPaused(
         bool paused
-    ) external;
-
-    /// @notice Set the mint premium ceiling. Admin only. Minting is priced at no more than NAV plus
-    ///         this premium, so arbitrage (mint at the ceiling, sell into the pool) holds the market
-    ///         price near it.
-    /// @param maxPremiumBps_ Ceiling, in basis points over NAV (10 000 = 2x NAV); 0 for none.
-    function setMaxPremium(
-        uint16 maxPremiumBps_
     ) external;
 
     /// @notice Send the fund's whole balance of a token that is not backing to the factory's sweep
@@ -450,9 +462,18 @@ interface IFund is IERC20 {
     /// @return True while paused.
     function mintPaused() external view returns (bool);
 
-    /// @notice Mint premium ceiling, in basis points over NAV (0 for none).
-    /// @return The ceiling.
-    function maxPremiumBps() external view returns (uint16);
+    /// @notice Lock on a direct mint's stake, in seconds.
+    /// @return The lock.
+    function mintLock() external view returns (uint32);
+
+    /// @notice Signed adjustment to the pool price a direct mint pays, in basis points.
+    /// @return The adjustment.
+    function mintAdjustmentBps() external view returns (int16);
+
+    /// @notice Holdings set aside for promised payouts (boost budgets and the Premium Pot), 18
+    ///         decimals USD. Not counted in NAV.
+    /// @return The reserve.
+    function reserveUsd() external view returns (uint256);
 
     /// @notice Curators module: the fund fee recipient.
     /// @return The curators module.
@@ -514,34 +535,35 @@ interface IFund is IERC20 {
         address asset
     ) external view returns (uint16);
 
-    /// @notice Mint-with-lock options.
-    /// @return The options.
-    function lockOptions() external view returns (LockOption[] memory);
-
-    /// @notice Backing value: basket, idle USDG and the pool position's USDG, 18 decimals USD.
-    ///         Reverts if any asset's price is unavailable.
+    /// @notice Value held: basket, idle USDG and the pool position's USDG, 18 decimals USD, reserve
+    ///         included. Reverts if any asset's price is unavailable.
     /// @return The value.
     function totalValue() external view returns (uint256);
 
-    /// @notice NAV per fund token, 18 decimals USD. Reverts if any asset's price is unavailable.
+    /// @notice NAV per fund token, 18 decimals USD, reserve excluded. Reverts if any asset's price
+    ///         is unavailable.
     /// @return The NAV.
     function navPerShare() external view returns (uint256);
+
+    /// @notice NAV per fund token without reverting.
+    /// @return ok     Whether every price needed was available and NAV is non-zero.
+    /// @return nav    NAV per fund token, 18 decimals USD.
+    /// @return supply Supply outside the fund's pool position.
+    function tryNav() external view returns (bool ok, uint256 nav, uint256 supply);
 
     /// @notice Premium of the fund token's market TWAP over NAV.
     /// @return ok         Whether every price needed was available.
     /// @return premiumBps Premium in basis points (negative at a discount).
     function premiumBps() external view returns (bool ok, int256 premiumBps);
 
-    /// @notice Quote a mint.
+    /// @notice Quote a direct mint.
     /// @param navShares  Size of the slice, in fund tokens at NAV.
-    /// @param lockOption 0 for no lock, otherwise 1 + index into {lockOptions}.
-    /// @return shares     Fund tokens to the receiver, after the fee.
+    /// @return shares     Fund tokens staked for the receiver, after the fee.
     /// @return mintPrice  Price per fund token, 18 decimals USD.
     /// @return amounts    Amount of each basket asset the mint pulls, in {assets} order.
     /// @return usdgAmount USDG the mint pulls.
     function previewMint(
-        uint256 navShares,
-        uint256 lockOption
+        uint256 navShares
     ) external view returns (uint256 shares, uint256 mintPrice, uint256[] memory amounts, uint256 usdgAmount);
 
     /// @notice Quote a redeem (the USDG figure assumes the pool's spot price equals its TWAP).

@@ -68,7 +68,8 @@ contract FundHookTest is FundTestBase {
         assertEq(fund.balanceOf(trader) - sharesBefore, 500e18);
         uint256 paid = usdgBefore - usdg.balanceOf(trader);
         uint256 poolIn = paid - usdg.balanceOf(address(curators));
-        assertEq(usdg.balanceOf(address(curators)), poolIn * 100 / 10_000);
+        // The issued part and the pool's part are charged separately, so the fee may round apart by a wei.
+        assertApproxEqAbs(usdg.balanceOf(address(curators)), poolIn * 100 / 10_000, 1);
         assertEq(uint256(-int256(_usdgDelta(delta))), paid);
     }
 
@@ -103,6 +104,7 @@ contract FundHookTest is FundTestBase {
     }
 
     function test_roundTrip_costsAboutTheFees() public {
+        _noIssuance();
         uint256 usdgBefore = usdg.balanceOf(trader);
         uint256 sharesBefore = fund.balanceOf(trader);
         _swap(true, -int256(1000e6));
@@ -117,6 +119,7 @@ contract FundHookTest is FundTestBase {
     // ──────────────────────────────────────────────────────────
 
     function test_lpFee_accruesToFundPositionAndGoesToFund() public {
+        _noIssuance();
         vm.prank(admin);
         hook.setLpFee(address(fund), 3000); // 0.3%
 

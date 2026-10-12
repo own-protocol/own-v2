@@ -15,7 +15,13 @@ import {IFundFactory} from "../../src/interfaces/IFundFactory.sol";
 import {IFundLaunch} from "../../src/interfaces/IFundLaunch.sol";
 import {IFundStaking} from "../../src/interfaces/IFundStaking.sol";
 
-import {CreateFundParams, LaunchConfig, LockOption, YieldPoint} from "../../src/interfaces/types/FundTypes.sol";
+import {
+    CreateFundParams,
+    IssuanceConfig,
+    IssuanceStep,
+    LaunchConfig,
+    YieldPoint
+} from "../../src/interfaces/types/FundTypes.sol";
 import {ProtocolRegistry} from "../../src/registry/ProtocolRegistry.sol";
 import {Actors} from "./Actors.sol";
 import {MockAggregatorV3} from "./MockAggregatorV3.sol";
@@ -160,9 +166,6 @@ abstract contract FundTestBase is Test {
         p.launchSupply = 130_000e18;
         p.launchDuration = 7 days;
         p.poolUsdgBps = 2000;
-        p.lockOptions = new LockOption[](2);
-        p.lockOptions[0] = LockOption({duration: 7 days, discountBps: 500});
-        p.lockOptions[1] = LockOption({duration: 30 days, discountBps: 1000});
         p.yieldCurve = new YieldPoint[](3);
         p.yieldCurve[0] = YieldPoint({premiumBps: 1000, rateBpsPerYear: 3650});
         p.yieldCurve[1] = YieldPoint({premiumBps: 5000, rateBpsPerYear: 7300});
@@ -245,6 +248,14 @@ abstract contract FundTestBase is Test {
         }
     }
 
+    /// @dev Turns pool issuance off, for tests of the pool's own fees and liquidity.
+    function _noIssuance() internal {
+        vm.prank(admin);
+        hook.setIssuance(
+            address(fund), IssuanceConfig({startBps: 100, potShareBps: 7500, steps: new IssuanceStep[](0)})
+        );
+    }
+
     /// @dev Moves past the depositor lock and refreshes every feed.
     function _passDepositorLock() internal {
         vm.warp(fund.depositorUnlockAt());
@@ -316,13 +327,9 @@ abstract contract FundTestBase is Test {
     }
 
     /// @dev Gives `who` the slice a mint of `navShares` needs and approves the fund for it.
-    function _fundSlice(
-        address who,
-        uint256 navShares,
-        uint256 lockOption
-    ) internal returns (uint256[] memory amounts) {
+    function _fundSlice(address who, uint256 navShares) internal returns (uint256[] memory amounts) {
         uint256 usdgAmount;
-        (,, amounts, usdgAmount) = fund.previewMint(navShares, lockOption);
+        (,, amounts, usdgAmount) = fund.previewMint(navShares);
         address[] memory a = fund.assets();
         for (uint256 i; i < a.length; ++i) {
             _mintAsset(who, MockERC20(a[i]), amounts[i]);
@@ -330,10 +337,11 @@ abstract contract FundTestBase is Test {
         _mintAsset(who, usdg, usdgAmount);
     }
 
-    function _mintAs(address who, uint256 navShares, uint256 lockOption) internal returns (uint256 shares) {
-        _fundSlice(who, navShares, lockOption);
+    /// @dev Direct mint as `who`; returns the fund tokens staked for it.
+    function _mintAs(address who, uint256 navShares) internal returns (uint256 shares) {
+        _fundSlice(who, navShares);
         vm.prank(who);
-        shares = fund.mint(navShares, lockOption, 0, who);
+        shares = fund.mint(navShares, 0, who);
     }
 
     function _mintAsset(address who, MockERC20 asset, uint256 amount) internal {

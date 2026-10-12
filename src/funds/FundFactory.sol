@@ -14,8 +14,12 @@ import {
     CreateFundParams,
     GovernanceConfig,
     GovernanceConfigLib,
+    IssuanceStep,
     LaunchConfig,
-    PlatformMetadata
+    PlatformMetadata,
+    PremiumConfig,
+    PremiumConfigLib,
+    YieldPoint
 } from "../interfaces/types/FundTypes.sol";
 import {BPS} from "../interfaces/types/Types.sol";
 import {BeaconProxy} from "@openzeppelin/contracts/proxy/beacon/BeaconProxy.sol";
@@ -125,6 +129,10 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
 
     address private _sweepRecipient;
 
+    PremiumConfig private _premiumConfig;
+    IssuanceStep[] private _issuanceSteps;
+    YieldPoint[] private _yieldCurve;
+
     /// @notice Emitted once, when the hook is wired.
     /// @param hook The hook.
     event HookSet(address hook);
@@ -216,6 +224,28 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
         for (uint256 i; i < 6; ++i) {
             _beacons[Module(i)] = address(new UpgradeableBeacon(impls[i], address(this)));
         }
+
+        _setPremiumConfig(
+            PremiumConfig({
+                mintLock: 15 days,
+                mintAdjustmentBps: 0,
+                boostShareBps: 7500,
+                boostSpeedBpsPerYear: 7500,
+                potDripPeriod: 7 days,
+                issuanceStartBps: 100,
+                potShareBps: 7500
+            })
+        );
+        IssuanceStep[] memory steps = new IssuanceStep[](3);
+        steps[0] = IssuanceStep({premiumBps: 0, densityBps: 100});
+        steps[1] = IssuanceStep({premiumBps: 10_000, densityBps: 200});
+        steps[2] = IssuanceStep({premiumBps: 40_000, densityBps: 300});
+        _setIssuanceSteps(steps);
+        YieldPoint[] memory curve = new YieldPoint[](3);
+        curve[0] = YieldPoint({premiumBps: 0, rateBpsPerYear: 1200});
+        curve[1] = YieldPoint({premiumBps: 2500, rateBpsPerYear: 2400});
+        curve[2] = YieldPoint({premiumBps: 10_000, rateBpsPerYear: 4800});
+        _setYieldCurve(curve);
     }
 
     /// @notice Wire the pool hook. Admin only, once.
@@ -426,6 +456,27 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
     }
 
     /// @inheritdoc IFundFactory
+    function setPremiumConfig(
+        PremiumConfig calldata config
+    ) external override onlyAdmin {
+        _setPremiumConfig(config);
+    }
+
+    /// @inheritdoc IFundFactory
+    function setDefaultIssuanceSteps(
+        IssuanceStep[] calldata steps
+    ) external override onlyAdmin {
+        _setIssuanceSteps(steps);
+    }
+
+    /// @inheritdoc IFundFactory
+    function setDefaultYieldCurve(
+        YieldPoint[] calldata curve
+    ) external override onlyAdmin {
+        _setYieldCurve(curve);
+    }
+
+    /// @inheritdoc IFundFactory
     function upgradeModule(Module module, address implementation) external override onlyAdmin {
         UpgradeableBeacon(_beacons[module]).upgradeTo(implementation);
         emit ModuleUpgraded(module, implementation);
@@ -467,6 +518,21 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
     }
 
     /// @inheritdoc IFundFactory
+    function premiumConfig() external view override returns (PremiumConfig memory) {
+        return _premiumConfig;
+    }
+
+    /// @inheritdoc IFundFactory
+    function defaultIssuanceSteps() external view override returns (IssuanceStep[] memory) {
+        return _issuanceSteps;
+    }
+
+    /// @inheritdoc IFundFactory
+    function defaultYieldCurve() external view override returns (YieldPoint[] memory) {
+        return _yieldCurve;
+    }
+
+    /// @inheritdoc IFundFactory
     function fundCount() external view override returns (uint256) {
         return _funds.length;
     }
@@ -490,6 +556,38 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
         Module module
     ) external view override returns (address) {
         return _beacons[module];
+    }
+
+    function _setPremiumConfig(
+        PremiumConfig memory config
+    ) internal {
+        if (!PremiumConfigLib.isValid(config)) revert InvalidPremiumConfig();
+        _premiumConfig = config;
+        emit PremiumConfigSet(config);
+    }
+
+    function _setIssuanceSteps(
+        IssuanceStep[] memory steps
+    ) internal {
+        if (!PremiumConfigLib.stepsValid(steps)) revert InvalidPremiumConfig();
+        delete _issuanceSteps;
+        for (uint256 i; i < steps.length; ++i) {
+            _issuanceSteps.push(steps[i]);
+        }
+        emit DefaultIssuanceStepsSet(steps);
+    }
+
+    /// @dev Bounds match the staking module's, which checks the yield cap again at creation.
+    function _setYieldCurve(
+        YieldPoint[] memory curve
+    ) internal {
+        if (curve.length > 8) revert InvalidPremiumConfig();
+        delete _yieldCurve;
+        for (uint256 i; i < curve.length; ++i) {
+            if (i != 0 && curve[i].premiumBps <= curve[i - 1].premiumBps) revert InvalidPremiumConfig();
+            _yieldCurve.push(curve[i]);
+        }
+        emit DefaultYieldCurveSet(curve);
     }
 
     function _proxy(Module module, bytes memory init) internal returns (address) {

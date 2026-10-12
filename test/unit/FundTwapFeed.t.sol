@@ -145,7 +145,7 @@ contract FundTwapFeedTest is FundTestBase {
         assertApproxEqAbs(premium, 3000, 5);
 
         uint256 nav = fund.navPerShare();
-        uint256 shares = _mintAs(bob, 100e18, 0);
+        uint256 shares = _mintAs(bob, 100e18);
         // A slice worth 100 tokens at NAV, bought at the TWAP, less the 1% fee.
         assertApproxEqRel(shares, 100e18 * nav / launchPrice * 9900 / 10_000, 2e15);
     }

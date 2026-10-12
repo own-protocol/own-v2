@@ -1,7 +1,15 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {CreateFundParams, GovernanceConfig, LaunchConfig, PlatformMetadata} from "./types/FundTypes.sol";
+import {
+    CreateFundParams,
+    GovernanceConfig,
+    IssuanceStep,
+    LaunchConfig,
+    PlatformMetadata,
+    PremiumConfig,
+    YieldPoint
+} from "./types/FundTypes.sol";
 
 /// @title IFundFactory — creates Own Curated Funds and holds platform-wide settings
 /// @notice Every fund is six beacon proxies (fund token + basket, launch, staking, governor,
@@ -120,6 +128,18 @@ interface IFundFactory {
     /// @param metadata New metadata.
     event PlatformMetadataSet(PlatformMetadata metadata);
 
+    /// @notice Emitted when the default direct mint, boost, pot and issuance settings change.
+    /// @param config New defaults.
+    event PremiumConfigSet(PremiumConfig config);
+
+    /// @notice Emitted when the default issuance steps change.
+    /// @param steps New steps.
+    event DefaultIssuanceStepsSet(IssuanceStep[] steps);
+
+    /// @notice Emitted when the default yield tiers change.
+    /// @param curve New tier points.
+    event DefaultYieldCurveSet(YieldPoint[] curve);
+
     /// @notice Emitted when a module beacon is pointed at a new implementation.
     /// @param module         The module.
     /// @param implementation The new implementation.
@@ -151,6 +171,9 @@ interface IFundFactory {
 
     /// @notice A governance parameter is out of range.
     error InvalidGovernanceConfig();
+
+    /// @notice A default mint, boost, pot, issuance or tier setting is out of bounds.
+    error InvalidPremiumConfig();
 
     /// @notice Create a fund with all its modules. An admin, or (while whitelisting is on) a
     ///         whitelisted launcher; anyone once whitelisting is off. The launch window opens
@@ -265,6 +288,27 @@ interface IFundFactory {
     /// @param config New parameters.
     function setGovernanceConfig(
         GovernanceConfig calldata config
+    ) external;
+
+    /// @notice Set the defaults funds created from now on start with: direct mint lock and price
+    ///         adjustment, boost share and speed, pot drip period, issuance start and pot share.
+    ///         Admin only; each fund's own settings are changed on the fund, its staking module and
+    ///         the hook.
+    /// @param config New defaults.
+    function setPremiumConfig(
+        PremiumConfig calldata config
+    ) external;
+
+    /// @notice Set the default issuance density steps for funds created from now on. Admin only.
+    /// @param steps New steps (at most 8, premiums ascending, each density at most 50%).
+    function setDefaultIssuanceSteps(
+        IssuanceStep[] calldata steps
+    ) external;
+
+    /// @notice Set the default yield tiers for funds created without their own. Admin only.
+    /// @param curve New tier points (at most 8, premiums ascending).
+    function setDefaultYieldCurve(
+        YieldPoint[] calldata curve
     ) external;
 
     /// @notice Set the platform metadata every fund shows. Admin only.
@@ -389,6 +433,22 @@ interface IFundFactory {
     /// @notice Highest yearly rate a staking yield point may pay, in basis points.
     /// @return The cap.
     function maxYieldRateBpsPerYear() external view returns (uint32);
+
+    /// @notice Defaults new funds start with (by default a 15-day mint lock, no price adjustment, a
+    ///         75% boost share at 75% a year, a 7-day pot drip, issuance from 1% over NAV with 75% of
+    ///         its premium to the pot).
+    /// @return The defaults.
+    function premiumConfig() external view returns (PremiumConfig memory);
+
+    /// @notice Default issuance density steps (by default 1% of supply per doubling up to 2x NAV,
+    ///         2% from 2x, 3% from 5x).
+    /// @return The steps.
+    function defaultIssuanceSteps() external view returns (IssuanceStep[] memory);
+
+    /// @notice Default yield tiers (by default 12% a year from NAV, 24% from 1.25x NAV, 48% from
+    ///         2x NAV).
+    /// @return The tier points.
+    function defaultYieldCurve() external view returns (YieldPoint[] memory);
 
     /// @notice Governance parameters used by funds created from now on.
     /// @return The parameters.

@@ -11,8 +11,8 @@ import {
     BasketEntry,
     CreateFundParams,
     FundMetadata,
-    LockOption,
-    MAX_BASKET_ASSETS
+    MAX_BASKET_ASSETS,
+    PremiumConfig
 } from "../interfaces/types/FundTypes.sol";
 import {BPS, PRECISION} from "../interfaces/types/Types.sol";
 import {FundRebalance} from "./libraries/FundRebalance.sol";
@@ -42,22 +42,17 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
     /// @notice Fund fee used when a fund is created without one: 1%.
     uint16 public constant DEFAULT_FEE_BPS = 100;
 
-    /// @notice Hard cap on a lock option's discount.
-    uint16 public constant MAX_LOCK_DISCOUNT_BPS = 5000;
-
-    /// @notice Maximum number of lock options.
-    uint256 public constant MAX_LOCK_OPTIONS = 8;
-
     /// @notice A dropped asset worth at most this share of the basket may be left behind, in basis points.
     uint256 public constant DUST_BPS = 10;
-
-    uint256 private constant NO_LOCK = type(uint256).max;
 
     /// @inheritdoc IFund
     address public override factory;
 
     /// @inheritdoc IFund
-    uint16 public override maxPremiumBps;
+    uint32 public override mintLock;
+
+    /// @inheritdoc IFund
+    int16 public override mintAdjustmentBps;
 
     /// @inheritdoc IFund
     address public override manager;
@@ -89,8 +84,6 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
     address[] private _assets;
     mapping(address asset => BasketEntry) private _basket;
 
-    LockOption[] private _lockOptions;
-
     /// @notice When {rebalanceVolume} was last updated.
     uint64 public rebalanceVolumeUpdatedAt;
 
@@ -109,6 +102,9 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
 
     /// @inheritdoc IFund
     mapping(address account => uint256) public override launchLocked;
+
+    /// @inheritdoc IFund
+    uint256 public override reserveUsd;
 
     address private immutable _usdg;
 
@@ -159,9 +155,8 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
         emit ManagerSet(params.manager);
         _setFee(params.feeBps == 0 ? DEFAULT_FEE_BPS : params.feeBps);
         _setBasket(params.assets, params.weightsBps);
-        _setLockOptions(params.lockOptions);
-        maxPremiumBps = params.maxPremiumBps;
-        emit MaxPremiumSet(params.maxPremiumBps);
+        PremiumConfig memory c = IFundFactory(msg.sender).premiumConfig();
+        _setMintConfig(c.mintLock, c.mintAdjustmentBps);
     }
 
     /// @inheritdoc IFund
@@ -231,7 +226,6 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
     /// @inheritdoc IFund
     function mint(
         uint256 navShares,
-        uint256 lockOption,
         uint256 minSharesOut,
         address receiver
     ) external override nonReentrant returns (uint256 shares) {
@@ -241,18 +235,37 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
 
         // The slice and the prices are read before anything is pulled, so the deposit cannot move them.
         address[] memory basket = _assets;
-        address usdg = _usdg;
-        (uint256 gross, uint256 mintPrice, uint256[] memory amounts, uint256 usdgAmount) =
-            _mintQuote(basket, usdg, navShares, lockOption);
+        (uint256 gross, uint256 mintPrice, uint256 nav, uint256[] memory amounts, uint256 usdgAmount) =
+            _mintQuote(basket, _usdg, navShares);
         for (uint256 i; i < basket.length; ++i) {
             _pull(basket[i], amounts[i]);
         }
-        _pull(usdg, usdgAmount);
+        _pull(_usdg, usdgAmount);
         shares = _chargeMintFees(gross);
         if (shares == 0 || shares < minSharesOut) revert Slippage();
-        uint256 lockId = _issue(receiver, shares, lockOption);
+        uint256 budget = _stakeMinted(receiver, shares, Math.mulDiv(navShares, nav, PRECISION), gross, nav);
 
-        emit Minted(msg.sender, receiver, navShares, shares, mintPrice, lockId);
+        emit Minted(msg.sender, receiver, navShares, shares, mintPrice, budget);
+    }
+
+    /// @inheritdoc IFund
+    function hookIssue(uint256 shares, uint256 potUsd) external override {
+        if (msg.sender != _hook()) revert NotHook();
+        _mint(msg.sender, shares);
+        if (potUsd != 0) {
+            reserveUsd += potUsd;
+            IFundStaking(staking).addPot(potUsd);
+        }
+        emit Issued(shares, potUsd);
+    }
+
+    /// @inheritdoc IFund
+    function releaseReserve(uint256 usd, uint256 shares) external override onlyStaking {
+        uint256 r = reserveUsd;
+        // Clamped so a rounding slip can never block an unstake.
+        reserveUsd = usd >= r ? 0 : r - usd;
+        if (shares != 0) _mint(msg.sender, shares);
+        emit ReserveReleased(usd, shares);
     }
 
     /// @inheritdoc IFund
@@ -267,29 +280,21 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
         address[] memory basket = _assets;
         if (minAmountsOut.length != 0 && minAmountsOut.length != basket.length) revert LengthMismatch();
 
-        address usdg = _usdg;
         address hook = _hook();
-        uint256 net;
-        uint256 supply;
-        uint256 idle;
-        {
-            uint256 fee = _fee(shares);
-            net = shares - fee;
-            (, supply) = _poolAndSupplyAt(hook);
-            (amounts, idle) = _redeemAmounts(basket, usdg, net, supply);
-            for (uint256 i; i < minAmountsOut.length; ++i) {
-                if (amounts[i] < minAmountsOut[i]) revert Slippage();
-            }
-
-            // Burning everything and minting the fees back moves locked launch tokens only by burning.
-            _burn(msg.sender, shares);
-            _mintFee(fee);
+        (uint256 net, uint256 supply, uint256 idle) = _redeemQuote(basket, _usdg, hook, shares);
+        amounts = _redeemAssets(basket, net, supply);
+        for (uint256 i; i < minAmountsOut.length; ++i) {
+            if (amounts[i] < minAmountsOut[i]) revert Slippage();
         }
+
+        // Burning everything and minting the fees back moves locked launch tokens only by burning.
+        _burn(msg.sender, shares);
+        _mintFee(_fee(shares));
 
         for (uint256 i; i < basket.length; ++i) {
             if (amounts[i] != 0) IERC20(basket[i]).safeTransfer(receiver, amounts[i]);
         }
-        if (idle != 0) IERC20(usdg).safeTransfer(receiver, idle);
+        if (idle != 0) IERC20(_usdg).safeTransfer(receiver, idle);
         usdgAmount = idle + IFundHook(hook).redeemPosition(net, supply, receiver);
         if (usdgAmount < minUsdgOut) revert Slippage();
 
@@ -340,10 +345,8 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
     }
 
     /// @inheritdoc IFund
-    function setLockOptions(
-        LockOption[] calldata options
-    ) external override onlyAdmin {
-        _setLockOptions(options);
+    function setMintConfig(uint32 lock, int16 adjustmentBps) external override onlyAdmin {
+        _setMintConfig(lock, adjustmentBps);
     }
 
     /// @inheritdoc IFund
@@ -381,14 +384,6 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
         _checkOperator();
         mintPaused = paused;
         emit MintPausedSet(paused);
-    }
-
-    /// @inheritdoc IFund
-    function setMaxPremium(
-        uint16 maxPremiumBps_
-    ) external override onlyAdmin {
-        maxPremiumBps = maxPremiumBps_;
-        emit MaxPremiumSet(maxPremiumBps_);
     }
 
     /// @inheritdoc IFund
@@ -435,11 +430,6 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
     }
 
     /// @inheritdoc IFund
-    function lockOptions() external view override returns (LockOption[] memory) {
-        return _lockOptions;
-    }
-
-    /// @inheritdoc IFund
     function isAsset(
         address asset
     ) external view override returns (bool) {
@@ -464,7 +454,18 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
         (uint256 poolUsdg, uint256 supply) = _poolAndSupply();
         if (supply == 0) return 0;
         (, uint256 value) = _totalValue(_oracle(), _assets, _usdg, poolUsdg);
-        return Math.mulDiv(value, PRECISION, supply);
+        return Math.mulDiv(_backing(value), PRECISION, supply);
+    }
+
+    /// @inheritdoc IFund
+    function tryNav() external view override returns (bool ok, uint256 nav, uint256 supply) {
+        uint256 poolUsdg;
+        (poolUsdg, supply) = _poolAndSupply();
+        uint256 basket;
+        (ok, basket) = _basketValue(_assets, _oracle(), true);
+        if (!ok || supply == 0) return (false, 0, supply);
+        nav = Math.mulDiv(_backing(basket + _usdgBacking(_usdg, poolUsdg)), PRECISION, supply);
+        ok = nav != 0;
     }
 
     /// @inheritdoc IFund
@@ -504,15 +505,14 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
         if (!marketOk || supply == 0) return (false, 0);
         (bool basketOk, uint256 basket) = _basketValue(_assets, o, true);
         if (!basketOk) return (false, 0);
-        uint256 nav = Math.mulDiv(basket + _usdgBacking(_usdg, poolUsdg), PRECISION, supply);
+        uint256 nav = Math.mulDiv(_backing(basket + _usdgBacking(_usdg, poolUsdg)), PRECISION, supply);
         if (nav == 0) return (false, 0);
         return (true, int256(Math.mulDiv(market, BPS, nav)) - int256(BPS));
     }
 
     /// @inheritdoc IFund
     function previewMint(
-        uint256 navShares,
-        uint256 lockOption
+        uint256 navShares
     )
         external
         view
@@ -520,7 +520,7 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
         returns (uint256 shares, uint256 mintPrice, uint256[] memory amounts, uint256 usdgAmount)
     {
         uint256 gross;
-        (gross, mintPrice, amounts, usdgAmount) = _mintQuote(_assets, _usdg, navShares, lockOption);
+        (gross, mintPrice,, amounts, usdgAmount) = _mintQuote(_assets, _usdg, navShares);
         shares = gross - _fee(gross);
     }
 
@@ -528,10 +528,12 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
     function previewRedeem(
         uint256 shares
     ) external view override returns (uint256[] memory amounts, uint256 usdgAmount) {
-        uint256 net = shares - _fee(shares);
-        (uint256 poolUsdg, uint256 supply) = _poolAndSupply();
-        (amounts, usdgAmount) = _redeemAmounts(_assets, _usdg, net, supply);
-        usdgAmount += Math.mulDiv(poolUsdg, net, supply);
+        address[] memory basket = _assets;
+        address hook = _hook();
+        (uint256 net, uint256 supply, uint256 idle) = _redeemQuote(basket, _usdg, hook, shares);
+        amounts = _redeemAssets(basket, net, supply);
+        (uint256 poolUsdg,) = _poolAndSupplyAt(hook);
+        usdgAmount = idle + Math.mulDiv(poolUsdg, net, supply);
     }
 
     function _hook() internal view returns (address) {
@@ -568,44 +570,50 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
         if (!IFundFactory(factory).isOperator(msg.sender)) revert NotOperator();
     }
 
-    /// @dev A mint of `navShares`: the depositor brings `navShares / supply` of every basket asset
-    ///      and of the fund's USDG (idle plus the pool position's), each rounded up, so no oracle
-    ///      values the deposit and the basket keeps its proportions. The fund tokens issued are
-    ///      `navShares` scaled down by the mint price over NAV: the market TWAP, capped at the premium
-    ///      ceiling, less the lock discount, never below NAV. A mispriced oracle can only cost the
+    /// @dev A mint of `navShares`: the depositor brings `navShares` worth at NAV of a slice of
+    ///      everything backing the fund (every basket asset and the fund's USDG, idle plus the pool
+    ///      position's, the reserve's part left out), each rounded up, so no oracle values the deposit
+    ///      and the basket keeps its proportions. The fund tokens issued are `navShares` scaled down
+    ///      by the mint price over NAV: the higher of the pool's spot price and its TWAP, adjusted by
+    ///      the fund's signed mint adjustment, never below NAV. A mispriced oracle can only cost the
     ///      minter, never dilute holders.
     function _mintQuote(
         address[] memory basket,
         address usdg,
-        uint256 navShares,
-        uint256 lockOption
-    ) internal view returns (uint256 gross, uint256 mintPrice, uint256[] memory amounts, uint256 usdgAmount) {
+        uint256 navShares
+    )
+        internal
+        view
+        returns (uint256 gross, uint256 mintPrice, uint256 nav, uint256[] memory amounts, uint256 usdgAmount)
+    {
         if (!launched) revert NotLaunched();
-        if (lockOption > _lockOptions.length) revert InvalidLockOption();
         (uint256 poolUsdg, uint256 supply) = _poolAndSupply();
         if (supply == 0) revert EmptyFund();
-        uint256 nav;
-        (nav, mintPrice) = _mintPrice(basket, usdg, poolUsdg, supply, lockOption);
+        uint256 total;
+        (nav, mintPrice, total) = _mintPrice(basket, usdg, poolUsdg, supply);
         // Rounds down: the minter never receives more than its slice is worth at the mint price.
         gross = nav == 0 ? 0 : Math.mulDiv(navShares, nav, mintPrice);
-        (amounts, usdgAmount) = _mintAmounts(basket, usdg, navShares, poolUsdg, supply);
+        uint256 r = reserveUsd;
+        uint256 slice =
+            r == 0 || total == 0 ? navShares : Math.mulDiv(navShares, _backing(total), total, Math.Rounding.Ceil);
+        (amounts, usdgAmount) = _mintAmounts(basket, usdg, slice, poolUsdg, supply);
     }
 
     function _mintPrice(
         address[] memory basket,
         address usdg,
         uint256 poolUsdg,
-        uint256 supply,
-        uint256 lockOption
-    ) internal view returns (uint256 nav, uint256 mintPrice) {
+        uint256 supply
+    ) internal view returns (uint256 nav, uint256 mintPrice, uint256 total) {
         IFundOracle o = _oracle();
         (bool ok, uint256 market) = o.tryPrice(address(this));
         if (!ok) revert NoMarketPrice();
-        (, uint256 total) = _totalValue(o, basket, usdg, poolUsdg);
-        nav = Math.mulDiv(total, PRECISION, supply, Math.Rounding.Ceil);
-        if (maxPremiumBps != 0) market = Math.min(market, Math.mulDiv(nav, BPS + maxPremiumBps, BPS));
-        uint256 discount = lockOption == 0 ? 0 : _lockOptions[lockOption - 1].discountBps;
-        mintPrice = Math.max(Math.mulDiv(market, BPS - discount, BPS, Math.Rounding.Ceil), nav);
+        // The higher of spot and TWAP, so pushing the pool down for a block never mints cheaply.
+        market = Math.max(market, IFundHook(_hook()).spotPrice(address(this)));
+        (, total) = _totalValue(o, basket, usdg, poolUsdg);
+        nav = Math.mulDiv(_backing(total), PRECISION, supply, Math.Rounding.Ceil);
+        mintPrice =
+            Math.max(Math.mulDiv(market, uint256(int256(BPS) + mintAdjustmentBps), BPS, Math.Rounding.Ceil), nav);
     }
 
     function _mintAmounts(
@@ -638,33 +646,76 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
         net = gross - fee;
     }
 
-    function _issue(address receiver, uint256 shares, uint256 lockOption) internal returns (uint256 lockId) {
-        if (lockOption == 0) {
-            _mint(receiver, shares);
-            return NO_LOCK;
-        }
+    /// @dev Reserves the boost budget, the staking module's share of the premium `payment` carries
+    ///      over the NAV of the `gross` tokens issued, then stakes `shares` for `receiver`. Reserved
+    ///      first, so a boost payout made while staking sees the NAV after the mint.
+    function _stakeMinted(
+        address receiver,
+        uint256 shares,
+        uint256 payment,
+        uint256 gross,
+        uint256 nav
+    ) internal returns (uint256 budget) {
         address stakingModule = staking;
+        budget =
+            Math.mulDiv(payment - Math.mulDiv(gross, nav, PRECISION), IFundStaking(stakingModule).boostShareBps(), BPS);
+        reserveUsd += budget;
         _mint(stakingModule, shares);
-        lockId = IFundStaking(stakingModule).stakeLocked(
-            receiver, shares, SafeCast.toUint64(block.timestamp + _lockOptions[lockOption - 1].duration)
+        IFundStaking(stakingModule).stakeMinted(
+            receiver, shares, payment, budget, SafeCast.toUint64(block.timestamp + mintLock)
         );
     }
 
-    /// @dev Each basket asset's and the idle USDG's share for `net` of `supply`. Rounds down: the
-    ///      redeemer never takes more than their share.
-    function _redeemAmounts(
+    /// @dev The part of everything held that `net` fund tokens claim, in fund tokens of `supply`:
+    ///      `net` itself, scaled down by backing over total value while the reserve holds anything,
+    ///      so a redeem never takes the reserve's part. Rounds down.
+    function _claim(
         address[] memory basket,
         address usdg,
         uint256 net,
+        uint256 poolUsdg,
         uint256 supply
-    ) internal view returns (uint256[] memory amounts, uint256 idle) {
+    ) internal view returns (uint256) {
         if (net > supply) revert RedeemTooLarge();
+        if (reserveUsd == 0) return net;
+        (, uint256 total) = _totalValue(_oracle(), basket, usdg, poolUsdg);
+        return total == 0 ? 0 : Math.mulDiv(net, _backing(total), total);
+    }
+
+    /// @dev Value held less the reserve (boost budgets and the Premium Pot), floored at zero.
+    function _backing(
+        uint256 total
+    ) internal view returns (uint256) {
+        uint256 r = reserveUsd;
+        return total > r ? total - r : 0;
+    }
+
+    /// @dev The fund tokens `shares` (fees included) claim after the fee and the reserve's part (see
+    ///      {_claim}), the supply they are a share of, and their share of the idle USDG. Rounds down:
+    ///      the redeemer never takes more than their share.
+    function _redeemQuote(
+        address[] memory basket,
+        address usdg,
+        address hook,
+        uint256 shares
+    ) internal view returns (uint256 net, uint256 supply, uint256 idle) {
+        uint256 poolUsdg;
+        (poolUsdg, supply) = _poolAndSupplyAt(hook);
+        net = _claim(basket, usdg, shares - _fee(shares), poolUsdg, supply);
+        idle = Math.mulDiv(_balanceOf(usdg), net, supply);
+    }
+
+    /// @dev Each basket asset's share for `net` of `supply`. Rounds down.
+    function _redeemAssets(
+        address[] memory basket,
+        uint256 net,
+        uint256 supply
+    ) internal view returns (uint256[] memory amounts) {
         uint256 n = basket.length;
         amounts = new uint256[](n);
         for (uint256 i; i < n; ++i) {
             amounts[i] = Math.mulDiv(_balanceOf(basket[i]), net, supply);
         }
-        idle = Math.mulDiv(_balanceOf(usdg), net, supply);
     }
 
     function _fee(
@@ -723,18 +774,11 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
         emit MetadataSet(name_, symbol_, logoURI_, description_);
     }
 
-    function _setLockOptions(
-        LockOption[] calldata options
-    ) internal {
-        if (options.length > MAX_LOCK_OPTIONS) revert InvalidLockOptions();
-        delete _lockOptions;
-        for (uint256 i; i < options.length; ++i) {
-            if (options[i].duration == 0 || options[i].discountBps > MAX_LOCK_DISCOUNT_BPS) {
-                revert InvalidLockOptions();
-            }
-            _lockOptions.push(options[i]);
-        }
-        emit LockOptionsSet(options);
+    function _setMintConfig(uint32 lock, int16 adjustmentBps) internal {
+        if (lock > 365 days || adjustmentBps < -5000 || adjustmentBps > 10_000) revert InvalidMintConfig();
+        mintLock = lock;
+        mintAdjustmentBps = adjustmentBps;
+        emit MintConfigSet(lock, adjustmentBps);
     }
 
     function _setBasket(address[] calldata assets_, uint16[] calldata weightsBps_) internal {

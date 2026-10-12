@@ -6,11 +6,14 @@ import {YieldPoint} from "../../src/interfaces/types/FundTypes.sol";
 import {FundTestBase} from "../helpers/FundTestBase.sol";
 import {FundHandler} from "./handlers/FundHandler.sol";
 
-/// @title FundInvariant — mints and redeems never dilute a fund
-/// @notice With oracle prices held fixed and no pool trades, every mint is priced at or above NAV
-///         and every redeem (basket, idle USDG and its slice of the pool position) pays at most NAV,
-///         so NAV per token can only rise. Also checks that locked mints are always fully held by
-///         the staking module. Staker yield is switched off: it dilutes by design.
+/// @title FundInvariant — mints, redeems and boosts never dilute a fund
+/// @notice With oracle prices held fixed and only buys in the pool (each issues above NAV, keeps a
+///         quarter of the premium as backing, and lifts the TWAP the position is valued at), every
+///         mint is priced at or above NAV,
+///         every redeem (basket, idle USDG and its slice of the pool position, less the reserve's
+///         part) pays at most NAV, and every boost payout or forfeit moves reserve into backing at
+///         NAV or better, so NAV per token can only rise. Also checks that the reserve always equals
+///         the boost budgets still owed. Tier yield is switched off: it dilutes by design.
 contract FundInvariant is FundTestBase {
     FundHandler internal handler;
     uint256 internal navAtStart;
@@ -47,15 +50,12 @@ contract FundInvariant is FundTestBase {
         assertGe(fund.navPerShare() + navAtStart / 1e9, navAtStart);
     }
 
-    function invariant_locksFullyHeld() public view {
+    function invariant_reserveMatchesBudgetsOwed() public view {
         address[3] memory actors = [alice, bob, carol];
-        uint256 locked;
+        uint256 owed = staking.potLeft() + staking.potPending();
         for (uint256 a; a < 3; ++a) {
-            IFundStaking.Lock[] memory locks = staking.locksOf(actors[a]);
-            for (uint256 i; i < locks.length; ++i) {
-                locked += locks[i].shares;
-            }
+            owed += staking.boostOf(actors[a]).usdLeft;
         }
-        assertGe(staking.balanceOf(address(staking)), locked);
+        assertEq(fund.reserveUsd(), owed);
     }
 }

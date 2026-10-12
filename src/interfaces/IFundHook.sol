@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
+import {IssuanceConfig} from "./types/FundTypes.sol";
 import {IPoolManager} from "v4-core/src/interfaces/IPoolManager.sol";
 import {PoolKey} from "v4-core/src/types/PoolKey.sol";
 
@@ -17,7 +18,13 @@ import {PoolKey} from "v4-core/src/types/PoolKey.sol";
 ///           counts;
 ///         - lets the platform admin set each pool's LP fee;
 ///         - records a tick accumulator before every swap, so each pool's time-weighted average
-///           price can be read onchain without a keeper ({consult}).
+///           price can be read onchain without a keeper ({consult});
+///         - issues new fund tokens into buys while the pool price is above NAV by more than the
+///           fund's issuance start: a density (a share of circulating supply per doubling of price,
+///           stepping up with the premium) sets how much of each buy the hook fills, at the AMM's
+///           average price over the buy, and the AMM fills the rest. Sells never trigger it. The
+///           USDG goes to the fund; the pot share of the premium over NAV is set aside for the
+///           fund's Premium Pot, the rest raises NAV.
 interface IFundHook {
     /// @notice Emitted when a fund's pool is registered.
     /// @param fund   The fund.
@@ -52,6 +59,18 @@ interface IFundHook {
         address indexed fund, uint128 liquidity, uint256 usdgPaid, uint256 usdgToFund, uint256 burned
     );
 
+    /// @notice Emitted when the hook issues fund tokens into a buy.
+    /// @param fund     The fund.
+    /// @param usdgIn   USDG the buyer paid for them, sent to the fund.
+    /// @param issued   Fund tokens issued.
+    /// @param potUsd   Premium set aside for the Premium Pot, 18 decimals USD.
+    event Issued(address indexed fund, uint256 usdgIn, uint256 issued, uint256 potUsd);
+
+    /// @notice Emitted when a fund's issuance settings change.
+    /// @param fund   The fund.
+    /// @param config The settings.
+    event IssuanceSet(address indexed fund, IssuanceConfig config);
+
     /// @notice Emitted when a pool's LP fee changes.
     /// @param fund  The fund.
     /// @param lpFee LP fee, in hundredths of a basis point.
@@ -74,6 +93,9 @@ interface IFundHook {
 
     /// @notice More liquidity than the fund's position holds.
     error InsufficientLiquidity();
+
+    /// @notice The pot share is above 100%, or the steps are too many, not ascending or too dense.
+    error InvalidIssuance();
 
     /// @notice Pools using this hook can only be initialised by the hook.
     error InitializeNotAllowed();
@@ -118,8 +140,8 @@ interface IFundHook {
     /// @param shareAmount Fund tokens to add.
     function seedPool(address fund, uint256 usdgAmount, uint256 shareAmount) external;
 
-    /// @notice Collect LP fees earned by the fund's position: USDG to the fund, fund tokens burned.
-    ///         Anyone can call.
+    /// @notice Collect LP fees earned by the fund's position, and the USDG paid for pool issuance
+    ///         so far: USDG to the fund, fund tokens burned. Anyone can call.
     /// @param fund The fund.
     /// @return usdgAmount USDG sent to the fund.
     /// @return burned     Fund tokens burned.
@@ -129,8 +151,9 @@ interface IFundHook {
 
     /// @notice Remove `numerator / denominator` of the fund's position for a redeem. The fund
     ///         only. The fund tokens removed are burned; the redeemer gets the USDG removed, capped
-    ///         at that slice's USDG at the pool TWAP, and any excess (and any LP fees the removal
-    ///         collects) goes to the fund.
+    ///         at that slice's USDG at the pool TWAP, plus the same share of the USDG paid for pool
+    ///         issuance not yet collected; any excess (and any LP fees the removal collects) goes to
+    ///         the fund.
     /// @param numerator   Share of the position, numerator.
     /// @param denominator Share of the position, denominator.
     /// @param receiver    Receiver of the USDG.
@@ -152,6 +175,26 @@ interface IFundHook {
     /// @param fund  The fund.
     /// @param lpFee LP fee, in hundredths of a basis point (capped).
     function setLpFee(address fund, uint24 lpFee) external;
+
+    /// @notice Set a fund's issuance settings. Admin only. Funds start with the factory's defaults.
+    /// @param fund   The fund.
+    /// @param config Start, pot share and density steps (no steps turns issuance off).
+    function setIssuance(address fund, IssuanceConfig calldata config) external;
+
+    /// @notice A fund's issuance settings.
+    /// @param fund The fund.
+    /// @return The settings.
+    function issuanceOf(
+        address fund
+    ) external view returns (IssuanceConfig memory);
+
+    /// @notice The pool's spot price, USD per fund token (18 decimals), counting USDG as $1; zero
+    ///         before the pool is seeded.
+    /// @param fund The fund.
+    /// @return The price.
+    function spotPrice(
+        address fund
+    ) external view returns (uint256);
 
     /// @notice Time-weighted mean tick of the fund's pool over at least the last `window` seconds.
     ///         The measured period starts at the newest checkpoint at least `window` old, so it can
@@ -195,7 +238,7 @@ interface IFundHook {
 
     /// @notice The fund's position valued at the pool TWAP (a 30-minute window, or the history
     ///         there is right after seeding, or the price at the start of the block in the seeding
-    ///         block). Zero before seeding.
+    ///         block), plus the USDG paid for pool issuance not yet collected. Zero before seeding.
     /// @param fund The fund.
     /// @return usdgAmount USDG in the position.
     /// @return fundTokens Fund tokens in the position.

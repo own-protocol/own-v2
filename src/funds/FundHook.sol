@@ -4,11 +4,14 @@ pragma solidity 0.8.28;
 import {IFund} from "../interfaces/IFund.sol";
 import {IFundFactory} from "../interfaces/IFundFactory.sol";
 import {IFundHook} from "../interfaces/IFundHook.sol";
-import {BPS} from "../interfaces/types/Types.sol";
+import {IssuanceConfig, IssuanceStep, PremiumConfig} from "../interfaces/types/FundTypes.sol";
+import {BPS, PRECISION} from "../interfaces/types/Types.sol";
 import {FullRangeLiquidity} from "./libraries/FullRangeLiquidity.sol";
+import {PoolIssuance} from "./libraries/PoolIssuance.sol";
 import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
 import {UUPSUpgradeable} from "@openzeppelin/contracts/proxy/utils/UUPSUpgradeable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
@@ -49,6 +52,8 @@ import {PoolKey} from "v4-core/src/types/PoolKey.sol";
 ///      The fund's position is this hook's full-range position (salt 0) in the fund's pool. It is
 ///      valued at the pool TWAP: price manipulation inside a block never moves it, because the
 ///      accumulator only adds a tick once it has held across a block boundary.
+///
+///      Issuance (how much of a buy the hook fills) is computed by the {PoolIssuance} library.
 contract FundHook is IFundHook, IUnlockCallback, Initializable, UUPSUpgradeable {
     using SafeERC20 for IERC20;
     using PoolIdLibrary for PoolKey;
@@ -101,6 +106,11 @@ contract FundHook is IFundHook, IUnlockCallback, Initializable, UUPSUpgradeable 
         address curators;
         uint32 ringAt;
         Observation[OBSERVATION_SLOTS] ring;
+        uint16 issuanceStartBps;
+        uint16 potShareBps;
+        // USDG paid for issued tokens, held as pool manager claims until the next collect or redeem.
+        uint128 pendingUsdg;
+        IssuanceStep[] steps;
     }
 
     /// @notice The Uniswap v4 pool manager.
@@ -110,6 +120,7 @@ contract FundHook is IFundHook, IUnlockCallback, Initializable, UUPSUpgradeable 
     IFundFactory public immutable factory;
 
     address private immutable _usdg;
+    uint256 private immutable _usdgUnit;
     int24 private immutable _tickLower = TickMath.minUsableTick(TICK_SPACING);
     int24 private immutable _tickUpper = TickMath.maxUsableTick(TICK_SPACING);
     uint160 private immutable _sqrtLower = TickMath.getSqrtPriceAtTick(TickMath.minUsableTick(TICK_SPACING));
@@ -126,6 +137,7 @@ contract FundHook is IFundHook, IUnlockCallback, Initializable, UUPSUpgradeable 
         poolManager = poolManager_;
         factory = factory_;
         _usdg = factory_.usdg();
+        _usdgUnit = 10 ** IERC20Metadata(_usdg).decimals();
         _disableInitializers();
     }
 
@@ -143,6 +155,8 @@ contract FundHook is IFundHook, IUnlockCallback, Initializable, UUPSUpgradeable 
         if (pool.registered) revert AlreadyRegistered();
         pool.registered = true;
         emit FundRegistered(fund, PoolId.unwrap(_key(fund).toId()));
+        PremiumConfig memory c = factory.premiumConfig();
+        _setIssuance(fund, pool, c.issuanceStartBps, c.potShareBps, factory.defaultIssuanceSteps());
     }
 
     /// @inheritdoc IFundHook
@@ -191,7 +205,8 @@ contract FundHook is IFundHook, IUnlockCallback, Initializable, UUPSUpgradeable 
     function collectLpFees(
         address fund
     ) external override returns (uint256 usdgAmount, uint256 burned) {
-        if (_seeded(fund).liquidity == 0) return (0, 0);
+        Pool storage pool = _seeded(fund);
+        if (pool.liquidity == 0 && pool.pendingUsdg == 0) return (0, 0);
         (, usdgAmount, burned) =
             abi.decode(poolManager.unlock(abi.encode(Action.Collect, fund)), (uint256, uint256, uint256));
         if (burned != 0) IFund(fund).burn(burned);
@@ -207,12 +222,15 @@ contract FundHook is IFundHook, IUnlockCallback, Initializable, UUPSUpgradeable 
         address fund = msg.sender;
         Pool storage pool = _pools[fund];
         if (!pool.registered) revert NotFund();
-        if (!pool.seeded || pool.liquidity == 0 || numerator == 0) return 0;
-        // Rounds down: a redeemer never removes more than their share of the position.
+        if (!pool.seeded || numerator == 0) return 0;
+        // Rounds down: a redeemer never removes more than their share of the position or of the
+        // pending issuance USDG.
         uint128 liquidity = SafeCast.toUint128(Math.mulDiv(pool.liquidity, numerator, denominator));
-        if (liquidity == 0) return 0;
+        uint256 pending = Math.mulDiv(pool.pendingUsdg, numerator, denominator);
+        if (liquidity == 0 && pending == 0) return 0;
+        pool.pendingUsdg -= uint128(pending);
         (uint256 usdgCap,) = _amountsAt(fund, _positionTick(pool, fund), liquidity);
-        usdgPaid = _reduce(fund, pool, liquidity, receiver, usdgCap);
+        usdgPaid = _reduce(fund, pool, liquidity, receiver, usdgCap, pending);
     }
 
     /// @inheritdoc IFundHook
@@ -220,7 +238,7 @@ contract FundHook is IFundHook, IUnlockCallback, Initializable, UUPSUpgradeable 
         if (!factory.isAdmin(msg.sender)) revert NotAdmin();
         Pool storage pool = _seeded(fund);
         if (liquidity == 0 || liquidity > pool.liquidity) revert InsufficientLiquidity();
-        _reduce(fund, pool, liquidity, fund, 0);
+        _reduce(fund, pool, liquidity, fund, 0, 0);
     }
 
     /// @inheritdoc IFundHook
@@ -232,6 +250,14 @@ contract FundHook is IFundHook, IUnlockCallback, Initializable, UUPSUpgradeable 
         pool.lpFee = lpFee;
         if (pool.seeded) poolManager.updateDynamicLPFee(_key(fund), lpFee);
         emit LpFeeSet(fund, lpFee);
+    }
+
+    /// @inheritdoc IFundHook
+    function setIssuance(address fund, IssuanceConfig calldata config) external override {
+        if (!factory.isAdmin(msg.sender)) revert NotAdmin();
+        Pool storage pool = _pools[fund];
+        if (!pool.registered) revert NotRegistered();
+        _setIssuance(fund, pool, config.startBps, config.potShareBps, config.steps);
     }
 
     /// @inheritdoc IUnlockCallback
@@ -254,16 +280,28 @@ contract FundHook is IFundHook, IUnlockCallback, Initializable, UUPSUpgradeable 
             return abi.encode(_settle(key.currency0, delta.amount0()), _settle(key.currency1, delta.amount1()));
         }
 
+        uint256 paid;
+        uint256 toFund;
+        uint256 burned;
         if (action == Action.Collect) {
-            (BalanceDelta fees,) = poolManager.modifyLiquidity(key, params, "");
-            return _payOut(fees, fees, fund, fund, type(uint256).max);
+            Pool storage pool = _pools[fund];
+            if (pool.liquidity != 0) {
+                (BalanceDelta fees,) = poolManager.modifyLiquidity(key, params, "");
+                (, toFund, burned) = _payOut(fees, fees, fund, fund, type(uint256).max);
+            }
+            uint256 pending = pool.pendingUsdg;
+            pool.pendingUsdg = 0;
+            return abi.encode(0, toFund + _payPending(fund, pending), burned);
         }
 
-        (,, uint128 removed, address receiver, uint256 usdgCap) =
-            abi.decode(data, (Action, address, uint128, address, uint256));
-        params.liquidityDelta = -SafeCast.toInt256(uint256(removed));
-        (BalanceDelta callerDelta, BalanceDelta feesAccrued) = poolManager.modifyLiquidity(key, params, "");
-        return _payOut(callerDelta, callerDelta - feesAccrued, receiver, fund, usdgCap);
+        (,, uint128 removed, address receiver, uint256 usdgCap, uint256 share) =
+            abi.decode(data, (Action, address, uint128, address, uint256, uint256));
+        if (removed != 0) {
+            params.liquidityDelta = -SafeCast.toInt256(uint256(removed));
+            (BalanceDelta callerDelta, BalanceDelta feesAccrued) = poolManager.modifyLiquidity(key, params, "");
+            (paid, toFund, burned) = _payOut(callerDelta, callerDelta - feesAccrued, receiver, fund, usdgCap);
+        }
+        return abi.encode(paid + _payPending(receiver, share), toFund, burned);
     }
 
     /// @notice Pool manager callback; any call is someone else trying to create a pool on this hook.
@@ -272,8 +310,8 @@ contract FundHook is IFundHook, IUnlockCallback, Initializable, UUPSUpgradeable 
         revert InitializeNotAllowed();
     }
 
-    /// @notice Pool manager callback: records the TWAP accumulator and, when USDG is the specified
-    ///         side, takes the swap fees.
+    /// @notice Pool manager callback: records the TWAP accumulator, takes the swap fees when USDG
+    ///         is the specified side, and fills part of a buy above NAV with newly issued fund tokens.
     function beforeSwap(
         address,
         PoolKey calldata key,
@@ -282,12 +320,29 @@ contract FundHook is IFundHook, IUnlockCallback, Initializable, UUPSUpgradeable 
     ) external onlyPoolManager returns (bytes4, BeforeSwapDelta, uint24) {
         (address fund, bool usdgIs0) = _fundOf(key);
         Pool storage pool = _pools[fund];
-        _observe(pool, key.toId());
-        bool specifiedIs0 = (params.amountSpecified < 0) == params.zeroForOne;
-        if (specifiedIs0 != usdgIs0) return (IHooks.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
-        uint256 amount = params.amountSpecified < 0 ? uint256(-params.amountSpecified) : uint256(params.amountSpecified);
-        uint256 fee = _takeFees(fund, pool, usdgIs0 ? key.currency0 : key.currency1, amount);
-        return (IHooks.beforeSwap.selector, toBeforeSwapDelta(SafeCast.toInt128(SafeCast.toInt256(fee)), 0), 0);
+        PoolId id = key.toId();
+        _observe(pool, id);
+        bool exactIn = params.amountSpecified < 0;
+        uint256 amount = exactIn ? uint256(-params.amountSpecified) : uint256(params.amountSpecified);
+        Currency usdg = usdgIs0 ? key.currency0 : key.currency1;
+        bool buy = params.zeroForOne == usdgIs0;
+        if ((exactIn == params.zeroForOne) == usdgIs0) {
+            // USDG is the specified side: a buy with exact USDG in, or a sell for exact USDG out.
+            uint256 taken = _takeFees(fund, pool, usdg, amount);
+            uint256 tokensOut;
+            if (buy) {
+                uint256 usdgIn;
+                (usdgIn, tokensOut) = _issue(fund, pool, id, usdgIs0, amount - taken, true);
+                taken += usdgIn;
+            }
+            return (IHooks.beforeSwap.selector, toBeforeSwapDelta(_int128(taken), -_int128(tokensOut)), 0);
+        }
+        if (!buy) return (IHooks.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
+        // A buy of exact fund tokens out: the hook hands over part of them and charges their USDG plus the fee.
+        (uint256 cost, uint256 issued) = _issue(fund, pool, id, usdgIs0, amount, false);
+        if (issued == 0) return (IHooks.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
+        cost += _takeFees(fund, pool, usdg, cost);
+        return (IHooks.beforeSwap.selector, toBeforeSwapDelta(-_int128(issued), _int128(cost)), 0);
     }
 
     /// @notice Pool manager callback: takes the swap fees when USDG is the unspecified side.
@@ -350,7 +405,9 @@ contract FundHook is IFundHook, IUnlockCallback, Initializable, UUPSUpgradeable 
     function positionAmounts(
         address fund
     ) external view override returns (uint256 usdgAmount, uint256 fundTokens) {
-        return liquidityAmounts(fund, _pools[fund].liquidity);
+        Pool storage pool = _pools[fund];
+        (usdgAmount, fundTokens) = liquidityAmounts(fund, pool.liquidity);
+        usdgAmount += pool.pendingUsdg;
     }
 
     /// @inheritdoc IFundHook
@@ -361,6 +418,23 @@ contract FundHook is IFundHook, IUnlockCallback, Initializable, UUPSUpgradeable 
         Pool storage pool = _pools[fund];
         if (!pool.seeded || liquidity == 0) return (0, 0);
         return _amountsAt(fund, _positionTick(pool, fund), liquidity);
+    }
+
+    /// @inheritdoc IFundHook
+    function spotPrice(
+        address fund
+    ) external view override returns (uint256) {
+        if (!_pools[fund].seeded) return 0;
+        PoolKey memory key = _key(fund);
+        return PoolIssuance.priceOf(_sqrtUsdgPerToken(key.toId(), Currency.unwrap(key.currency0) == _usdg), _usdgUnit);
+    }
+
+    /// @inheritdoc IFundHook
+    function issuanceOf(
+        address fund
+    ) external view override returns (IssuanceConfig memory) {
+        Pool storage pool = _pools[fund];
+        return IssuanceConfig({startBps: pool.issuanceStartBps, potShareBps: pool.potShareBps, steps: pool.steps});
     }
 
     /// @notice Callbacks this hook enables; its deployed address must encode exactly these.
@@ -409,13 +483,14 @@ contract FundHook is IFundHook, IUnlockCallback, Initializable, UUPSUpgradeable 
         Pool storage pool,
         uint128 liquidity,
         address receiver,
-        uint256 usdgCap
+        uint256 usdgCap,
+        uint256 pending
     ) private returns (uint256 paid) {
         pool.liquidity -= liquidity;
         uint256 toFund;
         uint256 burned;
         (paid, toFund, burned) = abi.decode(
-            poolManager.unlock(abi.encode(Action.Remove, fund, liquidity, receiver, usdgCap)),
+            poolManager.unlock(abi.encode(Action.Remove, fund, liquidity, receiver, usdgCap, pending)),
             (uint256, uint256, uint256)
         );
         if (burned != 0) IFund(fund).burn(burned);
@@ -431,18 +506,73 @@ contract FundHook is IFundHook, IUnlockCallback, Initializable, UUPSUpgradeable 
         address receiver,
         address fund,
         uint256 usdgCap
-    ) private returns (bytes memory) {
+    ) private returns (uint256, uint256, uint256) {
         bool usdgIs0 = _usdg < fund;
-        int128 usdgPrincipal = usdgIs0 ? principal.amount0() : principal.amount1();
-        int128 usdgTotal = usdgIs0 ? total.amount0() : total.amount1();
-        uint256 all = usdgTotal > 0 ? uint256(int256(usdgTotal)) : 0;
-        uint256 paid = usdgPrincipal > 0 ? uint256(int256(usdgPrincipal)) : 0;
-        if (paid > usdgCap) paid = usdgCap;
+        uint256 all = _positive(usdgIs0 ? total.amount0() : total.amount1());
+        uint256 paid = Math.min(_positive(usdgIs0 ? principal.amount0() : principal.amount1()), usdgCap);
         if (receiver == fund) paid = 0;
         if (paid != 0) poolManager.take(Currency.wrap(_usdg), receiver, paid);
         if (all > paid) poolManager.take(Currency.wrap(_usdg), fund, all - paid);
         uint256 burned = _take(Currency.wrap(fund), usdgIs0 ? total.amount1() : total.amount0(), address(this));
-        return abi.encode(paid, all - paid, burned);
+        return (paid, all - paid, burned);
+    }
+
+    function _positive(
+        int128 x
+    ) private pure returns (uint256) {
+        return x > 0 ? uint256(int256(x)) : 0;
+    }
+
+    /// @dev Turns `amount` of the hook's USDG claims into USDG for `to`.
+    function _payPending(address to, uint256 amount) private returns (uint256) {
+        if (amount == 0) return 0;
+        poolManager.burn(address(this), uint256(uint160(_usdg)), amount);
+        poolManager.take(Currency.wrap(_usdg), to, amount);
+        return amount;
+    }
+
+    /// @dev Fills part of a buy with new fund tokens when the pool price is above the issuance start
+    ///      (see {PoolIssuance-issue}): for exact input `amount` is the USDG left after the fee, for
+    ///      exact output the fund tokens bought. Returns the USDG the buyer pays for the issued tokens
+    ///      and the tokens issued; the USDG is held as claims for the fund until the next collect or
+    ///      redeem, and counted in its position meanwhile.
+    function _issue(
+        address fund,
+        Pool storage pool,
+        PoolId id,
+        bool usdgIs0,
+        uint256 amount,
+        bool exactIn
+    ) private returns (uint256 usdgIn, uint256 tokensOut) {
+        if (amount == 0 || pool.steps.length == 0) return (0, 0);
+        (usdgIn, tokensOut) = PoolIssuance.issue(
+            pool.steps,
+            PoolIssuance.Buy({
+                fund: fund,
+                usdg: _usdg,
+                usdgUnit: _usdgUnit,
+                id: id,
+                usdgIs0: usdgIs0,
+                startBps: pool.issuanceStartBps,
+                potShareBps: pool.potShareBps,
+                amount: amount,
+                exactIn: exactIn
+            })
+        );
+        pool.pendingUsdg += SafeCast.toUint128(usdgIn);
+    }
+
+    function _setIssuance(
+        address fund,
+        Pool storage pool,
+        uint16 startBps,
+        uint16 potShareBps,
+        IssuanceStep[] memory steps
+    ) private {
+        if (potShareBps > BPS || !PoolIssuance.store(pool.steps, steps)) revert InvalidIssuance();
+        pool.issuanceStartBps = startBps;
+        pool.potShareBps = potShareBps;
+        emit IssuanceSet(fund, IssuanceConfig({startBps: startBps, potShareBps: potShareBps, steps: steps}));
     }
 
     function _takeFees(address fund, Pool storage pool, Currency usdg, uint256 amount) private returns (uint256) {
@@ -572,6 +702,18 @@ contract FundHook is IFundHook, IUnlockCallback, Initializable, UUPSUpgradeable 
     ) private view returns (address fund, bool usdgIs0) {
         usdgIs0 = Currency.unwrap(key.currency0) == _usdg;
         fund = Currency.unwrap(usdgIs0 ? key.currency1 : key.currency0);
+    }
+
+    /// @dev Square root of the pool price as USDG per fund token in raw units, Q96.
+    function _sqrtUsdgPerToken(PoolId id, bool usdgIs0) private view returns (uint256) {
+        (uint160 sqrtPrice,,,) = poolManager.getSlot0(id);
+        return usdgIs0 ? (1 << 192) / sqrtPrice : sqrtPrice;
+    }
+
+    function _int128(
+        uint256 amount
+    ) private pure returns (int128) {
+        return SafeCast.toInt128(SafeCast.toInt256(amount));
     }
 
     function _sqrtPriceX96(uint256 amount0, uint256 amount1) private pure returns (uint160) {
