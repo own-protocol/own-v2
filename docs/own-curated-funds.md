@@ -9,18 +9,20 @@ Design source: the "Own Curated Funds: launch, curators, weight votes and bribes
 
 Updated 2026-10-07: Dutch-auction rebalancing with admin router swaps as the fallback, and the keeper-pushed price hub.
 
+Updated 2026-10-12: the premium yield redesign (spec `plans/fund-premium-rebate-base-yield.md`): pool issuance, the locked direct mint with the Premium Boost, the Premium Pot, the boost reserve and step tiers. Lock options and the premium ceiling are gone.
+
 ## Contracts (`src/funds/`)
 
 | Contract | Role |
 | --- | --- |
-| `FundFactory` | UUPS. Platform admin hub: launcher whitelist (Own only by default), the protocol curator and its share (33.33% default, 50% cap), rebalance routers and limits, launch and governance defaults, staking yield cap (109,500 bps a year, i.e. 3% a day), curator cap (10), bribe cut (15%, 25% cap), bribe tokens, the listing eligibility list and the platform metadata. Owns the six module beacons, so one call upgrades every fund. |
-| `Fund` | Beacon proxy per fund. The fund token plus custody of the basket and idle USDG: in-kind mint, redeem, the fund fee, locks, rebalance, the depositor lock. NAV counts the pool position. |
+| `FundFactory` | UUPS. Platform admin hub: launcher whitelist (Own only by default), the protocol curator and its share (33.33% default, 50% cap), rebalance routers and limits, launch and governance defaults, premium defaults for new funds (mint lock and adjustment, boost share and speed, pot drip and share, issuance start and steps, yield tiers), staking yield cap (109,500 bps a year, i.e. 3% a day), curator cap (10), bribe cut (15%, 25% cap), bribe tokens, the listing eligibility list and the platform metadata. Owns the six module beacons, so one call upgrades every fund. |
+| `Fund` | Beacon proxy per fund. The fund token plus custody of the basket and idle USDG: the locked direct mint, redeem, the fund fee, the boost reserve, rebalance, the depositor lock. NAV counts the pool position and excludes the reserve. |
 | `FundLaunch` | Beacon proxy per fund. Deposit window (any basket token or USDG), early close at the target raise, early-deposit yield, overweight haircut, the fixed-supply split and pool seeding after the launch rebalance. |
-| `FundStaking` | Beacon proxy per fund. Staked fund token (e.g. sOCF1) with issuance set by a premium-based yearly yield curve, the curators' yield minted on top, and staking of full-range Uniswap v4 LP position NFTs in the fund's pool. |
+| `FundStaking` | Beacon proxy per fund. Staked fund token (e.g. sOCF1) with step-tier yield set by the premium, the Premium Boost and mint lock of direct minters, the Premium Pot, the curators' yield minted on top, and staking of full-range Uniswap v4 LP position NFTs in the fund's pool. |
 | `FundGovernor` | Beacon proxy per fund. Staked escrow, the weekly weight vote (gauge) and proposals to list or delist tokens and add, remove or replace curators. |
 | `FundCurators` | Beacon proxy per fund. The curator set (with the protocol curator), the minimum curator stake and compliance, and the curators' income: the fund fee, the curator yield (30-day unlocks, forfeits on removal) and the bribe cut, split between the protocol curator and the others. |
 | `FundBribes` | Beacon proxy per fund. Bribes on the weekly vote per token per week, and bribes on listing proposals. The curators' cut goes to `FundCurators`. |
-| `FundHook` | UUPS, upgraded by the registry ADMIN; the proxy sits at the mined hook address. One Uniswap v4 hook for every fund pool: the fund fee in USDG on swaps, admin-set LP fee, the TWAP, and the fund's own pool position. |
+| `FundHook` | UUPS, upgraded by the registry ADMIN; the proxy sits at the mined hook address. One Uniswap v4 hook for every fund pool: the fund fee in USDG on swaps, pool issuance on buys above NAV (math in the linked `PoolIssuance` library), admin-set LP fee, the TWAP, and the fund's own pool position. |
 | `FundOracle` | Per-asset Chainlink-style feeds. A fund token's own market price is read through the same surface. |
 | `FundPriceHub` | One for the platform. Keeper-pushed USD prices for basket assets with no Chainlink feed (Pons tokens, VIRTUAL): the keeper samples each token's Uniswap v4 pool, converts its pair (ETH, SPY, NVDA...) to USD with Chainlink and pushes a 30-minute TWAP. A keeper push moving more than `maxMoveBps` (30% at deploy) is skipped; admin pushes are not bounded. `createFeed(asset)` deploys a `FundPriceFeed` the oracle reads like any Chainlink aggregator. |
 | `FundAuctions` | One for the platform. Dutch auctions for rebalancing after the pool is seeded (below). |
@@ -34,11 +36,10 @@ Updated 2026-10-07: Dutch-auction rebalancing with admin router swaps as the fal
    is on and empty by default, so only Own launches). Own sets the name, symbol, logo and
    description, the basket and starting weights, the manager (the Own keeper), the curators (up to
    the cap; the protocol curator is a curator of every fund on top) and the fund fee (default 1%,
-   at most 10%), the minimum curator stake, lock options, the yield curve, the mint premium
-   ceiling, the minimum raise, the target raise (optional), the pool's USDG share (default 10%, at
+   at most 10%), the minimum curator stake, the yield tiers (empty takes the factory's), the minimum raise, the target raise (optional), the pool's USDG share (default 10%, at
    most 50%), the launch supply (default 100M) and the launch window (default 7 days, 1 to 30
-   allowed). Only the admin can change the metadata, fund fee, curator yield, lock options, yield
-   curve and premium ceiling afterwards.
+   allowed). The premium settings start at the factory's defaults. Only the admin can change the
+   metadata, fund fee, curator yield, yield tiers and premium settings afterwards.
 2. **Deposit window.** Anyone deposits any basket asset with a non-zero weight, or USDG, on its
    own. Deposits are final: there are no withdrawals.
    - **Early-deposit yield:** each deposit earns 0.5% a day of its amount until the close, paid as
@@ -92,36 +93,58 @@ Updated 2026-10-07: Dutch-auction rebalancing with admin router swaps as the fal
 
 ## Live
 
-- **Mint is in kind:** `mint(navShares, lockOption, minSharesOut, receiver)`. The minter brings
+- **Locked direct mint (in kind):** `mint(navShares, minSharesOut, receiver)`. The minter brings
   `navShares / supply` (supply outside the pool position) of every basket asset's balance and of
-  the fund's USDG (idle plus the pool position's), each rounded up, and receives
+  the fund's USDG (idle, the pool position's and issuance USDG not yet collected), each rounded up
+  and scaled by backing over total value while the reserve holds anything, and receives
   `navShares × NAV / mintPrice` fund tokens, less the fund fee, where
-  `mintPrice = max(min(marketTWAP, ceiling) × (1 − lockDiscount), NAV)` and
-  `ceiling = NAV × (1 + maxPremium)`. No oracle values the deposit, minters cannot pick what the
-  fund buys, and a mint never dilutes holders. `previewMint(navShares, lockOption)` returns
-  `(shares, mintPrice, amounts, usdgAmount)`. A lock option earns its discount; the tokens are staked
-  at once and the shares held in the staking module until the lock ends, so they earn the staker
-  yield. `FundStaking.claimLocks` then releases the shares (`locksOf` lists an account's locks). Minting needs the pool's market price, so it opens once the pool is seeded.
+  `mintPrice = max(max(spot, TWAP) × (1 + mintAdjustmentBps), NAV)`. The tokens are staked for the
+  receiver and locked for `mintLock` (default 15 days, 0 allowed): they cannot be transferred or
+  unstaked until then, but can be redeemed at NAV through `FundStaking.redeem`. One lock per
+  account; a second mint locks the total until the share-weighted end, so a mint to someone else
+  cannot hold their earlier shares longer than it pays for. The adjustment is signed (default 0,
+  -50% to +100%) and the price is never below NAV. The admin sets both per fund with
+  `setMintConfig`; `setMintPaused` (operator or admin) is the mint door. No oracle values the
+  deposit, minters cannot pick what the fund buys, and a mint never dilutes holders.
+  `previewMint(navShares)` returns `(shares, mintPrice, amounts, usdgAmount)`. Minting needs the
+  pool's price, so it opens once the pool is seeded.
+- **Premium Boost (direct mints only):** of a mint's payment above NAV, `boostShareBps` (default
+  75%) goes into the fund's reserve as the minter's budget and the rest is backing. The budget is
+  paid back in dollars at `boostSpeedBpsPerYear` (default 75% a year) of the mint payment, as staked
+  fund tokens at NAV: a 2x mint is repaid in about 6 months, 10x in about 11, only while the tokens
+  stay staked. Payouts settle lazily (on every stake change, transfer, redeem or `settleBoost`),
+  and each moves the same dollars from the reserve into backing, so NAV does not move. Shares
+  leaving the account (transfer, unstake, redeem) scale the boost down to what is still held, and
+  the unpaid part goes to backing (NAV rises). A second mint settles the first and merges into it;
+  a finished or forfeited boost never comes back.
+- **Pool issuance:** on a pool buy starting above `NAV × (1 + issuanceStartBps)` (default 1.01x),
+  the hook fills part of the buy with newly issued fund tokens at the pool's own average price, so
+  the price moves as if supply grew by the density per price doubling: 1% of supply below 2x NAV,
+  2% from 2x, 3% from 5x (up to 8 admin-set steps, `setIssuance`). Exact-in and exact-out buys both
+  issue; sells never do. Of the premium over NAV on issued tokens, `potShareBps` (default 75%)
+  goes to the Premium Pot and the rest is backing. The USDG for issued tokens is held as pool
+  manager claims and counted in the position until the next `collectLpFees` or redeem.
+- **Premium Pot:** pot dollars sit in the reserve and drip linearly to all stakers over
+  `potDripPeriod` (default 7 days; each top-up re-spreads what is left over a new period) through
+  the vault's share price, minting the dripped dollars' worth of fund tokens at NAV, so NAV does not
+  move. Variable, never promised. With less than one whole share staked the drip goes to backing.
+- **Reserve:** boost budgets and the pot, held in dollars. It is excluded from NAV and from
+  redeems, so redeemers never take it and outstanding boosts stay funded however many holders
+  leave. While it holds anything, redeems need basket prices to scale their claim.
 - **Mint zap:** `FundMintZap.zapMint` takes one token, runs the caller's swaps through
-  admin-allowed routers into the slice, mints, and refunds whatever is left. The minter pays the
-  swap slippage, not the fund's holders.
-- **Premium ceiling.** Set per fund by the admin (e.g. 100% = 2x NAV; 0 turns it off). When the
-  market trades above it, anyone can mint at the ceiling and sell into the pool, so arbitrage holds
-  the price near the ceiling, and every such mint adds backing (NAV per token rises). A mint brings
-  a slice of everything the fund holds, so it cannot skew the basket.
+  admin-allowed routers into the slice, mints (staked, locked and boosted for the receiver), and
+  refunds whatever is left. The minter pays the swap slippage, not the fund's holders.
 - **Redeem** at any time, as above. It needs no oracle and cannot be paused.
 - **Fee.** One fund fee (default 1%, admin-set per fund with `setFee`, at most 10%) on pool trades
   (in USDG through the hook), mints and redeems (in fund tokens). All of it goes to `FundCurators`;
   there is no separate protocol fee.
-- **Staking:** stakers earn a yearly rate (APR) read off the fund's yield curve at the market TWAP's
-  premium to NAV, paid by minting new fund tokens (capped by the factory's
-  `maxYieldRateBpsPerYear`, 109,500 bps a year, i.e. 3% a day, by default; at most 3,650,000). The
-  curve is up to 8 (premium, `rateBpsPerYear`) points, interpolated linearly: no yield below the
-  first point (so never below NAV), the last point's rate past the last point. A point at premium
-  0 pays at NAV: rate 900 is a 9% APR. The intended shape is a hump, for example 0 at NAV, about 1%
-  a week (about 5,200 bps a year) from a 10% to a 30% premium, then down to 0 at the ceiling, so
-  yield draws stakers in at a moderate premium and stops fuelling a runaway one. Yield accrues every
-  8 hours at most.
+- **Staking (tier yield):** stakers earn a yearly rate (APR) set by the market TWAP's premium to
+  NAV, paid by minting new fund tokens (capped by the factory's `maxYieldRateBpsPerYear`, 109,500
+  bps a year, i.e. 3% a day, by default; at most 3,650,000). The tiers are up to 8 (premium,
+  `rateBpsPerYear`) levels, stepped: each level's rate holds until the next level, no yield below
+  the first level (so never below NAV). Defaults: 12% APR from NAV, 24% from 1.25x NAV, 48% from
+  2x NAV; the base may be 0 with the upper levels still paying. Yield accrues every 8 hours at
+  most.
 - **Curator yield:** on top of the stakers' yield, `FundStaking` mints the curators 15%
   (`curatorYieldBps`, admin-set per fund with `setCuratorYield`, at most 50%) of what stakers earn,
   so stakers keep the full curve rate. An optional yearly cap, in bps of the staked balance, limits
@@ -252,7 +275,8 @@ Updated 2026-10-07: Dutch-auction rebalancing with admin router swaps as the fal
   upgrade the factory, the hook and all modules; set the price oracle and feeds, the protocol
   curator and its share, the whitelist, routers, the LP fee, the curator cap, the bribe cut and
   tokens, the eligibility list, the yield cap, governance rules and each fund's fee, curator
-  yield, minimum curator stake, lock options, yield curve and premium ceiling; add and remove
+  yield, minimum curator stake, yield tiers, mint lock and adjustment, boost and pot settings and
+  pool issuance; set the premium defaults for new funds; add and remove
   curators (never the protocol curator); veto proposals; can delist a token directly; can
   withdraw the pool position back into the fund; set the sweep recipient
   (`factory.setSweepRecipient`; the registry treasury until set).
@@ -295,8 +319,11 @@ prints those calls for an admin's Safe. After a fund launches,
 
 - `test/unit/Fund*.t.sol` run against a real v4 PoolManager, deployed from precompiled bytecode in
   `test/helpers/v4/PoolManagerBytecode.sol` (v4-core pins solc 0.8.26; this repo pins 0.8.28).
-- `test/invariant/FundInvariant.t.sol` checks that mints and redeems never lower NAV per token
-  (beyond the position valuation's rounding) and that locked mints stay fully held as staked shares.
+- `test/invariant/FundInvariant.t.sol` checks that mints, pool buys, redeems, unstakes and boost
+  settlements never lower NAV per token (beyond the position valuation's rounding) and that the
+  reserve always equals the boost budgets and pot still owed.
+- `test/unit/FundPremium.t.sol` covers pool issuance, the Premium Boost, the Premium Pot, the
+  locked mint and the premium settings.
 - `test/unit/FundStakingLp.t.sol` uses `test/helpers/MockPositionManager.sol`;
   `test/fork/FundLpStakingRobinhoodFork.t.sol` (needs `ROBINHOOD_RPC`) mints, stakes, trades
   against, collects fees from and unstakes a position through the live PositionManager.
