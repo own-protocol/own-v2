@@ -88,12 +88,15 @@ Updated 2026-10-12: the premium yield redesign (spec `plans/fund-premium-rebate-
   above the cap goes to the fund) and the matching fund tokens burned.
 - LP fees the position earns go to the fund (USDG) or are burned (fund tokens). Outside LPs can add
   their own positions; only the fund's own position counts.
-- The position stays locked. In rare cases the admin can withdraw part or all of it, and the
-  proceeds always go back into the fund.
+- The position stays locked. The admin can resize it later, though by default it is set once at
+  launch: `fund.increasePosition(usdgAmount)` moves idle USDG into it with matching fund tokens
+  minted at the spot price (only while spot is within about 1% of the TWAP, so NAV does not move),
+  and `hook.withdrawPosition(fund, liquidity)` takes part or all of it out, the proceeds always
+  going back into the fund.
 
 ## Live
 
-- **Locked direct mint (in kind):** `mint(navShares, minSharesOut, receiver)`. The minter brings
+- **Locked direct mint (in kind):** `mint(navShares, minSharesOut, receiver, false)`. The minter brings
   `navShares / supply` (supply outside the pool position) of every basket asset's balance and of
   the fund's USDG (idle, the pool position's and issuance USDG not yet collected), each rounded up
   and scaled by backing over total value while the reserve holds anything, and receives
@@ -103,11 +106,22 @@ Updated 2026-10-12: the premium yield redesign (spec `plans/fund-premium-rebate-
   unstaked until then, but can be redeemed at NAV through `FundStaking.redeem`. One lock per
   account; a second mint locks the total until the share-weighted end, so a mint to someone else
   cannot hold their earlier shares longer than it pays for. The adjustment is signed (default 0,
-  -50% to +100%) and the price is never below NAV. The admin sets both per fund with
-  `setMintConfig`; `setMintPaused` (operator or admin) is the mint door. No oracle values the
-  deposit, minters cannot pick what the fund buys, and a mint never dilutes holders.
-  `previewMint(navShares)` returns `(shares, mintPrice, amounts, usdgAmount)`. Minting needs the
-  pool's price, so it opens once the pool is seeded.
+  -50% to +100%) and the price is never below NAV. No oracle values the deposit, minters cannot
+  pick what the fund buys, and a mint never dilutes holders. `previewMint(navShares, atNav)`
+  returns `(shares, mintPrice, amounts, usdgAmount, locked)`. Minting needs the pool's price, so it
+  opens once the pool is seeded.
+- **Premium cap:** `maxPremiumBps` per fund (0, the default, is no cap). When the pool price would
+  put a direct mint above `NAV × (1 + maxPremiumBps)`, it is priced at the cap instead and the
+  tokens go to the receiver unlocked, with no boost (the whole premium is backing), so anyone can
+  mint at the cap and sell into the pool and arbitrage holds the price near it.
+- **Mint at NAV:** `mint(navShares, minSharesOut, receiver, true)` prices the same slice at NAV
+  (fee still charged). The tokens are staked for the receiver and locked for `navMintLock` (default
+  6 months, up to 2 years) in a lock of their own that direct mints never join; meanwhile they earn
+  tier yield and the pot and can be redeemed at NAV, but not transferred or unstaked. No boost. For
+  holders who want basket exposure without the premium game.
+- **Mint settings:** the admin sets the mint lock, adjustment, NAV mint lock and premium cap per
+  fund with `setMintConfig` (new funds take the factory's defaults); `setMintPaused` (operator or
+  admin) closes both mint doors.
 - **Premium Boost (direct mints only):** of a mint's payment above NAV, `boostShareBps` (default
   75%) goes into the fund's reserve as the minter's budget and the rest is backing. The budget is
   paid back in dollars at `boostSpeedBpsPerYear` (default 75% a year) of the mint payment, as staked
@@ -132,7 +146,7 @@ Updated 2026-10-12: the premium yield redesign (spec `plans/fund-premium-rebate-
   redeems, so redeemers never take it and outstanding boosts stay funded however many holders
   leave. While it holds anything, redeems need basket prices to scale their claim.
 - **Mint zap:** `FundMintZap.zapMint` takes one token, runs the caller's swaps through
-  admin-allowed routers into the slice, mints (staked, locked and boosted for the receiver), and
+  admin-allowed routers into the slice, mints (direct or at NAV) for the receiver, and
   refunds whatever is left. The minter pays the swap slippage, not the fund's holders.
 - **Redeem** at any time, as above. It needs no oracle and cannot be paused.
 - **Fee.** One fund fee (default 1%, admin-set per fund with `setFee`, at most 10%) on pool trades
