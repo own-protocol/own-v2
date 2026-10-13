@@ -45,6 +45,9 @@ struct IssuanceConfig {
 /// @param mintLock             How long a direct mint's stake stays locked, in seconds (may be 0).
 /// @param mintAdjustmentBps    Signed adjustment to the pool price a direct mint pays, in basis
 ///                             points: positive is a markup, negative a discount. Never below NAV.
+/// @param navMintLock          How long a mint at NAV stays locked, in seconds (may be 0).
+/// @param maxPremiumBps        Premium over NAV a direct mint pays at most, in basis points (0 for
+///                             no cap); a mint the cap prices is unlocked and earns no boost.
 /// @param boostShareBps        Share of a direct mint's premium paid back as the minter's boost.
 /// @param boostSpeedBpsPerYear Speed of the boost, a yearly rate on the mint payment.
 /// @param potDripPeriod        Period over which each Premium Pot top-up drips to stakers.
@@ -53,6 +56,8 @@ struct IssuanceConfig {
 struct PremiumConfig {
     uint32 mintLock;
     int16 mintAdjustmentBps;
+    uint32 navMintLock;
+    uint32 maxPremiumBps;
     uint16 boostShareBps;
     uint32 boostSpeedBpsPerYear;
     uint32 potDripPeriod;
@@ -68,9 +73,19 @@ library PremiumConfigLib {
     function isValid(
         PremiumConfig memory c
     ) internal pure returns (bool) {
-        return c.mintLock <= 365 days && c.mintAdjustmentBps >= -5000 && c.mintAdjustmentBps <= 10_000
-            && c.boostShareBps <= 10_000 && c.boostSpeedBpsPerYear != 0 && c.boostSpeedBpsPerYear <= 1_000_000
-            && c.potDripPeriod >= 1 hours && c.potDripPeriod <= 365 days && c.potShareBps <= 10_000;
+        return mintValid(c.mintLock, c.mintAdjustmentBps, c.navMintLock) && c.boostShareBps <= 10_000
+            && c.boostSpeedBpsPerYear != 0 && c.boostSpeedBpsPerYear <= 1_000_000 && c.potDripPeriod >= 1 hours
+            && c.potDripPeriod <= 365 days && c.potShareBps <= 10_000;
+    }
+
+    /// @notice Whether a fund's mint settings are within bounds: the direct mint lock at most a year,
+    ///         the adjustment from -50% to +100%, the NAV mint lock at most two years.
+    /// @param lock          Direct mint lock.
+    /// @param adjustmentBps Direct mint adjustment.
+    /// @param navLock       NAV mint lock.
+    /// @return True if valid.
+    function mintValid(uint32 lock, int16 adjustmentBps, uint32 navLock) internal pure returns (bool) {
+        return lock <= 365 days && adjustmentBps >= -5000 && adjustmentBps <= 10_000 && navLock <= 730 days;
     }
 
     /// @notice Whether issuance `steps` are within bounds: at most 8, premiums strictly ascending,

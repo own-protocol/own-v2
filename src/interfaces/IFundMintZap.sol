@@ -56,9 +56,10 @@ interface IFundMintZap {
     /// @param amountIn     Amount paid.
     /// @param swaps        Swaps run in order before the mint.
     /// @param navShares    Size of the slice, in fund tokens at NAV.
-    /// @param minSharesOut Minimum fund tokens staked for the receiver, after the fee.
-    /// @param receiver     Owner of the stake, its lock and its boost.
-    /// @return shares Fund tokens staked for the receiver.
+    /// @param minSharesOut Minimum fund tokens for the receiver, after the fee.
+    /// @param receiver     Owner of the mint (its stake, lock and boost when staked).
+    /// @param atNav        Mint at NAV instead of the pool price.
+    /// @return shares Fund tokens for the receiver.
     function zapMint(
         address fund,
         address tokenIn,
@@ -66,7 +67,8 @@ interface IFundMintZap {
         Swap[] calldata swaps,
         uint256 navShares,
         uint256 minSharesOut,
-        address receiver
+        address receiver,
+        bool atNav
     ) external returns (uint256 shares);
 
     /// @notice The fund factory.

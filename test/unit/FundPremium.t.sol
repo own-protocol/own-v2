@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
+import {IFund} from "../../src/interfaces/IFund.sol";
 import {IFundFactory} from "../../src/interfaces/IFundFactory.sol";
 import {IFundHook} from "../../src/interfaces/IFundHook.sol";
 import {IFundStaking} from "../../src/interfaces/IFundStaking.sol";
@@ -12,6 +13,8 @@ import {
     YieldPoint
 } from "../../src/interfaces/types/FundTypes.sol";
 import {FundTestBase} from "../helpers/FundTestBase.sol";
+import {MockERC20} from "../helpers/MockERC20.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {Vm} from "forge-std/Vm.sol";
 import {IPoolManager} from "v4-core/src/interfaces/IPoolManager.sol";
@@ -243,7 +246,7 @@ contract FundPremiumTest is FundTestBase {
     function test_issuance_poolBuysCreateNoBoost() public {
         _buy(-int256(5000e6));
         assertEq(staking.boostOf(carol).usdLeft, 0);
-        assertEq(staking.mintLockOf(carol).shares, 0);
+        assertEq(staking.mintLockOf(carol, false).shares, 0);
         assertEq(staking.balanceOf(carol), 0);
     }
 
@@ -253,7 +256,7 @@ contract FundPremiumTest is FundTestBase {
 
     function test_boost_budgetIsShareOfPremium_fullProceedsInFund() public {
         uint256 navShares = 10_000e18;
-        (, uint256 mintPrice,,) = fund.previewMint(navShares);
+        (, uint256 mintPrice,,,) = fund.previewMint(navShares, false);
         uint256 nav = _mintNav();
         uint256 v0 = fund.totalValue();
         _mintAs(carol, navShares);
@@ -271,7 +274,7 @@ contract FundPremiumTest is FundTestBase {
     }
 
     function test_boost_paysBudgetAtSpeed() public {
-        (, uint256 mintPrice,,) = fund.previewMint(10_000e18);
+        (, uint256 mintPrice,,,) = fund.previewMint(10_000e18, false);
         uint256 nav = _mintNav();
         _mintAs(carol, 10_000e18);
         IFundStaking.Boost memory b = staking.boostOf(carol);
@@ -359,7 +362,7 @@ contract FundPremiumTest is FundTestBase {
         vm.expectEmit(true, false, false, false, address(staking));
         emit IFundStaking.BoostPaid(carol, owed, 0, 0);
         vm.prank(carol);
-        fund.mint(5000e18, 0, carol);
+        fund.mint(5000e18, 0, carol, false);
 
         IFundStaking.Boost memory b2 = staking.boostOf(carol);
         uint256 budget2 = fund.reserveUsd() - (r0 - owed);
@@ -439,7 +442,7 @@ contract FundPremiumTest is FundTestBase {
         assertEq(staking.boostSpeedBpsPerYear(), 10_000);
         assertEq(staking.potDripPeriod(), 3 days);
 
-        (, uint256 mintPrice,,) = fund.previewMint(10_000e18);
+        (, uint256 mintPrice,,,) = fund.previewMint(10_000e18, false);
         uint256 nav = _mintNav();
         _mintAs(carol, 10_000e18);
         uint256 payment = 10_000e18 * nav / 1e18;
@@ -572,7 +575,7 @@ contract FundPremiumTest is FundTestBase {
         vm.stopPrank();
         assertGt(usdgOut, 0);
         assertEq(staking.balanceOf(carol), 0);
-        assertEq(staking.mintLockOf(carol).shares, 0);
+        assertEq(staking.mintLockOf(carol, false).shares, 0);
         // Redeeming at NAV gives up the unpaid boost.
         assertEq(staking.boostOf(carol).usdLeft, 0);
         assertEq(fund.reserveUsd(), 0);
@@ -580,9 +583,9 @@ contract FundPremiumTest is FundTestBase {
 
     function test_lock_freeAfterConfiguredLength() public {
         vm.prank(admin);
-        fund.setMintConfig(3 days, 0);
+        fund.setMintConfig(3 days, 0, 180 days, 0);
         _mintAs(carol, 1000e18);
-        assertEq(staking.mintLockOf(carol).unlockAt, block.timestamp + 3 days);
+        assertEq(staking.mintLockOf(carol, false).unlockAt, block.timestamp + 3 days);
         _warp(3 days);
         uint256 half = staking.balanceOf(carol) / 2;
         vm.prank(carol);
@@ -591,14 +594,214 @@ contract FundPremiumTest is FundTestBase {
 
     function test_lock_mintForOthersCannotExtendTheirLock() public {
         _mintAs(carol, 10_000e18);
-        uint64 end = staking.mintLockOf(carol).unlockAt;
+        uint64 end = staking.mintLockOf(carol, false).unlockAt;
         _warp(14 days);
         // A tiny mint to carol with a fresh 15 days moves her end by its share of the locked stake only.
         _fundSlice(dave, 1e18);
         vm.prank(dave);
-        fund.mint(1e18, 0, carol);
-        IFundStaking.MintLock memory lock = staking.mintLockOf(carol);
+        fund.mint(1e18, 0, carol, false);
+        IFundStaking.MintLock memory lock = staking.mintLockOf(carol, false);
         assertLt(lock.unlockAt, end + 1 hours);
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Premium cap
+    // ──────────────────────────────────────────────────────────
+
+    function _setCap(
+        uint32 capBps
+    ) internal {
+        vm.prank(admin);
+        fund.setMintConfig(15 days, 0, 180 days, capBps);
+    }
+
+    function test_cap_noneByDefault() public view {
+        assertEq(fund.maxPremiumBps(), 0);
+        (,,,, bool locked) = fund.previewMint(1000e18, false);
+        assertTrue(locked);
+    }
+
+    function test_cap_pricesAtCapUnlockedWithoutBoost() public {
+        _setCap(1000); // 10%, under the pool's 30%
+        uint256 nav = _mintNav();
+        (uint256 quoted, uint256 mintPrice,,, bool locked) = fund.previewMint(10_000e18, false);
+        assertEq(mintPrice, Math.mulDiv(nav, 11_000, 10_000, Math.Rounding.Ceil));
+        assertFalse(locked);
+
+        (uint256 nav0,) = _nav();
+        uint256 shares = _mintAs(carol, 10_000e18);
+        assertEq(shares, quoted);
+        assertEq(fund.balanceOf(carol), shares);
+        assertEq(staking.balanceOf(carol), 0);
+        assertEq(staking.boostOf(carol).usdLeft, 0);
+        assertEq(fund.reserveUsd(), 0);
+        // The whole premium is backing.
+        (uint256 nav1,) = _nav();
+        assertGt(nav1, nav0);
+
+        // Free to sell into the pool at once: the arbitrage that holds the price near the cap.
+        vm.prank(carol);
+        fund.transfer(dave, shares);
+        uint256 usdgBefore = usdg.balanceOf(dave);
+        _poolSwap(dave, false, -int256(shares));
+        assertGt(usdg.balanceOf(dave) - usdgBefore, 0);
+    }
+
+    function test_cap_aboveMarketLeavesTheLockedMint() public {
+        _setCap(5000); // 50%, over the pool's 30%
+        (,,,, bool locked) = fund.previewMint(1000e18, false);
+        assertTrue(locked);
+        _mintAs(carol, 1000e18);
+        assertGt(staking.boostOf(carol).usdLeft, 0);
+        assertEq(fund.balanceOf(carol), 0);
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Mint at NAV
+    // ──────────────────────────────────────────────────────────
+
+    function _mintAtNav(address who, uint256 navShares) internal returns (uint256 shares) {
+        uint256 usdgAmount;
+        uint256[] memory amounts;
+        (,, amounts, usdgAmount,) = fund.previewMint(navShares, true);
+        address[] memory a = fund.assets();
+        for (uint256 i; i < a.length; ++i) {
+            _mintAsset(who, MockERC20(a[i]), amounts[i]);
+        }
+        _mintAsset(who, usdg, usdgAmount);
+        vm.prank(who);
+        shares = fund.mint(navShares, 0, who, true);
+    }
+
+    function test_navMint_atNavLockedSixMonthsNoBoost() public {
+        uint256 nav = _mintNav();
+        (uint256 quoted, uint256 mintPrice,,, bool locked) = fund.previewMint(10_000e18, true);
+        assertEq(mintPrice, nav);
+        assertTrue(locked);
+        assertEq(quoted, 10_000e18 - 10_000e18 * 100 / 10_000);
+
+        (uint256 nav0,) = _nav();
+        _mintAtNav(carol, 10_000e18);
+        IFundStaking.MintLock memory lock = staking.mintLockOf(carol, true);
+        assertEq(lock.shares, staking.balanceOf(carol));
+        assertEq(lock.unlockAt, block.timestamp + 180 days);
+        assertEq(staking.mintLockOf(carol, false).shares, 0);
+        assertEq(staking.boostOf(carol).usdLeft, 0);
+        assertEq(fund.reserveUsd(), 0);
+        (uint256 nav1,) = _nav();
+        assertGe(nav1 + 1, nav0); // never dilutive (the fee even adds a little)
+    }
+
+    function test_navMint_exitAtNavDuringLockFreeAfter() public {
+        _mintAtNav(carol, 10_000e18);
+        uint256 bal = staking.balanceOf(carol);
+        _warp(90 days);
+        vm.startPrank(carol);
+        vm.expectRevert(IFundStaking.SharesLocked.selector);
+        staking.transfer(dave, 1);
+        vm.expectRevert(IFundStaking.SharesLocked.selector);
+        staking.unstake(1, carol);
+        staking.redeem(bal / 2, carol, new uint256[](0), 0);
+        vm.stopPrank();
+        assertEq(staking.mintLockOf(carol, true).shares, bal - bal / 2);
+
+        _warp(90 days);
+        uint256 rest = staking.balanceOf(carol);
+        vm.prank(carol);
+        staking.unstake(rest, carol);
+        assertGt(fund.balanceOf(carol), 0);
+    }
+
+    function test_navMint_keepsItsOwnLockBesideDirectMints() public {
+        _mintAtNav(carol, 10_000e18);
+        uint64 navEnd = staking.mintLockOf(carol, true).unlockAt;
+        uint256 navLocked = staking.mintLockOf(carol, true).shares;
+        // A big direct mint with its short lock cannot pull the NAV lock's end in.
+        _mintAs(carol, 50_000e18);
+        assertEq(staking.mintLockOf(carol, true).unlockAt, navEnd);
+        assertEq(staking.mintLockOf(carol, false).unlockAt, block.timestamp + 15 days);
+
+        _warp(15 days);
+        staking.settleBoost(carol);
+        uint256 free = staking.balanceOf(carol) - navLocked;
+        vm.startPrank(carol);
+        vm.expectRevert(IFundStaking.SharesLocked.selector);
+        staking.unstake(free + 1, carol);
+        staking.unstake(free, carol);
+        vm.stopPrank();
+    }
+
+    function test_navMint_lockIsAdminSet() public {
+        vm.prank(admin);
+        fund.setMintConfig(15 days, 0, 30 days, 0);
+        assertEq(fund.navMintLock(), 30 days);
+        _mintAtNav(carol, 1000e18);
+        assertEq(staking.mintLockOf(carol, true).unlockAt, block.timestamp + 30 days);
+
+        vm.prank(admin);
+        vm.expectRevert(IFund.InvalidMintConfig.selector);
+        fund.setMintConfig(15 days, 0, 730 days + 1, 0);
+    }
+
+    function test_navMint_closedWithTheMintDoor() public {
+        vm.prank(admin);
+        fund.setMintPaused(true);
+        vm.expectRevert(IFund.MintPaused.selector);
+        fund.mint(1000e18, 0, carol, true);
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Fund pool position
+    // ──────────────────────────────────────────────────────────
+
+    function test_increasePosition_addsIdleUsdgWithoutMovingNav() public {
+        usdg.mint(address(fund), 10_000e6);
+        (uint256 nav0, uint256 s0) = _nav();
+        uint128 liq0 = hook.positionLiquidity(address(fund));
+        (uint256 posUsdg0,) = fund.positionAmounts();
+        uint256 idle0 = fund.idleUsdg();
+        uint256 supply0 = fund.totalSupply();
+
+        vm.prank(admin);
+        uint128 added = fund.increasePosition(5000e6);
+
+        assertGt(added, 0);
+        assertEq(hook.positionLiquidity(address(fund)), liq0 + added);
+        assertApproxEqAbs(idle0 - fund.idleUsdg(), 5000e6, 1);
+        (uint256 posUsdg1,) = fund.positionAmounts();
+        assertApproxEqRel(posUsdg1 - posUsdg0, 5000e6, 1e15);
+        assertGt(fund.totalSupply(), supply0); // tokens minted into the position
+        (uint256 nav1, uint256 s1) = _nav();
+        assertApproxEqRel(s1, s0, 1e15); // outside supply
+        assertApproxEqRel(nav1, nav0, 1e15);
+        assertEq(IERC20(address(fund)).balanceOf(address(hook)), 0);
+        assertEq(usdg.balanceOf(address(hook)), 0);
+    }
+
+    function test_increasePosition_thenWithdraw() public {
+        usdg.mint(address(fund), 10_000e6);
+        vm.prank(admin);
+        uint128 added = fund.increasePosition(5000e6);
+        uint256 idle = fund.idleUsdg();
+        vm.prank(admin);
+        hook.withdrawPosition(address(fund), added);
+        assertApproxEqRel(fund.idleUsdg() - idle, 5000e6, 1e15);
+    }
+
+    function test_increasePosition_adminOnly() public {
+        usdg.mint(address(fund), 10_000e6);
+        vm.expectRevert(IFund.NotAdmin.selector);
+        fund.increasePosition(1000e6);
+        vm.expectRevert(IFundHook.NotRegistered.selector);
+        hook.increasePosition(1000e6);
+    }
+
+    function test_increasePosition_spotOffTwap_reverts() public {
+        usdg.mint(address(fund), 10_000e6);
+        _poolSwap(dave, true, -int256(5000e6)); // spot jumps, the TWAP has not moved
+        vm.prank(admin);
+        vm.expectRevert(IFundHook.PriceOffTwap.selector);
+        fund.increasePosition(1000e6);
     }
 
     // ──────────────────────────────────────────────────────────
@@ -609,6 +812,8 @@ contract FundPremiumTest is FundTestBase {
         PremiumConfig memory c = factory.premiumConfig();
         assertEq(c.mintLock, 15 days);
         assertEq(c.mintAdjustmentBps, 0);
+        assertEq(c.navMintLock, 180 days);
+        assertEq(c.maxPremiumBps, 0);
         assertEq(c.boostShareBps, 7500);
         assertEq(c.boostSpeedBpsPerYear, 7500);
         assertEq(c.potDripPeriod, 7 days);
@@ -646,6 +851,8 @@ contract FundPremiumTest is FundTestBase {
         PremiumConfig memory c = PremiumConfig({
             mintLock: 30 days,
             mintAdjustmentBps: 200,
+            navMintLock: 90 days,
+            maxPremiumBps: 5000,
             boostShareBps: 5000,
             boostSpeedBpsPerYear: 10_000,
             potDripPeriod: 3 days,
@@ -697,6 +904,8 @@ contract FundPremiumTest is FundTestBase {
 
         assertEq(fund.mintLock(), 30 days);
         assertEq(fund.mintAdjustmentBps(), 200);
+        assertEq(fund.navMintLock(), 90 days);
+        assertEq(fund.maxPremiumBps(), 5000);
         assertEq(staking.boostShareBps(), 5000);
         assertEq(staking.boostSpeedBpsPerYear(), 10_000);
         assertEq(staking.potDripPeriod(), 3 days);

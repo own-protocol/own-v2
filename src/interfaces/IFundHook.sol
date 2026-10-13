@@ -43,6 +43,13 @@ interface IFundHook {
     /// @param fee  USDG to the fund's curators module.
     event SwapFeesTaken(address indexed fund, uint256 fee);
 
+    /// @notice Emitted when the admin adds to the fund's position after launch.
+    /// @param fund      The fund.
+    /// @param liquidity Liquidity added.
+    /// @param usdg      USDG added (from the fund).
+    /// @param shares    Fund tokens minted into the position.
+    event PositionIncreased(address indexed fund, uint128 liquidity, uint256 usdg, uint256 shares);
+
     /// @notice Emitted when LP fees on the fund's position are collected.
     /// @param fund       The fund.
     /// @param usdgAmount USDG sent to the fund.
@@ -112,6 +119,9 @@ interface IFundHook {
     /// @notice The launch price is outside Uniswap's range, or an amount is zero.
     error InvalidSeed();
 
+    /// @notice The pool's spot price is too far from its TWAP to add to the position safely.
+    error PriceOffTwap();
+
     /// @notice The LP fee is above its cap.
     error LpFeeTooHigh();
 
@@ -163,6 +173,18 @@ interface IFundHook {
         uint256 denominator,
         address receiver
     ) external returns (uint256 usdgPaid);
+
+    /// @notice Add `usdgAmount` of USDG the fund just sent here to its position, with the fund
+    ///         tokens that match it at the spot price minted into the position. The fund only (the
+    ///         admin calls {IFund-increasePosition}). Needs the spot price within 1% of the pool
+    ///         TWAP the position is valued at, so it moves no value between the fund and traders;
+    ///         a fund token in the position is outside supply, so NAV does not move. Dust is burned
+    ///         (fund tokens) or sent back (USDG).
+    /// @param usdgAmount USDG to add.
+    /// @return liquidity Liquidity added.
+    function increasePosition(
+        uint256 usdgAmount
+    ) external returns (uint128 liquidity);
 
     /// @notice Withdraw `liquidity` of the fund's position out of the pool, in rare cases. Admin
     ///         only. The USDG goes to the fund and the fund tokens are burned; nothing goes to a

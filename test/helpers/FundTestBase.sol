@@ -329,7 +329,7 @@ abstract contract FundTestBase is Test {
     /// @dev Gives `who` the slice a mint of `navShares` needs and approves the fund for it.
     function _fundSlice(address who, uint256 navShares) internal returns (uint256[] memory amounts) {
         uint256 usdgAmount;
-        (,, amounts, usdgAmount) = fund.previewMint(navShares);
+        (,, amounts, usdgAmount,) = fund.previewMint(navShares, false);
         address[] memory a = fund.assets();
         for (uint256 i; i < a.length; ++i) {
             _mintAsset(who, MockERC20(a[i]), amounts[i]);
@@ -341,7 +341,7 @@ abstract contract FundTestBase is Test {
     function _mintAs(address who, uint256 navShares) internal returns (uint256 shares) {
         _fundSlice(who, navShares);
         vm.prank(who);
-        shares = fund.mint(navShares, 0, who);
+        shares = fund.mint(navShares, 0, who, false);
     }
 
     function _mintAsset(address who, MockERC20 asset, uint256 amount) internal {

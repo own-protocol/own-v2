@@ -35,7 +35,8 @@ contract FundMintZap is IFundMintZap, ReentrancyGuardTransient {
         Swap[] calldata swaps,
         uint256 navShares,
         uint256 minSharesOut,
-        address receiver
+        address receiver,
+        bool atNav
     ) external override nonReentrant returns (uint256 shares) {
         IFundFactory fac = IFundFactory(factory);
         if (!fac.isFund(fund)) revert NotFund();
@@ -54,7 +55,7 @@ contract FundMintZap is IFundMintZap, ReentrancyGuardTransient {
         address[] memory assets = IFund(fund).assets();
         address usdg = _usdg;
         _approveAll(fund, assets, usdg, true);
-        shares = IFund(fund).mint(navShares, minSharesOut, receiver);
+        shares = IFund(fund).mint(navShares, minSharesOut, receiver, atNav);
         _approveAll(fund, assets, usdg, false);
 
         // The zap holds nothing between calls, so every balance left is this caller's.

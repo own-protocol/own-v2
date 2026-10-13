@@ -36,7 +36,7 @@ contract FundMintZapTest is FundTestBase {
     function _swaps(
         uint256 extra
     ) internal view returns (IFundMintZap.Swap[] memory swaps) {
-        (,, uint256[] memory amounts,) = fund.previewMint(NAV_SHARES);
+        (,, uint256[] memory amounts,,) = fund.previewMint(NAV_SHARES, false);
         address[] memory a = fund.assets();
         swaps = new IFundMintZap.Swap[](3);
         for (uint256 i; i < 3; ++i) {
@@ -50,12 +50,12 @@ contract FundMintZapTest is FundTestBase {
     }
 
     function test_zapMint_fromUsdg() public {
-        (uint256 quoted,,, uint256 usdgAmount) = fund.previewMint(NAV_SHARES);
+        (uint256 quoted,,, uint256 usdgAmount,) = fund.previewMint(NAV_SHARES, false);
         IFundMintZap.Swap[] memory sw = _swaps(0);
         vm.expectEmit(address(zap));
         emit IFundMintZap.ZapMinted(address(fund), alice, alice, address(usdg), PAY, quoted);
         vm.prank(alice);
-        uint256 shares = zap.zapMint(address(fund), address(usdg), PAY, sw, NAV_SHARES, quoted, alice);
+        uint256 shares = zap.zapMint(address(fund), address(usdg), PAY, sw, NAV_SHARES, quoted, alice, false);
 
         assertEq(shares, quoted);
         assertApproxEqAbs(staking.convertToAssets(staking.balanceOf(alice)), shares, 1);
@@ -66,7 +66,7 @@ contract FundMintZapTest is FundTestBase {
     function test_zapMint_leftoversRefunded() public {
         IFundMintZap.Swap[] memory sw = _swaps(5);
         vm.prank(alice);
-        zap.zapMint(address(fund), address(usdg), PAY, sw, NAV_SHARES, 0, alice);
+        zap.zapMint(address(fund), address(usdg), PAY, sw, NAV_SHARES, 0, alice, false);
         assertEq(net.balanceOf(alice), 5);
         assertEq(pons.balanceOf(alice), 5);
         assertEq(tsla.balanceOf(alice), 5);
@@ -76,8 +76,8 @@ contract FundMintZapTest is FundTestBase {
     function test_zapMint_lockedAndBoostedForReceiver() public {
         IFundMintZap.Swap[] memory sw = _swaps(0);
         vm.prank(alice);
-        uint256 shares = zap.zapMint(address(fund), address(usdg), PAY, sw, NAV_SHARES, 0, bob);
-        IFundStaking.MintLock memory lock = staking.mintLockOf(bob);
+        uint256 shares = zap.zapMint(address(fund), address(usdg), PAY, sw, NAV_SHARES, 0, bob, false);
+        IFundStaking.MintLock memory lock = staking.mintLockOf(bob, false);
         assertEq(lock.shares, staking.balanceOf(bob));
         assertEq(lock.unlockAt, block.timestamp + 15 days);
         assertApproxEqAbs(staking.convertToAssets(lock.shares), shares, 1);
@@ -88,19 +88,19 @@ contract FundMintZapTest is FundTestBase {
 
     function test_zapMint_shortSwap_reverts() public {
         IFundMintZap.Swap[] memory swaps = _swaps(0);
-        (,, uint256[] memory amounts,) = fund.previewMint(NAV_SHARES);
+        (,, uint256[] memory amounts,,) = fund.previewMint(NAV_SHARES, false);
         swaps[2].data = abi.encodeCall(MockSwapRouter.swap, (address(usdg), 1000e6, address(tsla), amounts[2] - 1));
         vm.prank(alice);
         vm.expectRevert();
-        zap.zapMint(address(fund), address(usdg), PAY, swaps, NAV_SHARES, 0, alice);
+        zap.zapMint(address(fund), address(usdg), PAY, swaps, NAV_SHARES, 0, alice, false);
     }
 
     function test_zapMint_slippage_reverts() public {
-        (uint256 quoted,,,) = fund.previewMint(NAV_SHARES);
+        (uint256 quoted,,,,) = fund.previewMint(NAV_SHARES, false);
         IFundMintZap.Swap[] memory swaps = _swaps(0);
         vm.prank(alice);
         vm.expectRevert(IFund.Slippage.selector);
-        zap.zapMint(address(fund), address(usdg), PAY, swaps, NAV_SHARES, quoted + 1, alice);
+        zap.zapMint(address(fund), address(usdg), PAY, swaps, NAV_SHARES, quoted + 1, alice, false);
     }
 
     function test_zapMint_routerNotAllowed_reverts() public {
@@ -108,7 +108,7 @@ contract FundMintZapTest is FundTestBase {
         swaps[0].router = address(new MockSwapRouter());
         vm.prank(alice);
         vm.expectRevert(IFundMintZap.RouterNotAllowed.selector);
-        zap.zapMint(address(fund), address(usdg), PAY, swaps, NAV_SHARES, 0, alice);
+        zap.zapMint(address(fund), address(usdg), PAY, swaps, NAV_SHARES, 0, alice, false);
     }
 
     function test_zapMint_swapFails_reverts() public {
@@ -116,21 +116,21 @@ contract FundMintZapTest is FundTestBase {
         swaps[0].data = abi.encodeCall(MockSwapRouter.alwaysReverts, ());
         vm.prank(alice);
         vm.expectRevert(IFundMintZap.SwapFailed.selector);
-        zap.zapMint(address(fund), address(usdg), PAY, swaps, NAV_SHARES, 0, alice);
+        zap.zapMint(address(fund), address(usdg), PAY, swaps, NAV_SHARES, 0, alice, false);
     }
 
     function test_zapMint_notFund_reverts() public {
         IFundMintZap.Swap[] memory sw = _swaps(0);
         vm.prank(alice);
         vm.expectRevert(IFundMintZap.NotFund.selector);
-        zap.zapMint(address(usdg), address(usdg), PAY, sw, NAV_SHARES, 0, alice);
+        zap.zapMint(address(usdg), address(usdg), PAY, sw, NAV_SHARES, 0, alice, false);
     }
 
     function test_zapMint_zeroReceiver_reverts() public {
         IFundMintZap.Swap[] memory sw = _swaps(0);
         vm.prank(alice);
         vm.expectRevert(IFundMintZap.ZeroAddress.selector);
-        zap.zapMint(address(fund), address(usdg), PAY, sw, NAV_SHARES, 0, address(0));
+        zap.zapMint(address(fund), address(usdg), PAY, sw, NAV_SHARES, 0, address(0), false);
     }
 
     function test_constructor_zeroFactory_reverts() public {

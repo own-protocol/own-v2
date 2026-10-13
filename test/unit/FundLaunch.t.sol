@@ -468,7 +468,7 @@ contract FundLaunchTest is FundTestBase {
         _finalizeTwoDepositors();
         vm.prank(bob);
         vm.expectRevert(IFund.NoMarketPrice.selector);
-        fund.mint(1e18, 0, bob);
+        fund.mint(1e18, 0, bob, false);
 
         vm.prank(alice);
         uint256 shares = launch.claim(false);

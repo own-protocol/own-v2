@@ -132,7 +132,8 @@ interface IFundStaking is IERC20, IERC721Receiver {
     /// @param account  The account.
     /// @param shares   Shares locked.
     /// @param unlockAt When the lock ends.
-    event MintLockSet(address indexed account, uint256 shares, uint64 unlockAt);
+    /// @param atNav    Whether it is the NAV mint lock (else the direct mint lock).
+    event MintLockSet(address indexed account, uint256 shares, uint64 unlockAt, bool atNav);
 
     /// @notice Emitted when a direct mint adds to an account's boost.
     /// @param account    The account.
@@ -231,22 +232,25 @@ interface IFundStaking is IERC20, IERC721Receiver {
     /// @param shares Shares moved from the launch.
     function transferLocked(address to, uint256 shares) external;
 
-    /// @notice Stake fund tokens the fund just minted here for a direct mint: the shares go to
-    ///         `account`, locked until `unlockAt` (one lock per account: a mint during a running
-    ///         lock joins it, and the lock ends at the share-weighted average of the two ends), and its boost grows by `budgetUsd`, paid at
+    /// @notice Stake fund tokens the fund just minted here for a direct mint or a mint at NAV: the
+    ///         shares go to `account`, locked until `unlockAt` (one lock of each kind per account:
+    ///         a mint during a running lock of its kind joins it, and the lock ends at the
+    ///         share-weighted average of the two ends), and its boost grows by `budgetUsd`, paid at
     ///         the boost speed on `paymentUsd`. Settles the account's boost first. Fund only.
     /// @param account    The minter.
     /// @param assets     Fund tokens minted here.
     /// @param paymentUsd Value paid, 18 decimals USD.
     /// @param budgetUsd  Boost budget the fund reserved, 18 decimals USD.
     /// @param unlockAt   When the lock ends (no lock if not in the future).
+    /// @param atNav      Whether this is a mint at NAV (its own lock).
     /// @return shares Shares minted to `account`.
     function stakeMinted(
         address account,
         uint256 assets,
         uint256 paymentUsd,
         uint256 budgetUsd,
-        uint64 unlockAt
+        uint64 unlockAt,
+        bool atNav
     ) external returns (uint256 shares);
 
     /// @notice Top up the Premium Pot with `usd` the fund just reserved: everything not yet dripped
@@ -300,12 +304,11 @@ interface IFundStaking is IERC20, IERC721Receiver {
         address account
     ) external view returns (uint256);
 
-    /// @notice `account`'s mint lock.
+    /// @notice `account`'s direct or NAV mint lock.
     /// @param account The account.
+    /// @param atNav   The NAV mint lock (else the direct mint lock).
     /// @return The lock.
-    function mintLockOf(
-        address account
-    ) external view returns (MintLock memory);
+    function mintLockOf(address account, bool atNav) external view returns (MintLock memory);
 
     /// @notice Share of a direct mint's premium paid back as boost, in basis points.
     /// @return The share.

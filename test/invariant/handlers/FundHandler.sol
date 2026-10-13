@@ -13,7 +13,7 @@ import {PoolSwapTest} from "v4-core/src/test/PoolSwapTest.sol";
 import {Currency} from "v4-core/src/types/Currency.sol";
 import {PoolKey} from "v4-core/src/types/PoolKey.sol";
 
-/// @title FundHandler — random direct mints, pool buys (with issuance), redeems, unstakes, staked
+/// @title FundHandler — random direct and NAV mints, pool buys (with issuance), redeems, unstakes, staked
 ///        redeems and boost settlements on one fund
 contract FundHandler is Test {
     Fund internal fund;
@@ -62,10 +62,10 @@ contract FundHandler is Test {
         ++buys;
     }
 
-    function mint(uint256 actorSeed, uint256 navShares) external {
+    function mint(uint256 actorSeed, uint256 navShares, bool atNav) external {
         address actor = actors[actorSeed % 3];
         navShares = bound(navShares, 1e15, 10_000e18);
-        (,, uint256[] memory amounts, uint256 usdgAmount) = fund.previewMint(navShares);
+        (,, uint256[] memory amounts, uint256 usdgAmount,) = fund.previewMint(navShares, atNav);
         vm.startPrank(actor);
         for (uint256 i; i < 3; ++i) {
             assets[i].mint(actor, amounts[i]);
@@ -73,7 +73,7 @@ contract FundHandler is Test {
         }
         usdg.mint(actor, usdgAmount);
         usdg.approve(address(fund), usdgAmount);
-        fund.mint(navShares, 0, actor);
+        fund.mint(navShares, 0, actor, atNav);
         vm.stopPrank();
         ++mints;
     }
@@ -102,9 +102,11 @@ contract FundHandler is Test {
     function unstake(uint256 actorSeed, uint256 amount, uint256 warpBy) external {
         vm.warp(block.timestamp + bound(warpBy, 0, 10 days));
         address actor = actors[actorSeed % 3];
-        IFundStaking.MintLock memory lock = staking.mintLockOf(actor);
+        IFundStaking.MintLock memory lock = staking.mintLockOf(actor, false);
+        IFundStaking.MintLock memory navLock = staking.mintLockOf(actor, true);
         uint256 bal = staking.balanceOf(actor);
-        uint256 locked = block.timestamp < lock.unlockAt ? lock.shares : 0;
+        uint256 locked = (block.timestamp < lock.unlockAt ? lock.shares : 0)
+            + (block.timestamp < navLock.unlockAt ? navLock.shares : 0);
         if (bal <= locked) return;
         amount = bound(amount, 1, bal - locked);
         if (staking.convertToAssets(amount) == 0) return;

@@ -128,7 +128,7 @@ contract FundTest is FundTestBase {
             held[i] = IERC20(a[i]).balanceOf(address(fund));
         }
 
-        (,, uint256[] memory amounts, uint256 usdgAmount) = fund.previewMint(navShares);
+        (,, uint256[] memory amounts, uint256 usdgAmount,) = fund.previewMint(navShares, false);
         for (uint256 i; i < 3; ++i) {
             assertEq(amounts[i], Math.mulDiv(held[i], navShares, supply, Math.Rounding.Ceil));
         }
@@ -162,12 +162,12 @@ contract FundTest is FundTestBase {
         vm.expectEmit(address(fund));
         emit IFund.FeesCharged(gross * 100 / 10_000);
         vm.prank(alice);
-        uint256 shares = fund.mint(navShares, 0, alice);
+        uint256 shares = fund.mint(navShares, 0, alice, false);
 
         assertEq(shares, gross - gross * 100 / 10_000);
         assertEq(fund.balanceOf(alice), aliceShares); // nothing unstaked
         assertApproxEqAbs(staking.convertToAssets(staking.balanceOf(alice)), shares, 1);
-        IFundStaking.MintLock memory lock = staking.mintLockOf(alice);
+        IFundStaking.MintLock memory lock = staking.mintLockOf(alice, false);
         assertEq(lock.shares, staking.balanceOf(alice));
         assertEq(lock.unlockAt, block.timestamp + 15 days);
         assertEq(fund.balanceOf(address(curators)), gross * 100 / 10_000);
@@ -179,24 +179,24 @@ contract FundTest is FundTestBase {
         assertApproxEqRel(spot, fund.navPerShare() * 13 / 10, 1e15);
 
         _setFeed(address(fund), _navPrice() * 3); // TWAP above spot
-        (, uint256 mintPrice,,) = fund.previewMint(1000e18);
+        (, uint256 mintPrice,,,) = fund.previewMint(1000e18, false);
         assertEq(mintPrice, uint256(feeds[address(fund)].answer()) * 1e10);
 
         _setFeed(address(fund), _navPrice() / 2); // TWAP below spot: the spot price stands
-        (, mintPrice,,) = fund.previewMint(1000e18);
+        (, mintPrice,,,) = fund.previewMint(1000e18, false);
         assertEq(mintPrice, spot);
     }
 
     function test_mint_spotPushedDownDoesNotLowerPrice() public {
         _passDepositorLock();
-        (, uint256 before,,) = fund.previewMint(1000e18);
+        (, uint256 before,,,) = fund.previewMint(1000e18, false);
         // Dump into the pool in the same block: spot falls, the TWAP has not moved.
         vm.prank(alice);
         fund.transfer(makeAddr("dumper"), 20_000e18);
         _poolSwap(makeAddr("dumper"), false, -int256(20_000e18));
         assertLt(hook.spotPrice(address(fund)), before);
         // The TWAP has not moved, so the price holds at it (at or above NAV).
-        (, uint256 mintPrice,,) = fund.previewMint(1000e18);
+        (, uint256 mintPrice,,,) = fund.previewMint(1000e18, false);
         uint256 twap = uint256(feeds[address(fund)].answer()) * 1e10;
         assertEq(mintPrice, Math.max(twap, _mintNav()));
         assertGe(mintPrice, twap);
@@ -205,26 +205,26 @@ contract FundTest is FundTestBase {
     function test_mint_adjustment_markupAndDiscount() public {
         uint256 market = _marketPrice();
         vm.prank(admin);
-        fund.setMintConfig(15 days, 1000); // +10%
-        (, uint256 mintPrice,,) = fund.previewMint(1000e18);
+        fund.setMintConfig(15 days, 1000, 180 days, 0); // +10%
+        (, uint256 mintPrice,,,) = fund.previewMint(1000e18, false);
         assertEq(mintPrice, Math.mulDiv(market, 11_000, 10_000, Math.Rounding.Ceil));
 
         vm.prank(admin);
-        fund.setMintConfig(15 days, -1000); // -10%
-        (, mintPrice,,) = fund.previewMint(1000e18);
+        fund.setMintConfig(15 days, -1000, 180 days, 0); // -10%
+        (, mintPrice,,,) = fund.previewMint(1000e18, false);
         assertEq(mintPrice, Math.mulDiv(market, 9000, 10_000, Math.Rounding.Ceil));
 
         vm.prank(admin);
-        fund.setMintConfig(15 days, -5000); // -50% would be below NAV: priced at NAV
-        (, mintPrice,,) = fund.previewMint(1000e18);
+        fund.setMintConfig(15 days, -5000, 180 days, 0); // -50% would be below NAV: priced at NAV
+        (, mintPrice,,,) = fund.previewMint(1000e18, false);
         assertEq(mintPrice, _mintNav());
     }
 
     function test_mint_belowNav_pricedAtNav_noBoost() public {
         vm.prank(admin);
-        fund.setMintConfig(15 days, -5000);
+        fund.setMintConfig(15 days, -5000, 180 days, 0);
         uint256 nav = _mintNav();
-        (uint256 quoted, uint256 mintPrice,,) = fund.previewMint(1000e18);
+        (uint256 quoted, uint256 mintPrice,,,) = fund.previewMint(1000e18, false);
         assertEq(mintPrice, nav);
         assertEq(quoted, 1000e18 - 1000e18 * 100 / 10_000);
 
@@ -236,9 +236,9 @@ contract FundTest is FundTestBase {
 
     function test_mint_zeroLock_stakedButFree() public {
         vm.prank(admin);
-        fund.setMintConfig(0, 0);
+        fund.setMintConfig(0, 0, 180 days, 0);
         _mintAs(alice, 1000e18);
-        assertEq(staking.mintLockOf(alice).shares, 0);
+        assertEq(staking.mintLockOf(alice, false).shares, 0);
         uint256 shares = staking.balanceOf(alice);
         vm.prank(alice);
         staking.transfer(bob, shares); // free to move (and the boost goes nowhere)
@@ -248,21 +248,21 @@ contract FundTest is FundTestBase {
 
     function test_setMintConfig() public {
         vm.expectRevert(IFund.NotAdmin.selector);
-        fund.setMintConfig(1 days, 0);
+        fund.setMintConfig(1 days, 0, 180 days, 0);
 
         vm.startPrank(admin);
         vm.expectEmit(address(fund));
-        emit IFund.MintConfigSet(30 days, -200);
-        fund.setMintConfig(30 days, -200);
+        emit IFund.MintConfigSet(30 days, -200, 180 days, 0);
+        fund.setMintConfig(30 days, -200, 180 days, 0);
         assertEq(fund.mintLock(), 30 days);
         assertEq(fund.mintAdjustmentBps(), -200);
 
         vm.expectRevert(IFund.InvalidMintConfig.selector);
-        fund.setMintConfig(365 days + 1, 0);
+        fund.setMintConfig(365 days + 1, 0, 180 days, 0);
         vm.expectRevert(IFund.InvalidMintConfig.selector);
-        fund.setMintConfig(0, -5001);
+        fund.setMintConfig(0, -5001, 180 days, 0);
         vm.expectRevert(IFund.InvalidMintConfig.selector);
-        fund.setMintConfig(0, 10_001);
+        fund.setMintConfig(0, 10_001, 180 days, 0);
         vm.stopPrank();
     }
 
@@ -301,7 +301,7 @@ contract FundTest is FundTestBase {
 
     function test_stakeMinted_onlyFund_reverts() public {
         vm.expectRevert(IFundStaking.NotFund.selector);
-        staking.stakeMinted(alice, 1e18, 1e18, 0, uint64(block.timestamp));
+        staking.stakeMinted(alice, 1e18, 1e18, 0, uint64(block.timestamp), false);
     }
 
     function test_hookIssue_onlyHook_reverts() public {
@@ -315,10 +315,10 @@ contract FundTest is FundTestBase {
     }
 
     function test_mint_matchesPreview() public {
-        (uint256 quoted,,,) = fund.previewMint(3000e18);
+        (uint256 quoted,,,,) = fund.previewMint(3000e18, false);
         _fundSlice(alice, 3000e18);
         vm.prank(alice);
-        assertEq(fund.mint(3000e18, quoted, alice), quoted);
+        assertEq(fund.mint(3000e18, quoted, alice, false), quoted);
     }
 
     function test_mint_shortSlice_reverts() public {
@@ -327,14 +327,14 @@ contract FundTest is FundTestBase {
         pons.approve(address(fund), amounts[1] - 1);
         vm.prank(alice);
         vm.expectRevert();
-        fund.mint(1000e18, 0, alice);
+        fund.mint(1000e18, 0, alice, false);
     }
 
     function test_mint_notLaunched_reverts() public {
         _createFund();
         vm.prank(alice);
         vm.expectRevert(IFund.NotLaunched.selector);
-        fund.mint(1e18, 0, alice);
+        fund.mint(1e18, 0, alice, false);
     }
 
     function test_setMintPaused_operatorOnly() public {
@@ -351,7 +351,7 @@ contract FundTest is FundTestBase {
         fund.setMintPaused(true);
         vm.prank(alice);
         vm.expectRevert(IFund.MintPaused.selector);
-        fund.mint(1e18, 0, alice);
+        fund.mint(1e18, 0, alice, false);
     }
 
     function test_mint_staleMarketPrice_reverts() public {
@@ -361,27 +361,27 @@ contract FundTest is FundTestBase {
         _setFeed(address(tsla), 400e8);
         vm.prank(alice);
         vm.expectRevert(IFund.NoMarketPrice.selector);
-        fund.mint(1e18, 0, alice);
+        fund.mint(1e18, 0, alice, false);
     }
 
     function test_mint_slippage_reverts() public {
-        (uint256 quoted,,,) = fund.previewMint(1000e18);
+        (uint256 quoted,,,,) = fund.previewMint(1000e18, false);
         _fundSlice(alice, 1000e18);
         vm.prank(alice);
         vm.expectRevert(IFund.Slippage.selector);
-        fund.mint(1000e18, quoted + 1, alice);
+        fund.mint(1000e18, quoted + 1, alice, false);
     }
 
     function test_mint_zeroAmount_reverts() public {
         vm.prank(alice);
         vm.expectRevert(IFund.ZeroAmount.selector);
-        fund.mint(0, 0, alice);
+        fund.mint(0, 0, alice, false);
     }
 
     function test_mint_zeroReceiver_reverts() public {
         vm.prank(alice);
         vm.expectRevert(IFund.ZeroAddress.selector);
-        fund.mint(1e18, 0, address(0));
+        fund.mint(1e18, 0, address(0), false);
     }
 
     // ──────────────────────────────────────────────────────────

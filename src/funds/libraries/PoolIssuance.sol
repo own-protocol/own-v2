@@ -13,7 +13,7 @@ import {StateLibrary} from "v4-core/src/libraries/StateLibrary.sol";
 import {Currency} from "v4-core/src/types/Currency.sol";
 import {PoolId} from "v4-core/src/types/PoolId.sol";
 
-/// @title PoolIssuance — the hook's pool issuance
+/// @title PoolIssuance — the hook's pool issuance and position math
 /// @notice External library, linked at deployment and run in the hook's context (delegatecall), so
 ///         the hook stays under the contract size limit.
 /// @dev With `q` the square root of the pool price (USDG per fund token, raw units) and `L` the
@@ -93,6 +93,27 @@ library PoolIssuance {
             dst.push(steps[i]);
         }
         return true;
+    }
+
+    /// @notice Amounts to add to a full-range position for `usdgAmount` of USDG at `sqrtPrice`:
+    ///         the fund tokens worth it at that price plus 0.1%, so the USDG binds and the extra
+    ///         tokens are left over (to be burned).
+    /// @param sqrtPrice  The pool's square root price, Q96.
+    /// @param usdgIs0    Whether USDG is the pool's currency 0.
+    /// @param usdgUnit   One USDG in raw units.
+    /// @param usdgAmount USDG to add.
+    /// @return amount0 Currency 0 amount.
+    /// @return amount1 Currency 1 amount.
+    /// @return shares  Fund tokens to mint.
+    function matchUsdg(
+        uint160 sqrtPrice,
+        bool usdgIs0,
+        uint256 usdgUnit,
+        uint256 usdgAmount
+    ) external pure returns (uint256 amount0, uint256 amount1, uint256 shares) {
+        uint256 price = priceOf(usdgIs0 ? (1 << 192) / sqrtPrice : sqrtPrice, usdgUnit);
+        shares = Math.mulDiv(usdgAmount, PRECISION * PRECISION * 1001, price * usdgUnit * 1000) + 1;
+        (amount0, amount1) = usdgIs0 ? (usdgAmount, shares) : (shares, usdgAmount);
     }
 
     /// @notice USD per fund token (18 decimals each), counting USDG as $1.

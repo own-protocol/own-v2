@@ -75,6 +75,10 @@ contract FundHook is IFundHook, IUnlockCallback, Initializable, UUPSUpgradeable 
     /// @notice Longest window {consult} serves.
     uint32 public constant MAX_TWAP_WINDOW = 3 hours;
 
+    /// @notice Furthest the spot tick may be from the position TWAP when adding to the position
+    ///         (about 1%).
+    int24 public constant MAX_ADD_TICK_GAP = 100;
+
     /// @notice Window over which the fund's position is valued.
     uint32 public constant POSITION_TWAP_WINDOW = 30 minutes;
 
@@ -180,16 +184,8 @@ contract FundHook is IFundHook, IUnlockCallback, Initializable, UUPSUpgradeable 
         pool.curators = IFund(fund).curators();
         if (pool.lpFee != 0) poolManager.updateDynamicLPFee(key, pool.lpFee);
 
-        uint128 liquidity = FullRangeLiquidity.liquidityForAmounts(sqrtPrice, _sqrtLower, _sqrtUpper, amount0, amount1);
-        if (liquidity == 0) revert InvalidSeed();
-        pool.liquidity = liquidity;
-
-        (uint256 used0, uint256 used1) =
-            abi.decode(poolManager.unlock(abi.encode(Action.Seed, fund, liquidity)), (uint256, uint256));
-        _sweepSeedDust(fund);
-
-        if (usdgIs0) emit PoolSeeded(fund, liquidity, used0, used1);
-        else emit PoolSeeded(fund, liquidity, used1, used0);
+        (uint128 liquidity, uint256 usedUsdg, uint256 usedShares) = _add(fund, pool, sqrtPrice, amount0, amount1);
+        emit PoolSeeded(fund, liquidity, usedUsdg, usedShares);
     }
 
     /// @inheritdoc IFundHook
@@ -231,6 +227,25 @@ contract FundHook is IFundHook, IUnlockCallback, Initializable, UUPSUpgradeable 
         pool.pendingUsdg -= uint128(pending);
         (uint256 usdgCap,) = _amountsAt(fund, _positionTick(pool, fund), liquidity);
         usdgPaid = _reduce(fund, pool, liquidity, receiver, usdgCap, pending);
+    }
+
+    /// @inheritdoc IFundHook
+    function increasePosition(
+        uint256 usdgAmount
+    ) external override returns (uint128 liquidity) {
+        address fund = msg.sender;
+        Pool storage pool = _seeded(fund);
+        if (usdgAmount == 0) revert InvalidSeed();
+        PoolKey memory key = _key(fund);
+        (uint160 sqrtPrice, int24 tick,,) = poolManager.getSlot0(key.toId());
+        int24 twapTick = _positionTick(pool, fund);
+        if (tick > twapTick + MAX_ADD_TICK_GAP || tick < twapTick - MAX_ADD_TICK_GAP) revert PriceOffTwap();
+        (uint256 amount0, uint256 amount1, uint256 shares) =
+            PoolIssuance.matchUsdg(sqrtPrice, _usdg < fund, _usdgUnit, usdgAmount);
+        IFund(fund).hookIssue(shares, 0);
+        uint256 usedUsdg;
+        (liquidity, usedUsdg, shares) = _add(fund, pool, sqrtPrice, amount0, amount1);
+        emit PositionIncreased(fund, liquidity, usedUsdg, shares);
     }
 
     /// @inheritdoc IFundHook
@@ -590,6 +605,24 @@ contract FundHook is IFundHook, IUnlockCallback, Initializable, UUPSUpgradeable 
     }
 
     // Sweeps the whole balance: the hook holds nothing between seeds, so anything else was donated.
+    /// @dev Adds what `amount0` and `amount1` (held by this hook) allow to the fund's position at
+    ///      `sqrtPrice`; dust is burned (fund tokens) or sent to the fund (USDG). Returns the
+    ///      liquidity and the USDG and fund tokens used.
+    function _add(
+        address fund,
+        Pool storage pool,
+        uint160 sqrtPrice,
+        uint256 amount0,
+        uint256 amount1
+    ) private returns (uint128 liquidity, uint256 usdg, uint256 shares) {
+        liquidity = FullRangeLiquidity.liquidityForAmounts(sqrtPrice, _sqrtLower, _sqrtUpper, amount0, amount1);
+        if (liquidity == 0) revert InvalidSeed();
+        pool.liquidity += liquidity;
+        (usdg, shares) = abi.decode(poolManager.unlock(abi.encode(Action.Seed, fund, liquidity)), (uint256, uint256));
+        if (fund < _usdg) (usdg, shares) = (shares, usdg);
+        _sweepSeedDust(fund);
+    }
+
     function _sweepSeedDust(
         address fund
     ) private {

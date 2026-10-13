@@ -109,6 +109,8 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuardTrans
 
     mapping(address account => MintLock) private _mintLocks;
 
+    mapping(address account => MintLock) private _navLocks;
+
     /// @inheritdoc IFundStaking
     uint16 public override boostShareBps;
 
@@ -169,7 +171,8 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuardTrans
         uint256 assets,
         uint256 paymentUsd,
         uint256 budgetUsd,
-        uint64 unlockAt
+        uint64 unlockAt,
+        bool atNav
     ) external override nonReentrant returns (uint256 shares) {
         if (msg.sender != fund) revert NotFund();
         _accrue();
@@ -178,23 +181,7 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuardTrans
         if (shares == 0) revert ZeroAmount();
         _totalStaked += assets;
         _mint(account, shares);
-
-        if (unlockAt > block.timestamp) {
-            MintLock memory lock = _mintLocks[account];
-            uint256 held = lock.unlockAt > block.timestamp ? lock.shares : 0;
-            uint256 total = held + shares;
-            // One lock per account, ending at the share-weighted end: shares times time locked are
-            // kept, so a mint to someone else cannot hold their earlier shares longer than it pays for.
-            uint256 left = Math.mulDiv(
-                held * (held == 0 ? 0 : lock.unlockAt - block.timestamp) + shares * (unlockAt - block.timestamp),
-                1,
-                total,
-                Math.Rounding.Ceil
-            );
-            lock = MintLock({shares: SafeCast.toUint128(total), unlockAt: uint64(block.timestamp + left)});
-            _mintLocks[account] = lock;
-            emit MintLockSet(account, total, lock.unlockAt);
-        }
+        if (unlockAt > block.timestamp) _joinMintLock(account, shares, unlockAt, atNav);
 
         if (budgetUsd != 0) {
             Boost storage b = _boosts[account];
@@ -440,10 +427,8 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuardTrans
     }
 
     /// @inheritdoc IFundStaking
-    function mintLockOf(
-        address account
-    ) external view override returns (MintLock memory) {
-        return _mintLocks[account];
+    function mintLockOf(address account, bool atNav) external view override returns (MintLock memory) {
+        return _lockOf(account, atNav);
     }
 
     /// @inheritdoc IFundStaking
@@ -642,11 +627,47 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuardTrans
         return balanceOf(account) + IFundGovernor(gov).escrowOf(account, address(this));
     }
 
+    function _lockOf(address account, bool atNav) internal view returns (MintLock storage) {
+        return atNav ? _navLocks[account] : _mintLocks[account];
+    }
+
+    /// @dev One lock of each kind per account, ending at the share-weighted end: shares times time
+    ///      locked are kept, so a mint to someone else cannot hold their earlier shares longer than
+    ///      it pays for. Direct and NAV mints never share a lock, so neither can shorten the other.
+    function _joinMintLock(address account, uint256 shares, uint64 unlockAt, bool atNav) internal {
+        MintLock storage lock = _lockOf(account, atNav);
+        uint256 held = lock.unlockAt > block.timestamp ? lock.shares : 0;
+        uint256 total = held + shares;
+        uint256 left = Math.mulDiv(
+            held * (held == 0 ? 0 : lock.unlockAt - block.timestamp) + shares * (unlockAt - block.timestamp),
+            1,
+            total,
+            Math.Rounding.Ceil
+        );
+        (lock.shares, lock.unlockAt) = (SafeCast.toUint128(total), uint64(block.timestamp + left));
+        emit MintLockSet(account, total, lock.unlockAt, atNav);
+    }
+
+    /// @dev Shares under `account`'s running direct and NAV mint locks.
     function _activeMintLock(
         address account
-    ) internal view returns (uint256) {
+    ) internal view returns (uint256 locked) {
         MintLock memory lock = _mintLocks[account];
-        return block.timestamp < lock.unlockAt ? lock.shares : 0;
+        if (block.timestamp < lock.unlockAt) locked = lock.shares;
+        lock = _navLocks[account];
+        if (block.timestamp < lock.unlockAt) locked += lock.shares;
+    }
+
+    /// @dev Caps `account`'s running mint lock of the kind to `held` after a burn; returns what is
+    ///      left of `held` past it.
+    function _capMintLock(address account, bool atNav, uint256 held) internal returns (uint256) {
+        MintLock storage lock = _lockOf(account, atNav);
+        if (block.timestamp >= lock.unlockAt) return held;
+        uint256 locked = lock.shares;
+        if (locked <= held) return held - locked;
+        lock.shares = uint128(held);
+        emit MintLockSet(account, held, lock.unlockAt, atNav);
+        return 0;
     }
 
     /// @dev Takes custody of a full-range position in the fund's pool. Its liquidity cannot change
@@ -704,15 +725,10 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuardTrans
         }
         super._update(from, to, value);
         if (to == address(0) && launchLocked + mintLocked != 0) {
-            uint256 held = _held(from, gov);
-            if (mintLocked > held) {
-                mintLocked = held;
-                _mintLocks[from].shares = uint128(held);
-                emit MintLockSet(from, held, _mintLocks[from].unlockAt);
-            }
-            if (launchLocked > held - mintLocked) {
-                lockedShares[from] = held - mintLocked;
-                emit LockedSharesSet(from, held - mintLocked);
+            uint256 held = _capMintLock(from, true, _capMintLock(from, false, _held(from, gov)));
+            if (launchLocked > held) {
+                lockedShares[from] = held;
+                emit LockedSharesSet(from, held);
             }
         }
         if (boosted && to != gov) _forfeit(from, gov);

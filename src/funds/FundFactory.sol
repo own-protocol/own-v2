@@ -229,6 +229,8 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
             PremiumConfig({
                 mintLock: 15 days,
                 mintAdjustmentBps: 0,
+                navMintLock: 180 days,
+                maxPremiumBps: 0,
                 boostShareBps: 7500,
                 boostSpeedBpsPerYear: 7500,
                 potDripPeriod: 7 days,
