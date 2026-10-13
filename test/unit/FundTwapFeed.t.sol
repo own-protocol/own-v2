@@ -89,10 +89,10 @@ contract FundTwapFeedTest is FundTestBase {
             vm.warp(block.timestamp + 6 minutes);
             _swap(i % 2 == 0, i % 2 == 0 ? -int256(100e6) : -int256(50e18));
         }
-        (bool ok,, uint32 period) = hook.consult(address(fund), hook.MAX_TWAP_WINDOW());
+        (bool ok,, uint32 period) = hook.consult(address(fund), hook.maxTwapWindow());
         assertTrue(ok);
-        assertGe(period, hook.MAX_TWAP_WINDOW());
-        assertLt(period, hook.MAX_TWAP_WINDOW() + 6 minutes);
+        assertGe(period, hook.maxTwapWindow());
+        assertLt(period, hook.maxTwapWindow() + 6 minutes);
     }
 
     function test_poke_keepsWindowTight() public {
@@ -112,14 +112,14 @@ contract FundTwapFeedTest is FundTestBase {
 
     function test_consult_windowTooLong() public {
         vm.warp(block.timestamp + 10 hours);
-        (bool ok,,) = hook.consult(address(fund), hook.MAX_TWAP_WINDOW() + 1);
+        (bool ok,,) = hook.consult(address(fund), hook.maxTwapWindow() + 1);
         assertFalse(ok);
     }
 
     function test_constructor_badWindow_reverts() public {
         vm.expectRevert(FundTwapFeed.InvalidWindow.selector);
         new FundTwapFeed(IFundHook(address(hook)), address(fund), 0);
-        uint32 tooLong = hook.MAX_TWAP_WINDOW() + 1;
+        uint32 tooLong = hook.maxTwapWindow() + 1;
         vm.expectRevert(FundTwapFeed.InvalidWindow.selector);
         new FundTwapFeed(IFundHook(address(hook)), address(fund), tooLong);
     }

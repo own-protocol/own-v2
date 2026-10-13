@@ -8,10 +8,10 @@ import {IFundGovernor} from "../interfaces/IFundGovernor.sol";
 import {IFundHook} from "../interfaces/IFundHook.sol";
 import {IFundStaking} from "../interfaces/IFundStaking.sol";
 import {IPositionManager} from "../interfaces/external/IPositionManager.sol";
-import {BPS_TO_WAD, PremiumConfig, YieldPoint} from "../interfaces/types/FundTypes.sol";
+import {BPS_TO_WAD, PremiumConfig, Valuation, ValuationLib, YieldPoint} from "../interfaces/types/FundTypes.sol";
 import {BPS, PRECISION} from "../interfaces/types/Types.sol";
 import {EpochHistory} from "./libraries/EpochHistory.sol";
-import {PositionFees} from "./libraries/PositionFees.sol";
+import {LpPositions} from "./libraries/LpPositions.sol";
 import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -20,9 +20,6 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {ReentrancyGuardTransient} from "@openzeppelin/contracts/utils/ReentrancyGuardTransient.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
-import {TickMath} from "v4-core/src/libraries/TickMath.sol";
-import {PoolId, PoolIdLibrary} from "v4-core/src/types/PoolId.sol";
-import {PoolKey} from "v4-core/src/types/PoolKey.sol";
 
 /// @title FundStaking — staked fund token vault with tiered yield, Premium Boost and Premium Pot
 /// @notice See {IFundStaking}.
@@ -35,20 +32,20 @@ import {PoolKey} from "v4-core/src/types/PoolKey.sol";
 contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuardTransient {
     using SafeERC20 for IERC20;
     using EpochHistory for EpochHistory.History;
-    using PoolIdLibrary for PoolKey;
+    using ValuationLib for Valuation;
 
-    /// @notice Longest period one accrual covers. Yield is distributed every 8 hours, so one
-    ///         premium reading never sets the rate for longer than that.
-    uint256 public constant MAX_ACCRUAL_PERIOD = 8 hours;
+    // Longest period one accrual covers. Yield is distributed every 8 hours, so one
+    // premium reading never sets the rate for longer than that.
+    uint256 private constant MAX_ACCRUAL_PERIOD = 8 hours;
 
-    /// @notice Maximum number of yield curve points.
-    uint256 public constant MAX_YIELD_POINTS = 8;
+    // Maximum number of yield curve points.
+    uint256 private constant MAX_YIELD_POINTS = 8;
 
-    /// @notice Curators' share of staker yield a new fund starts with: 15%.
-    uint16 public constant DEFAULT_CURATOR_YIELD_BPS = 1500;
+    // Curators' share of staker yield a new fund starts with: 15%.
+    uint16 private constant DEFAULT_CURATOR_YIELD_BPS = 1500;
 
-    /// @notice Hard cap on the curators' share of staker yield.
-    uint16 public constant MAX_CURATOR_YIELD_BPS = 5000;
+    // Hard cap on the curators' share of staker yield.
+    uint16 private constant MAX_CURATOR_YIELD_BPS = 5000;
 
     uint256 private constant YEAR = 365 days;
 
@@ -65,6 +62,13 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuardTrans
         address owner;
         uint128 liquidity;
         uint256 paid;
+    }
+
+    /// @dev The fund's valuation, read at most once per call: what the call then mints and
+    ///      releases is applied to it rather than valuing the basket again.
+    struct Snapshot {
+        bool read;
+        Valuation v;
     }
 
     /// @inheritdoc IFundStaking
@@ -175,8 +179,7 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuardTrans
         bool atNav
     ) external override nonReentrant returns (uint256 shares) {
         if (msg.sender != fund) revert NotFund();
-        _accrue();
-        _settleBoost(account);
+        _accrueAndSettle(account);
         shares = convertToShares(assets);
         if (shares == 0) revert ZeroAmount();
         _totalStaked += assets;
@@ -213,8 +216,7 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuardTrans
     function settleBoost(
         address account
     ) external override nonReentrant {
-        _accrue();
-        _settleBoost(account);
+        _accrueAndSettle(account);
     }
 
     /// @inheritdoc IFundStaking
@@ -226,8 +228,7 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuardTrans
     ) external override nonReentrant returns (uint256[] memory amounts, uint256 usdgAmount) {
         if (shares == 0) revert ZeroAmount();
         if (receiver == address(0)) revert ZeroAddress();
-        _accrue();
-        _settleBoost(msg.sender);
+        _accrueAndSettle(msg.sender);
         uint256 assets = convertToAssets(shares);
         _totalStaked -= assets;
         _burn(msg.sender, shares);
@@ -273,8 +274,7 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuardTrans
     function unstake(uint256 shares, address receiver) external override nonReentrant returns (uint256 assets) {
         if (shares == 0) revert ZeroAmount();
         if (receiver == address(0)) revert ZeroAddress();
-        _accrue();
-        _settleBoost(msg.sender);
+        _accrueAndSettle(msg.sender);
         uint256 mintLocked = _activeMintLock(msg.sender);
         if (mintLocked != 0 && _held(msg.sender, IFund(fund).governor()) < shares + mintLocked) revert SharesLocked();
         assets = convertToAssets(shares);
@@ -339,7 +339,7 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuardTrans
     function collectPositionFees(uint256 tokenId, address to) external override nonReentrant {
         if (to == address(0)) revert ZeroAddress();
         _ownedPosition(tokenId);
-        PositionFees.collect(positionManager, tokenId, to);
+        LpPositions.collectFees(positionManager, tokenId, to);
         emit PositionFeesCollected(tokenId, to);
     }
 
@@ -489,7 +489,14 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuardTrans
     ///      on top (capped by `curatorYieldCapBps` of the staked balance a year when set), paid to the
     ///      curators module as shares, so it stays staked. No yield without a fresh premium reading; the period is
     ///      still consumed, so a stale oracle can only withhold yield, never inflate it later.
-    function _accrue() internal returns (uint256 minted) {
+    function _accrue() internal returns (uint256) {
+        Snapshot memory s;
+        return _accrue(s);
+    }
+
+    function _accrue(
+        Snapshot memory s
+    ) internal returns (uint256 minted) {
         uint256 last = lastAccrual;
         if (block.timestamp <= last) return 0;
         uint256 elapsed = block.timestamp - last;
@@ -498,12 +505,12 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuardTrans
 
         uint256 staked = totalAssets();
         bool stakers = staked != 0 && totalSupply() != 0;
-        _releasePot(stakers);
+        _releasePot(stakers, s);
         staked = totalAssets();
         uint128 lpLiq = lpLiquidity;
         if (!stakers && lpLiq == 0) return 0;
 
-        (bool ok, int256 premium) = IFund(fund).premiumBps();
+        (bool ok, int256 premium) = _valued(s).premiumBps();
         if (!ok) return 0;
         uint256 rate = rateForPremium(premium);
         if (rate == 0) return 0;
@@ -525,7 +532,10 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuardTrans
             lpMinted = Math.mulDiv(lpTokens, rate * elapsed, PRECISION * YEAR);
             _lpYieldPerLiquidity += Math.mulDiv(lpMinted, Q128, lpLiq);
         }
-        if (minted + lpMinted != 0) IFund(fund).moduleMint(address(this), minted + lpMinted);
+        if (minted + lpMinted != 0) {
+            IFund(fund).moduleMint(address(this), minted + lpMinted);
+            s.v.supply += minted + lpMinted;
+        }
         if (curatorShares != 0) {
             address cur = IFund(fund).curators();
             _mint(cur, curatorShares);
@@ -550,22 +560,20 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuardTrans
     /// @dev Pays the dripped pot to stakers: fund tokens at NAV into the vault, the same dollars out
     ///      of the reserve, so NAV does not move. With less than a whole share staked it goes to
     ///      backing instead. Waits for a NAV reading rather than pricing without one.
-    function _releasePot(
-        bool stakers
-    ) internal {
+    function _releasePot(bool stakers, Snapshot memory s) internal {
         _checkpointPot();
         uint256 pending = potPending;
         if (pending == 0) return;
         uint256 assets;
         if (stakers && totalSupply() >= MIN_POT_SHARES) {
-            (bool ok, uint256 nav,) = IFund(fund).tryNav();
-            if (!ok) return;
+            uint256 nav = _valued(s).nav();
+            if (nav == 0) return;
             // Rounds down: the vault never gets more than the dollars released.
             assets = Math.mulDiv(pending, PRECISION, nav);
             _totalStaked += assets;
         }
         potPending = 0;
-        IFund(fund).releaseReserve(pending, assets);
+        _release(s, pending, assets);
         emit PotReleased(pending, assets);
     }
 
@@ -573,33 +581,53 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuardTrans
     ///      NAV, the same dollars out of the reserve, so NAV does not move. Callers accrue first, so
     ///      the shares are priced after the tier yield. Without a NAV reading nothing is paid and the
     ///      time is not consumed.
-    function _settleBoost(
-        address account
-    ) internal {
+    function _settleBoost(address account, Snapshot memory s) internal {
         Boost storage b = _boosts[account];
         uint256 left = b.usdLeft;
         if (left == 0) return;
         uint256 owed = Math.min(uint256(b.usdPerSec) * (block.timestamp - b.lastSettle), left);
         if (owed == 0) return;
-        (bool ok, uint256 nav,) = IFund(fund).tryNav();
-        if (!ok) return;
+        uint256 nav = _valued(s).nav();
+        if (nav == 0) return;
         // Rounds down: the account never gets more than the dollars released.
         uint256 assets = Math.mulDiv(owed, PRECISION, nav);
         uint256 shares = convertToShares(assets);
         if (owed == left) delete _boosts[account];
         else (b.usdLeft, b.lastSettle) = (uint128(left - owed), uint64(block.timestamp));
         _totalStaked += assets;
-        IFund(fund).releaseReserve(owed, assets);
+        _release(s, owed, assets);
         _mint(account, shares);
         emit BoostPaid(account, owed, assets, shares);
+    }
+
+    /// @dev Accrues, then pays `account`'s boost at the NAV after the accrual.
+    function _accrueAndSettle(
+        address account
+    ) internal {
+        Snapshot memory s;
+        _accrue(s);
+        _settleBoost(account, s);
     }
 
     function _settleBefore(
         address account
     ) internal {
-        if (_boosts[account].usdLeft == 0) return;
-        _accrue();
-        _settleBoost(account);
+        if (_boosts[account].usdLeft != 0) _accrueAndSettle(account);
+    }
+
+    /// @dev The snapshot, valuing the fund on first use.
+    function _valued(
+        Snapshot memory s
+    ) internal view returns (Valuation memory) {
+        if (!s.read) (s.read, s.v) = (true, IFund(fund).valuation());
+        return s.v;
+    }
+
+    /// @dev Releases `usd` of the fund's reserve against `assets` fund tokens minted here, keeping
+    ///      the snapshot in step (a snapshot not yet read is left to read the result).
+    function _release(Snapshot memory s, uint256 usd, uint256 assets) internal {
+        uint256 reserveLeft = IFund(fund).releaseReserve(usd, assets);
+        if (s.read) (s.v.reserve, s.v.supply) = (reserveLeft, s.v.supply + assets);
     }
 
     /// @dev Scales `account`'s boost down to the shares it still holds (in hand or in the governor),
@@ -673,18 +701,7 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuardTrans
     /// @dev Takes custody of a full-range position in the fund's pool. Its liquidity cannot change
     ///      while staked: only the owner (this contract) can modify it.
     function _stakePosition(uint256 tokenId, address owner) internal {
-        (PoolKey memory key, uint256 info) = positionManager.getPoolAndPositionInfo(tokenId);
-        PoolKey memory fundKey = IFundHook(_factory.hook()).poolKeyOf(fund);
-        if (address(fundKey.hooks) == address(0) || PoolId.unwrap(key.toId()) != PoolId.unwrap(fundKey.toId())) {
-            revert NotFundPosition();
-        }
-        // PositionInfo packs tick lower at bits 8-31 and tick upper at bits 32-55.
-        if (
-            int24(uint24(info >> 8)) != TickMath.minUsableTick(key.tickSpacing)
-                || int24(uint24(info >> 32)) != TickMath.maxUsableTick(key.tickSpacing)
-        ) revert NotFullRange();
-        uint128 liquidity = positionManager.getPositionLiquidity(tokenId);
-        if (liquidity == 0) revert ZeroAmount();
+        uint128 liquidity = LpPositions.fundLiquidity(positionManager, _factory.hook(), fund, tokenId);
         _accrue();
         lpLiquidity += liquidity;
         _positions[tokenId] = LpPosition({owner: owner, liquidity: liquidity, paid: _lpYieldPerLiquidity});

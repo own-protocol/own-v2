@@ -2,14 +2,15 @@
 pragma solidity 0.8.28;
 
 import {IFund} from "../../interfaces/IFund.sol";
+
+import {IFundFactory} from "../../interfaces/IFundFactory.sol";
 import {IFundHook} from "../../interfaces/IFundHook.sol";
-import {IssuanceStep, PremiumConfigLib} from "../../interfaces/types/FundTypes.sol";
+import {IssuanceConfig, IssuanceStep, PremiumConfig, PremiumConfigLib} from "../../interfaces/types/FundTypes.sol";
 import {BPS, PRECISION} from "../../interfaces/types/Types.sol";
-import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {IPoolManager} from "v4-core/src/interfaces/IPoolManager.sol";
 import {StateLibrary} from "v4-core/src/libraries/StateLibrary.sol";
+import {TickMath} from "v4-core/src/libraries/TickMath.sol";
 import {Currency} from "v4-core/src/types/Currency.sol";
 import {PoolId} from "v4-core/src/types/PoolId.sol";
 
@@ -23,7 +24,6 @@ import {PoolId} from "v4-core/src/types/PoolId.sol";
 ///      average price over the rest of the buy (`q0 * q1`), and the AMM fills the rest. The split and
 ///      the density level are fixed at the swap's starting price.
 library PoolIssuance {
-    using SafeERC20 for IERC20;
     using StateLibrary for IPoolManager;
 
     // 2 / ln 2, 18 decimals.
@@ -32,6 +32,7 @@ library PoolIssuance {
     uint256 private constant Q96 = 1 << 96;
 
     /// @notice A buy to fill in part.
+    /// @param pm          The pool manager.
     /// @param fund        The fund.
     /// @param usdg        USDG.
     /// @param usdgUnit    One USDG in raw units.
@@ -43,6 +44,7 @@ library PoolIssuance {
     ///                    tokens bought.
     /// @param exactIn     Whether the buy is exact input.
     struct Buy {
+        IPoolManager pm;
         address fund;
         address usdg;
         uint256 usdgUnit;
@@ -65,34 +67,76 @@ library PoolIssuance {
     function issue(IssuanceStep[] storage steps, Buy memory b) external returns (uint256 usdgIn, uint256 tokensOut) {
         (bool ok, uint256 nav, uint256 supply) = IFund(b.fund).tryNav();
         if (!ok) return (0, 0);
-        IPoolManager pm = IFundHook(address(this)).poolManager();
-        (usdgIn, tokensOut) = _split(steps, b, pm, nav, supply);
+        (usdgIn, tokensOut) = _split(steps, b, nav, supply);
         if (tokensOut == 0) return (0, 0);
 
         uint256 paid = Math.mulDiv(usdgIn, PRECISION, b.usdgUnit);
         uint256 atNav = Math.mulDiv(tokensOut, nav, PRECISION);
         uint256 pot = paid > atNav ? Math.mulDiv(paid - atNav, b.potShareBps, BPS) : 0;
-        pm.mint(address(this), uint256(uint160(b.usdg)), usdgIn);
-        IFund(b.fund).hookIssue(tokensOut, pot);
-        pm.sync(Currency.wrap(b.fund));
-        IERC20(b.fund).safeTransfer(address(pm), tokensOut);
-        pm.settle();
+        b.pm.mint(address(this), uint256(uint160(b.usdg)), usdgIn);
+        b.pm.sync(Currency.wrap(b.fund));
+        IFund(b.fund).hookIssue(address(b.pm), tokensOut, pot);
+        b.pm.settle();
         emit IFundHook.Issued(b.fund, usdgIn, tokensOut, pot);
     }
 
-    /// @notice Replace a fund's density steps, if they are within bounds.
-    /// @param dst   The fund's stored steps.
-    /// @param steps New steps.
-    /// @return ok Whether they were within bounds (nothing is stored otherwise).
-    function store(IssuanceStep[] storage dst, IssuanceStep[] memory steps) external returns (bool ok) {
-        if (!PremiumConfigLib.stepsValid(steps)) return false;
+    /// @notice Replace a fund's issuance settings with the factory's defaults. See {configure}.
+    /// @param dst     The fund's stored steps.
+    /// @param fund    The fund.
+    /// @param factory The factory.
+    /// @return startBps    Issuance start, for the hook to store.
+    /// @return potShareBps Pot share, for the hook to store.
+    function configureDefaults(
+        IssuanceStep[] storage dst,
+        address fund,
+        IFundFactory factory
+    ) external returns (uint16 startBps, uint16 potShareBps) {
+        PremiumConfig memory c = factory.premiumConfig();
+        return configure(
+            dst,
+            fund,
+            IssuanceConfig({
+                startBps: c.issuanceStartBps,
+                potShareBps: c.potShareBps,
+                steps: factory.defaultIssuanceSteps()
+            })
+        );
+    }
+
+    /// @notice Replace a fund's issuance settings, reverting unless they are within bounds. Stores
+    ///         the density steps and returns the start and pot share for the hook to store.
+    /// @param dst    The fund's stored steps.
+    /// @param fund   The fund.
+    /// @param config New settings.
+    /// @return startBps    Issuance start.
+    /// @return potShareBps Pot share.
+    function configure(
+        IssuanceStep[] storage dst,
+        address fund,
+        IssuanceConfig memory config
+    ) public returns (uint16 startBps, uint16 potShareBps) {
+        IssuanceStep[] memory steps = config.steps;
+        if (config.potShareBps > BPS || !PremiumConfigLib.stepsValid(steps)) revert IFundHook.InvalidIssuance();
         while (dst.length != 0) {
             dst.pop();
         }
         for (uint256 i; i < steps.length; ++i) {
             dst.push(steps[i]);
         }
-        return true;
+        emit IFundHook.IssuanceSet(fund, config);
+        return (config.startBps, config.potShareBps);
+    }
+
+    /// @notice Square root of the price `amount1 / amount0` a pool is seeded at, Q96.
+    /// @param amount0 Currency 0 seeded.
+    /// @param amount1 Currency 1 seeded.
+    /// @return The square root price.
+    function seedSqrtPrice(uint256 amount0, uint256 amount1) external pure returns (uint160) {
+        uint256 sqrtPrice = Math.sqrt(Math.mulDiv(amount1, 1 << 192, amount0));
+        if (sqrtPrice < TickMath.MIN_SQRT_PRICE || sqrtPrice >= TickMath.MAX_SQRT_PRICE) {
+            revert IFundHook.InvalidSeed();
+        }
+        return uint160(sqrtPrice);
     }
 
     /// @notice Amounts to add to a full-range position for `usdgAmount` of USDG at `sqrtPrice`:
@@ -127,13 +171,12 @@ library PoolIssuance {
     function _split(
         IssuanceStep[] storage steps,
         Buy memory b,
-        IPoolManager pm,
         uint256 nav,
         uint256 supply
     ) private view returns (uint256 usdgIn, uint256 tokensOut) {
-        (uint160 sqrtPrice,,,) = pm.getSlot0(b.id);
+        (uint160 sqrtPrice,,,) = b.pm.getSlot0(b.id);
         uint256 q = b.usdgIs0 ? (1 << 192) / sqrtPrice : sqrtPrice;
-        uint256 liquidity = pm.getLiquidity(b.id);
+        uint256 liquidity = b.pm.getLiquidity(b.id);
         uint256 cq = _issuanceTerm(steps, b, nav, supply, q);
         if (cq == 0 || liquidity == 0 || b.amount == 0) return (0, 0);
         if (b.exactIn) {

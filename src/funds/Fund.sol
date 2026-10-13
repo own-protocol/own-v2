@@ -10,10 +10,12 @@ import {IFundStaking} from "../interfaces/IFundStaking.sol";
 import {
     BasketEntry,
     CreateFundParams,
+    DUST_BPS,
     FundMetadata,
-    MAX_BASKET_ASSETS,
     PremiumConfig,
-    PremiumConfigLib
+    PremiumConfigLib,
+    Valuation,
+    ValuationLib
 } from "../interfaces/types/FundTypes.sol";
 import {BPS, PRECISION} from "../interfaces/types/Types.sol";
 import {FundRebalance} from "./libraries/FundRebalance.sol";
@@ -33,6 +35,7 @@ import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 ///      ones are constructor-set on the implementation.
 contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
     using SafeERC20 for IERC20;
+    using ValuationLib for Valuation;
 
     /// @dev A priced mint: fund tokens before the fee, the price and NAV, the slice to bring, and
     ///      whether the premium cap set the price.
@@ -45,17 +48,11 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
         bool capped;
     }
 
-    /// @notice Maximum number of basket assets (bounds every loop over the basket).
-    uint256 public constant MAX_ASSETS = MAX_BASKET_ASSETS;
+    // Hard cap on the fund fee.
+    uint16 private constant MAX_FEE_BPS = 1000;
 
-    /// @notice Hard cap on the fund fee.
-    uint16 public constant MAX_FEE_BPS = 1000;
-
-    /// @notice Fund fee used when a fund is created without one: 1%.
-    uint16 public constant DEFAULT_FEE_BPS = 100;
-
-    /// @notice A dropped asset worth at most this share of the basket may be left behind, in basis points.
-    uint256 public constant DUST_BPS = 10;
+    // Fund fee used when a fund is created without one: 1%.
+    uint16 private constant DEFAULT_FEE_BPS = 100;
 
     /// @inheritdoc IFund
     address public override factory;
@@ -172,7 +169,7 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
         manager = params.manager;
         emit ManagerSet(params.manager);
         _setFee(params.feeBps == 0 ? DEFAULT_FEE_BPS : params.feeBps);
-        _setBasket(params.assets, params.weightsBps);
+        FundRebalance.setBasket(_oracle(), _usdg, _assets, _basket, params.assets, params.weightsBps);
         PremiumConfig memory c = IFundFactory(msg.sender).premiumConfig();
         _setMintConfig(c.mintLock, c.mintAdjustmentBps, c.navMintLock, c.maxPremiumBps);
     }
@@ -269,9 +266,9 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
     }
 
     /// @inheritdoc IFund
-    function hookIssue(uint256 shares, uint256 potUsd) external override {
+    function hookIssue(address to, uint256 shares, uint256 potUsd) external override {
         if (msg.sender != _hook()) revert NotHook();
-        _mint(msg.sender, shares);
+        _mint(to, shares);
         if (potUsd != 0) {
             reserveUsd += potUsd;
             IFundStaking(staking).addPot(potUsd);
@@ -280,10 +277,11 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
     }
 
     /// @inheritdoc IFund
-    function releaseReserve(uint256 usd, uint256 shares) external override onlyStaking {
+    function releaseReserve(uint256 usd, uint256 shares) external override onlyStaking returns (uint256 reserveLeft) {
         uint256 r = reserveUsd;
         // Clamped so a rounding slip can never block an unstake.
-        reserveUsd = usd >= r ? 0 : r - usd;
+        reserveLeft = usd >= r ? 0 : r - usd;
+        reserveUsd = reserveLeft;
         if (shares != 0) _mint(msg.sender, shares);
         emit ReserveReleased(usd, shares);
     }
@@ -354,7 +352,7 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
         uint16[] calldata weightsBps_
     ) external override onlyGovernor nonReentrant {
         if (!launched) revert NotLaunched();
-        _setBasket(assets_, weightsBps_);
+        FundRebalance.setBasket(_oracle(), _usdg, _assets, _basket, assets_, weightsBps_);
     }
 
     /// @inheritdoc IFund
@@ -362,6 +360,7 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
         uint16 feeBps_
     ) external override onlyAdmin {
         _setFee(feeBps_);
+        IFundHook(_hook()).setFundFee(feeBps_);
     }
 
     /// @inheritdoc IFund
@@ -493,13 +492,9 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
 
     /// @inheritdoc IFund
     function tryNav() external view override returns (bool ok, uint256 nav, uint256 supply) {
-        uint256 poolUsdg;
-        (poolUsdg, supply) = _poolAndSupply();
-        uint256 basket;
-        (ok, basket) = _basketValue(_assets, _oracle(), true);
-        if (!ok || supply == 0) return (false, 0, supply);
-        nav = Math.mulDiv(_backing(basket + _usdgBacking(_usdg, poolUsdg)), PRECISION, supply);
-        ok = nav != 0;
+        Valuation memory v = _valuation(false);
+        nav = v.nav();
+        return (nav != 0, nav, v.supply);
     }
 
     /// @inheritdoc IFund
@@ -532,16 +527,13 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
     }
 
     /// @inheritdoc IFund
+    function valuation() external view override returns (Valuation memory) {
+        return _valuation(true);
+    }
+
+    /// @inheritdoc IFund
     function premiumBps() external view override returns (bool ok, int256 premium) {
-        IFundOracle o = _oracle();
-        (bool marketOk, uint256 market) = o.tryPrice(address(this));
-        (uint256 poolUsdg, uint256 supply) = _poolAndSupply();
-        if (!marketOk || supply == 0) return (false, 0);
-        (bool basketOk, uint256 basket) = _basketValue(_assets, o, true);
-        if (!basketOk) return (false, 0);
-        uint256 nav = Math.mulDiv(_backing(basket + _usdgBacking(_usdg, poolUsdg)), PRECISION, supply);
-        if (nav == 0) return (false, 0);
-        return (true, int256(Math.mulDiv(market, BPS, nav)) - int256(BPS));
+        return _valuation(true).premiumBps();
     }
 
     /// @inheritdoc IFund
@@ -617,13 +609,14 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
         bool atNav
     ) internal view returns (MintQuote memory q) {
         if (!launched) revert NotLaunched();
-        (uint256 poolUsdg, uint256 supply) = _poolAndSupply();
+        address hook = _hook();
+        (uint256 poolUsdg, uint256 supply) = _poolAndSupplyAt(hook);
         if (supply == 0) revert EmptyFund();
         IFundOracle o = _oracle();
         (, uint256 total) = _totalValue(o, basket, usdg, poolUsdg);
         q.nav = Math.mulDiv(_backing(total), PRECISION, supply, Math.Rounding.Ceil);
         q.mintPrice = q.nav;
-        if (!atNav) _poolMintPrice(o, q);
+        if (!atNav) _poolMintPrice(o, hook, q);
         // Rounds down: the minter never receives more than its slice is worth at the mint price.
         q.gross = q.nav == 0 ? 0 : Math.mulDiv(navShares, q.nav, q.mintPrice);
         uint256 slice = reserveUsd == 0 || total == 0
@@ -635,10 +628,10 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
     /// @dev The higher of the pool's spot price and its TWAP, so pushing the pool down for a block
     ///      never mints cheaply, adjusted by the mint adjustment; held to the premium cap when one is
     ///      set (and marked capped), and never below NAV.
-    function _poolMintPrice(IFundOracle o, MintQuote memory q) internal view {
+    function _poolMintPrice(IFundOracle o, address hook, MintQuote memory q) internal view {
         (bool ok, uint256 market) = o.tryPrice(address(this));
         if (!ok) revert NoMarketPrice();
-        market = Math.max(market, IFundHook(_hook()).spotPrice(address(this)));
+        market = Math.max(market, IFundHook(hook).spotPrice(address(this)));
         uint256 price = Math.mulDiv(market, uint256(int256(BPS) + mintAdjustmentBps), BPS, Math.Rounding.Ceil);
         uint256 cap = maxPremiumBps;
         if (cap != 0) {
@@ -821,46 +814,18 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
         emit MintConfigSet(lock, adjustmentBps, navLock, maxPremiumBps_);
     }
 
-    function _setBasket(address[] calldata assets_, uint16[] calldata weightsBps_) internal {
-        uint256 n = assets_.length;
-        if (n == 0 || n > MAX_ASSETS || n != weightsBps_.length) revert InvalidBasket();
-
-        address[] memory old = _assets;
-        for (uint256 i; i < old.length; ++i) {
-            delete _basket[old[i]];
-        }
-
+    /// @dev The holdings at oracle prices without reverting, with the market price when `market`.
+    function _valuation(
+        bool market
+    ) internal view returns (Valuation memory v) {
+        uint256 poolUsdg;
+        (poolUsdg, v.supply) = _poolAndSupply();
         IFundOracle o = _oracle();
-        address usdg = _usdg;
-        uint256 sum;
-        for (uint256 i; i < n; ++i) {
-            address a = assets_[i];
-            if (a == address(0) || a == address(this) || a == usdg || _basket[a].listed || !o.hasFeed(a)) {
-                revert InvalidBasket();
-            }
-            _basket[a] = BasketEntry({listed: true, weightBps: weightsBps_[i]});
-            sum += weightsBps_[i];
-        }
-        if (sum != BPS) revert InvalidBasket();
-
-        uint256 dustLimit;
-        for (uint256 i; i < old.length; ++i) {
-            address a = old[i];
-            if (_basket[a].listed) continue;
-            uint256 bal = _balanceOf(a);
-            if (bal == 0) continue;
-            // Anyone can send a dropped asset back to the fund, so a balance worth under DUST_BPS of the
-            // basket is left behind rather than blocking the change.
-            (bool ok, uint256 p) = o.tryPrice(a);
-            if (dustLimit == 0) {
-                (, uint256 oldValue) = _basketValue(old, o, false);
-                dustLimit = Math.mulDiv(oldValue, DUST_BPS, BPS);
-            }
-            if (!ok || _value(a, bal, p) > dustLimit) revert AssetHasBalance(a);
-        }
-
-        _assets = assets_;
-        emit TargetWeightsSet(assets_, weightsBps_);
+        uint256 basket;
+        (v.ok, basket) = _basketValue(_assets, o, true);
+        if (v.ok) v.total = basket + _usdgBacking(_usdg, poolUsdg);
+        v.reserve = reserveUsd;
+        if (market) (v.marketOk, v.market) = o.tryPrice(address(this));
     }
 
     /// @dev The USDG in the fund's pool position and the supply outside the pool, reading the

@@ -4,8 +4,8 @@ pragma solidity 0.8.28;
 import {IFund} from "../interfaces/IFund.sol";
 import {IFundFactory} from "../interfaces/IFundFactory.sol";
 import {IFundHook} from "../interfaces/IFundHook.sol";
-import {IssuanceConfig, IssuanceStep, PremiumConfig} from "../interfaces/types/FundTypes.sol";
-import {BPS, PRECISION} from "../interfaces/types/Types.sol";
+import {IssuanceConfig, IssuanceStep} from "../interfaces/types/FundTypes.sol";
+import {BPS} from "../interfaces/types/Types.sol";
 import {FullRangeLiquidity} from "./libraries/FullRangeLiquidity.sol";
 import {PoolIssuance} from "./libraries/PoolIssuance.sol";
 import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
@@ -20,7 +20,6 @@ import {IPoolManager} from "v4-core/src/interfaces/IPoolManager.sol";
 import {IUnlockCallback} from "v4-core/src/interfaces/callback/IUnlockCallback.sol";
 import {Hooks} from "v4-core/src/libraries/Hooks.sol";
 import {LPFeeLibrary} from "v4-core/src/libraries/LPFeeLibrary.sol";
-import {SqrtPriceMath} from "v4-core/src/libraries/SqrtPriceMath.sol";
 import {StateLibrary} from "v4-core/src/libraries/StateLibrary.sol";
 import {TickMath} from "v4-core/src/libraries/TickMath.sol";
 import {BalanceDelta, BalanceDeltaLibrary} from "v4-core/src/types/BalanceDelta.sol";
@@ -33,7 +32,7 @@ import {PoolKey} from "v4-core/src/types/PoolKey.sol";
 /// @notice See {IFundHook}.
 /// @dev Runs behind an ERC-1967 proxy (UUPS) upgraded by the registry ADMIN; storage is
 ///      append-only across upgrades. The proxy must be deployed at an address whose low bits
-///      encode exactly {getHookPermissions} (mined with CREATE2); the pool manager calls only
+///      encode exactly `PERMISSIONS` (mined with CREATE2); the pool manager calls only
 ///      those callbacks, so only they are implemented. Every pool is the fund token against USDG
 ///      with this hook, a dynamic fee and {TICK_SPACING}, so a fund's pool key is derived rather
 ///      than stored. Swap fees are taken in
@@ -60,27 +59,30 @@ contract FundHook is IFundHook, IUnlockCallback, Initializable, UUPSUpgradeable 
     using BalanceDeltaLibrary for BalanceDelta;
     using StateLibrary for IPoolManager;
 
-    /// @notice Tick spacing of every fund pool.
-    int24 public constant TICK_SPACING = 60;
+    // Tick spacing of every fund pool.
+    int24 private constant TICK_SPACING = 60;
 
-    /// @notice Hard cap on a pool's LP fee (10%, in hundredths of a basis point).
-    uint24 public constant MAX_LP_FEE = 100_000;
+    // Hard cap on a pool's LP fee (10%, in hundredths of a basis point).
+    uint24 private constant MAX_LP_FEE = 100_000;
 
-    /// @notice Minimum spacing between ring checkpoints.
-    uint32 public constant OBSERVATION_INTERVAL = 5 minutes;
+    // Minimum spacing between ring checkpoints.
+    uint32 private constant OBSERVATION_INTERVAL = 5 minutes;
 
-    /// @notice Ring size; 48 checkpoints at least 5 minutes apart span at least 235 minutes.
-    uint256 public constant OBSERVATION_SLOTS = 48;
+    // Ring size; 48 checkpoints at least 5 minutes apart span at least 235 minutes.
+    uint256 private constant OBSERVATION_SLOTS = 48;
 
-    /// @notice Longest window {consult} serves.
-    uint32 public constant MAX_TWAP_WINDOW = 3 hours;
+    // Longest window {consult} serves.
+    uint32 private constant MAX_TWAP_WINDOW = 3 hours;
 
-    /// @notice Furthest the spot tick may be from the position TWAP when adding to the position
-    ///         (about 1%).
-    int24 public constant MAX_ADD_TICK_GAP = 100;
+    // Furthest the spot tick may be from the position TWAP when adding to the position (about 1%).
+    int24 private constant MAX_ADD_TICK_GAP = 100;
 
-    /// @notice Window over which the fund's position is valued.
-    uint32 public constant POSITION_TWAP_WINDOW = 30 minutes;
+    // Window over which the fund's position is valued.
+    uint32 private constant POSITION_TWAP_WINDOW = 30 minutes;
+
+    // Callbacks this hook enables: its deployed address must encode exactly these.
+    uint160 private constant PERMISSIONS = Hooks.BEFORE_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG
+        | Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG | Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG;
 
     enum Action {
         Seed,
@@ -93,20 +95,20 @@ contract FundHook is IFundHook, IUnlockCallback, Initializable, UUPSUpgradeable 
         int56 tickCumulative;
     }
 
-    /// @dev The first slot holds the pool's flags and the latest accumulator checkpoint, so a swap
-    ///      reads both with one storage load. The second caches the fund's curators module and when
-    ///      the newest ring checkpoint was taken; both are zero for a pool seeded before they existed
-    ///      and are filled on first use.
+    /// @dev The first slot holds the pool's flags and everything the accumulator updates, so the
+    ///      first swap of a block writes one slot. The second holds what a swap reads besides: the
+    ///      fund's curators module and fee (mirrored from the fund) and the newest ring checkpoint.
     struct Pool {
         bool registered;
         bool seeded;
-        uint24 lpFee;
+        // The tick at the start of the latest observed block, for a zero-length TWAP period.
+        int24 blockTick;
         uint128 liquidity;
         uint32 observedAt;
         int56 tickCumulative;
         uint8 index;
-        // The tick at the start of the latest observed block, for a zero-length TWAP period.
-        int24 blockTick;
+        uint24 lpFee;
+        uint16 feeBps;
         address curators;
         uint32 ringAt;
         Observation[OBSERVATION_SLOTS] ring;
@@ -147,7 +149,10 @@ contract FundHook is IFundHook, IUnlockCallback, Initializable, UUPSUpgradeable 
 
     /// @inheritdoc IFundHook
     function initialize() external override initializer {
-        Hooks.validateHookPermissions(IHooks(address(this)), getHookPermissions());
+        // The pool manager calls exactly the callbacks the address's low bits encode.
+        if (uint160(address(this)) & Hooks.ALL_HOOK_MASK != PERMISSIONS) {
+            revert Hooks.HookAddressNotValid(address(this));
+        }
     }
 
     /// @inheritdoc IFundHook
@@ -158,9 +163,10 @@ contract FundHook is IFundHook, IUnlockCallback, Initializable, UUPSUpgradeable 
         Pool storage pool = _pools[fund];
         if (pool.registered) revert AlreadyRegistered();
         pool.registered = true;
+        pool.feeBps = IFund(fund).feeBps();
+        pool.curators = IFund(fund).curators();
         emit FundRegistered(fund, PoolId.unwrap(_key(fund).toId()));
-        PremiumConfig memory c = factory.premiumConfig();
-        _setIssuance(fund, pool, c.issuanceStartBps, c.potShareBps, factory.defaultIssuanceSteps());
+        (pool.issuanceStartBps, pool.potShareBps) = PoolIssuance.configureDefaults(pool.steps, fund, factory);
     }
 
     /// @inheritdoc IFundHook
@@ -174,14 +180,13 @@ contract FundHook is IFundHook, IUnlockCallback, Initializable, UUPSUpgradeable 
 
         bool usdgIs0 = _usdg < fund;
         (uint256 amount0, uint256 amount1) = usdgIs0 ? (usdgAmount, shareAmount) : (shareAmount, usdgAmount);
-        uint160 sqrtPrice = _sqrtPriceX96(amount0, amount1);
+        uint160 sqrtPrice = PoolIssuance.seedSqrtPrice(amount0, amount1);
 
         PoolKey memory key = _key(fund);
         pool.blockTick = poolManager.initialize(key, sqrtPrice);
         pool.observedAt = uint32(block.timestamp);
         pool.ring[0] = Observation({timestamp: uint32(block.timestamp), tickCumulative: 0});
         pool.ringAt = uint32(block.timestamp);
-        pool.curators = IFund(fund).curators();
         if (pool.lpFee != 0) poolManager.updateDynamicLPFee(key, pool.lpFee);
 
         (uint128 liquidity, uint256 usedUsdg, uint256 usedShares) = _add(fund, pool, sqrtPrice, amount0, amount1);
@@ -242,7 +247,7 @@ contract FundHook is IFundHook, IUnlockCallback, Initializable, UUPSUpgradeable 
         if (tick > twapTick + MAX_ADD_TICK_GAP || tick < twapTick - MAX_ADD_TICK_GAP) revert PriceOffTwap();
         (uint256 amount0, uint256 amount1, uint256 shares) =
             PoolIssuance.matchUsdg(sqrtPrice, _usdg < fund, _usdgUnit, usdgAmount);
-        IFund(fund).hookIssue(shares, 0);
+        IFund(fund).hookIssue(address(this), shares, 0);
         uint256 usedUsdg;
         (liquidity, usedUsdg, shares) = _add(fund, pool, sqrtPrice, amount0, amount1);
         emit PositionIncreased(fund, liquidity, usedUsdg, shares);
@@ -254,6 +259,15 @@ contract FundHook is IFundHook, IUnlockCallback, Initializable, UUPSUpgradeable 
         Pool storage pool = _seeded(fund);
         if (liquidity == 0 || liquidity > pool.liquidity) revert InsufficientLiquidity();
         _reduce(fund, pool, liquidity, fund, 0, 0);
+    }
+
+    /// @inheritdoc IFundHook
+    function setFundFee(
+        uint16 feeBps
+    ) external override {
+        Pool storage pool = _pools[msg.sender];
+        if (!pool.registered) revert NotFund();
+        pool.feeBps = feeBps;
     }
 
     /// @inheritdoc IFundHook
@@ -272,7 +286,7 @@ contract FundHook is IFundHook, IUnlockCallback, Initializable, UUPSUpgradeable 
         if (!factory.isAdmin(msg.sender)) revert NotAdmin();
         Pool storage pool = _pools[fund];
         if (!pool.registered) revert NotRegistered();
-        _setIssuance(fund, pool, config.startBps, config.potShareBps, config.steps);
+        (pool.issuanceStartBps, pool.potShareBps) = PoolIssuance.configure(pool.steps, fund, config);
     }
 
     /// @inheritdoc IUnlockCallback
@@ -452,27 +466,6 @@ contract FundHook is IFundHook, IUnlockCallback, Initializable, UUPSUpgradeable 
         return IssuanceConfig({startBps: pool.issuanceStartBps, potShareBps: pool.potShareBps, steps: pool.steps});
     }
 
-    /// @notice Callbacks this hook enables; its deployed address must encode exactly these.
-    /// @return The permissions.
-    function getHookPermissions() public pure returns (Hooks.Permissions memory) {
-        return Hooks.Permissions({
-            beforeInitialize: true,
-            afterInitialize: false,
-            beforeAddLiquidity: false,
-            afterAddLiquidity: false,
-            beforeRemoveLiquidity: false,
-            afterRemoveLiquidity: false,
-            beforeSwap: true,
-            afterSwap: true,
-            beforeDonate: false,
-            afterDonate: false,
-            beforeSwapReturnDelta: true,
-            afterSwapReturnDelta: true,
-            afterAddLiquidityReturnDelta: false,
-            afterRemoveLiquidityReturnDelta: false
-        });
-    }
-
     function _observe(Pool storage pool, PoolId id) private {
         uint32 nowTs = uint32(block.timestamp);
         uint32 last = pool.observedAt;
@@ -483,9 +476,7 @@ contract FundHook is IFundHook, IUnlockCallback, Initializable, UUPSUpgradeable 
         pool.tickCumulative = cumulative;
         pool.blockTick = tick;
         uint256 index = pool.index;
-        uint32 ringAt = pool.ringAt;
-        if (ringAt == 0) ringAt = pool.ring[index].timestamp;
-        if (nowTs - ringAt >= OBSERVATION_INTERVAL) {
+        if (nowTs - pool.ringAt >= OBSERVATION_INTERVAL) {
             index = (index + 1) % OBSERVATION_SLOTS;
             pool.index = uint8(index);
             pool.ringAt = nowTs;
@@ -563,6 +554,7 @@ contract FundHook is IFundHook, IUnlockCallback, Initializable, UUPSUpgradeable 
         (usdgIn, tokensOut) = PoolIssuance.issue(
             pool.steps,
             PoolIssuance.Buy({
+                pm: poolManager,
                 fund: fund,
                 usdg: _usdg,
                 usdgUnit: _usdgUnit,
@@ -577,29 +569,11 @@ contract FundHook is IFundHook, IUnlockCallback, Initializable, UUPSUpgradeable 
         pool.pendingUsdg += SafeCast.toUint128(usdgIn);
     }
 
-    function _setIssuance(
-        address fund,
-        Pool storage pool,
-        uint16 startBps,
-        uint16 potShareBps,
-        IssuanceStep[] memory steps
-    ) private {
-        if (potShareBps > BPS || !PoolIssuance.store(pool.steps, steps)) revert InvalidIssuance();
-        pool.issuanceStartBps = startBps;
-        pool.potShareBps = potShareBps;
-        emit IssuanceSet(fund, IssuanceConfig({startBps: startBps, potShareBps: potShareBps, steps: steps}));
-    }
-
     function _takeFees(address fund, Pool storage pool, Currency usdg, uint256 amount) private returns (uint256) {
         // Rounds down: the fee never exceeds the configured share of the USDG leg.
-        uint256 fee = Math.mulDiv(amount, IFund(fund).feeBps(), BPS);
+        uint256 fee = Math.mulDiv(amount, pool.feeBps, BPS);
         if (fee == 0) return 0;
-        address cur = pool.curators;
-        if (cur == address(0)) {
-            cur = IFund(fund).curators();
-            pool.curators = cur;
-        }
-        poolManager.take(usdg, cur, fee);
+        poolManager.take(usdg, pool.curators, fee);
         emit SwapFeesTaken(fund, fee);
         return fee;
     }
@@ -710,9 +684,8 @@ contract FundHook is IFundHook, IUnlockCallback, Initializable, UUPSUpgradeable 
         uint160 sqrtPrice = TickMath.getSqrtPriceAtTick(tick);
         if (sqrtPrice < _sqrtLower) sqrtPrice = _sqrtLower;
         if (sqrtPrice > _sqrtUpper) sqrtPrice = _sqrtUpper;
-        // Rounds down: the position is never overstated.
-        uint256 amount0 = SqrtPriceMath.getAmount0Delta(sqrtPrice, _sqrtUpper, liquidity, false);
-        uint256 amount1 = SqrtPriceMath.getAmount1Delta(_sqrtLower, sqrtPrice, liquidity, false);
+        (uint256 amount0, uint256 amount1) =
+            FullRangeLiquidity.amountsForLiquidity(sqrtPrice, _sqrtLower, _sqrtUpper, liquidity);
         (usdgAmount, fundTokens) = _usdg < fund ? (amount0, amount1) : (amount1, amount0);
     }
 
@@ -747,11 +720,5 @@ contract FundHook is IFundHook, IUnlockCallback, Initializable, UUPSUpgradeable 
         uint256 amount
     ) private pure returns (int128) {
         return SafeCast.toInt128(SafeCast.toInt256(amount));
-    }
-
-    function _sqrtPriceX96(uint256 amount0, uint256 amount1) private pure returns (uint160) {
-        uint256 sqrtPrice = Math.sqrt(Math.mulDiv(amount1, 1 << 192, amount0));
-        if (sqrtPrice < TickMath.MIN_SQRT_PRICE || sqrtPrice >= TickMath.MAX_SQRT_PRICE) revert InvalidSeed();
-        return uint160(sqrtPrice);
     }
 }

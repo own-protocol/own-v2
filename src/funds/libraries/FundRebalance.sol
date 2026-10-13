@@ -5,18 +5,50 @@ import {IFund} from "../../interfaces/IFund.sol";
 import {IFundFactory} from "../../interfaces/IFundFactory.sol";
 import {IFundHook} from "../../interfaces/IFundHook.sol";
 import {IFundOracle} from "../../interfaces/IFundOracle.sol";
-import {BasketEntry} from "../../interfaces/types/FundTypes.sol";
+import {BasketEntry, DUST_BPS, MAX_BASKET_ASSETS} from "../../interfaces/types/FundTypes.sol";
 import {BPS, PRECISION} from "../../interfaces/types/Types.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
-/// @title FundRebalance — the manager's bounded basket swap
+/// @title FundRebalance — basket changes: new target weights and the manager's bounded swap
 /// @notice External library, linked at deployment and run in the fund's context (delegatecall), so
 ///         the fund stays under the contract size limit. The fund checks the caller and reentrancy.
 library FundRebalance {
     using SafeERC20 for IERC20;
+
+    /// @notice Replace the basket and its target weights. See {IFund-setTargetWeights}. Every new
+    ///         asset needs an oracle feed; an asset dropped with a balance worth more than
+    ///         `DUST_BPS` of the old basket (or with no price) blocks the change.
+    /// @param o           The oracle.
+    /// @param usdg        The factory's USDG.
+    /// @param assets      The basket, replaced.
+    /// @param basket      Basket membership, replaced.
+    /// @param assets_     New assets.
+    /// @param weightsBps_ New target weights (sum 10 000).
+    function setBasket(
+        IFundOracle o,
+        address usdg,
+        address[] storage assets,
+        mapping(address => BasketEntry) storage basket,
+        address[] calldata assets_,
+        uint16[] calldata weightsBps_
+    ) public {
+        address[] memory old = assets;
+        for (uint256 i; i < old.length; ++i) {
+            delete basket[old[i]];
+        }
+        _list(o, usdg, basket, assets_, weightsBps_);
+        _checkDropped(o, basket, old);
+        while (assets.length != 0) {
+            assets.pop();
+        }
+        for (uint256 i; i < assets_.length; ++i) {
+            assets.push(assets_[i]);
+        }
+        emit IFund.TargetWeightsSet(assets_, weightsBps_);
+    }
 
     /// @notice Swap through an allowed router within the slippage and daily volume bounds. See
     ///         {IFund-rebalance}. Until the fund's pool is seeded (the launch rebalance) the swap may
@@ -153,6 +185,54 @@ library FundRebalance {
         volume = (volume > drained ? volume - drained : 0) + soldValue;
         if (volume > cap) revert IFund.RebalanceVolumeExceeded();
         return volume;
+    }
+
+    function _list(
+        IFundOracle o,
+        address usdg,
+        mapping(address => BasketEntry) storage basket,
+        address[] calldata assets_,
+        uint16[] calldata weightsBps_
+    ) private {
+        uint256 n = assets_.length;
+        if (n == 0 || n > MAX_BASKET_ASSETS || n != weightsBps_.length) revert IFund.InvalidBasket();
+        uint256 sum;
+        for (uint256 i; i < n; ++i) {
+            address a = assets_[i];
+            if (a == address(0) || a == address(this) || a == usdg || basket[a].listed || !o.hasFeed(a)) {
+                revert IFund.InvalidBasket();
+            }
+            basket[a] = BasketEntry({listed: true, weightBps: weightsBps_[i]});
+            sum += weightsBps_[i];
+        }
+        if (sum != BPS) revert IFund.InvalidBasket();
+    }
+
+    /// @dev Anyone can send a dropped asset back to the fund, so a balance worth under `DUST_BPS`
+    ///      of the old basket is left behind rather than blocking the change.
+    function _checkDropped(
+        IFundOracle o,
+        mapping(address => BasketEntry) storage basket,
+        address[] memory old
+    ) private view {
+        uint256 dustLimit;
+        for (uint256 i; i < old.length; ++i) {
+            address a = old[i];
+            if (basket[a].listed) continue;
+            uint256 bal = IERC20(a).balanceOf(address(this));
+            if (bal == 0) continue;
+            (bool ok, uint256 p) = o.tryPrice(a);
+            if (dustLimit == 0) dustLimit = Math.mulDiv(_basketValue(o, old), DUST_BPS, BPS);
+            if (!ok || _value(a, bal, p) > dustLimit) revert IFund.AssetHasBalance(a);
+        }
+    }
+
+    /// @dev Value of the fund's holdings of `tokens` at oracle prices; a missing price reverts.
+    function _basketValue(IFundOracle o, address[] memory tokens) private view returns (uint256 value) {
+        for (uint256 i; i < tokens.length; ++i) {
+            uint256 bal = IERC20(tokens[i]).balanceOf(address(this));
+            if (bal != 0) value += _value(tokens[i], bal, o.price(tokens[i]));
+        }
     }
 
     function _value(address asset, uint256 amount, uint256 price) private view returns (uint256) {

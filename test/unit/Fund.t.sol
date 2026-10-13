@@ -306,7 +306,7 @@ contract FundTest is FundTestBase {
 
     function test_hookIssue_onlyHook_reverts() public {
         vm.expectRevert(IFund.NotHook.selector);
-        fund.hookIssue(1e18, 0);
+        fund.hookIssue(address(this), 1e18, 0);
     }
 
     function test_releaseReserve_onlyStaking_reverts() public {

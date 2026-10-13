@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {CreateFundParams, FundMetadata} from "./types/FundTypes.sol";
+import {CreateFundParams, FundMetadata, Valuation} from "./types/FundTypes.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 /// @title IFund — an Own Curated Fund token and the basket that backs it
@@ -325,15 +325,18 @@ interface IFund is IERC20 {
 
     /// @notice Mint fund tokens the hook issues into a pool buy, whose USDG the hook has paid here,
     ///         and set `potUsd` of it aside in the reserve for the Premium Pot. Hook only.
-    /// @param shares Fund tokens minted to the hook.
+    /// @param to     Receiver of the fund tokens: the pool manager for a buy, the hook to add them
+    ///               to the fund's position.
+    /// @param shares Fund tokens minted.
     /// @param potUsd Premium for the pot, 18 decimals USD.
-    function hookIssue(uint256 shares, uint256 potUsd) external;
+    function hookIssue(address to, uint256 shares, uint256 potUsd) external;
 
     /// @notice Move `usd` of the reserve into backing, minting `shares` to the staking module
     ///         against it (a boost or pot payout at NAV), or none for a forfeit. Staking only.
     /// @param usd    Reserve released, 18 decimals USD.
     /// @param shares Fund tokens minted to the staking module.
-    function releaseReserve(uint256 usd, uint256 shares) external;
+    /// @return reserveLeft The reserve after the release.
+    function releaseReserve(uint256 usd, uint256 shares) external returns (uint256 reserveLeft);
 
     /// @notice Redeem fund tokens for a pro-rata slice of every basket asset, of idle USDG and of
     ///         the fund's pool position. The position slice pays its USDG (at most its TWAP value,
@@ -590,6 +593,11 @@ interface IFund is IERC20 {
     /// @return nav    NAV per fund token, 18 decimals USD.
     /// @return supply Supply outside the fund's pool position.
     function tryNav() external view returns (bool ok, uint256 nav, uint256 supply);
+
+    /// @notice The fund's holdings at oracle prices with the reserve, supply and market price,
+    ///         from which NAV and the premium follow (see {ValuationLib}). Never reverts.
+    /// @return The valuation.
+    function valuation() external view returns (Valuation memory);
 
     /// @notice Premium of the fund token's market TWAP over NAV.
     /// @return ok         Whether every price needed was available.

@@ -193,6 +193,13 @@ interface IFundHook {
     /// @param liquidity Liquidity to remove.
     function withdrawPosition(address fund, uint128 liquidity) external;
 
+    /// @notice Mirror the fund's fee for its pool's swaps, so a swap need not ask the fund. The
+    ///         fund only, whenever its fee changes; the hook reads it once at registration.
+    /// @param feeBps The fund fee, in basis points.
+    function setFundFee(
+        uint16 feeBps
+    ) external;
+
     /// @notice Set a fund pool's LP fee. Admin only.
     /// @param fund  The fund.
     /// @param lpFee LP fee, in hundredths of a basis point (capped).

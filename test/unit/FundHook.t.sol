@@ -178,34 +178,32 @@ contract FundHookTest is FundTestBase {
         assertEq(usdg.balanceOf(address(curators)), 10e6);
     }
 
-    function test_seedPool_cachesCuratorsAndCheckpointTime() public view {
+    function test_seedPool_cachesCuratorsFeeAndCheckpointTime() public view {
         uint256 slot1 = uint256(vm.load(address(hook), _poolSlot1()));
-        assertEq(address(uint160(slot1 >> 32)), address(curators));
-        assertEq(uint32(slot1 >> 192), uint32(launch.closedAt()));
+        assertEq(uint16(slot1 >> 32), FEE_BPS);
+        assertEq(address(uint160(slot1 >> 48)), address(curators));
+        assertEq(uint32(slot1 >> 208), uint32(launch.closedAt()));
     }
 
-    function test_poolSeededBeforeCaches_fillsThemOnUse() public {
+    function test_swap_checkpointsAtMostEveryInterval() public {
         _swap(true, -int256(1000e6));
         uint256 checkpointAt = block.timestamp;
-        // A pool seeded before the cache fields existed has them zero.
         bytes32 slot = _poolSlot1();
         uint256 slot1 = uint256(vm.load(address(hook), slot));
         assertEq(uint8(slot1), 1);
-        vm.store(address(hook), slot, bytes32(slot1 & type(uint32).max));
+        assertEq(uint32(slot1 >> 208), uint32(checkpointAt));
 
         vm.warp(checkpointAt + 1 minutes);
         _swap(true, -int256(1000e6));
-        assertEq(usdg.balanceOf(address(curators)), 20e6);
         slot1 = uint256(vm.load(address(hook), slot));
-        assertEq(address(uint160(slot1 >> 32)), address(curators));
-        // Under the checkpoint interval since the last checkpoint, read from the ring: none taken.
-        assertEq(uint32(slot1 >> 192), 0);
+        // Under the checkpoint interval since the last checkpoint: none taken.
         assertEq(uint8(slot1), 1);
+        assertEq(uint32(slot1 >> 208), uint32(checkpointAt));
 
         vm.warp(checkpointAt + 6 minutes);
         _swap(false, -int256(100e18));
         slot1 = uint256(vm.load(address(hook), slot));
-        assertEq(uint32(slot1 >> 192), uint32(block.timestamp));
+        assertEq(uint32(slot1 >> 208), uint32(block.timestamp));
         assertEq(uint8(slot1), 2);
     }
 

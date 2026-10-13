@@ -21,17 +21,17 @@ import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 contract FundAuctions is IFundAuctions, ReentrancyGuardTransient {
     using SafeERC20 for IERC20;
 
-    /// @notice Hard cap on the start premium.
-    uint16 public constant MAX_START_PREMIUM_BPS = 5000;
+    // Hard cap on the start premium.
+    uint16 private constant MAX_START_PREMIUM_BPS = 5000;
 
-    /// @notice Hard cap on the floor discount.
-    uint16 public constant MAX_FLOOR_DISCOUNT_BPS = 1000;
+    // Hard cap on the floor discount.
+    uint16 private constant MAX_FLOOR_DISCOUNT_BPS = 1000;
 
-    /// @notice Shortest auction.
-    uint32 public constant MIN_DURATION = 15 minutes;
+    // Shortest auction.
+    uint32 private constant MIN_DURATION = 15 minutes;
 
-    /// @notice Longest auction.
-    uint32 public constant MAX_DURATION = 7 days;
+    // Longest auction.
+    uint32 private constant MAX_DURATION = 7 days;
 
     struct Volume {
         uint192 amount;

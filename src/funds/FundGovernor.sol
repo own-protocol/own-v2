@@ -39,14 +39,14 @@ contract FundGovernor is IFundGovernor, Initializable, ReentrancyGuardTransient 
     using SafeERC20 for IERC20;
     using EpochHistory for EpochHistory.History;
 
-    /// @notice Maximum number of allowed wrappers.
-    uint256 public constant MAX_WRAPPERS = 4;
+    // Maximum number of allowed wrappers.
+    uint256 private constant MAX_WRAPPERS = 4;
 
-    /// @notice Maximum basket size (matches the fund's own bound).
-    uint256 public constant MAX_ASSETS = MAX_BASKET_ASSETS;
+    // Maximum basket size (matches the fund's own bound).
+    uint256 private constant MAX_ASSETS = MAX_BASKET_ASSETS;
 
-    /// @notice Epoch length; epochs flip Thursday 00:00 UTC (the Unix epoch was a Thursday).
-    uint256 public constant EPOCH = 1 weeks;
+    // Epoch length; epochs flip Thursday 00:00 UTC (the Unix epoch was a Thursday).
+    uint256 private constant EPOCH = 1 weeks;
 
     struct Allocation {
         address[] tokens;

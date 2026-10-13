@@ -25,15 +25,15 @@ import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 contract FundCurators is IFundCurators, Initializable, ReentrancyGuardTransient {
     using SafeERC20 for IERC20;
 
-    /// @notice Hard cap on the minimum stake.
-    uint16 public constant MAX_MIN_STAKE_BPS = 1000;
+    // Hard cap on the minimum stake.
+    uint16 private constant MAX_MIN_STAKE_BPS = 1000;
 
-    /// @notice Most bribe reward tokens the module tracks besides the fund token, USDG and staked
-    ///         fund tokens.
-    uint256 public constant MAX_REWARD_TOKENS = 32;
+    // Most bribe reward tokens the module tracks besides the fund token, USDG and staked
+    // fund tokens.
+    uint256 private constant MAX_REWARD_TOKENS = 32;
 
-    /// @notice Length of a vesting period: staked fund tokens a curator earns unlock when it ends.
-    uint256 public constant VEST_PERIOD = 30 days;
+    // Length of a vesting period: staked fund tokens a curator earns unlock when it ends.
+    uint256 private constant VEST_PERIOD = 30 days;
 
     struct CuratorState {
         bool active;

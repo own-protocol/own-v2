@@ -37,32 +37,32 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
     bytes32 private constant ADMIN_ROLE = keccak256("ADMIN");
     bytes32 private constant OPERATOR_ROLE = keccak256("OPERATOR");
 
-    /// @notice Hard cap on the protocol curator's share.
-    uint16 public constant MAX_PROTOCOL_CURATOR_SHARE_BPS = 5000;
+    // Hard cap on the protocol curator's share.
+    uint16 private constant MAX_PROTOCOL_CURATOR_SHARE_BPS = 5000;
 
-    /// @notice Hard cap on the rebalance slippage bound.
-    uint16 public constant MAX_REBALANCE_SLIPPAGE_BPS = 1000;
+    // Hard cap on the rebalance slippage bound.
+    uint16 private constant MAX_REBALANCE_SLIPPAGE_BPS = 1000;
 
-    /// @notice Default staking yield cap: 109 500 bps a year (3% a day).
-    uint32 public constant DEFAULT_MAX_YIELD_RATE_BPS_PER_YEAR = 300 * 365;
+    // Default staking yield cap: 109 500 bps a year (3% a day).
+    uint32 private constant DEFAULT_MAX_YIELD_RATE_BPS_PER_YEAR = 300 * 365;
 
-    /// @notice Hard cap on the staking yield cap: 3 650 000 bps a year (100% a day).
-    uint32 public constant MAX_YIELD_RATE_BPS_PER_YEAR = 10_000 * 365;
+    // Hard cap on the staking yield cap: 3 650 000 bps a year (100% a day).
+    uint32 private constant MAX_YIELD_RATE_BPS_PER_YEAR = 10_000 * 365;
 
-    /// @notice Hard cap on the bribe cut.
-    uint16 public constant MAX_BRIBE_CUT_BPS = 2500;
+    // Hard cap on the bribe cut.
+    uint16 private constant MAX_BRIBE_CUT_BPS = 2500;
 
-    /// @notice Hard cap on the curator cap.
-    uint8 public constant MAX_CURATOR_CAP = 50;
+    // Hard cap on the curator cap.
+    uint8 private constant MAX_CURATOR_CAP = 50;
 
-    /// @notice Launch supply used when a fund sets none.
-    uint256 public constant DEFAULT_LAUNCH_SUPPLY = 100_000_000e18;
+    // Launch supply used when a fund sets none.
+    uint256 private constant DEFAULT_LAUNCH_SUPPLY = 100_000_000e18;
 
-    /// @notice Launch window used when a fund sets none.
-    uint32 public constant DEFAULT_LAUNCH_DURATION = 7 days;
+    // Launch window used when a fund sets none.
+    uint32 private constant DEFAULT_LAUNCH_DURATION = 7 days;
 
-    /// @notice Hard cap on the share of a raise that seeds the pool.
-    uint16 public constant MAX_POOL_USDG_BPS = 5000;
+    // Hard cap on the share of a raise that seeds the pool.
+    uint16 private constant MAX_POOL_USDG_BPS = 5000;
 
     /// @inheritdoc IFundFactory
     address public override registry;

@@ -1,10 +1,17 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
+import {BPS, PRECISION} from "./Types.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+
 /// @title FundTypes — shared types for Own Curated Funds
 
 /// @dev Maximum number of basket assets (bounds every loop over a basket).
 uint256 constant MAX_BASKET_ASSETS = 20;
+
+/// @dev A dropped basket asset worth at most this share of the basket, in basis points, is dust:
+///      it may be left behind by a basket change.
+uint256 constant DUST_BPS = 10;
 
 /// @dev A 1e18-scaled share ("WAD"): 1e18 is the whole, e.g. every possible vote.
 uint256 constant WAD = 1e18;
@@ -63,6 +70,50 @@ struct PremiumConfig {
     uint32 potDripPeriod;
     uint16 issuanceStartBps;
     uint16 potShareBps;
+}
+
+/// @notice A fund's holdings at oracle prices with what NAV and the premium are derived from.
+///         The staking module reads it once per call and keeps `reserve` and `supply` current as it
+///         releases reserve and mints fund tokens, neither of which moves the holdings.
+/// @param ok       Whether every held basket asset had a fresh price.
+/// @param total    Basket plus idle and pooled USDG, 18 decimals USD.
+/// @param reserve  The reserve (boost budgets and the Premium Pot), 18 decimals USD.
+/// @param supply   Fund tokens outside the fund's pool position.
+/// @param marketOk Whether the fund token had a fresh market price.
+/// @param market   Market price of one fund token, 18 decimals USD.
+struct Valuation {
+    bool ok;
+    uint256 total;
+    uint256 reserve;
+    uint256 supply;
+    bool marketOk;
+    uint256 market;
+}
+
+/// @title ValuationLib — NAV and premium from a {Valuation}, the one formula every module uses
+library ValuationLib {
+    /// @notice NAV per fund token, 18 decimals USD: value less the reserve (floored at zero) over
+    ///         supply. Rounds down. Zero when a price is missing or there is no supply.
+    /// @param v The valuation.
+    /// @return The NAV.
+    function nav(
+        Valuation memory v
+    ) internal pure returns (uint256) {
+        if (!v.ok || v.supply == 0) return 0;
+        return Math.mulDiv(v.total > v.reserve ? v.total - v.reserve : 0, PRECISION, v.supply);
+    }
+
+    /// @notice Premium of the market price over NAV.
+    /// @param v The valuation.
+    /// @return ok      Whether both prices were available and NAV is non-zero.
+    /// @return premium Premium in basis points (negative at a discount).
+    function premiumBps(
+        Valuation memory v
+    ) internal pure returns (bool ok, int256 premium) {
+        uint256 n = nav(v);
+        if (!v.marketOk || n == 0) return (false, 0);
+        return (true, int256(Math.mulDiv(v.market, BPS, n)) - int256(BPS));
+    }
 }
 
 /// @title PremiumConfigLib — bounds shared by the factory and every fund
