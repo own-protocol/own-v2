@@ -90,10 +90,10 @@ M-01, M-02, M-03, M-04, M-06, M-08 and L-04 again on its own.
 | -------- | ----- | ----- | ---- | ------------ | --------- |
 | Critical | 0 | 0 | 0 | 0 | 0 |
 | High     | 3 | 3 | 0 | 0 | 0 |
-| Medium   | 14 | 10 | 4 | 0 | 0 |
+| Medium   | 14 | 11 | 3 | 0 | 0 |
 | Low      | 8 | 2 | 6 | 0 | 0 |
 | Info     | 0 | 0 | 0 | 0 | 0 |
-| **Total** | **25** | **15** | **10** | **0** | **0** |
+| **Total** | **25** | **16** | **9** | **0** | **0** |
 
 | ID | Severity | Finding | Conf | Status |
 | -- | -------- | ------- | ---- | ------ |
@@ -110,7 +110,7 @@ M-01, M-02, M-03, M-04, M-06, M-08 and L-04 again on its own.
 | A6-M-08 | Medium | After `setGovernor`, bribers refund bribes that voters already claimed | 75 | Fixed (`e8b2f45`) |
 | A6-M-09 | Medium | `stake` moves the caller's launch lock onto any receiver | 85 | Fixed (`ff2cfe7`) |
 | A6-M-10 | Medium | Anyone can mint to any receiver and put a lock and a boost on it | 85 | Fixed (`ff2cfe7`) |
-| A6-M-11 | Medium | A stake made while NAV has no price takes pot drip it did not earn | 80 | Open |
+| A6-M-11 | Medium | A stake made while NAV has no price takes pot drip it did not earn | 80 | Fixed (`eb3ff2b`) |
 | A6-M-12 | Medium | One stale basket price blocks every redeem while the reserve holds value | 80 | Open |
 | A6-M-13 | Medium | The price keeper moves a hub price without limit by repeating pushes | 75 | Open |
 | A6-M-14 | Medium | Other staked shares shield a boost after its minted shares are sold | 75 | Open |
@@ -418,7 +418,7 @@ receiver. A module can still mint for itself, but only with its own tokens. Test
 `test_mint_lockedForOthers_reverts`, `test_mint_cappedForOthers_allowed`,
 `test_zapMint_notFactoryZap_reverts`.
 
-## A6-M-11 — A stake made while NAV has no price takes pot drip it did not earn (Medium, Open, new 2026-10-13)
+## A6-M-11 — A stake made while NAV has no price takes pot drip it did not earn (Medium, Fixed 2026-10-14, new 2026-10-13)
 
 `FundStaking._releasePot` (`src/funds/FundStaking.sol:563`). Round 2: 1 agent in pass 1,
 1 in pass 1 (boundary), 1 in pass 2.
@@ -438,6 +438,15 @@ staking**, taken from stakers who held all weekend.
 **Suggested fix:** while NAV is unavailable, keep the drip time in `potLeft` (move
 `_potUpdatedAt` forward without moving dollars into `potPending`), or refuse a new stake while
 `potPending > 0`.
+
+**Fix (`eb3ff2b`, 2026-10-14, Bhargav's pick):** `_releasePot` reads NAV first; without a price it
+marks the pot held, and `_checkpointPot` then moves `potEnd` out by the time held instead of
+dripping, so the drip resumes where it stopped (`addPot` honours the same flag). Separately, fund
+assets with Chainlink can now be priced through the in-house `ChainlinkOracleVerifier`
+(`FundOracle.setVerifierFeed`), whose signer quotes stocks while their feeds are silent, so NAV
+stays priced over weekends and this path is left for real outages. Tests
+`test_pot_pausesWhileNavUnpriced`, `test_pot_stakeWhileUnpricedTakesNothing` (both fail on the old
+code).
 
 ## A6-M-12 — One stale basket price blocks every redeem while the reserve holds value (Medium, Open, new 2026-10-13)
 
