@@ -90,10 +90,10 @@ M-01, M-02, M-03, M-04, M-06, M-08 and L-04 again on its own.
 | -------- | ----- | ----- | ---- | ------------ | --------- |
 | Critical | 0 | 0 | 0 | 0 | 0 |
 | High     | 3 | 3 | 0 | 0 | 0 |
-| Medium   | 14 | 12 | 2 | 0 | 0 |
+| Medium   | 14 | 13 | 0 | 0 | 1 |
 | Low      | 8 | 2 | 6 | 0 | 0 |
 | Info     | 0 | 0 | 0 | 0 | 0 |
-| **Total** | **25** | **17** | **8** | **0** | **0** |
+| **Total** | **25** | **18** | **6** | **0** | **1** |
 
 | ID | Severity | Finding | Conf | Status |
 | -- | -------- | ------- | ---- | ------ |
@@ -112,8 +112,8 @@ M-01, M-02, M-03, M-04, M-06, M-08 and L-04 again on its own.
 | A6-M-10 | Medium | Anyone can mint to any receiver and put a lock and a boost on it | 85 | Fixed (`ff2cfe7`) |
 | A6-M-11 | Medium | A stake made while NAV has no price takes pot drip it did not earn | 80 | Fixed (`eb3ff2b`) |
 | A6-M-12 | Medium | One stale basket price blocks every redeem while the reserve holds value | 80 | Fixed (`bcea925`) |
-| A6-M-13 | Medium | The price keeper moves a hub price without limit by repeating pushes | 75 | Open |
-| A6-M-14 | Medium | Other staked shares shield a boost after its minted shares are sold | 75 | Open |
+| A6-M-13 | Medium | The price keeper moves a hub price without limit by repeating pushes | 75 | Fixed (`d06dace`) |
+| A6-M-14 | Medium | Other staked shares shield a boost after its minted shares are sold | 75 | By design |
 | A6-L-01 | Low | A bribe posted before a failed launch can never be refunded | 80 | Open |
 | A6-L-02 | Low | A reward token whose balance drops below `_reserved` blocks flip and curator changes | 75 | Fixed (`5db4443`) |
 | A6-L-03 | Low | A mint at NAV after a 30-minute dump is charged at the TWAP pool reading | 65 | Fixed (`fbde008`) |
@@ -486,7 +486,7 @@ retires the two reserve leads below and A6-L-07's effect on this finding. Tests
 the invariant now checks the staking module holds exactly the stakes plus boost and pot tokens
 owed.
 
-## A6-M-13 — The price keeper moves a hub price without limit by repeating pushes (Medium, Open, new 2026-10-13)
+## A6-M-13 — The price keeper moves a hub price without limit by repeating pushes (Medium, Fixed 2026-10-14, new 2026-10-13)
 
 `FundPriceHub.pushPrices` (`src/funds/FundPriceHub.sol:48`). Round 2: 8 agents in pass 1, 5 in
 pass 2.
@@ -509,7 +509,18 @@ keeper.
 **Suggested fix:** reject a keeper push for an asset whose `updatedAt == block.timestamp`, or
 scale the allowed move by the time since `updatedAt` (e.g. `maxMoveBps` per hour).
 
-## A6-M-14 — Other staked shares shield a boost after its minted shares are sold (Medium, Open, new 2026-10-13)
+**Fix (`d06dace`, 2026-10-14, Bhargav's pick):** `maxMoveBps` (admin-set, 30% at deploy) is now
+the largest move per hour since the asset's last push, compounding by the hour and pro rata
+within it, so pushes in one block move nothing and a 10x takes about 9 hours. A push past the
+bound is stored at the bound (`PriceClamped`) instead of skipped, so a real jump catches up rather
+than going stale. Admin pushes are removed (Bhargav: raising the bound or swapping the keeper does
+the same job). The allowance grows with silence, so after about a week without a push (visible as
+stale prices) any move is allowed. Tests `test_moveBound_repeatPushesGainNothing`,
+`test_moveBound_realJumpCatchesUpHourly`, `test_moveBound_fallsSymmetricallyAndProRataWithinTheHour`,
+`test_moveBound_offOrLongSilenceIsUnbounded`. The keeper's hub job (keeper PR #25) pre-skips
+pushes over the old per-push bound and should now push every price.
+
+## A6-M-14 — Other staked shares shield a boost after its minted shares are sold (Medium, By design, new 2026-10-13)
 
 `FundStaking._forfeit` (`src/funds/FundStaking.sol:635`). Round 2 pass 2: numerical-gap.
 
@@ -527,6 +538,13 @@ b.shares = 0` lets shares from a finished boost shield the next one.
 
 **Suggested fix:** record the account's staked holdings before each boosted mint and forfeit when
 holdings fall below that baseline plus `b.shares`.
+
+**By design (Bhargav, 2026-10-14):** the boost is the minter's own premium returned (since
+`bcea925`, boost tokens minted from it at the mint), so a minter who keeps the boost after
+selling an equal number of staked tokens takes nothing other holders were owed: 25% of the
+premium already went to backing, and a forfeit only hands holders a windfall. Staked tokens are
+interchangeable, so the sale can as well be read as selling the older ones. Repeating mint and
+sell grows TVL each time; its only effect on others is selling pressure on the pool premium.
 
 ## A6-L-01 — A bribe posted before a failed launch can never be refunded (Low, Open)
 
