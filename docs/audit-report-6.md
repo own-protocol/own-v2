@@ -90,10 +90,10 @@ M-01, M-02, M-03, M-04, M-06, M-08 and L-04 again on its own.
 | -------- | ----- | ----- | ---- | ------------ | --------- |
 | Critical | 0 | 0 | 0 | 0 | 0 |
 | High     | 3 | 3 | 0 | 0 | 0 |
-| Medium   | 14 | 11 | 3 | 0 | 0 |
+| Medium   | 14 | 12 | 2 | 0 | 0 |
 | Low      | 8 | 2 | 6 | 0 | 0 |
 | Info     | 0 | 0 | 0 | 0 | 0 |
-| **Total** | **25** | **16** | **9** | **0** | **0** |
+| **Total** | **25** | **17** | **8** | **0** | **0** |
 
 | ID | Severity | Finding | Conf | Status |
 | -- | -------- | ------- | ---- | ------ |
@@ -111,7 +111,7 @@ M-01, M-02, M-03, M-04, M-06, M-08 and L-04 again on its own.
 | A6-M-09 | Medium | `stake` moves the caller's launch lock onto any receiver | 85 | Fixed (`ff2cfe7`) |
 | A6-M-10 | Medium | Anyone can mint to any receiver and put a lock and a boost on it | 85 | Fixed (`ff2cfe7`) |
 | A6-M-11 | Medium | A stake made while NAV has no price takes pot drip it did not earn | 80 | Fixed (`eb3ff2b`) |
-| A6-M-12 | Medium | One stale basket price blocks every redeem while the reserve holds value | 80 | Open |
+| A6-M-12 | Medium | One stale basket price blocks every redeem while the reserve holds value | 80 | Fixed (`bcea925`) |
 | A6-M-13 | Medium | The price keeper moves a hub price without limit by repeating pushes | 75 | Open |
 | A6-M-14 | Medium | Other staked shares shield a boost after its minted shares are sold | 75 | Open |
 | A6-L-01 | Low | A bribe posted before a failed launch can never be refunded | 80 | Open |
@@ -446,9 +446,10 @@ assets with Chainlink can now be priced through the in-house `ChainlinkOracleVer
 (`FundOracle.setVerifierFeed`), whose signer quotes stocks while their feeds are silent, so NAV
 stays priced over weekends and this path is left for real outages. Tests
 `test_pot_pausesWhileNavUnpriced`, `test_pot_stakeWhileUnpricedTakesNothing` (both fail on the old
-code).
+code). The pause was later replaced by A6-M-12's fix (`bcea925`): the pot is held in fund tokens
+and drips without a price, so nothing piles up.
 
-## A6-M-12 — One stale basket price blocks every redeem while the reserve holds value (Medium, Open, new 2026-10-13)
+## A6-M-12 — One stale basket price blocks every redeem while the reserve holds value (Medium, Fixed 2026-10-14, new 2026-10-13)
 
 `Fund._claim` (`src/funds/Fund.sol:706`), reached from `redeem`, `FundStaking.redeem` and
 `FundRedeemZap`. Round 2: 2 agents as findings, 4 as leads.
@@ -470,6 +471,20 @@ a frozen token.
 unpriced asset at zero, which only shrinks the redeemer's claim (holders are protected, and
 `minAmountsOut` protects the redeemer); (B) hold the reserve in kind (fund tokens or a basket
 slice) so redeem needs no price. Either way, fix the docs.
+
+**Fix (`bcea925`, 2026-10-14, Bhargav's pick: B, in fund tokens):** the dollar reserve is gone. A
+direct mint's boost is minted at once as fund tokens (the boost share of `navShares` less the
+tokens issued) and held by the staking module, paid out as staked shares at the boost speed in
+tokens; the pot's share of an issuance's premium is minted as fund tokens at the NAV issuance
+already reads, held there and dripped into the vault. Forfeited boost tokens, and pot drips with
+under one whole share staked, are burned. NAV is value over supply, so mint and redeem no longer
+scale by a reserve and `_claim` is gone: a redeem reads no price. Boost and pot tokens count in
+supply, so recipients share the fund's price moves and holders carry no fixed dollar claim. The
+pot drip no longer needs a price either, replacing the A6-M-11 pause. Docs updated. This also
+retires the two reserve leads below and A6-L-07's effect on this finding. Tests
+`test_redeem_stalePriceWithBoostOwed`, `test_boost_sharesPriceMoves`, `test_pot_dripsWhileUnpriced`;
+the invariant now checks the staking module holds exactly the stakes plus boost and pot tokens
+owed.
 
 ## A6-M-13 — The price keeper moves a hub price without limit by repeating pushes (Medium, Open, new 2026-10-13)
 
