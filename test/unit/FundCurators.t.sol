@@ -284,9 +284,9 @@ contract FundCuratorsTest is FundTestBase {
     ///      not be shared out again as fresh income.
     function test_claim_boostedModule_doesNotRecountClaimedShares() public {
         _earnYield();
-        address carol = makeAddr("carol");
-        _fundSlice(carol, 1e18);
-        vm.prank(carol);
+        // Only the module itself can mint it a boost now (A6-M-10).
+        _fundSlice(address(curators), 1e18);
+        vm.prank(address(curators));
         fund.mint(1e18, 0, address(curators), false);
         assertGt(staking.boostOf(address(curators)).usdLeft, 0);
 

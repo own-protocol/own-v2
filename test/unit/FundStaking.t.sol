@@ -35,6 +35,22 @@ contract FundStakingTest is FundTestBase {
         assertEq(uint32(slot5 >> 224), fund.depositorUnlockAt());
     }
 
+    /// @dev A6-M-09: launch-locked tokens can be staked only for the caller.
+    function test_stake_launchLockedForOthers_reverts() public {
+        address carol = makeAddr("carol");
+        vm.startPrank(bob);
+        fund.approve(address(staking), bobLiquid);
+        vm.expectRevert(IFundStaking.SharesLocked.selector);
+        staking.stake(bobLiquid / 2, carol);
+        vm.stopPrank();
+
+        _passDepositorLock();
+        vm.prank(bob);
+        uint256 shares = staking.stake(bobLiquid / 2, carol);
+        assertEq(staking.balanceOf(carol), shares);
+        assertEq(staking.lockedShares(carol), 0);
+    }
+
     function test_stake_afterUnlock_skipsLaunchLockRelease() public {
         uint256 amount = bobLiquid / 2;
         vm.startPrank(bob);

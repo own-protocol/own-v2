@@ -479,6 +479,8 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuardTrans
         if (shares == 0) revert ZeroAmount();
         _totalStaked += assets;
         uint256 moved = block.timestamp < _depositorUnlockAt() ? IFund(fund).releaseLaunchLock(msg.sender, assets) : 0;
+        // A launch lock stays with its owner, as in `unstake`.
+        if (moved != 0 && receiver != msg.sender) revert SharesLocked();
         uint256 locked = Math.min(Math.mulDiv(shares, moved, assets, Math.Rounding.Ceil), shares);
         IERC20(fund).safeTransferFrom(msg.sender, address(this), assets);
         _mint(receiver, shares);

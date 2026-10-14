@@ -592,16 +592,26 @@ contract FundPremiumTest is FundTestBase {
         staking.unstake(half, carol);
     }
 
-    function test_lock_mintForOthersCannotExtendTheirLock() public {
-        _mintAs(carol, 10_000e18);
-        uint64 end = staking.mintLockOf(carol, false).unlockAt;
-        _warp(14 days);
-        // A tiny mint to carol with a fresh 15 days moves her end by its share of the locked stake only.
+    /// @dev A6-M-10: a locked or boosted mint goes only to the caller, so nobody can put a lock or
+    ///      a boost on someone else.
+    function test_mint_lockedForOthers_reverts() public {
         _fundSlice(dave, 1e18);
-        vm.prank(dave);
+        vm.startPrank(dave);
+        vm.expectRevert(IFund.NotReceiver.selector);
         fund.mint(1e18, 0, carol, false);
-        IFundStaking.MintLock memory lock = staking.mintLockOf(carol, false);
-        assertLt(lock.unlockAt, end + 1 hours);
+        vm.expectRevert(IFund.NotReceiver.selector);
+        fund.mint(1e18, 0, carol, true);
+        vm.stopPrank();
+    }
+
+    function test_mint_cappedForOthers_allowed() public {
+        _setCap(1000); // unlocked, no boost
+        _fundSlice(dave, 1000e18);
+        vm.prank(dave);
+        uint256 shares = fund.mint(1000e18, 0, carol, false);
+        assertEq(fund.balanceOf(carol), shares);
+        assertEq(staking.mintLockOf(carol, false).shares, 0);
+        assertEq(staking.boostOf(carol).usdLeft, 0);
     }
 
     // ──────────────────────────────────────────────────────────

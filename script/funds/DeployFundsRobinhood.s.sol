@@ -65,6 +65,9 @@ contract DeployFundsRobinhood is Script {
     uint32 constant AUCTION_DURATION = 4 hours;
     uint16 constant HUB_MAX_MOVE_BPS = 3000;
 
+    // Set by _deployPeripherals for _wiring; a local would push run() past the stack limit.
+    address internal _mintZap;
+
     uint160 constant HOOK_FLAGS = Hooks.BEFORE_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG
         | Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG | Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG;
 
@@ -123,18 +126,20 @@ contract DeployFundsRobinhood is Script {
         }
     }
 
-    function _wiring(address hook, address auctions, address money) internal pure returns (bytes[] memory calls) {
-        calls = new bytes[](money == address(0) ? 4 : 5);
+    function _wiring(address hook, address auctions, address money) internal view returns (bytes[] memory calls) {
+        calls = new bytes[](money == address(0) ? 5 : 6);
         calls[0] = abi.encodeCall(FundFactory.setHook, (hook));
         calls[1] = abi.encodeCall(FundFactory.setAuctions, (auctions));
         calls[2] = abi.encodeCall(FundFactory.setPlatformMetadata, (_platformMetadata()));
         calls[3] = abi.encodeCall(FundFactory.setBribeToken, (USDG, true));
-        if (money != address(0)) calls[4] = abi.encodeCall(FundFactory.setBribeToken, (money, true));
+        calls[4] = abi.encodeCall(FundFactory.setMintZap, (_mintZap));
+        if (money != address(0)) calls[5] = abi.encodeCall(FundFactory.setBribeToken, (money, true));
     }
 
     function _deployPeripherals(address factory, address registry) internal returns (address, address) {
         console.log("FundRedeemZap   ", address(new FundRedeemZap(factory)));
-        console.log("FundMintZap     ", address(new FundMintZap(factory)));
+        _mintZap = address(new FundMintZap(factory));
+        console.log("FundMintZap     ", _mintZap);
         FundAuctions auctions =
             new FundAuctions(factory, AUCTION_START_PREMIUM_BPS, AUCTION_FLOOR_DISCOUNT_BPS, AUCTION_DURATION);
         FundPriceHub hub = new FundPriceHub(registry, vm.envAddress("PRICE_KEEPER"), HUB_MAX_MOVE_BPS);

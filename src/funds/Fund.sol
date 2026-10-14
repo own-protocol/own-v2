@@ -259,8 +259,13 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
         shares = _chargeMintFees(q.gross);
         if (shares == 0 || shares < minSharesOut) revert Slippage();
         uint256 budget;
-        if (q.capped) _mint(receiver, shares);
-        else budget = _stakeMinted(receiver, shares, Math.mulDiv(navShares, q.nav, PRECISION), q, atNav);
+        if (q.capped) {
+            _mint(receiver, shares);
+        } else {
+            // A lock or a boost lands only on the caller (the zap mints for its own caller).
+            if (receiver != msg.sender && msg.sender != IFundFactory(factory).mintZap()) revert NotReceiver();
+            budget = _stakeMinted(receiver, shares, Math.mulDiv(navShares, q.nav, PRECISION), q, atNav);
+        }
 
         emit Minted(msg.sender, receiver, navShares, shares, q.mintPrice, budget);
     }

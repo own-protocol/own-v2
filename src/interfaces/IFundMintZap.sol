@@ -23,19 +23,11 @@ interface IFundMintZap {
 
     /// @notice Emitted on a zap mint.
     /// @param fund     The fund.
-    /// @param sender   Payer.
-    /// @param receiver Owner of the stake.
+    /// @param sender   Payer and owner of the mint.
     /// @param tokenIn  Token paid.
     /// @param amountIn Amount paid.
-    /// @param shares   Fund tokens staked for the receiver.
-    event ZapMinted(
-        address indexed fund,
-        address indexed sender,
-        address indexed receiver,
-        address tokenIn,
-        uint256 amountIn,
-        uint256 shares
-    );
+    /// @param shares   Fund tokens for the sender.
+    event ZapMinted(address indexed fund, address indexed sender, address tokenIn, uint256 amountIn, uint256 shares);
 
     /// @notice The fund was not created by the factory.
     error NotFund();
@@ -50,16 +42,16 @@ interface IFundMintZap {
     error ZeroAddress();
 
     /// @notice Pay `amountIn` of `tokenIn`, swap it into the slice a mint of `navShares` needs and
-    ///         mint. See {IFund-previewMint} for the slice.
+    ///         mint for the caller, who owns the mint (its stake, lock and boost when staked). See
+    ///         {IFund-previewMint} for the slice.
     /// @param fund         The fund.
     /// @param tokenIn      Token paid.
     /// @param amountIn     Amount paid.
     /// @param swaps        Swaps run in order before the mint.
     /// @param navShares    Size of the slice, in fund tokens at NAV.
-    /// @param minSharesOut Minimum fund tokens for the receiver, after the fee.
-    /// @param receiver     Owner of the mint (its stake, lock and boost when staked).
+    /// @param minSharesOut Minimum fund tokens for the caller, after the fee.
     /// @param atNav        Mint at NAV instead of the pool price.
-    /// @return shares Fund tokens for the receiver.
+    /// @return shares Fund tokens for the caller.
     function zapMint(
         address fund,
         address tokenIn,
@@ -67,7 +59,6 @@ interface IFundMintZap {
         Swap[] calldata swaps,
         uint256 navShares,
         uint256 minSharesOut,
-        address receiver,
         bool atNav
     ) external returns (uint256 shares);
 

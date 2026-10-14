@@ -257,6 +257,9 @@ interface IFund is IERC20 {
     /// @notice The price oracle has no fresh price for the fund token.
     error NoMarketPrice();
 
+    /// @notice A locked or boosted mint must go to the caller (or come through the mint zap).
+    error NotReceiver();
+
     /// @notice Initialise a fund proxy. Called once by the factory.
     /// @param params Fund parameters (launch and staking fields are ignored here).
     function initialize(
@@ -311,6 +314,8 @@ interface IFund is IERC20 {
     ///           unlocked instead, with no boost.
     ///         - Mint at NAV (`atNav` true): at NAV; staked for the receiver and locked for
     ///           {navMintLock}, no boost.
+    ///         A staked (locked or boosted) mint reverts {NotReceiver} unless the receiver is the
+    ///         caller or the caller is the factory's mint zap.
     /// @param navShares    Size of the slice, in fund tokens at NAV. The receiver gets this scaled
     ///                     down by the mint price over NAV, less the fee.
     /// @param minSharesOut Minimum fund tokens for the receiver, after the fee.

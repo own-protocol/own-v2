@@ -64,6 +64,10 @@ interface IFundFactory {
     /// @param recipient New recipient (zero for the registry treasury).
     event SweepRecipientSet(address recipient);
 
+    /// @notice Emitted when the mint zap changes.
+    /// @param zap New zap (zero for none).
+    event MintZapSet(address zap);
+
     /// @notice Emitted when the protocol curator changes.
     /// @param curator New protocol curator.
     event ProtocolCuratorSet(address curator);
@@ -195,6 +199,13 @@ interface IFundFactory {
     /// @param recipient The wallet, or zero for the registry treasury.
     function setSweepRecipient(
         address recipient
+    ) external;
+
+    /// @notice Set the mint zap, the one contract that may make a locked or boosted mint for another
+    ///         account (its caller). Admin only.
+    /// @param zap The zap, or zero for none.
+    function setMintZap(
+        address zap
     ) external;
 
     /// @notice Set the price oracle every fund reads. Admin only. The new oracle must already price
@@ -354,6 +365,11 @@ interface IFundFactory {
     ///         registry treasury.
     /// @return The recipient.
     function sweepRecipient() external view returns (address);
+
+    /// @notice The mint zap: the one contract that may make a locked or boosted mint for another
+    ///         account (zero for none).
+    /// @return The zap.
+    function mintZap() external view returns (address);
 
     /// @notice The USDG token every pool is paired with.
     /// @return USDG.

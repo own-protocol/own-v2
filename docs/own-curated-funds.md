@@ -107,8 +107,9 @@ Updated 2026-10-12: the premium yield redesign (spec `plans/fund-premium-rebate-
   `mintPrice = max(max(spot, TWAP) × (1 + mintAdjustmentBps), NAV)`. The tokens are staked for the
   receiver and locked for `mintLock` (default 15 days, 0 allowed): they cannot be transferred or
   unstaked until then, but can be redeemed at NAV through `FundStaking.redeem`. One lock per
-  account; a second mint locks the total until the share-weighted end, so a mint to someone else
-  cannot hold their earlier shares longer than it pays for. The adjustment is signed (default 0,
+  account; a second mint locks the total until the share-weighted end. A locked or boosted mint
+  goes only to the caller (`NotReceiver` otherwise; the factory's `mintZap` is the one exception,
+  minting for its own caller), so nobody can put a lock or a boost on someone else. The adjustment is signed (default 0,
   -50% to +100%) and the price is never below NAV. No oracle values the deposit, minters cannot
   pick what the fund buys, and a mint never dilutes holders. `previewMint(navShares, atNav)`
   returns `(shares, mintPrice, amounts, usdgAmount, locked)`. Minting needs the pool's price, so it
@@ -149,8 +150,8 @@ Updated 2026-10-12: the premium yield redesign (spec `plans/fund-premium-rebate-
   redeems, so redeemers never take it and outstanding boosts stay funded however many holders
   leave. While it holds anything, redeems need basket prices to scale their claim.
 - **Mint zap:** `FundMintZap.zapMint` takes one token, runs the caller's swaps through
-  admin-allowed routers into the slice, mints (direct or at NAV) for the receiver, and
-  refunds whatever is left. The minter pays the swap slippage, not the fund's holders.
+  admin-allowed routers into the slice, mints (direct or at NAV) for the caller, and
+  refunds whatever is left. The admin registers it with `factory.setMintZap`. The minter pays the swap slippage, not the fund's holders.
 - **Redeem** at any time, as above. It needs no oracle and cannot be paused. If one basket token
   can't be transferred (paused, or blacklisting the fund), `redeemSkipping` names it to leave out:
   that slice is forfeited and stays in the fund for the remaining holders.

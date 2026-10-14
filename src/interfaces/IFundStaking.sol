@@ -343,7 +343,8 @@ interface IFundStaking is IERC20, IERC721Receiver {
         address account
     ) external view returns (uint256);
 
-    /// @notice Stake fund tokens.
+    /// @notice Stake fund tokens. Launch-locked tokens can be staked only for the caller (reverts
+    ///         {SharesLocked} otherwise); their lock moves onto the shares.
     /// @param assets   Fund tokens.
     /// @param receiver Receiver of the shares.
     /// @return shares Shares minted.

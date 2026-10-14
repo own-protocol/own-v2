@@ -133,6 +133,9 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
     IssuanceStep[] private _issuanceSteps;
     YieldPoint[] private _yieldCurve;
 
+    /// @inheritdoc IFundFactory
+    address public override mintZap;
+
     /// @notice Emitted once, when the hook is wired.
     /// @param hook The hook.
     event HookSet(address hook);
@@ -322,6 +325,14 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
     ) external override onlyAdmin {
         _sweepRecipient = recipient;
         emit SweepRecipientSet(recipient);
+    }
+
+    /// @inheritdoc IFundFactory
+    function setMintZap(
+        address zap
+    ) external override onlyAdmin {
+        mintZap = zap;
+        emit MintZapSet(zap);
     }
 
     /// @inheritdoc IFundFactory
