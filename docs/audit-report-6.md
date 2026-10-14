@@ -90,10 +90,10 @@ M-01, M-02, M-03, M-04, M-06, M-08 and L-04 again on its own.
 | -------- | ----- | ----- | ---- | ------------ | --------- |
 | Critical | 0 | 0 | 0 | 0 | 0 |
 | High     | 3 | 3 | 0 | 0 | 0 |
-| Medium   | 14 | 4 | 10 | 0 | 0 |
+| Medium   | 14 | 7 | 7 | 0 | 0 |
 | Low      | 8 | 2 | 6 | 0 | 0 |
 | Info     | 0 | 0 | 0 | 0 | 0 |
-| **Total** | **25** | **9** | **16** | **0** | **0** |
+| **Total** | **25** | **12** | **13** | **0** | **0** |
 
 | ID | Severity | Finding | Conf | Status |
 | -- | -------- | ------- | ---- | ------ |
@@ -103,10 +103,10 @@ M-01, M-02, M-03, M-04, M-06, M-08 and L-04 again on its own.
 | A6-M-01 | Medium | A 30-minute pool crash shrinks the redeem supply and over-pays the basket | 75 | Fixed (`fbde008`) |
 | A6-M-02 | Medium | Right after seeding the position TWAP covers seconds; one block sets redeem supply | 75 | Fixed (`fbde008`) |
 | A6-M-03 | Medium | Dust bribes fill the 32 reward-token slots; later bribes in new tokens revert | 90 | Fixed (`195c055`) |
-| A6-M-04 | Medium | Compliance uses live supply, so mint → flip → redeem fails an honest curator | 80 | Open |
+| A6-M-04 | Medium | Compliance uses live supply, so mint → flip → redeem fails an honest curator | 80 | Fixed (`93c4e24`) |
 | A6-M-05 | Medium | A flip in the launch epoch uses up every curator's grace week | 80 | Fixed (`e4a69df`) |
-| A6-M-06 | Medium | One premium reading prices up to 8 h of staking yield; caller picks the moment | 80 | Open |
-| A6-M-07 | Medium | One paused / blacklisting basket token blocks every redeem | 80 | Open |
+| A6-M-06 | Medium | One premium reading prices up to 8 h of staking yield; caller picks the moment | 80 | Fixed (`0dcbeb0`) |
+| A6-M-07 | Medium | One paused / blacklisting basket token blocks every redeem | 80 | Fixed (`0dcbeb0`) |
 | A6-M-08 | Medium | After `setGovernor`, bribers refund bribes that voters already claimed | 75 | Open |
 | A6-M-09 | Medium | `stake` moves the caller's launch lock onto any receiver | 85 | Open |
 | A6-M-10 | Medium | Anyone can mint to any receiver and put a lock and a boost on it | 85 | Open |
@@ -240,7 +240,7 @@ protocol curator. `FundCurators` now tracks only the fund token, USDG and stakin
 `registerRewardToken`, the 32 cap and its errors are removed and every `_distributeAll` loops three
 tokens. Test `test_postBribe_manyRewardTokens_neverBlocked` posts 40 dust bribes in 40 tokens.
 
-## A6-M-04 — Compliance uses live supply, so mint → flip → redeem fails an honest curator (Medium, Open)
+## A6-M-04 — Compliance uses live supply, so mint → flip → redeem fails an honest curator (Medium, Fixed 2026-10-14)
 
 `FundCurators.checkCompliance` (`src/funds/FundCurators.sol:153`). Round 1: 3 agents. Round 2:
 raised again as a lead (`compliance-supply-timing`).
@@ -266,7 +266,15 @@ script comment still documents 50 bps (`DeployFundsRobinhood.s.sol:45`).
 **Suggested fix:** compare against a fund-supply checkpoint for the tallied epoch (an
 `EpochHistory` of `Fund.totalSupply`, minimum-in-epoch like staking).
 
-## A6-M-06 — One premium reading prices up to 8 h of staking yield; caller picks the moment (Medium, Open)
+**Fix (`93c4e24`, 2026-10-14, Bhargav's direction):** the minimum is now a dollar value,
+`minStakeUsd` (18 decimals; `CreateFundParams.minCuratorStakeUsd`, admin `setMinStake`), compared
+with the curator's stake record for the epoch valued at `tryNav()`. Mints and redeems happen at
+NAV, so they no longer move the bar. With no NAV price the check returns before touching anyone, so
+a stale feed changes nobody's standing that week. The bps cap and `InvalidMinStake` are gone. Tests
+`test_checkCompliance_mintBeforeFlipDoesNotFailCurator` and
+`test_checkCompliance_noNavPrice_changesNobody`.
+
+## A6-M-06 — One premium reading prices up to 8 h of staking yield; caller picks the moment (Medium, Fixed 2026-10-14)
 
 `FundStaking._accrue` (`src/funds/FundStaking.sol:497`). Round 1: 6 agent runs. Round 2: raised
 again as a lead (`caller-timed-premium-reading`).
@@ -288,7 +296,17 @@ the NatSpec now calls this intended).
 `elapsed` per reading to the TWAP window and have the keeper accrue every ~30 minutes; pay each
 chunk at the lower of the rate at its start and its end.
 
-## A6-M-07 — One paused / blacklisting basket token blocks every redeem (Medium, Open)
+**Fix (`0dcbeb0`, 2026-10-14, Bhargav's direction):** `_accrue` stores the rate of each fresh
+reading and pays the time since the last accrual at the lower of that stored rate and the rate
+read now, so a call timed at a high premium earns no more than the earlier reading allows. When
+the premium can't be read the clock no longer moves, so the stretch waits and is paid once a price
+is back. The 8-hour cap is removed (it would clip that stretch). The first reading after staking
+begins has nothing to compare with and pays at its own rate. The keeper will call `accrue` hourly
+(a keeper job, not built yet). Trade-off: a stake made during a stale stretch shares that stretch
+when it is paid, the same class as A6-M-11. Tests `test_accrue_paysLowerOfTwoReadings`,
+`test_accrue_staleOracle_timeWaits`, `test_accrue_paysTheWholeStretch`.
+
+## A6-M-07 — One paused / blacklisting basket token blocks every redeem (Medium, Fixed 2026-10-14)
 
 `Fund.redeem` (`src/funds/Fund.sol:290`). Round 1: economic-security, invariant.
 
@@ -303,6 +321,14 @@ A6-M-12 is a second way to the same effect.
 
 **Suggested fix:** let the caller name assets to skip (forfeiting that slice to remaining
 holders), or credit a failed transfer to the receiver as a later claim.
+
+**Fix (`0dcbeb0`, 2026-10-14, Bhargav's pick):** `Fund.redeemSkipping(shares, receiver,
+minAmountsOut, minUsdgOut, skip)` pays nothing of the named basket assets; those slices stay in
+the fund for the remaining holders. `redeem` is unchanged and shares the code path. Unchanged:
+`FundStaking.redeem` and `FundRedeemZap` have no skip (a staker unstakes and calls the fund), and
+`FundLaunch.finalize` still needs every launch token to transfer. Tests
+`test_redeemSkipping_frozenAssetLeftInFund`, `test_redeemSkipping_minimumOnSkippedAsset_reverts`,
+`test_redeemSkipping_unknownTokenIgnored`.
 
 ## A6-M-08 — After `setGovernor`, bribers refund bribes that voters already claimed (Medium, Open)
 
