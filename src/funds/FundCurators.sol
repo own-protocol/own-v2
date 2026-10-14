@@ -190,8 +190,10 @@ contract FundCurators is IFundCurators, Initializable, ReentrancyGuardTransient 
             _protocolOwed[token] = 0;
         }
         if (amount == 0) return 0;
-        _reserved[token] -= amount;
+        // A staked-share transfer can call back into {notifyYield}; the shares leave `_reserved`
+        // only once they are gone, so they are never counted as fresh income.
         IERC20(token).safeTransfer(msg.sender, amount);
+        _reserved[token] -= amount;
         emit FeesClaimed(msg.sender, token, amount);
     }
 

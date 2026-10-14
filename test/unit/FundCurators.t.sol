@@ -280,6 +280,31 @@ contract FundCuratorsTest is FundTestBase {
         assertEq(curators.claim(address(staking)), locked);
     }
 
+    /// @dev A6-H-03: a boosted module accrues inside the claim's transfer; the claimed shares must
+    ///      not be shared out again as fresh income.
+    function test_claim_boostedModule_doesNotRecountClaimedShares() public {
+        _earnYield();
+        address carol = makeAddr("carol");
+        _fundSlice(carol, 1e18);
+        vm.prank(carol);
+        fund.mint(1e18, 0, address(curators), false);
+        assertGt(staking.boostOf(address(curators)).usdLeft, 0);
+
+        vm.warp(block.timestamp + 8 hours);
+        _refreshFeeds();
+        uint256 owed = curators.claimable(protocolCurator, address(staking));
+        assertGt(owed, 0);
+        vm.prank(protocolCurator);
+        assertEq(curators.claim(address(staking)), owed);
+
+        (uint256 lockedA,) = curators.lockedYieldOf(curatorA);
+        (uint256 lockedB,) = curators.lockedYieldOf(curatorB);
+        uint256 promised = curators.claimable(protocolCurator, address(staking))
+            + curators.claimable(curatorA, address(staking)) + curators.claimable(curatorB, address(staking)) + lockedA
+            + lockedB;
+        assertApproxEqAbs(promised, staking.balanceOf(address(curators)), 4);
+    }
+
     // ──────────────────────────────────────────────────────────
     //  Bribe reward tokens
     // ──────────────────────────────────────────────────────────
