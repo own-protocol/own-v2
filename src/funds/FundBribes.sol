@@ -15,8 +15,10 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 /// @title FundBribes — weight-vote and listing bribes for one fund
 /// @notice See {IFundBribes}.
-/// @dev Beacon proxy per fund; storage is append-only across upgrades. Votes are read from the
-///      fund's current governor; only stake locked for bribes counts, never curator slices. Each
+/// @dev Beacon proxy per fund; storage is append-only across upgrades. Every bribe is kept under the
+///      governor live when it was posted, and its claims and refunds read that governor's votes, so
+///      a governor swap neither reopens old bribes nor mixes up proposal ids. Only stake locked for
+///      bribes counts, never curator slices. Each
 ///      claim is the claimant's share of a total fixed before claims open (bribes close when the
 ///      epoch is tallied or the proposal stops being active), rounded down, so claims never exceed
 ///      the bribe.
@@ -26,15 +28,24 @@ contract FundBribes is IFundBribes, Initializable, ReentrancyGuardTransient {
     /// @inheritdoc IFundBribes
     address public override fund;
 
-    mapping(uint256 epoch => mapping(address token => mapping(address reward => uint256))) private _bribes;
-    mapping(uint256 epoch => mapping(address token => mapping(address reward => mapping(address briber => uint256))))
-        private _bribesBy;
-    mapping(uint256 epoch => mapping(address token => mapping(address reward => mapping(address account => bool))))
-        private _claimed;
+    mapping(address gov => mapping(uint256 epoch => mapping(address token => mapping(address reward => uint256))))
+        private _bribes;
+    mapping(
+        address gov
+            => mapping(
+                uint256 epoch => mapping(address token => mapping(address reward => mapping(address => uint256)))
+            )
+    ) private _bribesBy;
+    mapping(
+        address gov
+            => mapping(uint256 epoch => mapping(address token => mapping(address reward => mapping(address => bool))))
+    ) private _claimed;
 
-    mapping(uint256 id => mapping(address reward => uint256)) private _listingBribes;
-    mapping(uint256 id => mapping(address reward => mapping(address briber => uint256))) private _listingBribesBy;
-    mapping(uint256 id => mapping(address reward => mapping(address account => bool))) private _listingClaimed;
+    mapping(address gov => mapping(uint256 id => mapping(address reward => uint256))) private _listingBribes;
+    mapping(address gov => mapping(uint256 id => mapping(address reward => mapping(address briber => uint256)))) private
+        _listingBribesBy;
+    mapping(address gov => mapping(uint256 id => mapping(address reward => mapping(address account => bool)))) private
+        _listingClaimed;
 
     IFundFactory private _factory;
 
@@ -63,42 +74,44 @@ contract FundBribes is IFundBribes, Initializable, ReentrancyGuardTransient {
         if (epoch < gov.currentEpoch() || gov.isTallied(epoch)) revert EpochClosed();
         uint256 cut;
         (net, cut) = _pull(token, reward, amount);
-        _bribes[epoch][token][reward] += net;
-        _bribesBy[epoch][token][reward][msg.sender] += net;
+        _bribes[address(gov)][epoch][token][reward] += net;
+        _bribesBy[address(gov)][epoch][token][reward][msg.sender] += net;
         emit BribePosted(msg.sender, token, epoch, reward, net, cut);
     }
 
     /// @inheritdoc IFundBribes
     function claimBribe(
+        IFundGovernor gov,
         address token,
         uint256 epoch,
         address reward
     ) external override nonReentrant returns (uint256 amount) {
-        if (_claimed[epoch][token][reward][msg.sender]) revert AlreadyClaimed();
-        IFundGovernor gov = _governor();
+        if (_claimed[address(gov)][epoch][token][reward][msg.sender]) revert AlreadyClaimed();
         if (!gov.isTallied(epoch)) revert EpochNotTallied();
         amount = _share(gov, msg.sender, token, epoch, reward);
         if (amount == 0) revert NothingToClaim();
-        _claimed[epoch][token][reward][msg.sender] = true;
+        _claimed[address(gov)][epoch][token][reward][msg.sender] = true;
         IERC20(reward).safeTransfer(msg.sender, amount);
         emit BribeClaimed(msg.sender, token, epoch, reward, amount);
     }
 
     /// @inheritdoc IFundBribes
     function refundBribe(
+        IFundGovernor gov,
         address token,
         uint256 epoch,
         address reward
     ) external override nonReentrant returns (uint256 amount) {
-        IFundGovernor gov = _governor();
         // Refundable when no locked stake voted for the token in a tallied epoch, or the epoch was
-        // skipped.
-        bool refundable = gov.isTallied(epoch) ? gov.bribeVotes(token, epoch) == 0 : epoch < gov.nextEpochToTally();
+        // skipped or will never be tallied (its governor was replaced).
+        bool refundable = gov.isTallied(epoch)
+            ? gov.bribeVotes(token, epoch) == 0
+            : epoch < gov.nextEpochToTally() || gov != _governor();
         if (!refundable) revert NotRefundable();
-        amount = _bribesBy[epoch][token][reward][msg.sender];
+        amount = _bribesBy[address(gov)][epoch][token][reward][msg.sender];
         if (amount == 0) revert NothingToClaim();
-        _bribesBy[epoch][token][reward][msg.sender] = 0;
-        _bribes[epoch][token][reward] -= amount;
+        _bribesBy[address(gov)][epoch][token][reward][msg.sender] = 0;
+        _bribes[address(gov)][epoch][token][reward] -= amount;
         IERC20(reward).safeTransfer(msg.sender, amount);
         emit BribeRefunded(msg.sender, token, epoch, reward, amount);
     }
@@ -116,36 +129,37 @@ contract FundBribes is IFundBribes, Initializable, ReentrancyGuardTransient {
         }
         uint256 cut;
         (net, cut) = _pull(p.target, reward, amount);
-        _listingBribes[proposalId][reward] += net;
-        _listingBribesBy[proposalId][reward][msg.sender] += net;
+        _listingBribes[address(gov)][proposalId][reward] += net;
+        _listingBribesBy[address(gov)][proposalId][reward][msg.sender] += net;
         emit ListingBribePosted(msg.sender, proposalId, reward, net, cut);
     }
 
     /// @inheritdoc IFundBribes
     function claimListingBribe(
+        IFundGovernor gov,
         uint256 proposalId,
         address reward
     ) external override nonReentrant returns (uint256 amount) {
-        if (_listingClaimed[proposalId][reward][msg.sender]) revert AlreadyClaimed();
-        IFundGovernor gov = _governor();
+        if (_listingClaimed[address(gov)][proposalId][reward][msg.sender]) revert AlreadyClaimed();
         if (gov.state(proposalId) != IFundGovernor.ProposalState.Executed) revert NothingToClaim();
         IFundGovernor.ProposalVote memory v = gov.proposalVote(proposalId, msg.sender);
         if (!v.support || v.bribeVotes == 0) revert NothingToClaim();
         // Rounds down: claims together never exceed the bribe.
-        amount =
-            Math.mulDiv(_listingBribes[proposalId][reward], v.bribeVotes, gov.getProposal(proposalId).bribeYesVotes);
+        amount = Math.mulDiv(
+            _listingBribes[address(gov)][proposalId][reward], v.bribeVotes, gov.getProposal(proposalId).bribeYesVotes
+        );
         if (amount == 0) revert NothingToClaim();
-        _listingClaimed[proposalId][reward][msg.sender] = true;
+        _listingClaimed[address(gov)][proposalId][reward][msg.sender] = true;
         IERC20(reward).safeTransfer(msg.sender, amount);
         emit ListingBribeClaimed(msg.sender, proposalId, reward, amount);
     }
 
     /// @inheritdoc IFundBribes
     function refundListingBribe(
+        IFundGovernor gov,
         uint256 proposalId,
         address reward
     ) external override nonReentrant returns (uint256 amount) {
-        IFundGovernor gov = _governor();
         IFundGovernor.ProposalState s = gov.state(proposalId);
         // An executed listing with no locked yes stake has no one to pay.
         bool unpaid = s == IFundGovernor.ProposalState.Executed && gov.getProposal(proposalId).bribeYesVotes == 0;
@@ -153,33 +167,42 @@ contract FundBribes is IFundBribes, Initializable, ReentrancyGuardTransient {
             !unpaid && s != IFundGovernor.ProposalState.Defeated && s != IFundGovernor.ProposalState.Vetoed
                 && s != IFundGovernor.ProposalState.Cancelled && s != IFundGovernor.ProposalState.Expired
         ) revert NotRefundable();
-        amount = _listingBribesBy[proposalId][reward][msg.sender];
+        amount = _listingBribesBy[address(gov)][proposalId][reward][msg.sender];
         if (amount == 0) revert NothingToClaim();
-        _listingBribesBy[proposalId][reward][msg.sender] = 0;
-        _listingBribes[proposalId][reward] -= amount;
+        _listingBribesBy[address(gov)][proposalId][reward][msg.sender] = 0;
+        _listingBribes[address(gov)][proposalId][reward] -= amount;
         IERC20(reward).safeTransfer(msg.sender, amount);
         emit ListingBribeRefunded(msg.sender, proposalId, reward, amount);
     }
 
     /// @inheritdoc IFundBribes
-    function bribeOf(address token, uint256 epoch, address reward) external view override returns (uint256) {
-        return _bribes[epoch][token][reward];
+    function bribeOf(
+        IFundGovernor gov,
+        address token,
+        uint256 epoch,
+        address reward
+    ) external view override returns (uint256) {
+        return _bribes[address(gov)][epoch][token][reward];
     }
 
     /// @inheritdoc IFundBribes
-    function listingBribeOf(uint256 proposalId, address reward) external view override returns (uint256) {
-        return _listingBribes[proposalId][reward];
+    function listingBribeOf(
+        IFundGovernor gov,
+        uint256 proposalId,
+        address reward
+    ) external view override returns (uint256) {
+        return _listingBribes[address(gov)][proposalId][reward];
     }
 
     /// @inheritdoc IFundBribes
     function claimableBribe(
+        IFundGovernor gov,
         address account,
         address token,
         uint256 epoch,
         address reward
     ) external view override returns (uint256) {
-        IFundGovernor gov = _governor();
-        if (_claimed[epoch][token][reward][account] || !gov.isTallied(epoch)) return 0;
+        if (_claimed[address(gov)][epoch][token][reward][account] || !gov.isTallied(epoch)) return 0;
         return _share(gov, account, token, epoch, reward);
     }
 
@@ -193,7 +216,7 @@ contract FundBribes is IFundBribes, Initializable, ReentrancyGuardTransient {
         uint256 total = gov.bribeVotes(token, epoch);
         if (total == 0) return 0;
         // Rounds down: claims together never exceed the bribe.
-        return Math.mulDiv(_bribes[epoch][token][reward], gov.bribeVotesOf(account, token, epoch), total);
+        return Math.mulDiv(_bribes[address(gov)][epoch][token][reward], gov.bribeVotesOf(account, token, epoch), total);
     }
 
     function _pull(address token, address reward, uint256 amount) internal returns (uint256 net, uint256 cut) {

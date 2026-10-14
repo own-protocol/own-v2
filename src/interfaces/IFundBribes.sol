@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
+import {IFundGovernor} from "./IFundGovernor.sol";
+
 /// @title IFundBribes — bribes on a fund's weight vote and on its listing proposals
 /// @notice Anyone can post a bribe, typically a token team wanting its token listed or
 ///         up-weighted. Bribes are paid in admin-listed tokens (e.g. USDG, MONEY) or in the bribed
@@ -19,6 +21,11 @@ pragma solidity 0.8.28;
 ///         - Listing bribes are per listing proposal. If the listing executes, its locked yes stake
 ///           splits the bribe in proportion to its votes; if it fails, is vetoed, cancelled or
 ///           expires, or executes with no locked yes stake, the briber takes it back.
+///
+///         Each bribe is kept under the governor live when it was posted; claims, refunds and the
+///         views name that governor (`gov`), so a governor swap leaves earlier bribes with the
+///         votes they were posted against. Bribes for epochs a replaced governor never tallied can be
+///         taken back.
 interface IFundBribes {
     /// @notice Emitted when a weight-vote bribe is posted.
     /// @param briber Who posted it.
@@ -123,19 +130,31 @@ interface IFundBribes {
     function postBribe(address token, uint256 epoch, address reward, uint256 amount) external returns (uint256 net);
 
     /// @notice Claim the caller's share of the `reward` bribes for `token` in a tallied `epoch`.
+    /// @param gov    Governor the bribe was posted under.
     /// @param token  Basket token.
     /// @param epoch  Epoch.
     /// @param reward Token paid.
     /// @return amount Amount claimed.
-    function claimBribe(address token, uint256 epoch, address reward) external returns (uint256 amount);
+    function claimBribe(
+        IFundGovernor gov,
+        address token,
+        uint256 epoch,
+        address reward
+    ) external returns (uint256 amount);
 
     /// @notice Take back the caller's bribe when no locked stake voted for `token` in `epoch`, or the
-    ///         epoch was skipped.
+    ///         epoch was skipped, or `gov` was replaced before tallying it.
+    /// @param gov    Governor the bribe was posted under.
     /// @param token  Basket token.
     /// @param epoch  Epoch.
     /// @param reward Token.
     /// @return amount Amount refunded.
-    function refundBribe(address token, uint256 epoch, address reward) external returns (uint256 amount);
+    function refundBribe(
+        IFundGovernor gov,
+        address token,
+        uint256 epoch,
+        address reward
+    ) external returns (uint256 amount);
 
     /// @notice Post a bribe on an active listing proposal, paid to its yes voters if it executes.
     /// @param proposalId Listing proposal.
@@ -145,42 +164,56 @@ interface IFundBribes {
     function postListingBribe(uint256 proposalId, address reward, uint256 amount) external returns (uint256 net);
 
     /// @notice Claim the caller's share of an executed listing's `reward` bribes.
+    /// @param gov        Governor the proposal belongs to.
     /// @param proposalId Listing proposal.
     /// @param reward     Token paid.
     /// @return amount Amount claimed.
-    function claimListingBribe(uint256 proposalId, address reward) external returns (uint256 amount);
+    function claimListingBribe(
+        IFundGovernor gov,
+        uint256 proposalId,
+        address reward
+    ) external returns (uint256 amount);
 
     /// @notice Take back the caller's bribe on a listing that failed, was vetoed, cancelled or expired,
     ///         or executed with no locked yes stake.
+    /// @param gov        Governor the proposal belongs to.
     /// @param proposalId Listing proposal.
     /// @param reward     Token.
     /// @return amount Amount refunded.
-    function refundListingBribe(uint256 proposalId, address reward) external returns (uint256 amount);
+    function refundListingBribe(
+        IFundGovernor gov,
+        uint256 proposalId,
+        address reward
+    ) external returns (uint256 amount);
 
     /// @notice The fund.
     /// @return The fund.
     function fund() external view returns (address);
 
-    /// @notice Total `reward` bribed for `token` in `epoch`, after the curators' cut.
+    /// @notice Total `reward` bribed for `token` in `epoch` under `gov`, after the curators' cut.
+    /// @param gov    Governor the bribes were posted under.
     /// @param token  Basket token.
     /// @param epoch  Epoch.
     /// @param reward Token.
     /// @return The amount.
-    function bribeOf(address token, uint256 epoch, address reward) external view returns (uint256);
+    function bribeOf(IFundGovernor gov, address token, uint256 epoch, address reward) external view returns (uint256);
 
-    /// @notice Total `reward` bribed on a listing proposal, after the curators' cut.
+    /// @notice Total `reward` bribed on a listing proposal of `gov`, after the curators' cut.
+    /// @param gov        Governor the proposal belongs to.
     /// @param proposalId Listing proposal.
     /// @param reward     Token.
     /// @return The amount.
-    function listingBribeOf(uint256 proposalId, address reward) external view returns (uint256);
+    function listingBribeOf(IFundGovernor gov, uint256 proposalId, address reward) external view returns (uint256);
 
-    /// @notice What `account` can claim of the `reward` bribes for `token` in `epoch`.
+    /// @notice What `account` can claim of the `reward` bribes for `token` in `epoch` under `gov`.
+    /// @param gov     Governor the bribes were posted under.
     /// @param account The voter.
     /// @param token   Basket token.
     /// @param epoch   Epoch.
     /// @param reward  Token.
     /// @return The amount.
     function claimableBribe(
+        IFundGovernor gov,
         address account,
         address token,
         uint256 epoch,
