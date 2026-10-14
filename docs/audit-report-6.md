@@ -91,9 +91,9 @@ M-01, M-02, M-03, M-04, M-06, M-08 and L-04 again on its own.
 | Critical | 0 | 0 | 0 | 0 | 0 |
 | High     | 3 | 3 | 0 | 0 | 0 |
 | Medium   | 14 | 13 | 0 | 0 | 1 |
-| Low      | 8 | 2 | 6 | 0 | 0 |
+| Low      | 8 | 8 | 0 | 0 | 0 |
 | Info     | 0 | 0 | 0 | 0 | 0 |
-| **Total** | **25** | **18** | **6** | **0** | **1** |
+| **Total** | **25** | **24** | **0** | **0** | **1** |
 
 | ID | Severity | Finding | Conf | Status |
 | -- | -------- | ------- | ---- | ------ |
@@ -114,14 +114,14 @@ M-01, M-02, M-03, M-04, M-06, M-08 and L-04 again on its own.
 | A6-M-12 | Medium | One stale basket price blocks every redeem while the reserve holds value | 80 | Fixed (`bcea925`) |
 | A6-M-13 | Medium | The price keeper moves a hub price without limit by repeating pushes | 75 | Fixed (`d06dace`) |
 | A6-M-14 | Medium | Other staked shares shield a boost after its minted shares are sold | 75 | By design |
-| A6-L-01 | Low | A bribe posted before a failed launch can never be refunded | 80 | Open |
+| A6-L-01 | Low | A bribe posted before a failed launch can never be refunded | 80 | Fixed (`6c6fb91`) |
 | A6-L-02 | Low | A reward token whose balance drops below `_reserved` blocks flip and curator changes | 75 | Fixed (`5db4443`) |
 | A6-L-03 | Low | A mint at NAV after a 30-minute dump is charged at the TWAP pool reading | 65 | Fixed (`fbde008`) |
-| A6-L-04 | Low | Before seeding, every rebalance swap skips the daily volume cap (manager-only) | 75 | Open |
-| A6-L-05 | Low | The auction rate rounds down, so some lots start at the floor price | 75 | Open |
-| A6-L-06 | Low | The pool opens at the close price after the basket has moved | 75 | Open |
-| A6-L-07 | Low | A tiny direct mint makes a boost that never ends | 75 | Open |
-| A6-L-08 | Low | A replaced protocol curator keeps the protocol vote on open proposals | 70 | Open |
+| A6-L-04 | Low | Before seeding, every rebalance swap skips the daily volume cap (manager-only) | 75 | Fixed (`6c6fb91`) |
+| A6-L-05 | Low | The auction rate rounds down, so some lots start at the floor price | 75 | Fixed (`6c6fb91`) |
+| A6-L-06 | Low | The pool opens at the close price after the basket has moved | 75 | Fixed (`6c6fb91`) |
+| A6-L-07 | Low | A tiny direct mint makes a boost that never ends | 75 | Fixed (`6c6fb91`) |
+| A6-L-08 | Low | A replaced protocol curator keeps the protocol vote on open proposals | 70 | Fixed (`6c6fb91`) |
 
 ---
 
@@ -546,7 +546,7 @@ premium already went to backing, and a forfeit only hands holders a windfall. St
 interchangeable, so the sale can as well be read as selling the older ones. Repeating mint and
 sell grows TVL each time; its only effect on others is selling pressure on the pool premium.
 
-## A6-L-01 — A bribe posted before a failed launch can never be refunded (Low, Open)
+## A6-L-01 — A bribe posted before a failed launch can never be refunded (Low, Fixed 2026-10-14)
 
 `FundBribes.postBribe` (`src/funds/FundBribes.sol:55`) / `refundBribe` (`:88`). Round 1:
 execution-trace.
@@ -558,6 +558,10 @@ exit; the cut has already gone to the curators module.
 
 **Suggested fix:** revert `postBribe` (and `postListingBribe`) until `launched`, or refund when
 the launch status is Failed.
+
+**Fix (`6c6fb91`, 2026-10-14):** `postBribe` reverts `NotLaunched` until the fund has launched, so
+no bribe can predate a failed launch. Listing bribes need an open proposal, which cannot exist
+before governance starts. Test `test_postBribe_beforeLaunch_reverts`.
 
 ## A6-L-03 — A mint at NAV after a 30-minute dump is charged at the TWAP pool reading (Low, Fixed 2026-10-14)
 
@@ -576,7 +580,7 @@ can be redeemed at once through `FundStaking.redeem`.
 **Fix (`fbde008`, 2026-10-14):** closed by the A6-M-01 fix: a mint takes the higher pool USDG and
 the higher pool fund-token amount of the TWAP and spot readings.
 
-## A6-L-04 — Before seeding, every rebalance swap skips the daily volume cap (Low, Open)
+## A6-L-04 — Before seeding, every rebalance swap skips the daily volume cap (Low, Fixed 2026-10-14)
 
 `FundRebalance.rebalance` (`src/funds/libraries/FundRebalance.sol:64,100`), via `Fund.rebalance`
 (`src/funds/Fund.sol:330`). Round 1: trust-gap (PoC), invariant. Round 2: raised again by 4
@@ -593,7 +597,13 @@ manager-or-admin only with no deadline, so the manager decides when the window e
 **Suggested fix:** track volume while launching too (keep only the buy-USDG allowance), or cap
 the total sold before seeding at a one-time launch allowance.
 
-## A6-L-05 — The auction rate rounds down, so some lots start at the floor price (Low, Open, new 2026-10-13)
+**Fix (`6c6fb91`, 2026-10-14):** before seeding, a USDG buy is free of the daily cap only for the
+part that takes idle USDG up to the launch's `poolUsdg`; the rest of that buy and every other swap
+count toward the cap. Tests `test_launchRebalance_capAppliesBeyondPoolUsdg`,
+`test_launchRebalance_usdgBeyondPoolCounts`; `test_seedPool_shortOfUsdg_rebalanceSellsTokensFirst`
+still passes.
+
+## A6-L-05 — The auction rate rounds down, so some lots start at the floor price (Low, Fixed 2026-10-14, new 2026-10-13)
 
 `FundAuctions.openLot` (`src/funds/FundAuctions.sol:84-91`). Round 2: 2 leads in pass 1, a
 finding in pass 2.
@@ -609,7 +619,12 @@ true rate of 10.99 → 10 is 9% low, so every fill reverts and the lot never fil
 **Suggested fix:** keep the rate at 1e36 scale, or compute the payment at fill time from both
 prices and decimals in one `mulDiv`.
 
-## A6-L-06 — The pool opens at the close price after the basket has moved (Low, Open, new 2026-10-13)
+**Fix (`6c6fb91`, 2026-10-14):** lot prices are buy units per 1e36 sell units (`PRICE_SCALE`), so
+the start premium and floor discount keep their digits for any pair. Test
+`test_openLot_cheapForExpensiveKeepsPrecision` (the report's 12.3 example now starts at 12.546 and
+floors at 11.931).
+
+## A6-L-06 — The pool opens at the close price after the basket has moved (Low, Fixed 2026-10-14, new 2026-10-13)
 
 `FundLaunch.seedPool` (`src/funds/FundLaunch.sol:210-226`). Round 2 pass 2: two agents (leads,
 promoted).
@@ -625,7 +640,12 @@ gross from one trade; ~$50k at +50%. A6-M-02 makes the first redeem worse in the
 fund-token side at the current NAV), or refuse to seed when the close-time price is off current
 NAV by more than a tolerance.
 
-## A6-L-07 — A tiny direct mint makes a boost that never ends (Low, Open, new 2026-10-13)
+**Fix (`6c6fb91`, 2026-10-14):** `seedPool` keeps the USDG (scaled for redemptions) and sizes the
+fund tokens at the NAV at seeding times the launch premium, rounding down; it reverts
+`NavUnavailable` without a NAV price. Tests `test_seedPool_basketMovedSinceClose_opensAtCurrentNav`,
+`test_seedPool_noNavPrice_reverts`.
+
+## A6-L-07 — A tiny direct mint makes a boost that never ends (Low, Fixed 2026-10-14, new 2026-10-13)
 
 `FundStaking.stakeMinted` (`src/funds/FundStaking.sol:192`). Round 2: lead in pass 1, finding
 plus lead in pass 2.
@@ -639,7 +659,11 @@ accrues first. That is the cheapest trigger for A6-H-03. Amounts are dust on the
 **Suggested fix:** in `stakeMinted`, revert (or skip the boost) when `budgetUsd != 0` and the
 added speed is 0.
 
-## A6-L-08 — A replaced protocol curator keeps the protocol vote on open proposals (Low, Open, new 2026-10-13)
+**Fix (`6c6fb91`, 2026-10-14):** Bhargav's pick, skip the boost: when a direct mint's boost speed
+rounds to zero, `stakeMinted` records no boost and burns its boost tokens into backing. Test
+`test_boost_tinyMintSkipsBoost`.
+
+## A6-L-08 — A replaced protocol curator keeps the protocol vote on open proposals (Low, Fixed 2026-10-14, new 2026-10-13)
 
 `ProposalBook._curatorVotes` (`src/funds/libraries/ProposalBook.sol:316`). Round 2 pass 2:
 access-control.
@@ -652,6 +676,10 @@ the vote, half of the 20% quorum) on every open List or Delist proposal, and P2 
 
 **Suggested fix:** give the protocol slice only when `msg.sender` is the live
 `protocolCurator()`.
+
+**Fix (`6c6fb91`, 2026-10-14):** the protocol slice goes to the live `protocolCurator()`; the
+snapshot's first entry (the protocol curator at the proposal) gets nothing unless it is still the
+protocol curator. Test `test_castVote_replacedProtocolCuratorVotesNothing`.
 
 ---
 
