@@ -34,10 +34,6 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuardTrans
     using EpochHistory for EpochHistory.History;
     using ValuationLib for Valuation;
 
-    // Longest period one accrual covers. Yield is distributed every 8 hours, so one
-    // premium reading never sets the rate for longer than that.
-    uint256 private constant MAX_ACCRUAL_PERIOD = 8 hours;
-
     // Maximum number of yield curve points.
     uint256 private constant MAX_YIELD_POINTS = 8;
 
@@ -134,6 +130,13 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuardTrans
 
     /// @inheritdoc IFundStaking
     uint256 public override potPending;
+
+    // Rate of the last fresh premium reading: each accrual pays at the lower of it and the rate
+    // read then, so no single reading prices the stretch on its own.
+    uint128 private _lastRate;
+
+    // False until the first fresh reading sets `_lastRate`.
+    bool private _rateRead;
 
     /// @param positionManager_ The Uniswap v4 PositionManager whose positions can be staked.
     constructor(
@@ -483,12 +486,12 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuardTrans
         emit Staked(msg.sender, receiver, assets, shares);
     }
 
-    /// @dev Mints the yield owed since the last accrual, at the rate of the premium read now, to
-    ///      stakers and to staked LP positions (on their fund tokens at the pool TWAP; LP yield is
-    ///      held here until claimed). The curators get `curatorYieldBps` of the stakers' yield minted
-    ///      on top (capped by `curatorYieldCapBps` of the staked balance a year when set), paid to the
-    ///      curators module as shares, so it stays staked. No yield without a fresh premium reading; the period is
-    ///      still consumed, so a stale oracle can only withhold yield, never inflate it later.
+    /// @dev Mints the yield owed since the last accrual, at the lower of the rate read now and the
+    ///      rate read then, to stakers and to staked LP positions (on their fund tokens at the pool
+    ///      TWAP; LP yield is held here until claimed). The curators get `curatorYieldBps` of the
+    ///      stakers' yield minted on top (capped by `curatorYieldCapBps` of the staked balance a year
+    ///      when set), paid to the curators module as shares, so it stays staked. Without a fresh
+    ///      premium reading the clock waits, so the stretch is paid once a price is back.
     function _accrue() internal returns (uint256) {
         Snapshot memory s;
         return _accrue(s);
@@ -497,22 +500,26 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuardTrans
     function _accrue(
         Snapshot memory s
     ) internal returns (uint256 minted) {
-        uint256 last = lastAccrual;
-        if (block.timestamp <= last) return 0;
-        uint256 elapsed = block.timestamp - last;
-        if (elapsed > MAX_ACCRUAL_PERIOD) elapsed = MAX_ACCRUAL_PERIOD;
-        lastAccrual = uint64(block.timestamp);
+        if (block.timestamp <= lastAccrual) return 0;
 
         uint256 staked = totalAssets();
         bool stakers = staked != 0 && totalSupply() != 0;
         _releasePot(stakers, s);
         staked = totalAssets();
         uint128 lpLiq = lpLiquidity;
-        if (!stakers && lpLiq == 0) return 0;
+        if (!stakers && lpLiq == 0) {
+            lastAccrual = uint64(block.timestamp);
+            return 0;
+        }
 
         (bool ok, int256 premium) = _valued(s).premiumBps();
         if (!ok) return 0;
-        uint256 rate = rateForPremium(premium);
+        uint256 read = rateForPremium(premium);
+        // The first reading has nothing to compare with; it covers only the stretch since staking began.
+        uint256 rate = _rateRead ? Math.min(read, _lastRate) : read;
+        (_lastRate, _rateRead) = (SafeCast.toUint128(read), true);
+        uint256 elapsed = block.timestamp - lastAccrual;
+        lastAccrual = uint64(block.timestamp);
         if (rate == 0) return 0;
 
         uint256 curatorShares;

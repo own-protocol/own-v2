@@ -418,6 +418,54 @@ contract FundTest is FundTestBase {
         assertGe(fund.navPerShare() * 10_001 / 10_000, navBefore);
     }
 
+    /// @dev A6-M-07: a basket token that can't be transferred blocks plain redeems, but the
+    ///      redeemer can leave it out; its slice stays in the fund for the remaining holders.
+    function test_redeemSkipping_frozenAssetLeftInFund() public {
+        vm.mockCallRevert(address(pons), abi.encodeWithSelector(IERC20.transfer.selector), "frozen");
+        vm.prank(alice);
+        vm.expectRevert();
+        fund.redeem(10_000e18, alice, new uint256[](0), 0);
+
+        uint256 ponsBal = pons.balanceOf(address(fund));
+        uint256 supply = fund.effectiveSupply();
+        (uint256[] memory preview,) = fund.previewRedeem(10_000e18);
+        address[] memory skip = new address[](1);
+        skip[0] = address(pons);
+        vm.prank(alice);
+        (uint256[] memory out,) = fund.redeemSkipping(10_000e18, alice, new uint256[](0), 0, skip);
+        vm.clearMockedCalls();
+
+        assertEq(out[0], preview[0]);
+        assertEq(out[1], 0);
+        assertEq(out[2], preview[2]);
+        assertEq(net.balanceOf(alice), out[0]);
+        assertEq(tsla.balanceOf(alice), out[2]);
+        assertEq(pons.balanceOf(address(fund)), ponsBal);
+        // Every remaining share now holds more of the skipped token.
+        assertGt(ponsBal * 1e18 / fund.effectiveSupply(), ponsBal * 1e18 / supply);
+    }
+
+    function test_redeemSkipping_minimumOnSkippedAsset_reverts() public {
+        uint256[] memory mins = new uint256[](3);
+        mins[1] = 1;
+        address[] memory skip = new address[](1);
+        skip[0] = address(pons);
+        vm.prank(alice);
+        vm.expectRevert(IFund.Slippage.selector);
+        fund.redeemSkipping(10_000e18, alice, mins, 0, skip);
+    }
+
+    function test_redeemSkipping_unknownTokenIgnored() public {
+        (uint256[] memory preview,) = fund.previewRedeem(10_000e18);
+        address[] memory skip = new address[](1);
+        skip[0] = address(0xdead);
+        vm.prank(alice);
+        (uint256[] memory out,) = fund.redeemSkipping(10_000e18, alice, new uint256[](0), 0, skip);
+        assertEq(out[0], preview[0]);
+        assertEq(out[1], preview[1]);
+        assertEq(out[2], preview[2]);
+    }
+
     function test_redeem_pumpedSpotCannotInflateUsdg() public {
         // Issuance would add real USDG to the fund; this checks the position's TWAP cap alone.
         _noIssuance();

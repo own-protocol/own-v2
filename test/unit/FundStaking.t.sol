@@ -100,17 +100,48 @@ contract FundStakingTest is FundTestBase {
         assertEq(staking.accrue(), 0);
     }
 
-    function test_accrue_staleOracle_noYieldAndPeriodConsumed() public {
+    /// @dev A6-M-06: a stale price pays nothing now and the time waits for the next price.
+    function test_accrue_staleOracle_timeWaits() public {
+        uint256 start = staking.lastAccrual();
         vm.warp(block.timestamp + STALENESS + 1);
         assertEq(staking.accrue(), 0);
+        assertEq(staking.lastAccrual(), start);
+
+        _refreshFeeds();
+        uint256 minted = staking.accrue();
         assertEq(staking.lastAccrual(), block.timestamp);
+        assertApproxEqRel(minted, staked * 10 * (block.timestamp - start) / (10_000 * 1 days), 0.001e18);
     }
 
-    function test_accrue_periodCapped() public {
+    /// @dev A6-M-06: each stretch pays at the lower of the rate read at its start and at its end,
+    ///      so a call timed at a high premium earns no more than the earlier reading allows.
+    function test_accrue_paysLowerOfTwoReadings() public {
+        vm.warp(block.timestamp + 8 hours);
+        _refreshFeeds();
+        staking.accrue(); // 30% premium: 0.1% a day
+
+        _setFeed(address(fund), _navPrice() * 21 / 10); // 110% premium: 0.3% a day
+        vm.warp(block.timestamp + 8 hours);
+        _refreshFeeds();
+        uint256 assets = staking.totalAssets();
+        assertApproxEqRel(staking.accrue(), assets * 10 * 8 hours / (10_000 * 1 days), 0.001e18);
+
+        vm.warp(block.timestamp + 8 hours);
+        _refreshFeeds();
+        assets = staking.totalAssets();
+        assertEq(staking.accrue(), assets * 30 * 8 hours / (10_000 * 1 days));
+
+        _setFeed(address(fund), _navPrice() * 104 / 100); // below the first tier
+        vm.warp(block.timestamp + 8 hours);
+        _refreshFeeds();
+        assertEq(staking.accrue(), 0);
+    }
+
+    function test_accrue_paysTheWholeStretch() public {
         vm.warp(block.timestamp + 5 days);
         _refreshFeeds();
-        uint256 minted = staking.accrue(); // one distribution period, not five days
-        assertApproxEqRel(minted, staked * 10 * 8 hours / (10_000 * 1 days), 0.001e18);
+        uint256 minted = staking.accrue();
+        assertApproxEqRel(minted, staked * 10 * 5 days / (10_000 * 1 days), 0.001e18);
     }
 
     function test_accrue_dilutesNonStakers() public {

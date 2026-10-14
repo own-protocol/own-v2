@@ -293,17 +293,35 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
         uint256[] calldata minAmountsOut,
         uint256 minUsdgOut
     ) external override nonReentrant returns (uint256[] memory amounts, uint256 usdgAmount) {
+        return _redeem(shares, receiver, minAmountsOut, minUsdgOut, new address[](0));
+    }
+
+    /// @inheritdoc IFund
+    function redeemSkipping(
+        uint256 shares,
+        address receiver,
+        uint256[] calldata minAmountsOut,
+        uint256 minUsdgOut,
+        address[] calldata skip
+    ) external override nonReentrant returns (uint256[] memory amounts, uint256 usdgAmount) {
+        return _redeem(shares, receiver, minAmountsOut, minUsdgOut, skip);
+    }
+
+    function _redeem(
+        uint256 shares,
+        address receiver,
+        uint256[] calldata minAmountsOut,
+        uint256 minUsdgOut,
+        address[] memory skip
+    ) internal returns (uint256[] memory amounts, uint256 usdgAmount) {
         if (shares == 0) revert ZeroAmount();
         if (receiver == address(0)) revert ZeroAddress();
         address[] memory basket = _assets;
         if (minAmountsOut.length != 0 && minAmountsOut.length != basket.length) revert LengthMismatch();
 
-        address hook = _hook();
-        (uint256 net, uint256 supply, uint256 idle) = _redeemQuote(basket, _usdg, hook, shares);
+        (uint256 net, uint256 supply, uint256 idle) = _redeemQuote(basket, _usdg, _hook(), shares);
         amounts = _redeemAssets(basket, net, supply);
-        for (uint256 i; i < minAmountsOut.length; ++i) {
-            if (amounts[i] < minAmountsOut[i]) revert Slippage();
-        }
+        _skipAndCheck(basket, amounts, skip, minAmountsOut);
 
         // Burning everything and minting the fees back moves locked launch tokens only by burning.
         _burn(msg.sender, shares);
@@ -313,7 +331,7 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
             if (amounts[i] != 0) IERC20(basket[i]).safeTransfer(receiver, amounts[i]);
         }
         if (idle != 0) IERC20(_usdg).safeTransfer(receiver, idle);
-        usdgAmount = idle + IFundHook(hook).redeemPosition(net, supply, receiver);
+        usdgAmount = idle + IFundHook(_hook()).redeemPosition(net, supply, receiver);
         if (usdgAmount < minUsdgOut) revert Slippage();
 
         emit Redeemed(msg.sender, receiver, shares, amounts, usdgAmount);
@@ -737,6 +755,24 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
         (poolUsdg, supply) = _boundedPoolAndSupply(hook, false);
         net = _claim(basket, usdg, shares - _fee(shares), poolUsdg, supply);
         idle = Math.mulDiv(_balanceOf(usdg), net, supply);
+    }
+
+    /// @dev Zeroes the skipped assets' amounts (their slices stay in the fund for the remaining
+    ///      holders), then checks the per-asset minimums.
+    function _skipAndCheck(
+        address[] memory basket,
+        uint256[] memory amounts,
+        address[] memory skip,
+        uint256[] calldata minAmountsOut
+    ) internal pure {
+        for (uint256 i; i < skip.length; ++i) {
+            for (uint256 j; j < basket.length; ++j) {
+                if (basket[j] == skip[i]) amounts[j] = 0;
+            }
+        }
+        for (uint256 i; i < minAmountsOut.length; ++i) {
+            if (amounts[i] < minAmountsOut[i]) revert Slippage();
+        }
     }
 
     /// @dev Each basket asset's share for `net` of `supply`. Rounds down.

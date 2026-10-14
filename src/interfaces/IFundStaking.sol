@@ -82,7 +82,8 @@ interface IFundStaking is IERC20, IERC721Receiver {
     /// @notice Emitted when yield accrues.
     /// @param elapsed        Seconds covered.
     /// @param premiumBps     Premium read.
-    /// @param ratePerYearWad Yearly rate applied, as a fraction of the staked balance (1e18 = 100%).
+    /// @param ratePerYearWad Yearly rate applied (the lower of the rate read now and the one read at
+    ///                       the last accrual), as a fraction of the staked balance (1e18 = 100%).
     /// @param minted         Fund tokens minted to the vault: the stakers' yield plus the curators' share.
     /// @param lpMinted       Fund tokens minted for staked LP positions.
     /// @param curatorShares  Shares minted to the curators module for their share.
@@ -356,7 +357,9 @@ interface IFundStaking is IERC20, IERC721Receiver {
     /// @return assets Fund tokens paid out.
     function unstake(uint256 shares, address receiver) external returns (uint256 assets);
 
-    /// @notice Accrue yield up to now. Anyone can call; keepers call it every epoch.
+    /// @notice Accrue yield up to now, at the lower of the rate read now and the rate read at the
+    ///         last accrual. Without a fresh premium reading nothing is paid and the time waits for
+    ///         the next one. Anyone can call; the keeper calls it hourly.
     /// @return minted Fund tokens minted for stakers (staked LP positions' yield is in the event).
     function accrue() external returns (uint256 minted);
 

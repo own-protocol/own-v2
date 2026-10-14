@@ -151,7 +151,9 @@ Updated 2026-10-12: the premium yield redesign (spec `plans/fund-premium-rebate-
 - **Mint zap:** `FundMintZap.zapMint` takes one token, runs the caller's swaps through
   admin-allowed routers into the slice, mints (direct or at NAV) for the receiver, and
   refunds whatever is left. The minter pays the swap slippage, not the fund's holders.
-- **Redeem** at any time, as above. It needs no oracle and cannot be paused.
+- **Redeem** at any time, as above. It needs no oracle and cannot be paused. If one basket token
+  can't be transferred (paused, or blacklisting the fund), `redeemSkipping` names it to leave out:
+  that slice is forfeited and stays in the fund for the remaining holders.
 - **Fee.** One fund fee (default 1%, admin-set per fund with `setFee`, at most 10%) on pool trades
   (in USDG through the hook), mints and redeems (in fund tokens). All of it goes to `FundCurators`;
   there is no separate protocol fee.
@@ -160,8 +162,10 @@ Updated 2026-10-12: the premium yield redesign (spec `plans/fund-premium-rebate-
   bps a year, i.e. 3% a day, by default; at most 3,650,000). The tiers are up to 8 (premium,
   `rateBpsPerYear`) levels, stepped: each level's rate holds until the next level, no yield below
   the first level (so never below NAV). Defaults: 12% APR from NAV, 24% from 1.25x NAV, 48% from
-  2x NAV; the base may be 0 with the upper levels still paying. Yield accrues every 8 hours at
-  most.
+  2x NAV; the base may be 0 with the upper levels still paying. Each accrual pays the time since
+  the last one at the lower of the rate read now and the rate read then, so no single reading
+  prices a stretch on its own; while the premium can't be read the time waits and is paid once a
+  price is back. The keeper accrues hourly.
 - **Curator yield:** on top of the stakers' yield, `FundStaking` mints the curators 15%
   (`curatorYieldBps`, admin-set per fund with `setCuratorYield`, at most 50%) of what stakers earn,
   so stakers keep the full curve rate. An optional yearly cap, in bps of the staked balance, limits

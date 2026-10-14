@@ -355,6 +355,24 @@ interface IFund is IERC20 {
         uint256 minUsdgOut
     ) external returns (uint256[] memory amounts, uint256 usdgAmount);
 
+    /// @notice {redeem}, leaving out the basket assets in `skip`: for when one of them cannot be
+    ///         transferred (paused, or blacklisting the fund). The skipped slices are forfeited and
+    ///         stay in the fund for the remaining holders.
+    /// @param shares        Fund tokens redeemed, fees included.
+    /// @param receiver      Receiver of the basket assets and USDG.
+    /// @param minAmountsOut Per-asset minimum, in {assets} order (empty to skip).
+    /// @param minUsdgOut    Minimum USDG paid out.
+    /// @param skip          Basket assets not paid out.
+    /// @return amounts    Amount of each asset paid out, in {assets} order (zero for a skipped one).
+    /// @return usdgAmount USDG paid out.
+    function redeemSkipping(
+        uint256 shares,
+        address receiver,
+        uint256[] calldata minAmountsOut,
+        uint256 minUsdgOut,
+        address[] calldata skip
+    ) external returns (uint256[] memory amounts, uint256 usdgAmount);
+
     /// @notice Burn caller's fund tokens without redeeming (raises NAV for everyone else).
     /// @param amount Amount.
     function burn(
