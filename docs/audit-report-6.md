@@ -90,10 +90,10 @@ M-01, M-02, M-03, M-04, M-06, M-08 and L-04 again on its own.
 | -------- | ----- | ----- | ---- | ------------ | --------- |
 | Critical | 0 | 0 | 0 | 0 | 0 |
 | High     | 3 | 3 | 0 | 0 | 0 |
-| Medium   | 14 | 7 | 7 | 0 | 0 |
+| Medium   | 14 | 10 | 4 | 0 | 0 |
 | Low      | 8 | 2 | 6 | 0 | 0 |
 | Info     | 0 | 0 | 0 | 0 | 0 |
-| **Total** | **25** | **12** | **13** | **0** | **0** |
+| **Total** | **25** | **15** | **10** | **0** | **0** |
 
 | ID | Severity | Finding | Conf | Status |
 | -- | -------- | ------- | ---- | ------ |
@@ -107,9 +107,9 @@ M-01, M-02, M-03, M-04, M-06, M-08 and L-04 again on its own.
 | A6-M-05 | Medium | A flip in the launch epoch uses up every curator's grace week | 80 | Fixed (`e4a69df`) |
 | A6-M-06 | Medium | One premium reading prices up to 8 h of staking yield; caller picks the moment | 80 | Fixed (`0dcbeb0`) |
 | A6-M-07 | Medium | One paused / blacklisting basket token blocks every redeem | 80 | Fixed (`0dcbeb0`) |
-| A6-M-08 | Medium | After `setGovernor`, bribers refund bribes that voters already claimed | 75 | Open |
-| A6-M-09 | Medium | `stake` moves the caller's launch lock onto any receiver | 85 | Open |
-| A6-M-10 | Medium | Anyone can mint to any receiver and put a lock and a boost on it | 85 | Open |
+| A6-M-08 | Medium | After `setGovernor`, bribers refund bribes that voters already claimed | 75 | Fixed (`e8b2f45`) |
+| A6-M-09 | Medium | `stake` moves the caller's launch lock onto any receiver | 85 | Fixed (`ff2cfe7`) |
+| A6-M-10 | Medium | Anyone can mint to any receiver and put a lock and a boost on it | 85 | Fixed (`ff2cfe7`) |
 | A6-M-11 | Medium | A stake made while NAV has no price takes pot drip it did not earn | 80 | Open |
 | A6-M-12 | Medium | One stale basket price blocks every redeem while the reserve holds value | 80 | Open |
 | A6-M-13 | Medium | The price keeper moves a hub price without limit by repeating pushes | 75 | Open |
@@ -165,7 +165,7 @@ shares all owed: X 3,000, Y 3,000, protocol 3,000):
 `_forfeit` does, so the callback sees the claimed shares as still reserved. Test
 `test_claim_boostedModule_doesNotRecountClaimedShares` gifts the module a boosted mint, claims, and
 checks that what the module owes equals what it holds (it failed by ~2.13 shares before the fix).
-The cheap trigger itself (mints to fund modules) is A6-M-10, still open.
+The cheap trigger itself (mints to fund modules) is A6-M-10, fixed in `ff2cfe7`.
 
 ## A6-M-01 — A 30-minute pool crash shrinks the redeem supply and over-pays the basket (Medium, Fixed 2026-10-14)
 
@@ -330,7 +330,7 @@ the fund for the remaining holders. `redeem` is unchanged and shares the code pa
 `test_redeemSkipping_frozenAssetLeftInFund`, `test_redeemSkipping_minimumOnSkippedAsset_reverts`,
 `test_redeemSkipping_unknownTokenIgnored`.
 
-## A6-M-08 — After `setGovernor`, bribers refund bribes that voters already claimed (Medium, Open)
+## A6-M-08 — After `setGovernor`, bribers refund bribes that voters already claimed (Medium, Fixed 2026-10-14)
 
 `FundBribes.refundBribe` (`src/funds/FundBribes.sol:88`), `claimListingBribe` (`:125`) and the
 other listing-bribe paths, all through `_governor()` (`:221`). Round 1: trust-gap, boundary.
@@ -348,7 +348,15 @@ reverts. Admin-triggered, but the harm is taken by unprivileged bribers and vote
 **Suggested fix:** key bribe ledgers by the governor that was live when the bribe was posted,
 and refuse claims and refunds against a different governor (or migrate them explicitly).
 
-## A6-M-09 — `stake` moves the caller's launch lock onto any receiver (Medium, Open)
+**Fix (`e8b2f45`, 2026-10-14):** every `FundBribes` ledger is keyed by the governor live when the
+bribe was posted. `claimBribe`, `refundBribe`, `claimListingBribe`, `refundListingBribe`,
+`bribeOf`, `listingBribeOf` and `claimableBribe` take that governor as their first argument and read
+its votes, tallies and proposals, so G2's empty tally of epoch E cannot refund a G1 bribe and G2
+proposal #0 cannot claim G1 proposal #0's bribe. Naming any other address reads an empty ledger. A
+bribe for an epoch its governor never tallied becomes refundable once that governor is replaced.
+Tests `test_governorSwap_bribeStaysWithItsGovernor`, `test_governorSwap_untalliedEpochRefundable`.
+
+## A6-M-09 — `stake` moves the caller's launch lock onto any receiver (Medium, Fixed 2026-10-14)
 
 `FundStaking._stake` (`src/funds/FundStaking.sol:471-489`). Round 1: 8 agent runs.
 
@@ -370,7 +378,10 @@ shape through `Fund.mint`, with a longer lock, and its fix is separate.
 
 **Suggested fix:** in `_stake`, revert `SharesLocked` when `moved != 0 && receiver != msg.sender`.
 
-## A6-M-10 — Anyone can mint to any receiver and put a lock and a boost on it (Medium, Open, new 2026-10-13)
+**Fix (`ff2cfe7`, 2026-10-14):** as suggested. Staking unlocked tokens for another address is still
+allowed. Test `test_stake_launchLockedForOthers_reverts`.
+
+## A6-M-10 — Anyone can mint to any receiver and put a lock and a boost on it (Medium, Fixed 2026-10-14, new 2026-10-13)
 
 `Fund.mint` (`src/funds/Fund.sol:242`) → `_stakeMinted` → `FundStaking.stakeMinted`
 (`src/funds/FundStaking.sol:173`) → `_joinMintLock`, with the effect in `FundCurators._forfeit`
@@ -398,6 +409,14 @@ A6-M-09's fix (in `_stake`) does not cover this path.
 **Suggested fix (pick one or combine):** (A) revert when `receiver` is a module of the fund
 (curators, staking, launch, governor); (B) require `receiver == msg.sender` for a mint that
 creates a lock or a boost, or keep a lock someone else creates separate from the receiver's.
+
+**Fix (`ff2cfe7`, 2026-10-14, Bhargav's pick, B):** `Fund.mint` reverts `NotReceiver` when a staked
+(locked or boosted) mint goes to anyone but the caller. The one exception is the factory's mint zap
+(`FundFactory.mintZap`, admin-set with `setMintZap`), which now always mints for its own caller
+(`zapMint` lost its `receiver` argument). The capped mint, unlocked with no boost, still goes to any
+receiver. A module can still mint for itself, but only with its own tokens. Tests
+`test_mint_lockedForOthers_reverts`, `test_mint_cappedForOthers_allowed`,
+`test_zapMint_notFactoryZap_reverts`.
 
 ## A6-M-11 — A stake made while NAV has no price takes pot drip it did not earn (Medium, Open, new 2026-10-13)
 
