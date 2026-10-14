@@ -70,6 +70,8 @@ contract FundBribes is IFundBribes, Initializable, ReentrancyGuardTransient {
         uint256 amount
     ) external override nonReentrant returns (uint256 net) {
         if (token == address(0)) revert ZeroAddress();
+        // A launch that fails never tallies, so a bribe posted before launch could never leave.
+        if (!IFund(fund).launched()) revert NotLaunched();
         IFundGovernor gov = _governor();
         if (epoch < gov.currentEpoch() || gov.isTallied(epoch)) revert EpochClosed();
         uint256 cut;

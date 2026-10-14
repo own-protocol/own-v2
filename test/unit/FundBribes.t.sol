@@ -48,6 +48,16 @@ contract FundBribesTest is FundTestBase {
         return (cut - cut * 3333 / 10_000) / 2;
     }
 
+    /// @dev A6-L-01: no bribe before launch, so none can be stranded by a failed launch.
+    function test_postBribe_beforeLaunch_reverts() public {
+        _createFund();
+        vm.startPrank(briber);
+        usdg.approve(address(bribes), type(uint256).max);
+        vm.expectRevert(IFundBribes.NotLaunched.selector);
+        bribes.postBribe(address(tsla), 1, address(usdg), 1000e6);
+        vm.stopPrank();
+    }
+
     function test_postBribe_curatorsTakeFifteenPercentPaidAtOnce() public {
         uint256 pBefore = usdg.balanceOf(protocolCurator);
         uint256 aBefore = usdg.balanceOf(curatorA);

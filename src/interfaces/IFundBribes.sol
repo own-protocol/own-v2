@@ -115,6 +115,9 @@ interface IFundBribes {
     /// @notice The bribe is not refundable.
     error NotRefundable();
 
+    /// @notice The fund has not launched.
+    error NotLaunched();
+
     /// @notice Initialise a bribes proxy. Called once by the factory.
     /// @param fund_ The fund.
     function initialize(

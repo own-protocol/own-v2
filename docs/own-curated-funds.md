@@ -62,10 +62,12 @@ Updated 2026-10-12: the premium yield redesign (spec `plans/fund-premium-rebate-
      7 days. NAV is V / C. The pool is not open yet.
 4. **Launch rebalance and pool seeding.** The manager rebalances the fund to its target weights and
    to at least P of idle USDG, selling basket tokens for USDG if the USDG deposits fall short.
-   Until the pool is seeded the rebalance may buy USDG and the daily volume cap does not apply
-   (the 2% per-swap loss bound still does). The manager (or admin) then calls `seedPool()`, which
-   adds P of the fund's USDG and the M tokens as the fund's position, so the pool opens at NAV (at
-   the default launch premium). Redemptions before seeding shrink P and M in proportion. Before seeding nobody can trade
+   Until the pool is seeded the rebalance may buy USDG, and buying USDG up to P is free of the
+   daily volume cap; every other swap counts toward it (the 2% per-swap loss bound always
+   applies). The manager (or admin) then calls `seedPool()`, which adds P of the fund's USDG and
+   fund tokens sized at the NAV then (times the launch premium) as the fund's position, so the pool
+   opens at its premium over NAV even if the basket moved since the close. It needs a NAV price.
+   Redemptions before seeding shrink P in proportion. Before seeding nobody can trade
    or mint and stakers earn nothing; redeeming works.
 5. **Auto-stake, no claim needed.** At the close the launch stakes the whole depositor allocation,
    so it earns staker yield from then on (once the pool gives a market price) and, until its
@@ -278,8 +280,8 @@ Updated 2026-10-12: the premium yield redesign (spec `plans/fund-premium-rebate-
 
 ## Bribes
 
-- **Weight-vote bribes:** anyone can post a bribe on a basket token for the current or a future
-  week, in an admin-listed bribe token (USDG, MONEY) or the bribed token itself when it is a basket
+- **Weight-vote bribes:** once the fund has launched, anyone can post a bribe on a basket token
+  for the current or a future week, in an admin-listed bribe token (USDG, MONEY) or the bribed token itself when it is a basket
   asset or eligible for listing. The curators' cut (15% by default, at most 25%) is taken when it is
   posted and paid out in the same transaction: the protocol curator its third, the curators
   compliant at that moment the rest equally (a curator that cannot receive the token forfeits its
@@ -312,8 +314,8 @@ Updated 2026-10-12: the premium yield redesign (spec `plans/fund-premium-rebate-
   asset, USDG or the fund token. Redeeming cannot be paused.
 - **Manager (Own keeper):** trusted only within the rebalance bounds above. After seeding it only
   opens and cancels auction lots; it can no longer swap. Between the launch
-  close and pool seeding it is trusted more: no daily volume cap, only the 2% per-swap bound, so
-  it should finish the launch rebalance and seed promptly. Its launch jobs are `finalize()` as
+  close and pool seeding it may also buy the pool's USDG free of the daily volume cap, so it
+  should finish the launch rebalance and seed promptly. Its launch jobs are `finalize()` as
   soon as the window ends or the target raise is reached, then the rebalance, `seedPool()` and
   `distribute()` in batches.
 - **Price keeper:** pushes hub prices for assets without a Chainlink feed, bounded by `maxMoveBps`

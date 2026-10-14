@@ -21,6 +21,10 @@ import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 contract FundAuctions is IFundAuctions, ReentrancyGuardTransient {
     using SafeERC20 for IERC20;
 
+    // Lot prices are buy units per 1e36 sell units, so a cheap asset priced in an expensive one
+    // keeps enough digits for the start premium and floor discount.
+    uint256 private constant PRICE_SCALE = 1e36;
+
     // Hard cap on the start premium.
     uint16 private constant MAX_START_PREMIUM_BPS = 5000;
 
@@ -83,7 +87,7 @@ contract FundAuctions is IFundAuctions, ReentrancyGuardTransient {
         IFundOracle o = IFundOracle(fac.oracle());
         uint256 rate = Math.mulDiv(
             _price(o, sellAsset) * 10 ** IERC20Metadata(buyAsset).decimals(),
-            PRECISION,
+            PRICE_SCALE,
             _price(o, buyAsset) * 10 ** IERC20Metadata(sellAsset).decimals()
         );
         uint256 startPrice = Math.mulDiv(rate, BPS + startPremiumBps, BPS);
@@ -206,7 +210,7 @@ contract FundAuctions is IFundAuctions, ReentrancyGuardTransient {
 
     /// @dev Rounds up: the fund is never paid less than the lot's price.
     function _cost(Lot storage l, uint256 amount) internal view returns (uint256) {
-        return Math.mulDiv(amount, _priceNow(l), PRECISION, Math.Rounding.Ceil);
+        return Math.mulDiv(amount, _priceNow(l), PRICE_SCALE, Math.Rounding.Ceil);
     }
 
     function _checkManager(IFundFactory fac, address fund) internal view {

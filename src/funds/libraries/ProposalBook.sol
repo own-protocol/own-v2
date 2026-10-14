@@ -311,13 +311,14 @@ library ProposalBook {
     }
 
     /// @dev The caller's part of a proposal's curator slice: the protocol share for the protocol
-    ///      curator at the proposal (first in the snapshot), an equal part of the rest for each other
-    ///      curator in the snapshot that is still a compliant curator.
+    ///      curator now (a replaced one keeps nothing), an equal part of the rest for each other
+    ///      curator in the snapshot (first is the protocol curator at the proposal) that is still a
+    ///      compliant curator.
     function _curatorVotes(address[] storage cs, address fund, uint16 curatorShareBps) private view returns (uint256) {
-        bool isProtocol = msg.sender == cs[0];
+        IFundCurators cur = IFundCurators(IFund(fund).curators());
+        bool isProtocol = msg.sender == cur.protocolCurator();
         if (!isProtocol) {
-            if (!_contains(cs, msg.sender)) return 0;
-            IFundCurators cur = IFundCurators(IFund(fund).curators());
+            if (msg.sender == cs[0] || !_contains(cs, msg.sender)) return 0;
             if (!cur.isCurator(msg.sender) || !cur.isCompliant(msg.sender)) return 0;
         }
         uint256 protocolShare = IFundFactory(IFund(fund).factory()).protocolCuratorShareBps();

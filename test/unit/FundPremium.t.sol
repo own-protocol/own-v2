@@ -331,6 +331,18 @@ contract FundPremiumTest is FundTestBase {
         assertEq(staking.boostOf(carol).left, left);
     }
 
+    /// @dev A6-L-07: a mint too small for any boost speed gets no boost; its boost tokens are burned.
+    function test_boost_tinyMintSkipsBoost() public {
+        uint256 supply0 = fund.totalSupply();
+        (uint256 quoted, uint256 mintPrice,,,) = fund.previewMint(40_000, false);
+        uint256 gross = Math.mulDiv(40_000, _mintNav(), mintPrice);
+        assertGt(40_000 - gross, 0); // a boost would be owed
+        assertEq(_mintAs(carol, 40_000), quoted);
+        assertEq(staking.boostOf(carol).left, 0);
+        assertEq(_held(), 0);
+        assertEq(fund.totalSupply() - supply0, gross);
+    }
+
     function test_boost_forfeitBurnsUnpaidAndRaisesNav() public {
         _mintAs(carol, 10_000e18);
         _warp(15 days);

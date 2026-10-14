@@ -15,8 +15,8 @@ contract FundAuctionsTest is FundTestBase {
     uint16 internal constant FLOOR = 300;
     uint32 internal constant DURATION = 4 hours;
 
-    // 1e18 NET units (1e9 NET) priced in TSLA units: $300 / $400 per whole token.
-    uint256 internal constant RATE = 0.75e27;
+    // TSLA units per 1e36 NET units (1e27 NET): $300 / $400 per whole token.
+    uint256 internal constant RATE = 0.75e45;
 
     function setUp() public override {
         super.setUp();
@@ -45,6 +45,24 @@ contract FundAuctionsTest is FundTestBase {
         assertEq(l.startPrice, RATE * 10_200 / 10_000);
         assertEq(l.floorPrice, RATE * 9700 / 10_000);
         assertEq(auctions.currentPrice(id), l.startPrice);
+    }
+
+    /// @dev A6-L-05: a cheap asset priced in an expensive one keeps its start premium and floor.
+    function test_openLot_cheapForExpensiveKeepsPrecision() public {
+        _setFeed(address(net), 1_000_000e8);
+        _setFeed(address(pons), 0.0123e8);
+        vm.prank(keeper);
+        uint256 id = auctions.openLot(address(fund), address(pons), address(net), 1_000_000e18);
+        IFundAuctions.Lot memory l = auctions.lot(id);
+        // 12.3 NET units per 1e18 PONS units, kept to 18 more decimals.
+        assertEq(l.startPrice, 12.3e18 * 10_200 / 10_000);
+        assertEq(l.floorPrice, 12.3e18 * 9700 / 10_000);
+
+        net.mint(filler, 1e9);
+        vm.startPrank(filler);
+        net.approve(address(auctions), type(uint256).max);
+        assertEq(auctions.fill(id, 1000e18, type(uint256).max), 12_546);
+        vm.stopPrank();
     }
 
     function test_fill_paysFundAndFiller() public {

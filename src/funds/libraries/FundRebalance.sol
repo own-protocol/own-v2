@@ -4,6 +4,7 @@ pragma solidity 0.8.28;
 import {IFund} from "../../interfaces/IFund.sol";
 import {IFundFactory} from "../../interfaces/IFundFactory.sol";
 import {IFundHook} from "../../interfaces/IFundHook.sol";
+import {IFundLaunch} from "../../interfaces/IFundLaunch.sol";
 import {IFundOracle} from "../../interfaces/IFundOracle.sol";
 import {BasketEntry, DUST_BPS, MAX_BASKET_ASSETS} from "../../interfaces/types/FundTypes.sol";
 import {BPS, PRECISION} from "../../interfaces/types/Types.sol";
@@ -52,7 +53,8 @@ library FundRebalance {
 
     /// @notice Swap through an allowed router within the slippage and daily volume bounds. See
     ///         {IFund-rebalance}. Until the fund's pool is seeded (the launch rebalance) the swap may
-    ///         buy USDG and the volume cap does not apply.
+    ///         buy USDG, and a USDG buy that leaves idle USDG within the pool's USDG is free of the
+    ///         volume cap.
     /// @param factory         The fund's factory.
     /// @param usdg            The factory's USDG.
     /// @param assets          The basket.
@@ -96,8 +98,18 @@ library FundRebalance {
             (uint256 sold, uint256 bought) = _swap(params, tracked);
             soldValue = _checkSwapValue(fac, usdg, params, sold, bought);
             emit IFund.Rebalanced(params.sellAsset, sold, params.buyAsset, bought);
+            if (launching && params.buyAsset == usdg) soldValue = _beyondPoolUsdg(usdg, soldValue, bought);
         }
-        newVolume = launching ? volume : _trackVolume(fac, tracked, soldValue, volume, volumeUpdatedAt);
+        newVolume = _trackVolume(fac, tracked, soldValue, volume, volumeUpdatedAt);
+    }
+
+    /// @dev The part of a launch USDG buy's `soldValue` that took idle USDG past the pool's USDG;
+    ///      buying up to it is free of the volume cap.
+    function _beyondPoolUsdg(address usdg, uint256 soldValue, uint256 bought) private view returns (uint256) {
+        uint256 need = IFundLaunch(IFund(address(this)).launch()).poolUsdg();
+        uint256 idle = IERC20(usdg).balanceOf(address(this));
+        uint256 from = Math.max(idle - bought, need);
+        return idle > from ? Math.mulDiv(soldValue, idle - from, bought, Math.Rounding.Ceil) : 0;
     }
 
     function _swap(

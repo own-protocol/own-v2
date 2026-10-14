@@ -21,8 +21,8 @@ import {LaunchConfig} from "./types/FundTypes.sol";
 ///           position and counts its USDG as backing, so NAV = V / (S - M) and depositors get
 ///           exactly what they brought at NAV.
 ///         - At the close everything moves to the fund and depositors can claim. The manager then
-///           rebalances to the target weights and to at least P of idle USDG, free of the daily
-///           volume cap, and calls {seedPool}. Until then nobody can trade or mint; redeeming works.
+///           rebalances to the target weights and to at least P of idle USDG (buying USDG up to P
+///           is free of the daily volume cap; every other swap counts), and calls {seedPool}. Until then nobody can trade or mint; redeeming works.
 ///         - Auto-stake: at the close the launch stakes the whole depositor allocation, so it earns
 ///           staker yield from then on and its votes follow the curators until its owners vote.
 ///           Anyone (the keeper in practice) pushes each depositor's staked shares to them with
@@ -95,6 +95,9 @@ interface IFundLaunch {
     /// @notice The fund holds less idle USDG than the pool needs.
     error InsufficientPoolUsdg();
 
+    /// @notice NAV has no price, so the pool cannot be sized.
+    error NavUnavailable();
+
     /// @notice Caller is neither the fund's manager nor the platform admin.
     error NotManager();
 
@@ -149,7 +152,9 @@ interface IFundLaunch {
     function finalize() external;
 
     /// @notice Seed the fund's pool after the close, once the manager has rebalanced the fund to hold
-    ///         the pool's USDG. Scaled down by any redemptions since the close. Manager or admin.
+    ///         the pool's USDG. The USDG is scaled down by any redemptions since the close; the fund
+    ///         tokens are sized at the current NAV times `launchPremiumBps`, so the pool opens at its
+    ///         premium over NAV now. Needs a NAV price. Manager or admin.
     function seedPool() external;
 
     /// @notice Mark the launch failed when nobody finalized it in time. Anyone.
@@ -227,7 +232,8 @@ interface IFundLaunch {
     /// @return The amount.
     function poolUsdg() external view returns (uint256);
 
-    /// @notice Fund tokens set aside at the close for the pool.
+    /// @notice Fund tokens set aside at the close for the pool (at the close's NAV; {seedPool} sizes
+    ///         the pool at the NAV then).
     /// @return The amount.
     function poolShares() external view returns (uint256);
 

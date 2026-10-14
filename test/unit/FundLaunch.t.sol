@@ -418,20 +418,54 @@ contract FundLaunchTest is FundTestBase {
         fund.rebalance(p);
     }
 
-    function test_launchRebalance_ignoresVolumeCap_thenCapApplies() public {
+    /// @dev A6-L-04: before seeding only USDG bought for the pool is free of the daily cap.
+    function test_launchRebalance_capAppliesBeyondPoolUsdg() public {
         _finalizeTwoDepositors();
         tsla.mint(address(router), 1000e18);
         vm.startPrank(keeper);
         // $24k of NET for TSLA in one swap: about twice the 10% daily cap on ~$125k.
-        fund.rebalance(_netForTsla(80e9, 59.2e18));
-        assertEq(fund.rebalanceVolume(), 0);
-        launch.seedPool();
-        vm.stopPrank();
-
-        _refreshFeeds();
-        vm.prank(admin);
         vm.expectRevert(IFund.RebalanceVolumeExceeded.selector);
-        fund.rebalance(_netForTsla(40e9, 29.6e18));
+        fund.rebalance(_netForTsla(80e9, 59.2e18));
+        // Under the cap it goes through and counts.
+        fund.rebalance(_netForTsla(20e9, 14.8e18));
+        assertGt(fund.rebalanceVolume(), 0);
+        vm.stopPrank();
+    }
+
+    function test_launchRebalance_usdgBeyondPoolCounts() public {
+        _finalizeTwoDepositors();
+        assertGe(fund.idleUsdg(), launch.poolUsdg()); // the deposits already hold the pool's USDG
+        usdg.mint(address(router), 3000e6);
+        IFund.RebalanceParams memory p = IFund.RebalanceParams({
+            sellAsset: address(net),
+            sellAmount: 10e9,
+            buyAsset: address(usdg),
+            minBuyAmount: 3000e6,
+            router: address(router),
+            data: abi.encodeCall(MockSwapRouter.swap, (address(net), 10e9, address(usdg), 3000e6))
+        });
+        vm.prank(keeper);
+        fund.rebalance(p);
+        assertApproxEqRel(fund.rebalanceVolume(), 3000e18, 1e15);
+    }
+
+    /// @dev A6-L-06: the pool opens at its premium over the NAV at seeding, not at the close.
+    function test_seedPool_basketMovedSinceClose_opensAtCurrentNav() public {
+        _finalizeTwoDepositors();
+        _setFeed(address(tsla), feeds[address(tsla)].answer() * 3 / 2);
+        uint256 nav = fund.navPerShare();
+        vm.prank(keeper);
+        launch.seedPool();
+        assertApproxEqRel(_poolPrice(), nav * 13 / 10, 1e14);
+        assertApproxEqRel(fund.navPerShare(), nav, 1e14);
+    }
+
+    function test_seedPool_noNavPrice_reverts() public {
+        _finalizeTwoDepositors();
+        vm.warp(block.timestamp + 2 days);
+        vm.prank(keeper);
+        vm.expectRevert(IFundLaunch.NavUnavailable.selector);
+        launch.seedPool();
     }
 
     function test_seedPool_atNavWithoutPremium() public {

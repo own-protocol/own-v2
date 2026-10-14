@@ -22,8 +22,8 @@ interface IFundAuctions {
     /// @param remaining  Amount of `sellAsset` still for sale.
     /// @param startTime  When the auction starts.
     /// @param endTime    When it ends (the price reaches the floor).
-    /// @param startPrice `buyAsset` units per 1e18 units of `sellAsset` at the start.
-    /// @param floorPrice `buyAsset` units per 1e18 units of `sellAsset` at the end.
+    /// @param startPrice `buyAsset` units per 1e36 units of `sellAsset` at the start.
+    /// @param floorPrice `buyAsset` units per 1e36 units of `sellAsset` at the end.
     struct Lot {
         address fund;
         address sellAsset;
@@ -41,7 +41,7 @@ interface IFundAuctions {
     /// @param sellAsset  Asset sold.
     /// @param buyAsset   Asset bought.
     /// @param amount     Amount for sale.
-    /// @param startPrice Start price (`buyAsset` units per 1e18 `sellAsset` units).
+    /// @param startPrice Start price (`buyAsset` units per 1e36 `sellAsset` units).
     /// @param floorPrice Floor price, same units.
     /// @param endTime    When the auction ends.
     event LotOpened(
@@ -171,7 +171,7 @@ interface IFundAuctions {
     /// @return The count.
     function lotCount() external view returns (uint256);
 
-    /// @notice A lot's price now: `buyAsset` units per 1e18 units of `sellAsset`.
+    /// @notice A lot's price now: `buyAsset` units per 1e36 units of `sellAsset`.
     /// @param id Lot id.
     /// @return The price (reverts if the lot is not active).
     function currentPrice(

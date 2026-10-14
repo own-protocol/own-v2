@@ -189,11 +189,15 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuardTrans
         _mint(account, shares);
         if (unlockAt > block.timestamp) _joinMintLock(account, shares, unlockAt, atNav);
 
-        if (boost != 0) {
+        uint256 speed = Math.mulDiv(payment, boostSpeedBpsPerYear, BPS * YEAR);
+        // A mint too small for any speed would never finish paying: its boost tokens go to backing.
+        if (boost != 0 && speed == 0) {
+            IFund(fund).burn(boost);
+        } else if (boost != 0) {
             Boost storage b = _boosts[account];
             // A finished boost leaves no shares behind, so a new one starts from this mint alone.
             if (b.left == 0) b.shares = 0;
-            b.perSec += SafeCast.toUint128(Math.mulDiv(payment, boostSpeedBpsPerYear, BPS * YEAR));
+            b.perSec += SafeCast.toUint128(speed);
             b.left += SafeCast.toUint128(boost);
             b.shares += SafeCast.toUint128(shares);
             b.lastSettle = uint64(block.timestamp);

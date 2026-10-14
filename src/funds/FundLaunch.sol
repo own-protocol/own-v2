@@ -216,8 +216,16 @@ contract FundLaunch is IFundLaunch, Initializable, ReentrancyGuardTransient {
         // Only redemptions move the supply before the pool opens; the pool shrinks with them.
         uint256 supply = Math.min(IERC20(fund).totalSupply(), depositorSupply);
         uint256 usdgAmount = Math.mulDiv(poolUsdg, supply, depositorSupply);
-        uint256 shares = Math.mulDiv(poolShares, supply, depositorSupply);
         if (IERC20(_usdg).balanceOf(fund) < usdgAmount) revert InsufficientPoolUsdg();
+        // Priced at today's NAV, not the close's, so a basket move while rebalancing never opens the
+        // pool off NAV. Rounds down: the pool never opens below its premium over NAV.
+        (bool ok, uint256 nav,) = f.tryNav();
+        if (!ok) revert NavUnavailable();
+        uint256 shares = Math.mulDiv(
+            Math.mulDiv(usdgAmount, PRECISION, 10 ** IERC20Metadata(_usdg).decimals()),
+            PRECISION * BPS,
+            nav * (BPS + _config.launchPremiumBps)
+        );
         poolSeeded = true;
 
         address hook = _factory.hook();

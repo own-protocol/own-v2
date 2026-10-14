@@ -886,6 +886,20 @@ contract FundGovernorTest is FundTestBase {
         assertEq(governor.castVote(id, true), uint256(0.3e18) * 6667 / 10_000 / 2);
     }
 
+    /// @dev A6-L-08: a replaced protocol curator loses the protocol vote on open proposals and the
+    ///      new one holds it.
+    function test_castVote_replacedProtocolCuratorVotesNothing() public {
+        uint256 id = _propose(curatorA, IFundGovernor.ProposalKind.List, address(spare));
+        address next = makeAddr("nextProtocolCurator");
+        vm.prank(admin);
+        factory.setProtocolCurator(next);
+        vm.prank(protocolCurator);
+        vm.expectRevert(IFundGovernor.NoVotingPower.selector);
+        governor.castVote(id, true);
+        vm.prank(next);
+        assertEq(governor.castVote(id, true), uint256(0.3e18) * 3333 / 10_000);
+    }
+
     function test_curatorChange_removeAndReplace() public {
         _escrow(alice, aliceStake);
         vm.warp(block.timestamp + 1);
