@@ -211,10 +211,12 @@ Updated 2026-10-12: the premium yield redesign (spec `plans/fund-premium-rebate-
   what a curator earns in a period is claimable once it ends (`lockedYieldOf` shows what is still
   locked). A curator removed mid-period forfeits that period's locked shares: they are unstaked and
   the fund tokens burned, raising NAV. Earlier periods stay claimable.
-- **Minimum stake:** each curator other than the protocol curator must keep at least 0.5% of
-  supply (admin-set per fund, 10% cap) staked in the governor. It is checked at every weekly flip
-  with one week of grace; a curator out of compliance loses their vote slice (it counts as silent)
-  and their income share.
+- **Minimum stake:** each curator other than the protocol curator must keep a dollar amount of
+  fund tokens staked in the governor (`minStakeUsd`, admin-set per fund, 0 for none), valued at NAV.
+  It is checked at every weekly flip against the curator's recorded stake for the week, with one
+  week of grace; a curator out of compliance loses their vote slice (it counts as silent) and their
+  income share. A flip with no NAV price (a stale feed) changes nobody's standing. Mints and redeems
+  happen at NAV, so they cannot move anyone across the line.
 
 ## Weekly weight vote (gauge)
 

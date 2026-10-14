@@ -630,8 +630,8 @@ contract FundGovernorTest is FundTestBase {
 
     function test_flip_curatorWithMinimumStake_staysCompliant() public {
         _stakeAndEscrow(curatorA, 3000e6);
-        uint256 required = fund.totalSupply() * 50 / 10_000;
-        assertGe(governor.stakedAssetsAt(curatorA, governor.currentEpoch() + 1), required);
+        uint256 staked = governor.stakedAssetsAt(curatorA, governor.currentEpoch() + 1);
+        assertGe(staked * fund.navPerShare() / 1e18, curators.minStakeUsd());
         _toNextEpoch();
         _toNextEpoch();
         governor.flip();

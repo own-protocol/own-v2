@@ -97,7 +97,7 @@ contract FundFactoryTest is FundTestBase {
         assertEq(curators.curatorCount(), 2);
         assertTrue(curators.isCurator(curatorA));
         assertTrue(curators.isCurator(curatorB));
-        assertEq(curators.minStakeBps(), 50);
+        assertEq(curators.minStakeUsd(), 1000e18);
 
         assertEq(launch.launchSupply(), 130_000e18);
         assertEq(launch.endTime(), block.timestamp + 7 days);
@@ -177,14 +177,6 @@ contract FundFactoryTest is FundTestBase {
         p.curators[1] = curatorA;
         vm.prank(admin);
         vm.expectRevert(IFundCurators.AlreadyCurator.selector);
-        factory.createFund(p);
-    }
-
-    function test_createFund_minCuratorStakeAboveCap_reverts() public {
-        CreateFundParams memory p = _defaultParams();
-        p.minCuratorStakeBps = 1001;
-        vm.prank(admin);
-        vm.expectRevert(IFundCurators.InvalidMinStake.selector);
         factory.createFund(p);
     }
 

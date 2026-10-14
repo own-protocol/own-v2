@@ -349,16 +349,54 @@ contract FundCuratorsTest is FundTestBase {
         assertEq(curators.claim(address(usdg)), owed);
     }
 
-    function test_setMinStake_adminOnlyAndCapped() public {
+    function test_setMinStake_adminOnly() public {
         vm.prank(curatorA);
         vm.expectRevert(IFundCurators.NotAdmin.selector);
-        curators.setMinStake(100);
+        curators.setMinStake(5000e18);
         vm.prank(admin);
-        vm.expectRevert(IFundCurators.InvalidMinStake.selector);
-        curators.setMinStake(1001);
+        curators.setMinStake(5000e18);
+        assertEq(curators.minStakeUsd(), 5000e18);
+    }
+
+    /// @dev A6-M-04: the minimum is a dollar value at NAV, and mints and redeems happen at NAV, so a
+    ///      mint just before the flip no longer raises what an honest curator needs.
+    function test_checkCompliance_mintBeforeFlipDoesNotFailCurator() public {
+        _stakeAndEscrow(curatorA, 3000e6);
+        _toNextEpoch();
+        uint256 e = governor.currentEpoch();
+        uint256 value = governor.stakedAssetsAt(curatorA, e) * fund.navPerShare() / 1e18;
+        // Set the minimum just under curatorA's stake.
         vm.prank(admin);
-        curators.setMinStake(100);
-        assertEq(curators.minStakeBps(), 100);
+        curators.setMinStake(value * 99 / 100);
+        _toNextEpoch();
+        // A large mint right before the flip.
+        address whale = makeAddr("whale");
+        _fundSlice(whale, 500_000e18);
+        vm.prank(whale);
+        fund.mint(500_000e18, 0, whale, true);
+        governor.flip();
+        _toNextEpoch();
+        _fundSlice(whale, 500_000e18);
+        vm.prank(whale);
+        fund.mint(500_000e18, 0, whale, true);
+        governor.flip();
+        assertTrue(curators.isCompliant(curatorA));
+        assertFalse(curators.isCompliant(curatorB)); // no stake at all
+    }
+
+    function test_checkCompliance_noNavPrice_changesNobody() public {
+        _toNextEpoch();
+        governor.flip(); // grace for both
+        _toNextEpoch();
+        vm.warp(block.timestamp + 30 days); // every feed stale
+        governor.flip(); // would remove both with a price
+        assertTrue(curators.isCompliant(curatorA));
+        assertTrue(curators.isCompliant(curatorB));
+
+        _refreshFeeds();
+        governor.flip();
+        assertFalse(curators.isCompliant(curatorA));
+        assertFalse(curators.isCompliant(curatorB));
     }
 
     function test_checkCompliance_governorOnly() public {

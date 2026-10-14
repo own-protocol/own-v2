@@ -25,9 +25,6 @@ import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 contract FundCurators is IFundCurators, Initializable, ReentrancyGuardTransient {
     using SafeERC20 for IERC20;
 
-    // Hard cap on the minimum stake.
-    uint16 private constant MAX_MIN_STAKE_BPS = 1000;
-
     // Length of a vesting period: staked fund tokens a curator earns unlock when it ends.
     uint256 private constant VEST_PERIOD = 30 days;
 
@@ -46,7 +43,7 @@ contract FundCurators is IFundCurators, Initializable, ReentrancyGuardTransient 
     address public override fund;
 
     /// @inheritdoc IFundCurators
-    uint16 public override minStakeBps;
+    uint256 public override minStakeUsd;
 
     address[] private _curators;
     mapping(address curator => CuratorState) private _state;
@@ -82,12 +79,12 @@ contract FundCurators is IFundCurators, Initializable, ReentrancyGuardTransient 
     function initialize(
         address fund_,
         address[] calldata curators_,
-        uint16 minStakeBps_
+        uint256 minStakeUsd_
     ) external override initializer {
         if (fund_ == address(0)) revert ZeroAddress();
         fund = fund_;
         _factory = IFundFactory(IFund(fund_).factory());
-        _setMinStake(minStakeBps_);
+        _setMinStake(minStakeUsd_);
         uint256 cap = _factory.curatorCap();
         for (uint256 i; i < curators_.length; ++i) {
             _add(curators_[i], cap, new address[](0));
@@ -118,9 +115,9 @@ contract FundCurators is IFundCurators, Initializable, ReentrancyGuardTransient 
 
     /// @inheritdoc IFundCurators
     function setMinStake(
-        uint16 minStakeBps_
+        uint256 minStakeUsd_
     ) external override onlyAdmin {
-        _setMinStake(minStakeBps_);
+        _setMinStake(minStakeUsd_);
     }
 
     /// @inheritdoc IFundCurators
@@ -163,13 +160,20 @@ contract FundCurators is IFundCurators, Initializable, ReentrancyGuardTransient 
         IFund f = IFund(fund);
         if (msg.sender != f.governor()) revert NotGovernor();
         address[] memory tokens = _distributeAll();
-        uint256 required = Math.mulDiv(f.totalSupply(), minStakeBps, BPS, Math.Rounding.Ceil);
+        uint256 required = minStakeUsd;
+        uint256 nav;
+        if (required != 0) {
+            bool priced;
+            (priced, nav,) = f.tryNav();
+            // No price, no verdict: nobody's standing changes this week.
+            if (!priced) return;
+        }
         IFundGovernor gov = IFundGovernor(msg.sender);
         uint256 n = _curators.length;
         for (uint256 i; i < n; ++i) {
             address c = _curators[i];
             CuratorState storage st = _state[c];
-            bool ok = gov.stakedAssetsAt(c, epoch) >= required;
+            bool ok = required == 0 || Math.mulDiv(gov.stakedAssetsAt(c, epoch), nav, PRECISION) >= required;
             if (ok) {
                 st.belowSince = 0;
             } else if (st.belowSince == 0) {
@@ -432,11 +436,10 @@ contract FundCurators is IFundCurators, Initializable, ReentrancyGuardTransient 
     }
 
     function _setMinStake(
-        uint16 minStakeBps_
+        uint256 minStakeUsd_
     ) internal {
-        if (minStakeBps_ > MAX_MIN_STAKE_BPS) revert InvalidMinStake();
-        minStakeBps = minStakeBps_;
-        emit MinStakeSet(minStakeBps_);
+        minStakeUsd = minStakeUsd_;
+        emit MinStakeSet(minStakeUsd_);
     }
 
     function _checkToken(address token, address staking) internal view {

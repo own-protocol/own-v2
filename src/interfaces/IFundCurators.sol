@@ -14,9 +14,10 @@ pragma solidity 0.8.28;
 ///           (default a third) of the curators' votes and income.
 ///         - Own adds the other curators up to the factory's cap; the governor adds, removes and
 ///           replaces them through proposals; Own can also remove them.
-///         - Each of those curators must keep `minStakeBps` of the fund's supply staked in the
-///           governor. The governor has it checked at each weekly flip: the first failed check is a
-///           week of grace, the next one makes the curator non-compliant until a check passes again.
+///         - Each of those curators must keep `minStakeUsd` worth of fund tokens (at NAV) staked in
+///           the governor. The governor has it checked at each weekly flip: the first failed check is
+///           a week of grace, the next one makes the curator non-compliant until a check passes again.
+///           A flip with no NAV price changes nobody's standing.
 ///         - The rest of the income is split equally among compliant curators as it arrives; while
 ///           none is compliant the protocol curator takes all of it.
 ///         - Staked fund tokens from staker yield unlock at the end of the 30-day period they are
@@ -37,8 +38,8 @@ interface IFundCurators {
     event ComplianceSet(address indexed curator, bool compliant);
 
     /// @notice Emitted when the minimum stake changes.
-    /// @param minStakeBps New minimum, in basis points of supply.
-    event MinStakeSet(uint16 minStakeBps);
+    /// @param minStakeUsd New minimum, 18 decimals USD.
+    event MinStakeSet(uint256 minStakeUsd);
 
     /// @notice Emitted when a curator claims income.
     /// @param curator The curator.
@@ -73,9 +74,6 @@ interface IFundCurators {
     /// @notice The fund already has the maximum number of curators.
     error CuratorCapReached();
 
-    /// @notice The minimum stake is out of bounds.
-    error InvalidMinStake();
-
     /// @notice The token is not tracked by this module.
     error NotFeeToken();
 
@@ -85,8 +83,8 @@ interface IFundCurators {
     /// @notice Initialise a curators proxy. Called once by the factory.
     /// @param fund_        The fund.
     /// @param curators_    Starting curators.
-    /// @param minStakeBps_ Minimum stake, in basis points of supply.
-    function initialize(address fund_, address[] calldata curators_, uint16 minStakeBps_) external;
+    /// @param minStakeUsd_ Minimum stake, 18 decimals USD at NAV (0 for none).
+    function initialize(address fund_, address[] calldata curators_, uint256 minStakeUsd_) external;
 
     /// @notice Add a curator, up to the factory's cap. Admin or governor.
     /// @param curator The curator.
@@ -108,9 +106,9 @@ interface IFundCurators {
     function replaceCurator(address curator, address replacement) external;
 
     /// @notice Set the minimum stake. Admin only.
-    /// @param minStakeBps_ Minimum, in basis points of supply (at most 10%).
+    /// @param minStakeUsd_ Minimum, 18 decimals USD at NAV (0 for none).
     function setMinStake(
-        uint16 minStakeBps_
+        uint256 minStakeUsd_
     ) external;
 
     /// @notice Share out staked fund tokens just minted to this module, so they vest in the period
@@ -185,9 +183,9 @@ interface IFundCurators {
         address curator
     ) external view returns (bool);
 
-    /// @notice Minimum stake, in basis points of supply.
+    /// @notice Minimum stake each curator keeps staked, 18 decimals USD at NAV.
     /// @return The minimum.
-    function minStakeBps() external view returns (uint16);
+    function minStakeUsd() external view returns (uint256);
 
     /// @notice Every token this module pays out: the fund token, USDG and staked fund tokens.
     /// @return The tokens.

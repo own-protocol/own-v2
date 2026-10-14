@@ -161,7 +161,7 @@ abstract contract FundTestBase is Test {
         p.curators[0] = curatorA;
         p.curators[1] = curatorB;
         p.feeBps = 100;
-        p.minCuratorStakeBps = 50;
+        p.minCuratorStakeUsd = 1000e18;
         p.minRaiseUsd = 10_000e18;
         p.launchSupply = 130_000e18;
         p.launchDuration = 7 days;

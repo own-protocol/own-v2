@@ -175,7 +175,8 @@ struct YieldPoint {
 /// @param curators           Starting curators (at most the factory's curator cap).
 /// @param feeBps             Fund fee on pool trades, mints and redeems, all paid to the curators
 ///                           (0 for the default 1%, at most 10%).
-/// @param minCuratorStakeBps Share of supply each curator must keep staked in the governor.
+/// @param minCuratorStakeUsd Value (18 decimals USD, at NAV) each curator must keep staked in the
+///                           governor; 0 for none.
 /// @param minRaiseUsd        Minimum value (18 decimals USD) the launch must raise.
 /// @param targetRaiseUsd     Raise at which the launch can close before the window ends (0 for none).
 /// @param launchSupply       Fixed fund token supply created at launch (0 for the default 100M).
@@ -192,7 +193,7 @@ struct CreateFundParams {
     address manager;
     address[] curators;
     uint16 feeBps;
-    uint16 minCuratorStakeBps;
+    uint256 minCuratorStakeUsd;
     uint256 minRaiseUsd;
     uint256 targetRaiseUsd;
     uint256 launchSupply;

@@ -42,8 +42,8 @@ import {Hooks} from "v4-core/src/libraries/Hooks.sol";
 ///           the returned feed; the keeper pushes its pool TWAP to the hub.
 ///        3. Admin allows rebalance / zap routers: factory.setRouter(router, true).
 ///        4. Admin fills the listing eligibility list: factory.setEligibleAsset(token, true).
-///        5. Admin creates the fund (curators, fund fee, minimum curator stake of 0.5% = 50 bps,
-///           the Own keeper as manager); after launch run AddFundTwapFeedRobinhood for its TWAP.
+///        5. Admin creates the fund (curators, fund fee, minimum curator stake in USD at NAV, 0 for
+///           none, the Own keeper as manager); after launch run AddFundTwapFeedRobinhood for its TWAP.
 ///        6. The keeper finalizes each launch at its close, calls governor.flip() every
 ///           Thursday 00:00 UTC and opens auction lots to move the basket to its new weights.
 ///
