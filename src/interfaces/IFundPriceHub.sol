@@ -9,9 +9,10 @@ pragma solidity 0.8.28;
 ///         `AggregatorV3` surface) that the FundOracle registers like any other feed, with its
 ///         own staleness bound.
 ///
-///         An optional per-push move bound skips (and reports) a keeper price that moved more
-///         than `maxMoveBps` from the asset's last price; the admin's pushes are never bounded,
-///         so a genuine jump is re-anchored by the admin.
+///         Only the keeper pushes. An optional move bound, `maxMoveBps` per hour since the asset's
+///         last push (compounding, pro rata within the hour), holds every push: a price beyond it
+///         is stored at the bound instead (and reported), so a genuine jump catches up over a few
+///         hours and repeated pushes gain nothing. The admin sets the bound and the keeper.
 interface IFundPriceHub {
     /// @notice An asset's latest price.
     /// @param price     USD per whole token, 18 decimals.
@@ -26,18 +27,19 @@ interface IFundPriceHub {
     /// @param price USD per whole token, 18 decimals.
     event PricePushed(address indexed asset, uint256 price);
 
-    /// @notice Emitted when a keeper price is skipped for moving more than the bound.
-    /// @param asset    The asset.
-    /// @param price    The skipped price.
-    /// @param previous The price kept.
-    event PriceRejected(address indexed asset, uint256 price, uint256 previous);
+    /// @notice Emitted when a pushed price moved more than the bound allows and is stored at the
+    ///         bound instead.
+    /// @param asset  The asset.
+    /// @param price  The price pushed.
+    /// @param stored The price stored.
+    event PriceClamped(address indexed asset, uint256 price, uint256 stored);
 
     /// @notice Emitted when the keeper changes.
     /// @param keeper The new keeper.
     event KeeperSet(address keeper);
 
     /// @notice Emitted when the move bound changes.
-    /// @param maxMoveBps The new bound (0 for none).
+    /// @param maxMoveBps The new bound per hour (0 for none).
     event MaxMoveSet(uint16 maxMoveBps);
 
     /// @notice Emitted when an asset's adapter is deployed.
@@ -51,7 +53,7 @@ interface IFundPriceHub {
     /// @notice Caller is not the platform admin.
     error NotAdmin();
 
-    /// @notice Caller is neither the keeper nor the admin.
+    /// @notice Caller is not the keeper.
     error NotKeeper();
 
     /// @notice The asset and price lists differ in length.
@@ -63,8 +65,8 @@ interface IFundPriceHub {
     /// @notice The asset already has an adapter.
     error FeedExists();
 
-    /// @notice Store USD prices (18 decimals per whole token). Keeper or admin; keeper prices
-    ///         that break the move bound are skipped.
+    /// @notice Store USD prices (18 decimals per whole token). Keeper only; a price that breaks
+    ///         the move bound is stored at the bound.
     /// @param assets The assets.
     /// @param prices Their prices.
     function pushPrices(address[] calldata assets, uint256[] calldata prices) external;
@@ -82,8 +84,9 @@ interface IFundPriceHub {
         address keeper_
     ) external;
 
-    /// @notice Set the per-push move bound for keeper prices. Admin only.
-    /// @param maxMoveBps_ Largest move from the last price, in basis points (0 for none).
+    /// @notice Set the move bound. Admin only.
+    /// @param maxMoveBps_ Largest move per hour since an asset's last push, in basis points (0 for
+    ///                    none).
     function setMaxMove(
         uint16 maxMoveBps_
     ) external;
@@ -107,7 +110,7 @@ interface IFundPriceHub {
     /// @return The keeper.
     function keeper() external view returns (address);
 
-    /// @notice The per-push move bound for keeper prices (0 for none).
+    /// @notice The move bound per hour since an asset's last push (0 for none).
     /// @return The bound, in basis points.
     function maxMoveBps() external view returns (uint16);
 

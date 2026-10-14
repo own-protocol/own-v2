@@ -70,6 +70,9 @@ contract FundPriceHubTest is Test {
         vm.prank(attacker);
         vm.expectRevert(IFundPriceHub.NotKeeper.selector);
         hub.pushPrices(assets, prices);
+        vm.prank(admin);
+        vm.expectRevert(IFundPriceHub.NotKeeper.selector);
+        hub.pushPrices(assets, prices);
     }
 
     function test_pushPrices_badInput_reverts() public {
@@ -85,28 +88,70 @@ contract FundPriceHubTest is Test {
         vm.stopPrank();
     }
 
-    function test_moveBound_skipsKeeperJumpButNotAdmin() public {
-        vm.prank(admin);
-        hub.setMaxMove(5000);
-        _push(address(pons), 1e18, address(cat), 1e18);
-
-        vm.warp(block.timestamp + 60);
-        vm.expectEmit(address(hub));
-        emit IFundPriceHub.PriceRejected(address(pons), 1.6e18, 1e18);
-        _push(address(pons), 1.6e18, address(cat), 1.5e18);
-        (uint256 ponsPrice, uint256 ponsAt) = hub.priceOf(address(pons));
-        (uint256 catPrice,) = hub.priceOf(address(cat));
-        assertEq(ponsPrice, 1e18);
-        assertEq(ponsAt, block.timestamp - 60);
-        assertEq(catPrice, 1.5e18);
-
+    function _pushOne(address who, uint256 price) internal returns (uint256 stored) {
         address[] memory assets = new address[](1);
         uint256[] memory prices = new uint256[](1);
-        (assets[0], prices[0]) = (address(pons), 1.6e18);
-        vm.prank(admin);
+        (assets[0], prices[0]) = (address(pons), price);
+        vm.prank(who);
         hub.pushPrices(assets, prices);
-        (ponsPrice,) = hub.priceOf(address(pons));
-        assertEq(ponsPrice, 1.6e18);
+        (stored,) = hub.priceOf(address(pons));
+    }
+
+    /// @dev A6-M-13: the bound is per hour since the last push, so repeated pushes in one block
+    ///      gain nothing.
+    function test_moveBound_repeatPushesGainNothing() public {
+        vm.prank(admin);
+        hub.setMaxMove(3000);
+        _pushOne(keeper, 1e18);
+
+        vm.expectEmit(address(hub));
+        emit IFundPriceHub.PriceClamped(address(pons), 10e18, 1e18);
+        _pushOne(keeper, 10e18);
+        for (uint256 i; i < 8; ++i) {
+            assertEq(_pushOne(keeper, 10e18), 1e18);
+        }
+
+        vm.warp(block.timestamp + 1 hours);
+        assertEq(_pushOne(keeper, 10e18), 1.3e18);
+    }
+
+    function test_moveBound_realJumpCatchesUpHourly() public {
+        vm.prank(admin);
+        hub.setMaxMove(3000);
+        _pushOne(keeper, 1e18);
+        uint256 expected = 1e18;
+        for (uint256 h = 1; h <= 8; ++h) {
+            vm.warp(block.timestamp + 1 hours);
+            expected = expected * 13_000 / 10_000;
+            assertEq(_pushOne(keeper, 10e18), expected);
+        }
+        vm.warp(block.timestamp + 1 hours); // 1.3^9 is past 10x
+        assertEq(_pushOne(keeper, 10e18), 10e18);
+        (, uint256 at) = hub.priceOf(address(pons));
+        assertEq(at, block.timestamp);
+    }
+
+    function test_moveBound_fallsSymmetricallyAndProRataWithinTheHour() public {
+        vm.prank(admin);
+        hub.setMaxMove(3000);
+        _pushOne(keeper, 1.3e18);
+        vm.warp(block.timestamp + 1 hours);
+        assertEq(_pushOne(keeper, 0.1e18), 1e18);
+
+        vm.warp(block.timestamp + 30 minutes);
+        assertEq(_pushOne(keeper, 2e18), 1.15e18);
+        vm.warp(block.timestamp + 30 minutes);
+        assertEq(_pushOne(keeper, 1.2e18), 1.2e18); // within the bound: stored as pushed
+    }
+
+    function test_moveBound_offOrLongSilenceIsUnbounded() public {
+        _pushOne(keeper, 1e18);
+        assertEq(_pushOne(keeper, 50e18), 50e18); // no bound set
+
+        vm.prank(admin);
+        hub.setMaxMove(3000);
+        vm.warp(block.timestamp + 200 hours); // 1.3^200 is past any real move
+        assertEq(_pushOne(keeper, 1e40), 1e40);
     }
 
     function test_createFeed_adminOnlyOnce() public {

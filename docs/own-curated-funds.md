@@ -24,7 +24,7 @@ Updated 2026-10-12: the premium yield redesign (spec `plans/fund-premium-rebate-
 | `FundBribes` | Beacon proxy per fund. Bribes on the weekly vote per token per week, and bribes on listing proposals. The curators' cut is paid out when the bribe is posted. |
 | `FundHook` | UUPS, upgraded by the registry ADMIN; the proxy sits at the mined hook address. One Uniswap v4 hook for every fund pool: the fund fee in USDG on swaps, pool issuance on buys above NAV (math in the linked `PoolIssuance` library), admin-set LP fee, the TWAP, and the fund's own pool position. |
 | `FundOracle` | One price source per asset: a ticker on the protocol's `ChainlinkOracleVerifier` (the registry's INHOUSE_ORACLE: Chainlink while live, the in-house signer within a band of the last Chainlink answer while it is silent, so stocks stay priced over weekends), or a Chainlink-style feed (`FundPriceHub` feeds for tokens without Chainlink). A fund token's own market price is read through the same surface. |
-| `FundPriceHub` | One for the platform. Keeper-pushed USD prices for basket assets with no Chainlink feed (Pons tokens, VIRTUAL): the keeper samples each token's Uniswap v4 pool, converts its pair (ETH, SPY, NVDA...) to USD with Chainlink and pushes a 30-minute TWAP. A keeper push moving more than `maxMoveBps` (30% at deploy) is skipped; admin pushes are not bounded. `createFeed(asset)` deploys a `FundPriceFeed` the oracle reads like any Chainlink aggregator. |
+| `FundPriceHub` | One for the platform. Keeper-pushed USD prices for basket assets with no Chainlink feed (Pons tokens, VIRTUAL): the keeper samples each token's Uniswap v4 pool, converts its pair (ETH, SPY, NVDA...) to USD with Chainlink and pushes a 30-minute TWAP. Only the keeper pushes. A price may move at most `maxMoveBps` (admin-set, 30% at deploy) per hour since that asset's last push, compounding; a bigger push is stored at the bound, so a real jump catches up over a few hours (a 10x in about 9 at 30%) and repeated pushes gain nothing. `createFeed(asset)` deploys a `FundPriceFeed` the oracle reads like any Chainlink aggregator. |
 | `FundAuctions` | One for the platform. Dutch auctions for rebalancing after the pool is seeded (below). |
 | `FundTwapFeed` | Per fund. Serves the fund's pool TWAP (recorded by the hook) as an aggregator. |
 | `FundRedeemZap` | Redeem a fund token and swap the basket to USDG through allowed routers in one transaction. |
@@ -316,8 +316,9 @@ Updated 2026-10-12: the premium yield redesign (spec `plans/fund-premium-rebate-
   it should finish the launch rebalance and seed promptly. Its launch jobs are `finalize()` as
   soon as the window ends or the target raise is reached, then the rebalance, `seedPool()` and
   `distribute()` in batches.
-- **Price keeper:** pushes hub prices for assets without a Chainlink feed, bounded per push by
-  `maxMoveBps`; the admin can push any price to recover from a large real move.
+- **Price keeper:** pushes hub prices for assets without a Chainlink feed, bounded by `maxMoveBps`
+  per hour since each asset's last push. The admin sets the bound and the keeper and cannot push
+  prices.
 - **Oracle feeds:** basket prices come from admin-set sources: `setVerifierFeed(asset, ticker,
   staleness)` for assets with Chainlink (read through the in-house verifier, so its weekend quotes
   count), or `setFeed(asset, feed, staleness)` for `FundPriceHub` feeds, whose decimals are read once
