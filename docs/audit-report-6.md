@@ -61,7 +61,7 @@ only FINDING and LEAD blocks", which is what stopped the round-1 blocks.
 | A6-H-01 | `finalize` reverted after `endTime` | `e4a69df` |
 | A6-H-02 | Launch-epoch proposals counted only escrowed power | `e4a69df` |
 | A6-M-05 | A flip in the launch epoch used up every curator's grace week | `e4a69df` |
-| A6-L-02 | A reward token whose balance fell below `_reserved` blocked flip | `5db4443` (the "no unregister path" part lives on in A6-M-03) |
+| A6-L-02 | A reward token whose balance fell below `_reserved` blocked flip | `5db4443`; the rest (no unregister path, a reward token with a reverting `balanceOf`) went with the A6-M-03 fix, `195c055` |
 
 **Removed leads** (code changed, so they no longer apply):
 
@@ -90,10 +90,10 @@ M-01, M-02, M-03, M-04, M-06, M-08 and L-04 again on its own.
 | -------- | ----- | ----- | ---- | ------------ | --------- |
 | Critical | 0 | 0 | 0 | 0 | 0 |
 | High     | 3 | 3 | 0 | 0 | 0 |
-| Medium   | 14 | 3 | 11 | 0 | 0 |
+| Medium   | 14 | 4 | 10 | 0 | 0 |
 | Low      | 8 | 2 | 6 | 0 | 0 |
 | Info     | 0 | 0 | 0 | 0 | 0 |
-| **Total** | **25** | **8** | **17** | **0** | **0** |
+| **Total** | **25** | **9** | **16** | **0** | **0** |
 
 | ID | Severity | Finding | Conf | Status |
 | -- | -------- | ------- | ---- | ------ |
@@ -102,7 +102,7 @@ M-01, M-02, M-03, M-04, M-06, M-08 and L-04 again on its own.
 | A6-H-03 | High | A curator claim credits the claimed staked shares a second time | 90 | Fixed (`10998a7`) |
 | A6-M-01 | Medium | A 30-minute pool crash shrinks the redeem supply and over-pays the basket | 75 | Fixed (`fbde008`) |
 | A6-M-02 | Medium | Right after seeding the position TWAP covers seconds; one block sets redeem supply | 75 | Fixed (`fbde008`) |
-| A6-M-03 | Medium | Dust bribes fill the 32 reward-token slots; later bribes in new tokens revert | 90 | Open |
+| A6-M-03 | Medium | Dust bribes fill the 32 reward-token slots; later bribes in new tokens revert | 90 | Fixed (`195c055`) |
 | A6-M-04 | Medium | Compliance uses live supply, so mint → flip → redeem fails an honest curator | 80 | Open |
 | A6-M-05 | Medium | A flip in the launch epoch uses up every curator's grace week | 80 | Fixed (`e4a69df`) |
 | A6-M-06 | Medium | One premium reading prices up to 8 h of staking yield; caller picks the moment | 80 | Open |
@@ -213,7 +213,7 @@ locked 7 days by default).
 the redeem, so the lower reading is spot. The young-pool TWAP itself is unchanged (still a short
 window right after seeding), which matters only for views and valuation.
 
-## A6-M-03 — Dust bribes fill the 32 reward-token slots; later bribes in new tokens revert (Medium, Open)
+## A6-M-03 — Dust bribes fill the 32 reward-token slots; later bribes in new tokens revert (Medium, Fixed 2026-10-14)
 
 `FundCurators.registerRewardToken` (`src/funds/FundCurators.sol:141`), entered from
 `FundBribes._pull` (`src/funds/FundBribes.sol:199-219`). Round 1: 12 agent runs. Round 2: raised
@@ -232,10 +232,13 @@ token) and a token team's listing bribe paid in its own token. Every `_distribut
 curator changes, claims) also loops the junk tokens forever. Precondition: at least 32 allowed
 tokens (eligible + basket + bribe tokens), likely with a tokenized-stock eligibility list.
 
-**Suggested fix (pick one or combine):** (A) in `_pull`, allow `reward == token` only for basket
-assets or the open listing target; (B) exempt `isBribeToken` tokens from the cap, or skip the
-cut instead of reverting when full; (C) add an admin path to unregister a token with zero balance
-and zero reserve.
+**Fix (`195c055`, 2026-10-14, Bhargav's direction):** the reward-token list is gone. `FundBribes`
+pays the curators' cut out in the same transaction as the bribe, split by
+`FundCurators.bribeSplit`: the protocol curator its share plus rounding, the curators compliant at
+that moment the rest equally; a curator that cannot receive the token forfeits its part to the
+protocol curator. `FundCurators` now tracks only the fund token, USDG and staking shares, so
+`registerRewardToken`, the 32 cap and its errors are removed and every `_distributeAll` loops three
+tokens. Test `test_postBribe_manyRewardTokens_neverBlocked` posts 40 dust bribes in 40 tokens.
 
 ## A6-M-04 — Compliance uses live supply, so mint → flip → redeem fails an honest curator (Medium, Open)
 
