@@ -20,8 +20,8 @@ Updated 2026-10-12: the premium yield redesign (spec `plans/fund-premium-rebate-
 | `FundLaunch` | Beacon proxy per fund. Deposit window (any basket token or USDG), early close at the target raise, early-deposit yield, overweight haircut, the fixed-supply split and pool seeding after the launch rebalance. |
 | `FundStaking` | Beacon proxy per fund. Staked fund token (e.g. sOCF1) with step-tier yield set by the premium, the Premium Boost and mint lock of direct minters, the Premium Pot, the curators' yield minted on top, and staking of full-range Uniswap v4 LP position NFTs in the fund's pool. |
 | `FundGovernor` | Beacon proxy per fund. Staked escrow, the weekly weight vote (gauge) and proposals to list or delist tokens and add, remove or replace curators. |
-| `FundCurators` | Beacon proxy per fund. The curator set (with the protocol curator), the minimum curator stake and compliance, and the curators' income: the fund fee, the curator yield (30-day unlocks, forfeits on removal) and the bribe cut, split between the protocol curator and the others. |
-| `FundBribes` | Beacon proxy per fund. Bribes on the weekly vote per token per week, and bribes on listing proposals. The curators' cut goes to `FundCurators`. |
+| `FundCurators` | Beacon proxy per fund. The curator set (with the protocol curator), the minimum curator stake and compliance, and the curators' income: the fund fee, the curator yield (30-day unlocks, forfeits on removal), split between the protocol curator and the others. It also says how a bribe cut is split (`bribeSplit`). |
+| `FundBribes` | Beacon proxy per fund. Bribes on the weekly vote per token per week, and bribes on listing proposals. The curators' cut is paid out when the bribe is posted. |
 | `FundHook` | UUPS, upgraded by the registry ADMIN; the proxy sits at the mined hook address. One Uniswap v4 hook for every fund pool: the fund fee in USDG on swaps, pool issuance on buys above NAV (math in the linked `PoolIssuance` library), admin-set LP fee, the TWAP, and the fund's own pool position. |
 | `FundOracle` | Per-asset Chainlink-style feeds. A fund token's own market price is read through the same surface. |
 | `FundPriceHub` | One for the platform. Keeper-pushed USD prices for basket assets with no Chainlink feed (Pons tokens, VIRTUAL): the keeper samples each token's Uniswap v4 pool, converts its pair (ETH, SPY, NVDA...) to USD with Chainlink and pushes a 30-minute TWAP. A keeper push moving more than `maxMoveBps` (30% at deploy) is skipped; admin pushes are not bounded. `createFeed(asset)` deploys a `FundPriceFeed` the oracle reads like any Chainlink aggregator. |
@@ -203,10 +203,10 @@ Updated 2026-10-12: the premium yield redesign (spec `plans/fund-premium-rebate-
 - Up to 10 other curators per fund (admin-set cap). Own can add them directly up to the cap;
   proposals can add, remove or replace them. No minimum: with no other curators, the protocol
   curator still holds its 10% of the vote.
-- **Income.** `FundCurators` receives the fund fee (fund tokens and USDG), the curator yield
-  (staking shares) and the bribe cut (each bribe reward token, registered on first use, at most 32).
-  The protocol curator takes its third and the compliant curators split the rest equally, claiming
-  with `claim(token)`. While no other curator is compliant, the protocol curator takes all of it.
+- **Income.** `FundCurators` receives the fund fee (fund tokens and USDG) and the curator yield
+  (staking shares). The protocol curator takes its third and the compliant curators split the rest
+  equally, claiming with `claim(token)`. While no other curator is compliant, the protocol curator
+  takes all of it. The bribe cut is split the same way but paid out at once (see Bribes).
 - **Curator yield vesting.** Staking shares unlock in fixed 30-day periods aligned to Unix time:
   what a curator earns in a period is claimable once it ends (`lockedYieldOf` shows what is still
   locked). A curator removed mid-period forfeits that period's locked shares: they are unstaked and
@@ -276,8 +276,9 @@ Updated 2026-10-12: the premium yield redesign (spec `plans/fund-premium-rebate-
 - **Weight-vote bribes:** anyone can post a bribe on a basket token for the current or a future
   week, in an admin-listed bribe token (USDG, MONEY) or the bribed token itself when it is a basket
   asset or eligible for listing. The curators' cut (15% by default, at most 25%) is taken when it is
-  posted and goes to `FundCurators`, which splits it like the rest of the curators' income (Own gets
-  its third through the protocol curator). After the flip, the locked stake that voted for the token that week claims in proportion
+  posted and paid out in the same transaction: the protocol curator its third, the curators
+  compliant at that moment the rest equally (a curator that cannot receive the token forfeits its
+  part to the protocol curator). Nothing is tracked per bribe token. After the flip, the locked stake that voted for the token that week claims in proportion
   to its votes. Curator base slices never earn bribes; a curator earns only on their own locked
   stake. If no locked stake voted for it, or that week was never tallied, the briber takes it back.
 - **Listing bribes:** anyone can post a bribe on an open listing proposal, on the same terms. Locked

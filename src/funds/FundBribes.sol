@@ -211,11 +211,18 @@ contract FundBribes is IFundBribes, Initializable, ReentrancyGuardTransient {
         cut = Math.mulDiv(received, fac.bribeCutBps(), BPS);
         net = received - cut;
         if (net == 0) revert ZeroAmount();
-        if (cut != 0) {
-            address cur = IFund(fund).curators();
-            IFundCurators(cur).registerRewardToken(reward);
-            r.safeTransfer(cur, cut);
+        if (cut != 0) _payCut(r, cut);
+    }
+
+    /// @dev Pays the curators' cut out now, to the curators compliant at this moment. A curator that
+    ///      cannot receive the token forfeits its part to the protocol curator.
+    function _payCut(IERC20 r, uint256 cut) internal {
+        (address[] memory to, uint256[] memory amounts) = IFundCurators(IFund(fund).curators()).bribeSplit(cut);
+        uint256 toProtocol = amounts[0];
+        for (uint256 i = 1; i < to.length; ++i) {
+            if (amounts[i] != 0 && !r.trySafeTransfer(to[i], amounts[i])) toProtocol += amounts[i];
         }
+        if (toProtocol != 0) r.safeTransfer(to[0], toProtocol);
     }
 
     function _governor() internal view returns (IFundGovernor) {

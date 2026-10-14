@@ -6,7 +6,8 @@ pragma solidity 0.8.28;
 ///         distribution and market expertise, hold a base slice of every vote and share the
 ///         curators' income. This module receives all of it: the fund fee (fund tokens from mints
 ///         and redeems, USDG from pool trades), the curators' share of staker yield (staked fund
-///         tokens) and the curators' cut of every bribe (in the bribe's reward token).
+///         tokens). The curators' cut of a bribe never passes through it: the bribes module pays it
+///         out when the bribe is posted, split by {bribeSplit}.
 ///
 ///         - The protocol curator (Own's seat, set on the factory) is a curator of every fund. It
 ///           cannot be removed, needs no stake and always takes the factory's protocol share
@@ -45,10 +46,6 @@ interface IFundCurators {
     /// @param amount  Amount.
     event FeesClaimed(address indexed curator, address indexed token, uint256 amount);
 
-    /// @notice Emitted when a bribe reward token starts being tracked.
-    /// @param token The token.
-    event RewardTokenRegistered(address indexed token);
-
     /// @notice Emitted when a removed curator forfeits the staked fund tokens it earned this period.
     /// @param curator The curator.
     /// @param shares  Staked fund tokens forfeited.
@@ -82,14 +79,8 @@ interface IFundCurators {
     /// @notice The token is not tracked by this module.
     error NotFeeToken();
 
-    /// @notice Caller is not the fund's bribes module.
-    error NotBribes();
-
     /// @notice Caller is not the fund's staking module.
     error NotStaking();
-
-    /// @notice The module already tracks the maximum number of bribe reward tokens.
-    error TooManyRewardTokens();
 
     /// @notice Initialise a curators proxy. Called once by the factory.
     /// @param fund_        The fund.
@@ -126,12 +117,15 @@ interface IFundCurators {
     ///         they were earned. Staking module only.
     function notifyYield() external;
 
-    /// @notice Track a bribe reward token, so the curators' cut paid in it can be claimed. Bribes
-    ///         module only; tokens already tracked are ignored.
-    /// @param token The reward token.
-    function registerRewardToken(
-        address token
-    ) external;
+    /// @notice How a bribe cut of `amount` is paid out right now: the protocol curator first (its
+    ///         share plus the rounding remainder, or all of it while no other curator is compliant),
+    ///         then each compliant curator an equal part of the rest.
+    /// @param amount The cut.
+    /// @return to      Receivers, the protocol curator first.
+    /// @return amounts Amount for each receiver.
+    function bribeSplit(
+        uint256 amount
+    ) external view returns (address[] memory to, uint256[] memory amounts);
 
     /// @notice Check every curator's stake for `epoch`. Governor only, at each flip.
     /// @param epoch The epoch being tallied.
@@ -195,8 +189,7 @@ interface IFundCurators {
     /// @return The minimum.
     function minStakeBps() external view returns (uint16);
 
-    /// @notice Every token this module pays out: the fund token, USDG, staked fund tokens, then the
-    ///         bribe reward tokens.
+    /// @notice Every token this module pays out: the fund token, USDG and staked fund tokens.
     /// @return The tokens.
     function rewardTokens() external view returns (address[] memory);
 

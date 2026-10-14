@@ -28,10 +28,6 @@ contract FundCurators is IFundCurators, Initializable, ReentrancyGuardTransient 
     // Hard cap on the minimum stake.
     uint16 private constant MAX_MIN_STAKE_BPS = 1000;
 
-    // Most bribe reward tokens the module tracks besides the fund token, USDG and staked
-    // fund tokens.
-    uint256 private constant MAX_REWARD_TOKENS = 32;
-
     // Length of a vesting period: staked fund tokens a curator earns unlock when it ends.
     uint256 private constant VEST_PERIOD = 30 days;
 
@@ -63,8 +59,6 @@ contract FundCurators is IFundCurators, Initializable, ReentrancyGuardTransient 
 
     IFundFactory private _factory;
 
-    address[] private _rewardTokens;
-    mapping(address token => bool) private _isRewardToken;
     mapping(address token => uint256) private _protocolOwed;
     mapping(address curator => Vest) private _vest;
     uint256 private _accPeriod;
@@ -138,15 +132,28 @@ contract FundCurators is IFundCurators, Initializable, ReentrancyGuardTransient 
     }
 
     /// @inheritdoc IFundCurators
-    function registerRewardToken(
-        address token
-    ) external override {
-        if (msg.sender != _factory.modulesOf(fund).bribes) revert NotBribes();
-        if (_isRewardToken[token] || _isCoreToken(token, _staking())) return;
-        if (_rewardTokens.length >= MAX_REWARD_TOKENS) revert TooManyRewardTokens();
-        _isRewardToken[token] = true;
-        _rewardTokens.push(token);
-        emit RewardTokenRegistered(token);
+    function bribeSplit(
+        uint256 amount
+    ) external view override returns (address[] memory to, uint256[] memory amounts) {
+        uint256 count = _compliantCount;
+        uint256 n = _curators.length;
+        to = new address[](count + 1);
+        amounts = new uint256[](count + 1);
+        to[0] = _factory.protocolCurator();
+        if (count == 0) {
+            amounts[0] = amount;
+            return (to, amounts);
+        }
+        uint256 each = (amount - Math.mulDiv(amount, _factory.protocolCuratorShareBps(), BPS)) / count;
+        // The protocol curator takes its share and the rounding remainder.
+        amounts[0] = amount - each * count;
+        uint256 j = 1;
+        for (uint256 i; i < n; ++i) {
+            address c = _curators[i];
+            if (!_state[c].compliant) continue;
+            (to[j], amounts[j]) = (c, each);
+            ++j;
+        }
     }
 
     /// @inheritdoc IFundCurators
@@ -433,23 +440,19 @@ contract FundCurators is IFundCurators, Initializable, ReentrancyGuardTransient 
     }
 
     function _checkToken(address token, address staking) internal view {
-        if (!_isRewardToken[token] && !_isCoreToken(token, staking)) revert NotFeeToken();
+        if (!_isCoreToken(token, staking)) revert NotFeeToken();
     }
 
     function _isCoreToken(address token, address staking) internal view returns (bool) {
         return token == fund || token == staking || token == _factory.usdg();
     }
 
-    /// @dev The fund token, USDG, staked fund tokens, then the bribe reward tokens.
+    /// @dev The fund token, USDG and staked fund tokens.
     function _allTokens() internal view returns (address[] memory tokens) {
-        uint256 n = _rewardTokens.length;
-        tokens = new address[](n + 3);
+        tokens = new address[](3);
         tokens[0] = fund;
         tokens[1] = _factory.usdg();
         tokens[2] = _staking();
-        for (uint256 i; i < n; ++i) {
-            tokens[i + 3] = _rewardTokens[i];
-        }
     }
 
     function _staking() internal view returns (address) {

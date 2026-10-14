@@ -5,9 +5,9 @@ pragma solidity 0.8.28;
 /// @notice Anyone can post a bribe, typically a token team wanting its token listed or
 ///         up-weighted. Bribes are paid in admin-listed tokens (e.g. USDG, MONEY) or in the bribed
 ///         token itself when it is a basket token or eligible for listing. The curators take the
-///         factory's bribe cut (15% by default, at most 25%) when a bribe is posted: it goes to the
-///         fund's curators module, which gives the protocol curator its share and splits the rest
-///         among the other curators.
+///         factory's bribe cut (15% by default, at most 25%) when a bribe is posted: it is paid out
+///         at once, the protocol curator its share and the rest split equally among the curators
+///         compliant at that moment (see {IFundCurators-bribeSplit}).
 ///
 ///         Only stake locked for bribes earns them (see {IFundGovernor-lockForBribes}); curators
 ///         earn on their own locked stake, never on their base slice.

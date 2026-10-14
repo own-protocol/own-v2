@@ -306,47 +306,47 @@ contract FundCuratorsTest is FundTestBase {
     }
 
     // ──────────────────────────────────────────────────────────
-    //  Bribe reward tokens
+    //  Bribe cut split and income below what is owed
     // ──────────────────────────────────────────────────────────
 
-    function test_registerRewardToken_bribesOnly() public {
-        vm.prank(admin);
-        vm.expectRevert(IFundCurators.NotBribes.selector);
-        curators.registerRewardToken(address(spare));
+    function test_bribeSplit_protocolFirstThenCompliantCurators() public view {
+        (address[] memory to, uint256[] memory amounts) = curators.bribeSplit(1000);
+        assertEq(to.length, 3);
+        assertEq(to[0], protocolCurator);
+        assertEq(to[1], curatorA);
+        assertEq(to[2], curatorB);
+        assertEq(amounts[1], _curatorPart(1000, 2));
+        assertEq(amounts[2], amounts[1]);
+        assertEq(amounts[0] + amounts[1] + amounts[2], 1000);
     }
 
-    function test_registerRewardToken_capped() public {
-        vm.startPrank(address(bribes));
-        for (uint256 i; i < 32; ++i) {
-            curators.registerRewardToken(address(uint160(0x1000 + i)));
-        }
-        curators.registerRewardToken(address(uint160(0x1000))); // already registered: no-op
-        curators.registerRewardToken(address(usdg)); // core token: no-op
-        vm.expectRevert(IFundCurators.TooManyRewardTokens.selector);
-        curators.registerRewardToken(address(spare));
+    function test_bribeSplit_noCompliantCurator_allToProtocol() public {
+        vm.startPrank(admin);
+        curators.removeCurator(curatorA);
+        curators.removeCurator(curatorB);
         vm.stopPrank();
-        assertEq(curators.rewardTokens().length, 35);
+        (address[] memory to, uint256[] memory amounts) = curators.bribeSplit(1000);
+        assertEq(to.length, 1);
+        assertEq(amounts[0], 1000);
     }
 
-    function test_rewardTokenBelowReserved_doesNotBlock() public {
-        vm.prank(address(bribes));
-        curators.registerRewardToken(address(spare));
-        spare.mint(address(curators), 1000e18);
+    function test_incomeBelowReserved_doesNotBlock() public {
+        usdg.mint(address(curators), 1000e6);
         // Adding a curator shares out the balance, reserving all of it.
         vm.prank(admin);
         curators.addCurator(curatorC);
-        uint256 owed = curators.claimable(curatorA, address(spare));
-        assertApproxEqAbs(owed, _curatorPart(1000e18, 2), 1);
+        uint256 owed = curators.claimable(curatorA, address(usdg));
+        assertApproxEqAbs(owed, _curatorPart(1000e6, 2), 1);
 
-        // The token rebases down below what is reserved: no new income, and nothing reverts.
-        spare.burn(address(curators), 400e18);
-        assertEq(curators.claimable(curatorA, address(spare)), owed);
+        // The balance drops below what is reserved: no new income, and nothing reverts.
+        usdg.burn(address(curators), 400e6);
+        assertEq(curators.claimable(curatorA, address(usdg)), owed);
         vm.prank(admin);
         curators.removeCurator(curatorC);
         _toNextEpoch();
         governor.flip();
         vm.prank(curatorA);
-        assertEq(curators.claim(address(spare)), owed);
+        assertEq(curators.claim(address(usdg)), owed);
     }
 
     function test_setMinStake_adminOnlyAndCapped() public {

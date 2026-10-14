@@ -4,6 +4,8 @@ pragma solidity 0.8.28;
 import {IFundBribes} from "../../src/interfaces/IFundBribes.sol";
 import {IFundGovernor} from "../../src/interfaces/IFundGovernor.sol";
 import {FundTestBase} from "../helpers/FundTestBase.sol";
+import {MockERC20} from "../helpers/MockERC20.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 contract FundBribesTest is FundTestBase {
     address internal briber = makeAddr("briber");
@@ -35,17 +37,31 @@ contract FundBribesTest is FundTestBase {
     //  Weight-vote bribes
     // ──────────────────────────────────────────────────────────
 
-    function test_postBribe_curatorsTakeFifteenPercent() public {
-        uint256 before = usdg.balanceOf(address(curators));
+    /// @dev Each compliant curator's part of a `cut`; the protocol curator takes the rest.
+    function _curatorPart(
+        uint256 cut
+    ) internal pure returns (uint256) {
+        return (cut - cut * 3333 / 10_000) / 2;
+    }
+
+    function test_postBribe_curatorsTakeFifteenPercentPaidAtOnce() public {
+        uint256 pBefore = usdg.balanceOf(protocolCurator);
+        uint256 aBefore = usdg.balanceOf(curatorA);
+        uint256 bBefore = usdg.balanceOf(curatorB);
+        uint256 modBefore = usdg.balanceOf(address(curators));
         vm.prank(briber);
         uint256 net = bribes.postBribe(address(tsla), epoch, address(usdg), 1000e6);
         assertEq(net, 850e6);
         assertEq(bribes.bribeOf(address(tsla), epoch, address(usdg)), 850e6);
-        assertEq(usdg.balanceOf(address(curators)) - before, 150e6);
         assertEq(usdg.balanceOf(address(bribes)), 850e6);
+        uint256 each = _curatorPart(150e6);
+        assertEq(usdg.balanceOf(curatorA) - aBefore, each);
+        assertEq(usdg.balanceOf(curatorB) - bBefore, each);
+        assertEq(usdg.balanceOf(protocolCurator) - pBefore, 150e6 - 2 * each);
+        assertEq(usdg.balanceOf(address(curators)), modBefore);
     }
 
-    function test_postBribe_cutInNewTokenRegisteredWithCurators() public {
+    function test_postBribe_cutInNewTokenPaidOutNotTracked() public {
         vm.prank(admin);
         factory.setBribeToken(address(spare), true);
         spare.mint(briber, 100e18);
@@ -53,22 +69,56 @@ contract FundBribesTest is FundTestBase {
         spare.approve(address(bribes), 100e18);
         bribes.postBribe(address(tsla), epoch, address(spare), 100e18);
         vm.stopPrank();
-        address[] memory r = curators.rewardTokens();
-        assertEq(r.length, 4); // the fund token, USDG, staking shares, then registered tokens
-        assertEq(r[3], address(spare));
-        // Protocol curator a third, curatorA and curatorB the rest equally.
-        assertApproxEqAbs(curators.claimable(protocolCurator, address(spare)), 15e18 * 3333 / 10_000, 1);
-        assertApproxEqAbs(curators.claimable(curatorA, address(spare)), (15e18 - 15e18 * 3333 / 10_000) / 2, 1);
+        assertEq(curators.rewardTokens().length, 3); // the fund token, USDG and staking shares only
+        assertEq(spare.balanceOf(address(curators)), 0);
+        assertEq(spare.balanceOf(curatorA), _curatorPart(15e18));
+        assertEq(spare.balanceOf(protocolCurator), 15e18 - 2 * _curatorPart(15e18));
     }
 
-    function test_postBribe_cutInBribedToken_registered() public {
+    function test_postBribe_cutInBribedToken_paidOut() public {
         tsla.mint(briber, 1e18);
         vm.startPrank(briber);
         tsla.approve(address(bribes), 1e18);
         bribes.postBribe(address(tsla), epoch, address(tsla), 1e18);
         vm.stopPrank();
-        assertEq(curators.rewardTokens()[3], address(tsla));
-        assertEq(tsla.balanceOf(address(curators)), 0.15e18);
+        assertEq(tsla.balanceOf(address(curators)), 0);
+        assertEq(tsla.balanceOf(curatorB), _curatorPart(0.15e18));
+    }
+
+    /// @dev A6-M-03: no reward-token slots to fill, so bribes in any number of tokens go through.
+    function test_postBribe_manyRewardTokens_neverBlocked() public {
+        for (uint256 i; i < 40; ++i) {
+            MockERC20 t = new MockERC20("T", "T", 18);
+            vm.prank(admin);
+            factory.setBribeToken(address(t), true);
+            t.mint(briber, 7);
+            vm.startPrank(briber);
+            t.approve(address(bribes), 7);
+            bribes.postBribe(address(tsla), epoch, address(t), 7);
+            vm.stopPrank();
+        }
+        assertEq(curators.rewardTokens().length, 3);
+    }
+
+    function test_postBribe_removedCuratorGetsNoCut() public {
+        vm.prank(admin);
+        curators.removeCurator(curatorB);
+        uint256 bBefore = usdg.balanceOf(curatorB);
+        uint256 aBefore = usdg.balanceOf(curatorA);
+        vm.prank(briber);
+        bribes.postBribe(address(tsla), epoch, address(usdg), 1000e6);
+        assertEq(usdg.balanceOf(curatorB), bBefore);
+        assertEq(usdg.balanceOf(curatorA) - aBefore, 150e6 - 150e6 * 3333 / 10_000);
+    }
+
+    function test_postBribe_curatorThatCannotReceive_partGoesToProtocolCurator() public {
+        uint256 each = _curatorPart(150e6);
+        vm.mockCallRevert(address(usdg), abi.encodeCall(IERC20.transfer, (curatorA, each)), "blocked");
+        uint256 pBefore = usdg.balanceOf(protocolCurator);
+        vm.prank(briber);
+        bribes.postBribe(address(tsla), epoch, address(usdg), 1000e6);
+        vm.clearMockedCalls();
+        assertEq(usdg.balanceOf(protocolCurator) - pBefore, 150e6 - each);
     }
 
     function test_postBribe_rewardIsOtherBasketAsset_reverts() public {
