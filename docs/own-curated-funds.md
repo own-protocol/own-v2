@@ -9,14 +9,14 @@ Design source: the "Own Curated Funds: launch, curators, weight votes and bribes
 
 Updated 2026-10-07: Dutch-auction rebalancing with admin router swaps as the fallback, and the keeper-pushed price hub.
 
-Updated 2026-10-12: the premium yield redesign (spec `plans/fund-premium-rebate-base-yield.md`): pool issuance, the locked direct mint with the Premium Boost, the Premium Pot, the boost reserve and step tiers. Lock options and the premium ceiling are gone.
+Updated 2026-10-12: the premium yield redesign (spec `plans/fund-premium-rebate-base-yield.md`): pool issuance, the locked direct mint with the Premium Boost, the Premium Pot, the boost reserve and step tiers. Lock options and the premium ceiling are gone. Updated 2026-10-14: the boost and the pot are held as fund tokens, not a dollar reserve (A6-M-12).
 
 ## Contracts (`src/funds/`)
 
 | Contract | Role |
 | --- | --- |
 | `FundFactory` | UUPS. Platform admin hub: launcher whitelist (Own only by default), the protocol curator and its share (33.33% default, 50% cap), rebalance routers and limits, launch and governance defaults, premium defaults for new funds (mint lock and adjustment, boost share and speed, pot drip and share, issuance start and steps, yield tiers), staking yield cap (109,500 bps a year, i.e. 3% a day), curator cap (10), bribe cut (15%, 25% cap), bribe tokens, the listing eligibility list and the platform metadata. Owns the six module beacons, so one call upgrades every fund. |
-| `Fund` | Beacon proxy per fund. The fund token plus custody of the basket and idle USDG: the locked direct mint, redeem, the fund fee, the boost reserve, rebalance, the depositor lock. NAV counts the pool position and excludes the reserve. |
+| `Fund` | Beacon proxy per fund. The fund token plus custody of the basket and idle USDG: the locked direct mint, redeem, the fund fee, rebalance, the depositor lock. NAV counts the pool position. |
 | `FundLaunch` | Beacon proxy per fund. Deposit window (any basket token or USDG), early close at the target raise, early-deposit yield, overweight haircut, the fixed-supply split and pool seeding after the launch rebalance. |
 | `FundStaking` | Beacon proxy per fund. Staked fund token (e.g. sOCF1) with step-tier yield set by the premium, the Premium Boost and mint lock of direct minters, the Premium Pot, the curators' yield minted on top, and staking of full-range Uniswap v4 LP position NFTs in the fund's pool. |
 | `FundGovernor` | Beacon proxy per fund. Staked escrow, the weekly weight vote (gauge) and proposals to list or delist tokens and add, remove or replace curators. |
@@ -101,8 +101,8 @@ Updated 2026-10-12: the premium yield redesign (spec `plans/fund-premium-rebate-
 
 - **Locked direct mint (in kind):** `mint(navShares, minSharesOut, receiver, false)`. The minter brings
   `navShares / supply` (supply outside the pool position) of every basket asset's balance and of
-  the fund's USDG (idle, the pool position's and issuance USDG not yet collected), each rounded up
-  and scaled by backing over total value while the reserve holds anything, and receives
+  the fund's USDG (idle, the pool position's and issuance USDG not yet collected), each rounded up,
+  and receives
   `navShares × NAV / mintPrice` fund tokens, less the fund fee, where
   `mintPrice = max(max(spot, TWAP) × (1 + mintAdjustmentBps), NAV)`. The tokens are staked for the
   receiver and locked for `mintLock` (default 15 days, 0 allowed): they cannot be transferred or
@@ -126,31 +126,27 @@ Updated 2026-10-12: the premium yield redesign (spec `plans/fund-premium-rebate-
 - **Mint settings:** the admin sets the mint lock, adjustment, NAV mint lock and premium cap per
   fund with `setMintConfig` (new funds take the factory's defaults); `setMintPaused` (operator or
   admin) closes both mint doors.
-- **Premium Boost (direct mints only):** of a mint's payment above NAV, `boostShareBps` (default
-  75%) goes into the fund's reserve as the minter's budget and the rest is backing. The budget is
-  paid back in dollars at `boostSpeedBpsPerYear` (default 75% a year) of the mint payment, as staked
-  fund tokens at NAV: a 2x mint is repaid in about 6 months, 10x in about 11, only while the tokens
-  stay staked. Payouts settle lazily (on every stake change, transfer, redeem or `settleBoost`),
-  and each moves the same dollars from the reserve into backing, so NAV does not move. Shares
-  leaving the account (transfer, unstake, redeem) scale the boost down to what is still held, and
-  the unpaid part goes to backing (NAV rises). A second mint settles the first and merges into it;
-  a finished or forfeited boost never comes back.
+- **Premium Boost (direct mints only):** of a mint's premium over NAV in fund tokens (the
+  `navShares` paid for less the tokens issued), `boostShareBps` (default 75%) is minted at once as
+  the minter's boost tokens, held by the staking module, and the rest is backing. The boost is paid
+  at `boostSpeedBpsPerYear` (default 75% a year) of `navShares`, as staked shares: a 2x mint is paid
+  out in about 6 months, 10x in about 11, only while the tokens stay staked. Boost tokens count in
+  supply and share the fund's price moves like any other token, so a boost is worth more if the
+  fund rises and less if it falls. Payouts settle lazily (on every stake change, transfer, redeem
+  or `settleBoost`) and need no price. Shares leaving the account (transfer, unstake, redeem) scale
+  the boost down to what is still held, and the unpaid boost tokens are burned (NAV rises). A
+  second mint settles the first and merges into it; a finished or forfeited boost never comes back.
 - **Pool issuance:** on a pool buy starting above `NAV × (1 + issuanceStartBps)` (default 1.01x),
   the hook fills part of the buy with newly issued fund tokens at the pool's own average price, so
   the price moves as if supply grew by the density per price doubling: 1% of supply below 2x NAV,
   2% from 2x, 3% from 5x (up to 8 admin-set steps, `setIssuance`). Exact-in and exact-out buys both
   issue; sells never do. Of the premium over NAV on issued tokens, `potShareBps` (default 75%)
-  goes to the Premium Pot and the rest is backing. The USDG for issued tokens is held as pool
+  is minted as fund tokens at NAV for the Premium Pot and the rest is backing. The USDG for issued tokens is held as pool
   manager claims and counted in the position until the next `collectLpFees` or redeem.
-- **Premium Pot:** pot dollars sit in the reserve and drip linearly to all stakers over
-  `potDripPeriod` (default 7 days; each top-up re-spreads what is left over a new period) through
-  the vault's share price, minting the dripped dollars' worth of fund tokens at NAV, so NAV does not
-  move. Variable, never promised. With less than one whole share staked the drip goes to backing.
-  While NAV has no price the drip pauses and its end moves out, so nothing piles up for whoever
-  stakes before the price returns.
-- **Reserve:** boost budgets and the pot, held in dollars. It is excluded from NAV and from
-  redeems, so redeemers never take it and outstanding boosts stay funded however many holders
-  leave. While it holds anything, redeems need basket prices to scale their claim.
+- **Premium Pot:** pot tokens are held by the staking module and drip linearly into the vault
+  over `potDripPeriod` (default 7 days; each top-up re-spreads what is left over a new period),
+  raising the share price. The drip needs no price, so it never piles up while feeds are stale.
+  Variable, never promised. With less than one whole share staked the drip is burned into backing.
 - **Mint zap:** `FundMintZap.zapMint` takes one token, runs the caller's swaps through
   admin-allowed routers into the slice, mints (direct or at NAV) for the caller, and
   refunds whatever is left. The admin registers it with `factory.setMintZap`. The minter pays the swap slippage, not the fund's holders.
@@ -353,7 +349,7 @@ prints those calls for an admin's Safe. After a fund launches,
   `test/helpers/v4/PoolManagerBytecode.sol` (v4-core pins solc 0.8.26; this repo pins 0.8.28).
 - `test/invariant/FundInvariant.t.sol` checks that mints, pool buys, redeems, unstakes and boost
   settlements never lower NAV per token (beyond the position valuation's rounding) and that the
-  reserve always equals the boost budgets and pot still owed.
+  staking module holds exactly the stakes plus the boost and pot tokens still owed.
 - `test/unit/FundPremium.t.sol` covers pool issuance, the Premium Boost, the Premium Pot, the
   locked mint and the premium settings.
 - `test/unit/FundStakingLp.t.sol` uses `test/helpers/MockPositionManager.sol`;

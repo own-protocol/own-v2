@@ -63,7 +63,12 @@ contract FundPremiumTest is FundTestBase {
 
     /// @dev NAV as the mint prices it: rounded up.
     function _mintNav() internal view returns (uint256) {
-        return Math.mulDiv(fund.totalValue() - fund.reserveUsd(), 1e18, fund.effectiveSupply(), Math.Rounding.Ceil);
+        return Math.mulDiv(fund.totalValue(), 1e18, fund.effectiveSupply(), Math.Rounding.Ceil);
+    }
+
+    /// @dev Fund tokens the staking module holds for payouts (boosts and the pot), beyond the stakes.
+    function _held() internal view returns (uint256) {
+        return fund.balanceOf(address(staking)) - staking.totalAssets();
     }
 
     /// @dev Square root of the pool price, USDG per fund token in raw units, Q96.
@@ -180,15 +185,16 @@ contract FundPremiumTest is FundTestBase {
         (uint256 usdgIn, uint256 issued, uint256 pot) = _buy(-int256(2000e6));
         assertGt(issued, 0);
         uint256 premium = usdgIn * 1e12 - issued * nav0 / 1e18;
-        assertEq(pot, premium * 7500 / 10_000);
-        assertEq(fund.reserveUsd(), pot);
+        // The pot's share of the premium, in fund tokens at NAV.
+        assertEq(pot, Math.mulDiv(premium, 7500e18, 10_000 * nav0));
+        assertEq(_held(), pot);
         assertEq(staking.potLeft(), pot);
         assertEq(staking.potEnd(), block.timestamp + 7 days);
 
         (uint256 nav1, uint256 s1) = _nav();
-        assertEq(s1, s0 + issued);
-        // The USDG for the issued tokens is in the fund; all of it but the pot is backing.
-        assertApproxEqAbs(nav1 * s1 / 1e18, nav0 * s0 / 1e18 + usdgIn * 1e12 - pot, 1e6);
+        assertEq(s1, s0 + issued + pot);
+        // All the USDG for the issued tokens is in the fund; the pot tokens are claims on it.
+        assertApproxEqAbs(nav1 * s1 / 1e18, nav0 * s0 / 1e18 + usdgIn * 1e12, 1e6);
         assertGt(nav1, nav0);
     }
 
@@ -201,7 +207,7 @@ contract FundPremiumTest is FundTestBase {
         (, issued,) = _swapIssued(dave, false, int256(100e6));
         assertEq(issued, 0);
         assertEq(fund.totalSupply(), supply);
-        assertEq(fund.reserveUsd(), 0);
+        assertEq(staking.potLeft(), 0);
     }
 
     function test_issuance_exactOutBuy() public {
@@ -211,7 +217,7 @@ contract FundPremiumTest is FundTestBase {
         assertGt(issued, 0);
         assertLt(issued, 500e18);
         assertGt(usdgIn, 0);
-        assertEq(fund.reserveUsd(), pot);
+        assertEq(staking.potLeft(), pot);
     }
 
     function test_issuance_largeBuysSettle() public {
@@ -245,7 +251,7 @@ contract FundPremiumTest is FundTestBase {
 
     function test_issuance_poolBuysCreateNoBoost() public {
         _buy(-int256(5000e6));
-        assertEq(staking.boostOf(carol).usdLeft, 0);
+        assertEq(staking.boostOf(carol).left, 0);
         assertEq(staking.mintLockOf(carol, false).shares, 0);
         assertEq(staking.balanceOf(carol), 0);
     }
@@ -254,67 +260,83 @@ contract FundPremiumTest is FundTestBase {
     //  Premium Boost
     // ──────────────────────────────────────────────────────────
 
-    function test_boost_budgetIsShareOfPremium_fullProceedsInFund() public {
+    function test_boost_isShareOfPremiumInTokens_fullProceedsInFund() public {
         uint256 navShares = 10_000e18;
         (, uint256 mintPrice,,,) = fund.previewMint(navShares, false);
         uint256 nav = _mintNav();
         uint256 v0 = fund.totalValue();
+        uint256 supply0 = fund.totalSupply();
         _mintAs(carol, navShares);
 
         IFundStaking.Boost memory b = staking.boostOf(carol);
-        uint256 payment = navShares * nav / 1e18;
-        uint256 budget = (payment - Math.mulDiv(payment, nav, mintPrice)) * 7500 / 10_000;
-        assertApproxEqRel(b.usdLeft, budget, 1e9);
-        assertEq(fund.reserveUsd(), b.usdLeft);
-        assertApproxEqRel(b.usdPerSec, payment * 7500 / (10_000 * 365 days), 1e9);
+        uint256 gross = Math.mulDiv(navShares, nav, mintPrice);
+        uint256 boost = (navShares - gross) * 7500 / 10_000;
+        assertApproxEqAbs(b.left, boost, 1e6);
+        assertEq(_held(), b.left);
+        assertApproxEqRel(b.perSec, navShares * 7500 / (10_000 * 365 days), 1e9);
         assertEq(b.shares, staking.balanceOf(carol));
         assertEq(b.lastSettle, block.timestamp);
-        // The whole payment lands in the fund: the budget as reserve, the rest as backing.
-        assertApproxEqRel(fund.totalValue() - v0, payment, 1e9);
+        // The whole payment lands in the fund; the boost tokens are minted with the mint.
+        assertApproxEqRel(fund.totalValue() - v0, navShares * nav / 1e18, 1e9);
+        assertApproxEqAbs(fund.totalSupply() - supply0, gross + boost, 1e6);
     }
 
-    function test_boost_paysBudgetAtSpeed() public {
+    function test_boost_paysAtSpeed() public {
         (, uint256 mintPrice,,,) = fund.previewMint(10_000e18, false);
         uint256 nav = _mintNav();
         _mintAs(carol, 10_000e18);
         IFundStaking.Boost memory b = staking.boostOf(carol);
-        uint256 duration = b.usdLeft / b.usdPerSec;
+        uint256 duration = b.left / b.perSec;
         // 75% of the premium at 75% of the payment a year: the premium's share of the price, in years.
         assertApproxEqRel(duration, (1e18 - nav * 1e18 / mintPrice) * 365 days / 1e18, 1e12);
 
         _warp(duration / 2);
         staking.settleBoost(carol);
-        assertApproxEqRel(b.usdLeft - staking.boostOf(carol).usdLeft, b.usdLeft / 2, 1e12);
+        assertApproxEqRel(b.left - staking.boostOf(carol).left, b.left / 2, 1e12);
 
         _warp(duration);
         staking.settleBoost(carol);
-        assertEq(staking.boostOf(carol).usdLeft, 0);
-        assertEq(fund.reserveUsd(), 0);
+        assertEq(staking.boostOf(carol).left, 0);
+        assertEq(_held(), 0);
     }
 
-    function test_boost_payoutLeavesNavUnchanged() public {
+    function test_boost_payoutLeavesNavAndSupplyUnchanged() public {
         _mintAs(carol, 10_000e18);
         _warp(20 days);
         staking.accrue();
-        (uint256 nav0,) = _nav();
+        (uint256 nav0, uint256 s0) = _nav();
         uint256 owed = staking.pendingBoost(carol);
-        uint256 r0 = fund.reserveUsd();
+        uint256 held0 = _held();
         uint256 a0 = staking.convertToAssets(staking.balanceOf(carol));
 
         staking.settleBoost(carol);
-        (uint256 nav1,) = _nav();
-        assertGe(nav1, nav0);
-        assertApproxEqAbs(nav1, nav0, 2);
-        assertEq(fund.reserveUsd(), r0 - owed);
-        assertApproxEqRel(staking.convertToAssets(staking.balanceOf(carol)) - a0, owed * 1e18 / nav0, 1e9);
+        (uint256 nav1, uint256 s1) = _nav();
+        assertEq(nav1, nav0);
+        assertEq(s1, s0);
+        assertEq(_held(), held0 - owed);
+        assertApproxEqRel(staking.convertToAssets(staking.balanceOf(carol)) - a0, owed, 1e9);
     }
 
-    function test_boost_forfeitRaisesNavByReleased() public {
+    /// @dev A6-M-12: the boost tokens share the fund's price moves, so a basket drop costs other
+    ///      holders only its own share, with no fixed dollar claim levering it.
+    function test_boost_sharesPriceMoves() public {
+        _mintAs(carol, 20_000e18);
+        uint256 left = staking.boostOf(carol).left;
+        (uint256 nav0,) = _nav();
+        uint256 v0 = fund.totalValue();
+
+        _setFeed(address(tsla), feeds[address(tsla)].answer() / 2);
+        (uint256 nav1,) = _nav();
+        assertApproxEqRel(nav1 * 1e18 / nav0, fund.totalValue() * 1e18 / v0, 1e9);
+        assertEq(staking.boostOf(carol).left, left);
+    }
+
+    function test_boost_forfeitBurnsUnpaidAndRaisesNav() public {
         _mintAs(carol, 10_000e18);
         _warp(15 days);
         staking.settleBoost(carol);
         IFundStaking.Boost memory b = staking.boostOf(carol);
-        uint256 r0 = fund.reserveUsd();
+        uint256 held0 = _held();
         (uint256 nav0, uint256 s0) = _nav();
 
         uint256 half = staking.balanceOf(carol) / 2;
@@ -323,16 +345,17 @@ contract FundPremiumTest is FundTestBase {
 
         uint256 held = staking.balanceOf(carol);
         IFundStaking.Boost memory a = staking.boostOf(carol);
-        assertEq(a.usdLeft, Math.mulDiv(b.usdLeft, held, b.shares));
-        assertEq(a.usdPerSec, Math.mulDiv(b.usdPerSec, held, b.shares));
+        assertEq(a.left, Math.mulDiv(b.left, held, b.shares));
+        assertEq(a.perSec, Math.mulDiv(b.perSec, held, b.shares));
         assertEq(a.shares, held);
-        uint256 forfeited = r0 - fund.reserveUsd();
-        assertEq(forfeited, b.usdLeft - a.usdLeft);
-        assertEq(staking.boostOf(bob).usdLeft, 0);
+        uint256 forfeited = held0 - _held();
+        assertEq(forfeited, b.left - a.left);
+        assertEq(staking.boostOf(bob).left, 0);
 
         (uint256 nav1, uint256 s1) = _nav();
-        assertEq(s1, s0);
-        assertApproxEqAbs(nav1, nav0 + forfeited * 1e18 / s0, 2);
+        assertEq(s1, s0 - forfeited);
+        assertApproxEqAbs(nav1, nav0 * s0 / s1, 2);
+        assertGt(nav1, nav0);
     }
 
     function test_boost_partialUnstakeScales() public {
@@ -345,9 +368,9 @@ contract FundPremiumTest is FundTestBase {
         staking.unstake(out, carol);
         uint256 held = staking.balanceOf(carol);
         IFundStaking.Boost memory a = staking.boostOf(carol);
-        assertEq(a.usdLeft, Math.mulDiv(b.usdLeft, held, b.shares));
-        assertEq(a.usdPerSec, Math.mulDiv(b.usdPerSec, held, b.shares));
-        assertEq(fund.reserveUsd(), a.usdLeft);
+        assertEq(a.left, Math.mulDiv(b.left, held, b.shares));
+        assertEq(a.perSec, Math.mulDiv(b.perSec, held, b.shares));
+        assertEq(_held(), a.left);
     }
 
     function test_boost_secondMintMergesAfterSettling() public {
@@ -355,19 +378,19 @@ contract FundPremiumTest is FundTestBase {
         IFundStaking.Boost memory b1 = staking.boostOf(carol);
         _warp(10 days);
         uint256 owed = staking.pendingBoost(carol);
-        uint256 r0 = fund.reserveUsd();
-        uint256 payment2 = 5000e18 * _mintNav() / 1e18;
+        uint256 held0 = _held();
 
         _fundSlice(carol, 5000e18);
         vm.expectEmit(true, false, false, false, address(staking));
-        emit IFundStaking.BoostPaid(carol, owed, 0, 0);
+        emit IFundStaking.BoostPaid(carol, owed, 0);
         vm.prank(carol);
         fund.mint(5000e18, 0, carol, false);
 
         IFundStaking.Boost memory b2 = staking.boostOf(carol);
-        uint256 budget2 = fund.reserveUsd() - (r0 - owed);
-        assertEq(b2.usdLeft, b1.usdLeft - owed + budget2);
-        assertApproxEqRel(b2.usdPerSec - b1.usdPerSec, payment2 * 7500 / (10_000 * 365 days), 1e9);
+        uint256 boost2 = _held() - (held0 - owed);
+        assertGt(boost2, 0);
+        assertEq(b2.left, b1.left - owed + boost2);
+        assertApproxEqRel(b2.perSec - b1.perSec, uint256(5000e18) * 7500 / (10_000 * 365 days), 1e9);
         assertEq(b2.lastSettle, block.timestamp);
     }
 
@@ -378,25 +401,24 @@ contract FundPremiumTest is FundTestBase {
         uint256 bal = staking.balanceOf(carol);
         vm.prank(carol);
         uint256 assets = staking.unstake(bal, carol);
-        assertEq(staking.boostOf(carol).usdLeft, 0);
-        assertEq(fund.reserveUsd(), 0);
+        assertEq(staking.boostOf(carol).left, 0);
+        assertEq(_held(), 0);
 
         vm.startPrank(carol);
         fund.approve(address(staking), assets);
         staking.stake(assets, carol);
         vm.stopPrank();
         _warp(30 days);
-        assertEq(staking.boostOf(carol).usdLeft, 0);
+        assertEq(staking.boostOf(carol).left, 0);
         assertEq(staking.pendingBoost(carol), 0);
         uint256 shares = staking.balanceOf(carol);
         staking.settleBoost(carol);
         assertEq(staking.balanceOf(carol), shares);
     }
 
-    function test_boost_redeemsNeverTouchReserve() public {
+    function test_boost_redeemsLeaveBoostTokensInPlace() public {
         _mintAs(carol, 20_000e18);
-        uint256 r0 = fund.reserveUsd();
-        uint256 budget = staking.boostOf(carol).usdLeft;
+        uint256 boost = staking.boostOf(carol).left;
         (uint256 nav0,) = _nav();
 
         // 80% of every other holder redeems.
@@ -407,7 +429,7 @@ contract FundPremiumTest is FundTestBase {
         vm.prank(bob);
         staking.redeem(bobBal * 8 / 10, bob, new uint256[](0), 0);
 
-        assertEq(fund.reserveUsd(), r0);
+        assertEq(_held(), boost);
         (uint256 nav1,) = _nav();
         // Redeems never lower NAV (rounding and the pool's TWAP cap leave dust with the fund).
         assertGe(nav1 + 1, nav0);
@@ -417,10 +439,31 @@ contract FundPremiumTest is FundTestBase {
         uint256 a0 = staking.convertToAssets(staking.balanceOf(carol));
         _warp(2 * 365 days);
         staking.settleBoost(carol);
-        assertEq(staking.boostOf(carol).usdLeft, 0);
-        assertEq(fund.reserveUsd(), 0);
-        (uint256 nav2,) = _nav();
-        assertApproxEqRel((staking.convertToAssets(staking.balanceOf(carol)) - a0) * nav2 / 1e18, budget, 1e9);
+        assertEq(staking.boostOf(carol).left, 0);
+        assertEq(_held(), 0);
+        assertApproxEqRel(staking.convertToAssets(staking.balanceOf(carol)) - a0, boost, 1e9);
+    }
+
+    /// @dev A6-M-12: a redeem reads no price, so a stale feed never blocks it while boosts are owed.
+    function test_redeem_stalePriceWithBoostOwed() public {
+        _mintAs(carol, 10_000e18);
+        assertGt(_held(), 0);
+        vm.warp(block.timestamp + 2 days); // feeds stale
+        (bool ok,,) = fund.tryNav();
+        assertFalse(ok);
+
+        uint256 bal = fund.balanceOf(alice);
+        vm.prank(alice);
+        (, uint256 usdgOut) = fund.redeem(bal / 2, alice, new uint256[](0), 0);
+        assertGt(usdgOut, 0);
+        // The boost pays without a price too.
+        uint256 shares = staking.balanceOf(carol);
+        staking.settleBoost(carol);
+        assertGt(staking.balanceOf(carol), shares);
+        shares = staking.balanceOf(carol);
+        vm.prank(carol);
+        staking.redeem(shares, carol, new uint256[](0), 0);
+        assertEq(staking.balanceOf(carol), 0);
     }
 
     function test_setPremiumConfig_adminOnlyBoundedAndApplied() public {
@@ -445,10 +488,9 @@ contract FundPremiumTest is FundTestBase {
         (, uint256 mintPrice,,,) = fund.previewMint(10_000e18, false);
         uint256 nav = _mintNav();
         _mintAs(carol, 10_000e18);
-        uint256 payment = 10_000e18 * nav / 1e18;
         IFundStaking.Boost memory b = staking.boostOf(carol);
-        assertApproxEqRel(b.usdLeft, (payment - Math.mulDiv(payment, nav, mintPrice)) / 2, 1e9);
-        assertApproxEqRel(b.usdPerSec, payment / 365 days, 1e9);
+        assertApproxEqRel(b.left, (10_000e18 - Math.mulDiv(10_000e18, nav, mintPrice)) / 2, 1e9);
+        assertApproxEqRel(b.perSec, 10_000e18 / uint256(365 days), 1e9);
 
         (,, uint256 pot) = _buy(-int256(1000e6));
         assertEq(staking.potEnd(), block.timestamp + 3 days);
@@ -464,47 +506,46 @@ contract FundPremiumTest is FundTestBase {
         assertGt(pot, 0);
 
         _warp(1 days);
-        (uint256 nav0,) = _nav();
+        (uint256 nav0, uint256 s0) = _nav();
         uint256 assets0 = staking.totalAssets();
         staking.accrue();
-        assertEq(fund.reserveUsd(), pot - pot / 7);
         assertEq(staking.potLeft(), pot - pot / 7);
-        (uint256 nav1,) = _nav();
-        assertApproxEqAbs(nav1, nav0, 2);
-        assertApproxEqRel(staking.totalAssets() - assets0, (pot / 7) * 1e18 / nav0, 1e9);
+        assertEq(_held(), pot - pot / 7);
+        (uint256 nav1, uint256 s1) = _nav();
+        assertEq(nav1, nav0);
+        assertEq(s1, s0);
+        assertEq(staking.totalAssets() - assets0, pot / 7);
 
         _warp(3 days);
         staking.accrue();
-        assertApproxEqAbs(fund.reserveUsd(), pot - pot * 4 / 7, 2);
+        assertApproxEqAbs(staking.potLeft(), pot - pot * 4 / 7, 2);
 
         _warp(3 days);
         staking.accrue();
-        assertEq(fund.reserveUsd(), 0);
         assertEq(staking.potLeft(), 0);
         assertEq(staking.potPending(), 0);
+        assertEq(_held(), 0);
     }
 
-    /// @dev A6-M-11: while NAV has no price the drip pauses instead of piling up, then resumes
-    ///      where it stopped.
-    function test_pot_pausesWhileNavUnpriced() public {
+    /// @dev A6-M-11, A6-M-12: the drip needs no price, so it keeps paying stakers while the feeds
+    ///      are stale and nothing piles up.
+    function test_pot_dripsWhileUnpriced() public {
         (,, uint256 pot) = _buy(-int256(5000e6));
         _warp(1 days);
         staking.accrue();
         uint256 left = staking.potLeft();
-        uint64 end = staking.potEnd();
+        uint256 assets0 = staking.totalAssets();
 
         vm.warp(block.timestamp + 2 days); // feeds stale
+        (bool ok,,) = fund.tryNav();
+        assertFalse(ok);
         staking.accrue();
-        assertEq(staking.potLeft(), left);
+        assertApproxEqAbs(staking.potLeft(), left - pot * 2 / 7, 2);
         assertEq(staking.potPending(), 0);
-        assertEq(staking.potEnd(), end + 2 days);
-
-        _warp(1 days);
-        staking.accrue();
-        assertApproxEqAbs(fund.reserveUsd(), pot - pot * 2 / 7, 2);
+        assertApproxEqAbs(staking.totalAssets() - assets0, pot * 2 / 7, 2);
     }
 
-    /// @dev A6-M-11: a stake made while NAV has no price takes nothing when the price returns.
+    /// @dev A6-M-11: a stake made while NAV has no price takes nothing already dripped.
     function test_pot_stakeWhileUnpricedTakesNothing() public {
         _buy(-int256(5000e6));
         _warp(1 days);
@@ -564,7 +605,7 @@ contract FundPremiumTest is FundTestBase {
         uint256 released;
         for (uint256 i; i < logs.length; ++i) {
             if (logs[i].emitter == address(staking) && logs[i].topics[0] == IFundStaking.PotReleased.selector) {
-                (, released) = abi.decode(logs[i].data, (uint256, uint256));
+                (released,) = abi.decode(logs[i].data, (uint256, bool));
             }
         }
         assertGt(released, 0);
@@ -572,7 +613,7 @@ contract FundPremiumTest is FundTestBase {
     }
 
     function test_pot_dustStakeDoesNotCaptureIt() public {
-        // Everyone leaves but the launch's wei of dust: the pot goes to backing instead of
+        // Everyone leaves but the launch's wei of dust: the pot is burned into backing instead of
         // inflating the share price.
         uint256 bobBal = staking.balanceOf(bob);
         vm.prank(bob);
@@ -585,9 +626,10 @@ contract FundPremiumTest is FundTestBase {
         uint256 assets0 = staking.totalAssets();
         staking.accrue();
         assertEq(staking.totalAssets(), assets0);
-        assertEq(fund.reserveUsd(), 0);
-        (uint256 nav1,) = _nav();
-        assertApproxEqAbs(nav1, nav0 + pot * 1e18 / s0, 2);
+        assertEq(_held(), 0);
+        (uint256 nav1, uint256 s1) = _nav();
+        assertEq(s1, s0 - pot);
+        assertApproxEqAbs(nav1, nav0 * s0 / s1, 2);
 
         // New stakes still get their full share.
         vm.prank(alice);
@@ -617,8 +659,8 @@ contract FundPremiumTest is FundTestBase {
         assertEq(staking.balanceOf(carol), 0);
         assertEq(staking.mintLockOf(carol, false).shares, 0);
         // Redeeming at NAV gives up the unpaid boost.
-        assertEq(staking.boostOf(carol).usdLeft, 0);
-        assertEq(fund.reserveUsd(), 0);
+        assertEq(staking.boostOf(carol).left, 0);
+        assertEq(_held(), 0);
     }
 
     function test_lock_freeAfterConfiguredLength() public {
@@ -651,7 +693,7 @@ contract FundPremiumTest is FundTestBase {
         uint256 shares = fund.mint(1000e18, 0, carol, false);
         assertEq(fund.balanceOf(carol), shares);
         assertEq(staking.mintLockOf(carol, false).shares, 0);
-        assertEq(staking.boostOf(carol).usdLeft, 0);
+        assertEq(staking.boostOf(carol).left, 0);
     }
 
     // ──────────────────────────────────────────────────────────
@@ -683,8 +725,8 @@ contract FundPremiumTest is FundTestBase {
         assertEq(shares, quoted);
         assertEq(fund.balanceOf(carol), shares);
         assertEq(staking.balanceOf(carol), 0);
-        assertEq(staking.boostOf(carol).usdLeft, 0);
-        assertEq(fund.reserveUsd(), 0);
+        assertEq(staking.boostOf(carol).left, 0);
+        assertEq(_held(), 0);
         // The whole premium is backing.
         (uint256 nav1,) = _nav();
         assertGt(nav1, nav0);
@@ -702,7 +744,7 @@ contract FundPremiumTest is FundTestBase {
         (,,,, bool locked) = fund.previewMint(1000e18, false);
         assertTrue(locked);
         _mintAs(carol, 1000e18);
-        assertGt(staking.boostOf(carol).usdLeft, 0);
+        assertGt(staking.boostOf(carol).left, 0);
         assertEq(fund.balanceOf(carol), 0);
     }
 
@@ -736,8 +778,8 @@ contract FundPremiumTest is FundTestBase {
         assertEq(lock.shares, staking.balanceOf(carol));
         assertEq(lock.unlockAt, block.timestamp + 180 days);
         assertEq(staking.mintLockOf(carol, false).shares, 0);
-        assertEq(staking.boostOf(carol).usdLeft, 0);
-        assertEq(fund.reserveUsd(), 0);
+        assertEq(staking.boostOf(carol).left, 0);
+        assertEq(_held(), 0);
         (uint256 nav1,) = _nav();
         assertGe(nav1 + 1, nav0); // never dilutive (the fee even adds a little)
     }

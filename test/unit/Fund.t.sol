@@ -144,7 +144,7 @@ contract FundTest is FundTestBase {
 
     /// @dev NAV as the mint prices it: rounded up.
     function _mintNav() internal view returns (uint256) {
-        return Math.mulDiv(fund.totalValue() - fund.reserveUsd(), 1e18, fund.effectiveSupply(), Math.Rounding.Ceil);
+        return Math.mulDiv(fund.totalValue(), 1e18, fund.effectiveSupply(), Math.Rounding.Ceil);
     }
 
     /// @dev The pool price a direct mint pays before its adjustment: the higher of spot and TWAP.
@@ -230,8 +230,8 @@ contract FundTest is FundTestBase {
 
         _mintAs(alice, 1000e18);
         assertGe(fund.navPerShare(), nav - 1); // never dilutive
-        assertEq(staking.boostOf(alice).usdLeft, 0); // no premium, no boost
-        assertEq(fund.reserveUsd(), 0);
+        assertEq(staking.boostOf(alice).left, 0); // no premium, no boost
+        assertEq(fund.balanceOf(address(staking)), staking.totalAssets());
     }
 
     function test_mint_zeroLock_stakedButFree() public {
@@ -242,8 +242,8 @@ contract FundTest is FundTestBase {
         uint256 shares = staking.balanceOf(alice);
         vm.prank(alice);
         staking.transfer(bob, shares); // free to move (and the boost goes nowhere)
-        assertEq(staking.boostOf(alice).usdLeft, 0);
-        assertEq(staking.boostOf(bob).usdLeft, 0);
+        assertEq(staking.boostOf(alice).left, 0);
+        assertEq(staking.boostOf(bob).left, 0);
     }
 
     function test_setMintConfig() public {
@@ -307,11 +307,6 @@ contract FundTest is FundTestBase {
     function test_hookIssue_onlyHook_reverts() public {
         vm.expectRevert(IFund.NotHook.selector);
         fund.hookIssue(address(this), 1e18, 0);
-    }
-
-    function test_releaseReserve_onlyStaking_reverts() public {
-        vm.expectRevert(IFund.NotStaking.selector);
-        fund.releaseReserve(1, 0);
     }
 
     function test_mint_matchesPreview() public {

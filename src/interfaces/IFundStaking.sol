@@ -16,19 +16,19 @@ import {IERC721Receiver} from "@openzeppelin/contracts/token/ERC721/IERC721Recei
 ///           worth more fund tokens. The new tokens have no new backing: non-stakers are diluted,
 ///           which is the incentive to stake. Yield accrues before every stake and unstake, so late
 ///           stakers cannot capture it. Rates are capped by the factory's admin-set yield cap.
-///         - Premium Pot: part of the premium the hook captures on pool buys sits in the fund's
-///           reserve and drips to all stakers over the drip period (7 days by default): each accrual
-///           mints the dripped dollars' worth of fund tokens at NAV into the vault and moves the
-///           same dollars from the reserve into backing, so NAV does not move. Variable, never
-///           promised; with less than one whole share staked the drip goes to backing.
+///         - Premium Pot: part of the premium the hook captures on pool buys is minted as fund
+///           tokens at NAV and held here, then drips into the vault over the drip period (7 days
+///           by default). Variable, never promised; with less than one whole share staked the drip
+///           is burned into backing.
 ///         - Premium Boost: a direct mint ({IFund-mint}) is staked here for the minter, locked for the
-///           fund's mint lock, and carries a personal boost: a dollar budget (the boost share of the
-///           premium it paid over NAV, held in the fund's reserve) paid at a fixed dollar speed (a
-///           yearly rate on the mint payment) as new staked shares at NAV, until the budget is used.
-///           It is settled lazily: on stake, unstake, redeem, transfer, a new direct mint, or
+///           fund's mint lock, and carries a personal boost: fund tokens (the boost share of the
+///           premium it paid over NAV, in fund tokens at NAV) minted at once and held here, paid at a
+///           fixed speed (a yearly rate on the payment in fund tokens at NAV) as new staked shares,
+///           until none are left. Held boost tokens ride the fund's price like any other token. It
+///           is settled lazily: on stake, unstake, redeem, transfer, a new direct mint, or
 ///           {settleBoost}. The boost belongs to the minter: shares that leave the account (unstaked,
-///           redeemed or transferred; the governor excepted) scale it down, and the unpaid budget of
-///           what left goes to backing. It never comes back.
+///           redeemed or transferred; the governor excepted) scale it down, and the unpaid boost
+///           tokens of what left are burned into backing. It never comes back.
 ///
 ///         The curators get a share of the stakers' yield minted on top of it (15% by default,
 ///         admin-set per fund, optionally capped at a yearly share of the staked balance), so
@@ -54,13 +54,13 @@ interface IFundStaking is IERC20, IERC721Receiver {
     }
 
     /// @notice An account's Premium Boost from direct mints.
-    /// @param usdPerSec  Payout speed, 18 decimals USD a second (summed over its direct mints).
-    /// @param usdLeft    Budget still to pay, held in the fund's reserve.
+    /// @param perSec     Payout speed, fund tokens a second (summed over its direct mints).
+    /// @param left       Fund tokens still to pay, held here.
     /// @param shares     Shares carrying the boost; holding fewer scales it down.
     /// @param lastSettle Last settlement time.
     struct Boost {
-        uint128 usdPerSec;
-        uint128 usdLeft;
+        uint128 perSec;
+        uint128 left;
         uint128 shares;
         uint64 lastSettle;
     }
@@ -138,35 +138,34 @@ interface IFundStaking is IERC20, IERC721Receiver {
 
     /// @notice Emitted when a direct mint adds to an account's boost.
     /// @param account    The account.
-    /// @param budgetUsd  Budget added, 18 decimals USD.
-    /// @param usdPerSec  Payout speed now.
-    /// @param usdLeft    Budget left now.
+    /// @param added      Fund tokens added.
+    /// @param perSec     Payout speed now.
+    /// @param left       Fund tokens left now.
     /// @param shares     Shares carrying the boost now.
-    event BoostAdded(address indexed account, uint256 budgetUsd, uint256 usdPerSec, uint256 usdLeft, uint256 shares);
+    event BoostAdded(address indexed account, uint256 added, uint256 perSec, uint256 left, uint256 shares);
 
     /// @notice Emitted when an account's boost is paid.
     /// @param account The account.
-    /// @param usd     Dollars paid, 18 decimals.
-    /// @param assets  Fund tokens minted into the vault at NAV.
+    /// @param assets  Fund tokens paid into the vault.
     /// @param shares  Shares minted to the account.
-    event BoostPaid(address indexed account, uint256 usd, uint256 assets, uint256 shares);
+    event BoostPaid(address indexed account, uint256 assets, uint256 shares);
 
     /// @notice Emitted when shares leaving an account scale its boost down.
     /// @param account   The account.
-    /// @param forfeited Budget released into backing, 18 decimals USD.
-    /// @param usdLeft   Budget left.
-    event BoostForfeited(address indexed account, uint256 forfeited, uint256 usdLeft);
+    /// @param forfeited Fund tokens burned into backing.
+    /// @param left      Fund tokens left.
+    event BoostForfeited(address indexed account, uint256 forfeited, uint256 left);
 
     /// @notice Emitted when the Premium Pot is topped up.
-    /// @param usd     Dollars added, 18 decimals.
-    /// @param potLeft Dollars left to drip.
+    /// @param tokens  Fund tokens added.
+    /// @param potLeft Fund tokens left to drip.
     /// @param potEnd  When the drip ends.
-    event PotAdded(uint256 usd, uint256 potLeft, uint64 potEnd);
+    event PotAdded(uint256 tokens, uint256 potLeft, uint64 potEnd);
 
     /// @notice Emitted when the dripped pot is paid.
-    /// @param usd    Dollars released from the reserve, 18 decimals.
-    /// @param assets Fund tokens minted into the vault at NAV (zero when it went to backing).
-    event PotReleased(uint256 usd, uint256 assets);
+    /// @param tokens    Fund tokens released.
+    /// @param toStakers Whether they went into the vault (else burned into backing).
+    event PotReleased(uint256 tokens, bool toStakers);
 
     /// @notice Emitted when the boost and pot settings change.
     /// @param boostShareBps        Share of a direct mint's premium paid back as boost.
@@ -236,29 +235,29 @@ interface IFundStaking is IERC20, IERC721Receiver {
     /// @notice Stake fund tokens the fund just minted here for a direct mint or a mint at NAV: the
     ///         shares go to `account`, locked until `unlockAt` (one lock of each kind per account:
     ///         a mint during a running lock of its kind joins it, and the lock ends at the
-    ///         share-weighted average of the two ends), and its boost grows by `budgetUsd`, paid at
-    ///         the boost speed on `paymentUsd`. Settles the account's boost first. Fund only.
+    ///         share-weighted average of the two ends), and its boost grows by `boost`, paid at the
+    ///         boost speed on `payment`. Settles the account's boost first. Fund only.
     /// @param account    The minter.
-    /// @param assets     Fund tokens minted here.
-    /// @param paymentUsd Value paid, 18 decimals USD.
-    /// @param budgetUsd  Boost budget the fund reserved, 18 decimals USD.
+    /// @param assets     Fund tokens minted here to stake.
+    /// @param payment    Value paid, in fund tokens at NAV.
+    /// @param boost      Boost fund tokens the fund minted here on top of `assets`.
     /// @param unlockAt   When the lock ends (no lock if not in the future).
     /// @param atNav      Whether this is a mint at NAV (its own lock).
     /// @return shares Shares minted to `account`.
     function stakeMinted(
         address account,
         uint256 assets,
-        uint256 paymentUsd,
-        uint256 budgetUsd,
+        uint256 payment,
+        uint256 boost,
         uint64 unlockAt,
         bool atNav
     ) external returns (uint256 shares);
 
-    /// @notice Top up the Premium Pot with `usd` the fund just reserved: everything not yet dripped
-    ///         drips again over a full drip period from now. Fund only.
-    /// @param usd Dollars added, 18 decimals.
+    /// @notice Top up the Premium Pot with `tokens` the fund just minted here: everything not yet
+    ///         dripped drips again over a full drip period from now. Fund only.
+    /// @param tokens Fund tokens added.
     function addPot(
-        uint256 usd
+        uint256 tokens
     ) external;
 
     /// @notice Pay `account`'s boost owed up to now. Anyone can call.
@@ -298,9 +297,9 @@ interface IFundStaking is IERC20, IERC721Receiver {
         address account
     ) external view returns (Boost memory);
 
-    /// @notice `account`'s boost owed since its last settlement, 18 decimals USD.
+    /// @notice `account`'s boost owed since its last settlement, in fund tokens.
     /// @param account The account.
-    /// @return The dollars owed.
+    /// @return The fund tokens owed.
     function pendingBoost(
         address account
     ) external view returns (uint256);
@@ -323,16 +322,16 @@ interface IFundStaking is IERC20, IERC721Receiver {
     /// @return The period.
     function potDripPeriod() external view returns (uint32);
 
-    /// @notice Premium Pot dollars not yet dripped, as of the last checkpoint, 18 decimals.
-    /// @return The dollars.
+    /// @notice Premium Pot fund tokens not yet dripped, as of the last checkpoint.
+    /// @return The fund tokens.
     function potLeft() external view returns (uint128);
 
     /// @notice When the pot's current drip ends.
     /// @return The timestamp.
     function potEnd() external view returns (uint64);
 
-    /// @notice Pot dollars dripped but not yet paid (waiting for a NAV reading), 18 decimals.
-    /// @return The dollars.
+    /// @notice Pot fund tokens dripped but not yet paid (paid at the next accrual).
+    /// @return The fund tokens.
     function potPending() external view returns (uint256);
 
     /// @notice Shares of `account` that are still locked (meaningful only before the fund's

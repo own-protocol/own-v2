@@ -83,7 +83,7 @@ contract FundMintZapTest is FundTestBase {
         assertEq(lock.shares, staking.balanceOf(alice));
         assertEq(lock.unlockAt, block.timestamp + 15 days);
         assertApproxEqAbs(staking.convertToAssets(lock.shares), shares, 1);
-        assertGt(staking.boostOf(alice).usdLeft, 0);
+        assertGt(staking.boostOf(alice).left, 0);
         _assertZapEmpty();
     }
 

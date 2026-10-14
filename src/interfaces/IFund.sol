@@ -8,18 +8,16 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 /// @notice The fund token is a plain ERC-20 backed by a basket of tokens held in this contract, any
 ///         idle USDG the fund holds, and the fund's own position in its USDG pool.
 ///
-///         - NAV per token = (basket + idle USDG + the USDG in the fund's pool position - the
-///           reserve) divided by (supply minus the fund tokens in that position). The position is
-///           valued at the pool TWAP; mints and redeems take whichever of the TWAP and spot
-///           readings costs the caller.
-///         - Reserve: a dollar amount of the fund's holdings set aside for promised payouts (direct
-///           minters' Premium Boost budgets and the Premium Pot). It is not counted in NAV and
-///           redeems never take it; the staking module moves it into backing as it pays out (each
-///           payout mints tokens at NAV, so NAV does not move) or as boosts are forfeited (NAV rises).
+///         - NAV per token = (basket + idle USDG + the USDG in the fund's pool position) divided by
+///           (supply minus the fund tokens in that position). The position is valued at the pool
+///           TWAP; mints and redeems take whichever of the TWAP and spot readings costs the caller.
+///         - Promised payouts (direct minters' Premium Boosts and the Premium Pot) are fund tokens
+///           minted when they are earned and held by the staking module until paid, so they count
+///           in supply and share the fund's price moves like any other token. Unpaid boost tokens
+///           that are forfeited are burned (NAV rises).
 ///         - Redeem: burn fund tokens for a pro-rata slice of every basket asset, of idle USDG and of
-///           the pool position (its USDG paid out, its fund tokens burned), at any time, less the
-///           reserve's part. Nothing can pause it; while the reserve holds anything it needs every
-///           basket price.
+///           the pool position (its USDG paid out, its fund tokens burned), at any time. Nothing can
+///           pause it, and it needs no price.
 ///         - Mint: deposit a slice of everything backing the fund (every basket asset and USDG, in
 ///           proportion), so no oracle values the deposit. Two doors:
 ///           - Direct mint: priced at the higher of the pool's spot price and TWAP, adjusted by a
@@ -67,25 +65,20 @@ interface IFund is IERC20 {
     /// @param navShares  Size of the slice deposited, in fund tokens at NAV.
     /// @param shares     Fund tokens for the receiver (after the fee).
     /// @param mintPrice  Price per fund token, 18 decimals USD.
-    /// @param boostUsd   Boost budget reserved for the receiver, 18 decimals USD.
+    /// @param boost      Fund tokens minted to the staking module for the receiver's boost.
     event Minted(
         address indexed sender,
         address indexed receiver,
         uint256 navShares,
         uint256 shares,
         uint256 mintPrice,
-        uint256 boostUsd
+        uint256 boost
     );
 
     /// @notice Emitted when the hook issues fund tokens into a pool buy.
     /// @param shares Fund tokens issued.
-    /// @param potUsd Premium added to the reserve for the Premium Pot, 18 decimals USD.
-    event Issued(uint256 shares, uint256 potUsd);
-
-    /// @notice Emitted when the staking module moves reserve into backing.
-    /// @param usd    Reserve released, 18 decimals USD.
-    /// @param shares Fund tokens minted to the staking module against it (zero for a forfeit).
-    event ReserveReleased(uint256 usd, uint256 shares);
+    /// @param pot    Fund tokens minted to the staking module for the Premium Pot.
+    event Issued(uint256 shares, uint256 pot);
 
     /// @notice Emitted on a redeem.
     /// @param sender     Holder that redeemed.
@@ -304,8 +297,8 @@ interface IFund is IERC20 {
     function releaseLaunchLock(address account, uint256 amount) external returns (uint256 moved);
 
     /// @notice Mint: deposit a slice of the fund worth `navShares` at NAV (that share of every
-    ///         basket asset's balance and of the fund's USDG, idle plus the pool position's, the
-    ///         reserve's part left out, each rounded up). Pulled from the caller, which must have
+    ///         basket asset's balance and of the fund's USDG, idle plus the pool position's, each
+    ///         rounded up). Pulled from the caller, which must have
     ///         approved the fund; {previewMint} gives the amounts.
     ///         - Direct mint (`atNav` false): at the pool price; the fund tokens are staked for the
     ///           receiver and locked for {mintLock} (see {IFundStaking-stakeMinted}), and the
@@ -330,19 +323,12 @@ interface IFund is IERC20 {
     ) external returns (uint256 shares);
 
     /// @notice Mint fund tokens the hook issues into a pool buy, whose USDG the hook has paid here,
-    ///         and set `potUsd` of it aside in the reserve for the Premium Pot. Hook only.
+    ///         and mint `pot` fund tokens to the staking module for the Premium Pot. Hook only.
     /// @param to     Receiver of the fund tokens: the pool manager for a buy, the hook to add them
     ///               to the fund's position.
     /// @param shares Fund tokens minted.
-    /// @param potUsd Premium for the pot, 18 decimals USD.
-    function hookIssue(address to, uint256 shares, uint256 potUsd) external;
-
-    /// @notice Move `usd` of the reserve into backing, minting `shares` to the staking module
-    ///         against it (a boost or pot payout at NAV), or none for a forfeit. Staking only.
-    /// @param usd    Reserve released, 18 decimals USD.
-    /// @param shares Fund tokens minted to the staking module.
-    /// @return reserveLeft The reserve after the release.
-    function releaseReserve(uint256 usd, uint256 shares) external returns (uint256 reserveLeft);
+    /// @param pot    Fund tokens for the pot.
+    function hookIssue(address to, uint256 shares, uint256 pot) external;
 
     /// @notice Redeem fund tokens for a pro-rata slice of every basket asset, of idle USDG and of
     ///         the fund's pool position. The position slice pays its USDG (at most its TWAP value,
@@ -537,11 +523,6 @@ interface IFund is IERC20 {
     /// @return The cap.
     function maxPremiumBps() external view returns (uint32);
 
-    /// @notice Holdings set aside for promised payouts (boost budgets and the Premium Pot), 18
-    ///         decimals USD. Not counted in NAV.
-    /// @return The reserve.
-    function reserveUsd() external view returns (uint256);
-
     /// @notice Curators module: the fund fee recipient.
     /// @return The curators module.
     function curators() external view returns (address);
@@ -602,13 +583,12 @@ interface IFund is IERC20 {
         address asset
     ) external view returns (uint16);
 
-    /// @notice Value held: basket, idle USDG and the pool position's USDG, 18 decimals USD, reserve
-    ///         included. Reverts if any asset's price is unavailable.
+    /// @notice Value held: basket, idle USDG and the pool position's USDG, 18 decimals USD.
+    ///         Reverts if any asset's price is unavailable.
     /// @return The value.
     function totalValue() external view returns (uint256);
 
-    /// @notice NAV per fund token, 18 decimals USD, reserve excluded. Reverts if any asset's price
-    ///         is unavailable.
+    /// @notice NAV per fund token, 18 decimals USD. Reverts if any asset's price is unavailable.
     /// @return The NAV.
     function navPerShare() external view returns (uint256);
 
@@ -618,7 +598,7 @@ interface IFund is IERC20 {
     /// @return supply Supply outside the fund's pool position.
     function tryNav() external view returns (bool ok, uint256 nav, uint256 supply);
 
-    /// @notice The fund's holdings at oracle prices with the reserve, supply and market price,
+    /// @notice The fund's holdings at oracle prices with the supply and market price,
     ///         from which NAV and the premium follow (see {ValuationLib}). Never reverts.
     /// @return The valuation.
     function valuation() external view returns (Valuation memory);

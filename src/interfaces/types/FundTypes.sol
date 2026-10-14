@@ -73,18 +73,16 @@ struct PremiumConfig {
 }
 
 /// @notice A fund's holdings at oracle prices with what NAV and the premium are derived from.
-///         The staking module reads it once per call and keeps `reserve` and `supply` current as it
-///         releases reserve and mints fund tokens, neither of which moves the holdings.
+///         The staking module reads it once per call and keeps `supply` current as it mints fund
+///         tokens, which does not move the holdings.
 /// @param ok       Whether every held basket asset had a fresh price.
 /// @param total    Basket plus idle and pooled USDG, 18 decimals USD.
-/// @param reserve  The reserve (boost budgets and the Premium Pot), 18 decimals USD.
 /// @param supply   Fund tokens outside the fund's pool position.
 /// @param marketOk Whether the fund token had a fresh market price.
 /// @param market   Market price of one fund token, 18 decimals USD.
 struct Valuation {
     bool ok;
     uint256 total;
-    uint256 reserve;
     uint256 supply;
     bool marketOk;
     uint256 market;
@@ -92,15 +90,15 @@ struct Valuation {
 
 /// @title ValuationLib — NAV and premium from a {Valuation}, the one formula every module uses
 library ValuationLib {
-    /// @notice NAV per fund token, 18 decimals USD: value less the reserve (floored at zero) over
-    ///         supply. Rounds down. Zero when a price is missing or there is no supply.
+    /// @notice NAV per fund token, 18 decimals USD: value over supply. Rounds down. Zero when a
+    ///         price is missing or there is no supply.
     /// @param v The valuation.
     /// @return The NAV.
     function nav(
         Valuation memory v
     ) internal pure returns (uint256) {
         if (!v.ok || v.supply == 0) return 0;
-        return Math.mulDiv(v.total > v.reserve ? v.total - v.reserve : 0, PRECISION, v.supply);
+        return Math.mulDiv(v.total, PRECISION, v.supply);
     }
 
     /// @notice Premium of the market price over NAV.

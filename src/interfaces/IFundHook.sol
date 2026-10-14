@@ -23,8 +23,8 @@ import {PoolKey} from "v4-core/src/types/PoolKey.sol";
 ///           fund's issuance start: a density (a share of circulating supply per doubling of price,
 ///           stepping up with the premium) sets how much of each buy the hook fills, at the AMM's
 ///           average price over the buy, and the AMM fills the rest. Sells never trigger it. The
-///           USDG goes to the fund; the pot share of the premium over NAV is set aside for the
-///           fund's Premium Pot, the rest raises NAV.
+///           USDG goes to the fund; the pot share of the premium over NAV is minted as fund
+///           tokens at NAV for the fund's Premium Pot, the rest raises NAV.
 interface IFundHook {
     /// @notice Emitted when a fund's pool is registered.
     /// @param fund   The fund.
@@ -70,8 +70,8 @@ interface IFundHook {
     /// @param fund     The fund.
     /// @param usdgIn   USDG the buyer paid for them, sent to the fund.
     /// @param issued   Fund tokens issued.
-    /// @param potUsd   Premium set aside for the Premium Pot, 18 decimals USD.
-    event Issued(address indexed fund, uint256 usdgIn, uint256 issued, uint256 potUsd);
+    /// @param pot      Fund tokens minted for the Premium Pot.
+    event Issued(address indexed fund, uint256 usdgIn, uint256 issued, uint256 pot);
 
     /// @notice Emitted when a fund's issuance settings change.
     /// @param fund   The fund.

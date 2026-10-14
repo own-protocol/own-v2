@@ -72,7 +72,8 @@ library PoolIssuance {
 
         uint256 paid = Math.mulDiv(usdgIn, PRECISION, b.usdgUnit);
         uint256 atNav = Math.mulDiv(tokensOut, nav, PRECISION);
-        uint256 pot = paid > atNav ? Math.mulDiv(paid - atNav, b.potShareBps, BPS) : 0;
+        // Rounds down: the pot never gets more tokens than its share of the premium buys at NAV.
+        uint256 pot = paid > atNav ? Math.mulDiv(paid - atNav, b.potShareBps * PRECISION, BPS * nav) : 0;
         b.pm.mint(address(this), uint256(uint160(b.usdg)), usdgIn);
         b.pm.sync(Currency.wrap(b.fund));
         IFund(b.fund).hookIssue(address(b.pm), tokensOut, pot);

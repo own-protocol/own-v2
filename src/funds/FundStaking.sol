@@ -45,8 +45,8 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuardTrans
 
     uint256 private constant YEAR = 365 days;
 
-    // Below one whole share staked the pot goes to backing: dripping it onto dust would inflate the
-    // share price until new stakes round to nothing.
+    // Below one whole share staked the pot is burned into backing: dripping it onto dust would
+    // inflate the share price until new stakes round to nothing.
     uint256 private constant MIN_POT_SHARES = 1e18;
 
     // Same weekly epoch as the governor's.
@@ -60,8 +60,8 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuardTrans
         uint256 paid;
     }
 
-    /// @dev The fund's valuation, read at most once per call: what the call then mints and
-    ///      releases is applied to it rather than valuing the basket again.
+    /// @dev The fund's valuation, read at most once per call: what the call then mints is applied
+    ///      to it rather than valuing the basket again.
     struct Snapshot {
         bool read;
         Valuation v;
@@ -138,9 +138,6 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuardTrans
     // False until the first fresh reading sets `_lastRate`.
     bool private _rateRead;
 
-    // True while the pot is paused for lack of a NAV price (set at each release attempt).
-    bool private _potHeld;
-
     /// @param positionManager_ The Uniswap v4 PositionManager whose positions can be staked.
     constructor(
         address positionManager_
@@ -179,8 +176,8 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuardTrans
     function stakeMinted(
         address account,
         uint256 assets,
-        uint256 paymentUsd,
-        uint256 budgetUsd,
+        uint256 payment,
+        uint256 boost,
         uint64 unlockAt,
         bool atNav
     ) external override nonReentrant returns (uint256 shares) {
@@ -192,30 +189,30 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuardTrans
         _mint(account, shares);
         if (unlockAt > block.timestamp) _joinMintLock(account, shares, unlockAt, atNav);
 
-        if (budgetUsd != 0) {
+        if (boost != 0) {
             Boost storage b = _boosts[account];
             // A finished boost leaves no shares behind, so a new one starts from this mint alone.
-            if (b.usdLeft == 0) b.shares = 0;
-            b.usdPerSec += SafeCast.toUint128(Math.mulDiv(paymentUsd, boostSpeedBpsPerYear, BPS * YEAR));
-            b.usdLeft += SafeCast.toUint128(budgetUsd);
+            if (b.left == 0) b.shares = 0;
+            b.perSec += SafeCast.toUint128(Math.mulDiv(payment, boostSpeedBpsPerYear, BPS * YEAR));
+            b.left += SafeCast.toUint128(boost);
             b.shares += SafeCast.toUint128(shares);
             b.lastSettle = uint64(block.timestamp);
-            emit BoostAdded(account, budgetUsd, b.usdPerSec, b.usdLeft, b.shares);
+            emit BoostAdded(account, boost, b.perSec, b.left, b.shares);
         }
         emit Staked(msg.sender, account, assets, shares);
     }
 
     /// @inheritdoc IFundStaking
     function addPot(
-        uint256 usd
+        uint256 tokens
     ) external override {
         if (msg.sender != fund) revert NotFund();
         _checkpointPot();
-        uint256 left = potLeft + usd;
+        uint256 left = potLeft + tokens;
         potLeft = SafeCast.toUint128(left);
         uint64 end = uint64(block.timestamp + potDripPeriod);
         potEnd = end;
-        emit PotAdded(usd, left, end);
+        emit PotAdded(tokens, left, end);
     }
 
     /// @inheritdoc IFundStaking
@@ -429,7 +426,7 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuardTrans
         address account
     ) external view override returns (uint256) {
         Boost memory b = _boosts[account];
-        return Math.min(uint256(b.usdPerSec) * (block.timestamp - b.lastSettle), b.usdLeft);
+        return Math.min(uint256(b.perSec) * (block.timestamp - b.lastSettle), b.left);
     }
 
     /// @inheritdoc IFundStaking
@@ -509,7 +506,7 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuardTrans
 
         uint256 staked = totalAssets();
         bool stakers = staked != 0 && totalSupply() != 0;
-        _releasePot(stakers, s);
+        _releasePot(stakers);
         staked = totalAssets();
         uint128 lpLiq = lpLiquidity;
         if (!stakers && lpLiq == 0) {
@@ -557,86 +554,64 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuardTrans
     }
 
     /// @dev Moves the pot's drip since the last checkpoint into `potPending`: the rest drips
-    ///      linearly until `potEnd`. While the pot is held the drip pauses instead: its end moves
-    ///      out by the time held.
+    ///      linearly until `potEnd`.
     function _checkpointPot() internal {
         uint256 last = _potUpdatedAt;
         _potUpdatedAt = uint64(block.timestamp);
         uint256 left = potLeft;
         uint256 end = potEnd;
         if (left == 0 || block.timestamp <= last) return;
-        if (_potHeld) {
-            if (end > last) potEnd = uint64(end + block.timestamp - last);
-            return;
-        }
         uint256 released = block.timestamp >= end ? left : Math.mulDiv(left, block.timestamp - last, end - last);
         potLeft = SafeCast.toUint128(left - released);
         potPending += released;
     }
 
-    /// @dev Pays the dripped pot to stakers: fund tokens at NAV into the vault, the same dollars out
-    ///      of the reserve, so NAV does not move. With less than a whole share staked it goes to
-    ///      backing instead. Without a NAV reading the drip pauses, so nothing piles up for whoever
-    ///      stakes before the price returns.
-    function _releasePot(bool stakers, Snapshot memory s) internal {
-        bool toStakers = stakers && totalSupply() >= MIN_POT_SHARES;
-        uint256 nav;
-        bool held;
-        if (toStakers && (potLeft != 0 || potPending != 0)) {
-            nav = _valued(s).nav();
-            held = nav == 0;
-        }
-        _potHeld = held;
+    /// @dev Pays the dripped pot tokens, already minted here, into the vault. With less than a
+    ///      whole share staked they are burned into backing instead.
+    function _releasePot(
+        bool stakers
+    ) internal {
         _checkpointPot();
         uint256 pending = potPending;
-        if (pending == 0 || held) return;
-        uint256 assets;
-        if (toStakers) {
-            // Rounds down: the vault never gets more than the dollars released.
-            assets = Math.mulDiv(pending, PRECISION, nav);
-            _totalStaked += assets;
-        }
+        if (pending == 0) return;
         potPending = 0;
-        _release(s, pending, assets);
-        emit PotReleased(pending, assets);
+        bool toStakers = stakers && totalSupply() >= MIN_POT_SHARES;
+        if (toStakers) _totalStaked += pending;
+        else IFund(fund).burn(pending);
+        emit PotReleased(pending, toStakers);
     }
 
-    /// @dev Pays `account`'s boost owed since its last settlement as staked shares: fund tokens at
-    ///      NAV, the same dollars out of the reserve, so NAV does not move. Callers accrue first, so
-    ///      the shares are priced after the tier yield. Without a NAV reading nothing is paid and the
-    ///      time is not consumed.
-    function _settleBoost(address account, Snapshot memory s) internal {
+    /// @dev Pays `account`'s boost owed since its last settlement as staked shares, from the boost
+    ///      tokens already minted here. Callers accrue first, so the shares are priced after the
+    ///      tier yield.
+    function _settleBoost(
+        address account
+    ) internal {
         Boost storage b = _boosts[account];
-        uint256 left = b.usdLeft;
+        uint256 left = b.left;
         if (left == 0) return;
-        uint256 owed = Math.min(uint256(b.usdPerSec) * (block.timestamp - b.lastSettle), left);
+        uint256 owed = Math.min(uint256(b.perSec) * (block.timestamp - b.lastSettle), left);
         if (owed == 0) return;
-        uint256 nav = _valued(s).nav();
-        if (nav == 0) return;
-        // Rounds down: the account never gets more than the dollars released.
-        uint256 assets = Math.mulDiv(owed, PRECISION, nav);
-        uint256 shares = convertToShares(assets);
+        uint256 shares = convertToShares(owed);
         if (owed == left) delete _boosts[account];
-        else (b.usdLeft, b.lastSettle) = (uint128(left - owed), uint64(block.timestamp));
-        _totalStaked += assets;
-        _release(s, owed, assets);
+        else (b.left, b.lastSettle) = (uint128(left - owed), uint64(block.timestamp));
+        _totalStaked += owed;
         _mint(account, shares);
-        emit BoostPaid(account, owed, assets, shares);
+        emit BoostPaid(account, owed, shares);
     }
 
     /// @dev Accrues, then pays `account`'s boost at the NAV after the accrual.
     function _accrueAndSettle(
         address account
     ) internal {
-        Snapshot memory s;
-        _accrue(s);
-        _settleBoost(account, s);
+        _accrue();
+        _settleBoost(account);
     }
 
     function _settleBefore(
         address account
     ) internal {
-        if (_boosts[account].usdLeft != 0) _accrueAndSettle(account);
+        if (_boosts[account].left != 0) _accrueAndSettle(account);
     }
 
     /// @dev The snapshot, valuing the fund on first use.
@@ -647,18 +622,11 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuardTrans
         return s.v;
     }
 
-    /// @dev Releases `usd` of the fund's reserve against `assets` fund tokens minted here, keeping
-    ///      the snapshot in step (a snapshot not yet read is left to read the result).
-    function _release(Snapshot memory s, uint256 usd, uint256 assets) internal {
-        uint256 reserveLeft = IFund(fund).releaseReserve(usd, assets);
-        if (s.read) (s.v.reserve, s.v.supply) = (reserveLeft, s.v.supply + assets);
-    }
-
     /// @dev Scales `account`'s boost down to the shares it still holds (in hand or in the governor),
-    ///      releasing the unpaid budget of the shares that left into backing.
+    ///      burning the unpaid boost tokens of the shares that left into backing.
     function _forfeit(address account, address gov) internal {
         Boost storage b = _boosts[account];
-        uint256 left = b.usdLeft;
+        uint256 left = b.left;
         uint256 boosted = b.shares;
         if (left == 0) return;
         uint256 held = _held(account, gov);
@@ -667,11 +635,11 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuardTrans
         if (keptLeft == 0) {
             delete _boosts[account];
         } else {
-            b.usdLeft = uint128(keptLeft);
-            b.usdPerSec = uint128(Math.mulDiv(b.usdPerSec, held, boosted));
+            b.left = uint128(keptLeft);
+            b.perSec = uint128(Math.mulDiv(b.perSec, held, boosted));
             b.shares = uint128(held);
         }
-        IFund(fund).releaseReserve(left - keptLeft, 0);
+        IFund(fund).burn(left - keptLeft);
         emit BoostForfeited(account, left - keptLeft, keptLeft);
     }
 
@@ -756,7 +724,7 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuardTrans
     function _update(address from, address to, uint256 value) internal override {
         uint256 launchLocked = from == address(0) ? 0 : _activeLock(from);
         uint256 mintLocked = from == address(0) ? 0 : _activeMintLock(from);
-        bool boosted = from != address(0) && _boosts[from].usdLeft != 0;
+        bool boosted = from != address(0) && _boosts[from].left != 0;
         address gov = launchLocked + mintLocked == 0 && !boosted ? address(0) : IFund(fund).governor();
         if (
             launchLocked + mintLocked != 0 && to != address(0) && to != gov

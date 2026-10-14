@@ -288,7 +288,7 @@ contract FundCuratorsTest is FundTestBase {
         _fundSlice(address(curators), 1e18);
         vm.prank(address(curators));
         fund.mint(1e18, 0, address(curators), false);
-        assertGt(staking.boostOf(address(curators)).usdLeft, 0);
+        assertGt(staking.boostOf(address(curators)).left, 0);
 
         vm.warp(block.timestamp + 8 hours);
         _refreshFeeds();

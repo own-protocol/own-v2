@@ -118,9 +118,6 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
     /// @inheritdoc IFund
     mapping(address account => uint256) public override launchLocked;
 
-    /// @inheritdoc IFund
-    uint256 public override reserveUsd;
-
     address private immutable _usdg;
 
     modifier onlyAdmin() {
@@ -258,37 +255,28 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
         _pull(_usdg, q.usdgAmount);
         shares = _chargeMintFees(q.gross);
         if (shares == 0 || shares < minSharesOut) revert Slippage();
-        uint256 budget;
+        uint256 boost;
         if (q.capped) {
             _mint(receiver, shares);
         } else {
             // A lock or a boost lands only on the caller (the zap mints for its own caller).
             if (receiver != msg.sender && msg.sender != IFundFactory(factory).mintZap()) revert NotReceiver();
-            budget = _stakeMinted(receiver, shares, Math.mulDiv(navShares, q.nav, PRECISION), q, atNav);
+            boost = _stakeMinted(receiver, shares, navShares, q.gross, atNav);
         }
 
-        emit Minted(msg.sender, receiver, navShares, shares, q.mintPrice, budget);
+        emit Minted(msg.sender, receiver, navShares, shares, q.mintPrice, boost);
     }
 
     /// @inheritdoc IFund
-    function hookIssue(address to, uint256 shares, uint256 potUsd) external override {
+    function hookIssue(address to, uint256 shares, uint256 pot) external override {
         if (msg.sender != _hook()) revert NotHook();
         _mint(to, shares);
-        if (potUsd != 0) {
-            reserveUsd += potUsd;
-            IFundStaking(staking).addPot(potUsd);
+        if (pot != 0) {
+            address stakingModule = staking;
+            _mint(stakingModule, pot);
+            IFundStaking(stakingModule).addPot(pot);
         }
-        emit Issued(shares, potUsd);
-    }
-
-    /// @inheritdoc IFund
-    function releaseReserve(uint256 usd, uint256 shares) external override onlyStaking returns (uint256 reserveLeft) {
-        uint256 r = reserveUsd;
-        // Clamped so a rounding slip can never block an unstake.
-        reserveLeft = usd >= r ? 0 : r - usd;
-        reserveUsd = reserveLeft;
-        if (shares != 0) _mint(msg.sender, shares);
-        emit ReserveReleased(usd, shares);
+        emit Issued(shares, pot);
     }
 
     /// @inheritdoc IFund
@@ -324,7 +312,7 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
         address[] memory basket = _assets;
         if (minAmountsOut.length != 0 && minAmountsOut.length != basket.length) revert LengthMismatch();
 
-        (uint256 net, uint256 supply, uint256 idle) = _redeemQuote(basket, _usdg, _hook(), shares);
+        (uint256 net, uint256 supply, uint256 idle) = _redeemQuote(_hook(), shares);
         amounts = _redeemAssets(basket, net, supply);
         _skipAndCheck(basket, amounts, skip, minAmountsOut);
 
@@ -510,7 +498,7 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
         (uint256 poolUsdg, uint256 supply) = _poolAndSupply();
         if (supply == 0) return 0;
         (, uint256 value) = _totalValue(_oracle(), _assets, _usdg, poolUsdg);
-        return Math.mulDiv(_backing(value), PRECISION, supply);
+        return Math.mulDiv(value, PRECISION, supply);
     }
 
     /// @inheritdoc IFund
@@ -579,7 +567,7 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
     ) external view override returns (uint256[] memory amounts, uint256 usdgAmount) {
         address[] memory basket = _assets;
         address hook = _hook();
-        (uint256 net, uint256 supply, uint256 idle) = _redeemQuote(basket, _usdg, hook, shares);
+        (uint256 net, uint256 supply, uint256 idle) = _redeemQuote(hook, shares);
         amounts = _redeemAssets(basket, net, supply);
         (uint256 poolUsdg,) = _boundedPoolAndSupply(hook, false);
         usdgAmount = idle + Math.mulDiv(poolUsdg, net, supply);
@@ -621,7 +609,7 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
 
     /// @dev A mint of `navShares`: the depositor brings `navShares` worth at NAV of a slice of
     ///      everything backing the fund (every basket asset and the fund's USDG, idle plus the pool
-    ///      position's, the reserve's part left out), each rounded up, so no oracle values the deposit
+    ///      position's), each rounded up, so no oracle values the deposit
     ///      and the basket keeps its proportions. The fund tokens issued are `navShares` scaled down
     ///      by the mint price over NAV: NAV itself for a mint at NAV, else the pool price (see
     ///      {_poolMintPrice}). A mispriced oracle can only cost the minter, never dilute holders.
@@ -637,15 +625,12 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
         if (supply == 0) revert EmptyFund();
         IFundOracle o = _oracle();
         (, uint256 total) = _totalValue(o, basket, usdg, poolUsdg);
-        q.nav = Math.mulDiv(_backing(total), PRECISION, supply, Math.Rounding.Ceil);
+        q.nav = Math.mulDiv(total, PRECISION, supply, Math.Rounding.Ceil);
         q.mintPrice = q.nav;
         if (!atNav) _poolMintPrice(o, hook, q);
         // Rounds down: the minter never receives more than its slice is worth at the mint price.
         q.gross = q.nav == 0 ? 0 : Math.mulDiv(navShares, q.nav, q.mintPrice);
-        uint256 slice = reserveUsd == 0 || total == 0
-            ? navShares
-            : Math.mulDiv(navShares, _backing(total), total, Math.Rounding.Ceil);
-        (q.amounts, q.usdgAmount) = _mintAmounts(basket, usdg, slice, poolUsdg, supply);
+        (q.amounts, q.usdgAmount) = _mintAmounts(basket, usdg, navShares, poolUsdg, supply);
     }
 
     /// @dev The higher of the pool's spot price and its TWAP, so pushing the pool down for a block
@@ -694,72 +679,40 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
         net = gross - fee;
     }
 
-    /// @dev Reserves the boost budget, the staking module's share of the premium `payment` carries
-    ///      over the NAV of the tokens issued (none at NAV), then stakes `shares` for `receiver`,
-    ///      locked for the direct or NAV mint lock. Reserved first, so a boost payout made while
-    ///      staking sees the NAV after the mint.
+    /// @dev Mints the boost, the staking module's share of the premium in fund tokens (the
+    ///      `navShares` paid for less the `gross` issued; none at NAV), to the staking module with
+    ///      `shares`, and stakes `shares` for `receiver`, locked for the direct or NAV mint lock.
     function _stakeMinted(
         address receiver,
         uint256 shares,
-        uint256 payment,
-        MintQuote memory q,
+        uint256 navShares,
+        uint256 gross,
         bool atNav
-    ) internal returns (uint256 budget) {
+    ) internal returns (uint256 boost) {
         address stakingModule = staking;
-        if (!atNav) {
-            budget = Math.mulDiv(
-                payment - Math.mulDiv(q.gross, q.nav, PRECISION), IFundStaking(stakingModule).boostShareBps(), BPS
-            );
-            reserveUsd += budget;
-        }
-        _mint(stakingModule, shares);
+        if (!atNav) boost = Math.mulDiv(navShares - gross, IFundStaking(stakingModule).boostShareBps(), BPS);
+        _mint(stakingModule, shares + boost);
         IFundStaking(stakingModule).stakeMinted(
             receiver,
             shares,
-            payment,
-            budget,
+            navShares,
+            boost,
             SafeCast.toUint64(block.timestamp + (atNav ? navMintLock : mintLock)),
             atNav
         );
     }
 
-    /// @dev The part of everything held that `net` fund tokens claim, in fund tokens of `supply`:
-    ///      `net` itself, scaled down by backing over total value while the reserve holds anything,
-    ///      so a redeem never takes the reserve's part. Rounds down.
-    function _claim(
-        address[] memory basket,
-        address usdg,
-        uint256 net,
-        uint256 poolUsdg,
-        uint256 supply
-    ) internal view returns (uint256) {
-        if (net > supply) revert RedeemTooLarge();
-        if (reserveUsd == 0) return net;
-        (, uint256 total) = _totalValue(_oracle(), basket, usdg, poolUsdg);
-        return total == 0 ? 0 : Math.mulDiv(net, _backing(total), total);
-    }
-
-    /// @dev Value held less the reserve (boost budgets and the Premium Pot), floored at zero.
-    function _backing(
-        uint256 total
-    ) internal view returns (uint256) {
-        uint256 r = reserveUsd;
-        return total > r ? total - r : 0;
-    }
-
-    /// @dev The fund tokens `shares` (fees included) claim after the fee and the reserve's part (see
-    ///      {_claim}), the supply they are a share of, and their share of the idle USDG. Rounds down:
-    ///      the redeemer never takes more than their share.
+    /// @dev The fund tokens `shares` (fees included) claim after the fee, the supply they are a
+    ///      share of, and their share of the idle USDG. Rounds down: the redeemer never takes more
+    ///      than their share.
     function _redeemQuote(
-        address[] memory basket,
-        address usdg,
         address hook,
         uint256 shares
     ) internal view returns (uint256 net, uint256 supply, uint256 idle) {
-        uint256 poolUsdg;
-        (poolUsdg, supply) = _boundedPoolAndSupply(hook, false);
-        net = _claim(basket, usdg, shares - _fee(shares), poolUsdg, supply);
-        idle = Math.mulDiv(_balanceOf(usdg), net, supply);
+        (, supply) = _boundedPoolAndSupply(hook, false);
+        net = shares - _fee(shares);
+        if (net > supply) revert RedeemTooLarge();
+        idle = Math.mulDiv(_balanceOf(_usdg), net, supply);
     }
 
     /// @dev Zeroes the skipped assets' amounts (their slices stay in the fund for the remaining
@@ -865,7 +818,6 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
         uint256 basket;
         (v.ok, basket) = _basketValue(_assets, o, true);
         if (v.ok) v.total = basket + _usdgBacking(_usdg, poolUsdg);
-        v.reserve = reserveUsd;
         if (market) (v.marketOk, v.market) = o.tryPrice(address(this));
     }
 

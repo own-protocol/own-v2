@@ -50,12 +50,12 @@ contract FundInvariant is FundTestBase {
         assertGe(fund.navPerShare() + navAtStart / 1e9, navAtStart);
     }
 
-    function invariant_reserveMatchesBudgetsOwed() public view {
+    function invariant_stakingHoldsStakesAndPayoutsOwed() public view {
         address[3] memory actors = [alice, bob, carol];
-        uint256 owed = staking.potLeft() + staking.potPending();
+        uint256 owed = staking.totalAssets() + staking.potLeft() + staking.potPending();
         for (uint256 a; a < 3; ++a) {
-            owed += staking.boostOf(actors[a]).usdLeft;
+            owed += staking.boostOf(actors[a]).left;
         }
-        assertEq(fund.reserveUsd(), owed);
+        assertEq(fund.balanceOf(address(staking)), owed);
     }
 }
