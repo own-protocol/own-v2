@@ -37,9 +37,11 @@ import {Hooks} from "v4-core/src/libraries/Hooks.sol";
 ///
 /// @dev Post-deploy checklist:
 ///        1. If the deployer is not an ADMIN, an ADMIN executes the printed wiring calls in order.
-///        2. Admin sets a feed for every basket asset: oracle.setFeed(asset, aggregator, staleness).
-///           For an asset with no Chainlink feed: hub.createFeed(asset), then oracle.setFeed with
-///           the returned feed; the keeper pushes its pool TWAP to the hub.
+///        2. Admin sets a price source for every basket asset. With a Chainlink feed: configure its
+///           ticker on the ChainlinkOracleVerifier (setChainlinkConfig, and the signer quotes it
+///           off-hours), then oracle.setVerifierFeed(asset, ticker, staleness). With no Chainlink
+///           feed: hub.createFeed(asset), then oracle.setFeed with the returned feed; the keeper
+///           pushes its pool TWAP to the hub.
 ///        3. Admin allows rebalance / zap routers: factory.setRouter(router, true).
 ///        4. Admin fills the listing eligibility list: factory.setEligibleAsset(token, true).
 ///        5. Admin creates the fund (curators, fund fee, minimum curator stake in USD at NAV, 0 for

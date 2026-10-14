@@ -6,6 +6,7 @@ import {IFundOracle} from "../../src/interfaces/IFundOracle.sol";
 import {ProtocolRegistry} from "../../src/registry/ProtocolRegistry.sol";
 import {Actors} from "../helpers/Actors.sol";
 import {MockAggregatorV3} from "../helpers/MockAggregatorV3.sol";
+import {MockOracleVerifier} from "../helpers/MockOracleVerifier.sol";
 import {Test} from "forge-std/Test.sol";
 
 contract FundOracleTest is Test {
@@ -117,6 +118,90 @@ contract FundOracleTest is Test {
         oracle.setFeed(asset, address(feed8), 1);
         assertEq(oracle.feedOf(asset).maxStaleness, 1);
         assertEq(oracle.registry(), address(registry));
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Verifier feeds
+    // ──────────────────────────────────────────────────────────
+
+    function _verifierFeed() internal returns (MockOracleVerifier v) {
+        v = new MockOracleVerifier();
+        vm.startPrank(admin);
+        registry.setAddress(registry.INHOUSE_ORACLE(), address(v));
+        oracle.setVerifierFeed(asset, bytes32("TSLA"), 2 hours);
+        vm.stopPrank();
+    }
+
+    function test_verifierFeed_readsTheVerifier() public {
+        MockOracleVerifier v = _verifierFeed();
+        v.setPrice(bytes32("TSLA"), 250e18, block.timestamp - 1 hours);
+        assertEq(oracle.price(asset), 250e18);
+        (bool ok, uint256 value) = oracle.tryPrice(asset);
+        assertTrue(ok);
+        assertEq(value, 250e18);
+        assertTrue(oracle.hasFeed(asset));
+        IFundOracle.Feed memory f = oracle.feedOf(asset);
+        assertEq(f.aggregator, address(0));
+        assertEq(f.ticker, bytes32("TSLA"));
+        assertEq(f.maxStaleness, 2 hours);
+    }
+
+    function test_verifierFeed_stale_reverts() public {
+        MockOracleVerifier v = _verifierFeed();
+        v.setPrice(bytes32("TSLA"), 250e18, block.timestamp - 2 hours - 1);
+        vm.expectRevert(abi.encodeWithSelector(IFundOracle.StalePrice.selector, asset));
+        oracle.price(asset);
+        (bool ok,) = oracle.tryPrice(asset);
+        assertFalse(ok);
+    }
+
+    function test_verifierFeed_verifierReverts_tryPriceFalse() public {
+        MockOracleVerifier v = _verifierFeed();
+        v.setForceStale(true);
+        vm.expectRevert();
+        oracle.price(asset);
+        (bool ok, uint256 value) = oracle.tryPrice(asset);
+        assertFalse(ok);
+        assertEq(value, 0);
+    }
+
+    function test_verifierFeed_noVerifier_tryPriceFalse() public {
+        vm.prank(admin);
+        oracle.setVerifierFeed(asset, bytes32("TSLA"), 2 hours);
+        (bool ok,) = oracle.tryPrice(asset);
+        assertFalse(ok);
+    }
+
+    function test_verifierFeed_followsTheRegistry() public {
+        MockOracleVerifier v = _verifierFeed();
+        v.setPrice(bytes32("TSLA"), 250e18, block.timestamp);
+        MockOracleVerifier v2 = new MockOracleVerifier();
+        v2.setPrice(bytes32("TSLA"), 260e18, block.timestamp);
+        vm.startPrank(admin);
+        registry.setAddress(registry.INHOUSE_ORACLE(), address(v2));
+        vm.stopPrank();
+        assertEq(oracle.price(asset), 260e18);
+    }
+
+    function test_setFeed_replacesVerifierFeed() public {
+        _verifierFeed();
+        vm.prank(admin);
+        oracle.setFeed(asset, address(feed8), 1 hours);
+        assertEq(oracle.price(asset), 300e18);
+        assertEq(oracle.feedOf(asset).ticker, bytes32(0));
+    }
+
+    function test_setVerifierFeed_invalid_reverts() public {
+        vm.startPrank(admin);
+        vm.expectRevert(IFundOracle.InvalidTicker.selector);
+        oracle.setVerifierFeed(asset, bytes32(0), 1 hours);
+        vm.expectRevert(IFundOracle.InvalidStaleness.selector);
+        oracle.setVerifierFeed(asset, bytes32("TSLA"), 0);
+        vm.expectRevert(IFundOracle.ZeroAddress.selector);
+        oracle.setVerifierFeed(address(0), bytes32("TSLA"), 1 hours);
+        vm.stopPrank();
+        vm.expectRevert(IFundOracle.NotAdmin.selector);
+        oracle.setVerifierFeed(asset, bytes32("TSLA"), 1 hours);
     }
 
     function test_constructor_zeroRegistry_reverts() public {

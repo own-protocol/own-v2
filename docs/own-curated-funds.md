@@ -23,7 +23,7 @@ Updated 2026-10-12: the premium yield redesign (spec `plans/fund-premium-rebate-
 | `FundCurators` | Beacon proxy per fund. The curator set (with the protocol curator), the minimum curator stake and compliance, and the curators' income: the fund fee, the curator yield (30-day unlocks, forfeits on removal), split between the protocol curator and the others. It also says how a bribe cut is split (`bribeSplit`). |
 | `FundBribes` | Beacon proxy per fund. Bribes on the weekly vote per token per week, and bribes on listing proposals. The curators' cut is paid out when the bribe is posted. |
 | `FundHook` | UUPS, upgraded by the registry ADMIN; the proxy sits at the mined hook address. One Uniswap v4 hook for every fund pool: the fund fee in USDG on swaps, pool issuance on buys above NAV (math in the linked `PoolIssuance` library), admin-set LP fee, the TWAP, and the fund's own pool position. |
-| `FundOracle` | Per-asset Chainlink-style feeds. A fund token's own market price is read through the same surface. |
+| `FundOracle` | One price source per asset: a ticker on the protocol's `ChainlinkOracleVerifier` (the registry's INHOUSE_ORACLE: Chainlink while live, the in-house signer within a band of the last Chainlink answer while it is silent, so stocks stay priced over weekends), or a Chainlink-style feed (`FundPriceHub` feeds for tokens without Chainlink). A fund token's own market price is read through the same surface. |
 | `FundPriceHub` | One for the platform. Keeper-pushed USD prices for basket assets with no Chainlink feed (Pons tokens, VIRTUAL): the keeper samples each token's Uniswap v4 pool, converts its pair (ETH, SPY, NVDA...) to USD with Chainlink and pushes a 30-minute TWAP. A keeper push moving more than `maxMoveBps` (30% at deploy) is skipped; admin pushes are not bounded. `createFeed(asset)` deploys a `FundPriceFeed` the oracle reads like any Chainlink aggregator. |
 | `FundAuctions` | One for the platform. Dutch auctions for rebalancing after the pool is seeded (below). |
 | `FundTwapFeed` | Per fund. Serves the fund's pool TWAP (recorded by the hook) as an aggregator. |
@@ -146,6 +146,8 @@ Updated 2026-10-12: the premium yield redesign (spec `plans/fund-premium-rebate-
   `potDripPeriod` (default 7 days; each top-up re-spreads what is left over a new period) through
   the vault's share price, minting the dripped dollars' worth of fund tokens at NAV, so NAV does not
   move. Variable, never promised. With less than one whole share staked the drip goes to backing.
+  While NAV has no price the drip pauses and its end moves out, so nothing piles up for whoever
+  stakes before the price returns.
 - **Reserve:** boost budgets and the pot, held in dollars. It is excluded from NAV and from
   redeems, so redeemers never take it and outstanding boosts stay funded however many holders
   leave. While it holds anything, redeems need basket prices to scale their claim.
@@ -320,8 +322,10 @@ Updated 2026-10-12: the premium yield redesign (spec `plans/fund-premium-rebate-
   `distribute()` in batches.
 - **Price keeper:** pushes hub prices for assets without a Chainlink feed, bounded per push by
   `maxMoveBps`; the admin can push any price to recover from a large real move.
-- **Oracle feeds:** basket prices come from admin-set feeds (Chainlink, or `FundPriceHub` feeds),
-  whose decimals are read once when the feed is set (set it again if they ever change);
+- **Oracle feeds:** basket prices come from admin-set sources: `setVerifierFeed(asset, ticker,
+  staleness)` for assets with Chainlink (read through the in-house verifier, so its weekend quotes
+  count), or `setFeed(asset, feed, staleness)` for `FundPriceHub` feeds, whose decimals are read once
+  when the feed is set (set it again if they ever change);
   the fund's market price and the position value come from its own pool TWAP. Mint deposits are taken in kind, so no oracle values
   them (the oracles only set NAV and the mint price). Redeem depends on neither.
 - **USDG:** treated as $1.

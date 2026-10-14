@@ -2,6 +2,7 @@
 pragma solidity 0.8.28;
 
 import {IFundOracle} from "../interfaces/IFundOracle.sol";
+import {IOracleVerifier} from "../interfaces/IOracleVerifier.sol";
 import {IProtocolRegistry} from "../interfaces/IProtocolRegistry.sol";
 
 interface IAggregatorV3 {
@@ -11,9 +12,11 @@ interface IAggregatorV3 {
 
 /// @title FundOracle — per-asset USD price registry for Own Curated Funds
 /// @notice See {IFundOracle}. Never reads onchain spot prices: every value comes from an
-///         admin-configured aggregator with a staleness bound.
+///         admin-configured aggregator, or a ticker on the protocol's in-house oracle verifier, with
+///         a staleness bound.
 /// @dev Administered by the ProtocolRegistry's ADMIN role. An aggregator's decimals are read once,
-///      when its feed is set.
+///      when its feed is set. The verifier is resolved from the registry on every read, so it
+///      follows the registry's INHOUSE_ORACLE slot.
 contract FundOracle is IFundOracle {
     bytes32 private constant ADMIN = keccak256("ADMIN");
 
@@ -21,6 +24,7 @@ contract FundOracle is IFundOracle {
         address aggregator;
         uint32 maxStaleness;
         uint8 decimals;
+        bytes32 ticker;
     }
 
     /// @inheritdoc IFundOracle
@@ -52,9 +56,19 @@ contract FundOracle is IFundOracle {
         _feeds[asset] = StoredFeed({
             aggregator: aggregator,
             maxStaleness: maxStaleness,
-            decimals: IAggregatorV3(aggregator).decimals()
+            decimals: IAggregatorV3(aggregator).decimals(),
+            ticker: bytes32(0)
         });
         emit FeedSet(asset, aggregator, maxStaleness);
+    }
+
+    /// @inheritdoc IFundOracle
+    function setVerifierFeed(address asset, bytes32 ticker, uint32 maxStaleness) external override onlyAdmin {
+        if (asset == address(0)) revert ZeroAddress();
+        if (ticker == bytes32(0)) revert InvalidTicker();
+        if (maxStaleness == 0) revert InvalidStaleness();
+        _feeds[asset] = StoredFeed({aggregator: address(0), maxStaleness: maxStaleness, decimals: 18, ticker: ticker});
+        emit VerifierFeedSet(asset, ticker, maxStaleness);
     }
 
     /// @inheritdoc IFundOracle
@@ -62,6 +76,12 @@ contract FundOracle is IFundOracle {
         address asset
     ) external view override returns (uint256) {
         StoredFeed memory feed = _feeds[asset];
+        if (feed.ticker != bytes32(0)) {
+            (uint256 value, uint256 at) = _verifier().getPrice(feed.ticker);
+            if (value == 0) revert InvalidPrice(asset);
+            if (at > block.timestamp || block.timestamp - at > feed.maxStaleness) revert StalePrice(asset);
+            return value;
+        }
         if (feed.aggregator == address(0)) revert NoFeed(asset);
         (, int256 answer,, uint256 updatedAt,) = IAggregatorV3(feed.aggregator).latestRoundData();
         if (answer <= 0) revert InvalidPrice(asset);
@@ -74,6 +94,7 @@ contract FundOracle is IFundOracle {
         address asset
     ) external view override returns (bool ok, uint256 value) {
         StoredFeed memory feed = _feeds[asset];
+        if (feed.ticker != bytes32(0)) return _tryVerifier(feed);
         if (feed.aggregator == address(0)) return (false, 0);
         try IAggregatorV3(feed.aggregator).latestRoundData() returns (
             uint80, int256 answer, uint256, uint256 updatedAt, uint80
@@ -91,7 +112,8 @@ contract FundOracle is IFundOracle {
     function hasFeed(
         address asset
     ) external view override returns (bool) {
-        return _feeds[asset].aggregator != address(0);
+        StoredFeed storage feed = _feeds[asset];
+        return feed.aggregator != address(0) || feed.ticker != bytes32(0);
     }
 
     /// @inheritdoc IFundOracle
@@ -99,7 +121,27 @@ contract FundOracle is IFundOracle {
         address asset
     ) external view override returns (Feed memory) {
         StoredFeed storage feed = _feeds[asset];
-        return Feed({aggregator: feed.aggregator, maxStaleness: feed.maxStaleness});
+        return Feed({aggregator: feed.aggregator, maxStaleness: feed.maxStaleness, ticker: feed.ticker});
+    }
+
+    function _verifier() private view returns (IOracleVerifier) {
+        return IOracleVerifier(IProtocolRegistry(registry).inhouseOracle());
+    }
+
+    function _tryVerifier(
+        StoredFeed memory feed
+    ) private view returns (bool, uint256) {
+        IOracleVerifier v = _verifier();
+        // A call to an address without code would revert outside the try.
+        if (address(v).code.length == 0) return (false, 0);
+        try v.getPrice(feed.ticker) returns (uint256 p, uint256 updatedAt) {
+            if (p == 0 || updatedAt > block.timestamp || block.timestamp - updatedAt > feed.maxStaleness) {
+                return (false, 0);
+            }
+            return (true, p);
+        } catch {
+            return (false, 0);
+        }
     }
 
     function _normalise(uint256 answer, uint8 dec) private pure returns (uint256) {

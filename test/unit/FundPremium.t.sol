@@ -484,6 +484,46 @@ contract FundPremiumTest is FundTestBase {
         assertEq(staking.potPending(), 0);
     }
 
+    /// @dev A6-M-11: while NAV has no price the drip pauses instead of piling up, then resumes
+    ///      where it stopped.
+    function test_pot_pausesWhileNavUnpriced() public {
+        (,, uint256 pot) = _buy(-int256(5000e6));
+        _warp(1 days);
+        staking.accrue();
+        uint256 left = staking.potLeft();
+        uint64 end = staking.potEnd();
+
+        vm.warp(block.timestamp + 2 days); // feeds stale
+        staking.accrue();
+        assertEq(staking.potLeft(), left);
+        assertEq(staking.potPending(), 0);
+        assertEq(staking.potEnd(), end + 2 days);
+
+        _warp(1 days);
+        staking.accrue();
+        assertApproxEqAbs(fund.reserveUsd(), pot - pot * 2 / 7, 2);
+    }
+
+    /// @dev A6-M-11: a stake made while NAV has no price takes nothing when the price returns.
+    function test_pot_stakeWhileUnpricedTakesNothing() public {
+        _buy(-int256(5000e6));
+        _warp(1 days);
+        staking.accrue();
+
+        vm.warp(block.timestamp + 2 days); // feeds stale
+        vm.prank(alice);
+        fund.transfer(dave, 10_000e18);
+        vm.startPrank(dave);
+        fund.approve(address(staking), type(uint256).max);
+        uint256 shares = staking.stake(10_000e18, dave);
+        vm.stopPrank();
+
+        _refreshFeeds();
+        staking.accrue();
+        vm.prank(dave);
+        assertLe(staking.unstake(shares, dave), 10_000e18);
+    }
+
     function test_pot_topUpRespreadsOverFullPeriod() public {
         (,, uint256 pot1) = _buy(-int256(5000e6));
         _warp(3 days);

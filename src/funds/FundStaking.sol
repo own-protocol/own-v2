@@ -138,6 +138,9 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuardTrans
     // False until the first fresh reading sets `_lastRate`.
     bool private _rateRead;
 
+    // True while the pot is paused for lack of a NAV price (set at each release attempt).
+    bool private _potHeld;
+
     /// @param positionManager_ The Uniswap v4 PositionManager whose positions can be staked.
     constructor(
         address positionManager_
@@ -554,13 +557,18 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuardTrans
     }
 
     /// @dev Moves the pot's drip since the last checkpoint into `potPending`: the rest drips
-    ///      linearly until `potEnd`.
+    ///      linearly until `potEnd`. While the pot is held the drip pauses instead: its end moves
+    ///      out by the time held.
     function _checkpointPot() internal {
         uint256 last = _potUpdatedAt;
         _potUpdatedAt = uint64(block.timestamp);
         uint256 left = potLeft;
         uint256 end = potEnd;
         if (left == 0 || block.timestamp <= last) return;
+        if (_potHeld) {
+            if (end > last) potEnd = uint64(end + block.timestamp - last);
+            return;
+        }
         uint256 released = block.timestamp >= end ? left : Math.mulDiv(left, block.timestamp - last, end - last);
         potLeft = SafeCast.toUint128(left - released);
         potPending += released;
@@ -568,15 +576,22 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuardTrans
 
     /// @dev Pays the dripped pot to stakers: fund tokens at NAV into the vault, the same dollars out
     ///      of the reserve, so NAV does not move. With less than a whole share staked it goes to
-    ///      backing instead. Waits for a NAV reading rather than pricing without one.
+    ///      backing instead. Without a NAV reading the drip pauses, so nothing piles up for whoever
+    ///      stakes before the price returns.
     function _releasePot(bool stakers, Snapshot memory s) internal {
+        bool toStakers = stakers && totalSupply() >= MIN_POT_SHARES;
+        uint256 nav;
+        bool held;
+        if (toStakers && (potLeft != 0 || potPending != 0)) {
+            nav = _valued(s).nav();
+            held = nav == 0;
+        }
+        _potHeld = held;
         _checkpointPot();
         uint256 pending = potPending;
-        if (pending == 0) return;
+        if (pending == 0 || held) return;
         uint256 assets;
-        if (stakers && totalSupply() >= MIN_POT_SHARES) {
-            uint256 nav = _valued(s).nav();
-            if (nav == 0) return;
+        if (toStakers) {
             // Rounds down: the vault never gets more than the dollars released.
             assets = Math.mulDiv(pending, PRECISION, nav);
             _totalStaked += assets;
