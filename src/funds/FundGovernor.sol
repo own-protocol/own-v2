@@ -103,8 +103,19 @@ contract FundGovernor is IFundGovernor, Initializable, ReentrancyGuardTransient 
 
     mapping(address token => EpochHistory.History) private _bribeVotes;
 
+    /// @inheritdoc IFundGovernor
+    bool public override publicCuration;
+
+    // Epochs flipped while public curation was off: no votes counted and no bribes earned.
+    mapping(uint256 epoch => bool) private _adminCurated;
+
     modifier onlyAdmin() {
         _checkAdmin();
+        _;
+    }
+
+    modifier whenPublic() {
+        if (!publicCuration) revert PublicCurationOff();
         _;
     }
 
@@ -202,7 +213,7 @@ contract FundGovernor is IFundGovernor, Initializable, ReentrancyGuardTransient 
     // ──────────────────────────────────────────────────────────
 
     /// @inheritdoc IFundGovernor
-    function vote(address[] calldata tokens, uint16[] calldata weightsBps) external override {
+    function vote(address[] calldata tokens, uint16[] calldata weightsBps) external override whenPublic {
         {
             IFund f = IFund(fund);
             if (!f.launched()) revert NotLaunched();
@@ -243,6 +254,10 @@ contract FundGovernor is IFundGovernor, Initializable, ReentrancyGuardTransient 
 
         IFundCurators cur = IFundCurators(f.curators());
         cur.checkCompliance(e);
+        if (!publicCuration) {
+            _adminCurated[e] = true;
+            return;
+        }
 
         address[] memory assets = f.assets();
         uint256[] memory votes = _castVotes(f, cur, e, assets);
@@ -254,14 +269,18 @@ contract FundGovernor is IFundGovernor, Initializable, ReentrancyGuardTransient 
     // ──────────────────────────────────────────────────────────
 
     /// @inheritdoc IFundGovernor
-    function propose(ProposalKind kind, address target, address replacement) external override returns (uint256 id) {
+    function propose(
+        ProposalKind kind,
+        address target,
+        address replacement
+    ) external override whenPublic returns (uint256 id) {
         id = ProposalBook.propose(
             _book, _config, delisted, _power[msg.sender], _totalPower, fund, kind, target, replacement
         );
     }
 
     /// @inheritdoc IFundGovernor
-    function castVote(uint256 id, bool support_) external override nonReentrant returns (uint256 votes) {
+    function castVote(uint256 id, bool support_) external override nonReentrant whenPublic returns (uint256 votes) {
         votes = ProposalBook.castVote(
             _book, _power[msg.sender], lastDepositAt, bribeLockedFrom, _voteLockUntil, fund, id, support_
         );
@@ -270,7 +289,7 @@ contract FundGovernor is IFundGovernor, Initializable, ReentrancyGuardTransient 
     /// @inheritdoc IFundGovernor
     function execute(
         uint256 id
-    ) external override nonReentrant {
+    ) external override nonReentrant whenPublic {
         ProposalBook.execute(_book, delisted, lowStreak, fund, id);
     }
 
@@ -297,6 +316,33 @@ contract FundGovernor is IFundGovernor, Initializable, ReentrancyGuardTransient 
         if (delisted_ && !IFund(fund).isAsset(token)) revert InvalidProposal();
         delisted[token] = delisted_;
         emit DelistedSet(token, delisted_);
+    }
+
+    /// @inheritdoc IFundGovernor
+    function setPublicCuration(
+        bool on
+    ) external override onlyAdmin {
+        publicCuration = on;
+        emit PublicCurationSet(on);
+    }
+
+    /// @inheritdoc IFundGovernor
+    function curate(address[] calldata assets, uint16[] calldata weightsBps) external override onlyAdmin nonReentrant {
+        if (publicCuration) revert PublicCurationOn();
+        IFund f = IFund(fund);
+        IFundFactory fac = IFundFactory(f.factory());
+        address[] memory old = f.assets();
+        for (uint256 i; i < assets.length; ++i) {
+            address a = assets[i];
+            if (f.isAsset(a)) continue;
+            if (!fac.isEligibleAsset(a)) revert NotEligibleAsset(a);
+            _clearStanding(a);
+        }
+        f.setTargetWeights(assets, weightsBps);
+        for (uint256 i; i < old.length; ++i) {
+            if (!f.isAsset(old[i])) _clearStanding(old[i]);
+        }
+        emit Curated(assets, weightsBps);
     }
 
     /// @inheritdoc IFundGovernor
@@ -380,6 +426,7 @@ contract FundGovernor is IFundGovernor, Initializable, ReentrancyGuardTransient 
 
     /// @inheritdoc IFundGovernor
     function bribeVotes(address token, uint256 epoch) external view override returns (uint256) {
+        if (_adminCurated[epoch]) return 0;
         return _bribeVotes[token].valueAt(epoch);
     }
 
@@ -619,6 +666,14 @@ contract FundGovernor is IFundGovernor, Initializable, ReentrancyGuardTransient 
     ///      exceed the stakers' share.
     function _stakedSupplyNow(IFund f, uint256 epoch) internal view returns (uint256) {
         return Math.max(IFundStaking(f.staking()).totalSupplyAt(epoch), _totalPower.valueAt(epoch));
+    }
+
+    /// @dev Resets a token's governance standing as it joins or leaves the basket.
+    function _clearStanding(
+        address token
+    ) internal {
+        delisted[token] = false;
+        lowStreak[token] = 0;
     }
 
     function _checkAdmin() internal view {

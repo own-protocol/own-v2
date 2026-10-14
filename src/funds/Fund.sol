@@ -64,9 +64,6 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
     int16 public override mintAdjustmentBps;
 
     /// @inheritdoc IFund
-    uint32 public override navMintLock;
-
-    /// @inheritdoc IFund
     uint32 public override maxPremiumBps;
 
     /// @inheritdoc IFund
@@ -168,7 +165,7 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
         _setFee(params.feeBps == 0 ? DEFAULT_FEE_BPS : params.feeBps);
         FundRebalance.setBasket(_oracle(), _usdg, _assets, _basket, params.assets, params.weightsBps);
         PremiumConfig memory c = IFundFactory(msg.sender).premiumConfig();
-        _setMintConfig(c.mintLock, c.mintAdjustmentBps, c.navMintLock, c.maxPremiumBps);
+        _setMintConfig(c.mintLock, c.mintAdjustmentBps, c.maxPremiumBps);
     }
 
     /// @inheritdoc IFund
@@ -375,13 +372,8 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
     }
 
     /// @inheritdoc IFund
-    function setMintConfig(
-        uint32 lock,
-        int16 adjustmentBps,
-        uint32 navLock,
-        uint32 maxPremiumBps_
-    ) external override onlyAdmin {
-        _setMintConfig(lock, adjustmentBps, navLock, maxPremiumBps_);
+    function setMintConfig(uint32 lock, int16 adjustmentBps, uint32 maxPremiumBps_) external override onlyAdmin {
+        _setMintConfig(lock, adjustmentBps, maxPremiumBps_);
     }
 
     /// @inheritdoc IFund
@@ -681,7 +673,8 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
 
     /// @dev Mints the boost, the staking module's share of the premium in fund tokens (the
     ///      `navShares` paid for less the `gross` issued; none at NAV), to the staking module with
-    ///      `shares`, and stakes `shares` for `receiver`, locked for the direct or NAV mint lock.
+    ///      `shares`, and stakes `shares` for `receiver`, locked for the direct mint lock, or for good
+    ///      at NAV.
     function _stakeMinted(
         address receiver,
         uint256 shares,
@@ -697,7 +690,7 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
             shares,
             navShares,
             boost,
-            SafeCast.toUint64(block.timestamp + (atNav ? navMintLock : mintLock)),
+            atNav ? type(uint64).max : SafeCast.toUint64(block.timestamp + mintLock),
             atNav
         );
     }
@@ -802,10 +795,10 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
         emit MetadataSet(name_, symbol_, logoURI_, description_);
     }
 
-    function _setMintConfig(uint32 lock, int16 adjustmentBps, uint32 navLock, uint32 maxPremiumBps_) internal {
-        if (!PremiumConfigLib.mintValid(lock, adjustmentBps, navLock)) revert InvalidMintConfig();
-        (mintLock, mintAdjustmentBps, navMintLock, maxPremiumBps) = (lock, adjustmentBps, navLock, maxPremiumBps_);
-        emit MintConfigSet(lock, adjustmentBps, navLock, maxPremiumBps_);
+    function _setMintConfig(uint32 lock, int16 adjustmentBps, uint32 maxPremiumBps_) internal {
+        if (!PremiumConfigLib.mintValid(lock, adjustmentBps)) revert InvalidMintConfig();
+        (mintLock, mintAdjustmentBps, maxPremiumBps) = (lock, adjustmentBps, maxPremiumBps_);
+        emit MintConfigSet(lock, adjustmentBps, maxPremiumBps_);
     }
 
     /// @dev The holdings at oracle prices without reverting, with the market price when `market`.

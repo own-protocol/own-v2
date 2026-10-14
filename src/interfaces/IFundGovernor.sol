@@ -198,6 +198,15 @@ interface IFundGovernor {
     /// @param allowed Whether allowed.
     event WrapperSet(address indexed wrapper, bool allowed);
 
+    /// @notice Emitted when public curation is turned on or off.
+    /// @param on Whether curators and stakers vote.
+    event PublicCurationSet(bool on);
+
+    /// @notice Emitted when the admin sets the basket while public curation is off.
+    /// @param assets     The basket.
+    /// @param weightsBps Target weights.
+    event Curated(address[] assets, uint16[] weightsBps);
+
     /// @notice Caller is not the platform admin.
     error NotAdmin();
 
@@ -266,6 +275,16 @@ interface IFundGovernor {
     /// @notice The account has no votes on this proposal.
     error NoVotingPower();
 
+    /// @notice Public curation is off: only the admin curates the basket.
+    error PublicCurationOff();
+
+    /// @notice Public curation is on: the basket follows the vote.
+    error PublicCurationOn();
+
+    /// @notice The token is not on the factory's eligibility list.
+    /// @param token The token.
+    error NotEligibleAsset(address token);
+
     /// @notice Initialise a governor proxy. Called once by the factory.
     /// @param fund_   The fund.
     /// @param config_ Governance rules.
@@ -295,13 +314,14 @@ interface IFundGovernor {
     function lockForBribes() external;
 
     /// @notice Set the caller's weight allocation (curator slice and stake alike). It counts in the
-    ///         current epoch and carries over until changed.
+    ///         current epoch and carries over until changed. Reverts while public curation is off.
     /// @param tokens     Basket tokens.
     /// @param weightsBps Share per token (sum 10 000), or both empty to go silent.
     function vote(address[] calldata tokens, uint16[] calldata weightsBps) external;
 
     /// @notice Tally the oldest untallied finished epoch, apply the new weights and drop tokens
     ///         that qualify. Anyone can call (the Own keeper in practice); call again to catch up.
+    ///         While public curation is off it only checks curator compliance and leaves the weights.
     function flip() external;
 
     /// @notice Raise a proposal.
@@ -340,6 +360,23 @@ interface IFundGovernor {
     /// @param delisted Whether it is delisted.
     function setDelisted(address token, bool delisted) external;
 
+    /// @notice Turn public curation on or off. Admin only. Off (a new fund's default), nobody votes
+    ///         or raises, votes on or executes proposals; the admin sets the basket with {curate},
+    ///         and each flip only checks curator compliance. On, the weekly vote and proposals run
+    ///         as usual, starting from the current weights.
+    /// @param on Whether curators and stakers vote.
+    function setPublicCuration(
+        bool on
+    ) external;
+
+    /// @notice Set the basket and its target weights at once while public curation is off. Admin
+    ///         only. A token new to the basket must be eligible; the fund checks the rest (weights
+    ///         sum to 100%, priced tokens, at most 20, a dropped token's balance is dust). None of the
+    ///         vote's cap, minimum or weekly move applies.
+    /// @param assets     The basket.
+    /// @param weightsBps Target weights in basis points, summing to 10 000.
+    function curate(address[] calldata assets, uint16[] calldata weightsBps) external;
+
     /// @notice Replace the governance rules. Admin only.
     /// @param config_ New rules.
     function setConfig(
@@ -358,6 +395,10 @@ interface IFundGovernor {
     /// @notice Governance rules.
     /// @return The rules.
     function config() external view returns (GovernanceConfig memory);
+
+    /// @notice Whether curators and stakers vote (else the admin curates the basket).
+    /// @return True if public curation is on.
+    function publicCuration() external view returns (bool);
 
     /// @notice The epoch now (weeks since Thursday 1 January 1970).
     /// @return The epoch.
@@ -398,7 +439,8 @@ interface IFundGovernor {
     function bribeVotesOf(address account, address token, uint256 epoch) external view returns (uint256);
 
     /// @notice All votes from stake locked for bribes cast for `token` in `epoch`, in staked-token
-    ///         shares. Final once the epoch has ended.
+    ///         shares. Final once the epoch has ended. Zero for an epoch flipped while public
+    ///         curation was off, so its bribes are refundable.
     /// @param token The token.
     /// @param epoch The epoch.
     /// @return The votes.

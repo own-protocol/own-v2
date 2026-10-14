@@ -658,6 +658,7 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuardTrans
     /// @dev One lock of each kind per account, ending at the share-weighted end: shares times time
     ///      locked are kept, so a mint to someone else cannot hold their earlier shares longer than
     ///      it pays for. Direct and NAV mints never share a lock, so neither can shorten the other.
+    ///      A NAV lock always ends at the largest uint64, which the weighting returns exactly.
     function _joinMintLock(address account, uint256 shares, uint64 unlockAt, bool atNav) internal {
         MintLock storage lock = _lockOf(account, atNav);
         uint256 held = lock.unlockAt > block.timestamp ? lock.shares : 0;

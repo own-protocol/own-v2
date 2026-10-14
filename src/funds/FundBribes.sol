@@ -73,6 +73,7 @@ contract FundBribes is IFundBribes, Initializable, ReentrancyGuardTransient {
         // A launch that fails never tallies, so a bribe posted before launch could never leave.
         if (!IFund(fund).launched()) revert NotLaunched();
         IFundGovernor gov = _governor();
+        if (!gov.publicCuration()) revert CurationClosed();
         if (epoch < gov.currentEpoch() || gov.isTallied(epoch)) revert EpochClosed();
         uint256 cut;
         (net, cut) = _pull(token, reward, amount);
@@ -125,6 +126,7 @@ contract FundBribes is IFundBribes, Initializable, ReentrancyGuardTransient {
         uint256 amount
     ) external override nonReentrant returns (uint256 net) {
         IFundGovernor gov = _governor();
+        if (!gov.publicCuration()) revert CurationClosed();
         IFundGovernor.Proposal memory p = gov.getProposal(proposalId);
         if (p.kind != IFundGovernor.ProposalKind.List || gov.state(proposalId) != IFundGovernor.ProposalState.Active) {
             revert NotOpenListing();

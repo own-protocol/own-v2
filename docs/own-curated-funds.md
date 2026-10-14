@@ -121,11 +121,12 @@ Updated 2026-10-12: the premium yield redesign (spec `plans/fund-premium-rebate-
   tokens go to the receiver unlocked, with no boost (the whole premium is backing), so anyone can
   mint at the cap and sell into the pool and arbitrage holds the price near it.
 - **Mint at NAV:** `mint(navShares, minSharesOut, receiver, true)` prices the same slice at NAV
-  (fee still charged). The tokens are staked for the receiver and locked for `navMintLock` (default
-  6 months, up to 2 years) in a lock of their own that direct mints never join; meanwhile they earn
-  tier yield and the pot and can be redeemed at NAV, but not transferred or unstaked. No boost. For
+  (fee still charged). The tokens are staked for the receiver and locked for good, in a lock of
+  their own that direct mints never join. The lock is on the staked shares, so the tier yield and
+  pot they earn stay locked too. They vote and earn bribes like any escrowed stake, and the only way
+  out is a redeem at NAV: they can never be transferred, unstaked or sold in the pool. No boost. For
   holders who want basket exposure without the premium game.
-- **Mint settings:** the admin sets the mint lock, adjustment, NAV mint lock and premium cap per
+- **Mint settings:** the admin sets the mint lock, adjustment and premium cap per
   fund with `setMintConfig` (new funds take the factory's defaults); `setMintPaused` (operator or
   admin) closes both mint doors.
 - **Premium Boost (direct mints only):** of a mint's premium over NAV in fund tokens (the
@@ -223,6 +224,22 @@ Updated 2026-10-12: the premium yield redesign (spec `plans/fund-premium-rebate-
   income share. A flip with no NAV price (a stale feed) changes nobody's standing. Mints and redeems
   happen at NAV, so they cannot move anyone across the line.
 
+## Public curation
+
+- `governor.setPublicCuration(bool)` (admin) switches a fund between admin curation and the public
+  vote. New funds start with it off, until a fund is big enough for active curation to be worth it.
+- **Off:** nobody votes on weights or raises, votes on or executes proposals, curators and stakers
+  alike. The admin sets the whole basket at once with `governor.curate(assets, weightsBps)`: add
+  tokens (on the eligibility list, with an oracle feed), drop tokens (once their balance is dust)
+  and set any weights, with none of the vote's cap, minimum or weekly move. The weekly flip still
+  runs but only checks curator compliance; the weights stay where the admin put them. No bribes can
+  be posted, and a week flipped while off pays none (its bribes go back to the briber).
+- **Curators are unchanged:** the admin adds, removes and replaces them directly, and fees, curator
+  yield, the protocol curator's share and compliance (minimum stake only) all work as usual. Only
+  the bribe cut is zero while off, as there are no bribes.
+- **On:** the vote and proposals below run as usual, starting from the current weights and moving
+  at most the weekly limit. Allocations set before curation was turned off count again until changed.
+
 ## Weekly weight vote (gauge)
 
 - Epochs run a week and flip Thursday 00:00 UTC. Anyone (the keeper in practice) calls
@@ -305,7 +322,8 @@ Updated 2026-10-12: the premium yield redesign (spec `plans/fund-premium-rebate-
   tokens, the eligibility list, the yield cap, governance rules and each fund's fee, curator
   yield, minimum curator stake, yield tiers, mint lock and adjustment, boost and pot settings and
   pool issuance; set the premium defaults for new funds; add and remove
-  curators (never the protocol curator); veto proposals; can delist a token directly; can
+  curators (never the protocol curator); veto proposals; can delist a token directly; turn public
+  curation off and on and, while it is off, set each fund's basket and weights directly; can
   withdraw the pool position back into the fund; set the sweep recipient
   (`factory.setSweepRecipient`; the registry treasury until set).
 - **Operator (registry `OPERATOR` role, or an admin):** pauses and unpauses fund mints and launch

@@ -205,24 +205,24 @@ contract FundTest is FundTestBase {
     function test_mint_adjustment_markupAndDiscount() public {
         uint256 market = _marketPrice();
         vm.prank(admin);
-        fund.setMintConfig(15 days, 1000, 180 days, 0); // +10%
+        fund.setMintConfig(15 days, 1000, 0); // +10%
         (, uint256 mintPrice,,,) = fund.previewMint(1000e18, false);
         assertEq(mintPrice, Math.mulDiv(market, 11_000, 10_000, Math.Rounding.Ceil));
 
         vm.prank(admin);
-        fund.setMintConfig(15 days, -1000, 180 days, 0); // -10%
+        fund.setMintConfig(15 days, -1000, 0); // -10%
         (, mintPrice,,,) = fund.previewMint(1000e18, false);
         assertEq(mintPrice, Math.mulDiv(market, 9000, 10_000, Math.Rounding.Ceil));
 
         vm.prank(admin);
-        fund.setMintConfig(15 days, -5000, 180 days, 0); // -50% would be below NAV: priced at NAV
+        fund.setMintConfig(15 days, -5000, 0); // -50% would be below NAV: priced at NAV
         (, mintPrice,,,) = fund.previewMint(1000e18, false);
         assertEq(mintPrice, _mintNav());
     }
 
     function test_mint_belowNav_pricedAtNav_noBoost() public {
         vm.prank(admin);
-        fund.setMintConfig(15 days, -5000, 180 days, 0);
+        fund.setMintConfig(15 days, -5000, 0);
         uint256 nav = _mintNav();
         (uint256 quoted, uint256 mintPrice,,,) = fund.previewMint(1000e18, false);
         assertEq(mintPrice, nav);
@@ -236,7 +236,7 @@ contract FundTest is FundTestBase {
 
     function test_mint_zeroLock_stakedButFree() public {
         vm.prank(admin);
-        fund.setMintConfig(0, 0, 180 days, 0);
+        fund.setMintConfig(0, 0, 0);
         _mintAs(alice, 1000e18);
         assertEq(staking.mintLockOf(alice, false).shares, 0);
         uint256 shares = staking.balanceOf(alice);
@@ -248,21 +248,21 @@ contract FundTest is FundTestBase {
 
     function test_setMintConfig() public {
         vm.expectRevert(IFund.NotAdmin.selector);
-        fund.setMintConfig(1 days, 0, 180 days, 0);
+        fund.setMintConfig(1 days, 0, 0);
 
         vm.startPrank(admin);
         vm.expectEmit(address(fund));
-        emit IFund.MintConfigSet(30 days, -200, 180 days, 0);
-        fund.setMintConfig(30 days, -200, 180 days, 0);
+        emit IFund.MintConfigSet(30 days, -200, 0);
+        fund.setMintConfig(30 days, -200, 0);
         assertEq(fund.mintLock(), 30 days);
         assertEq(fund.mintAdjustmentBps(), -200);
 
         vm.expectRevert(IFund.InvalidMintConfig.selector);
-        fund.setMintConfig(365 days + 1, 0, 180 days, 0);
+        fund.setMintConfig(365 days + 1, 0, 0);
         vm.expectRevert(IFund.InvalidMintConfig.selector);
-        fund.setMintConfig(0, -5001, 180 days, 0);
+        fund.setMintConfig(0, -5001, 0);
         vm.expectRevert(IFund.InvalidMintConfig.selector);
-        fund.setMintConfig(0, 10_001, 180 days, 0);
+        fund.setMintConfig(0, 10_001, 0);
         vm.stopPrank();
     }
 

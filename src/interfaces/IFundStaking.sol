@@ -44,8 +44,10 @@ import {IERC721Receiver} from "@openzeppelin/contracts/token/ERC721/IERC721Recei
 ///         its USDG earns nothing), paid in fund tokens they claim. The position's swap fees stay
 ///         theirs: they can collect them while staked or after. Staked positions do not vote.
 interface IFundStaking is IERC20, IERC721Receiver {
-    /// @notice An account's lock on shares from direct mints. Locked shares can be redeemed (see
-    ///         {redeem}) or escrowed in the governor, but not transferred or unstaked.
+    /// @notice An account's lock on shares from direct mints or mints at NAV. Locked shares can be
+    ///         redeemed (see {redeem}) or escrowed in the governor, but not transferred or unstaked.
+    ///         A NAV mint lock never ends (`unlockAt` is the largest uint64), and covers the yield
+    ///         its shares earn, so a mint at NAV only ever leaves at NAV.
     /// @param shares   Shares locked.
     /// @param unlockAt When the lock ends.
     struct MintLock {
@@ -241,7 +243,8 @@ interface IFundStaking is IERC20, IERC721Receiver {
     /// @param assets     Fund tokens minted here to stake.
     /// @param payment    Value paid, in fund tokens at NAV.
     /// @param boost      Boost fund tokens the fund minted here on top of `assets`.
-    /// @param unlockAt   When the lock ends (no lock if not in the future).
+    /// @param unlockAt   When the lock ends (no lock if not in the future; the largest uint64 for
+    ///                   a mint at NAV, which never unlocks).
     /// @param atNav      Whether this is a mint at NAV (its own lock).
     /// @return shares Shares minted to `account`.
     function stakeMinted(

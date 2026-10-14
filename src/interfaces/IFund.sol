@@ -118,9 +118,8 @@ interface IFund is IERC20 {
     /// @notice Emitted when the mint settings change.
     /// @param lock          Lock on a direct mint's stake, in seconds.
     /// @param adjustmentBps Signed adjustment to the pool price, in basis points.
-    /// @param navLock       Lock on a mint at NAV, in seconds.
     /// @param maxPremiumBps Premium cap on a direct mint, in basis points (0 for none).
-    event MintConfigSet(uint32 lock, int16 adjustmentBps, uint32 navLock, uint32 maxPremiumBps);
+    event MintConfigSet(uint32 lock, int16 adjustmentBps, uint32 maxPremiumBps);
 
     /// @notice Emitted when the manager changes.
     /// @param manager New manager.
@@ -305,8 +304,8 @@ interface IFund is IERC20 {
     ///           receiver earns a Premium Boost of the staking module's boost share of the premium
     ///           paid over NAV. If {maxPremiumBps} caps the price, the tokens go to the receiver
     ///           unlocked instead, with no boost.
-    ///         - Mint at NAV (`atNav` true): at NAV; staked for the receiver and locked for
-    ///           {navMintLock}, no boost.
+    ///         - Mint at NAV (`atNav` true): at NAV; staked for the receiver and locked for good, with
+    ///           the yield it earns: it can only leave by a redeem at NAV, never be sold. No boost.
     ///         A staked (locked or boosted) mint reverts {NotReceiver} unless the receiver is the
     ///         caller or the caller is the factory's mint zap.
     /// @param navShares    Size of the slice, in fund tokens at NAV. The receiver gets this scaled
@@ -410,10 +409,9 @@ interface IFund is IERC20 {
     /// @param lock          Lock on a direct mint's stake, in seconds (0 to 365 days).
     /// @param adjustmentBps Signed adjustment to the pool price, in basis points (-5 000 to 10 000):
     ///                      positive is a markup, negative a discount. The price is never below NAV.
-    /// @param navLock       Lock on a mint at NAV, in seconds (0 to 730 days).
     /// @param maxPremiumBps Premium over NAV a direct mint pays at most, in basis points (0 for
     ///                      no cap).
-    function setMintConfig(uint32 lock, int16 adjustmentBps, uint32 navLock, uint32 maxPremiumBps) external;
+    function setMintConfig(uint32 lock, int16 adjustmentBps, uint32 maxPremiumBps) external;
 
     /// @notice Replace the governor, e.g. with a quadratic, futarchy or bribe-market module.
     ///         Admin only.
@@ -514,10 +512,6 @@ interface IFund is IERC20 {
     /// @notice Signed adjustment to the pool price a direct mint pays, in basis points.
     /// @return The adjustment.
     function mintAdjustmentBps() external view returns (int16);
-
-    /// @notice Lock on a mint at NAV, in seconds.
-    /// @return The lock.
-    function navMintLock() external view returns (uint32);
 
     /// @notice Premium over NAV a direct mint pays at most, in basis points (0 for no cap).
     /// @return The cap.

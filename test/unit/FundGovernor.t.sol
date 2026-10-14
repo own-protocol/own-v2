@@ -3,8 +3,10 @@ pragma solidity 0.8.28;
 
 import {IFund} from "../../src/interfaces/IFund.sol";
 import {IFundCurators} from "../../src/interfaces/IFundCurators.sol";
+
+import {IFundFactory} from "../../src/interfaces/IFundFactory.sol";
 import {IFundGovernor} from "../../src/interfaces/IFundGovernor.sol";
-import {GovernanceConfig} from "../../src/interfaces/types/FundTypes.sol";
+import {CreateFundParams, GovernanceConfig} from "../../src/interfaces/types/FundTypes.sol";
 import {FundTestBase} from "../helpers/FundTestBase.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -963,6 +965,164 @@ contract FundGovernorTest is FundTestBase {
     //  Admin
     // ──────────────────────────────────────────────────────────
 
+    // ──────────────────────────────────────────────────────────
+    //  Public curation
+    // ──────────────────────────────────────────────────────────
+
+    function test_publicCuration_newFundStartsOff() public {
+        CreateFundParams memory p = _defaultParams();
+        p.name = "Own Curated Fund 2";
+        p.symbol = "OCF2";
+        vm.prank(admin);
+        IFundFactory.FundModules memory m = factory.createFund(p);
+        assertFalse(IFundGovernor(m.governor).publicCuration());
+    }
+
+    function test_setPublicCuration_adminOnlyAndEmits() public {
+        vm.prank(curatorA);
+        vm.expectRevert(IFundGovernor.NotAdmin.selector);
+        governor.setPublicCuration(false);
+
+        vm.expectEmit(address(governor));
+        emit IFundGovernor.PublicCurationSet(false);
+        vm.prank(admin);
+        governor.setPublicCuration(false);
+        assertFalse(governor.publicCuration());
+    }
+
+    function test_publicCurationOff_votesAndProposalsRevert() public {
+        _toNextEpoch();
+        uint256 id = _propose(curatorA, IFundGovernor.ProposalKind.List, address(spare));
+        _curatorsYes(id);
+        _curatorOff();
+
+        address[] memory t = new address[](1);
+        t[0] = address(tsla);
+        uint16[] memory w = new uint16[](1);
+        w[0] = 10_000;
+        vm.prank(curatorA);
+        vm.expectRevert(IFundGovernor.PublicCurationOff.selector);
+        governor.vote(t, w);
+        vm.prank(alice);
+        vm.expectRevert(IFundGovernor.PublicCurationOff.selector);
+        governor.vote(t, w);
+        vm.prank(curatorB);
+        vm.expectRevert(IFundGovernor.PublicCurationOff.selector);
+        governor.propose(IFundGovernor.ProposalKind.Delist, address(pons), address(0));
+        vm.prank(alice);
+        vm.expectRevert(IFundGovernor.PublicCurationOff.selector);
+        governor.castVote(id, false);
+
+        vm.warp(block.timestamp + 4 days);
+        assertEq(uint8(governor.state(id)), uint8(IFundGovernor.ProposalState.Executable));
+        vm.expectRevert(IFundGovernor.PublicCurationOff.selector);
+        governor.execute(id);
+        assertFalse(fund.isAsset(address(spare)));
+    }
+
+    function test_curate_setsAnyBasketAtOnce() public {
+        _curatorOff();
+        address[] memory a = new address[](4);
+        (a[0], a[1], a[2], a[3]) = (address(net), address(pons), address(tsla), address(spare));
+        uint16[] memory w = new uint16[](4);
+        (w[0], w[1], w[2], w[3]) = (7000, 100, 900, 2000); // over the cap, under the minimum, any move
+
+        vm.expectEmit(address(governor));
+        emit IFundGovernor.Curated(a, w);
+        vm.prank(admin);
+        governor.curate(a, w);
+        assertTrue(fund.isAsset(address(spare)));
+        assertEq(fund.targetWeightBps(address(net)), 7000);
+        assertEq(fund.targetWeightBps(address(pons)), 100);
+        assertEq(fund.targetWeightBps(address(tsla)), 900);
+        assertEq(fund.targetWeightBps(address(spare)), 2000);
+    }
+
+    function test_curate_adminOnlyAndOnlyWhileOff() public {
+        address[] memory a = fund.assets();
+        uint16[] memory w = new uint16[](a.length);
+        for (uint256 i; i < a.length; ++i) {
+            w[i] = fund.targetWeightBps(a[i]);
+        }
+        vm.prank(admin);
+        vm.expectRevert(IFundGovernor.PublicCurationOn.selector);
+        governor.curate(a, w);
+
+        _curatorOff();
+        vm.prank(curatorA);
+        vm.expectRevert(IFundGovernor.NotAdmin.selector);
+        governor.curate(a, w);
+    }
+
+    function test_curate_newTokenMustBeEligible() public {
+        _curatorOff();
+        vm.prank(admin);
+        factory.setEligibleAsset(address(spare), false);
+        address[] memory a = new address[](4);
+        (a[0], a[1], a[2], a[3]) = (address(net), address(pons), address(tsla), address(spare));
+        uint16[] memory w = new uint16[](4);
+        (w[0], w[1], w[2], w[3]) = (4000, 3000, 2000, 1000);
+        vm.prank(admin);
+        vm.expectRevert(abi.encodeWithSelector(IFundGovernor.NotEligibleAsset.selector, address(spare)));
+        governor.curate(a, w);
+    }
+
+    function test_curate_dropsOnlyDustTokensAndClearsTheirStanding() public {
+        _listSpare();
+        vm.prank(admin);
+        governor.setDelisted(address(spare), true);
+        _curatorOff();
+
+        address[] memory a = new address[](2);
+        (a[0], a[1]) = (address(net), address(tsla));
+        uint16[] memory w = new uint16[](2);
+        (w[0], w[1]) = (5000, 5000);
+        vm.prank(admin);
+        vm.expectRevert(abi.encodeWithSelector(IFund.AssetHasBalance.selector, address(pons)));
+        governor.curate(a, w); // still holds $30k of PONS
+
+        a = new address[](3);
+        (a[0], a[1], a[2]) = (address(net), address(pons), address(tsla));
+        w = new uint16[](3);
+        (w[0], w[1], w[2]) = (4000, 3000, 3000);
+        vm.prank(admin);
+        governor.curate(a, w);
+        assertFalse(fund.isAsset(address(spare)));
+        assertFalse(governor.delisted(address(spare)));
+    }
+
+    function test_flip_publicCurationOff_keepsWeightsAndChecksCompliance() public {
+        _curatorOff();
+        // CuratorA has no stake, so the compliance check still drops it after a week of grace.
+        _toNextEpoch();
+        governor.flip();
+        assertTrue(curators.isCompliant(curatorA));
+        _toNextEpoch();
+        governor.flip();
+        assertFalse(curators.isCompliant(curatorA));
+        // Above a third with three tokens, NET would come down at a normal flip.
+        assertEq(fund.targetWeightBps(address(net)), 4000);
+        assertTrue(governor.isTallied(governor.currentEpoch() - 1));
+        assertEq(governor.tokenVotes(address(net), governor.currentEpoch() - 1), 0);
+    }
+
+    function test_publicCurationBackOn_votingResumesFromCuratedWeights() public {
+        _curatorOff();
+        address[] memory a = fund.assets();
+        uint16[] memory w = new uint16[](3);
+        (w[0], w[1], w[2]) = (6000, 2000, 2000);
+        vm.prank(admin);
+        governor.curate(a, w);
+
+        vm.prank(admin);
+        governor.setPublicCuration(true);
+        _toNextEpoch();
+        governor.flip();
+        // No votes: the 60% weight heads for the cap at most five points a week.
+        assertApproxEqAbs(fund.targetWeightBps(a[0]), 5500, 1);
+        _assertSum();
+    }
+
     function test_adminSetters_onlyAdmin() public {
         GovernanceConfig memory c = governor.config();
         vm.startPrank(curatorA);
@@ -1021,6 +1181,11 @@ contract FundGovernorTest is FundTestBase {
         vm.warp(block.timestamp + 4 days);
         _refreshFeeds();
         governor.execute(id);
+    }
+
+    function _curatorOff() internal {
+        vm.prank(admin);
+        governor.setPublicCuration(false);
     }
 
     function _liftCap() internal {

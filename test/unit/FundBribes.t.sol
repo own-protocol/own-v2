@@ -495,6 +495,45 @@ contract FundBribesTest is FundTestBase {
         bribes.postListingBribe(listing, address(usdg), 1000e6);
     }
 
+    // ──────────────────────────────────────────────────────────
+    //  Public curation off
+    // ──────────────────────────────────────────────────────────
+
+    function test_postBribe_publicCurationOff_reverts() public {
+        vm.prank(admin);
+        governor.setPublicCuration(false);
+        vm.prank(briber);
+        vm.expectRevert(IFundBribes.CurationClosed.selector);
+        bribes.postBribe(address(tsla), epoch, address(usdg), 1000e6);
+    }
+
+    function test_postListingBribe_publicCurationOff_reverts() public {
+        uint256 id = _proposeListing();
+        vm.prank(admin);
+        governor.setPublicCuration(false);
+        vm.prank(briber);
+        vm.expectRevert(IFundBribes.CurationClosed.selector);
+        bribes.postListingBribe(id, address(usdg), 1000e6);
+    }
+
+    function test_bribe_epochFlippedWhileOff_refundedNotPaid() public {
+        vm.prank(briber);
+        bribes.postBribe(address(tsla), epoch, address(usdg), 1000e6);
+        vm.prank(admin);
+        governor.setPublicCuration(false);
+        _toNextEpoch();
+        _toNextEpoch();
+        governor.flip();
+        assertTrue(governor.isTallied(epoch));
+        assertEq(governor.bribeVotes(address(tsla), epoch), 0);
+
+        vm.prank(alice);
+        vm.expectRevert(IFundBribes.NothingToClaim.selector);
+        bribes.claimBribe(_g(), address(tsla), epoch, address(usdg));
+        vm.prank(briber);
+        assertEq(bribes.refundBribe(_g(), address(tsla), epoch, address(usdg)), 850e6);
+    }
+
     function _proposeListing() internal returns (uint256) {
         _toNextEpoch(); // proposals open the epoch after launch
         return _proposeListingBy(curatorA);

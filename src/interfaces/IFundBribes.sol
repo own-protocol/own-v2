@@ -118,13 +118,17 @@ interface IFundBribes {
     /// @notice The fund has not launched.
     error NotLaunched();
 
+    /// @notice Public curation is off, so there are no votes to bribe.
+    error CurationClosed();
+
     /// @notice Initialise a bribes proxy. Called once by the factory.
     /// @param fund_ The fund.
     function initialize(
         address fund_
     ) external;
 
-    /// @notice Post a bribe for `token` in `epoch` (the current epoch or a later one).
+    /// @notice Post a bribe for `token` in `epoch` (the current epoch or a later one). Reverts while
+    ///         public curation is off.
     /// @param token  Basket token.
     /// @param epoch  Epoch.
     /// @param reward Token paid.
@@ -160,6 +164,7 @@ interface IFundBribes {
     ) external returns (uint256 amount);
 
     /// @notice Post a bribe on an active listing proposal, paid to its yes voters if it executes.
+    ///         Reverts while public curation is off.
     /// @param proposalId Listing proposal.
     /// @param reward     Token paid.
     /// @param amount     Amount sent (the curators' cut is taken from it).

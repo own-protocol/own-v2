@@ -187,6 +187,8 @@ abstract contract FundTestBase is Test {
         governor = FundGovernor(m.governor);
         curators = FundCurators(m.curators);
         bribes = FundBribes(m.bribes);
+        vm.prank(admin);
+        governor.setPublicCuration(true);
     }
 
     /// @dev Creates the fund, takes $36k NET + $30k PONS + $34k TSLA + $25k USDG from alice and bob
