@@ -80,7 +80,10 @@ Updated 2026-10-12: the premium yield redesign (spec `plans/fund-premium-rebate-
 
 - The hook holds one full-range position per fund for the fund. It counts toward NAV:
   NAV = (basket + idle USDG + the position's USDG) / (supply − the position's fund tokens), with the
-  position valued at the pool's 30-minute TWAP (falling back to the history it has), never at spot.
+  position valued at the pool's 30-minute TWAP (falling back to the history it has). Mints and
+  redeems read the position at both the TWAP and spot and take whichever costs the caller (the
+  higher amounts for a mint, the lower for a redeem), so neither a move inside one block nor a move
+  held for the TWAP window and then reversed changes what they get.
 - Depositors therefore get exactly what they brought at NAV, and premium buys from the pool raise
   NAV for every holder.
 - **Redeem** pays a pro-rata slice of the basket, of the fund's idle USDG and of the position: the

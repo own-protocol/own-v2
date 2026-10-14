@@ -440,6 +440,24 @@ contract FundHook is IFundHook, IUnlockCallback, Initializable, UUPSUpgradeable 
     }
 
     /// @inheritdoc IFundHook
+    function positionBounds(
+        address fund,
+        bool high
+    ) external view override returns (uint256 usdgAmount, uint256 fundTokens) {
+        Pool storage pool = _pools[fund];
+        uint128 liquidity = pool.liquidity;
+        if (pool.seeded && liquidity != 0) {
+            (usdgAmount, fundTokens) = _amountsAt(fund, _positionTick(pool, fund), liquidity);
+            (, int24 tick,,) = poolManager.getSlot0(_key(fund).toId());
+            (uint256 spotUsdg, uint256 spotTokens) = _amountsAt(fund, tick, liquidity);
+            (usdgAmount, fundTokens) = high
+                ? (Math.max(usdgAmount, spotUsdg), Math.max(fundTokens, spotTokens))
+                : (Math.min(usdgAmount, spotUsdg), Math.min(fundTokens, spotTokens));
+        }
+        usdgAmount += pool.pendingUsdg;
+    }
+
+    /// @inheritdoc IFundHook
     function liquidityAmounts(
         address fund,
         uint128 liquidity

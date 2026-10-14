@@ -275,6 +275,15 @@ interface IFundHook {
         address fund
     ) external view returns (uint256 usdgAmount, uint256 fundTokens);
 
+    /// @notice The fund's position split at the pool TWAP and at the spot price, taking the lower
+    ///         of each amount (`high` false, for redeems) or the higher (`high` true, for mints),
+    ///         plus the USDG paid for pool issuance not yet collected. Zero before seeding.
+    /// @param fund The fund.
+    /// @param high Whether to take the higher amounts.
+    /// @return usdgAmount USDG in the position.
+    /// @return fundTokens Fund tokens in the position.
+    function positionBounds(address fund, bool high) external view returns (uint256 usdgAmount, uint256 fundTokens);
+
     /// @notice Amounts in a full-range position of `liquidity` in the fund's pool, valued at the
     ///         same TWAP as {positionAmounts}. Zero before seeding.
     /// @param fund      The fund.

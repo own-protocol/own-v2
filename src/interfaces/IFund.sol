@@ -10,7 +10,8 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 ///
 ///         - NAV per token = (basket + idle USDG + the USDG in the fund's pool position - the
 ///           reserve) divided by (supply minus the fund tokens in that position). The position is
-///           valued at the pool TWAP, never the spot price.
+///           valued at the pool TWAP; mints and redeems take whichever of the TWAP and spot
+///           readings costs the caller.
 ///         - Reserve: a dollar amount of the fund's holdings set aside for promised payouts (direct
 ///           minters' Premium Boost budgets and the Premium Pot). It is not counted in NAV and
 ///           redeems never take it; the staking module moves it into backing as it pays out (each
@@ -621,7 +622,7 @@ interface IFund is IERC20 {
         view
         returns (uint256 shares, uint256 mintPrice, uint256[] memory amounts, uint256 usdgAmount, bool locked);
 
-    /// @notice Quote a redeem (the USDG figure assumes the pool's spot price equals its TWAP).
+    /// @notice Quote a redeem (the USDG figure takes the lower of the TWAP and spot readings).
     /// @param shares Fund tokens redeemed, fees included.
     /// @return amounts    Amount of each asset paid out, in {assets} order.
     /// @return usdgAmount USDG paid out.

@@ -558,7 +558,7 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
         address hook = _hook();
         (uint256 net, uint256 supply, uint256 idle) = _redeemQuote(basket, _usdg, hook, shares);
         amounts = _redeemAssets(basket, net, supply);
-        (uint256 poolUsdg,) = _poolAndSupplyAt(hook);
+        (uint256 poolUsdg,) = _boundedPoolAndSupply(hook, false);
         usdgAmount = idle + Math.mulDiv(poolUsdg, net, supply);
     }
 
@@ -610,7 +610,7 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
     ) internal view returns (MintQuote memory q) {
         if (!launched) revert NotLaunched();
         address hook = _hook();
-        (uint256 poolUsdg, uint256 supply) = _poolAndSupplyAt(hook);
+        (uint256 poolUsdg, uint256 supply) = _boundedPoolAndSupply(hook, true);
         if (supply == 0) revert EmptyFund();
         IFundOracle o = _oracle();
         (, uint256 total) = _totalValue(o, basket, usdg, poolUsdg);
@@ -734,7 +734,7 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
         uint256 shares
     ) internal view returns (uint256 net, uint256 supply, uint256 idle) {
         uint256 poolUsdg;
-        (poolUsdg, supply) = _poolAndSupplyAt(hook);
+        (poolUsdg, supply) = _boundedPoolAndSupply(hook, false);
         net = _claim(basket, usdg, shares - _fee(shares), poolUsdg, supply);
         idle = Math.mulDiv(_balanceOf(usdg), net, supply);
     }
@@ -839,6 +839,21 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
     ) internal view returns (uint256 poolUsdg, uint256 supply) {
         uint256 poolTokens;
         if (launched) (poolUsdg, poolTokens) = IFundHook(hook).positionAmounts(address(this));
+        supply = _supplyOutside(poolTokens);
+    }
+
+    /// @dev As {_poolAndSupplyAt}, but each amount at whichever of the TWAP and spot readings costs
+    ///      the caller: the lower for a redeem, the higher for a mint. A move held for the TWAP
+    ///      window and then reversed, or one made within a block, never moves both readings.
+    function _boundedPoolAndSupply(address hook, bool mint) internal view returns (uint256 poolUsdg, uint256 supply) {
+        uint256 poolTokens;
+        if (launched) (poolUsdg, poolTokens) = IFundHook(hook).positionBounds(address(this), mint);
+        supply = _supplyOutside(poolTokens);
+    }
+
+    function _supplyOutside(
+        uint256 poolTokens
+    ) internal view returns (uint256 supply) {
         supply = totalSupply();
         supply = supply > poolTokens ? supply - poolTokens : 0;
     }
