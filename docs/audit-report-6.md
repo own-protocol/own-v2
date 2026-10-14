@@ -86,36 +86,44 @@ M-01, M-02, M-03, M-04, M-06, M-08 and L-04 again on its own.
 
 ## Status at a Glance
 
-| Severity | Open |
-| -------- | ---- |
-| Critical | 0    |
-| High     | 1    |
-| Medium   | 13   |
-| Low      | 7    |
+Found across both audit rounds (round 1 on `3a96ffe`, 2026-10-06; round 2 on `9fe95f7`, 2026-10-13). Fixed items keep their row here; their write-ups were dropped in this update and the fixes are in git.
 
-| ID      | Severity | Finding                                                                          | Conf | Status |
-| ------- | -------- | -------------------------------------------------------------------------------- | ---- | ------ |
-| A6-H-03 | High     | A curator claim credits the claimed staked shares a second time (*new*)          | 90   | Open |
-| A6-M-01 | Medium   | A 30-minute pool crash shrinks the redeem supply and over-pays the basket         | 75   | Open |
-| A6-M-02 | Medium   | Right after seeding the position TWAP covers seconds; one block sets redeem supply | 75  | Open |
-| A6-M-03 | Medium   | Dust bribes fill the 32 reward-token slots; later bribes in new tokens revert     | 90   | Open |
-| A6-M-04 | Medium   | Compliance uses live supply, so mint → flip → redeem fails an honest curator      | 80   | Open |
-| A6-M-06 | Medium   | One premium reading prices up to 8 h of staking yield; caller picks the moment    | 80   | Open |
-| A6-M-07 | Medium   | One paused / blacklisting basket token blocks every redeem                        | 80   | Open |
-| A6-M-08 | Medium   | After `setGovernor`, bribers refund bribes that voters already claimed            | 75   | Open |
-| A6-M-09 | Medium   | `stake` moves the caller's launch lock onto any receiver                          | 85   | Open |
-| A6-M-10 | Medium   | Anyone can mint to any receiver and put a lock and a boost on it (*new*)          | 85   | Open |
-| A6-M-11 | Medium   | A stake made while NAV has no price takes pot drip it did not earn (*new*)        | 80   | Open |
-| A6-M-12 | Medium   | One stale basket price blocks every redeem while the reserve holds value (*new*)  | 80   | Open |
-| A6-M-13 | Medium   | The price keeper moves a hub price without limit by repeating pushes (*new*)      | 75   | Open |
-| A6-M-14 | Medium   | Other staked shares shield a boost after its minted shares are sold (*new*)       | 75   | Open |
-| A6-L-01 | Low      | A bribe posted before a failed launch can never be refunded                       | 80   | Open |
-| A6-L-03 | Low      | A mint at NAV after a 30-minute dump is charged at the TWAP pool reading          | 65   | Open |
-| A6-L-04 | Low      | Before seeding, every rebalance swap skips the daily volume cap (manager-only)    | 75   | Open |
-| A6-L-05 | Low      | The auction rate rounds down, so some lots start at the floor price (*new*)       | 75   | Open |
-| A6-L-06 | Low      | The pool opens at the close price after the basket has moved (*new*)              | 75   | Open |
-| A6-L-07 | Low      | A tiny direct mint makes a boost that never ends (*new*)                          | 75   | Open |
-| A6-L-08 | Low      | A replaced protocol curator keeps the protocol vote on open proposals (*new*)     | 70   | Open |
+| Severity | Found | Round 1 | Round 2 | Fixed | Open | Acknowledged | By design |
+| -------- | ----- | ------- | ------- | ----- | ---- | ------------ | --------- |
+| Critical | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| High     | 3 | 2 | 1 | 2 | 1 | 0 | 0 |
+| Medium   | 14 | 9 | 5 | 1 | 13 | 0 | 0 |
+| Low      | 8 | 4 | 4 | 1 | 7 | 0 | 0 |
+| Info     | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| **Total** | **25** | **15** | **10** | **4** | **21** | **0** | **0** |
+
+| ID | Severity | Finding | Conf | Round | Status |
+| -- | -------- | ------- | ---- | ----- | ------ |
+| A6-H-01 | High | `finalize` reverts after `endTime`, so a launch without an early close always fails | 100 | 1 | Fixed (`e4a69df`) |
+| A6-H-02 | High | Launch-epoch proposals count only escrowed power, so one holder passes any proposal | 90 | 1 | Fixed (`e4a69df`) |
+| A6-H-03 | High | A curator claim credits the claimed staked shares a second time | 90 | 2 | Open |
+| A6-M-01 | Medium | A 30-minute pool crash shrinks the redeem supply and over-pays the basket | 75 | 1 | Open |
+| A6-M-02 | Medium | Right after seeding the position TWAP covers seconds; one block sets redeem supply | 75 | 1 | Open |
+| A6-M-03 | Medium | Dust bribes fill the 32 reward-token slots; later bribes in new tokens revert | 90 | 1 | Open |
+| A6-M-04 | Medium | Compliance uses live supply, so mint → flip → redeem fails an honest curator | 80 | 1 | Open |
+| A6-M-05 | Medium | A flip in the launch epoch uses up every curator's grace week | 80 | 1 | Fixed (`e4a69df`) |
+| A6-M-06 | Medium | One premium reading prices up to 8 h of staking yield; caller picks the moment | 80 | 1 | Open |
+| A6-M-07 | Medium | One paused / blacklisting basket token blocks every redeem | 80 | 1 | Open |
+| A6-M-08 | Medium | After `setGovernor`, bribers refund bribes that voters already claimed | 75 | 1 | Open |
+| A6-M-09 | Medium | `stake` moves the caller's launch lock onto any receiver | 85 | 1 | Open |
+| A6-M-10 | Medium | Anyone can mint to any receiver and put a lock and a boost on it | 85 | 2 | Open |
+| A6-M-11 | Medium | A stake made while NAV has no price takes pot drip it did not earn | 80 | 2 | Open |
+| A6-M-12 | Medium | One stale basket price blocks every redeem while the reserve holds value | 80 | 2 | Open |
+| A6-M-13 | Medium | The price keeper moves a hub price without limit by repeating pushes | 75 | 2 | Open |
+| A6-M-14 | Medium | Other staked shares shield a boost after its minted shares are sold | 75 | 2 | Open |
+| A6-L-01 | Low | A bribe posted before a failed launch can never be refunded | 80 | 1 | Open |
+| A6-L-02 | Low | A reward token whose balance drops below `_reserved` blocks flip and curator changes | 75 | 1 | Fixed (`5db4443`) |
+| A6-L-03 | Low | A mint at NAV after a 30-minute dump is charged at the TWAP pool reading | 65 | 1 | Open |
+| A6-L-04 | Low | Before seeding, every rebalance swap skips the daily volume cap (manager-only) | 75 | 1 | Open |
+| A6-L-05 | Low | The auction rate rounds down, so some lots start at the floor price | 75 | 2 | Open |
+| A6-L-06 | Low | The pool opens at the close price after the basket has moved | 75 | 2 | Open |
+| A6-L-07 | Low | A tiny direct mint makes a boost that never ends | 75 | 2 | Open |
+| A6-L-08 | Low | A replaced protocol curator keeps the protocol vote on open proposals | 70 | 2 | Open |
 
 ---
 
