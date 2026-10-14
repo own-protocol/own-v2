@@ -1,6 +1,6 @@
 # Own Protocol v2 — Audit Report & Remediation Status (Pass 6)
 
-**Branch:** `money-market-funds` · **First audited:** `3a96ffe` (2026-10-06) · **Re-audited:** `9fe95f7` (2026-10-13) · **Last updated:** 2026-10-13
+**Branch:** `money-market-funds` · **First audited:** `3a96ffe` (2026-10-06) · **Re-audited:** `9fe95f7` (2026-10-13) · **Last updated:** 2026-10-14
 
 Two rounds of the multi-agent solidity-auditor (v4, 12-agent pipeline: 9 specialty attackers + 3
 gap-hunters), each run in **loop mode with 2 passes**: pass 2 was handed what pass 1 found and
@@ -89,17 +89,17 @@ M-01, M-02, M-03, M-04, M-06, M-08 and L-04 again on its own.
 | Severity | Total | Fixed | Open | Acknowledged | By design |
 | -------- | ----- | ----- | ---- | ------------ | --------- |
 | Critical | 0 | 0 | 0 | 0 | 0 |
-| High     | 3 | 2 | 1 | 0 | 0 |
+| High     | 3 | 3 | 0 | 0 | 0 |
 | Medium   | 14 | 1 | 13 | 0 | 0 |
 | Low      | 8 | 1 | 7 | 0 | 0 |
 | Info     | 0 | 0 | 0 | 0 | 0 |
-| **Total** | **25** | **4** | **21** | **0** | **0** |
+| **Total** | **25** | **5** | **20** | **0** | **0** |
 
 | ID | Severity | Finding | Conf | Status |
 | -- | -------- | ------- | ---- | ------ |
 | A6-H-01 | High | `finalize` reverts after `endTime`, so a launch without an early close always fails | 100 | Fixed (`e4a69df`) |
 | A6-H-02 | High | Launch-epoch proposals count only escrowed power, so one holder passes any proposal | 90 | Fixed (`e4a69df`) |
-| A6-H-03 | High | A curator claim credits the claimed staked shares a second time | 90 | Open |
+| A6-H-03 | High | A curator claim credits the claimed staked shares a second time | 90 | Fixed (`10998a7`) |
 | A6-M-01 | Medium | A 30-minute pool crash shrinks the redeem supply and over-pays the basket | 75 | Open |
 | A6-M-02 | Medium | Right after seeding the position TWAP covers seconds; one block sets redeem supply | 75 | Open |
 | A6-M-03 | Medium | Dust bribes fill the 32 reward-token slots; later bribes in new tokens revert | 90 | Open |
@@ -125,7 +125,7 @@ M-01, M-02, M-03, M-04, M-06, M-08 and L-04 again on its own.
 
 ---
 
-## A6-H-03 — A curator claim credits the claimed staked shares a second time (High, Open, new 2026-10-13)
+## A6-H-03 — A curator claim credits the claimed staked shares a second time (High, Fixed 2026-10-14)
 
 `FundCurators.claim` (`src/funds/FundCurators.sol:176`) with `notifyYield` (`:133`). Round 2,
 pass 2: 7 of 12 agents, independently.
@@ -161,8 +161,11 @@ shares all owed: X 3,000, Y 3,000, protocol 3,000):
    Early claimers take later claimers' shares, every claim in a fresh block widens the gap, and
    `_forfeit` (curator removal) reverts once a vest exceeds the balance.
 
-**Suggested fix:** in `claim`, move `_reserved[token] -= amount;` after the `safeTransfer`, as
-`_forfeit` does. The A6-M-10 fix (no mints to fund modules) also removes the cheap trigger.
+**Fix (`10998a7`, 2026-10-14):** `claim` now lowers `_reserved[token]` after the `safeTransfer`, as
+`_forfeit` does, so the callback sees the claimed shares as still reserved. Test
+`test_claim_boostedModule_doesNotRecountClaimedShares` gifts the module a boosted mint, claims, and
+checks that what the module owes equals what it holds (it failed by ~2.13 shares before the fix).
+The cheap trigger itself (mints to fund modules) is A6-M-10, still open.
 
 ## A6-M-01 — A 30-minute pool crash shrinks the redeem supply and over-pays the basket (Medium, Open)
 
