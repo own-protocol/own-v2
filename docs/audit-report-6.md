@@ -90,18 +90,18 @@ M-01, M-02, M-03, M-04, M-06, M-08 and L-04 again on its own.
 | -------- | ----- | ----- | ---- | ------------ | --------- |
 | Critical | 0 | 0 | 0 | 0 | 0 |
 | High     | 3 | 3 | 0 | 0 | 0 |
-| Medium   | 14 | 1 | 13 | 0 | 0 |
-| Low      | 8 | 1 | 7 | 0 | 0 |
+| Medium   | 14 | 3 | 11 | 0 | 0 |
+| Low      | 8 | 2 | 6 | 0 | 0 |
 | Info     | 0 | 0 | 0 | 0 | 0 |
-| **Total** | **25** | **5** | **20** | **0** | **0** |
+| **Total** | **25** | **8** | **17** | **0** | **0** |
 
 | ID | Severity | Finding | Conf | Status |
 | -- | -------- | ------- | ---- | ------ |
 | A6-H-01 | High | `finalize` reverts after `endTime`, so a launch without an early close always fails | 100 | Fixed (`e4a69df`) |
 | A6-H-02 | High | Launch-epoch proposals count only escrowed power, so one holder passes any proposal | 90 | Fixed (`e4a69df`) |
 | A6-H-03 | High | A curator claim credits the claimed staked shares a second time | 90 | Fixed (`10998a7`) |
-| A6-M-01 | Medium | A 30-minute pool crash shrinks the redeem supply and over-pays the basket | 75 | Open |
-| A6-M-02 | Medium | Right after seeding the position TWAP covers seconds; one block sets redeem supply | 75 | Open |
+| A6-M-01 | Medium | A 30-minute pool crash shrinks the redeem supply and over-pays the basket | 75 | Fixed (`fbde008`) |
+| A6-M-02 | Medium | Right after seeding the position TWAP covers seconds; one block sets redeem supply | 75 | Fixed (`fbde008`) |
 | A6-M-03 | Medium | Dust bribes fill the 32 reward-token slots; later bribes in new tokens revert | 90 | Open |
 | A6-M-04 | Medium | Compliance uses live supply, so mint → flip → redeem fails an honest curator | 80 | Open |
 | A6-M-05 | Medium | A flip in the launch epoch uses up every curator's grace week | 80 | Fixed (`e4a69df`) |
@@ -116,7 +116,7 @@ M-01, M-02, M-03, M-04, M-06, M-08 and L-04 again on its own.
 | A6-M-14 | Medium | Other staked shares shield a boost after its minted shares are sold | 75 | Open |
 | A6-L-01 | Low | A bribe posted before a failed launch can never be refunded | 80 | Open |
 | A6-L-02 | Low | A reward token whose balance drops below `_reserved` blocks flip and curator changes | 75 | Fixed (`5db4443`) |
-| A6-L-03 | Low | A mint at NAV after a 30-minute dump is charged at the TWAP pool reading | 65 | Open |
+| A6-L-03 | Low | A mint at NAV after a 30-minute dump is charged at the TWAP pool reading | 65 | Fixed (`fbde008`) |
 | A6-L-04 | Low | Before seeding, every rebalance swap skips the daily volume cap (manager-only) | 75 | Open |
 | A6-L-05 | Low | The auction rate rounds down, so some lots start at the floor price | 75 | Open |
 | A6-L-06 | Low | The pool opens at the close price after the basket has moved | 75 | Open |
@@ -167,7 +167,7 @@ shares all owed: X 3,000, Y 3,000, protocol 3,000):
 checks that what the module owes equals what it holds (it failed by ~2.13 shares before the fix).
 The cheap trigger itself (mints to fund modules) is A6-M-10, still open.
 
-## A6-M-01 — A 30-minute pool crash shrinks the redeem supply and over-pays the basket (Medium, Open)
+## A6-M-01 — A 30-minute pool crash shrinks the redeem supply and over-pays the basket (Medium, Fixed 2026-10-14)
 
 `Fund.redeem` (`src/funds/Fund.sol:290`) → `_redeemQuote` → `_poolAndSupplyAt` (`:837`) →
 `FundHook.positionAmounts` (`src/funds/FundHook.sol:434`) at the 30-minute TWAP tick. Round 1:
@@ -186,11 +186,15 @@ repeatable every ~60 minutes, paid by remaining holders. The open question is co
 attacker must keep the pool crashed for 30 minutes against arbitrage, and an arb who buys the
 cheap tokens and redeems also pushes the TWAP back. Not run as a PoC.
 
-**Suggested fix:** for redeem (and mint), count the pool's fund tokens as the larger of the TWAP
-and spot amounts, i.e. use the smaller resulting `supply` only in the direction that cannot
-over-pay, or price the basket legs with the same cap logic the USDG leg already has.
+**Fix (`fbde008`, 2026-10-14):** `FundHook.positionBounds` splits the fund's position at the TWAP
+tick and at the spot tick; redeem (and `previewRedeem`) takes the lower USDG and the lower fund-token
+amount, mint takes the higher of each. A move held past the window and reversed, or one made inside
+a block, moves only one of the two readings. Views and valuation keep the TWAP. Tests in
+`test/unit/FundPoolReading.t.sol` fail on the old code (redeem paid ~36% over fair; a mint at NAV was
+charged about half) and pass now. Residual: a same-block spot push can raise what a mint costs, up
+to the minter's approval (the direct mint already prices at max(spot, TWAP)).
 
-## A6-M-02 — Right after seeding the position TWAP covers seconds, so one block sets the redeem supply (Medium, Open)
+## A6-M-02 — Right after seeding the position TWAP covers seconds, so one block sets the redeem supply (Medium, Fixed 2026-10-14)
 
 `FundHook._positionTick` (`src/funds/FundHook.sol:632`) and `_twap` (`:639`). Round 1:
 math-precision, first-principles (PoC), invariant. Round 2: raised again as a lead
@@ -205,8 +209,9 @@ holders. Precondition: unlocked fund tokens at seed time, i.e. `depositorLock ==
 `FundLaunch.seedPool` (manager or admin) runs after `depositorUnlockAt` (depositor tokens are
 locked 7 days by default).
 
-**Suggested fix:** until `POSITION_TWAP_WINDOW` of history exists, use the seed tick (or block
-the pool slice of redeem/mint).
+**Fix (`fbde008`, 2026-10-14):** closed by the A6-M-01 fix: the one-second push leaves spot fair by
+the redeem, so the lower reading is spot. The young-pool TWAP itself is unchanged (still a short
+window right after seeding), which matters only for views and valuation.
 
 ## A6-M-03 — Dust bribes fill the 32 reward-token slots; later bribes in new tokens revert (Medium, Open)
 
@@ -464,7 +469,7 @@ exit; the cut has already gone to the curators module.
 **Suggested fix:** revert `postBribe` (and `postListingBribe`) until `launched`, or refund when
 the launch status is Failed.
 
-## A6-L-03 — A mint at NAV after a 30-minute dump is charged at the TWAP pool reading (Low, Open)
+## A6-L-03 — A mint at NAV after a 30-minute dump is charged at the TWAP pool reading (Low, Fixed 2026-10-14)
 
 `Fund._mintQuote` (`src/funds/Fund.sol:605`) and `_mintAmounts` (`:644`). Round 1:
 economic-security (finding at 65), invariant (lead).
@@ -478,7 +483,8 @@ TWAP-valued pool USDG (which scales with √price) and supply are off in the min
 100 bps); profitable at `poolUsdgBps` 3000–5000 or fee 10 bps. A NAV mint is locked 180 days but
 can be redeemed at once through `FundStaking.redeem`.
 
-**Suggested fix:** the A6-M-01 fix shape (charge the larger of the spot and TWAP pool USDG).
+**Fix (`fbde008`, 2026-10-14):** closed by the A6-M-01 fix: a mint takes the higher pool USDG and
+the higher pool fund-token amount of the TWAP and spot readings.
 
 ## A6-L-04 — Before seeding, every rebalance swap skips the daily volume cap (Low, Open)
 
