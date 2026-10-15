@@ -378,7 +378,7 @@ contract FundFactoryTest is FundTestBase {
 
     function test_createFund_initializesFundWithItsParams() public {
         CreateFundParams memory p = _defaultParams();
-        p.description = "A longer description that does not fit in one storage slot, to cover long strings.";
+        p.info.description = "A longer description that does not fit in one storage slot, to cover long strings.";
         p.feeBps = 250;
         vm.prank(admin);
         Fund f = Fund(factory.createFund(p).fund);
@@ -388,7 +388,7 @@ contract FundFactoryTest is FundTestBase {
         vm.prank(address(factory));
         Fund ref = Fund(address(new BeaconProxy(fundBeacon, abi.encodeCall(IFund.initialize, (p)))));
         assertEq(f.factory(), ref.factory());
-        assertEq(keccak256(abi.encode(f.metadata())), keccak256(abi.encode(ref.metadata())));
+        assertEq(keccak256(abi.encode(f.getFundInfo())), keccak256(abi.encode(ref.getFundInfo())));
         assertEq(f.manager(), ref.manager());
         assertEq(f.feeBps(), ref.feeBps());
         assertEq(f.feeBps(), 250);
@@ -400,7 +400,7 @@ contract FundFactoryTest is FundTestBase {
             assertEq(f.targetWeightBps(assets[i]), ref.targetWeightBps(assets[i]));
             assertEq(f.targetWeightBps(assets[i]), p.weightsBps[i]);
         }
-        assertEq(f.description(), p.description);
+        assertEq(f.getFundInfo().info.description, p.info.description);
     }
 
     function test_setProtocolCurator() public {

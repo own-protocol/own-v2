@@ -33,8 +33,9 @@ Updated 2026-10-12: the premium yield redesign (spec `plans/fund-premium-rebate-
 ## Launch
 
 1. **Create.** `createFund` is open to admins and whitelisted launchers (the whitelist
-   is on and empty by default, so only Own launches). Own sets the name, symbol, logo and
-   description, the basket and starting weights, the manager (the Own keeper), the curators (up to
+   is on and empty by default, so only Own launches). Own sets the name, symbol and fund info (logo,
+   description, website, X, Telegram and Discord links; all of it, with the platform metadata,
+   reads back in one call, `getFundInfo()`), the basket and starting weights, the manager (the Own keeper), the curators (up to
    the cap; the protocol curator is a curator of every fund on top) and the fund fee (default 1%,
    at most 10%), the minimum curator stake, the yield tiers (empty takes the factory's), the minimum raise, the target raise (optional), the pool's USDG share (default 10%, at
    most 50%), the launch supply (default 100M) and the launch window (default 7 days, 1 to 30

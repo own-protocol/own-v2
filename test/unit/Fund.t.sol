@@ -7,7 +7,7 @@ import {IFund} from "../../src/interfaces/IFund.sol";
 import {IFundFactory} from "../../src/interfaces/IFundFactory.sol";
 import {IFundHook} from "../../src/interfaces/IFundHook.sol";
 import {IFundStaking} from "../../src/interfaces/IFundStaking.sol";
-import {CreateFundParams, FundMetadata, PlatformMetadata} from "../../src/interfaces/types/FundTypes.sol";
+import {CreateFundParams, FundInfo, FundMetadata, PlatformMetadata} from "../../src/interfaces/types/FundTypes.sol";
 import {FundTestBase} from "../helpers/FundTestBase.sol";
 import {MockSwapRouter} from "../helpers/MockSwapRouter.sol";
 import {BeaconProxy} from "@openzeppelin/contracts/proxy/beacon/BeaconProxy.sol";
@@ -1037,7 +1037,7 @@ contract FundTest is FundTestBase {
         assertEq(fund.manager(), keeper);
     }
 
-    function test_metadata_fundFieldsPlusPlatform() public {
+    function test_getFundInfo_fundFieldsPlusPlatform() public {
         vm.prank(admin);
         factory.setPlatformMetadata(
             PlatformMetadata({
@@ -1046,42 +1046,92 @@ contract FundTest is FundTestBase {
                 url: "https://own.money"
             })
         );
-        FundMetadata memory m = fund.metadata();
+        FundMetadata memory m = fund.getFundInfo();
         assertEq(m.name, "Own Curated Fund 1");
         assertEq(m.symbol, "OCF1");
-        assertEq(m.logoURI, "ipfs://ocf1-logo");
-        assertEq(m.description, "Robinhood Chain ecosystem tokens and stocks.");
+        assertEq(m.info.logo, "ipfs://ocf1-logo");
+        assertEq(m.info.description, "Robinhood Chain ecosystem tokens and stocks.");
+        assertEq(m.info.website, "");
+        assertEq(m.info.x, "https://x.com/owndotmoney");
+        assertEq(m.info.telegram, "https://t.me/owndotmoney");
+        assertEq(m.info.discord, "");
         assertEq(m.platform.name, "Own Curated Funds");
         assertEq(m.platform.url, "https://own.money");
     }
 
     function test_setMetadata_adminOnly() public {
         vm.prank(admin);
-        fund.setMetadata("Robin Fund", "ROBIN", "ipfs://robin", "New description");
+        FundInfo memory info = FundInfo({
+            logo: "ipfs://robin",
+            description: "New description",
+            website: "https://robin.fund",
+            x: "https://x.com/robin",
+            telegram: "https://t.me/robin",
+            discord: "https://discord.gg/robin"
+        });
+        vm.expectEmit(address(fund));
+        emit IFund.MetadataSet("Robin Fund", "ROBIN", info);
+        fund.setMetadata("Robin Fund", "ROBIN", info);
         assertEq(fund.name(), "Robin Fund");
         assertEq(fund.symbol(), "ROBIN");
-        assertEq(fund.logoURI(), "ipfs://robin");
-        assertEq(fund.description(), "New description");
+        assertEq(keccak256(abi.encode(fund.getFundInfo().info)), keccak256(abi.encode(info)));
 
         vm.prank(keeper);
         vm.expectRevert(IFund.NotAdmin.selector);
-        fund.setMetadata("X", "X", "", "");
+        fund.setMetadata("X", "X", info);
         vm.prank(curatorA);
         vm.expectRevert(IFund.NotAdmin.selector);
-        fund.setMetadata("X", "X", "", "");
+        fund.setMetadata("X", "X", info);
     }
 
     function test_setMetadata_emptyName_reverts() public {
         vm.prank(admin);
         vm.expectRevert(IFund.InvalidMetadata.selector);
-        fund.setMetadata("", "OCF1", "", "");
+        fund.setMetadata("", "OCF1", _noInfo());
     }
 
     function test_setMetadata_longSymbol_reverts() public {
         vm.prank(admin);
         vm.expectRevert(IFund.InvalidMetadata.selector);
-        fund.setMetadata("OCF1", "SEVENTEEN_CHARSXX", "", "");
+        fund.setMetadata("OCF1", "SEVENTEEN_CHARSXX", _noInfo());
     }
+
+    function test_setMetadata_longFields_revert() public {
+        string memory long257 = string(new bytes(257));
+        FundInfo memory info;
+        info.logo = string(new bytes(513));
+        vm.startPrank(admin);
+        vm.expectRevert(IFund.InvalidMetadata.selector);
+        fund.setMetadata("OCF1", "OCF1", info);
+        info.logo = "";
+        info.description = string(new bytes(2001));
+        vm.expectRevert(IFund.InvalidMetadata.selector);
+        fund.setMetadata("OCF1", "OCF1", info);
+        info.description = "";
+        info.website = long257;
+        vm.expectRevert(IFund.InvalidMetadata.selector);
+        fund.setMetadata("OCF1", "OCF1", info);
+        info.website = "";
+        info.x = long257;
+        vm.expectRevert(IFund.InvalidMetadata.selector);
+        fund.setMetadata("OCF1", "OCF1", info);
+        info.x = "";
+        info.telegram = long257;
+        vm.expectRevert(IFund.InvalidMetadata.selector);
+        fund.setMetadata("OCF1", "OCF1", info);
+        info.telegram = "";
+        info.discord = long257;
+        vm.expectRevert(IFund.InvalidMetadata.selector);
+        fund.setMetadata("OCF1", "OCF1", info);
+        info.discord = string(new bytes(256));
+        info.website = string(new bytes(256));
+        info.logo = string(new bytes(512));
+        info.description = string(new bytes(2000));
+        fund.setMetadata("OCF1", "OCF1", info);
+        vm.stopPrank();
+    }
+
+    function _noInfo() internal pure returns (FundInfo memory info) {}
 
     function test_setGovernor_zero_reverts() public {
         vm.prank(admin);

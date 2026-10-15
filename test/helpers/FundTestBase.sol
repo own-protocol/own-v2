@@ -146,8 +146,10 @@ abstract contract FundTestBase is Test {
     function _defaultParams() internal view returns (CreateFundParams memory p) {
         p.name = "Own Curated Fund 1";
         p.symbol = "OCF1";
-        p.logoURI = "ipfs://ocf1-logo";
-        p.description = "Robinhood Chain ecosystem tokens and stocks.";
+        p.info.logo = "ipfs://ocf1-logo";
+        p.info.description = "Robinhood Chain ecosystem tokens and stocks.";
+        p.info.x = "https://x.com/owndotmoney";
+        p.info.telegram = "https://t.me/owndotmoney";
         p.assets = new address[](3);
         p.assets[0] = address(net);
         p.assets[1] = address(pons);

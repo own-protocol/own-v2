@@ -3,7 +3,7 @@ pragma solidity 0.8.28;
 
 import {IFund} from "../../src/interfaces/IFund.sol";
 import {IFundStaking} from "../../src/interfaces/IFundStaking.sol";
-import {YieldPoint} from "../../src/interfaces/types/FundTypes.sol";
+import {FundInfo, YieldPoint} from "../../src/interfaces/types/FundTypes.sol";
 import {FundTestBase} from "../helpers/FundTestBase.sol";
 
 contract FundStakingTest is FundTestBase {
@@ -404,7 +404,7 @@ contract FundStakingTest is FundTestBase {
         assertEq(staking.name(), "Staked Own Curated Fund 1");
         assertEq(staking.symbol(), "sOCF1");
         vm.prank(admin);
-        fund.setMetadata("Robin Fund", "ROBIN", "", "");
+        fund.setMetadata("Robin Fund", "ROBIN", FundInfo("", "", "", "", "", ""));
         assertEq(staking.name(), "Staked Robin Fund");
         assertEq(staking.symbol(), "sROBIN");
     }

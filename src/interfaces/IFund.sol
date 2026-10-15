@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {CreateFundParams, FundMetadata, Valuation} from "./types/FundTypes.sol";
+import {CreateFundParams, FundInfo, FundMetadata, Valuation} from "./types/FundTypes.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 /// @title IFund — an Own Curated Fund token and the basket that backs it
@@ -130,11 +130,10 @@ interface IFund is IERC20 {
     event GovernorSet(address governor);
 
     /// @notice Emitted when the fund's metadata changes.
-    /// @param name        Name.
-    /// @param symbol      Symbol.
-    /// @param logoURI     Logo URI.
-    /// @param description Description.
-    event MetadataSet(string name, string symbol, string logoURI, string description);
+    /// @param name   Name.
+    /// @param symbol Symbol.
+    /// @param info   Logo, description and social links.
+    event MetadataSet(string name, string symbol, FundInfo info);
 
     /// @notice Emitted when minting is paused or unpaused.
     /// @param paused Whether minting is paused.
@@ -425,17 +424,11 @@ interface IFund is IERC20 {
         address governor_
     ) external;
 
-    /// @notice Update the fund's name, symbol, logo and description. Admin only.
-    /// @param name_        Name (1 to 64 bytes).
-    /// @param symbol_      Symbol (1 to 16 bytes).
-    /// @param logoURI_     Logo URI (at most 512 bytes).
-    /// @param description_ Description (at most 2 000 bytes).
-    function setMetadata(
-        string calldata name_,
-        string calldata symbol_,
-        string calldata logoURI_,
-        string calldata description_
-    ) external;
+    /// @notice Update the fund's name, symbol and info (logo, description, social links). Admin only.
+    /// @param name_   Name (1 to 64 bytes).
+    /// @param symbol_ Symbol (1 to 16 bytes).
+    /// @param info_   Logo, description and social links.
+    function setMetadata(string calldata name_, string calldata symbol_, FundInfo calldata info_) external;
 
     /// @notice Replace the manager. Admin only.
     /// @param manager_ New manager.
@@ -486,17 +479,10 @@ interface IFund is IERC20 {
     /// @return The previous governor (zero if never replaced).
     function previousGovernor() external view returns (address);
 
-    /// @notice Logo URI.
-    /// @return The URI.
-    function logoURI() external view returns (string memory);
-
-    /// @notice Fund description.
-    /// @return The description.
-    function description() external view returns (string memory);
-
-    /// @notice Full metadata: the fund's fields plus the platform's.
-    /// @return The metadata.
-    function metadata() external view returns (FundMetadata memory);
+    /// @notice Everything about the fund in one read: name, symbol, logo, description, social links
+    ///         and the platform's metadata.
+    /// @return The fund info.
+    function getFundInfo() external view returns (FundMetadata memory);
 
     /// @notice Launch module.
     /// @return The launch.

@@ -162,8 +162,7 @@ struct YieldPoint {
 /// @notice Everything Own chooses when creating a fund.
 /// @param name               Fund token name.
 /// @param symbol             Fund token symbol.
-/// @param logoURI            Logo URI.
-/// @param description        Description.
+/// @param info               Logo, description and social links.
 /// @param assets             Basket assets (each must have an oracle feed; USDG is not allowed).
 /// @param weightsBps         Starting target weight per asset; sums to 10 000.
 /// @param manager            The Own keeper that rebalances the basket.
@@ -181,8 +180,7 @@ struct YieldPoint {
 struct CreateFundParams {
     string name;
     string symbol;
-    string logoURI;
-    string description;
+    FundInfo info;
     address[] assets;
     uint16[] weightsBps;
     address manager;
@@ -273,16 +271,30 @@ struct PlatformMetadata {
     string url;
 }
 
-/// @notice A fund's full metadata: its own fields plus the platform's.
-/// @param name        Fund token name.
-/// @param symbol      Fund token symbol.
-/// @param logoURI     Logo URI.
-/// @param description Fund description.
-/// @param platform    Platform metadata.
+/// @notice A fund's descriptive fields, stored as one value.
+/// @param logo        Logo URI (at most 512 bytes).
+/// @param description Description (at most 2 000 bytes).
+/// @param website     Website link (at most 256 bytes, as is each social link).
+/// @param x           X link.
+/// @param telegram    Telegram link.
+/// @param discord     Discord link.
+struct FundInfo {
+    string logo;
+    string description;
+    string website;
+    string x;
+    string telegram;
+    string discord;
+}
+
+/// @notice Everything about a fund in one read: its token name and symbol, its info and the platform's.
+/// @param name     Fund token name.
+/// @param symbol   Fund token symbol.
+/// @param info     Logo, description and social links.
+/// @param platform Platform metadata.
 struct FundMetadata {
     string name;
     string symbol;
-    string logoURI;
-    string description;
+    FundInfo info;
     PlatformMetadata platform;
 }

@@ -11,6 +11,7 @@ import {
     BasketEntry,
     CreateFundParams,
     DUST_BPS,
+    FundInfo,
     FundMetadata,
     PremiumConfig,
     PremiumConfigLib,
@@ -18,6 +19,7 @@ import {
     ValuationLib
 } from "../interfaces/types/FundTypes.sol";
 import {BPS, PRECISION} from "../interfaces/types/Types.sol";
+import {FundMetadataLib} from "./libraries/FundMetadataLib.sol";
 import {FundRebalance} from "./libraries/FundRebalance.sol";
 import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
@@ -106,11 +108,7 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
     /// @inheritdoc IFund
     address public override governor;
 
-    /// @inheritdoc IFund
-    string public override logoURI;
-
-    /// @inheritdoc IFund
-    string public override description;
+    FundInfo private _info;
 
     /// @inheritdoc IFund
     mapping(address account => uint256) public override launchLocked;
@@ -162,7 +160,7 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
         // The implementation is built for one USDG; only a factory using the same one may deploy it.
         if (IFundFactory(msg.sender).usdg() != _usdg) revert NotFactory();
         factory = msg.sender;
-        _setMetadata(params.name, params.symbol, params.logoURI, params.description);
+        _setMetadata(params.name, params.symbol, params.info);
         manager = params.manager;
         emit ManagerSet(params.manager);
         _setFee(params.feeBps == 0 ? DEFAULT_FEE_BPS : params.feeBps);
@@ -398,10 +396,9 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
     function setMetadata(
         string calldata name_,
         string calldata symbol_,
-        string calldata logoURI_,
-        string calldata description_
+        FundInfo calldata info_
     ) external override onlyAdmin {
-        _setMetadata(name_, symbol_, logoURI_, description_);
+        _setMetadata(name_, symbol_, info_);
     }
 
     /// @inheritdoc IFund
@@ -459,12 +456,11 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
     }
 
     /// @inheritdoc IFund
-    function metadata() external view override returns (FundMetadata memory) {
+    function getFundInfo() external view override returns (FundMetadata memory) {
         return FundMetadata({
             name: _fundName,
             symbol: _fundSymbol,
-            logoURI: logoURI,
-            description: description,
+            info: _info,
             platform: IFundFactory(factory).platformMetadata()
         });
     }
@@ -785,23 +781,10 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
         }
     }
 
-    function _setMetadata(
-        string calldata name_,
-        string calldata symbol_,
-        string calldata logoURI_,
-        string calldata description_
-    ) internal {
-        uint256 nameLen = bytes(name_).length;
-        uint256 symbolLen = bytes(symbol_).length;
-        if (
-            nameLen == 0 || nameLen > 64 || symbolLen == 0 || symbolLen > 16 || bytes(logoURI_).length > 512
-                || bytes(description_).length > 2000
-        ) revert InvalidMetadata();
+    function _setMetadata(string calldata name_, string calldata symbol_, FundInfo calldata info_) internal {
+        FundMetadataLib.set(_info, name_, symbol_, info_);
         _fundName = name_;
         _fundSymbol = symbol_;
-        logoURI = logoURI_;
-        description = description_;
-        emit MetadataSet(name_, symbol_, logoURI_, description_);
     }
 
     function _setMintConfig(uint32 lock, int16 adjustmentBps, uint32 maxPremiumBps_) internal {
