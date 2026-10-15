@@ -1,6 +1,6 @@
 # Own Protocol v2 — Audit Report & Remediation Status (Pass 6)
 
-**Branch:** `money-market-funds` · **First audited:** `3a96ffe` (2026-10-06) · **Re-audited:** `9fe95f7` (2026-10-13), `68aef25` (2026-10-14) · **Last updated:** 2026-10-14
+**Branch:** `money-market-funds` · **First audited:** `3a96ffe` (2026-10-06) · **Re-audited:** `9fe95f7` (2026-10-13), `68aef25` (2026-10-14) · **Last updated:** 2026-10-15
 
 Three rounds of the multi-agent solidity-auditor (v4, 12-agent pipeline: 9 specialty attackers + 3
 gap-hunters), each run in **loop mode with 2 passes**: pass 2 was handed what pass 1 found and
@@ -19,8 +19,8 @@ told to spend its effort on new ground while still re-reporting anything it hit 
   them, findings that fall under A6-M-14's by-design call were left out, and only fresh, valid
   items were added (A6-M-15 to A6-M-18, A6-L-09, A6-L-10 and the leads marked *new, round 3*).
 
-Every item is **Open** until it is reviewed and a fix is chosen. Nothing in this update changes
-contract code.
+Every item was reviewed with Bhargav: each is fixed (with its commit), acknowledged or by design.
+The round-3 fixes are in `9fb7cee`.
 
 Each finding was traced against the source by the orchestrator before booking. The severity
 column is the orchestrator's grading; the skill's confidence score is shown per finding. The
@@ -60,7 +60,18 @@ Fable 5.1, Sonnet 5.5 and Opus 4.8 were never needed. All three rounds used the 
 "print reasoning markers" rule reworded to "apply the method, keep the working private, return
 only FINDING and LEAD blocks", which is what stopped the round-1 blocks.
 
-### Changes in this update (2026-10-14, round 3)
+### Changes in this update (2026-10-15, round 3 fixes)
+
+Reviewed with Bhargav item by item. **Fixed in `9fb7cee`:** A6-M-16 (skip list on the staking
+redeem), A6-M-17 (the previous governor's escrow still counts; zero transfers skip the lock and
+boost logic) and A6-M-18 (each epoch's supply is fixed when it opens). **Downgraded to Low:**
+A6-M-15 (outages are expected to last a day at most, so a late stake takes at most ~0.07% to
+0.13%; acknowledged, no change) and A6-M-18 (it needs one holder with both a small voting stake
+and a large silent one, and the gauge limits cap the swing). **Acknowledged, no contract change:**
+A6-L-09 (the app limits what a mint can pull) and A6-L-10 (the admin setting sets the real
+bound). Report 6 has no open items.
+
+### Changes in the previous update (2026-10-14, round 3)
 
 Nothing in report 6 was open before this round (24 fixed, A6-M-14 by design). Round 3 raised these
 report-6 items again, so they are not booked twice: the leads on `addPot` restarting the pot drip,
@@ -118,10 +129,10 @@ M-01, M-02, M-03, M-04, M-06, M-08 and L-04 again on its own.
 | -------- | ----- | ----- | ---- | ------------ | --------- |
 | Critical | 0 | 0 | 0 | 0 | 0 |
 | High     | 3 | 3 | 0 | 0 | 0 |
-| Medium   | 18 | 13 | 4 | 0 | 1 |
-| Low      | 10 | 8 | 2 | 0 | 0 |
+| Medium   | 16 | 15 | 0 | 0 | 1 |
+| Low      | 12 | 9 | 0 | 3 | 0 |
 | Info     | 0 | 0 | 0 | 0 | 0 |
-| **Total** | **31** | **24** | **6** | **0** | **1** |
+| **Total** | **31** | **27** | **0** | **3** | **1** |
 
 | ID | Severity | Finding | Conf | Status |
 | -- | -------- | ------- | ---- | ------ |
@@ -142,10 +153,10 @@ M-01, M-02, M-03, M-04, M-06, M-08 and L-04 again on its own.
 | A6-M-12 | Medium | One stale basket price blocks every redeem while the reserve holds value | 80 | Fixed (`bcea925`) |
 | A6-M-13 | Medium | The price keeper moves a hub price without limit by repeating pushes | 75 | Fixed (`d06dace`) |
 | A6-M-14 | Medium | Other staked shares shield a boost after its minted shares are sold | 75 | By design |
-| A6-M-15 | Medium | A stake made while no premium price exists takes yield for the whole wait | 95 | Open |
-| A6-M-16 | Medium | A NAV-locked staker cannot exit while one basket token is frozen | 90 | Open |
-| A6-M-17 | Medium | After a governor swap, a NAV-locked staker clears its lock and anyone burns a boost | 85 | Open |
-| A6-M-18 | Medium | Unstake and restake in one block lower the recorded epoch supply | 80 | Open |
+| A6-M-15 | Low (was Medium) | A stake made while no premium price exists takes yield for the whole wait | 95 | Acknowledged |
+| A6-M-16 | Medium | A NAV-locked staker cannot exit while one basket token is frozen | 90 | Fixed (`9fb7cee`) |
+| A6-M-17 | Medium | After a governor swap, a NAV-locked staker clears its lock and anyone burns a boost | 85 | Fixed (`9fb7cee`) |
+| A6-M-18 | Low (was Medium) | Unstake and restake in one block lower the recorded epoch supply | 80 | Fixed (`9fb7cee`) |
 | A6-L-01 | Low | A bribe posted before a failed launch can never be refunded | 80 | Fixed (`6c6fb91`) |
 | A6-L-02 | Low | A reward token whose balance drops below `_reserved` blocks flip and curator changes | 75 | Fixed (`5db4443`) |
 | A6-L-03 | Low | A mint at NAV after a 30-minute dump is charged at the TWAP pool reading | 65 | Fixed (`fbde008`) |
@@ -154,8 +165,8 @@ M-01, M-02, M-03, M-04, M-06, M-08 and L-04 again on its own.
 | A6-L-06 | Low | The pool opens at the close price after the basket has moved | 75 | Fixed (`6c6fb91`) |
 | A6-L-07 | Low | A tiny direct mint makes a boost that never ends | 75 | Fixed (`6c6fb91`) |
 | A6-L-08 | Low | A replaced protocol curator keeps the protocol vote on open proposals | 70 | Fixed (`6c6fb91`) |
-| A6-L-09 | Low | A mint at NAV has no input limit, so a trade just before it raises its cost | 80 | Open |
-| A6-L-10 | Low | Split pushes let the keeper move a hub price about 35% an hour | 80 | Open |
+| A6-L-09 | Low | A mint at NAV has no input limit, so a trade just before it raises its cost | 80 | Acknowledged |
+| A6-L-10 | Low | Split pushes let the keeper move a hub price about 35% an hour | 80 | Acknowledged |
 
 ---
 
@@ -580,7 +591,7 @@ premium already went to backing, and a forfeit only hands holders a windfall. St
 interchangeable, so the sale can as well be read as selling the older ones. Repeating mint and
 sell grows TVL each time; its only effect on others is selling pressure on the pool premium.
 
-## A6-M-15 — A stake made while no premium price exists takes yield for the whole wait (Medium, Open, new 2026-10-14)
+## A6-M-15 — A stake made while no premium price exists takes yield for the whole wait (Low, downgraded from Medium, Acknowledged 2026-10-15)
 
 `FundStaking._accrue` (`src/funds/FundStaking.sol:506`, early return at `:522`). Round 3: 9 of
 12 agents in pass 1 and 9 in pass 2, independently. PoC run (forge 1.3.5, scratch copy).
@@ -617,7 +628,14 @@ it (or, before any reading exists, move `lastAccrual` to now and pay nothing), s
 never earns for time before it joined; and call `IFundStaking.accrue()` at the start of
 `Fund.mint` and `Fund._redeem`.
 
-## A6-M-16 — A NAV-locked staker cannot exit while one basket token is frozen (Medium, Open, new 2026-10-14)
+**Acknowledged (Bhargav, 2026-10-15):** outages are expected to last a few hours, a day at most.
+At a day, a stake made just before the price returns takes about 0.07% of itself at the 24% tier
+(0.13% at 48%). Paying the wait as it passes, at the last rate read, would instead pay stakers the
+old rate if the premium fell during the outage; Bhargav preferred keeping the A6-M-06 behaviour
+(the clock waits and the stretch is paid once a price is back). The `Fund.mint` / `_redeem` path
+is left to the hourly keeper accrual. Downgraded to Low.
+
+## A6-M-16 — A NAV-locked staker cannot exit while one basket token is frozen (Medium, Fixed 2026-10-15)
 
 `FundStaking.redeem` (`src/funds/FundStaking.sol:230`). Round 3: 2 agents in pass 1, 5 in pass 2.
 PoC run.
@@ -637,7 +655,12 @@ of their lock.
 **Suggested fix:** give `FundStaking.redeem` a skip list and forward it to
 `IFund.redeemSkipping` (a new function or an extra argument).
 
-## A6-M-17 — After a governor swap, a NAV-locked staker clears its permanent lock, and anyone can burn a staker's boost (Medium, Open, new 2026-10-14)
+**Fix (`9fb7cee`, 2026-10-15):** `FundStaking.redeem` takes a `skip` list and redeems through
+`Fund.redeemSkipping`, so a locked staker can leave a frozen token's slice in the fund, as plain
+holders already can. Callers pass an empty list for the whole basket. Test
+`test_navMint_redeemSkipsAFrozenToken`.
+
+## A6-M-17 — After a governor swap, a NAV-locked staker clears its permanent lock, and anyone can burn a staker's boost (Medium, Fixed 2026-10-15)
 
 `FundStaking._held` (`src/funds/FundStaking.sol:650`) via `_update` (`:729`). Round 3: 1 agent
 in pass 1, 4 in pass 2. PoC run for the lock path. Round 1 and 2 had this root as a lead ("after
@@ -664,7 +687,19 @@ already plans for (A6-M-08).
 record the governor that holds them) and count that in `_held`; return early from the lock and
 forfeit logic when `value == 0`.
 
-## A6-M-18 — Unstake and restake in one block lower the recorded epoch supply (Medium, Open, new 2026-10-14)
+**Fix (`9fb7cee`, 2026-10-15, Bhargav's direction: keep `setGovernor`; stakers in the old governor can
+only move or redeem):** `Fund.setGovernor` keeps the replaced governor as `previousGovernor`, and
+`_held` adds the account's escrow in it, so a NAV-locked staker withdrawing from the old governor
+is still locked (it can only move into the new governor or redeem at NAV) and its boost stays.
+A second swap reverts `PreviousGovernorHoldsStake` while the governor before the current one still
+holds staked shares (swapping back to it is allowed), so no escrow ever drops out of the count.
+`_update` returns straight after the transfer when `value == 0`, so a zero transfer never touches
+a lock or a boost. Note: anyone can send stray staked shares to an old governor and so delay a
+second swap; a governor beacon upgrade can release them. Tests
+`test_govSwap_oldEscrowKeepsTheNavLock`, `test_govSwap_oldEscrowKeepsTheBoost`,
+`test_zeroTransfer_neverTouchesTheBoost`, `test_setGovernor_waitsUntilTheGovernorBeforeIsEmpty`.
+
+## A6-M-18 — Unstake and restake in one block lower the recorded epoch supply (Low, downgraded from Medium, Fixed 2026-10-15)
 
 `FundStaking._recordSupply` (`src/funds/FundStaking.sol:754`), read by `FundGovernor._castVotes`
 (through `_stakedSupplyNow`) and `ProposalBook.propose`. Round 3 pass 2: asymmetry. Rounds 1 and
@@ -688,6 +723,16 @@ Only matters while public curation is on (new funds start off).
 **Suggested fix:** cap the current epoch at the supply it opened with, not at the running
 minimum, so a mint can restore what a burn removed in the same epoch but never go above the
 opening supply.
+
+**Fix (`9fb7cee`, 2026-10-15, downgraded to Low):** the suggested fix above has a hole (unstake,
+wait for the flip, restake), so the epoch's supply is now fixed when it opens:
+`_recordSupply` keeps the current epoch's value and writes only the next one. No stake or unstake
+during an epoch moves its total; new stake still counts from the next epoch. Side effect,
+accepted: stake that leaves mid-epoch counts as silent (curator) weight until the epoch ends, as
+in standard snapshot voting. Downgraded because the gain needs one holder with both a small
+voting stake and a large silent one, it saves only the escrow lock and the warning, and the gauge
+limits (5 points a week, 25% cap, Own's listing veto) cap it. Test
+`test_supplyAt_fixedWhenTheEpochOpens`.
 
 ## A6-L-01 — A bribe posted before a failed launch can never be refunded (Low, Fixed 2026-10-14)
 
@@ -824,7 +869,7 @@ the vote, half of the 20% quorum) on every open List or Delist proposal, and P2 
 snapshot's first entry (the protocol curator at the proposal) gets nothing unless it is still the
 protocol curator. Test `test_castVote_replacedProtocolCuratorVotesNothing`.
 
-## A6-L-09 — A mint at NAV has no input limit, so a trade just before it raises its cost (Low, Open, new 2026-10-14)
+## A6-L-09 — A mint at NAV has no input limit, so a trade just before it raises its cost (Low, Acknowledged 2026-10-15)
 
 `Fund.mint` (`src/funds/Fund.sol:236`) → `_mintQuote` (`:608`) → `_boundedPoolAndSupply(hook,
 true)` (`:834`). Round 3: 3 agents in pass 2.
@@ -843,7 +888,13 @@ user who approved exactly the `previewMint` amounts gets a revert instead.
 **Suggested fix:** add per-asset and USDG maximum input amounts to `mint` and `zapMint`, and revert
 when a pulled amount is above its maximum.
 
-## A6-L-10 — Split pushes let the keeper move a hub price about 35% an hour, not 30% (Low, Open, new 2026-10-14)
+**Acknowledged (Bhargav, 2026-10-15), no contract change:** what a mint can pull is already
+capped by what the minter allows. The app must approve the `previewMint` amounts plus a small
+buffer (about 0.5%), never an unlimited allowance, for a direct `mint`, and send only the previewed
+amount plus the same buffer to `FundMintZap` (it spends only what it receives and refunds the
+rest). A front-run trade can then cost a minter at most that buffer; beyond it the mint reverts.
+
+## A6-L-10 — Split pushes let the keeper move a hub price about 35% an hour, not 30% (Low, Acknowledged 2026-10-15)
 
 `FundPriceHub._clamp` (`src/funds/FundPriceHub.sol:107`). Round 3: 2 agents in pass 1, 5 in
 pass 2. PoC run.
@@ -860,6 +911,10 @@ keeper rather than opening an attack.
 **Suggested fix:** measure the bound from a stored anchor price and time (for example the price
 at the start of the hour), or use a per-second compounding factor for the part hour, so many
 short pushes allow no more than one long one.
+
+**Acknowledged (Bhargav, 2026-10-15), no contract change:** frequent pushes compound to about
+e^(setting) an hour (a 5-minute cadence already reaches ~34.5% at 30%), and only the keeper can
+push. For a true 30% an hour the admin sets `maxMoveBps` to about 2600 (e^0.26 ≈ 1.297).
 
 ---
 
