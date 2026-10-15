@@ -770,10 +770,10 @@ contract FundGovernorTest is FundTestBase {
         governor.castVote(id, true);
     }
 
-    function test_veto_adminOnly() public {
+    function test_veto_operatorOrAdminOnly() public {
         uint256 id = _propose(curatorA, IFundGovernor.ProposalKind.List, address(spare));
         vm.prank(curatorA);
-        vm.expectRevert(IFundGovernor.NotAdmin.selector);
+        vm.expectRevert(IFundGovernor.NotOperator.selector);
         governor.veto(id);
         _curatorsYes(id);
         vm.warp(block.timestamp + 3 days);
@@ -1038,7 +1038,7 @@ contract FundGovernorTest is FundTestBase {
         assertEq(fund.targetWeightBps(address(spare)), 2000);
     }
 
-    function test_curate_adminOnlyAndOnlyWhileOff() public {
+    function test_curate_operatorOrAdminOnlyAndOnlyWhileOff() public {
         address[] memory a = fund.assets();
         uint16[] memory w = new uint16[](a.length);
         for (uint256 i; i < a.length; ++i) {
@@ -1050,8 +1050,61 @@ contract FundGovernorTest is FundTestBase {
 
         _curatorOff();
         vm.prank(curatorA);
-        vm.expectRevert(IFundGovernor.NotAdmin.selector);
+        vm.expectRevert(IFundGovernor.NotOperator.selector);
         governor.curate(a, w);
+    }
+
+    function test_operator_curatesVetoesAndDelists() public {
+        uint256 id = _propose(curatorA, IFundGovernor.ProposalKind.List, address(spare));
+        vm.prank(operator);
+        governor.veto(id);
+        assertEq(uint8(governor.state(id)), uint8(IFundGovernor.ProposalState.Vetoed));
+
+        vm.prank(operator);
+        governor.setDelisted(address(net), true);
+        assertTrue(governor.delisted(address(net)));
+
+        _curatorOff();
+        address[] memory a = fund.assets();
+        uint16[] memory w = new uint16[](3);
+        (w[0], w[1], w[2]) = (6000, 2000, 2000);
+        vm.prank(operator);
+        governor.curate(a, w);
+        assertEq(fund.targetWeightBps(a[0]), 6000);
+    }
+
+    function test_operator_cannotAdmin() public {
+        vm.startPrank(operator);
+        vm.expectRevert(IFundGovernor.NotAdmin.selector);
+        governor.setPublicCuration(false);
+        GovernanceConfig memory c = governor.config();
+        vm.expectRevert(IFundGovernor.NotAdmin.selector);
+        governor.setConfig(c);
+        vm.stopPrank();
+    }
+
+    function test_protocolRoles_cannotCurate() public {
+        address protocolAdmin = makeAddr("protocolAdmin");
+        address protocolOperator = makeAddr("protocolOperator");
+        vm.startPrank(admin);
+        registry.grantRole(keccak256("ADMIN"), protocolAdmin);
+        registry.grantRole(keccak256("OPERATOR"), protocolOperator);
+        vm.stopPrank();
+        _curatorOff();
+        address[] memory a = fund.assets();
+        uint16[] memory w = new uint16[](a.length);
+        for (uint256 i; i < a.length; ++i) {
+            w[i] = fund.targetWeightBps(a[i]);
+        }
+        vm.prank(protocolAdmin);
+        vm.expectRevert(IFundGovernor.NotOperator.selector);
+        governor.curate(a, w);
+        vm.prank(protocolOperator);
+        vm.expectRevert(IFundGovernor.NotOperator.selector);
+        governor.curate(a, w);
+        vm.prank(protocolAdmin);
+        vm.expectRevert(IFundGovernor.NotAdmin.selector);
+        governor.setPublicCuration(true);
     }
 
     function test_curate_newTokenMustBeEligible() public {
@@ -1126,7 +1179,7 @@ contract FundGovernorTest is FundTestBase {
     function test_adminSetters_onlyAdmin() public {
         GovernanceConfig memory c = governor.config();
         vm.startPrank(curatorA);
-        vm.expectRevert(IFundGovernor.NotAdmin.selector);
+        vm.expectRevert(IFundGovernor.NotOperator.selector);
         governor.setDelisted(address(net), true);
         vm.expectRevert(IFundGovernor.NotAdmin.selector);
         governor.setConfig(c);

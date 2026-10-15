@@ -30,11 +30,11 @@ import {UUPSUpgradeable} from "@openzeppelin/contracts/proxy/utils/UUPSUpgradeab
 /// @title FundFactory — Own Curated Funds platform hub
 /// @notice See {IFundFactory}.
 /// @dev Runs behind an ERC-1967 proxy (UUPS); storage is append-only across upgrades. It owns
-///      the seven module beacons, so the registry ADMIN upgrades every fund through
+///      the seven module beacons, so the registry FUND_ADMIN upgrades every fund through
 ///      {upgradeModule}.
 contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
-    bytes32 private constant ADMIN_ROLE = keccak256("ADMIN");
-    bytes32 private constant OPERATOR_ROLE = keccak256("OPERATOR");
+    bytes32 private constant ADMIN_ROLE = keccak256("FUND_ADMIN");
+    bytes32 private constant OPERATOR_ROLE = keccak256("FUND_OPERATOR");
 
     // Hard cap on the protocol curator's share.
     uint16 private constant MAX_PROTOCOL_CURATOR_SHARE_BPS = 5000;
@@ -142,7 +142,7 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
     }
 
     /// @notice Initialise the factory proxy.
-    /// @param registry_              Protocol registry; its ADMIN and OPERATOR roles run the platform.
+    /// @param registry_              Protocol registry; its FUND_ADMIN and FUND_OPERATOR roles run the platform.
     /// @param oracle_                Shared price oracle.
     /// @param usdg_                  USDG token.
     /// @param protocolCurator_       Protocol curator: Own's seat among every fund's curators.

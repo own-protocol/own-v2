@@ -22,7 +22,7 @@ contract FundOracleTest is Test {
         vm.warp(1_000_000);
         registry = new ProtocolRegistry(admin, 2 days, 2 minutes);
         vm.prank(admin);
-        registry.grantRole(keccak256("ADMIN"), admin);
+        registry.grantRole(keccak256("FUND_ADMIN"), admin);
         oracle = new FundOracle(address(registry));
         feed8 = new MockAggregatorV3(8);
         feed20 = new MockAggregatorV3(20);
@@ -107,8 +107,8 @@ contract FundOracleTest is Test {
     function test_setFeed_followsRegistryAdmin() public {
         address next = makeAddr("next");
         vm.startPrank(admin);
-        registry.grantRole(keccak256("ADMIN"), next);
-        registry.revokeRole(keccak256("ADMIN"), admin);
+        registry.grantRole(keccak256("FUND_ADMIN"), next);
+        registry.revokeRole(keccak256("FUND_ADMIN"), admin);
         vm.stopPrank();
 
         vm.prank(admin);

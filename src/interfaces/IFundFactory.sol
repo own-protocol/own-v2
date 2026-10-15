@@ -14,7 +14,7 @@ import {
 /// @title IFundFactory — creates Own Curated Funds and holds platform-wide settings
 /// @notice Every fund is seven beacon proxies (fund token + basket, launch, staking, governor,
 ///         curators, bribes, venue) sharing the platform's oracle and USDG. The registry's
-///         ADMIN role is the platform admin (Own): it launches funds (the launcher whitelist stays in the code,
+///         FUND_ADMIN role is the platform admin (Own): it launches funds (the launcher whitelist stays in the code,
 ///         empty by default, so launches can be opened up later), and sets the protocol curator
 ///         (Own's seat among every fund's curators) and its share, rebalance routers, launch and governance defaults, the curator cap, the bribe cut and
 ///         bribe tokens, the list of tokens eligible for listing, the staking yield cap and the
@@ -152,7 +152,7 @@ interface IFundFactory {
     /// @param implementation The new implementation.
     event ModuleUpgraded(Module indexed module, address implementation);
 
-    /// @notice Caller does not hold the protocol ADMIN role.
+    /// @notice Caller does not hold the registry's FUND_ADMIN role.
     error NotAdmin();
 
     /// @notice Caller is neither an admin nor a whitelisted launcher while whitelisting is on.
@@ -340,16 +340,19 @@ interface IFundFactory {
     /// @return The registry.
     function registry() external view returns (address);
 
-    /// @notice Whether `account` holds the registry's ADMIN role: the admin of the factory, the
-    ///         every fund, launch, staking vault, governor, curator set and venue.
+    /// @notice Whether `account` holds the registry's FUND_ADMIN role: the admin of the factory,
+    ///         the oracle, the price hub and every fund, launch, staking vault, governor, curator
+    ///         set and venue. The protocol's ADMIN role has no say over funds.
     /// @param account The account.
     /// @return True if it is an admin.
     function isAdmin(
         address account
     ) external view returns (bool);
 
-    /// @notice Whether `account` holds the registry's OPERATOR or ADMIN role; operators flip the
-    ///         instant pause levers (fund mints, launch deposits).
+    /// @notice Whether `account` holds the registry's FUND_OPERATOR or FUND_ADMIN role. Operators
+    ///         pause fund mints and launch deposits, sweep, curate while public curation is off,
+    ///         veto proposals, delist tokens, rebalance and open or cancel auction lots. The
+    ///         protocol's OPERATOR role has no say over funds.
     /// @param account The account.
     /// @return True if it is an operator or admin.
     function isOperator(

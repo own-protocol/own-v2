@@ -558,9 +558,20 @@ contract FundFactoryTest is FundTestBase {
         assertFalse(factory.isAdmin(operator));
         assertFalse(factory.isOperator(alice));
 
+        // The protocol's own roles carry no fund rights.
+        address protocolAdmin = makeAddr("protocolAdmin");
+        address protocolOperator = makeAddr("protocolOperator");
         vm.startPrank(admin);
-        registry.grantRole(keccak256("ADMIN"), alice);
-        registry.revokeRole(keccak256("ADMIN"), admin);
+        registry.grantRole(keccak256("ADMIN"), protocolAdmin);
+        registry.grantRole(keccak256("OPERATOR"), protocolOperator);
+        vm.stopPrank();
+        assertFalse(factory.isAdmin(protocolAdmin));
+        assertFalse(factory.isOperator(protocolAdmin));
+        assertFalse(factory.isOperator(protocolOperator));
+
+        vm.startPrank(admin);
+        registry.grantRole(keccak256("FUND_ADMIN"), alice);
+        registry.revokeRole(keccak256("FUND_ADMIN"), admin);
         vm.stopPrank();
 
         vm.prank(admin);

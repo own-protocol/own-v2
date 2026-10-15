@@ -214,9 +214,9 @@ Updated 2026-10-15: fund pools open on Hookr (plan `plans/fund-pools-on-hookr.md
   first. The fund names its price, so nobody can front-run a market order and fillers bring
   liquidity from any venue. Every fill is re-checked against the live oracle with the same floor
   discount and counts toward a 10%-of-the-basket daily cap (a running
-  total that drains at the full cap per day), tracked separately from router swaps. The manager or
-  the admin can cancel a lot.
-- **Router swaps (admin fallback):** after seeding only the admin can swap between basket assets,
+  total that drains at the full cap per day), tracked separately from router swaps. The manager, a
+  fund operator or the admin can open and cancel lots.
+- **Router swaps:** after seeding a fund operator or the admin can swap between basket assets,
   and from idle USDG into them, through admin-allowed routers: at most 2% loss of oracle value per
   swap and at most 10% of the basket a day. Before seeding the manager uses the same swaps for the
   launch rebalance (above). Assets worth up to 0.1% of the basket count as dust.
@@ -251,10 +251,10 @@ Updated 2026-10-15: fund pools open on Hookr (plan `plans/fund-pools-on-hookr.md
 - `governor.setPublicCuration(bool)` (admin) switches a fund between admin curation and the public
   vote. New funds start with it off, until a fund is big enough for active curation to be worth it.
 - **Off:** nobody votes on weights or raises, votes on or executes proposals, curators and stakers
-  alike. The admin sets the whole basket at once with `governor.curate(assets, weightsBps)`: add
+  alike. A fund operator or the admin sets the whole basket at once with `governor.curate(assets, weightsBps)`: add
   tokens (on the eligibility list, with an oracle feed), drop tokens (once their balance is dust)
   and set any weights, with none of the vote's cap, minimum or weekly move. The weekly flip still
-  runs but only checks curator compliance; the weights stay where the admin put them. No bribes can
+  runs but only checks curator compliance; the weights stay where they were set. No bribes can
   be posted, and a week flipped while off pays none (its bribes go back to the briber).
 - **Curators are unchanged:** the admin adds, removes and replaces them directly, and fees, curator
   yield, the protocol curator's share and compliance (minimum stake only) all work as usual. Only
@@ -338,20 +338,23 @@ Updated 2026-10-15: fund pools open on Hookr (plan `plans/fund-pools-on-hookr.md
 
 ## Trust and limits
 
-- **Admin (ProtocolRegistry `ADMIN` role, the same admins as eUSD):** no fund contract stores
-  its own admin; each checks the registry on every call, so granting or revoking `ADMIN` there
+- **Admin (ProtocolRegistry `FUND_ADMIN` role):** fund contracts check only the fund roles, so the
+  protocol's `ADMIN` and `OPERATOR` (eUSD) have no say over funds. No fund contract stores
+  its own admin; each checks the registry on every call, so granting or revoking `FUND_ADMIN` there
   (through the timelocked `PROTOCOL_ADMIN`) changes who administers every fund at once. Admins
   upgrade the factory and all modules (the venue included); set the price oracle and feeds, the protocol
   curator and its share, the whitelist, routers, each pool's settings before it opens, the curator cap, the bribe cut and
   tokens, the eligibility list, the yield cap, governance rules and each fund's fee, curator
   yield, minimum curator stake, yield tiers, mint lock and adjustment, boost and pot settings and
   pool issuance; set the premium defaults for new funds; add and remove
-  curators (never the protocol curator); veto proposals; can delist a token directly; turn public
-  curation off and on and, while it is off, set each fund's basket and weights directly; can
+  curators (never the protocol curator); set fund metadata; turn public
+  curation off and on; can do everything an operator can; can
   withdraw the pool position back into the fund; migrate a fund to a new pool; set the sweep recipient
   (`factory.setSweepRecipient`; the registry treasury until set).
-- **Operator (registry `OPERATOR` role, or an admin):** pauses and unpauses fund mints and launch
-  deposits, and sweeps tokens the fund holds that are not backing (stray tokens, a dropped asset's
+- **Operator (registry `FUND_OPERATOR` role, or an admin):** pauses and unpauses fund mints and
+  launch deposits; while public curation is off, sets each fund's basket and weights
+  (`governor.curate`, eligible tokens only); vetoes proposals; delists a token directly; swaps
+  through admin-allowed routers within the bounds above; opens and cancels auction lots; and sweeps tokens the fund holds that are not backing (stray tokens, a dropped asset's
   dust, rewards a basket asset pays out such as stock tokens) to the sweep recipient, never a basket
   asset, USDG or the fund token. Redeeming cannot be paused.
 - **Manager (Own keeper):** trusted only within the rebalance bounds above. After seeding it only
@@ -388,7 +391,7 @@ factory with the same USDG; the venue's also takes the Hookr addresses), the fac
 `PROTOCOL_CURATOR` as the protocol curator), the redeem and mint zaps, the auction house and the
 price hub (with `PRICE_KEEPER` as its keeper), all administered by the ProtocolRegistry at
 `PROTOCOL_REGISTRY_ROBINHOOD`. It wires the auction house and platform metadata and
-allows USDG (and MONEY, if given) as bribe tokens when the deployer holds `ADMIN`; otherwise it
+allows USDG (and MONEY, if given) as bribe tokens when the deployer holds `FUND_ADMIN`; otherwise it
 prints those calls for an admin's Safe. When a fund's pool opens, the admin creates its hub feed
 (`hub.createFeed(fund)`) and registers it in the oracle (`oracle.setFeed`), and the keeper pushes
 its pool TWAP with the other hub prices. Keeper jobs per fund: `venue.issue()` after buys,

@@ -24,7 +24,7 @@ contract FundPriceHubTest is Test {
         vm.warp(1_000_000);
         registry = new ProtocolRegistry(admin, 2 days, 2 minutes);
         vm.prank(admin);
-        registry.grantRole(keccak256("ADMIN"), admin);
+        registry.grantRole(keccak256("FUND_ADMIN"), admin);
         oracle = new FundOracle(address(registry));
         hub = new FundPriceHub(address(registry), keeper, 0);
         pons = new MockERC20("Pons", "PONS", 18);

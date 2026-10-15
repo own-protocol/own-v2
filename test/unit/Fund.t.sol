@@ -703,6 +703,24 @@ contract FundTest is FundTestBase {
         fund.rebalance(_swap(10e9, 7.4e18, 7.4e18));
     }
 
+    function test_rebalance_operatorAfterSeeding() public {
+        tsla.mint(address(router), 100e18);
+        uint256 netBefore = net.balanceOf(address(fund));
+        vm.prank(operator);
+        fund.rebalance(_swap(10e9, 7.4e18, 7.4e18));
+        assertEq(net.balanceOf(address(fund)), netBefore - 10e9);
+    }
+
+    function test_rebalance_protocolAdmin_reverts() public {
+        address protocolAdmin = makeAddr("protocolAdmin");
+        vm.prank(admin);
+        registry.grantRole(keccak256("ADMIN"), protocolAdmin);
+        tsla.mint(address(router), 100e18);
+        vm.prank(protocolAdmin);
+        vm.expectRevert(IFund.NotManager.selector);
+        fund.rebalance(_swap(10e9, 7.4e18, 7.4e18));
+    }
+
     function test_rebalance_managerAfterSeeding_reverts() public {
         tsla.mint(address(router), 100e18);
         vm.prank(keeper);

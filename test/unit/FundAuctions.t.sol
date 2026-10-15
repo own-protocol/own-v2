@@ -157,6 +157,25 @@ contract FundAuctionsTest is FundTestBase {
         auctions.openLot(address(fund), address(net), address(tsla), 1e9);
     }
 
+    function test_lots_operatorCanOpenAndCancel() public {
+        vm.prank(operator);
+        uint256 id = auctions.openLot(address(fund), address(net), address(tsla), 1e9);
+        vm.prank(operator);
+        auctions.cancelLot(id);
+        vm.prank(filler);
+        vm.expectRevert(abi.encodeWithSelector(IFundAuctions.LotNotActive.selector, id));
+        auctions.fill(id, 1e9, type(uint256).max);
+    }
+
+    function test_openLot_protocolOperator_reverts() public {
+        address protocolOperator = makeAddr("protocolOperator");
+        vm.prank(admin);
+        registry.grantRole(keccak256("OPERATOR"), protocolOperator);
+        vm.prank(protocolOperator);
+        vm.expectRevert(IFundAuctions.NotManager.selector);
+        auctions.openLot(address(fund), address(net), address(tsla), 1e9);
+    }
+
     function test_openLot_adminCanOpen() public {
         vm.prank(admin);
         auctions.openLot(address(fund), address(net), address(tsla), 1e9);

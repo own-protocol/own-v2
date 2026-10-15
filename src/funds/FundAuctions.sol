@@ -214,7 +214,7 @@ contract FundAuctions is IFundAuctions, ReentrancyGuardTransient {
     }
 
     function _checkManager(IFundFactory fac, address fund) internal view {
-        if (msg.sender != IFund(fund).manager() && !fac.isAdmin(msg.sender)) revert NotManager();
+        if (msg.sender != IFund(fund).manager() && !fac.isOperator(msg.sender)) revert NotManager();
     }
 
     function _checkAssets(address fund, address sellAsset, address buyAsset) internal view {

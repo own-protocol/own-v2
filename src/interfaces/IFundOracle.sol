@@ -32,7 +32,7 @@ interface IFundOracle {
     /// @param maxStaleness Maximum price age, in seconds.
     event VerifierFeedSet(address indexed asset, bytes32 ticker, uint32 maxStaleness);
 
-    /// @notice Caller does not hold the protocol ADMIN role.
+    /// @notice Caller does not hold the registry's FUND_ADMIN role.
     error NotAdmin();
 
     /// @notice A required address is zero.
@@ -110,7 +110,7 @@ interface IFundOracle {
         address asset
     ) external view returns (Feed memory);
 
-    /// @notice The protocol registry whose ADMIN role administers this oracle.
+    /// @notice The protocol registry whose FUND_ADMIN role administers this oracle.
     /// @return The registry.
     function registry() external view returns (address);
 }

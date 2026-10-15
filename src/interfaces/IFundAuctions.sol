@@ -81,7 +81,7 @@ interface IFundAuctions {
     /// @notice Caller is not the platform admin.
     error NotAdmin();
 
-    /// @notice Caller is neither the fund's manager nor the admin.
+    /// @notice Caller is neither the fund's manager nor a fund operator or admin.
     error NotManager();
 
     /// @notice Not a fund of the factory.
@@ -115,7 +115,7 @@ interface IFundAuctions {
     /// @notice The fund received less than the fill's price.
     error PaymentShort();
 
-    /// @notice Open a lot for `fund`, priced from the oracle now. Manager or admin.
+    /// @notice Open a lot for `fund`, priced from the oracle now. Manager, fund operator or admin.
     /// @param fund      The fund.
     /// @param sellAsset Basket asset or USDG to sell.
     /// @param buyAsset  Basket asset to buy.
@@ -123,7 +123,7 @@ interface IFundAuctions {
     /// @return id Lot id.
     function openLot(address fund, address sellAsset, address buyAsset, uint256 amount) external returns (uint256 id);
 
-    /// @notice Close a lot early. The fund's manager or the admin.
+    /// @notice Close a lot early. The fund's manager, a fund operator or admin.
     /// @param id Lot id.
     function cancelLot(
         uint256 id

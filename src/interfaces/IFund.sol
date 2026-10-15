@@ -154,13 +154,13 @@ interface IFund is IERC20 {
     /// @notice Caller is not the platform admin.
     error NotAdmin();
 
-    /// @notice Caller is neither a protocol operator nor an admin.
+    /// @notice Caller is neither a fund operator nor a fund admin.
     error NotOperator();
 
     /// @notice Caller is not the factory.
     error NotFactory();
 
-    /// @notice Caller is not the manager.
+    /// @notice Caller is not the manager, a fund operator or a fund admin.
     error NotManager();
 
     /// @notice Caller is not the governor.
@@ -381,12 +381,11 @@ interface IFund is IERC20 {
     ) external;
 
     /// @notice Swap a basket asset (or idle USDG) into another basket asset through an allowed
-    ///         router. The manager before the pool is seeded (the launch rebalance), the admin at
-    ///         any time: after seeding, rebalancing runs through auctions and this is the admin's
-    ///         fallback. Each swap
+    ///         router. The manager before the pool is seeded (the launch rebalance), a fund operator
+    ///         or admin at any time. Each swap
     ///         may lose at most the factory's slippage bound in oracle value, and the value sold is
     ///         rate limited: at most the daily cap at once, with the allowance refilling linearly
-    ///         over a day. This bounds what a manager can leak through bad fills. Until the fund's
+    ///         over a day. This bounds what a manager or operator can leak through bad fills. Until the fund's
     ///         pool is seeded (the launch rebalance) a swap may also buy USDG, and the cap does not
     ///         apply.
     /// @param params Swap parameters.
@@ -464,7 +463,7 @@ interface IFund is IERC20 {
     /// @notice Send the fund's whole balance of a token that is not backing to the factory's sweep
     ///         recipient (the registry treasury unless the admin set another wallet): tokens sent to
     ///         the fund by mistake, dust left by a dropped asset, or rewards paid out by a basket
-    ///         asset (e.g. stock tokens) for redistribution. Operator (registry OPERATOR or ADMIN).
+    ///         asset (e.g. stock tokens) for redistribution. Operator (registry FUND_OPERATOR or FUND_ADMIN).
     ///         Basket assets, USDG and the fund token cannot be swept.
     /// @param token The token.
     /// @return amount Amount sent.

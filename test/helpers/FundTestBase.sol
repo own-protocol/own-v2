@@ -85,8 +85,8 @@ abstract contract FundTestBase is Test {
         positionManager = _deployPositionManager();
         registry = new ProtocolRegistry(admin, 2 days, 2 minutes);
         vm.startPrank(admin);
-        registry.grantRole(keccak256("ADMIN"), admin);
-        registry.grantRole(keccak256("OPERATOR"), operator);
+        registry.grantRole(keccak256("FUND_ADMIN"), admin);
+        registry.grantRole(keccak256("FUND_OPERATOR"), operator);
         vm.stopPrank();
         oracle = new FundOracle(address(registry));
 

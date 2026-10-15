@@ -202,13 +202,16 @@ interface IFundGovernor {
     /// @param on Whether curators and stakers vote.
     event PublicCurationSet(bool on);
 
-    /// @notice Emitted when the admin sets the basket while public curation is off.
+    /// @notice Emitted when a fund operator or admin sets the basket while public curation is off.
     /// @param assets     The basket.
     /// @param weightsBps Target weights.
     event Curated(address[] assets, uint16[] weightsBps);
 
     /// @notice Caller is not the platform admin.
     error NotAdmin();
+
+    /// @notice Caller is neither a fund operator nor a fund admin.
+    error NotOperator();
 
     /// @notice A required address is zero.
     error ZeroAddress();
@@ -349,13 +352,13 @@ interface IFundGovernor {
         uint256 id
     ) external;
 
-    /// @notice Veto a proposal before it executes. Admin only.
+    /// @notice Veto a proposal before it executes. Fund operator or admin.
     /// @param id Proposal id.
     function veto(
         uint256 id
     ) external;
 
-    /// @notice Delist (or relist) a basket token directly. Admin only.
+    /// @notice Delist (or relist) a basket token directly. Fund operator or admin.
     /// @param token    The token.
     /// @param delisted Whether it is delisted.
     function setDelisted(address token, bool delisted) external;
@@ -369,8 +372,8 @@ interface IFundGovernor {
         bool on
     ) external;
 
-    /// @notice Set the basket and its target weights at once while public curation is off. Admin
-    ///         only. A token new to the basket must be eligible; the fund checks the rest (weights
+    /// @notice Set the basket and its target weights at once while public curation is off. Fund
+    ///         operator or admin. A token new to the basket must be eligible; the fund checks the rest (weights
     ///         sum to 100%, priced tokens, at most 20, a dropped token's balance is dust). None of the
     ///         vote's cap, minimum or weekly move applies.
     /// @param assets     The basket.

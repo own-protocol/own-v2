@@ -14,11 +14,11 @@ interface IAggregatorV3 {
 /// @notice See {IFundOracle}. Never reads onchain spot prices: every value comes from an
 ///         admin-configured aggregator, or a ticker on the protocol's in-house oracle verifier, with
 ///         a staleness bound.
-/// @dev Administered by the ProtocolRegistry's ADMIN role. An aggregator's decimals are read once,
+/// @dev Administered by the ProtocolRegistry's FUND_ADMIN role. An aggregator's decimals are read once,
 ///      when its feed is set. The verifier is resolved from the registry on every read, so it
 ///      follows the registry's INHOUSE_ORACLE slot.
 contract FundOracle is IFundOracle {
-    bytes32 private constant ADMIN = keccak256("ADMIN");
+    bytes32 private constant ADMIN = keccak256("FUND_ADMIN");
 
     struct StoredFeed {
         address aggregator;

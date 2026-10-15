@@ -123,7 +123,7 @@ interface IFundLaunch {
     /// @notice Caller is not the platform admin.
     error NotAdmin();
 
-    /// @notice Caller is neither a protocol operator nor an admin.
+    /// @notice Caller is neither a fund operator nor a fund admin.
     error NotOperator();
 
     /// @notice Initialise a launch proxy. Called once by the factory.

@@ -347,7 +347,7 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
     function rebalance(
         RebalanceParams calldata params
     ) external override nonReentrant {
-        if (!_isAdmin() && (msg.sender != manager || IFundVenue(venue).isSeeded())) {
+        if (!IFundFactory(factory).isOperator(msg.sender) && (msg.sender != manager || IFundVenue(venue).isSeeded())) {
             revert NotManager();
         }
         uint256 volume =

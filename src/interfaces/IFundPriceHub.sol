@@ -114,7 +114,7 @@ interface IFundPriceHub {
     /// @return The bound, in basis points.
     function maxMoveBps() external view returns (uint16);
 
-    /// @notice ProtocolRegistry whose ADMIN role administers the hub.
+    /// @notice ProtocolRegistry whose FUND_ADMIN role administers the hub.
     /// @return The registry.
     function registry() external view returns (address);
 }

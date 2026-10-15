@@ -28,13 +28,14 @@ import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.s
 ///         contracts, so every fund pool opens on Hookr's allowlisted hook), the factory proxy, the
 ///         mint and redeem zaps, the Dutch auction house for rebalancing and the price hub for
 ///         assets without a Chainlink feed and for fund tokens. The factory, oracle, auction house
-///         and hub are administered by the ProtocolRegistry's ADMIN role (pauses also by OPERATOR).
+///         and hub are administered by the ProtocolRegistry's FUND_ADMIN role (day-to-day actions also by
+///         FUND_OPERATOR).
 ///         Wiring the auction house, the platform metadata and the USDG (and MONEY, if given) bribe tokens needs
-///         ADMIN: executed directly when the deployer holds it, otherwise printed as
+///         FUND_ADMIN: executed directly when the deployer holds it, otherwise printed as
 ///         ready-to-paste Safe calls.
 ///
 /// @dev Post-deploy checklist:
-///        1. If the deployer is not an ADMIN, an ADMIN executes the printed wiring calls in order.
+///        1. If the deployer is not a FUND_ADMIN, a FUND_ADMIN executes the printed wiring calls in order.
 ///        2. Admin sets a price source for every basket asset. With a Chainlink feed: configure its
 ///           ticker on the ChainlinkOracleVerifier (setChainlinkConfig, and the signer quotes it
 ///           off-hours), then oracle.setVerifierFeed(asset, ticker, staleness). With no Chainlink
@@ -86,7 +87,7 @@ contract DeployFundsRobinhood is Script {
 
         uint256 key = vm.envUint("DEPLOYER_PRIVATE_KEY_ROBINHOOD");
         IProtocolRegistry registry = IProtocolRegistry(vm.envAddress("PROTOCOL_REGISTRY_ROBINHOOD"));
-        bool isAdmin = registry.hasRole(keccak256("ADMIN"), vm.addr(key));
+        bool isAdmin = registry.hasRole(keccak256("FUND_ADMIN"), vm.addr(key));
         address protocolCurator = vm.envAddress("PROTOCOL_CURATOR");
         address money = vm.envOr("MONEY_TOKEN", address(0));
 
@@ -117,7 +118,7 @@ contract DeployFundsRobinhood is Script {
         console.log("Bribes beacon   ", factory.beacon(IFundFactory.Module.Bribes));
         console.log("Venue beacon    ", factory.beacon(IFundFactory.Module.Venue));
         if (!isAdmin) {
-            console.log("Deployer is not an ADMIN; an ADMIN must call, in order, on", address(factory));
+            console.log("Deployer is not a FUND_ADMIN; a FUND_ADMIN must call, in order, on", address(factory));
             for (uint256 i; i < wiring.length; ++i) {
                 console.logBytes(wiring[i]);
             }

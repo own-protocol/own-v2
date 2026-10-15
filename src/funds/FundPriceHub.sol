@@ -9,9 +9,9 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 /// @title FundPriceHub — keeper-pushed USD prices for fund assets without a Chainlink feed
 /// @notice See {IFundPriceHub}.
-/// @dev Administered by the ProtocolRegistry's ADMIN role.
+/// @dev Administered by the ProtocolRegistry's FUND_ADMIN role.
 contract FundPriceHub is IFundPriceHub {
-    bytes32 private constant ADMIN = keccak256("ADMIN");
+    bytes32 private constant ADMIN = keccak256("FUND_ADMIN");
 
     // Past this allowed move factor (a 1e18x move) a price is no longer bounded.
     uint256 private constant MAX_FACTOR = 1e36;
@@ -35,7 +35,7 @@ contract FundPriceHub is IFundPriceHub {
         _;
     }
 
-    /// @param registry_   ProtocolRegistry resolving the ADMIN role.
+    /// @param registry_   ProtocolRegistry resolving the FUND_ADMIN role.
     /// @param keeper_     The keeper.
     /// @param maxMoveBps_ Per-push move bound for keeper prices (0 for none).
     constructor(address registry_, address keeper_, uint16 maxMoveBps_) {

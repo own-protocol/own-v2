@@ -114,6 +114,11 @@ contract FundGovernor is IFundGovernor, Initializable, ReentrancyGuardTransient 
         _;
     }
 
+    modifier onlyOperator() {
+        if (!IFundFactory(IFund(fund).factory()).isOperator(msg.sender)) revert NotOperator();
+        _;
+    }
+
     modifier whenPublic() {
         if (!publicCuration) revert PublicCurationOff();
         _;
@@ -303,16 +308,16 @@ contract FundGovernor is IFundGovernor, Initializable, ReentrancyGuardTransient 
     /// @inheritdoc IFundGovernor
     function veto(
         uint256 id
-    ) external override onlyAdmin {
+    ) external override onlyOperator {
         ProposalBook.veto(_book, id);
     }
 
     // ──────────────────────────────────────────────────────────
-    //  Admin
+    //  Operator and admin
     // ──────────────────────────────────────────────────────────
 
     /// @inheritdoc IFundGovernor
-    function setDelisted(address token, bool delisted_) external override onlyAdmin {
+    function setDelisted(address token, bool delisted_) external override onlyOperator {
         if (delisted_ && !IFund(fund).isAsset(token)) revert InvalidProposal();
         delisted[token] = delisted_;
         emit DelistedSet(token, delisted_);
@@ -327,7 +332,10 @@ contract FundGovernor is IFundGovernor, Initializable, ReentrancyGuardTransient 
     }
 
     /// @inheritdoc IFundGovernor
-    function curate(address[] calldata assets, uint16[] calldata weightsBps) external override onlyAdmin nonReentrant {
+    function curate(
+        address[] calldata assets,
+        uint16[] calldata weightsBps
+    ) external override onlyOperator nonReentrant {
         if (publicCuration) revert PublicCurationOn();
         IFund f = IFund(fund);
         IFundFactory fac = IFundFactory(f.factory());
