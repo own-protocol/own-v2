@@ -1,8 +1,8 @@
 # Own Protocol v2 — Audit Report & Remediation Status (Pass 6)
 
-**Branch:** `money-market-funds` · **First audited:** `3a96ffe` (2026-10-06) · **Re-audited:** `9fe95f7` (2026-10-13), `68aef25` (2026-10-14) · **Last updated:** 2026-10-15
+**Branch:** `money-market-funds` · **First audited:** `3a96ffe` (2026-10-06) · **Re-audited:** `9fe95f7` (2026-10-13), `68aef25` (2026-10-14), `aff2e91` (2026-10-15) · **Last updated:** 2026-10-15
 
-Three rounds of the multi-agent solidity-auditor (v4, 12-agent pipeline: 9 specialty attackers + 3
+Four rounds of the multi-agent solidity-auditor (v4, 12-agent pipeline: 9 specialty attackers + 3
 gap-hunters), each run in **loop mode with 2 passes**: pass 2 was handed what pass 1 found and
 told to spend its effort on new ground while still re-reporting anything it hit again.
 
@@ -18,6 +18,11 @@ told to spend its effort on new ground while still re-reporting anything it hit 
   checked against this report the same way: repeats of report-6 items and leads are noted under
   them, findings that fall under A6-M-14's by-design call were left out, and only fresh, valid
   items were added (A6-M-15 to A6-M-18, A6-L-09, A6-L-10 and the leads marked *new, round 3*).
+- **Round 4 (2026-10-15, `aff2e91`)** ran after the round-3 fixes, fund pools on Hookr through the
+  per-fund `FundVenue` (`ebdf14f`), fund token metadata (`87a2d1b`), the FUND_ADMIN and
+  FUND_OPERATOR roles (`08c5c3c`) and the size/gas pass (`aff2e91`). It was checked against this
+  report the same way, and only fresh, valid items were added (A6-M-19, A6-L-11 to A6-L-13 and
+  the leads marked *new, round 4*).
 
 Every item was reviewed with Bhargav: each is fixed (with its commit), acknowledged or by design.
 The round-3 fixes are in `9fb7cee`.
@@ -26,9 +31,10 @@ Each finding was traced against the source by the orchestrator before booking. T
 column is the orchestrator's grading; the skill's confidence score is shown per finding. The
 round-2 assembled skill report (16 scored findings, 35 leads, exact wording) is at
 `audits/solidity-auditor-run-2026-10-13.md` in the project files, and the round-3 one (10 scored
-findings, 15 leads) at `audits/solidity-auditor-run-2026-10-14.md`.
+findings, 15 leads) at `audits/solidity-auditor-run-2026-10-14.md`. The round-4 one (8 scored
+findings, 31 leads) is at `audits/solidity-auditor-run-2026-10-15-r4.md`.
 
-### Scope (rounds 2 and 3)
+### Scope (rounds 2 to 4)
 
 ```
 src/funds/Fund.sol            src/funds/FundAuctions.sol     src/funds/FundBribes.sol
@@ -47,6 +53,10 @@ script/funds/HookMiner.sol
 25 files, 7,110 lines in round 2 and 7,068 in round 3. Interfaces, tests and mocks were read for
 context only.
 
+Round 4 scope: the same list without `FundHook.sol`, `FundTwapFeed.sol`, `HookMiner.sol` and
+`AddFundTwapFeedRobinhood.s.sol` (removed in `ebdf14f`), plus `src/funds/FundVenue.sol` and
+`src/funds/libraries/FundMetadataLib.sol`: 23 files, 7,113 lines.
+
 ### Coverage
 
 | Round | Pass 1 | Pass 2 |
@@ -54,13 +64,37 @@ context only.
 | 1 (2026-10-06) | 12/12 returned: 5 on Opus, 7 on Fable after Opus `[reasoning_extraction]` blocks | 12/12 on Opus |
 | 2 (2026-10-13) | 12/12 on Opus 5.5 | 12/12 on Opus 5.5 |
 | 3 (2026-10-14) | 12/12 on Opus 5.5 | 12/12 on Opus 5.5 |
+| 4 (2026-10-15) | 12/12 on Opus 5.5 | 12/12 on Opus 5.5 |
 
-**72/72 agent runs returned across the three rounds.** In rounds 2 and 3 no agent was blocked, so
-Fable 5.1, Sonnet 5.5 and Opus 4.8 were never needed. All three rounds used the bundle with the skill's
+**96/96 agent runs returned across the four rounds.** In rounds 2 to 4 no agent was blocked, so
+Fable 5.1, Sonnet 5.5 and Opus 4.8 were never needed. All four rounds used the bundle with the skill's
 "print reasoning markers" rule reworded to "apply the method, keep the working private, return
 only FINDING and LEAD blocks", which is what stopped the round-1 blocks.
 
-### Changes in this update (2026-10-15, round 3 fixes)
+### Changes in this update (2026-10-15, round 4)
+
+Nothing in report 6 was open before this round (27 fixed, 3 acknowledged, A6-M-14 by design).
+Round 4 raised these report-6 items again, so they are not booked twice: A6-M-15 (8 agent runs in
+pass 2, including the LP path), A6-L-09 (6), A6-L-10 (1), the stray-share block on a second
+governor swap noted under A6-M-17 (6), and the leads on uncollected LP fees, `addPot` restarting
+the drip, released pot tokens earning back-yield, launch close timing, the refund loop, an
+unpriced 1-wei donation, mint at NAV before seeding, a basket asset without a feed, `claimable`
+omitting a vest, retroactive admin setters, the new governor's zero curator stake and re-tally,
+and the manager's pre-seed window. Left out as the A6-M-14 class: one `usdPerSec` pooling boosts.
+
+Two report-6 leads are now booked because round 4 traced them: "a buy above NAV and a sell back
+fund the pot" (A6-L-11, through the new `FundVenue.issue`) and "propose measures next-epoch power
+against current-epoch supply" (A6-L-12).
+
+Leads that pointed at removed code no longer apply: the TWAP feed's `updatedAt`
+(`FundTwapFeed`), an extreme tick moving the 30-minute TWAP and the exact-output fund fee
+(`FundHook`). The pool position is now valued at the fund token's oracle price.
+
+**Added from round 4:** A6-M-19, A6-L-11 to A6-L-13 and the leads marked *new, round 4*. A6-M-19
+and A6-L-11 were confirmed with Foundry PoCs on a scratch copy; the test file is in
+`audits/poc-2026-10-15/` in the project files. Nothing is fixed yet.
+
+### Changes in the previous update (2026-10-15, round 3 fixes)
 
 Reviewed with Bhargav item by item. **Fixed in `9fb7cee`:** A6-M-16 (skip list on the staking
 redeem), A6-M-17 (the previous governor's escrow still counts; zero transfers skip the lock and
@@ -69,7 +103,7 @@ A6-M-15 (outages are expected to last a day at most, so a late stake takes at mo
 0.13%; acknowledged, no change) and A6-M-18 (it needs one holder with both a small voting stake
 and a large silent one, and the gauge limits cap the swing). **Acknowledged, no contract change:**
 A6-L-09 (the app limits what a mint can pull) and A6-L-10 (the admin setting sets the real
-bound). Report 6 has no open items.
+bound). Report 6 had no open items after this update.
 
 ### Changes in the previous update (2026-10-14, round 3)
 
@@ -129,10 +163,10 @@ M-01, M-02, M-03, M-04, M-06, M-08 and L-04 again on its own.
 | -------- | ----- | ----- | ---- | ------------ | --------- |
 | Critical | 0 | 0 | 0 | 0 | 0 |
 | High     | 3 | 3 | 0 | 0 | 0 |
-| Medium   | 16 | 15 | 0 | 0 | 1 |
-| Low      | 12 | 9 | 0 | 3 | 0 |
+| Medium   | 17 | 15 | 1 | 0 | 1 |
+| Low      | 15 | 9 | 3 | 3 | 0 |
 | Info     | 0 | 0 | 0 | 0 | 0 |
-| **Total** | **31** | **27** | **0** | **3** | **1** |
+| **Total** | **35** | **27** | **4** | **3** | **1** |
 
 | ID | Severity | Finding | Conf | Status |
 | -- | -------- | ------- | ---- | ------ |
@@ -157,6 +191,7 @@ M-01, M-02, M-03, M-04, M-06, M-08 and L-04 again on its own.
 | A6-M-16 | Medium | A NAV-locked staker cannot exit while one basket token is frozen | 90 | Fixed (`9fb7cee`) |
 | A6-M-17 | Medium | After a governor swap, a NAV-locked staker clears its lock and anyone burns a boost | 85 | Fixed (`9fb7cee`) |
 | A6-M-18 | Low (was Medium) | Unstake and restake in one block lower the recorded epoch supply | 80 | Fixed (`9fb7cee`) |
+| A6-M-19 | Medium | Before finalize, the manager runs it inside a rebalance swap and keeps the sold asset | 75 | Open |
 | A6-L-01 | Low | A bribe posted before a failed launch can never be refunded | 80 | Fixed (`6c6fb91`) |
 | A6-L-02 | Low | A reward token whose balance drops below `_reserved` blocks flip and curator changes | 75 | Fixed (`5db4443`) |
 | A6-L-03 | Low | A mint at NAV after a 30-minute dump is charged at the TWAP pool reading | 65 | Fixed (`fbde008`) |
@@ -167,6 +202,9 @@ M-01, M-02, M-03, M-04, M-06, M-08 and L-04 again on its own.
 | A6-L-08 | Low | A replaced protocol curator keeps the protocol vote on open proposals | 70 | Fixed (`6c6fb91`) |
 | A6-L-09 | Low | A mint at NAV has no input limit, so a trade just before it raises its cost | 80 | Acknowledged |
 | A6-L-10 | Low | Split pushes let the keeper move a hub price about 35% an hour | 80 | Acknowledged |
+| A6-L-11 | Low | A sell, `issue` and buy-back resets the issuance anchor and mints a pot from holders | 75 | Open |
+| A6-L-12 | Low | A stake added in the proposal epoch is left out of the vote total, so less stake reaches quorum | 80 | Open |
+| A6-L-13 | Low | A change to the compliant curators shares out income earned before the change | 75 | Open |
 
 ---
 
@@ -635,6 +673,9 @@ old rate if the premium fell during the outage; Bhargav preferred keeping the A6
 (the clock waits and the stretch is paid once a price is back). The `Fund.mint` / `_redeem` path
 is left to the hourly keeper accrual. Downgraded to Low.
 
+Round 4 raised this again (8 agent runs in pass 2), with the LP path through `_stakePosition` and
+one stale basket feed stopping the clock. No change to the call above.
+
 ## A6-M-16 — A NAV-locked staker cannot exit while one basket token is frozen (Medium, Fixed 2026-10-15)
 
 `FundStaking.redeem` (`src/funds/FundStaking.sol:230`). Round 3: 2 agents in pass 1, 5 in pass 2.
@@ -699,6 +740,11 @@ second swap; a governor beacon upgrade can release them. Tests
 `test_govSwap_oldEscrowKeepsTheNavLock`, `test_govSwap_oldEscrowKeepsTheBoost`,
 `test_zeroTransfer_neverTouchesTheBoost`, `test_setGovernor_waitsUntilTheGovernorBeforeIsEmpty`.
 
+Round 4 raised the stray-share block again (6 agent runs): a plain `transfer` of 1 wei to the old
+governor is enough, nothing in the governor can move it, and a replaced governor still accepts
+`deposit`. Covered by the note above; the agents suggested checking the old governor's recorded
+escrow instead of its balance, and having `deposit` revert in a governor that is not current.
+
 ## A6-M-18 — Unstake and restake in one block lower the recorded epoch supply (Low, downgraded from Medium, Fixed 2026-10-15)
 
 `FundStaking._recordSupply` (`src/funds/FundStaking.sol:754`), read by `FundGovernor._castVotes`
@@ -733,6 +779,30 @@ in standard snapshot voting. Downgraded because the gain needs one holder with b
 voting stake and a large silent one, it saves only the escrow lock and the warning, and the gauge
 limits (5 points a week, 25% cap, Own's listing veto) cap it. Test
 `test_supplyAt_fixedWhenTheEpochOpens`.
+
+## A6-M-19 — Before finalize, the manager runs it inside a rebalance swap and keeps the sold asset (Medium, Open, new round 4)
+
+`FundRebalance._swap` (`src/funds/libraries/FundRebalance.sol:115`) via `Fund.rebalance`
+(`src/funds/Fund.sol:349`) and `FundLaunch.finalize` (`src/funds/FundLaunch.sol:165`). Round 4:
+1 agent in pass 1. PoC run.
+
+`_swap` measures what a rebalance sold and bought from the fund's balances before and after
+`router.call`. Before seeding, `Fund.rebalance` lets the manager swap, and it has no `launched`
+check. `FundLaunch.finalize` is permissionless and guarded only by its own `nonReentrant`, so it
+can run inside the router call, and it moves the launch deposits into the fund. That inflow
+cancels the sale in the balance deltas: the router pulls the sold tokens and passes them to the
+manager, and the fund records a sale of 0.
+
+PoC: a $125k launch holds 85 TSLA ($34k). The manager calls `rebalance` before finalize, selling
+all 85 TSLA for USDG through a router that first calls `finalize` and then pulls the TSLA to the
+manager. The manager keeps 85 TSLA, the fund holds 0 TSLA, and `rebalanceVolume` stays 0. It
+needs an allowed router (`factory.setRouter`) that runs other code before it pulls the sold
+tokens, for example a multi-hop route through a pool or token with a callback. After seeding only
+an operator can rebalance; the same shape works for it through `collectLpFees` or `issue`.
+
+**Suggested fix:** require `launched` in `Fund.rebalance`, and expose the fund's reentrancy
+state (`entered()`) so `FundLaunch.finalize`, `FundVenue.collectLpFees` and `FundVenue.issue`
+revert while a fund call is running.
 
 ## A6-L-01 — A bribe posted before a failed launch can never be refunded (Low, Fixed 2026-10-14)
 
@@ -894,6 +964,8 @@ buffer (about 0.5%), never an unlimited allowance, for a direct `mint`, and send
 amount plus the same buffer to `FundMintZap` (it spends only what it receives and refunds the
 rest). A front-run trade can then cost a minter at most that buffer; beyond it the mint reverts.
 
+Round 4 raised this again (6 agent runs, 5% to 11% in their examples). No change to the call above.
+
 ## A6-L-10 — Split pushes let the keeper move a hub price about 35% an hour, not 30% (Low, Acknowledged 2026-10-15)
 
 `FundPriceHub._clamp` (`src/funds/FundPriceHub.sol:107`). Round 3: 2 agents in pass 1, 5 in
@@ -916,12 +988,72 @@ short pushes allow no more than one long one.
 e^(setting) an hour (a 5-minute cadence already reaches ~34.5% at 30%), and only the keeper can
 push. For a true 30% an hour the admin sets `maxMoveBps` to about 2600 (e^0.26 ≈ 1.297).
 
+## A6-L-11 — A sell, `issue` and buy-back resets the issuance anchor and mints a pot from holders (Low, Open, new round 4)
+
+`FundVenue.issue` (`src/funds/FundVenue.sol:185`, anchor reset at `:200`). Round 4: 2 agents in
+pass 1. PoC run. This is the report-6 lead "a buy above NAV and a sell back fund the pot",
+traced through the new venue.
+
+`issue` is permissionless. When spot is below the anchor it issues nothing and moves the anchor
+down to spot. A trader sells to push spot down, calls `issue`, then buys back. The next `issue`
+measures the whole rise from the lowered anchor as demand, sells new tokens into the pool, and
+mints the pot on `usdgIn − issued × NAV`. Much of that USDG came from the fund's own position,
+not from an outside buyer, and the position is valued at the oracle price, not at its reserves.
+
+PoC (FundPremiumTest setup): sell 2,200 tokens (spot 1.442 → 1.136), `issue` returns 0 and resets
+the anchor, buy back 2,200 (spot 1.443), `issue` sells 328.3 tokens for 464 USDG and mints a pot
+of 67.46 tokens (~$74.8 at NAV 1.1095). NAV with the position at its real reserves falls 0.059%
+(1.109467 → 1.108810) while the oracle-view NAV rises to 1.109688. The round trip costs the
+trader ~$12 plus ~$55 of Hookr tax (1.05% a way), so it pays only a trader who holds most of the
+staked supply that the pot goes to.
+
+**Suggested fix:** count as premium only the part of `usdgIn` that outside liquidity paid (scale
+by `(activeLiquidity − positionLiquidity) / activeLiquidity`), or do not move the anchor down to a
+spot price inside the call.
+
+## A6-L-12 — A stake added in the proposal epoch is left out of the vote total, so less stake reaches quorum (Low, Open, new round 4)
+
+`ProposalBook.propose` (`src/funds/libraries/ProposalBook.sol:45`, totals at `:60`). Round 4:
+2 agents in pass 2. This is the report-6 lead "propose measures next-epoch power against
+current-epoch supply", now traced.
+
+`propose` sets `totalStake = max(totalSupplyAt(e), totalPower(e), totalPower(e+1))`. Since the
+A6-M-18 fix a stake made in epoch `e` is recorded only from `e+1`, but the voter's power is read
+at `e+1`. Example: 100,000 staked at the start of `e`, little of it escrowed. A holder stakes and
+escrows 20,000 in `e` and proposes AddCurator: its vote is 20,000 / 100,000 = 20%, the curator
+quorum, with 16.7% of the real stake. For List and Delist (stakers 70%, quorum 20%), 29,000 passes
+with 22.5% of the stake where 28.6% is needed. Public curation only; the Own veto still applies.
+
+**Suggested fix:** include `totalSupplyAt(e+1)` in `totalStake`, so the stake added in the current
+epoch is in the total.
+
+## A6-L-13 — A change to the compliant curators shares out income earned before the change (Low, Open, new round 4)
+
+`FundCurators._distributeAll` (`src/funds/FundCurators.sol:405`), called by `addCurator`,
+`removeCurator`, `replaceCurator` and `checkCompliance`. Round 4: 1 agent in pass 1 (lead),
+2 in pass 2.
+
+`_distributeAll` shares out only what the module already holds. It does not run
+`FundStaking.accrue` (the curators' 15% yield cut) or `FundVenue.collectTax` (Hookr tax waiting in
+the Directional Tax queues) first, so income earned under the old set is shared by the new set.
+The NatSpec says income goes to the curators that were compliant when it came in. Example: a
+curator calls `flip`, which makes another curator non-compliant, then calls `payCreator` in the
+same transaction: a week of queued tax (9,000) is split only among the remaining curators, and
+the removed curator loses its 2,000. A 3-day accrual gap on 1,000,000 staked at 24% leaves ~296
+unminted curator tokens, ~99 of which move. The hourly accrual and daily `collectTax` keepers
+keep the gap small.
+
+**Suggested fix:** at the start of `_distributeAll`, call `accrue()` on staking and
+`collectTax()` on the venue (in a `try`), so income earned before the change is shared first.
+
 ---
 
 ## Leads (not scored — trails for manual review)
 
 Carried from round 1 and still present at `9fe95f7` unless marked *new*. Re-checked at `68aef25`
-in round 3: all still present except the two now booked as A6-M-17 and A6-M-18.
+in round 3: all still present except the two now booked as A6-M-17 and A6-M-18. Round 4 at `aff2e91`:
+the two booked as A6-L-11 and A6-L-12 and the three on removed code are marked; the leads marked
+*new, round 4* are from the new venue and the code around it.
 
 - **Unstake + restake in one epoch lowers the recorded supply** — `FundStaking._recordSupply`.
   Booked as A6-M-18 in round 3.
@@ -947,7 +1079,7 @@ in round 3: all still present except the two now booked as A6-M-17 and A6-M-18.
   At a 0.3% LP fee the gap was ~0.3% of NAV after 10 idle days, below the 2% fees.
 - **Propose measures next-epoch power against current-epoch supply** — `ProposalBook.propose`:
   stake + escrow + propose in one epoch votes against a denominator without that stake, so
-  quorum is reached with less. Raised again in round 2.
+  quorum is reached with less. Raised again in round 2. Booked as A6-L-12 in round 4.
 - **Stale basket feed through the grace period turns a successful raise into a refund** —
   `FundLaunch.markFailed`; `finalize` uses the hard `price()` for every launch asset.
 - **Anyone picks the moment that fixes every launch close price** — `FundLaunch.finalize`, now
@@ -967,7 +1099,7 @@ in round 3: all still present except the two now booked as A6-M-17 and A6-M-18.
 - **Lowering spot before someone's redeem moves value to other holders** —
   `FundHook.redeemPosition` (removal at spot, pay at `min(spot, TWAP cap)`). Profit not shown.
 - **An extreme tick held across one second moves the 30-minute TWAP by ~5%** —
-  `FundHook._observe`; feeds `premiumBps` (A6-M-06) and `_poolAndSupplyAt` (A6-M-01).
+  `FundHook._observe`; feeds `premiumBps` (A6-M-06) and `_poolAndSupplyAt` (A6-M-01). Code removed in `ebdf14f`.
 - **`zapMint` accepts USDG / basket tokens as routers** — `FundMintZap.zapMint` only rejects
   `router == fund`, unlike the redeem zap and rebalance; if the admin ever allows such a router,
   anyone spends other users' allowances to the zap.
@@ -985,7 +1117,7 @@ in round 3: all still present except the two now booked as A6-M-17 and A6-M-18.
   Documented ("each top-up re-spreads what is left"), but dust buys can keep delaying the pot.
 - ***New:* the TWAP feed always reports the current block as `updatedAt`** —
   `FundTwapFeed.latestRoundData`; `consult` accepts a checkpoint of any age, so the oracle's
-  staleness bound never rejects an old pool price after days without swaps. No gain shown.
+  staleness bound never rejects an old pool price after days without swaps. No gain shown. Code removed in `ebdf14f`.
 - ***New:* a new NAV mint joins an expiring lock and unlocks in days** —
   `FundStaking._joinMintLock`. 10M NAV-locked shares with 1 h left plus a 1M NAV mint unlock
   together in ~16 days, not 180. Profit after fees not computed.
@@ -996,7 +1128,7 @@ in round 3: all still present except the two now booked as A6-M-17 and A6-M-18.
   `FundStaking._settleBoost` is permissionless and converts at the NAV of the call. Gain not sized.
 - ***New:* a buy above NAV and a sell back fund the pot from holders** — `PoolIssuance.issue`:
   75% of the issued premium goes to the reserve, while the fund's position buys the tokens back
-  near spot. Net gain after fees not simulated.
+  near spot. Net gain after fees not simulated. Booked as A6-L-11 in round 4.
 - ***New:* a stale price moves part of the reserve to a minter or redeemer** —
   `Fund._mintQuote` / `_claim` scale the slice by `(T − R) / T` at oracle prices. Below the 2%
   round-trip fees in the numbers tried; grows with the reserve share.
@@ -1012,7 +1144,7 @@ in round 3: all still present except the two now booked as A6-M-17 and A6-M-18.
   `FundAuctions.openLot` does not check lots against target weights; ~0.3% of the basket a day
   could leave within the daily cap. Manager trust model not confirmed.
 - ***New:* exact-output swaps pay the fund fee on the net USDG amount** — `FundHook.beforeSwap` /
-  `afterSwap`: the effective rate is f/(1+f), so at the 1% default a trader saves ~1% of the fee.
+  `afterSwap`: the effective rate is f/(1+f), so at the 1% default a trader saves ~1% of the fee. Code removed in `ebdf14f`.
 - ***New:* several missed epochs tally in one block** — `FundGovernor.flip`; each call moves
   weights by the weekly shift, so after four missed weeks they move 2,000 bps at once.
 - ***New:* every flip reverts if a kept basket asset loses its feed** — `FundRebalance.setBasket`
@@ -1063,8 +1195,46 @@ in round 3: all still present except the two now booked as A6-M-17 and A6-M-18.
 - ***New, round 3:* locked voters claim a bribe for a token that left the basket** —
   `FundBribes.claimBribe`: carried-over allocations keep `_bribeVotes` above 0 after `_drop`,
   so the briber cannot refund. How often a dropped token keeps bribe votes was not checked.
+- ***New, round 4:* a narrow outside position changes how much `issue` sells** —
+  `PoolIssuance.target` / `FundVenue.issue` treat the liquidity at the current tick as constant
+  down to the target, so a narrow LP range near spot stops the sale early (the anchor reset then
+  drops what stays due) or lets it run to the hourly cap. Raised by 5 agent runs; no LP profit
+  shown.
+- ***New, round 4:* the venue can sell new tokens below NAV after the sell tax** —
+  `FundVenue.issue`: the sale starts at NAV × 1.01 by default and pays Hookr's sell tax (up to
+  10%), and nothing ties `issuanceStartBps` to the tax. Loss not sized.
+- ***New, round 4:* `issue` values the position at the last fund price, however old** —
+  `FundVenue._reference` reads `lastPrice` with no age limit for the pot and the issuance start.
+- ***New, round 4:* someone can open the fund's Hookr pool before the venue** —
+  `FundVenue.seedPool`: the pool key is fixed by the root, USDG and the settings, so a pool opened
+  first makes `seedPool` revert. Not checked whether Hookr lets a non-owner launch the token.
+- ***New, round 4:* a Hookr withdraw or a USDG pause blocks every redeem** — `Fund._redeem`: the
+  A6-M-07 skip list covers basket tokens, not the pool leg or USDG. Hookr and USDG pause powers
+  not checked.
+- ***New, round 4:* `collectTax` and `lastPrice` call addresses without a code check** —
+  `FundVenue.collectTax` (a queue with no code fails both queues) and `FundOracle.lastPrice` (a
+  verifier with no code reverts every redeem through `_reference`). Misconfiguration only.
+- ***New, round 4:* a clamped hub price is marked fresh** — `FundPriceHub.pushPrices` sets
+  `updatedAt` to now on a clamped push, so after a crash in a hub-priced asset `FundAuctions.fill`
+  passes its value check at a price the hub knows is wrong. The daily cap limits it; not sized.
+- ***New, round 4:* a spot lift turns a locked direct mint into an unlocked capped mint** —
+  `Fund._poolMintPrice` uses `max(oracle, spot)`, so with a negative `mintAdjustmentBps` a caller
+  lifts spot, mints unlocked at the cap and sells into the pool. No profit at zero or above.
+- ***New, round 4:* mint at NAV adds the pool share as idle USDG, redeem takes it from the
+  pool** — `Fund.mint` / `_redeem`: mint-and-redeem cycles move value out of the pool position.
+  No profit shown.
+- ***New, round 4:* the old and the new protocol curator both cast the protocol slice** —
+  `ProposalBook._curatorVotes` reads the protocol curator live and keys `voted` by address, so
+  rotating it while a proposal is open counts the slice twice. Residual of the A6-L-08 fix;
+  admin-triggered.
+- ***New, round 4:* a flip while a price is stale gives no compliance verdict** —
+  `FundCurators.checkCompliance`: a curator below the minimum calls `flip` while a basket price is
+  stale and stays compliant for that epoch.
+- ***New, round 4:* `createFund` skips the eligible-asset list** — `FundFactory.createFund` →
+  `setBasket` checks only `hasFeed`, while `curate` and a List proposal check `isEligibleAsset`.
+  No loss found.
 
-## Attacked and held (round 1, re-confirmed where round 2 touched the same code)
+## Attacked and held (round 1, re-confirmed where later rounds touched the same code)
 
 - Fund mint/redeem rounding: ceil on deposit, floor on payout; minted fund tokens never exceed
   `navShares`; `RedeemTooLarge` holds.
@@ -1091,3 +1261,6 @@ in round 3: all still present except the two now booked as A6-M-17 and A6-M-18.
   rule while the governor stays the same, `_joinMintLock` weighting, vote / bribe / power
   aggregates, `GaugeMath` sums, curator vesting and `_forfeit` reentrancy, lot pricing, zap
   approvals, initializers and upgrade gates, and every downcast traced.
+- Round 4: governor and bribe tallies, curator income and vesting, staking locks and boosts, the
+  zaps, auctions, price hub, launch points and gauge math held; `withdrawPosition` without a spot
+  check costs a sandwicher (~0.0125·L) rather than holders.
