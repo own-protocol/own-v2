@@ -6,32 +6,34 @@ import {FundBribes} from "../../src/funds/FundBribes.sol";
 import {FundCurators} from "../../src/funds/FundCurators.sol";
 import {FundFactory} from "../../src/funds/FundFactory.sol";
 import {FundGovernor} from "../../src/funds/FundGovernor.sol";
-import {FundHook} from "../../src/funds/FundHook.sol";
 import {FundLaunch} from "../../src/funds/FundLaunch.sol";
 import {FundOracle} from "../../src/funds/FundOracle.sol";
 import {FundStaking} from "../../src/funds/FundStaking.sol";
+import {FundVenue} from "../../src/funds/FundVenue.sol";
 import {IFund} from "../../src/interfaces/IFund.sol";
 import {IFundFactory} from "../../src/interfaces/IFundFactory.sol";
 import {IFundLaunch} from "../../src/interfaces/IFundLaunch.sol";
 import {IFundStaking} from "../../src/interfaces/IFundStaking.sol";
+import {IHookrLauncher} from "../../src/interfaces/external/IHookr.sol";
 
 import {
     CreateFundParams,
     IssuanceConfig,
     IssuanceStep,
     LaunchConfig,
+    PoolSettings,
     YieldPoint
 } from "../../src/interfaces/types/FundTypes.sol";
 import {ProtocolRegistry} from "../../src/registry/ProtocolRegistry.sol";
 import {Actors} from "./Actors.sol";
 import {MockAggregatorV3} from "./MockAggregatorV3.sol";
 import {MockERC20} from "./MockERC20.sol";
+import {MockHookr} from "./MockHookr.sol";
 import {MockPositionManager} from "./MockPositionManager.sol";
 import {PoolManagerBytecode} from "./v4/PoolManagerBytecode.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import {Test} from "forge-std/Test.sol";
 import {IPoolManager} from "v4-core/src/interfaces/IPoolManager.sol";
-import {Hooks} from "v4-core/src/libraries/Hooks.sol";
 import {TickMath} from "v4-core/src/libraries/TickMath.sol";
 import {PoolSwapTest} from "v4-core/src/test/PoolSwapTest.sol";
 import {BalanceDelta} from "v4-core/src/types/BalanceDelta.sol";
@@ -56,7 +58,8 @@ abstract contract FundTestBase is Test {
     ProtocolRegistry internal registry;
     FundOracle internal oracle;
     FundFactory internal factory;
-    FundHook internal hook;
+    MockHookr internal hookr;
+    FundVenue internal venue;
 
     MockERC20 internal usdg;
     MockERC20 internal net; // 9 decimals, $300
@@ -87,7 +90,7 @@ abstract contract FundTestBase is Test {
         vm.stopPrank();
         oracle = new FundOracle(address(registry));
 
-        usdg = new MockERC20("Global Dollar", "USDG", 6);
+        usdg = _deployUsdg();
         net = new MockERC20("NetNet", "NET", 9);
         pons = new MockERC20("Pons", "PONS", 18);
         tsla = new MockERC20("Tesla", "TSLA", 18);
@@ -99,36 +102,45 @@ abstract contract FundTestBase is Test {
         _setFeed(address(spare), 1e8);
 
         FundFactory factoryImpl = new FundFactory();
-        address[6] memory impls = [
+        address[7] memory impls = [
             address(new Fund(address(usdg))),
             address(new FundLaunch()),
             address(new FundStaking(positionManager)),
             address(new FundGovernor()),
             address(new FundCurators()),
-            address(new FundBribes())
+            address(new FundBribes()),
+            _deployVenue()
         ];
         bytes memory init = abi.encodeCall(
             FundFactory.initialize, (address(registry), address(oracle), address(usdg), protocolCurator, impls)
         );
         factory = FundFactory(address(new ERC1967Proxy(address(factoryImpl), init)));
 
-        uint160 flags = Hooks.BEFORE_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG
-            | Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG | Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG;
-        address hookAddr = address((uint160(0x4444) << 144) | flags);
-        address hookImpl = address(new FundHook(poolManager, factory));
-        deployCodeTo(
-            "ERC1967Proxy.sol:ERC1967Proxy", abi.encode(hookImpl, abi.encodeCall(FundHook.initialize, ())), hookAddr
-        );
-        hook = FundHook(hookAddr);
-
         vm.startPrank(admin);
-        factory.setHook(hookAddr);
         factory.setLauncher(launcher, true);
         // Most tests use a 1.3x opening premium; launches open at NAV by default.
         LaunchConfig memory lc = factory.launchConfig();
         lc.launchPremiumBps = 3000;
         factory.setLaunchConfig(lc);
         vm.stopPrank();
+    }
+
+    function _deployUsdg() internal virtual returns (MockERC20) {
+        return new MockERC20("Global Dollar", "USDG", 6);
+    }
+
+    /// @dev The venue implementation; by default on {MockHookr} over the test's pool manager.
+    function _deployVenue() internal virtual returns (address) {
+        hookr = new MockHookr(poolManager);
+        return address(
+            new FundVenue(
+                IHookrLauncher(address(hookr)),
+                makeAddr("hookrRoot"),
+                makeAddr("hookrRules"),
+                address(hookr),
+                address(usdg)
+            )
+        );
     }
 
     function _deployPoolManager() internal virtual returns (IPoolManager) {
@@ -172,6 +184,13 @@ abstract contract FundTestBase is Test {
         p.yieldCurve[0] = YieldPoint({premiumBps: 1000, rateBpsPerYear: 3650});
         p.yieldCurve[1] = YieldPoint({premiumBps: 5000, rateBpsPerYear: 7300});
         p.yieldCurve[2] = YieldPoint({premiumBps: 10_000, rateBpsPerYear: 10_950});
+        p.pool = PoolSettings({
+            buyTaxPips: 10_500,
+            sellTaxPips: 10_500,
+            hookrShareBps: 2381,
+            lpFeePips: 2000,
+            tickSpacing: 60
+        });
     }
 
     function _createFund() internal {
@@ -189,6 +208,7 @@ abstract contract FundTestBase is Test {
         governor = FundGovernor(m.governor);
         curators = FundCurators(m.curators);
         bribes = FundBribes(m.bribes);
+        venue = FundVenue(m.venue);
         vm.prank(admin);
         governor.setPublicCuration(true);
     }
@@ -201,6 +221,15 @@ abstract contract FundTestBase is Test {
     ///      M = P * S / (1.3 * V + P) = ~17 333 tokens, depositors share ~112 667, NAV is
     ///      $125k / 112.67k = ~$1.1095 and the pool opens at 1.3x that.
     function _launchDefault() internal {
+        _finalizeDefault();
+        vm.prank(keeper);
+        launch.seedPool();
+        // The hub's first signed TWAP: the opening price.
+        _setFundPrice(venue.spotPrice());
+    }
+
+    /// @dev {_launchDefault} up to the close, before the pool is seeded.
+    function _finalizeDefault() internal {
         _createFund();
         vm.warp(launch.endTime() - 1);
         _refreshFeeds();
@@ -213,9 +242,6 @@ abstract contract FundTestBase is Test {
         vm.warp(launch.endTime());
         _refreshFeeds();
         launch.finalize();
-        vm.prank(keeper);
-        launch.seedPool();
-        _setFeed(address(fund), _navPrice() * 13 / 10);
     }
 
     /// @dev NAV in 8-decimal feed units.
@@ -231,32 +257,48 @@ abstract contract FundTestBase is Test {
         vm.stopPrank();
     }
 
+    /// @dev `answer` has 8 decimals. The fund token's feed has 18, like the price hub's, so it can
+    ///      carry the pool price exactly.
     function _setFeed(address asset, int256 answer) internal {
-        MockAggregatorV3 feed = feeds[asset];
+        bool isFund = asset == address(fund);
+        _feed(asset, isFund ? 18 : 8).setAnswer(isFund ? answer * 1e10 : answer, block.timestamp);
+    }
+
+    /// @dev Sets the fund token's oracle price, 18 decimals.
+    function _setFundPrice(
+        uint256 price
+    ) internal {
+        _feed(address(fund), 18).setAnswer(int256(price), block.timestamp);
+    }
+
+    /// @dev The fund token's oracle price, 18 decimals.
+    function _fundPrice() internal view returns (uint256) {
+        return uint256(feeds[address(fund)].answer());
+    }
+
+    function _feed(address asset, uint8 decimals) private returns (MockAggregatorV3 feed) {
+        feed = feeds[asset];
         if (address(feed) == address(0)) {
-            feed = new MockAggregatorV3(8);
+            feed = new MockAggregatorV3(decimals);
             feeds[asset] = feed;
             vm.prank(admin);
             oracle.setFeed(asset, address(feed), STALENESS);
         }
-        feed.setAnswer(answer, block.timestamp);
     }
 
     function _refreshFeeds() internal {
-        address[4] memory list = [address(net), address(pons), address(tsla), address(spare)];
+        address[5] memory list = [address(net), address(pons), address(tsla), address(spare), address(fund)];
         for (uint256 i; i < list.length; ++i) {
-            _setFeed(list[i], feeds[list[i]].answer());
-        }
-        if (address(fund) != address(0) && address(feeds[address(fund)]) != address(0)) {
-            _setFeed(address(fund), feeds[address(fund)].answer());
+            MockAggregatorV3 feed = feeds[list[i]];
+            if (list[i] != address(0) && address(feed) != address(0)) feed.setAnswer(feed.answer(), block.timestamp);
         }
     }
 
     /// @dev Turns pool issuance off, for tests of the pool's own fees and liquidity.
     function _noIssuance() internal {
         vm.prank(admin);
-        hook.setIssuance(
-            address(fund), IssuanceConfig({startBps: 100, potShareBps: 7500, steps: new IssuanceStep[](0)})
+        venue.setIssuance(
+            IssuanceConfig({startBps: 100, potShareBps: 7500, hourlyCapBps: 500, steps: new IssuanceStep[](0)})
         );
     }
 
@@ -273,7 +315,7 @@ abstract contract FundTestBase is Test {
     /// @param amountSpecified Negative for exact input, positive for exact output (v4 convention).
     function _poolSwap(address who, bool buy, int256 amountSpecified) internal returns (BalanceDelta delta) {
         if (address(_swapRouter) == address(0)) _swapRouter = new PoolSwapTest(poolManager);
-        PoolKey memory key = hook.poolKeyOf(address(fund));
+        PoolKey memory key = venue.poolKey();
         bool usdgIs0 = Currency.unwrap(key.currency0) == address(usdg);
         bool zeroForOne = buy == usdgIs0;
         usdg.mint(who, 1e30);
@@ -291,6 +333,22 @@ abstract contract FundTestBase is Test {
             ""
         );
         vm.stopPrank();
+        int128 usdgDelta = usdgIs0 ? delta.amount0() : delta.amount1();
+        _bookTax(buy, uint256(int256(usdgDelta < 0 ? -usdgDelta : usdgDelta)));
+    }
+
+    /// @dev Stands in for Hookr's Directional Tax on a swap moving `usdgAmount`: books the creator
+    ///      share of the tax in that direction's queue, and has the venue pay it out.
+    function _bookTax(bool buy, uint256 usdgAmount) internal {
+        // Hookr's live pools take the tax themselves.
+        if (address(hookr) == address(0)) return;
+        PoolSettings memory s = venue.poolSettings();
+        (address buyQueue, address sellQueue) = venue.taxQueues();
+        address queue = buy ? buyQueue : sellQueue;
+        if (queue == address(0)) return;
+        uint256 tax = usdgAmount * (buy ? s.buyTaxPips : s.sellTaxPips) / 1e6;
+        usdg.mint(queue, tax - tax * s.hookrShareBps / 10_000);
+        venue.collectTax();
     }
 
     // ──────────────────────────────────────────────────────────

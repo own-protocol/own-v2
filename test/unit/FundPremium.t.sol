@@ -4,8 +4,9 @@ pragma solidity 0.8.28;
 import {IFund} from "../../src/interfaces/IFund.sol";
 import {IFundFactory} from "../../src/interfaces/IFundFactory.sol";
 import {IFundGovernor} from "../../src/interfaces/IFundGovernor.sol";
-import {IFundHook} from "../../src/interfaces/IFundHook.sol";
+
 import {IFundStaking} from "../../src/interfaces/IFundStaking.sol";
+import {IFundVenue} from "../../src/interfaces/IFundVenue.sol";
 import {
     CreateFundParams,
     IssuanceConfig,
@@ -74,22 +75,28 @@ contract FundPremiumTest is FundTestBase {
 
     /// @dev Square root of the pool price, USDG per fund token in raw units, Q96.
     function _q() internal view returns (uint256) {
-        PoolKey memory key = hook.poolKeyOf(address(fund));
+        PoolKey memory key = venue.poolKey();
         (uint160 sqrtPrice,,,) = poolManager.getSlot0(key.toId());
         return Currency.unwrap(key.currency0) == address(usdg) ? (uint256(1) << 192) / sqrtPrice : sqrtPrice;
     }
 
-    /// @dev Pool swap returning the hook's issuance for it (zeros when nothing was issued).
+    /// @dev Pool swap followed by the keeper's issue call, returning what it issued (zeros when
+    ///      nothing was).
     function _swapIssued(
         address who,
         bool buy,
         int256 amountSpecified
     ) internal returns (uint256 usdgIn, uint256 issued, uint256 pot) {
-        vm.recordLogs();
         _poolSwap(who, buy, amountSpecified);
+        return _issue();
+    }
+
+    function _issue() internal returns (uint256 usdgIn, uint256 issued, uint256 pot) {
+        vm.recordLogs();
+        venue.issue();
         Vm.Log[] memory logs = vm.getRecordedLogs();
         for (uint256 i; i < logs.length; ++i) {
-            if (logs[i].emitter == address(hook) && logs[i].topics[0] == IFundHook.Issued.selector) {
+            if (logs[i].emitter == address(venue) && logs[i].topics[0] == IFundVenue.Issued.selector) {
                 (usdgIn, issued, pot) = abi.decode(logs[i].data, (uint256, uint256, uint256));
             }
         }
@@ -99,6 +106,23 @@ contract FundPremiumTest is FundTestBase {
         int256 amountSpecified
     ) internal returns (uint256 usdgIn, uint256 issued, uint256 pot) {
         return _swapIssued(carol, true, amountSpecified);
+    }
+
+    /// @dev Of the tokens an issuing sale sells, those that move the price: the pool's LP fee keeps
+    ///      the rest.
+    function _lessLpFee(
+        uint256 issued
+    ) internal pure returns (uint256) {
+        return issued * (1e6 - 2000) / 1e6;
+    }
+
+    /// @dev ln(x), x >= 1 with 18 decimals, by the atanh series (close for x up to about 2).
+    function _ln(
+        uint256 x
+    ) internal pure returns (uint256) {
+        uint256 z = (x - 1e18) * 1e18 / (x + 1e18);
+        uint256 z2 = z * z / 1e18;
+        return 2 * (z + z * z2 / 3e18 + z * z2 / 1e18 * z2 / 5e36 + z * z2 / 1e18 * z2 / 1e18 * z2 / 7e36);
     }
 
     function _steps(uint32 secondAt, uint16 first, uint16 second) internal pure returns (IssuanceStep[] memory s) {
@@ -122,39 +146,35 @@ contract FundPremiumTest is FundTestBase {
         (, uint256 supply) = _nav();
         uint256 q0 = _q();
         (, uint256 issued,) = _buy(-int256(50e6));
-        uint256 q1 = _q();
-        // `c * dq / q1` with c = 2 d S / ln 2: d of supply per doubling of price (dq / q = ln 2 / 2).
-        uint256 expected = Math.mulDiv(supply * 100 / 10_000, K * (q1 - q0), 1e18 * q1);
-        // The pool's LP fee moves its price a hair less than the split assumes.
+        uint256 q2 = _q();
+        // `c * dq / q` with c = 2 d S / ln 2: d of supply per doubling of price (dq / q = ln 2 / 2).
+        uint256 expected = Math.mulDiv(supply * 100 / 10_000, K * (q2 - q0), 1e18 * q2);
+        // The pool's LP fee moves its price a hair less than the target assumes.
         assertApproxEqRel(issued, expected, 0.005e18);
     }
 
     function test_issuance_densityFollowsSteps() public {
         vm.prank(admin);
-        hook.setIssuance(
-            address(fund), IssuanceConfig({startBps: 100, potShareBps: 7500, steps: _steps(2000, 100, 300)})
+        venue.setIssuance(
+            IssuanceConfig({startBps: 100, potShareBps: 7500, hourlyCapBps: 500, steps: _steps(2000, 100, 300)})
         );
         (, uint256 supply) = _nav();
         uint256 q0 = _q();
         (, uint256 issued,) = _buy(-int256(50e6));
-        uint256 q1 = _q();
+        uint256 q2 = _q();
         // At a 30% premium the second step (from 20%) sets 3% per doubling.
-        uint256 expected = Math.mulDiv(supply * 300 / 10_000, K * (q1 - q0), 1e18 * q1);
+        uint256 expected = Math.mulDiv(supply * 300 / 10_000, K * (q2 - q0), 1e18 * q2);
         assertApproxEqRel(issued, expected, 0.005e18);
     }
 
-    function test_issuance_fillShareMatchesDensity() public {
-        uint256 before = fund.balanceOf(carol);
-        (uint256 usdgIn, uint256 issued,) = _buy(-int256(1000e6));
-        uint256 got = fund.balanceOf(carol) - before;
-        // The hook fills cq / (L + cq) of the buy after its 1% fee; the AMM fills the rest.
-        PoolKey memory key = hook.poolKeyOf(address(fund));
-        uint256 liquidity = poolManager.getLiquidity(key.toId());
-        assertGt(issued, 0);
-        assertLt(issued, got);
-        uint256 afterFee = 1000e6 - 10e6;
-        uint256 cq = Math.mulDiv(usdgIn, liquidity, afterFee - usdgIn);
-        assertApproxEqRel(usdgIn * 1e18 / afterFee, cq * 1e18 / (liquidity + cq), 1e12);
+    /// @dev The sale stops where the tokens it sold equal the density's issuance for the rise:
+    ///      `c ln(q2 / q0)`, with c = 2 d S / ln 2 at 1%.
+    function test_issuance_sellsDownToTarget() public {
+        (, uint256 supply) = _nav();
+        uint256 q0 = _q();
+        (, uint256 issued,) = _buy(-int256(1000e6));
+        uint256 q2 = _q();
+        assertApproxEqRel(_lessLpFee(issued), Math.mulDiv(supply * 100 * K / 10_000, _ln(q2 * 1e18 / q0), 1e36), 1e14);
     }
 
     function test_issuance_noneBelowStart() public {
@@ -163,7 +183,7 @@ contract FundPremiumTest is FundTestBase {
         fund.transfer(dave, 6000e18);
         _poolSwap(dave, false, -int256(6000e18));
         (uint256 nav,) = _nav();
-        assertLt(hook.spotPrice(address(fund)) * 100, nav * 101);
+        assertLt(venue.spotPrice() * 100, nav * 101);
 
         uint256 supply = fund.totalSupply();
         (, uint256 issued,) = _buy(-int256(100e6));
@@ -174,8 +194,8 @@ contract FundPremiumTest is FundTestBase {
 
     function test_issuance_startIsConfigurable() public {
         vm.prank(admin);
-        hook.setIssuance(
-            address(fund), IssuanceConfig({startBps: 5000, potShareBps: 7500, steps: _steps(10_000, 100, 200)})
+        venue.setIssuance(
+            IssuanceConfig({startBps: 5000, potShareBps: 7500, hourlyCapBps: 500, steps: _steps(10_000, 100, 200)})
         );
         (, uint256 issued,) = _buy(-int256(100e6)); // a 30% premium is under the 50% start
         assertEq(issued, 0);
@@ -211,6 +231,16 @@ contract FundPremiumTest is FundTestBase {
         assertEq(staking.potLeft(), 0);
     }
 
+    /// @dev After a dip the anchor follows the price down, so the recovery issues too.
+    function test_issuance_anchorFollowsPriceDown() public {
+        vm.prank(alice);
+        fund.transfer(dave, 1000e18);
+        (, uint256 issued,) = _swapIssued(dave, false, -int256(1000e18));
+        assertEq(issued, 0);
+        (, issued,) = _buy(-int256(100e6));
+        assertGt(issued, 0);
+    }
+
     function test_issuance_exactOutBuy() public {
         uint256 before = fund.balanceOf(carol);
         (uint256 usdgIn, uint256 issued, uint256 pot) = _buy(int256(500e18));
@@ -221,33 +251,57 @@ contract FundPremiumTest is FundTestBase {
         assertEq(staking.potLeft(), pot);
     }
 
-    function test_issuance_largeBuysSettle() public {
-        (, uint256 issued,) = _buy(-int256(1_000_000e6));
-        assertGt(issued, 0);
-        // Now far above 5x NAV: the 3% step.
-        (uint256 nav,) = _nav();
-        assertGt(hook.spotPrice(address(fund)), nav * 5);
-        uint256 before = fund.balanceOf(carol);
-        (, issued,) = _buy(int256(5000e18));
-        assertGt(issued, 0);
-        assertEq(fund.balanceOf(carol) - before, 5000e18);
+    function test_issuance_hourlyCap_restStaysDue() public {
+        IssuanceConfig memory c = venue.issuanceOf();
+        c.hourlyCapBps = 100;
+        c.potShareBps = 0;
+        vm.prank(admin);
+        venue.setIssuance(c);
+        (uint256 nav, uint256 supply) = _nav();
+        (, uint256 first,) = _buy(-int256(1_000_000e6));
+        // Now far above 5x NAV, where issuance would sell far more than the cap allows.
+        assertGt(venue.spotPrice(), nav * 5);
+        assertEq(first, supply * 100 / 10_000);
+        // Only the cap's growth with the supply is left this hour.
+        (, uint256 issued,) = _issue();
+        assertApproxEqRel(issued, first / 100, 0.01e18);
+
+        // The cap drains over the hour and the rest is still due.
+        vm.warp(block.timestamp + 30 minutes);
+        _refreshFeeds();
+        (, supply) = _nav();
+        (, issued,) = _issue();
+        assertApproxEqRel(issued, supply * 50 / 10_000, 0.01e18);
     }
 
-    function test_issuance_usdgCountedInPositionUntilCollected() public {
+    /// @dev A rise across a density step issues each step's density per doubling of the price.
+    function test_issuance_acrossDensityStep() public {
+        vm.prank(admin);
+        venue.setIssuance(
+            IssuanceConfig({startBps: 100, potShareBps: 7500, hourlyCapBps: 10_000, steps: _steps(4000, 100, 300)})
+        );
+        (uint256 nav, uint256 supply) = _nav();
+        uint256 q0 = _q();
+        (, uint256 issued,) = _buy(-int256(10_000e6));
+        uint256 q2 = _q();
+        uint256 step = Math.sqrt(Math.mulDiv(nav * 14 / 10 * 1e6, 1 << 192, 1e36));
+        assertGt(step, q0);
+        assertLt(step, q2);
+        uint256 due = Math.mulDiv(supply * 100 * K / 10_000, _ln(step * 1e18 / q0), 1e36)
+            + Math.mulDiv(supply * 300 * K / 10_000, _ln(q2 * 1e18 / step), 1e36);
+        assertApproxEqRel(_lessLpFee(issued), due, 1e14);
+    }
+
+    function test_issuance_usdgGoesToFund() public {
         (uint256 positionUsdg0,) = fund.positionAmounts();
         uint256 idle0 = fund.idleUsdg();
         (uint256 usdgIn,,) = _buy(-int256(2000e6));
+        // The position is valued at the oracle price, which has not moved.
         (uint256 positionUsdg1,) = fund.positionAmounts();
-        // Same block: the TWAP has not moved, so only the issuance USDG is new.
-        assertEq(positionUsdg1, positionUsdg0 + usdgIn);
-
-        (uint256 nav0,) = _nav();
-        hook.collectLpFees(address(fund));
-        assertGe(fund.idleUsdg() - idle0, usdgIn);
-        (uint256 positionUsdg2,) = fund.positionAmounts();
-        assertEq(positionUsdg2, positionUsdg0);
-        (uint256 nav1,) = _nav();
-        assertGe(nav1, nav0);
+        assertEq(positionUsdg1, positionUsdg0);
+        assertEq(fund.idleUsdg() - idle0, usdgIn);
+        assertEq(usdg.balanceOf(address(venue)), 0);
+        assertEq(fund.balanceOf(address(venue)), 0);
     }
 
     function test_issuance_poolBuysCreateNoBoost() public {
@@ -1024,7 +1078,7 @@ contract FundPremiumTest is FundTestBase {
     function test_increasePosition_addsIdleUsdgWithoutMovingNav() public {
         usdg.mint(address(fund), 10_000e6);
         (uint256 nav0, uint256 s0) = _nav();
-        uint128 liq0 = hook.positionLiquidity(address(fund));
+        uint128 liq0 = venue.positionLiquidity();
         (uint256 posUsdg0,) = fund.positionAmounts();
         uint256 idle0 = fund.idleUsdg();
         uint256 supply0 = fund.totalSupply();
@@ -1033,7 +1087,7 @@ contract FundPremiumTest is FundTestBase {
         uint128 added = fund.increasePosition(5000e6);
 
         assertGt(added, 0);
-        assertEq(hook.positionLiquidity(address(fund)), liq0 + added);
+        assertEq(venue.positionLiquidity(), liq0 + added);
         assertApproxEqAbs(idle0 - fund.idleUsdg(), 5000e6, 1);
         (uint256 posUsdg1,) = fund.positionAmounts();
         assertApproxEqRel(posUsdg1 - posUsdg0, 5000e6, 1e15);
@@ -1041,8 +1095,8 @@ contract FundPremiumTest is FundTestBase {
         (uint256 nav1, uint256 s1) = _nav();
         assertApproxEqRel(s1, s0, 1e15); // outside supply
         assertApproxEqRel(nav1, nav0, 1e15);
-        assertEq(IERC20(address(fund)).balanceOf(address(hook)), 0);
-        assertEq(usdg.balanceOf(address(hook)), 0);
+        assertEq(IERC20(address(fund)).balanceOf(address(venue)), 0);
+        assertEq(usdg.balanceOf(address(venue)), 0);
     }
 
     function test_increasePosition_thenWithdraw() public {
@@ -1051,7 +1105,7 @@ contract FundPremiumTest is FundTestBase {
         uint128 added = fund.increasePosition(5000e6);
         uint256 idle = fund.idleUsdg();
         vm.prank(admin);
-        hook.withdrawPosition(address(fund), added);
+        venue.withdrawPosition(added);
         assertApproxEqRel(fund.idleUsdg() - idle, 5000e6, 1e15);
     }
 
@@ -1059,15 +1113,15 @@ contract FundPremiumTest is FundTestBase {
         usdg.mint(address(fund), 10_000e6);
         vm.expectRevert(IFund.NotAdmin.selector);
         fund.increasePosition(1000e6);
-        vm.expectRevert(IFundHook.NotRegistered.selector);
-        hook.increasePosition(1000e6);
+        vm.expectRevert(IFundVenue.NotFund.selector);
+        venue.increasePosition(1000e6);
     }
 
-    function test_increasePosition_spotOffTwap_reverts() public {
+    function test_increasePosition_spotOffReference_reverts() public {
         usdg.mint(address(fund), 10_000e6);
-        _poolSwap(dave, true, -int256(5000e6)); // spot jumps, the TWAP has not moved
+        _poolSwap(dave, true, -int256(5000e6)); // spot jumps, the oracle has not moved
         vm.prank(admin);
-        vm.expectRevert(IFundHook.PriceOffTwap.selector);
+        vm.expectRevert(IFundVenue.PriceOffReference.selector);
         fund.increasePosition(1000e6);
     }
 
@@ -1104,7 +1158,7 @@ contract FundPremiumTest is FundTestBase {
         assertEq(y[2].premiumBps, 10_000);
         assertEq(y[2].rateBpsPerYear, 4800);
 
-        IssuanceConfig memory i = hook.issuanceOf(address(fund));
+        IssuanceConfig memory i = venue.issuanceOf();
         assertEq(i.startBps, 100);
         assertEq(i.potShareBps, 7500);
         assertEq(i.steps.length, 3);
@@ -1173,7 +1227,7 @@ contract FundPremiumTest is FundTestBase {
         assertEq(staking.boostShareBps(), 5000);
         assertEq(staking.boostSpeedBpsPerYear(), 10_000);
         assertEq(staking.potDripPeriod(), 3 days);
-        IssuanceConfig memory i = hook.issuanceOf(address(fund));
+        IssuanceConfig memory i = venue.issuanceOf();
         assertEq(i.startBps, 500);
         assertEq(i.potShareBps, 6000);
         assertEq(i.steps.length, 2);
@@ -1184,15 +1238,14 @@ contract FundPremiumTest is FundTestBase {
     }
 
     function test_setIssuance_adminOnlyAndBounded() public {
-        IssuanceConfig memory c = IssuanceConfig({startBps: 300, potShareBps: 5000, steps: _steps(20_000, 50, 500)});
-        vm.expectRevert(IFundHook.NotAdmin.selector);
-        hook.setIssuance(address(fund), c);
+        IssuanceConfig memory c =
+            IssuanceConfig({startBps: 300, potShareBps: 5000, hourlyCapBps: 500, steps: _steps(20_000, 50, 500)});
+        vm.expectRevert(IFundVenue.NotAdmin.selector);
+        venue.setIssuance(c);
 
         vm.startPrank(admin);
-        vm.expectRevert(IFundHook.NotRegistered.selector);
-        hook.setIssuance(dave, c);
-        hook.setIssuance(address(fund), c);
-        IssuanceConfig memory got = hook.issuanceOf(address(fund));
+        venue.setIssuance(c);
+        IssuanceConfig memory got = venue.issuanceOf();
         assertEq(got.startBps, 300);
         assertEq(got.potShareBps, 5000);
         assertEq(got.steps.length, 2);
@@ -1200,21 +1253,21 @@ contract FundPremiumTest is FundTestBase {
         assertEq(got.steps[1].densityBps, 500);
 
         c.potShareBps = 10_001;
-        vm.expectRevert(IFundHook.InvalidIssuance.selector);
-        hook.setIssuance(address(fund), c);
+        vm.expectRevert(IFundVenue.InvalidIssuance.selector);
+        venue.setIssuance(c);
         c.potShareBps = 7500;
         c.steps = _steps(0, 50, 500); // not ascending
-        vm.expectRevert(IFundHook.InvalidIssuance.selector);
-        hook.setIssuance(address(fund), c);
+        vm.expectRevert(IFundVenue.InvalidIssuance.selector);
+        venue.setIssuance(c);
         c.steps = _steps(20_000, 50, 5001);
-        vm.expectRevert(IFundHook.InvalidIssuance.selector);
-        hook.setIssuance(address(fund), c);
+        vm.expectRevert(IFundVenue.InvalidIssuance.selector);
+        venue.setIssuance(c);
         c.steps = new IssuanceStep[](9);
         for (uint256 j; j < 9; ++j) {
             c.steps[j] = IssuanceStep({premiumBps: uint32(j * 1000), densityBps: 100});
         }
-        vm.expectRevert(IFundHook.InvalidIssuance.selector);
-        hook.setIssuance(address(fund), c);
+        vm.expectRevert(IFundVenue.InvalidIssuance.selector);
+        venue.setIssuance(c);
         vm.stopPrank();
     }
 }

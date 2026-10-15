@@ -16,7 +16,7 @@ import {IERC721Receiver} from "@openzeppelin/contracts/token/ERC721/IERC721Recei
 ///           worth more fund tokens. The new tokens have no new backing: non-stakers are diluted,
 ///           which is the incentive to stake. Yield accrues before every stake and unstake, so late
 ///           stakers cannot capture it. Rates are capped by the factory's admin-set yield cap.
-///         - Premium Pot: part of the premium the hook captures on pool buys is minted as fund
+///         - Premium Pot: part of the premium the venue captures by issuing into the pool is minted as fund
 ///           tokens at NAV and held here, then drips into the vault over the drip period (7 days
 ///           by default). Variable, never promised; with less than one whole share staked the drip
 ///           is burned into backing.
@@ -39,10 +39,12 @@ import {IERC721Receiver} from "@openzeppelin/contracts/token/ERC721/IERC721Recei
 ///         depositor unlock: they can be deposited in the governor (and come back to the same
 ///         account) or unstaked (the fund tokens come back locked), but not transferred.
 ///
-///         LPs can stake their Uniswap v4 position NFT for a full-range position in the fund's
-///         pool. It earns the same yearly rate on the fund tokens it holds (valued at the pool TWAP;
-///         its USDG earns nothing), paid in fund tokens they claim. The position's swap fees stay
-///         theirs: they can collect them while staked or after. Staked positions do not vote.
+///         LPs can stake their Uniswap v4 position NFT for a full-range position in the pool the
+///         fund trades in (its venue's pool). It earns the same yearly rate on the fund tokens it
+///         holds (valued at the fund token's oracle price; its USDG earns nothing), paid in fund
+///         tokens they claim. The position's swap fees stay theirs: they can collect them while
+///         staked or after. Staked positions do not vote. When the fund moves to a new pool,
+///         positions in the old one stop earning but keep what they earned and can be unstaked.
 interface IFundStaking is IERC20, IERC721Receiver {
     /// @notice An account's lock on shares from direct mints or mints at NAV. Locked shares can be
     ///         redeemed (see {redeem}) or escrowed in the governor, but not transferred or unstaked.
@@ -102,6 +104,11 @@ interface IFundStaking is IERC20, IERC721Receiver {
     /// @param shareBps      Curators' yield as a share of the stakers' yield, in basis points.
     /// @param capBpsPerYear Cap, in basis points of the staked balance a year (0 for none).
     event CuratorYieldSet(uint16 shareBps, uint16 capBpsPerYear);
+
+    /// @notice Emitted when the fund moves to a new pool: positions staked in earlier pools stop
+    ///         earning (they keep what they earned and can always be unstaked).
+    /// @param epoch The new pool's number, counting from 0 at launch.
+    event LpPoolMoved(uint32 epoch);
 
     /// @notice Emitted when an LP position is staked.
     /// @param owner     Owner credited with the position.
@@ -210,8 +217,11 @@ interface IFundStaking is IERC20, IERC721Receiver {
     /// @notice An ERC-721 arrived from a contract other than the PositionManager.
     error NotPositionManager();
 
-    /// @notice The position is not in the fund's pool.
+    /// @notice The position is not in the pool the fund trades in now.
     error NotFundPosition();
+
+    /// @notice Caller is not the fund's venue.
+    error NotVenue();
 
     /// @notice The position is not full range.
     error NotFullRange();
@@ -363,13 +373,17 @@ interface IFundStaking is IERC20, IERC721Receiver {
     /// @return assets Fund tokens paid out.
     function unstake(uint256 shares, address receiver) external returns (uint256 assets);
 
+    /// @notice Close LP staking yield in the pool the fund is leaving, after accruing up to now:
+    ///         only positions in the new pool earn from here. Venue only (its migration).
+    function poolMoved() external;
+
     /// @notice Accrue yield up to now, at the lower of the rate read now and the rate read at the
     ///         last accrual. Without a fresh premium reading nothing is paid and the time waits for
     ///         the next one. Anyone can call; the keeper calls it hourly.
     /// @return minted Fund tokens minted for stakers (staked LP positions' yield is in the event).
     function accrue() external returns (uint256 minted);
 
-    /// @notice Stake a full-range position in the fund's pool. The caller must own it and have
+    /// @notice Stake a full-range position in the pool the fund trades in now. The caller must own it and have
     ///         approved this contract; sending it with the PositionManager's `safeTransferFrom`
     ///         does the same in one step.
     /// @param tokenId The position.
@@ -404,9 +418,14 @@ interface IFundStaking is IERC20, IERC721Receiver {
     /// @return The PositionManager.
     function positionManager() external view returns (IPositionManager);
 
-    /// @notice Liquidity of all staked positions.
+    /// @notice Liquidity of the staked positions in the pool the fund trades in now.
     /// @return The liquidity.
     function lpLiquidity() external view returns (uint128);
+
+    /// @notice How many times the fund has moved pool; positions staked before the last move stop
+    ///         earning.
+    /// @return The current pool's number.
+    function lpEpoch() external view returns (uint32);
 
     /// @notice A staked position.
     /// @param tokenId The position.

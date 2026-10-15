@@ -4,8 +4,8 @@ pragma solidity 0.8.28;
 import {IFund} from "../interfaces/IFund.sol";
 import {IFundAuctions} from "../interfaces/IFundAuctions.sol";
 import {IFundFactory} from "../interfaces/IFundFactory.sol";
-import {IFundHook} from "../interfaces/IFundHook.sol";
 import {IFundOracle} from "../interfaces/IFundOracle.sol";
+import {IFundVenue} from "../interfaces/IFundVenue.sol";
 import {BPS, PRECISION} from "../interfaces/types/Types.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
@@ -80,7 +80,7 @@ contract FundAuctions is IFundAuctions, ReentrancyGuardTransient {
         IFundFactory fac = IFundFactory(factory);
         if (!fac.isFund(fund)) revert NotFund();
         _checkManager(fac, fund);
-        if (!IFundHook(fac.hook()).isSeeded(fund)) revert NotSeeded();
+        if (!IFundVenue(IFund(fund).venue()).isSeeded()) revert NotSeeded();
         _checkAssets(fund, sellAsset, buyAsset);
         if (amount == 0 || amount > IERC20(sellAsset).balanceOf(fund)) revert ZeroAmount();
 

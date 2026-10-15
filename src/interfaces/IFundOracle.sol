@@ -6,8 +6,8 @@ pragma solidity 0.8.28;
 ///         feeds for assets without Chainlink), or a ticker on the protocol's in-house oracle verifier
 ///         (the registry's INHOUSE_ORACLE: Chainlink while the feed is live, the in-house signer within
 ///         a band of the last Chainlink answer while it is silent, e.g. stocks over the weekend).
-///         A fund token's own market price (its pool TWAP, served by `FundTwapFeed`) is read
-///         through the same surface, keyed by the fund token address.
+///         A fund token's own market price (its pool's TWAP, signed by the oracle and pushed to a
+///         `FundPriceHub` feed) is read through the same surface, keyed by the fund token address.
 interface IFundOracle {
     /// @notice Price source for one asset.
     /// @param aggregator   Chainlink `AggregatorV3`-compatible feed (USD per whole token); zero for a
@@ -86,6 +86,15 @@ interface IFundOracle {
     function tryPrice(
         address asset
     ) external view returns (bool ok, uint256 value);
+
+    /// @notice The latest positive price for `asset`, whatever its age; zero when there is none.
+    ///         For reads that must not fail when a feed lapses, where an old price is safer than
+    ///         any onchain spot price.
+    /// @param asset The asset.
+    /// @return The price, 18 decimals.
+    function lastPrice(
+        address asset
+    ) external view returns (uint256);
 
     /// @notice Whether `asset` has a feed.
     /// @param asset The asset.

@@ -9,7 +9,6 @@ import {FundBribes} from "../../src/funds/FundBribes.sol";
 import {FundCurators} from "../../src/funds/FundCurators.sol";
 import {FundFactory} from "../../src/funds/FundFactory.sol";
 import {FundGovernor} from "../../src/funds/FundGovernor.sol";
-import {FundHook} from "../../src/funds/FundHook.sol";
 import {FundLaunch} from "../../src/funds/FundLaunch.sol";
 
 import {FundMintZap} from "../../src/funds/FundMintZap.sol";
@@ -17,21 +16,20 @@ import {FundOracle} from "../../src/funds/FundOracle.sol";
 import {FundPriceHub} from "../../src/funds/FundPriceHub.sol";
 import {FundRedeemZap} from "../../src/funds/FundRedeemZap.sol";
 import {FundStaking} from "../../src/funds/FundStaking.sol";
+import {FundVenue} from "../../src/funds/FundVenue.sol";
 import {IFundFactory} from "../../src/interfaces/IFundFactory.sol";
 import {IProtocolRegistry} from "../../src/interfaces/IProtocolRegistry.sol";
+import {IHookrLauncher} from "../../src/interfaces/external/IHookr.sol";
 import {PlatformMetadata} from "../../src/interfaces/types/FundTypes.sol";
-import {HookMiner} from "./HookMiner.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
-import {IPoolManager} from "v4-core/src/interfaces/IPoolManager.sol";
-import {Hooks} from "v4-core/src/libraries/Hooks.sol";
 
 /// @title DeployFundsRobinhood — Own Curated Funds platform on Robinhood Chain
-/// @notice Deploys the oracle, the six module implementations, the factory proxy, the Uniswap v4
-///         hook proxy (UUPS) at a mined CREATE2 address, the mint and redeem zaps, the Dutch
-///         auction house for rebalancing and the price hub for assets without a Chainlink feed.
-///         The factory, hook, oracle, auction house and hub are administered by the
-///         ProtocolRegistry's ADMIN role (pauses also by OPERATOR). Wiring the hook, the auction
-///         house, the platform metadata and the USDG (and MONEY, if given) bribe tokens needs
+/// @notice Deploys the oracle, the seven module implementations (the venue's against Hookr's live
+///         contracts, so every fund pool opens on Hookr's allowlisted hook), the factory proxy, the
+///         mint and redeem zaps, the Dutch auction house for rebalancing and the price hub for
+///         assets without a Chainlink feed and for fund tokens. The factory, oracle, auction house
+///         and hub are administered by the ProtocolRegistry's ADMIN role (pauses also by OPERATOR).
+///         Wiring the auction house, the platform metadata and the USDG (and MONEY, if given) bribe tokens needs
 ///         ADMIN: executed directly when the deployer holds it, otherwise printed as
 ///         ready-to-paste Safe calls.
 ///
@@ -44,10 +42,13 @@ import {Hooks} from "v4-core/src/libraries/Hooks.sol";
 ///           pushes its pool TWAP to the hub.
 ///        3. Admin allows rebalance / zap routers: factory.setRouter(router, true).
 ///        4. Admin fills the listing eligibility list: factory.setEligibleAsset(token, true).
-///        5. Admin creates the fund (curators, fund fee, minimum curator stake in USD at NAV, 0 for
-///           none, the Own keeper as manager); after launch run AddFundTwapFeedRobinhood for its TWAP.
-///        6. The keeper finalizes each launch at its close, calls governor.flip() every
-///           Thursday 00:00 UTC and opens auction lots to move the basket to its new weights.
+///        5. Admin creates the fund (curators, fund fee, its pool's tax, Hookr share and LP fee,
+///           minimum curator stake in USD at NAV, 0 for none, the Own keeper as manager). Before
+///           the pool opens: hub.createFeed(fund), then oracle.setFeed(fund, feed, staleness); the
+///           keeper pushes the fund pool's TWAP to the hub.
+///        6. The keeper finalizes each launch at its close and seeds the pool, calls
+///           governor.flip() every Thursday 00:00 UTC, opens auction lots to move the basket to its
+///           new weights, calls venue.issue() after buys and venue.collectTax() daily.
 ///
 /// Env: DEPLOYER_PRIVATE_KEY_ROBINHOOD, PROTOCOL_REGISTRY_ROBINHOOD, PROTOCOL_CURATOR,
 ///      PRICE_KEEPER (pushes hub prices), MONEY_TOKEN (optional, allowed as a bribe token)
@@ -62,6 +63,13 @@ contract DeployFundsRobinhood is Script {
     address constant POSITION_MANAGER = 0x58daec3116aae6D93017bAAea7749052E8a04fA7;
     address constant USDG = 0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168;
 
+    // Hookr 1 on Robinhood Chain (github.com/Hookr-fun/hookr-contracts); HookrRoot is on Uniswap's
+    // routing allowlist.
+    address constant HOOKR_LAUNCHER = 0x1cf2748A6670572425eAbf9Ab9e5BC4eb2eB8Ef4;
+    address constant HOOKR_ROOT = 0x89c9FB50d1f03192230FFB1c279BB6E7d3Fe6aCc;
+    address constant HOOKR_RULES = 0x4a71c270b1520F94064268102AebD744b0DE7942;
+    address constant HOOKR_TAX = 0xE73fAD0d773b9571a7a9d2A1edc01132fF5f1e1F;
+
     uint16 constant AUCTION_START_PREMIUM_BPS = 200;
     uint16 constant AUCTION_FLOOR_DISCOUNT_BPS = 300;
     uint32 constant AUCTION_DURATION = 4 hours;
@@ -70,14 +78,11 @@ contract DeployFundsRobinhood is Script {
     // Set by _deployPeripherals for _wiring; a local would push run() past the stack limit.
     address internal _mintZap;
 
-    uint160 constant HOOK_FLAGS = Hooks.BEFORE_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG
-        | Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG | Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG;
-
     function run() external {
         require(block.chainid == ROBINHOOD_CHAIN_ID, "RPC is not Robinhood Chain (4663)");
         require(POOL_MANAGER.code.length > 0, "no v4 PoolManager");
         require(POSITION_MANAGER.code.length > 0, "no v4 PositionManager");
-        require(CREATE2_FACTORY.code.length > 0, "no CREATE2 deployer");
+        require(HOOKR_LAUNCHER.code.length > 0, "no Hookr launcher");
 
         uint256 key = vm.envUint("DEPLOYER_PRIVATE_KEY_ROBINHOOD");
         IProtocolRegistry registry = IProtocolRegistry(vm.envAddress("PROTOCOL_REGISTRY_ROBINHOOD"));
@@ -90,17 +95,9 @@ contract DeployFundsRobinhood is Script {
         FundOracle oracle = new FundOracle(address(registry));
         FundFactory factory = _deployFactory(address(registry), address(oracle), protocolCurator);
 
-        FundHook hookImpl = new FundHook(IPoolManager(POOL_MANAGER), IFundFactory(address(factory)));
-        bytes memory hookInit = abi.encodeCall(FundHook.initialize, ());
-        bytes memory args = abi.encode(address(hookImpl), hookInit);
-        (address mined, bytes32 salt) =
-            HookMiner.find(CREATE2_FACTORY, HOOK_FLAGS, type(ERC1967Proxy).creationCode, args);
-        FundHook hook = FundHook(address(new ERC1967Proxy{salt: salt}(address(hookImpl), hookInit)));
-        require(address(hook) == mined, "hook address mismatch");
-
         (address auctions, address hub) = _deployPeripherals(address(factory), address(registry));
 
-        bytes[] memory wiring = _wiring(address(hook), auctions, money);
+        bytes[] memory wiring = _wiring(auctions, money);
         for (uint256 i; i < wiring.length && isAdmin; ++i) {
             (bool ok,) = address(factory).call(wiring[i]);
             require(ok, "wiring call failed");
@@ -110,8 +107,6 @@ contract DeployFundsRobinhood is Script {
 
         console.log("FundOracle      ", address(oracle));
         console.log("FundFactory     ", address(factory));
-        console.log("FundHook        ", address(hook));
-        console.log("FundHook impl   ", address(hookImpl));
         console.log("FundAuctions    ", auctions);
         console.log("FundPriceHub    ", hub);
         console.log("Fund beacon     ", factory.beacon(IFundFactory.Module.Fund));
@@ -120,6 +115,7 @@ contract DeployFundsRobinhood is Script {
         console.log("Governor beacon ", factory.beacon(IFundFactory.Module.Governor));
         console.log("Curators beacon ", factory.beacon(IFundFactory.Module.Curators));
         console.log("Bribes beacon   ", factory.beacon(IFundFactory.Module.Bribes));
+        console.log("Venue beacon    ", factory.beacon(IFundFactory.Module.Venue));
         if (!isAdmin) {
             console.log("Deployer is not an ADMIN; an ADMIN must call, in order, on", address(factory));
             for (uint256 i; i < wiring.length; ++i) {
@@ -128,14 +124,13 @@ contract DeployFundsRobinhood is Script {
         }
     }
 
-    function _wiring(address hook, address auctions, address money) internal view returns (bytes[] memory calls) {
-        calls = new bytes[](money == address(0) ? 5 : 6);
-        calls[0] = abi.encodeCall(FundFactory.setHook, (hook));
-        calls[1] = abi.encodeCall(FundFactory.setAuctions, (auctions));
-        calls[2] = abi.encodeCall(FundFactory.setPlatformMetadata, (_platformMetadata()));
-        calls[3] = abi.encodeCall(FundFactory.setBribeToken, (USDG, true));
-        calls[4] = abi.encodeCall(FundFactory.setMintZap, (_mintZap));
-        if (money != address(0)) calls[5] = abi.encodeCall(FundFactory.setBribeToken, (money, true));
+    function _wiring(address auctions, address money) internal view returns (bytes[] memory calls) {
+        calls = new bytes[](money == address(0) ? 4 : 5);
+        calls[0] = abi.encodeCall(FundFactory.setAuctions, (auctions));
+        calls[1] = abi.encodeCall(FundFactory.setPlatformMetadata, (_platformMetadata()));
+        calls[2] = abi.encodeCall(FundFactory.setBribeToken, (USDG, true));
+        calls[3] = abi.encodeCall(FundFactory.setMintZap, (_mintZap));
+        if (money != address(0)) calls[4] = abi.encodeCall(FundFactory.setBribeToken, (money, true));
     }
 
     function _deployPeripherals(address factory, address registry) internal returns (address, address) {
@@ -149,13 +144,14 @@ contract DeployFundsRobinhood is Script {
     }
 
     function _deployFactory(address registry, address oracle, address protocolCurator) internal returns (FundFactory) {
-        address[6] memory impls = [
+        address[7] memory impls = [
             address(new Fund(USDG)),
             address(new FundLaunch()),
             address(new FundStaking(POSITION_MANAGER)),
             address(new FundGovernor()),
             address(new FundCurators()),
-            address(new FundBribes())
+            address(new FundBribes()),
+            address(new FundVenue(IHookrLauncher(HOOKR_LAUNCHER), HOOKR_ROOT, HOOKR_RULES, HOOKR_TAX, USDG))
         ];
         bytes memory init = abi.encodeCall(FundFactory.initialize, (registry, oracle, USDG, protocolCurator, impls));
         return FundFactory(address(new ERC1967Proxy(address(new FundFactory()), init)));

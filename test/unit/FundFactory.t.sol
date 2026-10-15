@@ -8,9 +8,11 @@ import {FundFactory} from "../../src/funds/FundFactory.sol";
 import {FundGovernor} from "../../src/funds/FundGovernor.sol";
 import {FundLaunch} from "../../src/funds/FundLaunch.sol";
 import {FundStaking} from "../../src/funds/FundStaking.sol";
+import {FundVenue} from "../../src/funds/FundVenue.sol";
 import {IFund} from "../../src/interfaces/IFund.sol";
 import {IFundCurators} from "../../src/interfaces/IFundCurators.sol";
 import {IFundFactory} from "../../src/interfaces/IFundFactory.sol";
+import {IHookrLauncher} from "../../src/interfaces/external/IHookr.sol";
 import {
     CreateFundParams,
     GovernanceConfig,
@@ -40,7 +42,6 @@ contract FundFactoryTest is FundTestBase {
         assertEq(factory.protocolCuratorShareBps(), 3333);
         assertTrue(factory.whitelistEnabled());
         assertEq(factory.maxRebalanceSlippageBps(), 200);
-        assertEq(factory.hook(), address(hook));
         assertEq(factory.maxYieldRateBpsPerYear(), 300 * 365);
         assertEq(factory.curatorCap(), 10);
         assertEq(factory.bribeCutBps(), 1500);
@@ -101,7 +102,9 @@ contract FundFactoryTest is FundTestBase {
 
         assertEq(launch.launchSupply(), 130_000e18);
         assertEq(launch.endTime(), block.timestamp + 7 days);
-        assertEq(address(hook.poolKeyOf(address(fund)).hooks), address(hook));
+        assertEq(fund.venue(), address(venue));
+        assertEq(venue.fund(), address(fund));
+        assertFalse(venue.isSeeded());
     }
 
     function test_createFund_defaultsSupplyAndWindow() public {
@@ -240,22 +243,23 @@ contract FundFactoryTest is FundTestBase {
         assertEq(_bareFactory().launchConfig().launchPremiumBps, 0);
     }
 
-    function test_createFund_hookNotSet_reverts() public {
-        FundFactory bare = _bareFactory();
-        CreateFundParams memory p = _defaultParams();
-        vm.prank(admin);
-        vm.expectRevert(FundFactory.HookNotSet.selector);
-        bare.createFund(p);
-    }
-
     function _bareFactory() internal returns (FundFactory bare) {
-        address[6] memory impls = [
+        address[7] memory impls = [
             address(new Fund(address(usdg))),
             address(new FundLaunch()),
             address(new FundStaking(positionManager)),
             address(new FundGovernor()),
             address(new FundCurators()),
-            address(new FundBribes())
+            address(new FundBribes()),
+            address(
+                new FundVenue(
+                    IHookrLauncher(address(hookr)),
+                    makeAddr("hookrRoot"),
+                    makeAddr("hookrRules"),
+                    address(hookr),
+                    address(usdg)
+                )
+            )
         ];
         bare = FundFactory(
             address(
@@ -268,12 +272,6 @@ contract FundFactoryTest is FundTestBase {
                 )
             )
         );
-    }
-
-    function test_setHook_once() public {
-        vm.prank(admin);
-        vm.expectRevert(FundFactory.HookAlreadySet.selector);
-        factory.setHook(address(1));
     }
 
     function test_setCuratorCap_bounded() public {

@@ -154,8 +154,9 @@ interface IFundLaunch {
     /// @notice Seed the fund's pool after the close, once the manager has rebalanced the fund to hold
     ///         the pool's USDG. The USDG is scaled down by any redemptions since the close; the fund
     ///         tokens are sized at the current NAV times `launchPremiumBps`, so the pool opens at its
-    ///         premium over NAV now. Needs a NAV price. Manager or admin.
-    function seedPool() external;
+    ///         premium over NAV now. Needs a NAV price. Manager or admin; `msg.value` is the pool
+    ///         venue's launch fee (see {IFundVenue-seedPool}).
+    function seedPool() external payable;
 
     /// @notice Mark the launch failed when nobody finalized it in time. Anyone.
     function markFailed() external;

@@ -109,6 +109,26 @@ contract FundOracle is IFundOracle {
     }
 
     /// @inheritdoc IFundOracle
+    function lastPrice(
+        address asset
+    ) external view override returns (uint256) {
+        StoredFeed memory feed = _feeds[asset];
+        if (feed.ticker != bytes32(0)) {
+            try _verifier().getPrice(feed.ticker) returns (uint256 value, uint256) {
+                return value;
+            } catch {
+                return 0;
+            }
+        }
+        if (feed.aggregator == address(0)) return 0;
+        try IAggregatorV3(feed.aggregator).latestRoundData() returns (uint80, int256 answer, uint256, uint256, uint80) {
+            return answer > 0 ? _normalise(uint256(answer), feed.decimals) : 0;
+        } catch {
+            return 0;
+        }
+    }
+
+    /// @inheritdoc IFundOracle
     function hasFeed(
         address asset
     ) external view override returns (bool) {

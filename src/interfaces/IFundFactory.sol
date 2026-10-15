@@ -12,8 +12,8 @@ import {
 } from "./types/FundTypes.sol";
 
 /// @title IFundFactory — creates Own Curated Funds and holds platform-wide settings
-/// @notice Every fund is six beacon proxies (fund token + basket, launch, staking, governor,
-///         curators, bribes) sharing the platform's oracle, USDG and pool hook. The registry's
+/// @notice Every fund is seven beacon proxies (fund token + basket, launch, staking, governor,
+///         curators, bribes, venue) sharing the platform's oracle and USDG. The registry's
 ///         ADMIN role is the platform admin (Own): it launches funds (the launcher whitelist stays in the code,
 ///         empty by default, so launches can be opened up later), and sets the protocol curator
 ///         (Own's seat among every fund's curators) and its share, rebalance routers, launch and governance defaults, the curator cap, the bribe cut and
@@ -27,7 +27,8 @@ interface IFundFactory {
         Staking,
         Governor,
         Curators,
-        Bribes
+        Bribes,
+        Venue
     }
 
     /// @notice The contracts that make up one fund.
@@ -37,6 +38,7 @@ interface IFundFactory {
     /// @param governor Its governor.
     /// @param curators Its curators module.
     /// @param bribes   Its bribes module.
+    /// @param venue    Its venue (where it trades).
     struct FundModules {
         address fund;
         address launch;
@@ -44,6 +46,7 @@ interface IFundFactory {
         address governor;
         address curators;
         address bribes;
+        address venue;
     }
 
     /// @notice Emitted when a fund is created.
@@ -304,7 +307,7 @@ interface IFundFactory {
     /// @notice Set the defaults funds created from now on start with: direct mint lock and price
     ///         adjustment, boost share and speed, pot drip period, issuance start and pot share.
     ///         Admin only; each fund's own settings are changed on the fund, its staking module and
-    ///         the hook.
+    ///         its venue.
     /// @param config New defaults.
     function setPremiumConfig(
         PremiumConfig calldata config
@@ -333,12 +336,12 @@ interface IFundFactory {
     /// @param implementation The new implementation.
     function upgradeModule(Module module, address implementation) external;
 
-    /// @notice The protocol registry whose roles administer the factory, the hook and every fund.
+    /// @notice The protocol registry whose roles administer the factory and every fund.
     /// @return The registry.
     function registry() external view returns (address);
 
     /// @notice Whether `account` holds the registry's ADMIN role: the admin of the factory, the
-    ///         hook and every fund, launch, staking vault, governor and curator set.
+    ///         every fund, launch, staking vault, governor, curator set and venue.
     /// @param account The account.
     /// @return True if it is an admin.
     function isAdmin(
@@ -374,10 +377,6 @@ interface IFundFactory {
     /// @notice The USDG token every pool is paired with.
     /// @return USDG.
     function usdg() external view returns (address);
-
-    /// @notice The Uniswap v4 hook every fund pool uses.
-    /// @return The hook.
-    function hook() external view returns (address);
 
     /// @notice The protocol curator, Own's seat among every fund's curators.
     /// @return The protocol curator.

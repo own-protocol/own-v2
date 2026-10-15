@@ -4,7 +4,7 @@ pragma solidity 0.8.28;
 import {LaunchConfig} from "../../src/interfaces/types/FundTypes.sol";
 import {FundTestBase} from "../helpers/FundTestBase.sol";
 
-/// @dev Mints and redeems read the pool position at whichever of the TWAP and spot costs the caller
+/// @dev Mints and redeems read the pool position at whichever of the oracle price and spot costs the caller
 ///      (A6-M-01, A6-M-02, A6-L-03). Depositors are unlocked at the close so they can trade at once,
 ///      and issuance is off so the pool's supply only moves with the swaps.
 contract FundPoolReadingTest is FundTestBase {
@@ -28,15 +28,14 @@ contract FundPoolReadingTest is FundTestBase {
         vm.stopPrank();
     }
 
-    /// @dev Dumps into the pool now and keeps the TWAP checkpoints coming while the low price holds.
+    /// @dev Dumps into the pool now and holds the low price long enough for the oracle's signed
+    ///      TWAP to reach it.
     function _dumpAndHold(
         uint256 hold
     ) internal {
         _poolSwap(attacker, false, -int256(DUMP));
-        for (uint256 t; t < hold; t += 5 minutes) {
-            vm.warp(block.timestamp + 5 minutes);
-            hook.poke(address(fund));
-        }
+        vm.warp(block.timestamp + hold);
+        _setFundPrice(venue.spotPrice());
         _refreshFeeds();
     }
 
@@ -72,7 +71,7 @@ contract FundPoolReadingTest is FundTestBase {
         _dumpAndHold(35 minutes);
         _buyBack();
         (, uint256 twapTokens) = fund.positionAmounts();
-        (, uint256 spotTokens) = hook.positionBounds(address(fund), false);
+        (, uint256 spotTokens) = venue.positionBounds(false);
         assertGt(twapTokens, spotTokens * 2); // the TWAP still sees the crash
         (uint256[] memory out, uint256 usdgOut) = _redeemAsCarol();
         _assertNoMoreThan(out, usdgOut, fair, fairUsdg);
@@ -95,7 +94,6 @@ contract FundPoolReadingTest is FundTestBase {
     /// @dev A dump in the same block moves spot only; the redeem keeps the TWAP reading.
     function test_redeem_sameBlockDump_paysNoMoreThanFair() public {
         vm.warp(block.timestamp + 1 hours);
-        hook.poke(address(fund));
         _refreshFeeds();
         uint256 snap = vm.snapshotState();
         (uint256[] memory fair, uint256 fairUsdg) = _redeemAsCarol();
@@ -127,8 +125,8 @@ contract FundPoolReadingTest is FundTestBase {
         _dumpAndHold(35 minutes);
         _buyBack();
         (uint256 twapUsdg, uint256 twapTokens) = fund.positionAmounts();
-        (uint256 lowUsdg, uint256 lowTokens) = hook.positionBounds(address(fund), false);
-        (uint256 highUsdg, uint256 highTokens) = hook.positionBounds(address(fund), true);
+        (uint256 lowUsdg, uint256 lowTokens) = venue.positionBounds(false);
+        (uint256 highUsdg, uint256 highTokens) = venue.positionBounds(true);
         assertLe(lowUsdg, twapUsdg);
         assertLe(lowTokens, twapTokens);
         assertGe(highUsdg, twapUsdg);

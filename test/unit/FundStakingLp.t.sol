@@ -26,11 +26,11 @@ contract FundStakingLpTest is FundTestBase {
         launch.claim(true);
         staked = staking.totalAssets();
         posm = MockPositionManager(positionManager);
-        key = hook.poolKeyOf(address(fund));
+        key = venue.poolKey();
         lower = TickMath.minUsableTick(key.tickSpacing);
         upper = TickMath.maxUsableTick(key.tickSpacing);
         // Same liquidity as the fund's own position, so it holds the same fund tokens.
-        liq = hook.positionLiquidity(address(fund));
+        liq = venue.positionLiquidity();
     }
 
     function _mint(address to, uint128 liquidity) internal returns (uint256) {
@@ -56,7 +56,7 @@ contract FundStakingLpTest is FundTestBase {
     function _fundTokensIn(
         uint128 liquidity
     ) internal view returns (uint256 tokens) {
-        (, tokens) = hook.liquidityAmounts(address(fund), liquidity);
+        (, tokens) = venue.liquidityAmounts(liquidity);
     }
 
     // ── Staking ───────────────────────────────────────────────

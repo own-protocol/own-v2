@@ -5,8 +5,8 @@ import {IFund} from "../interfaces/IFund.sol";
 import {IFundCurators} from "../interfaces/IFundCurators.sol";
 import {IFundFactory} from "../interfaces/IFundFactory.sol";
 import {IFundGovernor} from "../interfaces/IFundGovernor.sol";
-import {IFundHook} from "../interfaces/IFundHook.sol";
 import {IFundStaking} from "../interfaces/IFundStaking.sol";
+import {IFundVenue} from "../interfaces/IFundVenue.sol";
 import {IPositionManager} from "../interfaces/external/IPositionManager.sol";
 import {BPS_TO_WAD, PremiumConfig, Valuation, ValuationLib, YieldPoint} from "../interfaces/types/FundTypes.sol";
 import {BPS, PRECISION} from "../interfaces/types/Types.sol";
@@ -56,6 +56,7 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuardTrans
 
     struct LpPosition {
         address owner;
+        uint32 epoch;
         uint128 liquidity;
         uint256 paid;
     }
@@ -137,6 +138,12 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuardTrans
 
     // False until the first fresh reading sets `_lastRate`.
     bool private _rateRead;
+
+    /// @inheritdoc IFundStaking
+    uint32 public override lpEpoch;
+
+    // `_lpYieldPerLiquidity` when each earlier pool stopped earning.
+    mapping(uint32 epoch => uint256) private _lpAccAtEnd;
 
     /// @param positionManager_ The Uniswap v4 PositionManager whose positions can be staked.
     constructor(
@@ -329,7 +336,7 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuardTrans
         LpPosition storage p = _ownedPosition(tokenId);
         _accrue();
         paid = _payPosition(tokenId, p, to);
-        lpLiquidity -= p.liquidity;
+        if (p.epoch == lpEpoch) lpLiquidity -= p.liquidity;
         delete _positions[tokenId];
         positionManager.safeTransferFrom(address(this), to, tokenId);
         emit PositionUnstaked(msg.sender, tokenId, to);
@@ -356,6 +363,17 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuardTrans
         if (!_factory.isAdmin(msg.sender)) revert NotAdmin();
         if (_positions[tokenId].owner != address(0)) revert PositionIsStaked();
         positionManager.safeTransferFrom(address(this), to, tokenId);
+    }
+
+    /// @inheritdoc IFundStaking
+    function poolMoved() external override nonReentrant {
+        if (msg.sender != IFund(fund).venue()) revert NotVenue();
+        _accrue();
+        uint32 epoch = lpEpoch;
+        _lpAccAtEnd[epoch] = _lpYieldPerLiquidity;
+        lpEpoch = epoch + 1;
+        lpLiquidity = 0;
+        emit LpPoolMoved(epoch + 1);
     }
 
     /// @inheritdoc IFundStaking
@@ -416,7 +434,7 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuardTrans
         uint256 tokenId
     ) external view override returns (uint256) {
         LpPosition storage p = _positions[tokenId];
-        return Math.mulDiv(p.liquidity, _lpYieldPerLiquidity - p.paid, Q128);
+        return Math.mulDiv(p.liquidity, _lpAccOf(p.epoch) - p.paid, Q128);
     }
 
     /// @inheritdoc IFundStaking
@@ -542,7 +560,7 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuardTrans
         }
         uint256 lpMinted;
         if (lpLiq != 0) {
-            (, uint256 lpTokens) = IFundHook(_factory.hook()).liquidityAmounts(fund, lpLiq);
+            (, uint256 lpTokens) = IFundVenue(IFund(fund).venue()).liquidityAmounts(lpLiq);
             lpMinted = Math.mulDiv(lpTokens, rate * elapsed, PRECISION * YEAR);
             _lpYieldPerLiquidity += Math.mulDiv(lpMinted, Q128, lpLiq);
         }
@@ -701,10 +719,11 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuardTrans
     /// @dev Takes custody of a full-range position in the fund's pool. Its liquidity cannot change
     ///      while staked: only the owner (this contract) can modify it.
     function _stakePosition(uint256 tokenId, address owner) internal {
-        uint128 liquidity = LpPositions.fundLiquidity(positionManager, _factory.hook(), fund, tokenId);
+        uint128 liquidity = LpPositions.fundLiquidity(positionManager, IFund(fund).venue(), tokenId);
         _accrue();
         lpLiquidity += liquidity;
-        _positions[tokenId] = LpPosition({owner: owner, liquidity: liquidity, paid: _lpYieldPerLiquidity});
+        _positions[tokenId] =
+            LpPosition({owner: owner, epoch: lpEpoch, liquidity: liquidity, paid: _lpYieldPerLiquidity});
         emit PositionStaked(owner, tokenId, liquidity);
     }
 
@@ -715,8 +734,16 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuardTrans
         if (p.owner != msg.sender) revert NotPositionOwner();
     }
 
+    /// @dev Yield per unit of liquidity for positions staked in pool `epoch`: still growing for the
+    ///      current pool, frozen at the move for an earlier one.
+    function _lpAccOf(
+        uint32 epoch
+    ) internal view returns (uint256) {
+        return epoch == lpEpoch ? _lpYieldPerLiquidity : _lpAccAtEnd[epoch];
+    }
+
     function _payPosition(uint256 tokenId, LpPosition storage p, address to) internal returns (uint256 paid) {
-        uint256 acc = _lpYieldPerLiquidity;
+        uint256 acc = _lpAccOf(p.epoch);
         // Rounds down: positions are never paid more than was minted for them.
         paid = Math.mulDiv(p.liquidity, acc - p.paid, Q128);
         p.paid = acc;

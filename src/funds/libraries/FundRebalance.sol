@@ -3,9 +3,9 @@ pragma solidity 0.8.28;
 
 import {IFund} from "../../interfaces/IFund.sol";
 import {IFundFactory} from "../../interfaces/IFundFactory.sol";
-import {IFundHook} from "../../interfaces/IFundHook.sol";
 import {IFundLaunch} from "../../interfaces/IFundLaunch.sol";
 import {IFundOracle} from "../../interfaces/IFundOracle.sol";
+import {IFundVenue} from "../../interfaces/IFundVenue.sol";
 import {BasketEntry, DUST_BPS, MAX_BASKET_ASSETS} from "../../interfaces/types/FundTypes.sol";
 import {BPS, PRECISION} from "../../interfaces/types/Types.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -76,7 +76,7 @@ library FundRebalance {
         if (!fac.isRouter(params.router) || basket[params.router].listed || params.router == address(this)) {
             revert IFund.RouterNotAllowed();
         }
-        bool launching = !IFundHook(fac.hook()).isSeeded(address(this));
+        bool launching = !IFundVenue(IFund(address(this)).venue()).isSeeded();
         if (
             (!basket[params.sellAsset].listed && params.sellAsset != usdg)
                 || (!basket[params.buyAsset].listed && !(launching && params.buyAsset == usdg))

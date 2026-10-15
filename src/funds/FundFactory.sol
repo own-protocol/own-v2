@@ -6,9 +6,9 @@ import {IFundBribes} from "../interfaces/IFundBribes.sol";
 import {IFundCurators} from "../interfaces/IFundCurators.sol";
 import {IFundFactory} from "../interfaces/IFundFactory.sol";
 import {IFundGovernor} from "../interfaces/IFundGovernor.sol";
-import {IFundHook} from "../interfaces/IFundHook.sol";
 import {IFundLaunch} from "../interfaces/IFundLaunch.sol";
 import {IFundStaking} from "../interfaces/IFundStaking.sol";
+import {IFundVenue} from "../interfaces/IFundVenue.sol";
 import {IProtocolRegistry} from "../interfaces/IProtocolRegistry.sol";
 import {
     CreateFundParams,
@@ -30,9 +30,8 @@ import {UUPSUpgradeable} from "@openzeppelin/contracts/proxy/utils/UUPSUpgradeab
 /// @title FundFactory — Own Curated Funds platform hub
 /// @notice See {IFundFactory}.
 /// @dev Runs behind an ERC-1967 proxy (UUPS); storage is append-only across upgrades. It owns
-///      the six module beacons, so the registry ADMIN upgrades every fund through
-///      {upgradeModule}. The hook is wired once after deployment ({setHook}) because its address
-///      must be mined against the factory address.
+///      the seven module beacons, so the registry ADMIN upgrades every fund through
+///      {upgradeModule}.
 contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
     bytes32 private constant ADMIN_ROLE = keccak256("ADMIN");
     bytes32 private constant OPERATOR_ROLE = keccak256("OPERATOR");
@@ -72,9 +71,6 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
 
     /// @inheritdoc IFundFactory
     address public override usdg;
-
-    /// @inheritdoc IFundFactory
-    address public override hook;
 
     /// @inheritdoc IFundFactory
     uint16 public override protocolCuratorShareBps;
@@ -136,16 +132,6 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
     /// @inheritdoc IFundFactory
     address public override mintZap;
 
-    /// @notice Emitted once, when the hook is wired.
-    /// @param hook The hook.
-    event HookSet(address hook);
-
-    /// @notice The hook is already wired.
-    error HookAlreadySet();
-
-    /// @notice The hook is not wired yet.
-    error HookNotSet();
-
     modifier onlyAdmin() {
         _onlyAdmin();
         _;
@@ -166,7 +152,7 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
         address oracle_,
         address usdg_,
         address protocolCurator_,
-        address[6] calldata impls
+        address[7] calldata impls
     ) external initializer {
         if (registry_ == address(0) || oracle_ == address(0) || usdg_ == address(0) || protocolCurator_ == address(0)) {
             revert ZeroAddress();
@@ -224,7 +210,7 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
         bribeCutBps = 1500;
         emit BribeCutSet(1500);
 
-        for (uint256 i; i < 6; ++i) {
+        for (uint256 i; i < 7; ++i) {
             _beacons[Module(i)] = address(new UpgradeableBeacon(impls[i], address(this)));
         }
 
@@ -252,23 +238,11 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
         _setYieldCurve(curve);
     }
 
-    /// @notice Wire the pool hook. Admin only, once.
-    /// @param hook_ The hook (deployed against this factory).
-    function setHook(
-        address hook_
-    ) external onlyAdmin {
-        if (hook != address(0)) revert HookAlreadySet();
-        _nonZero(hook_);
-        hook = hook_;
-        emit HookSet(hook_);
-    }
-
     /// @inheritdoc IFundFactory
     function createFund(
         CreateFundParams calldata p
     ) external override returns (FundModules memory m) {
         if (!isAdmin(msg.sender) && whitelistEnabled && !isLauncher[msg.sender]) revert NotLauncher();
-        if (hook == address(0)) revert HookNotSet();
         LaunchConfig memory cfg = _launchConfig;
         if (p.launchDuration != 0) cfg.duration = p.launchDuration;
         if (p.poolUsdgBps != 0) cfg.poolUsdgBps = p.poolUsdgBps;
@@ -290,9 +264,9 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
             Module.Curators, abi.encodeCall(IFundCurators.initialize, (m.fund, p.curators, p.minCuratorStakeUsd))
         );
         m.bribes = _proxy(Module.Bribes, abi.encodeCall(IFundBribes.initialize, (m.fund)));
+        m.venue = _proxy(Module.Venue, abi.encodeCall(IFundVenue.initialize, (m.fund, p.pool)));
 
-        IFund(m.fund).setModules(m.launch, m.staking, m.governor, m.curators);
-        IFundHook(hook).registerFund(m.fund);
+        IFund(m.fund).setModules(m.launch, m.staking, m.governor, m.curators, m.venue);
         isFund[m.fund] = true;
         _modules[m.fund] = m;
         _funds.push(m.fund);

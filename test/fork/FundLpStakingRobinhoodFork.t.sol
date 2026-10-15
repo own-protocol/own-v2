@@ -46,8 +46,6 @@ contract FundLpStakingRobinhoodForkTest is FundTestBase {
         _forkActive = true;
         super.setUp();
         _launchDefault();
-        vm.prank(admin);
-        hook.setLpFee(address(fund), 3000);
     }
 
     function _deployPoolManager() internal pure override returns (IPoolManager) {
@@ -62,7 +60,7 @@ contract FundLpStakingRobinhoodForkTest is FundTestBase {
     ///      live PositionManager (MINT_POSITION + SETTLE_PAIR, paid through Permit2).
     function _mintPosition(address who, uint128 liquidity) internal returns (uint256 tokenId) {
         _poolSwap(who, true, -int256(20_000e6));
-        PoolKey memory key = hook.poolKeyOf(address(fund));
+        PoolKey memory key = venue.poolKey();
         IPositionManagerFull pm = IPositionManagerFull(POSITION_MANAGER);
         tokenId = pm.nextTokenId();
         bytes[] memory params = new bytes[](2);
@@ -89,7 +87,7 @@ contract FundLpStakingRobinhoodForkTest is FundTestBase {
     }
 
     function test_fork_stakeTradeCollectClaimUnstake() public requiresFork {
-        uint128 liq = hook.positionLiquidity(address(fund)) / 10;
+        uint128 liq = venue.positionLiquidity() / 10;
         uint256 id = _mintPosition(carol, liq);
 
         vm.prank(carol);

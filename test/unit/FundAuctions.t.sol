@@ -195,9 +195,9 @@ contract FundAuctionsTest is FundTestBase {
     }
 
     function test_openLot_sellsIdleUsdg() public {
-        uint128 tenth = hook.positionLiquidity(address(fund)) / 10;
+        uint128 tenth = venue.positionLiquidity() / 10;
         vm.prank(admin);
-        hook.withdrawPosition(address(fund), tenth);
+        venue.withdrawPosition(tenth);
         vm.prank(keeper);
         uint256 id = auctions.openLot(address(fund), address(usdg), address(tsla), 1000e6);
         vm.prank(filler);

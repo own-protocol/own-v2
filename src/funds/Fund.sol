@@ -3,9 +3,9 @@ pragma solidity 0.8.28;
 
 import {IFund} from "../interfaces/IFund.sol";
 import {IFundFactory} from "../interfaces/IFundFactory.sol";
-import {IFundHook} from "../interfaces/IFundHook.sol";
 import {IFundOracle} from "../interfaces/IFundOracle.sol";
 import {IFundStaking} from "../interfaces/IFundStaking.sol";
+import {IFundVenue} from "../interfaces/IFundVenue.sol";
 
 import {
     BasketEntry,
@@ -116,6 +116,9 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
     /// @inheritdoc IFund
     address public override previousGovernor;
 
+    /// @inheritdoc IFund
+    address public override venue;
+
     address private immutable _usdg;
 
     modifier onlyAdmin() {
@@ -174,16 +177,21 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
         address launch_,
         address staking_,
         address governor_,
-        address curators_
+        address curators_,
+        address venue_
     ) external override onlyFactory {
         if (launch != address(0)) revert ModulesAlreadySet();
-        if (launch_ == address(0) || staking_ == address(0) || governor_ == address(0) || curators_ == address(0)) {
+        if (
+            launch_ == address(0) || staking_ == address(0) || governor_ == address(0) || curators_ == address(0)
+                || venue_ == address(0)
+        ) {
             revert ZeroAddress();
         }
         launch = launch_;
         staking = staking_;
         governor = governor_;
         curators = curators_;
+        venue = venue_;
         emit GovernorSet(governor_);
     }
 
@@ -203,7 +211,7 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
         uint256 amount
     ) external override {
         _checkLaunch();
-        IERC20(_usdg).safeTransfer(_hook(), amount);
+        IERC20(_usdg).safeTransfer(venue, amount);
     }
 
     /// @inheritdoc IFund
@@ -266,8 +274,8 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
     }
 
     /// @inheritdoc IFund
-    function hookIssue(address to, uint256 shares, uint256 pot) external override {
-        if (msg.sender != _hook()) revert NotHook();
+    function venueIssue(address to, uint256 shares, uint256 pot) external override {
+        if (msg.sender != venue) revert NotVenue();
         _mint(to, shares);
         if (pot != 0) {
             address stakingModule = staking;
@@ -310,7 +318,7 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
         address[] memory basket = _assets;
         if (minAmountsOut.length != 0 && minAmountsOut.length != basket.length) revert LengthMismatch();
 
-        (uint256 net, uint256 supply, uint256 idle) = _redeemQuote(_hook(), shares);
+        (uint256 net, uint256 supply, uint256 idle) = _redeemQuote(shares);
         amounts = _redeemAssets(basket, net, supply);
         _skipAndCheck(basket, amounts, skip, minAmountsOut);
 
@@ -322,7 +330,7 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
             if (amounts[i] != 0) IERC20(basket[i]).safeTransfer(receiver, amounts[i]);
         }
         if (idle != 0) IERC20(_usdg).safeTransfer(receiver, idle);
-        usdgAmount = idle + IFundHook(_hook()).redeemPosition(net, supply, receiver);
+        usdgAmount = idle + IFundVenue(venue).redeemPosition(net, supply, receiver);
         if (usdgAmount < minUsdgOut) revert Slippage();
 
         emit Redeemed(msg.sender, receiver, shares, amounts, usdgAmount);
@@ -339,7 +347,7 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
     function rebalance(
         RebalanceParams calldata params
     ) external override nonReentrant {
-        if (!_isAdmin() && (msg.sender != manager || IFundHook(_hook()).isSeeded(address(this)))) {
+        if (!_isAdmin() && (msg.sender != manager || IFundVenue(venue).isSeeded())) {
             revert NotManager();
         }
         uint256 volume =
@@ -369,7 +377,6 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
         uint16 feeBps_
     ) external override onlyAdmin {
         _setFee(feeBps_);
-        IFundHook(_hook()).setFundFee(feeBps_);
     }
 
     /// @inheritdoc IFund
@@ -414,9 +421,8 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
     function increasePosition(
         uint256 usdgAmount
     ) external override onlyAdmin nonReentrant returns (uint128 liquidity) {
-        address hook = _hook();
-        IERC20(_usdg).safeTransfer(hook, usdgAmount);
-        liquidity = IFundHook(hook).increasePosition(usdgAmount);
+        IERC20(_usdg).safeTransfer(venue, usdgAmount);
+        liquidity = IFundVenue(venue).increasePosition(usdgAmount);
     }
 
     /// @inheritdoc IFund
@@ -513,7 +519,7 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
     /// @inheritdoc IFund
     function positionAmounts() public view override returns (uint256 usdgAmount, uint256 fundTokens) {
         if (!launched) return (0, 0);
-        return IFundHook(_hook()).positionAmounts(address(this));
+        return IFundVenue(venue).positionAmounts();
     }
 
     /// @inheritdoc IFund
@@ -563,15 +569,10 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
         uint256 shares
     ) external view override returns (uint256[] memory amounts, uint256 usdgAmount) {
         address[] memory basket = _assets;
-        address hook = _hook();
-        (uint256 net, uint256 supply, uint256 idle) = _redeemQuote(hook, shares);
+        (uint256 net, uint256 supply, uint256 idle) = _redeemQuote(shares);
         amounts = _redeemAssets(basket, net, supply);
-        (uint256 poolUsdg,) = _boundedPoolAndSupply(hook, false);
+        (uint256 poolUsdg,) = _boundedPoolAndSupply(false);
         usdgAmount = idle + Math.mulDiv(poolUsdg, net, supply);
-    }
-
-    function _hook() internal view returns (address) {
-        return IFundFactory(factory).hook();
     }
 
     function _oracle() internal view returns (IFundOracle) {
@@ -617,26 +618,25 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
         bool atNav
     ) internal view returns (MintQuote memory q) {
         if (!launched) revert NotLaunched();
-        address hook = _hook();
-        (uint256 poolUsdg, uint256 supply) = _boundedPoolAndSupply(hook, true);
+        (uint256 poolUsdg, uint256 supply) = _boundedPoolAndSupply(true);
         if (supply == 0) revert EmptyFund();
         IFundOracle o = _oracle();
         (, uint256 total) = _totalValue(o, basket, usdg, poolUsdg);
         q.nav = Math.mulDiv(total, PRECISION, supply, Math.Rounding.Ceil);
         q.mintPrice = q.nav;
-        if (!atNav) _poolMintPrice(o, hook, q);
+        if (!atNav) _poolMintPrice(o, q);
         // Rounds down: the minter never receives more than its slice is worth at the mint price.
         q.gross = q.nav == 0 ? 0 : Math.mulDiv(navShares, q.nav, q.mintPrice);
         (q.amounts, q.usdgAmount) = _mintAmounts(basket, usdg, navShares, poolUsdg, supply);
     }
 
-    /// @dev The higher of the pool's spot price and its TWAP, so pushing the pool down for a block
-    ///      never mints cheaply, adjusted by the mint adjustment; held to the premium cap when one is
-    ///      set (and marked capped), and never below NAV.
-    function _poolMintPrice(IFundOracle o, address hook, MintQuote memory q) internal view {
+    /// @dev The higher of the pool's spot price and its oracle price (a signed pool TWAP), so
+    ///      pushing the pool down for a block never mints cheaply, adjusted by the mint adjustment;
+    ///      held to the premium cap when one is set (and marked capped), and never below NAV.
+    function _poolMintPrice(IFundOracle o, MintQuote memory q) internal view {
         (bool ok, uint256 market) = o.tryPrice(address(this));
         if (!ok) revert NoMarketPrice();
-        market = Math.max(market, IFundHook(hook).spotPrice(address(this)));
+        market = Math.max(market, IFundVenue(venue).spotPrice());
         uint256 price = Math.mulDiv(market, uint256(int256(BPS) + mintAdjustmentBps), BPS, Math.Rounding.Ceil);
         uint256 cap = maxPremiumBps;
         if (cap != 0) {
@@ -704,10 +704,9 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
     ///      share of, and their share of the idle USDG. Rounds down: the redeemer never takes more
     ///      than their share.
     function _redeemQuote(
-        address hook,
         uint256 shares
     ) internal view returns (uint256 net, uint256 supply, uint256 idle) {
-        (, supply) = _boundedPoolAndSupply(hook, false);
+        (, supply) = _boundedPoolAndSupply(false);
         net = shares - _fee(shares);
         if (net > supply) revert RedeemTooLarge();
         idle = Math.mulDiv(_balanceOf(_usdg), net, supply);
@@ -809,23 +808,19 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
     /// @dev The USDG in the fund's pool position and the supply outside the pool, reading the
     ///      position once.
     function _poolAndSupply() internal view returns (uint256 poolUsdg, uint256 supply) {
-        return _poolAndSupplyAt(_hook());
-    }
-
-    function _poolAndSupplyAt(
-        address hook
-    ) internal view returns (uint256 poolUsdg, uint256 supply) {
         uint256 poolTokens;
-        if (launched) (poolUsdg, poolTokens) = IFundHook(hook).positionAmounts(address(this));
+        if (launched) (poolUsdg, poolTokens) = IFundVenue(venue).positionAmounts();
         supply = _supplyOutside(poolTokens);
     }
 
-    /// @dev As {_poolAndSupplyAt}, but each amount at whichever of the TWAP and spot readings costs
+    /// @dev As {_poolAndSupply}, but each amount at whichever of the oracle and spot readings costs
     ///      the caller: the lower for a redeem, the higher for a mint. A move held for the TWAP
     ///      window and then reversed, or one made within a block, never moves both readings.
-    function _boundedPoolAndSupply(address hook, bool mint) internal view returns (uint256 poolUsdg, uint256 supply) {
+    function _boundedPoolAndSupply(
+        bool mint
+    ) internal view returns (uint256 poolUsdg, uint256 supply) {
         uint256 poolTokens;
-        if (launched) (poolUsdg, poolTokens) = IFundHook(hook).positionBounds(address(this), mint);
+        if (launched) (poolUsdg, poolTokens) = IFundVenue(venue).positionBounds(mint);
         supply = _supplyOutside(poolTokens);
     }
 

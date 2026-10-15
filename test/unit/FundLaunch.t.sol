@@ -127,7 +127,7 @@ contract FundLaunchTest is FundTestBase {
         assertEq(launch.closedAt(), block.timestamp);
         assertTrue(fund.launched());
         assertEq(fund.depositorUnlockAt(), block.timestamp + 7 days);
-        assertFalse(hook.isSeeded(address(fund)));
+        assertFalse(venue.isSeeded());
         assertFalse(launch.poolSeeded());
 
         assertApproxEqAbs(launch.poolShares(), POOL_SHARES, 1);
@@ -330,13 +330,13 @@ contract FundLaunchTest is FundTestBase {
         launch.seedPool();
 
         assertTrue(launch.poolSeeded());
-        assertTrue(hook.isSeeded(address(fund)));
+        assertTrue(venue.isSeeded());
         // Full-range liquidity rounding leaves a few wei of fund tokens, which the hook burns.
         assertApproxEqAbs(fund.totalSupply(), 130_000e18, 1e7);
         assertApproxEqAbs(fund.balanceOf(address(poolManager)), POOL_SHARES, 1e7);
         assertApproxEqAbs(usdg.balanceOf(address(poolManager)), 25_000e6, 1);
-        assertEq(fund.balanceOf(address(hook)), 0);
-        assertEq(usdg.balanceOf(address(hook)), 0);
+        assertEq(fund.balanceOf(address(venue)), 0);
+        assertEq(usdg.balanceOf(address(venue)), 0);
         assertApproxEqAbs(fund.idleUsdg(), 0, 1);
 
         // The position counts: NAV is unchanged by seeding, and the pool opens at 1.3x it.
@@ -350,7 +350,7 @@ contract FundLaunchTest is FundTestBase {
         _finalizeTwoDepositors();
         vm.prank(admin);
         launch.seedPool();
-        assertTrue(hook.isSeeded(address(fund)));
+        assertTrue(venue.isSeeded());
     }
 
     function test_seedPool_notManager_reverts() public {
@@ -405,7 +405,7 @@ contract FundLaunchTest is FundTestBase {
 
         vm.prank(keeper);
         launch.seedPool();
-        assertTrue(hook.isSeeded(address(fund)));
+        assertTrue(venue.isSeeded());
 
         // Once the pool is open, buying USDG is not a rebalance any more.
         _refreshFeeds();
@@ -841,7 +841,7 @@ contract FundLaunchTest is FundTestBase {
 
     /// @dev Pool spot price in USD per fund token, 18 decimals.
     function _poolPrice() internal view returns (uint256) {
-        PoolKey memory key = hook.poolKeyOf(address(fund));
+        PoolKey memory key = venue.poolKey();
         (uint160 sqrtPriceX96,,,) = poolManager.getSlot0(key.toId());
         uint256 priceX192 = uint256(sqrtPriceX96) * uint256(sqrtPriceX96);
         return address(usdg) < address(fund)

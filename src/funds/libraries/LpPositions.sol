@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: BUSL-1.1
 pragma solidity 0.8.28;
 
-import {IFundHook} from "../../interfaces/IFundHook.sol";
 import {IFundStaking} from "../../interfaces/IFundStaking.sol";
+import {IFundVenue} from "../../interfaces/IFundVenue.sol";
 import {IPositionManager} from "../../interfaces/external/IPositionManager.sol";
 import {TickMath} from "v4-core/src/libraries/TickMath.sol";
 import {PoolId, PoolIdLibrary} from "v4-core/src/types/PoolId.sol";
@@ -18,22 +18,20 @@ library LpPositions {
     uint8 private constant DECREASE_LIQUIDITY = 0x01;
     uint8 private constant TAKE_PAIR = 0x11;
 
-    /// @notice Liquidity of a full-range position in `fund`'s pool; reverts for any other position
-    ///         or an empty one.
+    /// @notice Liquidity of a full-range position in the pool the fund trades in now; reverts for
+    ///         any other position or an empty one.
     /// @param positionManager The PositionManager.
-    /// @param hook            The fund hook.
-    /// @param fund            The fund.
+    /// @param venue           The fund's venue.
     /// @param tokenId         The position.
     /// @return liquidity The position's liquidity.
     function fundLiquidity(
         IPositionManager positionManager,
-        address hook,
-        address fund,
+        address venue,
         uint256 tokenId
     ) public view returns (uint128 liquidity) {
         (PoolKey memory key, uint256 info) = positionManager.getPoolAndPositionInfo(tokenId);
-        PoolKey memory fundKey = IFundHook(hook).poolKeyOf(fund);
-        if (address(fundKey.hooks) == address(0) || PoolId.unwrap(key.toId()) != PoolId.unwrap(fundKey.toId())) {
+        PoolKey memory fundKey = IFundVenue(venue).poolKey();
+        if (fundKey.tickSpacing == 0 || PoolId.unwrap(key.toId()) != PoolId.unwrap(fundKey.toId())) {
             revert IFundStaking.NotFundPosition();
         }
         // PositionInfo packs tick lower at bits 8-31 and tick upper at bits 32-55.

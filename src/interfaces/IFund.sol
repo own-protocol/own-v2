@@ -9,8 +9,9 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 ///         idle USDG the fund holds, and the fund's own position in its USDG pool.
 ///
 ///         - NAV per token = (basket + idle USDG + the USDG in the fund's pool position) divided by
-///           (supply minus the fund tokens in that position). The position is valued at the pool
-///           TWAP; mints and redeems take whichever of the TWAP and spot readings costs the caller.
+///           (supply minus the fund tokens in that position). The position is valued at the fund
+///           token's oracle price (the pool TWAP, signed by Own's oracle and pushed by the keeper);
+///           mints and redeems take whichever of the oracle and spot readings costs the caller.
 ///         - Promised payouts (direct minters' Premium Boosts and the Premium Pot) are fund tokens
 ///           minted when they are earned and held by the staking module until paid, so they count
 ///           in supply and share the fund's price moves like any other token. Unpaid boost tokens
@@ -29,11 +30,12 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 ///           - Mint at NAV: priced at NAV, staked for the receiver and locked for the NAV mint lock
 ///             (6 months by default); redeemable at NAV meanwhile, no boost.
 ///           The mint zap builds the slice from a single token.
-///         - Pool issuance: on buys above NAV the hook fills part of the buy with new fund tokens;
-///           their USDG comes here, with part of the premium set aside for the Premium Pot.
-///         - Fee: one fund fee is charged in fund tokens on mints and redeems (and in USDG on pool
-///           trades, by the hook). It all goes to the fund's curators module, which splits it
-///           between the protocol curator and the other curators.
+///         - Pool issuance: after buys lift the pool above NAV, the fund's venue sells new fund
+///           tokens into the pool (see {IFundVenue-issue}); their USDG comes here, with part of the
+///           premium set aside for the Premium Pot.
+///         - Fee: the fund fee is charged in fund tokens on mints and redeems; on pool trades the
+///           pool's swap tax is the fund fee (see {IFundVenue}). It all goes to the fund's curators
+///           module, which splits it between the protocol curator and the other curators.
 ///         - Portfolio changes (assets and target weights) come only from the fund's governor
 ///           (the weekly weight vote and listing proposals). The admin can swap the governor.
 ///         - Rebalancing towards the targets runs through Dutch auctions (see {IFundAuctions}): the
@@ -75,7 +77,7 @@ interface IFund is IERC20 {
         uint256 boost
     );
 
-    /// @notice Emitted when the hook issues fund tokens into a pool buy.
+    /// @notice Emitted when the venue issues fund tokens into the pool.
     /// @param shares Fund tokens issued.
     /// @param pot    Fund tokens minted to the staking module for the Premium Pot.
     event Issued(uint256 shares, uint256 pot);
@@ -179,8 +181,8 @@ interface IFund is IERC20 {
     /// @notice Caller is not the factory's auction house.
     error NotAuctions();
 
-    /// @notice Caller is not the pool hook.
-    error NotHook();
+    /// @notice Caller is not the fund's venue.
+    error NotVenue();
 
     /// @notice The transfer would move launch tokens that are still locked.
     error LaunchTokensLocked();
@@ -265,9 +267,16 @@ interface IFund is IERC20 {
     /// @param staking_  Staking module.
     /// @param governor_ Governor.
     /// @param curators_ Curators module (the curator fee recipient).
-    function setModules(address launch_, address staking_, address governor_, address curators_) external;
+    /// @param venue_    Venue (where the fund trades).
+    function setModules(
+        address launch_,
+        address staking_,
+        address governor_,
+        address curators_,
+        address venue_
+    ) external;
 
-    /// @notice Send idle USDG to the hook to seed the fund's pool. Launch only.
+    /// @notice Send idle USDG to the venue to seed the fund's pool. Launch only.
     /// @param amount USDG amount.
     function sendPoolUsdg(
         uint256 amount
@@ -323,17 +332,17 @@ interface IFund is IERC20 {
         bool atNav
     ) external returns (uint256 shares);
 
-    /// @notice Mint fund tokens the hook issues into a pool buy, whose USDG the hook has paid here,
-    ///         and mint `pot` fund tokens to the staking module for the Premium Pot. Hook only.
-    /// @param to     Receiver of the fund tokens: the pool manager for a buy, the hook to add them
-    ///               to the fund's position.
+    /// @notice Mint fund tokens the venue issues into the pool, whose USDG the venue pays here, and
+    ///         mint `pot` fund tokens to the staking module for the Premium Pot. Venue only.
+    /// @param to     Receiver of the fund tokens: the pool manager for an issue, the venue to add
+    ///               them to the fund's position.
     /// @param shares Fund tokens minted.
     /// @param pot    Fund tokens for the pot.
-    function hookIssue(address to, uint256 shares, uint256 pot) external;
+    function venueIssue(address to, uint256 shares, uint256 pot) external;
 
     /// @notice Redeem fund tokens for a pro-rata slice of every basket asset, of idle USDG and of
-    ///         the fund's pool position. The position slice pays its USDG (at most its TWAP value,
-    ///         so moving the spot price cannot inflate it) and burns its fund tokens.
+    ///         the fund's pool position. The position slice pays its USDG (at most its value at
+    ///         the oracle price, so moving the spot price cannot inflate it) and burns its fund tokens.
     /// @param shares        Fund tokens redeemed, fees included.
     /// @param receiver      Receiver of the basket assets and USDG.
     /// @param minAmountsOut Per-asset minimum, in {assets} order (empty to skip).
@@ -437,8 +446,8 @@ interface IFund is IERC20 {
     ) external;
 
     /// @notice Move `usdgAmount` of idle USDG into the fund's pool position, with matching fund
-    ///         tokens minted into it (see {IFundHook-increasePosition}). Admin only; the launch adds
-    ///         the position once and this is optional. The hook's `withdrawPosition` reduces it.
+    ///         tokens minted into it (see {IFundVenue-increasePosition}). Admin only; the launch adds
+    ///         the position once and this is optional. The venue's `withdrawPosition` reduces it.
     /// @param usdgAmount Idle USDG to add.
     /// @return liquidity Liquidity added.
     function increasePosition(
@@ -478,6 +487,10 @@ interface IFund is IERC20 {
     /// @notice The governor replaced by the last {setGovernor}; stakers can still withdraw from it.
     /// @return The previous governor (zero if never replaced).
     function previousGovernor() external view returns (address);
+
+    /// @notice The fund's venue, the only contract that knows where the fund trades.
+    /// @return The venue.
+    function venue() external view returns (address);
 
     /// @notice Everything about the fund in one read: name, symbol, logo, description, social links
     ///         and the platform's metadata.
@@ -536,13 +549,13 @@ interface IFund is IERC20 {
     /// @return The amount.
     function idleUsdg() external view returns (uint256);
 
-    /// @notice The fund's pool position at the pool TWAP.
+    /// @notice The fund's pool position at the fund token's oracle price.
     /// @return usdgAmount USDG in the position.
     /// @return fundTokens Fund tokens in the position.
     function positionAmounts() external view returns (uint256 usdgAmount, uint256 fundTokens);
 
     /// @notice Supply that NAV is spread over: total supply minus the fund tokens in the fund's
-    ///         pool position (at the pool TWAP).
+    ///         pool position (at the fund token's oracle price).
     /// @return The supply.
     function effectiveSupply() external view returns (uint256);
 

@@ -28,7 +28,7 @@ struct BasketEntry {
 }
 
 /// @notice One step of a fund's pool issuance curve: from `premiumBps` over NAV upwards (until the
-///         next step), the hook issues `densityBps` of circulating supply per doubling of price.
+///         next step), the venue issues `densityBps` of circulating supply per doubling of price.
 /// @param premiumBps Premium over NAV, in basis points, at which the step starts (strictly
 ///                   ascending across steps; the first applies from the issuance start).
 /// @param densityBps Supply issued per doubling of price, in basis points of circulating supply.
@@ -37,14 +37,32 @@ struct IssuanceStep {
     uint16 densityBps;
 }
 
-/// @notice A fund's pool issuance settings, kept by the hook.
-/// @param startBps    Premium over NAV, in basis points, below which nothing is issued.
-/// @param potShareBps Share of the premium on issued tokens that goes to the Premium Pot.
-/// @param steps       Density steps by premium.
+/// @notice A fund's pool issuance settings, kept by its venue.
+/// @param startBps     Premium over NAV, in basis points, below which nothing is issued.
+/// @param potShareBps  Share of the premium on issued tokens that goes to the Premium Pot.
+/// @param hourlyCapBps Most fund tokens issued per hour, in basis points of circulating supply.
+/// @param steps        Density steps by premium.
 struct IssuanceConfig {
     uint16 startBps;
     uint16 potShareBps;
+    uint16 hourlyCapBps;
     IssuanceStep[] steps;
+}
+
+/// @notice A fund pool's fees, frozen for the life of the pool (a change opens a new pool). The tax
+///         is the fund fee on swaps, taken in USDG: Hookr keeps `hookrShareBps` of it and the rest
+///         goes to the fund's curators. The LP fee goes to everyone providing liquidity.
+/// @param buyTaxPips    Tax on buys, in pips (1e6 = 100%) of the USDG paid, at most 10%.
+/// @param sellTaxPips   Tax on sells, in pips of the USDG out, at most 10%.
+/// @param hookrShareBps Hookr's share of the tax, in basis points (Hookr admits 20% to 50%).
+/// @param lpFeePips     LP fee, in pips, at most 10%.
+/// @param tickSpacing   The pool's tick spacing; two pools of one fund need different ones (0 for 60).
+struct PoolSettings {
+    uint24 buyTaxPips;
+    uint24 sellTaxPips;
+    uint16 hookrShareBps;
+    uint24 lpFeePips;
+    int24 tickSpacing;
 }
 
 /// @notice A fund's direct mint and Premium Boost settings, kept by the fund and its staking
@@ -167,8 +185,8 @@ struct YieldPoint {
 /// @param weightsBps         Starting target weight per asset; sums to 10 000.
 /// @param manager            The Own keeper that rebalances the basket.
 /// @param curators           Starting curators (at most the factory's curator cap).
-/// @param feeBps             Fund fee on pool trades, mints and redeems, all paid to the curators
-///                           (0 for the default 1%, at most 10%).
+/// @param feeBps             Fund fee on mints and redeems, paid to the curators (0 for the default
+///                           1%, at most 10%).
 /// @param minCuratorStakeUsd Value (18 decimals USD, at NAV) each curator must keep staked in the
 ///                           governor; 0 for none.
 /// @param minRaiseUsd        Minimum value (18 decimals USD) the launch must raise.
@@ -177,6 +195,7 @@ struct YieldPoint {
 /// @param launchDuration     Deposit window length, in seconds (0 for the default 7 days).
 /// @param poolUsdgBps        Share of the raise that seeds the pool in USDG (0 for the default 10%).
 /// @param yieldCurve         Staker-yield tiers by premium (empty for the factory's default tiers).
+/// @param pool               The pool's fees, the fund fee on swaps among them.
 struct CreateFundParams {
     string name;
     string symbol;
@@ -193,6 +212,7 @@ struct CreateFundParams {
     uint32 launchDuration;
     uint16 poolUsdgBps;
     YieldPoint[] yieldCurve;
+    PoolSettings pool;
 }
 
 /// @notice Launch rules. The factory holds the defaults; each launch snapshots them with its own

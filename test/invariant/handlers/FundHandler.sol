@@ -2,8 +2,9 @@
 pragma solidity 0.8.28;
 
 import {Fund} from "../../../src/funds/Fund.sol";
+
+import {FundVenue} from "../../../src/funds/FundVenue.sol";
 import {IFundFactory} from "../../../src/interfaces/IFundFactory.sol";
-import {IFundHook} from "../../../src/interfaces/IFundHook.sol";
 import {IFundStaking} from "../../../src/interfaces/IFundStaking.sol";
 import {MockERC20} from "../../helpers/MockERC20.sol";
 import {Test} from "forge-std/Test.sol";
@@ -35,10 +36,10 @@ contract FundHandler is Test {
         assets = assets_;
         usdg = MockERC20(IFundFactory(fund_.factory()).usdg());
         actors = actors_;
-        IFundHook hook = IFundHook(IFundFactory(fund_.factory()).hook());
-        key = hook.poolKeyOf(address(fund_));
+        FundVenue venue = FundVenue(fund_.venue());
+        key = venue.poolKey();
         usdgIs0 = Currency.unwrap(key.currency0) == address(usdg);
-        router = new PoolSwapTest(hook.poolManager());
+        router = new PoolSwapTest(venue.poolManager());
     }
 
     function buy(uint256 actorSeed, uint256 usdgIn, uint256 warpBy) external {

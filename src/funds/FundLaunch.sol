@@ -3,10 +3,10 @@ pragma solidity 0.8.28;
 
 import {IFund} from "../interfaces/IFund.sol";
 import {IFundFactory} from "../interfaces/IFundFactory.sol";
-import {IFundHook} from "../interfaces/IFundHook.sol";
 import {IFundLaunch} from "../interfaces/IFundLaunch.sol";
 import {IFundOracle} from "../interfaces/IFundOracle.sol";
 import {IFundStaking} from "../interfaces/IFundStaking.sol";
+import {IFundVenue} from "../interfaces/IFundVenue.sol";
 import {LaunchConfig} from "../interfaces/types/FundTypes.sol";
 import {BPS, PRECISION} from "../interfaces/types/Types.sol";
 import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
@@ -207,7 +207,7 @@ contract FundLaunch is IFundLaunch, Initializable, ReentrancyGuardTransient {
     }
 
     /// @inheritdoc IFundLaunch
-    function seedPool() external override nonReentrant {
+    function seedPool() external payable override nonReentrant {
         IFund f = IFund(fund);
         if (msg.sender != f.manager() && !_factory.isAdmin(msg.sender)) revert NotManager();
         if (status != Status.Succeeded) revert WrongStatus();
@@ -228,10 +228,10 @@ contract FundLaunch is IFundLaunch, Initializable, ReentrancyGuardTransient {
         );
         poolSeeded = true;
 
-        address hook = _factory.hook();
-        f.moduleMint(hook, shares);
+        address venue = f.venue();
+        f.moduleMint(venue, shares);
         f.sendPoolUsdg(usdgAmount);
-        IFundHook(hook).seedPool(fund, usdgAmount, shares);
+        IFundVenue(venue).seedPool{value: msg.value}(usdgAmount, shares);
 
         emit PoolSeeded(usdgAmount, shares);
     }

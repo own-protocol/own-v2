@@ -11,22 +11,23 @@ Updated 2026-10-07: Dutch-auction rebalancing with admin router swaps as the fal
 
 Updated 2026-10-12: the premium yield redesign (spec `plans/fund-premium-rebate-base-yield.md`): pool issuance, the locked direct mint with the Premium Boost, the Premium Pot, the boost reserve and step tiers. Lock options and the premium ceiling are gone. Updated 2026-10-14: the boost and the pot are held as fund tokens, not a dollar reserve (A6-M-12).
 
+Updated 2026-10-15: fund pools open on Hookr (plan `plans/fund-pools-on-hookr.md`). Our own hook is upgradeable, which Uniswap's routing does not allow, so each fund's pool opens on Hookr's shared `HookrRoot` hook, which the Uniswap app and other routers already route. A per-fund `FundVenue` replaces `FundHook` and `FundTwapFeed`: the swap fee is Hookr's Directional Tax paid to the curators, issuance is a keeper call, the fund's price is its price-hub feed, and `migrate` moves the fund to a new pool (later, our own hook).
+
 ## Contracts (`src/funds/`)
 
 | Contract | Role |
 | --- | --- |
-| `FundFactory` | UUPS. Platform admin hub: launcher whitelist (Own only by default), the protocol curator and its share (33.33% default, 50% cap), rebalance routers and limits, launch and governance defaults, premium defaults for new funds (mint lock and adjustment, boost share and speed, pot drip and share, issuance start and steps, yield tiers), staking yield cap (109,500 bps a year, i.e. 3% a day), curator cap (10), bribe cut (15%, 25% cap), bribe tokens, the listing eligibility list and the platform metadata. Owns the six module beacons, so one call upgrades every fund. |
+| `FundFactory` | UUPS. Platform admin hub: launcher whitelist (Own only by default), the protocol curator and its share (33.33% default, 50% cap), rebalance routers and limits, launch and governance defaults, premium defaults for new funds (mint lock and adjustment, boost share and speed, pot drip and share, issuance start and steps, yield tiers), staking yield cap (109,500 bps a year, i.e. 3% a day), curator cap (10), bribe cut (15%, 25% cap), bribe tokens, the listing eligibility list and the platform metadata. Owns the seven module beacons, so one call upgrades every fund. |
 | `Fund` | Beacon proxy per fund. The fund token plus custody of the basket and idle USDG: the locked direct mint, redeem, the fund fee, rebalance, the depositor lock. NAV counts the pool position. |
 | `FundLaunch` | Beacon proxy per fund. Deposit window (any basket token or USDG), early close at the target raise, early-deposit yield, overweight haircut, the fixed-supply split and pool seeding after the launch rebalance. |
 | `FundStaking` | Beacon proxy per fund. Staked fund token (e.g. sOCF1) with step-tier yield set by the premium, the Premium Boost and mint lock of direct minters, the Premium Pot, the curators' yield minted on top, and staking of full-range Uniswap v4 LP position NFTs in the fund's pool. |
 | `FundGovernor` | Beacon proxy per fund. Staked escrow, the weekly weight vote (gauge) and proposals to list or delist tokens and add, remove or replace curators. |
 | `FundCurators` | Beacon proxy per fund. The curator set (with the protocol curator), the minimum curator stake and compliance, and the curators' income: the fund fee, the curator yield (30-day unlocks, forfeits on removal), split between the protocol curator and the others. It also says how a bribe cut is split (`bribeSplit`). |
 | `FundBribes` | Beacon proxy per fund. Bribes on the weekly vote per token per week, and bribes on listing proposals. The curators' cut is paid out when the bribe is posted. |
-| `FundHook` | UUPS, upgraded by the registry ADMIN; the proxy sits at the mined hook address. One Uniswap v4 hook for every fund pool: the fund fee in USDG on swaps, pool issuance on buys above NAV (math in the linked `PoolIssuance` library), admin-set LP fee, the TWAP, and the fund's own pool position. |
+| `FundVenue` | Beacon proxy per fund. Where the fund trades: opens its fund token / USDG pool through Hookr's launcher on `HookrRoot` with the fund's pool settings, holds the fund's position there (Hookr family member 0, owned by the venue), pays the swap tax out to the curators, issues into the pool (math in the linked `PoolIssuance` library) and migrates the fund to a new pool. |
 | `FundOracle` | One price source per asset: a ticker on the protocol's `ChainlinkOracleVerifier` (the registry's INHOUSE_ORACLE: Chainlink while live, the in-house signer within a band of the last Chainlink answer while it is silent, so stocks stay priced over weekends), or a Chainlink-style feed (`FundPriceHub` feeds for tokens without Chainlink). A fund token's own market price is read through the same surface. |
 | `FundPriceHub` | One for the platform. Keeper-pushed USD prices for basket assets with no Chainlink feed (Pons tokens, VIRTUAL): the keeper samples each token's Uniswap v4 pool, converts its pair (ETH, SPY, NVDA...) to USD with Chainlink and pushes a 30-minute TWAP. Only the keeper pushes. A price may move at most `maxMoveBps` (admin-set, 30% at deploy) per hour since that asset's last push, compounding; a bigger push is stored at the bound, so a real jump catches up over a few hours (a 10x in about 9 at 30%) and repeated pushes gain nothing. `createFeed(asset)` deploys a `FundPriceFeed` the oracle reads like any Chainlink aggregator. |
 | `FundAuctions` | One for the platform. Dutch auctions for rebalancing after the pool is seeded (below). |
-| `FundTwapFeed` | Per fund. Serves the fund's pool TWAP (recorded by the hook) as an aggregator. |
 | `FundRedeemZap` | Redeem a fund token and swap the basket to USDG through allowed routers in one transaction. |
 | `FundMintZap` | Pay one token, swap it through allowed routers into the slice a mint needs, mint, and refund what is left, in one transaction. Holds nothing between transactions. |
 
@@ -81,24 +82,40 @@ Updated 2026-10-12: the premium yield redesign (spec `plans/fund-premium-rebate-
 
 ## The fund's pool position
 
-- The hook holds one full-range position per fund for the fund. It counts toward NAV:
+- **Pool settings** are set per fund at creation (`CreateFundParams.pool`) and can change until
+  the pool opens (`venue.setPoolSettings`): buy and sell tax (Hookr's Directional Tax, each at most
+  10%, paid in USDG), Hookr's share of the tax (20% to 50%), the LP fee (at most 10%, to LPs only)
+  and the tick spacing (default 60). They are frozen for the life of the pool. Example: 1.05% tax
+  with Hookr at 23.81% and a 0.2% LP fee leaves about 0.8% to Own on every trade.
+- The venue holds one full-range position for the fund. It counts toward NAV:
   NAV = (basket + idle USDG + the position's USDG) / (supply − the position's fund tokens), with the
-  position valued at the pool's 30-minute TWAP (falling back to the history it has). Mints and
-  redeems read the position at both the TWAP and spot and take whichever costs the caller (the
-  higher amounts for a mint, the lower for a redeem), so neither a move inside one block nor a move
-  held for the TWAP window and then reversed changes what they get.
+  position valued at the fund token's oracle price: its `FundPriceHub` feed, the keeper's signed
+  30-minute pool TWAP (`FundOracle.lastPrice`, at any age; the pool's opening price until the
+  first push). Mints and redeems read the position at both that price and spot and take whichever
+  costs the caller (the higher amounts for a mint, the lower for a redeem), so neither a move inside
+  one block nor a move held and then reversed before the next push changes what they get.
 - Depositors therefore get exactly what they brought at NAV, and premium buys from the pool raise
   NAV for every holder.
 - **Redeem** pays a pro-rata slice of the basket, of the fund's idle USDG and of the position: the
-  position's USDG out (capped at its TWAP value, so a pumped spot price cannot be drained; anything
+  position's USDG out (capped at its value at the oracle price, so a pumped spot price cannot be drained; anything
   above the cap goes to the fund) and the matching fund tokens burned.
-- LP fees the position earns go to the fund (USDG) or are burned (fund tokens). Outside LPs can add
-  their own positions; only the fund's own position counts.
+- LP fees the position earns go to the fund (USDG) or are burned (fund tokens) on
+  `venue.collectLpFees()`. Outside LPs can add their own positions; only the fund's own position
+  counts, and they share the LP fee, never the tax.
+- **Tax:** Hookr books the tax in two queues per pool (buy and sell), frozen to pay the fund's
+  `FundCurators`. `venue.collectTax()` (anyone; the keeper) pays both out; Hookr's share goes to
+  Hookr.
 - The position stays locked. The admin can resize it later, though by default it is set once at
   launch: `fund.increasePosition(usdgAmount)` moves idle USDG into it with matching fund tokens
-  minted at the spot price (only while spot is within about 1% of the TWAP, so NAV does not move),
-  and `hook.withdrawPosition(fund, liquidity)` takes part or all of it out, the proceeds always
+  minted at the spot price (only while spot is within about 1% of the oracle price, so NAV does not
+  move), and `venue.withdrawPosition(liquidity)` takes part or all of it out, the proceeds always
   going back into the fund.
+- **Migration:** `venue.migrate(settings)` (admin) takes the whole position out and opens a new
+  Hookr pool at the old pool's price with new settings (the tick spacing must differ, so the pool
+  is new), only while spot is within about 1% of the oracle price. Staked LP positions in the old
+  pool keep what they earned and stop earning (`FundStaking.poolMoved` bumps `lpEpoch`); LPs
+  unstake and move themselves. There is no overlap window: announce the move ahead. A pool on our
+  own hook later comes in as a venue upgrade.
 
 ## Live
 
@@ -107,7 +124,7 @@ Updated 2026-10-12: the premium yield redesign (spec `plans/fund-premium-rebate-
   the fund's USDG (idle, the pool position's and issuance USDG not yet collected), each rounded up,
   and receives
   `navShares × NAV / mintPrice` fund tokens, less the fund fee, where
-  `mintPrice = max(max(spot, TWAP) × (1 + mintAdjustmentBps), NAV)`. The tokens are staked for the
+  `mintPrice = max(max(spot, oracle price) × (1 + mintAdjustmentBps), NAV)`. The tokens are staked for the
   receiver and locked for `mintLock` (default 15 days, 0 allowed): they cannot be transferred or
   unstaked until then, but can be redeemed at NAV through `FundStaking.redeem`. One lock per
   account; a second mint locks the total until the share-weighted end. A locked or boosted mint
@@ -140,13 +157,17 @@ Updated 2026-10-12: the premium yield redesign (spec `plans/fund-premium-rebate-
   or `settleBoost`) and need no price. Shares leaving the account (transfer, unstake, redeem) scale
   the boost down to what is still held, and the unpaid boost tokens are burned (NAV rises). A
   second mint settles the first and merges into it; a finished or forfeited boost never comes back.
-- **Pool issuance:** on a pool buy starting above `NAV × (1 + issuanceStartBps)` (default 1.01x),
-  the hook fills part of the buy with newly issued fund tokens at the pool's own average price, so
-  the price moves as if supply grew by the density per price doubling: 1% of supply below 2x NAV,
-  2% from 2x, 3% from 5x (up to 8 admin-set steps, `setIssuance`). Exact-in and exact-out buys both
-  issue; sells never do. Of the premium over NAV on issued tokens, `potShareBps` (default 75%)
-  is minted as fund tokens at NAV for the Premium Pot and the rest is backing. The USDG for issued tokens is held as pool
-  manager claims and counted in the position until the next `collectLpFees` or redeem.
+- **Pool issuance:** `venue.issue()` (anyone; the keeper calls it after buys) mints new fund tokens
+  and sells them into the pool while it trades above `NAV × (1 + issuanceStartBps)` (default
+  1.01x). It sells until the pool and supply are where issuing the density along the rise would
+  have left them: the tokens issued since the anchor (the price after the last full issue, or
+  lower if the price was seen lower since) equal the density per price doubling over the rise, 1%
+  of supply below 2x NAV, 2% from 2x, 3% from 5x (up to 8 admin-set steps, `venue.setIssuance`).
+  An hourly cap (`hourlyCapBps`, default 5% of supply, draining over the hour) bounds each run;
+  what it cuts short stays due. The sale pays the LP fee and Hookr's sell tax like any sell. The
+  USDG goes straight to the fund. Of the premium over NAV on issued tokens, `potShareBps` (default
+  75%) is minted as fund tokens at NAV for the Premium Pot and the rest is backing. Between a buy
+  and the next `issue`, anyone can sell at the higher price first.
 - **Premium Pot:** pot tokens are held by the staking module and drip linearly into the vault
   over `potDripPeriod` (default 7 days; each top-up re-spreads what is left over a new period),
   raising the share price. The drip needs no price, so it never piles up while feeds are stale.
@@ -157,10 +178,10 @@ Updated 2026-10-12: the premium yield redesign (spec `plans/fund-premium-rebate-
 - **Redeem** at any time, as above. It needs no oracle and cannot be paused. If one basket token
   can't be transferred (paused, or blacklisting the fund), `redeemSkipping` names it to leave out:
   that slice is forfeited and stays in the fund for the remaining holders.
-- **Fee.** One fund fee (default 1%, admin-set per fund with `setFee`, at most 10%) on pool trades
-  (in USDG through the hook), mints and redeems (in fund tokens). All of it goes to `FundCurators`;
-  there is no separate protocol fee.
-- **Staking (tier yield):** stakers earn a yearly rate (APR) set by the market TWAP's premium to
+- **Fee.** One fund fee (default 1%, admin-set per fund with `setFee`, at most 10%) on mints and
+  redeems (in fund tokens), and the pool tax on trades (in USDG, set per pool, above). All of it
+  goes to `FundCurators`; there is no separate protocol fee.
+- **Staking (tier yield):** stakers earn a yearly rate (APR) set by the oracle price's premium to
   NAV, paid by minting new fund tokens (capped by the factory's `maxYieldRateBpsPerYear`, 109,500
   bps a year, i.e. 3% a day, by default; at most 3,650,000). The tiers are up to 8 (premium,
   `rateBpsPerYear`) levels, stepped: each level's rate holds until the next level, no yield below
@@ -178,7 +199,7 @@ Updated 2026-10-12: the premium yield redesign (spec `plans/fund-premium-rebate-
   send it with the PositionManager's `safeTransferFrom`). Only full-range positions in the fund's
   pool qualify, so every staked position holds the same fund tokens per unit of liquidity and one
   yield-per-liquidity counter pays them all fairly. A staked position earns the staking rate on the
-  fund tokens it holds, valued at the pool's 30-minute TWAP; its USDG side earns nothing. The yield
+  fund tokens it holds, valued at the fund token's oracle price; its USDG side earns nothing. The yield
   is minted with the stakers' yield, held in `FundStaking` and claimed in fund tokens
   (`claimPositionYield`, or on `unstakePosition`). The position's swap fees stay the LP's: they can
   collect them while staked (`collectPositionFees`) or after unstaking. Staked positions do not
@@ -320,14 +341,14 @@ Updated 2026-10-12: the premium yield redesign (spec `plans/fund-premium-rebate-
 - **Admin (ProtocolRegistry `ADMIN` role, the same admins as eUSD):** no fund contract stores
   its own admin; each checks the registry on every call, so granting or revoking `ADMIN` there
   (through the timelocked `PROTOCOL_ADMIN`) changes who administers every fund at once. Admins
-  upgrade the factory, the hook and all modules; set the price oracle and feeds, the protocol
-  curator and its share, the whitelist, routers, the LP fee, the curator cap, the bribe cut and
+  upgrade the factory and all modules (the venue included); set the price oracle and feeds, the protocol
+  curator and its share, the whitelist, routers, each pool's settings before it opens, the curator cap, the bribe cut and
   tokens, the eligibility list, the yield cap, governance rules and each fund's fee, curator
   yield, minimum curator stake, yield tiers, mint lock and adjustment, boost and pot settings and
   pool issuance; set the premium defaults for new funds; add and remove
   curators (never the protocol curator); veto proposals; can delist a token directly; turn public
   curation off and on and, while it is off, set each fund's basket and weights directly; can
-  withdraw the pool position back into the fund; set the sweep recipient
+  withdraw the pool position back into the fund; migrate a fund to a new pool; set the sweep recipient
   (`factory.setSweepRecipient`; the registry treasury until set).
 - **Operator (registry `OPERATOR` role, or an admin):** pauses and unpauses fund mints and launch
   deposits, and sweeps tokens the fund holds that are not backing (stray tokens, a dropped asset's
@@ -346,31 +367,43 @@ Updated 2026-10-12: the premium yield redesign (spec `plans/fund-premium-rebate-
   staleness)` for assets with Chainlink (read through the in-house verifier, so its weekend quotes
   count), or `setFeed(asset, feed, staleness)` for `FundPriceHub` feeds, whose decimals are read once
   when the feed is set (set it again if they ever change);
-  the fund's market price and the position value come from its own pool TWAP. Mint deposits are taken in kind, so no oracle values
+  the fund's market price and the position value come from its own hub feed (the keeper's signed
+  pool TWAP). Mint deposits are taken in kind, so no oracle values
   them (the oracles only set NAV and the mint price). Redeem depends on neither.
 - **USDG:** treated as $1.
-- **Hook address:** the hook must be deployed (CREATE2-mined) at an address whose low bits encode
-  `beforeInitialize | beforeSwap | afterSwap | beforeSwapReturnDelta | afterSwapReturnDelta`.
+- **Hookr:** pools live on Hookr's contracts (unaudited): launcher
+  `0x1cf2748A6670572425eAbf9Ab9e5BC4eb2eB8Ef4`, root `0x89c9FB50d1f03192230FFB1c279BB6E7d3Fe6aCc`,
+  rules `0x4a71c270b1520F94064268102AebD744b0DE7942`, Directional Tax
+  `0xE73fAD0d773b9571a7a9d2A1edc01132fF5f1e1F`, fixed in the venue implementation. A launch fee,
+  if Hookr ever charges one, is paid as `msg.value` to `seedPool` and `migrate`.
   The Uniswap v4 PoolManager on Robinhood Chain is `0x8366a39cc670b4001a1121b8f6a443a643e40951`
   and the PositionManager (LP position NFTs, set in the `FundStaking` implementation) is
   `0x58daec3116aae6d93017baaea7749052e8a04fa7`.
 
 ## Deployment
 
-`script/funds/DeployFundsRobinhood.s.sol` deploys the oracle, the six module implementations (the
-`Fund` implementation takes USDG in its constructor and only initializes from a factory with the
-same USDG), the factory (with `PROTOCOL_CURATOR` as the protocol curator), the hook (mining its CREATE2 salt with
-`script/funds/HookMiner.sol`), the redeem and mint zaps, the auction house and the price hub (with
-`PRICE_KEEPER` as its keeper), all administered by the ProtocolRegistry at
-`PROTOCOL_REGISTRY_ROBINHOOD`. It wires the hook, the auction house and platform metadata and
+`script/funds/DeployFundsRobinhood.s.sol` deploys the oracle, the seven module implementations (the
+`Fund` and `FundVenue` implementations take USDG in their constructors and only initialize from a
+factory with the same USDG; the venue's also takes the Hookr addresses), the factory (with
+`PROTOCOL_CURATOR` as the protocol curator), the redeem and mint zaps, the auction house and the
+price hub (with `PRICE_KEEPER` as its keeper), all administered by the ProtocolRegistry at
+`PROTOCOL_REGISTRY_ROBINHOOD`. It wires the auction house and platform metadata and
 allows USDG (and MONEY, if given) as bribe tokens when the deployer holds `ADMIN`; otherwise it
-prints those calls for an admin's Safe. After a fund launches,
-`script/funds/AddFundTwapFeedRobinhood.s.sol` deploys its TWAP feed and registers it in the oracle.
+prints those calls for an admin's Safe. When a fund's pool opens, the admin creates its hub feed
+(`hub.createFeed(fund)`) and registers it in the oracle (`oracle.setFeed`), and the keeper pushes
+its pool TWAP with the other hub prices. Keeper jobs per fund: `venue.issue()` after buys,
+`venue.collectTax()`, `venue.collectLpFees()`, the hub push and `staking.accrue()`.
 
 ## Tests
 
 - `test/unit/Fund*.t.sol` run against a real v4 PoolManager, deployed from precompiled bytecode in
-  `test/helpers/v4/PoolManagerBytecode.sol` (v4-core pins solc 0.8.26; this repo pins 0.8.28).
+  `test/helpers/v4/PoolManagerBytecode.sol` (v4-core pins solc 0.8.26; this repo pins 0.8.28), with
+  `test/helpers/MockHookr.sol` standing in for Hookr's launcher and tax (hookless pools; test
+  swaps book the tax in its queues). `test/unit/FundVenue.t.sol` covers the pool settings, seeding,
+  tax, valuation, redeems and migration.
+- `test/fork/FundHookrRobinhoodFork.t.sol` (needs `ROBINHOOD_RPC`) launches a fund on Hookr's live
+  contracts, trades it through Uniswap's Universal Router, pays the tax to the curators, issues,
+  redeems and migrates.
 - `test/invariant/FundInvariant.t.sol` checks that mints, pool buys, redeems, unstakes and boost
   settlements never lower NAV per token (beyond the position valuation's rounding) and that the
   staking module holds exactly the stakes plus the boost and pot tokens still owed.

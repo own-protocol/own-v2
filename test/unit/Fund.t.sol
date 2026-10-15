@@ -5,8 +5,9 @@ import {Fund} from "../../src/funds/Fund.sol";
 
 import {IFund} from "../../src/interfaces/IFund.sol";
 import {IFundFactory} from "../../src/interfaces/IFundFactory.sol";
-import {IFundHook} from "../../src/interfaces/IFundHook.sol";
+
 import {IFundStaking} from "../../src/interfaces/IFundStaking.sol";
+import {IFundVenue} from "../../src/interfaces/IFundVenue.sol";
 import {CreateFundParams, FundInfo, FundMetadata, PlatformMetadata} from "../../src/interfaces/types/FundTypes.sol";
 import {FundTestBase} from "../helpers/FundTestBase.sol";
 import {MockSwapRouter} from "../helpers/MockSwapRouter.sol";
@@ -108,8 +109,10 @@ contract FundTest is FundTestBase {
         _refreshFeeds();
         uint256 navBefore = fund.navPerShare();
         _poolSwap(makeAddr("buyer"), true, -int256(5000e6));
+        venue.issue();
         vm.warp(block.timestamp + 1 hours);
         _refreshFeeds();
+        _setFundPrice(venue.spotPrice()); // the hub's TWAP catches up
         assertGt(fund.navPerShare(), navBefore);
     }
 
@@ -149,7 +152,7 @@ contract FundTest is FundTestBase {
 
     /// @dev The pool price a direct mint pays before its adjustment: the higher of spot and TWAP.
     function _marketPrice() internal view returns (uint256) {
-        return Math.max(uint256(feeds[address(fund)].answer()) * 1e10, hook.spotPrice(address(fund)));
+        return Math.max(_fundPrice(), venue.spotPrice());
     }
 
     function test_mint_atPoolPrice_stakedAndLockedForReceiver() public {
@@ -175,12 +178,12 @@ contract FundTest is FundTestBase {
     }
 
     function test_mint_priceIsHigherOfSpotAndTwap() public {
-        uint256 spot = hook.spotPrice(address(fund));
+        uint256 spot = venue.spotPrice();
         assertApproxEqRel(spot, fund.navPerShare() * 13 / 10, 1e15);
 
         _setFeed(address(fund), _navPrice() * 3); // TWAP above spot
         (, uint256 mintPrice,,,) = fund.previewMint(1000e18, false);
-        assertEq(mintPrice, uint256(feeds[address(fund)].answer()) * 1e10);
+        assertEq(mintPrice, _fundPrice());
 
         _setFeed(address(fund), _navPrice() / 2); // TWAP below spot: the spot price stands
         (, mintPrice,,,) = fund.previewMint(1000e18, false);
@@ -194,10 +197,10 @@ contract FundTest is FundTestBase {
         vm.prank(alice);
         fund.transfer(makeAddr("dumper"), 20_000e18);
         _poolSwap(makeAddr("dumper"), false, -int256(20_000e18));
-        assertLt(hook.spotPrice(address(fund)), before);
+        assertLt(venue.spotPrice(), before);
         // The TWAP has not moved, so the price holds at it (at or above NAV).
         (, uint256 mintPrice,,,) = fund.previewMint(1000e18, false);
-        uint256 twap = uint256(feeds[address(fund)].answer()) * 1e10;
+        uint256 twap = _fundPrice();
         assertEq(mintPrice, Math.max(twap, _mintNav()));
         assertGe(mintPrice, twap);
     }
@@ -304,9 +307,9 @@ contract FundTest is FundTestBase {
         staking.stakeMinted(alice, 1e18, 1e18, 0, uint64(block.timestamp), false);
     }
 
-    function test_hookIssue_onlyHook_reverts() public {
-        vm.expectRevert(IFund.NotHook.selector);
-        fund.hookIssue(address(this), 1e18, 0);
+    function test_venueIssue_onlyVenue_reverts() public {
+        vm.expectRevert(IFund.NotVenue.selector);
+        fund.venueIssue(address(this), 1e18, 0);
     }
 
     function test_mint_matchesPreview() public {
@@ -390,7 +393,7 @@ contract FundTest is FundTestBase {
         uint256 netBal = net.balanceOf(address(fund));
         uint256 ponsBal = pons.balanceOf(address(fund));
         uint256 tslaBal = tsla.balanceOf(address(fund));
-        uint128 liquidity = hook.positionLiquidity(address(fund));
+        uint128 liquidity = venue.positionLiquidity();
         (uint256 positionUsdg, uint256 positionTokens) = fund.positionAmounts();
 
         uint256 usdgBefore = usdg.balanceOf(alice);
@@ -398,16 +401,17 @@ contract FundTest is FundTestBase {
         (uint256[] memory out, uint256 usdgOut) = fund.redeem(10_000e18, alice, new uint256[](0), 0);
 
         uint256 net_ = 10_000e18 - 100e18;
-        assertEq(out[0], netBal * net_ / supply);
-        assertEq(out[1], ponsBal * net_ / supply);
-        assertEq(out[2], tslaBal * net_ / supply);
+        // Spot and the oracle's price differ by rounding, so the redeem's supply may by a few wei.
+        assertApproxEqRel(out[0], netBal * net_ / supply, 1e6);
+        assertApproxEqRel(out[1], ponsBal * net_ / supply, 1e6);
+        assertApproxEqRel(out[2], tslaBal * net_ / supply, 1e6);
         assertEq(net.balanceOf(alice), out[0]);
         assertEq(pons.balanceOf(alice), out[1]);
         assertEq(tsla.balanceOf(alice), out[2]);
         assertEq(usdg.balanceOf(alice) - usdgBefore, usdgOut);
         assertApproxEqRel(usdgOut, positionUsdg * net_ / supply, 1e15);
         assertEq(fund.balanceOf(address(curators)), 100e18);
-        assertApproxEqAbs(hook.positionLiquidity(address(fund)), liquidity - uint256(liquidity) * net_ / supply, 1);
+        assertApproxEqAbs(venue.positionLiquidity(), liquidity - uint256(liquidity) * net_ / supply, 1);
         // The redeemer's net shares and the slice's pool tokens are both burned.
         assertApproxEqRel(totalBefore - fund.totalSupply(), net_ + positionTokens * net_ / supply, 1e15);
         assertGe(fund.navPerShare() * 10_001 / 10_000, navBefore);
@@ -527,9 +531,9 @@ contract FundTest is FundTestBase {
     }
 
     function test_redeem_includesIdleUsdg() public {
-        uint128 half = hook.positionLiquidity(address(fund)) / 2;
+        uint128 half = venue.positionLiquidity() / 2;
         vm.prank(admin);
-        hook.withdrawPosition(address(fund), half);
+        venue.withdrawPosition(half);
         uint256 idle = fund.idleUsdg();
         uint256 supply = fund.effectiveSupply();
         (uint256 positionUsdg,) = fund.positionAmounts();
@@ -553,11 +557,11 @@ contract FundTest is FundTestBase {
 
     function test_withdrawPosition_returnsToFundAndKeepsNav() public {
         uint256 navBefore = fund.navPerShare();
-        uint128 liquidity = hook.positionLiquidity(address(fund));
+        uint128 liquidity = venue.positionLiquidity();
         vm.prank(admin);
-        hook.withdrawPosition(address(fund), liquidity);
+        venue.withdrawPosition(liquidity);
 
-        assertEq(hook.positionLiquidity(address(fund)), 0);
+        assertEq(venue.positionLiquidity(), 0);
         assertApproxEqRel(fund.idleUsdg(), 25_000e6, 1e15);
         assertApproxEqRel(fund.totalSupply(), launch.depositorSupply(), 1e15);
         assertApproxEqRel(fund.navPerShare(), navBefore, 1e15);
@@ -566,31 +570,29 @@ contract FundTest is FundTestBase {
 
     function test_withdrawPosition_notAdmin_reverts() public {
         vm.prank(keeper);
-        vm.expectRevert(IFundHook.NotAdmin.selector);
-        hook.withdrawPosition(address(fund), 1);
+        vm.expectRevert(IFundVenue.NotAdmin.selector);
+        venue.withdrawPosition(1);
     }
 
     function test_withdrawPosition_tooMuch_reverts() public {
-        uint128 liquidity = hook.positionLiquidity(address(fund));
+        uint128 liquidity = venue.positionLiquidity();
         vm.prank(admin);
-        vm.expectRevert(IFundHook.InsufficientLiquidity.selector);
-        hook.withdrawPosition(address(fund), liquidity + 1);
+        vm.expectRevert(IFundVenue.InsufficientLiquidity.selector);
+        venue.withdrawPosition(liquidity + 1);
     }
 
     function test_redeemPosition_onlyFunds() public {
         vm.prank(attacker);
-        vm.expectRevert(IFundHook.NotFund.selector);
-        hook.redeemPosition(1, 1, attacker);
+        vm.expectRevert(IFundVenue.NotFund.selector);
+        venue.redeemPosition(1, 1, attacker);
     }
 
     function test_lpFees_goToFund() public {
-        vm.prank(admin);
-        hook.setLpFee(address(fund), 3000); // 0.3%
         _poolSwap(makeAddr("buyer"), true, -int256(10_000e6));
         _poolSwap(makeAddr("buyer"), false, -int256(1000e18));
         uint256 supplyBefore = fund.totalSupply();
 
-        (uint256 usdgAmount, uint256 burned) = hook.collectLpFees(address(fund));
+        (uint256 usdgAmount, uint256 burned) = venue.collectLpFees();
         assertGt(usdgAmount, 0);
         assertGt(burned, 0);
         assertEq(fund.idleUsdg(), usdgAmount);
@@ -732,9 +734,9 @@ contract FundTest is FundTestBase {
     }
 
     function test_rebalance_spendsIdleUsdg() public {
-        uint128 tenth = hook.positionLiquidity(address(fund)) / 10;
+        uint128 tenth = venue.positionLiquidity() / 10;
         vm.prank(admin);
-        hook.withdrawPosition(address(fund), tenth);
+        venue.withdrawPosition(tenth);
         uint256 idle = fund.idleUsdg();
         tsla.mint(address(router), 100e18);
         uint256 tslaBefore = tsla.balanceOf(address(fund));
@@ -1006,7 +1008,7 @@ contract FundTest is FundTestBase {
     function test_setModules_twice_reverts() public {
         vm.prank(address(factory));
         vm.expectRevert(IFund.ModulesAlreadySet.selector);
-        fund.setModules(alice, bob, bob, bob);
+        fund.setModules(alice, bob, bob, bob, bob);
     }
 
     function test_implementation_cannotBeInitialized() public {
