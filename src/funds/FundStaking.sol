@@ -231,7 +231,8 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuardTrans
         uint256 shares,
         address receiver,
         uint256[] calldata minAmountsOut,
-        uint256 minUsdgOut
+        uint256 minUsdgOut,
+        address[] calldata skip
     ) external override nonReentrant returns (uint256[] memory amounts, uint256 usdgAmount) {
         if (shares == 0) revert ZeroAmount();
         if (receiver == address(0)) revert ZeroAddress();
@@ -240,7 +241,7 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuardTrans
         _totalStaked -= assets;
         _burn(msg.sender, shares);
         emit Unstaked(msg.sender, address(this), assets, shares);
-        (amounts, usdgAmount) = IFund(fund).redeem(assets, receiver, minAmountsOut, minUsdgOut);
+        (amounts, usdgAmount) = IFund(fund).redeemSkipping(assets, receiver, minAmountsOut, minUsdgOut, skip);
     }
 
     /// @inheritdoc IFundStaking
@@ -647,8 +648,10 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuardTrans
         emit BoostForfeited(account, left - keptLeft, keptLeft);
     }
 
-    function _held(address account, address gov) internal view returns (uint256) {
-        return balanceOf(account) + IFundGovernor(gov).escrowOf(account, address(this));
+    function _held(address account, address gov) internal view returns (uint256 held) {
+        held = balanceOf(account) + IFundGovernor(gov).escrowOf(account, address(this));
+        address prev = IFund(fund).previousGovernor();
+        if (prev != address(0) && prev != gov) held += IFundGovernor(prev).escrowOf(account, address(this));
     }
 
     function _lockOf(address account, bool atNav) internal view returns (MintLock storage) {
@@ -727,6 +730,8 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuardTrans
     ///      the governor still count towards the account's holdings. Shares leaving any other way
     ///      scale the account's boost down.
     function _update(address from, address to, uint256 value) internal override {
+        // Anyone can move zero tokens from any account, so a zero transfer must not touch its lock or boost.
+        if (value == 0) return super._update(from, to, value);
         uint256 launchLocked = from == address(0) ? 0 : _activeLock(from);
         uint256 mintLocked = from == address(0) ? 0 : _activeMintLock(from);
         bool boosted = from != address(0) && _boosts[from].left != 0;
@@ -749,12 +754,11 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuardTrans
         if (from == address(0) || to == address(0)) _recordSupply();
     }
 
-    /// @dev New shares count from the next epoch; burned shares leave the current epoch at once, so
-    ///      staking and unstaking within an epoch never raises that epoch's supply.
+    /// @dev An epoch's supply is fixed when it opens: shares minted or burned during it count from the
+    ///      next epoch, so no stake or unstake moves the total an epoch's votes are measured against.
     function _recordSupply() internal {
         uint256 e = block.timestamp / EPOCH;
-        uint256 live = totalSupply();
-        _supply.set(e, Math.min(_supply.valueAt(e), live), live);
+        _supply.set(e, _supply.valueAt(e), totalSupply());
     }
 
     function _addLock(address account, uint256 shares) internal {

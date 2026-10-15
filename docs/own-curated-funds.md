@@ -310,7 +310,9 @@ Updated 2026-10-12: the premium yield redesign (spec `plans/fund-premium-rebate-
   executed with no locked yes stake) the briber takes it back.
 - **Governor swaps:** every bribe stays with the governor live when it was posted; claims, refunds
   and the views name that governor, so a new governor neither reopens old bribes nor mixes up
-  proposal ids. A bribe for a week the old governor never tallied can be taken back.
+  proposal ids. A bribe for a week the old governor never tallied can be taken back. Staked
+  tokens still in the old governor keep counting as their owner's (for locks and boosts) until
+  withdrawn; a second swap waits until the governor before the current one holds no stake.
 
 ## Trust and limits
 

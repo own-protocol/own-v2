@@ -3,6 +3,7 @@ pragma solidity 0.8.28;
 
 import {IFund} from "../../src/interfaces/IFund.sol";
 import {IFundFactory} from "../../src/interfaces/IFundFactory.sol";
+import {IFundGovernor} from "../../src/interfaces/IFundGovernor.sol";
 import {IFundHook} from "../../src/interfaces/IFundHook.sol";
 import {IFundStaking} from "../../src/interfaces/IFundStaking.sol";
 import {
@@ -439,7 +440,7 @@ contract FundPremiumTest is FundTestBase {
         fund.redeem(aliceBal * 8 / 10, alice, new uint256[](0), 0);
         uint256 bobBal = staking.balanceOf(bob);
         vm.prank(bob);
-        staking.redeem(bobBal * 8 / 10, bob, new uint256[](0), 0);
+        staking.redeem(bobBal * 8 / 10, bob, new uint256[](0), 0, new address[](0));
 
         assertEq(_held(), boost);
         (uint256 nav1,) = _nav();
@@ -474,7 +475,7 @@ contract FundPremiumTest is FundTestBase {
         assertGt(staking.balanceOf(carol), shares);
         shares = staking.balanceOf(carol);
         vm.prank(carol);
-        staking.redeem(shares, carol, new uint256[](0), 0);
+        staking.redeem(shares, carol, new uint256[](0), 0, new address[](0));
         assertEq(staking.balanceOf(carol), 0);
     }
 
@@ -665,7 +666,7 @@ contract FundPremiumTest is FundTestBase {
         staking.transfer(bob, 1);
         vm.expectRevert(IFundStaking.SharesLocked.selector);
         staking.unstake(1, carol);
-        (, uint256 usdgOut) = staking.redeem(bal, carol, new uint256[](0), 0);
+        (, uint256 usdgOut) = staking.redeem(bal, carol, new uint256[](0), 0, new address[](0));
         vm.stopPrank();
         assertGt(usdgOut, 0);
         assertEq(staking.balanceOf(carol), 0);
@@ -805,9 +806,9 @@ contract FundPremiumTest is FundTestBase {
         staking.transfer(dave, 1);
         vm.expectRevert(IFundStaking.SharesLocked.selector);
         staking.unstake(1, carol);
-        staking.redeem(bal / 2, carol, new uint256[](0), 0);
+        staking.redeem(bal / 2, carol, new uint256[](0), 0, new address[](0));
         assertEq(staking.mintLockOf(carol, true).shares, bal - bal / 2);
-        staking.redeem(staking.balanceOf(carol), carol, new uint256[](0), 0);
+        staking.redeem(staking.balanceOf(carol), carol, new uint256[](0), 0, new address[](0));
         vm.stopPrank();
         assertEq(staking.mintLockOf(carol, true).shares, 0);
         assertEq(fund.balanceOf(carol), 0);
@@ -846,6 +847,138 @@ contract FundPremiumTest is FundTestBase {
         vm.expectRevert(IFundStaking.SharesLocked.selector);
         staking.transfer(dave, 1);
         vm.stopPrank();
+    }
+
+    function test_navMint_redeemSkipsAFrozenToken() public {
+        uint256 shares = _mintAtNav(carol, 10_000e18);
+        address[] memory a = fund.assets();
+        vm.mockCallRevert(a[1], abi.encodeWithSelector(IERC20.transfer.selector), "frozen");
+        address[] memory skip = new address[](1);
+        skip[0] = a[1];
+        vm.startPrank(carol);
+        vm.expectRevert();
+        staking.redeem(shares, carol, new uint256[](0), 0, new address[](0));
+        (uint256[] memory amounts,) = staking.redeem(shares, carol, new uint256[](0), 0, skip);
+        vm.stopPrank();
+        assertEq(amounts[1], 0);
+        assertGt(amounts[0], 0);
+        assertEq(IERC20(a[0]).balanceOf(carol), amounts[0]);
+        assertEq(staking.balanceOf(carol), 0);
+        assertEq(staking.mintLockOf(carol, true).shares, 0);
+    }
+
+    /// @dev A replaced governor that answers no escrow for anyone.
+    function _swapGovernor() internal returns (address g2) {
+        g2 = makeAddr("g2");
+        vm.mockCall(g2, abi.encodeWithSelector(IFundGovernor.escrowOf.selector), abi.encode(uint256(0)));
+        vm.prank(admin);
+        fund.setGovernor(g2);
+    }
+
+    function _escrowAll(
+        address who
+    ) internal returns (uint256 shares) {
+        shares = staking.balanceOf(who);
+        vm.startPrank(who);
+        staking.approve(address(governor), shares);
+        governor.deposit(address(staking), shares);
+        vm.stopPrank();
+    }
+
+    function test_govSwap_oldEscrowKeepsTheNavLock() public {
+        _mintAtNav(carol, 10_000e18);
+        uint256 shares = _escrowAll(carol);
+        _swapGovernor();
+        assertEq(fund.previousGovernor(), address(governor));
+
+        vm.prank(carol);
+        governor.requestWithdrawal(address(staking), 1e18);
+        _warp(governor.unlockAt(carol) - block.timestamp);
+        vm.startPrank(carol);
+        governor.withdraw(address(staking));
+        staking.redeem(1e18, carol, new uint256[](0), 0, new address[](0));
+        assertEq(staking.mintLockOf(carol, true).shares, shares - 1e18);
+        governor.requestWithdrawal(address(staking), shares - 1e18);
+        vm.stopPrank();
+        _warp(governor.unlockAt(carol) - block.timestamp);
+        vm.startPrank(carol);
+        governor.withdraw(address(staking));
+        vm.expectRevert(IFundStaking.SharesLocked.selector);
+        staking.unstake(shares - 1e18, carol);
+        vm.expectRevert(IFundStaking.SharesLocked.selector);
+        staking.transfer(dave, 1);
+        vm.stopPrank();
+    }
+
+    function test_govSwap_oldEscrowKeepsTheBoost() public {
+        _mintAs(carol, 10_000e18);
+        _warp(uint256(fund.mintLock()) + 1 days);
+        staking.settleBoost(carol);
+        _escrowAll(carol);
+        IFundStaking.Boost memory b = staking.boostOf(carol);
+        assertGt(b.left, 0);
+        _swapGovernor();
+        vm.prank(dave);
+        staking.transferFrom(carol, dave, 0);
+        IFundStaking.Boost memory a = staking.boostOf(carol);
+        assertEq(a.left, b.left);
+        assertEq(a.shares, b.shares);
+    }
+
+    function test_zeroTransfer_neverTouchesTheBoost() public {
+        _mintAs(carol, 10_000e18);
+        uint256 held0 = _held();
+        IFundStaking.Boost memory b = staking.boostOf(carol);
+        vm.prank(dave);
+        staking.transferFrom(carol, dave, 0);
+        assertEq(staking.boostOf(carol).left, b.left);
+        assertEq(_held(), held0);
+    }
+
+    function test_setGovernor_waitsUntilTheGovernorBeforeIsEmpty() public {
+        _mintAtNav(carol, 10_000e18);
+        uint256 shares = _escrowAll(carol);
+        address g2 = _swapGovernor();
+        address g3 = makeAddr("g3");
+
+        vm.startPrank(admin);
+        vm.expectRevert(IFund.PreviousGovernorHoldsStake.selector);
+        fund.setGovernor(g3);
+        fund.setGovernor(address(governor)); // back to the previous one: nothing drops out of the count
+        vm.stopPrank();
+        assertEq(fund.governor(), address(governor));
+        assertEq(fund.previousGovernor(), g2);
+
+        vm.prank(admin);
+        fund.setGovernor(g2);
+        vm.prank(carol);
+        governor.requestWithdrawal(address(staking), shares);
+        _warp(governor.unlockAt(carol) - block.timestamp);
+        vm.prank(carol);
+        governor.withdraw(address(staking));
+        vm.prank(admin);
+        fund.setGovernor(g3);
+        assertEq(fund.previousGovernor(), g2);
+        assertEq(fund.governor(), g3);
+    }
+
+    function test_supplyAt_fixedWhenTheEpochOpens() public {
+        _warp(1 weeks);
+        uint256 e = block.timestamp / 1 weeks;
+        uint256 opened = staking.totalSupplyAt(e);
+        uint256 shares = staking.balanceOf(bob);
+        assertGt(shares, 0);
+        assertEq(opened, staking.totalSupply());
+
+        vm.startPrank(bob);
+        uint256 assets = staking.unstake(shares, bob);
+        assertEq(staking.totalSupplyAt(e), opened); // leaving does not shrink this epoch
+        assertEq(staking.totalSupplyAt(e + 1), staking.totalSupply());
+        fund.approve(address(staking), assets);
+        staking.stake(assets, bob);
+        vm.stopPrank();
+        assertEq(staking.totalSupplyAt(e), opened); // nor does joining grow it
+        assertEq(staking.totalSupplyAt(e + 1), staking.totalSupply());
     }
 
     function test_navMint_keepsItsOwnLockBesideDirectMints() public {

@@ -661,8 +661,8 @@ contract FundGovernor is IFundGovernor, Initializable, ReentrancyGuardTransient 
     // ──────────────────────────────────────────────────────────
 
     /// @dev All staked tokens, the stakers' "all possible votes": stake that is not escrowed here
-    ///      counts as silent. Taken from the staking module's per-epoch record, which stake made
-    ///      during an epoch never raises; never below the escrowed power, so no voter's share can
+    ///      counts as silent. Taken from the staking module's per-epoch record, fixed when the epoch
+    ///      opens, so no stake or unstake during it moves the total; never below the escrowed power, so no voter's share can
     ///      exceed the stakers' share.
     function _stakedSupplyNow(IFund f, uint256 epoch) internal view returns (uint256) {
         return Math.max(IFundStaking(f.staking()).totalSupplyAt(epoch), _totalPower.valueAt(epoch));

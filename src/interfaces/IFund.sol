@@ -252,6 +252,9 @@ interface IFund is IERC20 {
     /// @notice A locked or boosted mint must go to the caller (or come through the mint zap).
     error NotReceiver();
 
+    /// @notice The governor before the current one still holds staked shares.
+    error PreviousGovernorHoldsStake();
+
     /// @notice Initialise a fund proxy. Called once by the factory.
     /// @param params Fund parameters (launch and staking fields are ignored here).
     function initialize(
@@ -414,7 +417,9 @@ interface IFund is IERC20 {
     function setMintConfig(uint32 lock, int16 adjustmentBps, uint32 maxPremiumBps) external;
 
     /// @notice Replace the governor, e.g. with a quadratic, futarchy or bribe-market module.
-    ///         Admin only.
+    ///         Admin only. The old governor becomes {previousGovernor}, whose escrow still counts
+    ///         towards each staker's holdings; reverts while the governor before it still holds
+    ///         staked shares.
     /// @param governor_ New governor.
     function setGovernor(
         address governor_
@@ -476,6 +481,10 @@ interface IFund is IERC20 {
     /// @notice The governor, the only source of portfolio changes.
     /// @return The governor.
     function governor() external view returns (address);
+
+    /// @notice The governor replaced by the last {setGovernor}; stakers can still withdraw from it.
+    /// @return The previous governor (zero if never replaced).
+    function previousGovernor() external view returns (address);
 
     /// @notice Logo URI.
     /// @return The URI.

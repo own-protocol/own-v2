@@ -295,7 +295,7 @@ contract FundTest is FundTestBase {
 
         uint256 bal = staking.balanceOf(attacker);
         vm.prank(attacker);
-        staking.redeem(bal, attacker, new uint256[](0), 0);
+        staking.redeem(bal, attacker, new uint256[](0), 0, new address[](0));
         assertGe(fund.navPerShare() + 1, navBefore);
     }
 

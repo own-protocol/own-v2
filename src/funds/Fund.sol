@@ -115,6 +115,9 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
     /// @inheritdoc IFund
     mapping(address account => uint256) public override launchLocked;
 
+    /// @inheritdoc IFund
+    address public override previousGovernor;
+
     address private immutable _usdg;
 
     modifier onlyAdmin() {
@@ -381,6 +384,12 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
         address governor_
     ) external override onlyAdmin {
         if (governor_ == address(0)) revert ZeroAddress();
+        address prev = previousGovernor;
+        // Staking counts escrow in the current and the previous governor only, so an older one must be empty.
+        if (prev != address(0) && prev != governor_ && IERC20(staking).balanceOf(prev) != 0) {
+            revert PreviousGovernorHoldsStake();
+        }
+        previousGovernor = governor;
         governor = governor_;
         emit GovernorSet(governor_);
     }

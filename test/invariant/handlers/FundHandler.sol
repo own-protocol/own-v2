@@ -95,7 +95,7 @@ contract FundHandler is Test {
         amount = bound(amount, 1, bal);
         if (staking.convertToAssets(amount) == 0) return;
         vm.prank(actor);
-        staking.redeem(amount, actor, new uint256[](0), 0);
+        staking.redeem(amount, actor, new uint256[](0), 0, new address[](0));
         ++redeems;
     }
 

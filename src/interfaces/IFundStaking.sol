@@ -276,13 +276,16 @@ interface IFundStaking is IERC20, IERC721Receiver {
     /// @param receiver      Receiver of the basket assets and USDG.
     /// @param minAmountsOut Per-asset minimum, in the fund's asset order (empty to skip).
     /// @param minUsdgOut    Minimum USDG paid out.
+    /// @param skip          Basket assets to leave out, e.g. a frozen token (see {IFund-redeemSkipping});
+    ///                      empty for the whole basket.
     /// @return amounts    Amount of each asset paid out.
     /// @return usdgAmount USDG paid out.
     function redeem(
         uint256 shares,
         address receiver,
         uint256[] calldata minAmountsOut,
-        uint256 minUsdgOut
+        uint256 minUsdgOut,
+        address[] calldata skip
     ) external returns (uint256[] memory amounts, uint256 usdgAmount);
 
     /// @notice Set the boost and pot settings. Admin only. A new speed applies to later mints; a new
@@ -473,8 +476,8 @@ interface IFundStaking is IERC20, IERC721Receiver {
         uint256 assets
     ) external view returns (uint256);
 
-    /// @notice Shares counted as staked in weekly `epoch`: shares minted count from the next epoch,
-    ///         shares burned leave at once.
+    /// @notice Shares counted as staked in weekly `epoch`: the supply when the epoch opened. Shares
+    ///         minted or burned during an epoch count from the next one.
     /// @param epoch The epoch.
     /// @return Staked shares.
     function totalSupplyAt(
