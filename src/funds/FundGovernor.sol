@@ -115,7 +115,7 @@ contract FundGovernor is IFundGovernor, Initializable, ReentrancyGuardTransient 
     }
 
     modifier onlyOperator() {
-        if (!IFundFactory(IFund(fund).factory()).isOperator(msg.sender)) revert NotOperator();
+        _checkOperator();
         _;
     }
 
@@ -686,6 +686,10 @@ contract FundGovernor is IFundGovernor, Initializable, ReentrancyGuardTransient 
 
     function _checkAdmin() internal view {
         if (!IFundFactory(IFund(fund).factory()).isAdmin(msg.sender)) revert NotAdmin();
+    }
+
+    function _checkOperator() internal view {
+        if (!IFundFactory(IFund(fund).factory()).isOperator(msg.sender)) revert NotOperator();
     }
 
     function _setConfig(

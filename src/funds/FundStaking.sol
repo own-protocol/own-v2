@@ -220,9 +220,8 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuardTrans
         if (msg.sender != fund) revert NotFund();
         _checkpointPot();
         uint256 left = potLeft + tokens;
-        potLeft = SafeCast.toUint128(left);
         uint64 end = uint64(block.timestamp + potDripPeriod);
-        potEnd = end;
+        (potLeft, potEnd, _potUpdatedAt) = (SafeCast.toUint128(left), end, uint64(block.timestamp));
         emit PotAdded(tokens, left, end);
     }
 
@@ -257,7 +256,7 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuardTrans
         uint32 boostSpeedBpsPerYear_,
         uint32 potDripPeriod_
     ) external override nonReentrant {
-        if (!_factory.isAdmin(msg.sender)) revert NotAdmin();
+        _checkAdmin();
         _accrue();
         _setPremiumConfig(boostShareBps_, boostSpeedBpsPerYear_, potDripPeriod_);
     }
@@ -360,7 +359,7 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuardTrans
 
     /// @inheritdoc IFundStaking
     function recoverPosition(uint256 tokenId, address to) external override nonReentrant {
-        if (!_factory.isAdmin(msg.sender)) revert NotAdmin();
+        _checkAdmin();
         if (_positions[tokenId].owner != address(0)) revert PositionIsStaked();
         positionManager.safeTransferFrom(address(this), to, tokenId);
     }
@@ -385,14 +384,14 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuardTrans
     function setYieldCurve(
         YieldPoint[] calldata curve_
     ) external override nonReentrant {
-        if (!_factory.isAdmin(msg.sender)) revert NotAdmin();
+        _checkAdmin();
         _accrue();
         _setCurve(curve_);
     }
 
     /// @inheritdoc IFundStaking
     function setCuratorYield(uint16 shareBps, uint16 capBpsPerYear) external override nonReentrant {
-        if (!_factory.isAdmin(msg.sender)) revert NotAdmin();
+        _checkAdmin();
         _accrue();
         _setCuratorYield(shareBps, capBpsPerYear);
     }
@@ -577,13 +576,14 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuardTrans
     }
 
     /// @dev Moves the pot's drip since the last checkpoint into `potPending`: the rest drips
-    ///      linearly until `potEnd`.
+    ///      linearly until `potEnd`. An empty pot's clock stands still; {addPot} restarts it.
     function _checkpointPot() internal {
+        uint256 left = potLeft;
+        if (left == 0) return;
         uint256 last = _potUpdatedAt;
         _potUpdatedAt = uint64(block.timestamp);
-        uint256 left = potLeft;
         uint256 end = potEnd;
-        if (left == 0 || block.timestamp <= last) return;
+        if (block.timestamp <= last) return;
         uint256 released = block.timestamp >= end ? left : Math.mulDiv(left, block.timestamp - last, end - last);
         potLeft = SafeCast.toUint128(left - released);
         potPending += released;
@@ -847,5 +847,9 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuardTrans
 
     function _maxRate() internal view returns (uint256) {
         return _factory.maxYieldRateBpsPerYear();
+    }
+
+    function _checkAdmin() internal view {
+        if (!_factory.isAdmin(msg.sender)) revert NotAdmin();
     }
 }

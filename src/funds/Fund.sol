@@ -120,6 +120,7 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
     address public override venue;
 
     address private immutable _usdg;
+    uint256 private immutable _usdgUnit;
 
     modifier onlyAdmin() {
         _checkAdmin();
@@ -152,6 +153,7 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
     ) ERC20("", "") {
         if (usdg_ == address(0)) revert ZeroAddress();
         _usdg = usdg_;
+        _usdgUnit = 10 ** IERC20Metadata(usdg_).decimals();
         _disableInitializers();
     }
 
@@ -463,12 +465,7 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
 
     /// @inheritdoc IFund
     function getFundInfo() external view override returns (FundMetadata memory) {
-        return FundMetadata({
-            name: _fundName,
-            symbol: _fundSymbol,
-            info: _info,
-            platform: IFundFactory(factory).platformMetadata()
-        });
+        return FundMetadataLib.get(_fundName, _fundSymbol, _info, IFundFactory(factory));
     }
 
     /// @inheritdoc IFund
@@ -621,13 +618,22 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
         (uint256 poolUsdg, uint256 supply) = _boundedPoolAndSupply(true);
         if (supply == 0) revert EmptyFund();
         IFundOracle o = _oracle();
-        (, uint256 total) = _totalValue(o, basket, usdg, poolUsdg);
+        uint256 usdgHeld = _balanceOf(usdg) + poolUsdg;
+        uint256 total = Math.mulDiv(usdgHeld, PRECISION, _usdgUnit);
+        q.amounts = new uint256[](basket.length);
+        for (uint256 i; i < basket.length; ++i) {
+            address a = basket[i];
+            uint256 bal = _balanceOf(a);
+            if (bal == 0) continue;
+            total += _value(a, bal, o.price(a));
+            q.amounts[i] = Math.mulDiv(bal, navShares, supply, Math.Rounding.Ceil);
+        }
+        q.usdgAmount = Math.mulDiv(usdgHeld, navShares, supply, Math.Rounding.Ceil);
         q.nav = Math.mulDiv(total, PRECISION, supply, Math.Rounding.Ceil);
         q.mintPrice = q.nav;
         if (!atNav) _poolMintPrice(o, q);
         // Rounds down: the minter never receives more than its slice is worth at the mint price.
         q.gross = q.nav == 0 ? 0 : Math.mulDiv(navShares, q.nav, q.mintPrice);
-        (q.amounts, q.usdgAmount) = _mintAmounts(basket, usdg, navShares, poolUsdg, supply);
     }
 
     /// @dev The higher of the pool's spot price and its oracle price (a signed pool TWAP), so
@@ -644,20 +650,6 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
             if (price > cap) (price, q.capped) = (cap, true);
         }
         q.mintPrice = Math.max(price, q.nav);
-    }
-
-    function _mintAmounts(
-        address[] memory basket,
-        address usdg,
-        uint256 navShares,
-        uint256 poolUsdg,
-        uint256 supply
-    ) internal view returns (uint256[] memory amounts, uint256 usdgAmount) {
-        amounts = new uint256[](basket.length);
-        for (uint256 i; i < basket.length; ++i) {
-            amounts[i] = Math.mulDiv(_balanceOf(basket[i]), navShares, supply, Math.Rounding.Ceil);
-        }
-        usdgAmount = Math.mulDiv(_balanceOf(usdg) + poolUsdg, navShares, supply, Math.Rounding.Ceil);
     }
 
     function _pull(address asset, uint256 amount) internal {
@@ -868,7 +860,7 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
 
     /// @dev Idle USDG plus `poolUsdg`, valued at $1 (18 decimals).
     function _usdgBacking(address usdg, uint256 poolUsdg) internal view returns (uint256) {
-        return _value(usdg, _balanceOf(usdg) + poolUsdg, PRECISION);
+        return Math.mulDiv(_balanceOf(usdg) + poolUsdg, PRECISION, _usdgUnit);
     }
 
     function _value(address asset, uint256 amount, uint256 price) internal view returns (uint256) {

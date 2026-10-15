@@ -14,9 +14,10 @@ interface IAggregatorV3 {
 /// @notice See {IFundOracle}. Never reads onchain spot prices: every value comes from an
 ///         admin-configured aggregator, or a ticker on the protocol's in-house oracle verifier, with
 ///         a staleness bound.
-/// @dev Administered by the ProtocolRegistry's FUND_ADMIN role. An aggregator's decimals are read once,
-///      when its feed is set. The verifier is resolved from the registry on every read, so it
-///      follows the registry's INHOUSE_ORACLE slot.
+/// @dev Administered by the ProtocolRegistry's FUND_ADMIN role. An asset has an aggregator or a
+///      ticker, never both, so reads check the aggregator's slot first and touch the ticker's only
+///      without one. An aggregator's decimals are read once, when its feed is set. The verifier is
+///      resolved from the registry on every read, so it follows the registry's INHOUSE_ORACLE slot.
 contract FundOracle is IFundOracle {
     bytes32 private constant ADMIN = keccak256("FUND_ADMIN");
 
@@ -75,15 +76,17 @@ contract FundOracle is IFundOracle {
     function price(
         address asset
     ) external view override returns (uint256) {
-        StoredFeed memory feed = _feeds[asset];
-        if (feed.ticker != bytes32(0)) {
-            (uint256 value, uint256 at) = _verifier().getPrice(feed.ticker);
+        StoredFeed storage feed = _feeds[asset];
+        address aggregator = feed.aggregator;
+        if (aggregator == address(0)) {
+            bytes32 ticker = feed.ticker;
+            if (ticker == bytes32(0)) revert NoFeed(asset);
+            (uint256 value, uint256 at) = _verifier().getPrice(ticker);
             if (value == 0) revert InvalidPrice(asset);
             if (at > block.timestamp || block.timestamp - at > feed.maxStaleness) revert StalePrice(asset);
             return value;
         }
-        if (feed.aggregator == address(0)) revert NoFeed(asset);
-        (, int256 answer,, uint256 updatedAt,) = IAggregatorV3(feed.aggregator).latestRoundData();
+        (, int256 answer,, uint256 updatedAt,) = IAggregatorV3(aggregator).latestRoundData();
         if (answer <= 0) revert InvalidPrice(asset);
         if (updatedAt > block.timestamp || block.timestamp - updatedAt > feed.maxStaleness) revert StalePrice(asset);
         return _normalise(uint256(answer), feed.decimals);
@@ -93,10 +96,10 @@ contract FundOracle is IFundOracle {
     function tryPrice(
         address asset
     ) external view override returns (bool ok, uint256 value) {
-        StoredFeed memory feed = _feeds[asset];
-        if (feed.ticker != bytes32(0)) return _tryVerifier(feed);
-        if (feed.aggregator == address(0)) return (false, 0);
-        try IAggregatorV3(feed.aggregator).latestRoundData() returns (
+        StoredFeed storage feed = _feeds[asset];
+        address aggregator = feed.aggregator;
+        if (aggregator == address(0)) return _tryVerifier(feed);
+        try IAggregatorV3(aggregator).latestRoundData() returns (
             uint80, int256 answer, uint256, uint256 updatedAt, uint80
         ) {
             if (answer <= 0 || updatedAt > block.timestamp || block.timestamp - updatedAt > feed.maxStaleness) {
@@ -112,16 +115,18 @@ contract FundOracle is IFundOracle {
     function lastPrice(
         address asset
     ) external view override returns (uint256) {
-        StoredFeed memory feed = _feeds[asset];
-        if (feed.ticker != bytes32(0)) {
-            try _verifier().getPrice(feed.ticker) returns (uint256 value, uint256) {
+        StoredFeed storage feed = _feeds[asset];
+        address aggregator = feed.aggregator;
+        if (aggregator == address(0)) {
+            bytes32 ticker = feed.ticker;
+            if (ticker == bytes32(0)) return 0;
+            try _verifier().getPrice(ticker) returns (uint256 value, uint256) {
                 return value;
             } catch {
                 return 0;
             }
         }
-        if (feed.aggregator == address(0)) return 0;
-        try IAggregatorV3(feed.aggregator).latestRoundData() returns (uint80, int256 answer, uint256, uint256, uint80) {
+        try IAggregatorV3(aggregator).latestRoundData() returns (uint80, int256 answer, uint256, uint256, uint80) {
             return answer > 0 ? _normalise(uint256(answer), feed.decimals) : 0;
         } catch {
             return 0;
@@ -149,12 +154,14 @@ contract FundOracle is IFundOracle {
     }
 
     function _tryVerifier(
-        StoredFeed memory feed
+        StoredFeed storage feed
     ) private view returns (bool, uint256) {
+        bytes32 ticker = feed.ticker;
+        if (ticker == bytes32(0)) return (false, 0);
         IOracleVerifier v = _verifier();
         // A call to an address without code would revert outside the try.
         if (address(v).code.length == 0) return (false, 0);
-        try v.getPrice(feed.ticker) returns (uint256 p, uint256 updatedAt) {
+        try v.getPrice(ticker) returns (uint256 p, uint256 updatedAt) {
             if (p == 0 || updatedAt > block.timestamp || block.timestamp - updatedAt > feed.maxStaleness) {
                 return (false, 0);
             }

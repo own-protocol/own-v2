@@ -67,7 +67,7 @@ contract FundCurators is IFundCurators, Initializable, ReentrancyGuardTransient 
     }
 
     modifier onlyAdminOrGovernor() {
-        if (msg.sender != IFund(fund).governor() && !_factory.isAdmin(msg.sender)) revert NotAdminOrGovernor();
+        _checkAdminOrGovernor();
         _;
     }
 
@@ -440,6 +440,10 @@ contract FundCurators is IFundCurators, Initializable, ReentrancyGuardTransient 
     ) internal {
         minStakeUsd = minStakeUsd_;
         emit MinStakeSet(minStakeUsd_);
+    }
+
+    function _checkAdminOrGovernor() internal view {
+        if (msg.sender != IFund(fund).governor() && !_factory.isAdmin(msg.sender)) revert NotAdminOrGovernor();
     }
 
     function _checkToken(address token, address staking) internal view {

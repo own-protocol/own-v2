@@ -125,7 +125,7 @@ contract FundVenue is IFundVenue, IUnlockCallback, Initializable, ReentrancyGuar
     IssuanceStep[] private _steps;
 
     modifier onlyAdmin() {
-        if (!_factory.isAdmin(msg.sender)) revert NotAdmin();
+        _checkAdmin();
         _;
     }
 
@@ -240,8 +240,9 @@ contract FundVenue is IFundVenue, IUnlockCallback, Initializable, ReentrancyGuar
         // Rounds down: a redeemer never removes more than their share of the position.
         uint128 removed = SafeCast.toUint128(Math.mulDiv(positionLiquidity(), numerator, denominator));
         if (removed == 0) return 0;
-        (uint256 usdgCap,) = _amountsAt(_reference(), removed);
-        _collectFees();
+        (uint160 lower, uint160 upper) = _range();
+        (uint256 usdgCap,) = _amountsAt(_reference(), removed, lower, upper);
+        _collect();
         launcher.withdraw(family, 0, removed, 0, 0, address(this), block.timestamp);
         usdgPaid = Math.min(IERC20(_usdg).balanceOf(address(this)), usdgCap);
         if (usdgPaid != 0) IERC20(_usdg).safeTransfer(receiver, usdgPaid);
@@ -381,8 +382,9 @@ contract FundVenue is IFundVenue, IUnlockCallback, Initializable, ReentrancyGuar
     ) external view override returns (uint256 usdgAmount, uint256 fundTokens) {
         uint128 liquidity = positionLiquidity();
         if (liquidity == 0) return (0, 0);
-        (usdgAmount, fundTokens) = _amountsAt(_reference(), liquidity);
-        (uint256 spotUsdg, uint256 spotTokens) = _amountsAt(_spot(_key.toId()), liquidity);
+        (uint160 lower, uint160 upper) = _range();
+        (usdgAmount, fundTokens) = _amountsAt(_reference(), liquidity, lower, upper);
+        (uint256 spotUsdg, uint256 spotTokens) = _amountsAt(_spot(_key.toId()), liquidity, lower, upper);
         (usdgAmount, fundTokens) = high
             ? (Math.max(usdgAmount, spotUsdg), Math.max(fundTokens, spotTokens))
             : (Math.min(usdgAmount, spotUsdg), Math.min(fundTokens, spotTokens));
@@ -393,7 +395,8 @@ contract FundVenue is IFundVenue, IUnlockCallback, Initializable, ReentrancyGuar
         uint128 liquidity
     ) public view override returns (uint256 usdgAmount, uint256 fundTokens) {
         if (!isSeeded || liquidity == 0) return (0, 0);
-        return _amountsAt(_reference(), liquidity);
+        (uint160 lower, uint160 upper) = _range();
+        return _amountsAt(_reference(), liquidity, lower, upper);
     }
 
     /// @inheritdoc IFundVenue
@@ -476,6 +479,11 @@ contract FundVenue is IFundVenue, IUnlockCallback, Initializable, ReentrancyGuar
     /// @dev Collects the LP fees on the fund's position: USDG to the fund, fund tokens burned.
     function _collectFees() internal returns (uint256 usdgAmount, uint256 burned) {
         if (positionLiquidity() == 0) return (0, 0);
+        return _collect();
+    }
+
+    /// @dev As {_collectFees}, for a position known to hold liquidity.
+    function _collect() internal returns (uint256 usdgAmount, uint256 burned) {
         launcher.withdraw(family, 0, 0, 0, 0, address(this), block.timestamp);
         (usdgAmount, burned) = _sweep();
         emit LpFeesCollected(usdgAmount, burned);
@@ -542,13 +550,19 @@ contract FundVenue is IFundVenue, IUnlockCallback, Initializable, ReentrancyGuar
         (sqrtPrice,,,) = poolManager.getSlot0(id);
     }
 
+    /// @dev The square root prices bounding the current pool's full-range position.
+    function _range() internal view returns (uint160 lower, uint160 upper) {
+        int24 spacing = _key.tickSpacing;
+        lower = TickMath.getSqrtPriceAtTick(TickMath.minUsableTick(spacing));
+        upper = TickMath.getSqrtPriceAtTick(TickMath.maxUsableTick(spacing));
+    }
+
     function _amountsAt(
         uint160 sqrtPrice,
-        uint128 liquidity
+        uint128 liquidity,
+        uint160 lower,
+        uint160 upper
     ) internal view returns (uint256 usdgAmount, uint256 tokens) {
-        int24 spacing = _key.tickSpacing;
-        uint160 lower = TickMath.getSqrtPriceAtTick(TickMath.minUsableTick(spacing));
-        uint160 upper = TickMath.getSqrtPriceAtTick(TickMath.maxUsableTick(spacing));
         sqrtPrice = uint160(Math.min(Math.max(sqrtPrice, lower), upper));
         (uint256 amount0, uint256 amount1) = FullRangeLiquidity.amountsForLiquidity(sqrtPrice, lower, upper, liquidity);
         (usdgAmount, tokens) = _usdgIs0() ? (amount0, amount1) : (amount1, amount0);
@@ -568,6 +582,10 @@ contract FundVenue is IFundVenue, IUnlockCallback, Initializable, ReentrancyGuar
             amount1
         );
         if (liquidity == 0) revert InvalidSeed();
+    }
+
+    function _checkAdmin() internal view {
+        if (!_factory.isAdmin(msg.sender)) revert NotAdmin();
     }
 
     function _usdgIs0() internal view returns (bool) {

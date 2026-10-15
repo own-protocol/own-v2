@@ -2,9 +2,10 @@
 pragma solidity 0.8.28;
 
 import {IFund} from "../../interfaces/IFund.sol";
-import {FundInfo} from "../../interfaces/types/FundTypes.sol";
+import {IFundFactory} from "../../interfaces/IFundFactory.sol";
+import {FundInfo, FundMetadata} from "../../interfaces/types/FundTypes.sol";
 
-/// @title FundMetadataLib — checks and stores a fund's name, symbol and info
+/// @title FundMetadataLib — checks, stores and reads a fund's name, symbol and info
 /// @notice External library, linked at deployment and run in the fund's context (delegatecall), so
 ///         the fund stays under the contract size limit. The fund checks the caller.
 library FundMetadataLib {
@@ -33,5 +34,20 @@ library FundMetadataLib {
         info.telegram = info_.telegram;
         info.discord = info_.discord;
         emit IFund.MetadataSet(name_, symbol_, info_);
+    }
+
+    /// @notice The fund's metadata with the platform's. See {IFund-getFundInfo}.
+    /// @param name    Name slot.
+    /// @param symbol  Symbol slot.
+    /// @param info    Info slot.
+    /// @param factory The fund's factory, which holds the platform metadata.
+    /// @return The metadata.
+    function get(
+        string storage name,
+        string storage symbol,
+        FundInfo storage info,
+        IFundFactory factory
+    ) external view returns (FundMetadata memory) {
+        return FundMetadata({name: name, symbol: symbol, info: info, platform: factory.platformMetadata()});
     }
 }

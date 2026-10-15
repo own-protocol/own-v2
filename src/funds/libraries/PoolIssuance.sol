@@ -10,6 +10,7 @@ import {TickMath} from "v4-core/src/libraries/TickMath.sol";
 
 /// @title PoolIssuance — the venue's pool issuance and price math
 /// @notice External library, linked at deployment and run in the venue's context (delegatecall).
+///         The small price conversions are internal, so they compile into the venue.
 /// @dev Prices are carried as `q`, the square root of the pool price as USDG per fund token in raw
 ///      units, Q96. With `L` the pool's active liquidity and `A = L * 2^96`, moving the price from
 ///      `q` to `q'` takes `A / q - A / q'` fund tokens out of the pool, while issuing `d` of
@@ -181,7 +182,7 @@ library PoolIssuance {
     /// @param usdgIs0  Whether USDG is the pool's currency 0.
     /// @param usdgUnit One USDG in raw units.
     /// @return The square root price, Q96.
-    function sqrtPriceAt(uint256 price, bool usdgIs0, uint256 usdgUnit) external pure returns (uint160) {
+    function sqrtPriceAt(uint256 price, bool usdgIs0, uint256 usdgUnit) internal pure returns (uint160) {
         uint256 q = qOf(price, usdgUnit);
         if (q == 0) return TickMath.MAX_SQRT_PRICE - 1;
         uint256 sqrtPrice = usdgIs0 ? (1 << 192) / q : q;
@@ -194,7 +195,7 @@ library PoolIssuance {
     /// @param sqrtPrice The pool's square root price, Q96.
     /// @param usdgIs0   Whether USDG is the pool's currency 0.
     /// @return `q`.
-    function qAt(uint160 sqrtPrice, bool usdgIs0) public pure returns (uint256) {
+    function qAt(uint160 sqrtPrice, bool usdgIs0) internal pure returns (uint256) {
         return usdgIs0 ? (1 << 192) / sqrtPrice : sqrtPrice;
     }
 
@@ -202,7 +203,7 @@ library PoolIssuance {
     /// @param q        Square root of the pool price, USDG per fund token in raw units, Q96.
     /// @param usdgUnit One USDG in raw units.
     /// @return The price.
-    function priceOf(uint256 q, uint256 usdgUnit) public pure returns (uint256) {
+    function priceOf(uint256 q, uint256 usdgUnit) internal pure returns (uint256) {
         return Math.mulDiv(Math.mulDiv(q, q, Q96), PRECISION * PRECISION / usdgUnit, Q96);
     }
 
@@ -210,7 +211,7 @@ library PoolIssuance {
     /// @param price    USD per fund token, 18 decimals.
     /// @param usdgUnit One USDG in raw units.
     /// @return `q`.
-    function qOf(uint256 price, uint256 usdgUnit) public pure returns (uint256) {
+    function qOf(uint256 price, uint256 usdgUnit) internal pure returns (uint256) {
         return Math.sqrt(Math.mulDiv(price * usdgUnit, 1 << 192, PRECISION * PRECISION));
     }
 
