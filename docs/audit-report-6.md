@@ -1,10 +1,11 @@
 # Own Protocol v2 — Audit Report & Remediation Status (Pass 6)
 
-**Branch:** `money-market-funds` · **First audited:** `3a96ffe` (2026-10-06) · **Re-audited:** `9fe95f7` (2026-10-13), `68aef25` (2026-10-14), `aff2e91` (2026-10-15) · **Last updated:** 2026-10-15
+**Branch:** `money-market-funds` · **First audited:** `3a96ffe` (2026-10-06) · **Re-audited:** `9fe95f7` (2026-10-13), `68aef25` (2026-10-14), `aff2e91` (2026-10-15), `26e83fc` (2026-10-16) · **Last updated:** 2026-10-16
 
-Four rounds of the multi-agent solidity-auditor (v4, 12-agent pipeline: 9 specialty attackers + 3
-gap-hunters), each run in **loop mode with 2 passes**: pass 2 was handed what pass 1 found and
-told to spend its effort on new ground while still re-reporting anything it hit again.
+Five rounds of the multi-agent solidity-auditor (v4, 12-agent pipeline: 9 specialty attackers + 3
+gap-hunters). Rounds 1 to 4 ran in **loop mode with 2 passes** (pass 2 was handed what pass 1
+found and told to spend its effort on new ground while still re-reporting anything it hit again);
+round 5 ran as a **single pass**.
 
 - **Round 1 (2026-10-06, `3a96ffe`)** produced the original A6 report: 2 High, 9 Medium, 4 Low.
 - **Round 2 (2026-10-13, `9fe95f7`)** ran after the yield redesign (`9d49d7c`, `cb3f43a`), the
@@ -23,16 +24,23 @@ told to spend its effort on new ground while still re-reporting anything it hit 
   FUND_OPERATOR roles (`08c5c3c`) and the size/gas pass (`aff2e91`). It was checked against this
   report the same way, and only fresh, valid items were added (A6-M-19, A6-L-11 to A6-L-13 and
   the leads marked *new, round 4*).
+- **Round 5 (2026-10-16, `26e83fc`)** re-ran the fund contracts with no code change since round 4
+  (`26e83fc` is the round-4 report commit on top of `aff2e91`). A **single pass** on **Opus 4.8**,
+  using the **published skill with no edits** so the 12 agents printed their reasoning markers.
+  Checked against this report the same way: only fresh, valid items were added (A6-M-20, A6-L-14
+  to A6-L-16 and the leads marked *new, round 5*).
 
 Every item was reviewed with Bhargav: each is fixed (with its commit), acknowledged or by design.
-The round-3 fixes are in `9fb7cee`.
+The round-3 fixes are in `9fb7cee`. The round-4 and round-5 items are open, awaiting Bhargav's
+pick of which to fix.
 
 Each finding was traced against the source by the orchestrator before booking. The severity
 column is the orchestrator's grading; the skill's confidence score is shown per finding. The
 round-2 assembled skill report (16 scored findings, 35 leads, exact wording) is at
 `audits/solidity-auditor-run-2026-10-13.md` in the project files, and the round-3 one (10 scored
 findings, 15 leads) at `audits/solidity-auditor-run-2026-10-14.md`. The round-4 one (8 scored
-findings, 31 leads) is at `audits/solidity-auditor-run-2026-10-15-r4.md`.
+findings, 31 leads) is at `audits/solidity-auditor-run-2026-10-15-r4.md`, and the round-5 one
+(5 scored findings, 12 leads) at `audits/solidity-auditor-run-2026-10-16.md`.
 
 ### Scope (rounds 2 to 4)
 
@@ -57,6 +65,9 @@ Round 4 scope: the same list without `FundHook.sol`, `FundTwapFeed.sol`, `HookMi
 `AddFundTwapFeedRobinhood.s.sol` (removed in `ebdf14f`), plus `src/funds/FundVenue.sol` and
 `src/funds/libraries/FundMetadataLib.sol`: 23 files, 7,113 lines.
 
+Round 5 scope: the same 23 files as round 4 at `26e83fc` (no code change since round 4),
+7,251 lines in the assembled bundle.
+
 ### Coverage
 
 | Round | Pass 1 | Pass 2 |
@@ -65,11 +76,46 @@ Round 4 scope: the same list without `FundHook.sol`, `FundTwapFeed.sol`, `HookMi
 | 2 (2026-10-13) | 12/12 on Opus 5.5 | 12/12 on Opus 5.5 |
 | 3 (2026-10-14) | 12/12 on Opus 5.5 | 12/12 on Opus 5.5 |
 | 4 (2026-10-15) | 12/12 on Opus 5.5 | 12/12 on Opus 5.5 |
+| 5 (2026-10-16) | 12/12 on Opus 4.8 (published skill, reasoning shared) | — single pass |
 
-**96/96 agent runs returned across the four rounds.** In rounds 2 to 4 no agent was blocked, so
-Fable 5.1, Sonnet 5.5 and Opus 4.8 were never needed. All four rounds used the bundle with the skill's
-"print reasoning markers" rule reworded to "apply the method, keep the working private, return
-only FINDING and LEAD blocks", which is what stopped the round-1 blocks.
+**108/108 agent runs returned across the five rounds.** No agent was blocked in any of rounds 2
+to 5, so Fable 5.1 and Sonnet 5.5 were never needed. Rounds 1 to 4 used the bundle with the
+skill's "print reasoning markers" rule reworded to "apply the method, keep the working private,
+return only FINDING and LEAD blocks", which is what stopped the round-1 blocks. **Round 5 was run
+on Bhargav's request with the published skill unchanged** (the reasoning-marker rule intact, so
+the agents shared their reasoning) on Opus 4.8; all 12 returned with no `[reasoning_extraction]`
+block this time.
+
+### Changes in this update (2026-10-16, round 5)
+
+A single pass on Opus 4.8 with the published skill (reasoning markers shared), on the same code as
+round 4. The round-4 open items (A6-M-19, A6-L-11 to A6-L-13) are unchanged and still open.
+
+**Added:** A6-M-20 (a withdrawal of one vote token keeps a same-epoch deposit of another vote
+token counted in the current epoch's gauge and bribe tallies) and three Lows — A6-L-14
+(`FundCurators.voteShares` divides the curator base slice by every seat but pays only compliant
+seats), A6-L-15 (`FundPriceHub._clamp` stops bounding the move once the compounded factor
+saturates, so a long push gap removes the clamp) and A6-L-16 (`FundOracle.price` returns a zero
+price for a feed with more than 18 decimals). Each was traced against the source by the
+orchestrator; no Foundry PoC was run this round (`forge` was not available in the session).
+
+**Raised again, not re-booked** (already tracked here): the `FundMintZap.zapMint` router allowlist
+omitting `usdg` (existing lead), `previewRedeem` overstating USDG when spot differs from the
+reference (existing lead), wrapper voting power fixed at deposit (existing lead, `FundGovernor.deposit`),
+and `FundStaking._accrue` dripping the pot while tier yield is frozen during a price outage
+(existing lead). A6-M-15 (`_accrue` taking yield for the whole wait) was raised again by the
+periphery agent.
+
+**Leads marked *new, round 5*** below: the auction credits the buy asset before it removes the
+sold asset (`FundAuctions.fill`, a cross-contract reentrancy gated on a callback basket token, two
+agents), an attacker front-runs an admin add with a spot move (`FundVenue._checkedSpot`), an
+understated fund-token oracle price blocks every mint and redeem (`FundVenue.positionAmounts`), a
+zero-density first step divides by zero (`PoolIssuance._solve`), an extreme seed price reverts at a
+tick bound (`FullRangeLiquidity.liquidityForAmounts`), a fee-on-transfer launch asset leaves the
+fund short (`FundLaunch.finalize`), anyone settles another depositor into staked locked shares
+(`FundLaunch.distribute`), and a launch depositor redeems launch-locked staked shares before the
+lock ends (`Fund.redeem`, appears intended — the exit returns basket at NAV, no liquid tokens to
+dump).
 
 ### Changes in this update (2026-10-15, round 4)
 
@@ -163,10 +209,10 @@ M-01, M-02, M-03, M-04, M-06, M-08 and L-04 again on its own.
 | -------- | ----- | ----- | ---- | ------------ | --------- |
 | Critical | 0 | 0 | 0 | 0 | 0 |
 | High     | 3 | 3 | 0 | 0 | 0 |
-| Medium   | 17 | 15 | 1 | 0 | 1 |
-| Low      | 15 | 9 | 3 | 3 | 0 |
+| Medium   | 18 | 15 | 2 | 0 | 1 |
+| Low      | 18 | 9 | 6 | 3 | 0 |
 | Info     | 0 | 0 | 0 | 0 | 0 |
-| **Total** | **35** | **27** | **4** | **3** | **1** |
+| **Total** | **39** | **27** | **8** | **3** | **1** |
 
 | ID | Severity | Finding | Conf | Status |
 | -- | -------- | ------- | ---- | ------ |
@@ -192,6 +238,7 @@ M-01, M-02, M-03, M-04, M-06, M-08 and L-04 again on its own.
 | A6-M-17 | Medium | After a governor swap, a NAV-locked staker clears its lock and anyone burns a boost | 85 | Fixed (`9fb7cee`) |
 | A6-M-18 | Low (was Medium) | Unstake and restake in one block lower the recorded epoch supply | 80 | Fixed (`9fb7cee`) |
 | A6-M-19 | Medium | Before finalize, the manager runs it inside a rebalance swap and keeps the sold asset | 75 | Open |
+| A6-M-20 | Medium | A withdrawal of one vote token keeps a same-epoch deposit of another vote token counted this epoch | 80 | Open |
 | A6-L-01 | Low | A bribe posted before a failed launch can never be refunded | 80 | Fixed (`6c6fb91`) |
 | A6-L-02 | Low | A reward token whose balance drops below `_reserved` blocks flip and curator changes | 75 | Fixed (`5db4443`) |
 | A6-L-03 | Low | A mint at NAV after a 30-minute dump is charged at the TWAP pool reading | 65 | Fixed (`fbde008`) |
@@ -205,6 +252,9 @@ M-01, M-02, M-03, M-04, M-06, M-08 and L-04 again on its own.
 | A6-L-11 | Low | A sell, `issue` and buy-back resets the issuance anchor and mints a pot from holders | 75 | Open |
 | A6-L-12 | Low | A stake added in the proposal epoch is left out of the vote total, so less stake reaches quorum | 80 | Open |
 | A6-L-13 | Low | A change to the compliant curators shares out income earned before the change | 75 | Open |
+| A6-L-14 | Low | The curator vote slice is divided by every seat but paid only to compliant seats | 75 | Open |
+| A6-L-15 | Low | The keeper price clamp stops bounding the move after a long push gap | 75 | Open |
+| A6-L-16 | Low | The Chainlink price branch returns a zero price when a feed has more than 18 decimals | 65 | Open |
 
 ---
 
@@ -804,6 +854,40 @@ an operator can rebalance; the same shape works for it through `collectLpFees` o
 state (`entered()`) so `FundLaunch.finalize`, `FundVenue.collectLpFees` and `FundVenue.issue`
 revert while a fund call is running.
 
+## A6-M-20 — A withdrawal of one vote token keeps a same-epoch deposit of another vote token counted this epoch (Medium, Open, new round 5)
+
+`FundGovernor.requestWithdrawal` (`src/funds/FundGovernor.sol:166`), power maths at `:181`. Round 5:
+1 agent, pass 1. Traced against the source.
+
+A voter's power is one per-account `EpochHistory`; `next - active` is the account's total pending
+power across **all** of its vote tokens (stake and any allowlisted ERC4626 wrapper), deposited this
+epoch and counting only from the next epoch. `requestWithdrawal(token, amount)` computes the
+withdrawn token's `power`, then charges it against that pooled pending bucket:
+
+```solidity
+uint256 fromPending = Math.min(power, next - active);
+_setPower(msg.sender, e, active, next, active - (power - fromPending), next - power);
+```
+
+When the withdrawn token's power was **active** since an earlier epoch but a **different** token was
+deposited this epoch, `fromPending` wrongly absorbs the withdrawal into the other token's pending
+power, so `active` for the current epoch is left unchanged instead of falling.
+
+Trace: epoch `e-1` deposit 100 stake, so at `e` `active = 100`, `next = 100`. At `e` deposit a
+wrapper worth 100, so `active = 100`, `next = 200` (the wrapper is pending, counts from `e+1`). At
+`e` `requestWithdrawal(stake, 100)`: `power = 100`, `fromPending = min(100, 200 - 100) = 100`, new
+`active = 100 - (100 - 100) = 100`, new `next = 100`. The stake is gone and only the wrapper (a
+current-epoch deposit) remains, yet `active(e)` is still 100. `flip()` reads `_power.valueAt(e)`
+for the epoch-`e` gauge tally, and `_setPower` moved the same inflated `active` into `_bribeVotes`,
+so the attacker takes a share of epoch-`e` bribes and gauge weight that honest epoch-`e` voters
+earned. The aggregate `next = total escrowPower` invariant still holds (no net power is minted —
+this is the `next ≥ active` property the round-1 pass checked), so the defect is a timing and
+attribution error, not unlimited power. It needs a second configured vote token (a wrapper);
+single-token stake is unaffected because stake escrow is fungible.
+
+**Suggested fix:** track pending (current-epoch) power per vote token, so a withdrawal reduces only
+the withdrawn token's own current-epoch and pending power rather than the account's pooled pending.
+
 ## A6-L-01 — A bribe posted before a failed launch can never be refunded (Low, Fixed 2026-10-14)
 
 `FundBribes.postBribe` (`src/funds/FundBribes.sol:55`) / `refundBribe` (`:88`). Round 1:
@@ -1048,6 +1132,81 @@ keep the gap small.
 
 ---
 
+## A6-L-14 — The curator vote slice is divided by every seat but paid only to compliant seats (Low, Open, new round 5)
+
+`FundCurators.voteShares` (`src/funds/FundCurators.sol:217`, divisors at `:236`–`:237`). Round 5:
+2 agents. Traced against the source.
+
+`voteShares` returns, per curator seat, a base share and a silent-staker share of the vote:
+
+```solidity
+uint256 n = _curators.length;      // every curator seat
+uint256 m = _compliantCount;       // compliant seats only
+...
+    if (!_state[c].compliant) continue;
+    baseBps[i + 1] = (BPS - protocolShare) / n;
+    silentBps[i + 1] = (BPS - protocolShare) / m;
+```
+
+`baseBps` divides the curator slice by `n` (all seats) but only compliant seats receive it, while
+`silentBps` divides by `m` (compliant seats). When a curator is non-compliant (`n > m`), the
+compliant curators together cast `m · (BPS - protocolShare) / n`, which is less than the full
+curator slice; the uncast `(n - m) / n` of it is cast by nobody and `GaugeMath` treats it as
+status-quo weight. The governor's sum-of-votes stays at or below `WAD`, so this is a governance
+weight inaccuracy, not over-counting or fund loss. `bribeSplit` divides the same base by the
+compliant count `m`, so the `n`-vs-`m` treatment is also internally inconsistent. It may be an
+intended per-seat forfeit; the inconsistency is a maintainer decision.
+
+**Suggested fix:** if compliant curators should split the base slice, divide `baseBps` by
+`_compliantCount` (`m`) to match `silentBps` and `bribeSplit`; otherwise document the per-seat
+intent.
+
+## A6-L-15 — The keeper price clamp stops bounding the move after a long push gap (Low, Open, new round 5)
+
+`FundPriceHub._clamp` (`src/funds/FundPriceHub.sol:107`, early return at `:109`; `_hourly` at `:119`,
+`MAX_FACTOR` at `:17`). Round 5: 2 agents. Traced against the source. Keeper-trust / defense in depth.
+
+`_clamp` holds a pushed price within a per-hour move of the previous one, compounding the allowed
+factor over the elapsed hours. `_hourly` saturates at `MAX_FACTOR = 1e36`, and `_clamp` returns the
+raw pushed price once the factor reaches it:
+
+```solidity
+if (factor >= MAX_FACTOR) return price;   // bound removed
+```
+
+With `maxMoveBps` around 3000 (30%/h), the factor reaches `MAX_FACTOR` after about 158 hours
+(~6.6 days). So if an asset is not pushed for roughly a week — a plausible gap for a stock token
+over a long market close — the next push is accepted with no move bound, which removes the clamp
+that was added for A6-M-13. The keeper is `onlyKeeper`, so this matters only when the keeper is late
+or compromised; it is not an external-attacker path.
+
+**Suggested fix:** cap the elapsed window the clamp compounds over, so the per-push move bound never
+fully disables, or require a fresh baseline (e.g. an admin re-seed) before accepting a push after a
+gap longer than the window.
+
+## A6-L-16 — The Chainlink price branch returns a zero price when a feed has more than 18 decimals (Low, Open, new round 5)
+
+`FundOracle.price` (`src/funds/FundOracle.sol:90`–`:92`; `tryPrice` at `:105`–`:108`; `_normalise`
+at `:174`). Round 5: 1 agent. Traced against the source. Needs an admin feed with more than 18
+decimals.
+
+The aggregator branch rejects a non-positive answer and then returns the normalised value with no
+zero check:
+
+```solidity
+if (answer <= 0) revert InvalidPrice(asset);
+return _normalise(uint256(answer), feed.decimals);
+```
+
+`_normalise` divides by `10 ** (dec - 18)` when `dec > 18`, so a small positive answer can floor to
+zero and `price` returns 0. The in-house verifier branch guards this (`if (value == 0) revert
+InvalidPrice(asset);`), so the two branches are inconsistent. A zero price undervalues a basket
+asset in mint and redeem maths. Feed decimals are admin-set via `setFeed` and real Chainlink feeds
+use 8 or 18, so this is a defensive gap rather than a live exploit.
+
+**Suggested fix:** reject a normalised zero in the aggregator branch too, matching the verifier
+branch (`if (p == 0) revert InvalidPrice(asset);`).
+
 ## Leads (not scored — trails for manual review)
 
 Carried from round 1 and still present at `9fe95f7` unless marked *new*. Re-checked at `68aef25`
@@ -1233,6 +1392,45 @@ the two booked as A6-L-11 and A6-L-12 and the three on removed code are marked; 
 - ***New, round 4:* `createFund` skips the eligible-asset list** — `FundFactory.createFund` →
   `setBasket` checks only `hasFeed`, while `curate` and a List proposal check `isEligibleAsset`.
   No loss found.
+- ***New, round 5:* the auction credits the buy asset before it removes the sold asset** —
+  `FundAuctions.fill` pulls the payment into the fund before `auctionPayout` sends the sold asset,
+  and holds only the FundAuctions guard while `Fund.redeem` is guarded on a different contract, so
+  a buy asset that calls back on transfer can reenter `Fund.redeem` while the fund holds both
+  assets and over-pay the redeemer. Two agents. No basket or eligible token with a post-credit
+  sender callback was found in scope, so the window is unproven; worth excluding callback/ERC777
+  tokens from baskets, or sharing one reentrancy guard across `Fund` and `FundAuctions`.
+- ***New, round 5:* an attacker front-runs an admin add with a spot move** —
+  `FundVenue._checkedSpot`. `increasePosition` and `migrate` revert `PriceOffReference` when spot is
+  more than ~1% off the oracle reference; an attacker pushes spot past that to make the admin call
+  revert, then recovers. Only blocks admin adds; `withdrawPosition` is not gated, so funds are never
+  trapped, and sustaining the gap against arbitrage has an unproven cost.
+- ***New, round 5:* an understated fund-token oracle price blocks every mint and redeem** —
+  `FundVenue.positionAmounts` values the position at `_reference()` (the oracle fund price, however
+  old), and `Fund._supplyOutside` floors supply to 0 when reported pool tokens exceed supply, so
+  `navPerShare` is 0 and `_mintQuote`/`_redeemQuote` revert until the price is corrected. Gated on a
+  keeper/oracle misconfiguration; a liveness impact, not fund loss.
+- ***New, round 5:* a zero-density first step divides by zero** — `PoolIssuance._solve`. `stepsValid`
+  permits `densityBps == 0` (so `c == 0`) and `_solve` divides by `a / q + c`, which reaches zero for
+  a low-liquidity pool, reverting `issue`. Non-default admin config, blocks only the keeper, moves no
+  funds.
+- ***New, round 5:* an extreme seed price reverts the position math at a tick bound** —
+  `FullRangeLiquidity.liquidityForAmounts` divides by `sqrtUpper - sqrtPrice` and by `sqrtPrice`,
+  which revert when the price sits exactly on a usable-tick bound, so an extreme admin/manager seed
+  price makes `_open` revert. A revert of one operation, not fund loss.
+- ***New, round 5:* a fee-on-transfer launch asset leaves the fund short** — `FundLaunch.finalize`
+  sends the recorded `totalDeposited[a]` to the fund and sizes shares from `raised` without
+  re-measuring the transfer, so a fee-on-transfer launch asset makes the fund hold less than the
+  minted shares assume. Basket assets carry oracle feeds and fee-on-transfer tokens are not expected
+  in a curated basket.
+- ***New, round 5:* anyone settles another depositor into staked locked shares** —
+  `FundLaunch.distribute` is permissionless and calls `_settle(..., stake=true)` for any account
+  rather than letting them pick `claim(false)` for launch-locked fund tokens. Both outcomes lock the
+  tokens and the shares stay the depositor's, so it is minor griefing.
+- ***New, round 5:* a launch depositor redeems launch-locked staked shares before the lock ends** —
+  `Fund.redeem`. `Fund._update` and `FundStaking._update` block transfer and unstake of locked shares
+  but allow burn, and `FundStaking.redeem` has no lock check. The exit returns basket assets at NAV
+  (no liquid fund tokens to dump) and affects only the redeemer, so it appears to be the sanctioned
+  NAV-neutral exit rather than a bug.
 
 ## Attacked and held (round 1, re-confirmed where later rounds touched the same code)
 
