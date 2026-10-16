@@ -381,8 +381,8 @@ interface IFund is IERC20 {
     ) external;
 
     /// @notice Swap a basket asset (or idle USDG) into another basket asset through an allowed
-    ///         router. The manager before the pool is seeded (the launch rebalance), a fund operator
-    ///         or admin at any time. Each swap
+    ///         router, once the fund has launched. The manager before the pool is seeded (the launch
+    ///         rebalance), a fund operator or admin at any time. Each swap
     ///         may lose at most the factory's slippage bound in oracle value, and the value sold is
     ///         rate limited: at most the daily cap at once, with the allowance refilling linearly
     ///         over a day. This bounds what a manager or operator can leak through bad fills. Until the fund's
@@ -507,6 +507,11 @@ interface IFund is IERC20 {
     /// @notice Whether the launch succeeded.
     /// @return True once live.
     function launched() external view returns (bool);
+
+    /// @notice Whether a guarded call on the fund is in progress. The venue refuses to pay into the
+    ///         fund while it is, since a rebalance reads its balance changes.
+    /// @return True mid-call.
+    function entered() external view returns (bool);
 
     /// @notice Whether minting is paused.
     /// @return True while paused.

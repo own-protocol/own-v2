@@ -97,6 +97,9 @@ interface IFundVenue {
     /// @notice The pot share is above 100%, or the steps are too many, not ascending or too dense.
     error InvalidIssuance();
 
+    /// @notice The fund is mid-call (a rebalance), so nothing may pay into it now.
+    error FundBusy();
+
     /// @notice More liquidity than the fund's position holds.
     error InsufficientLiquidity();
 

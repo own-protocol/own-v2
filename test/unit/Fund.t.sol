@@ -736,6 +736,52 @@ contract FundTest is FundTestBase {
         fund.rebalance(p);
     }
 
+    /// @dev A6-M-19: the venue won't pay into the fund mid-rebalance, so the router can't take the
+    ///      USDG an issue raises and have the balance checks read it as nothing sold.
+    function test_rebalance_issueMidSwap_refused() public {
+        _poolSwap(makeAddr("buyer"), true, -int256(20_000e6));
+        uint256 idle = fund.idleUsdg();
+
+        vm.prank(operator);
+        fund.rebalance(_callThenPull(address(venue), abi.encodeCall(venue.issue, ())));
+
+        assertEq(router.lastCallError(), abi.encodeWithSelector(IFundVenue.FundBusy.selector));
+        assertEq(usdg.balanceOf(attacker), 0);
+        assertEq(fund.idleUsdg(), idle);
+        (, uint256 usdgIn) = venue.issue();
+        assertGt(usdgIn, 0);
+    }
+
+    function test_rebalance_collectLpFeesMidSwap_refused() public {
+        _poolSwap(makeAddr("buyer"), true, -int256(10_000e6));
+        _poolSwap(makeAddr("buyer"), false, -int256(1000e18));
+
+        vm.prank(operator);
+        fund.rebalance(_callThenPull(address(venue), abi.encodeCall(venue.collectLpFees, ())));
+
+        assertEq(router.lastCallError(), abi.encodeWithSelector(IFundVenue.FundBusy.selector));
+        assertEq(usdg.balanceOf(attacker), 0);
+        (uint256 usdgAmount,) = venue.collectLpFees();
+        assertGt(usdgAmount, 0);
+    }
+
+    function test_entered_falseOutsideACall() public view {
+        assertFalse(fund.entered());
+    }
+
+    /// @dev Sells USDG for TSLA through a router that calls `target` first, then pulls the USDG it
+    ///      paid the fund to the attacker.
+    function _callThenPull(address target, bytes memory data) internal view returns (IFund.RebalanceParams memory) {
+        return IFund.RebalanceParams({
+            sellAsset: address(usdg),
+            sellAmount: 1_000_000e6,
+            buyAsset: address(tsla),
+            minBuyAmount: 0,
+            router: address(router),
+            data: abi.encodeCall(MockSwapRouter.callThenPull, (target, data, address(usdg), attacker))
+        });
+    }
+
     function _swap(
         uint256 sellAmount,
         uint256 buyAmount,

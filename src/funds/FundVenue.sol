@@ -144,6 +144,11 @@ contract FundVenue is IFundVenue, IUnlockCallback, Initializable, ReentrancyGuar
         _;
     }
 
+    modifier fundIdle() {
+        if (IFund(fund).entered()) revert FundBusy();
+        _;
+    }
+
     /// @param launcher_    Hookr's launcher.
     /// @param root_        Hookr's root.
     /// @param rules_       Hookr's rules module.
@@ -182,7 +187,7 @@ contract FundVenue is IFundVenue, IUnlockCallback, Initializable, ReentrancyGuar
     }
 
     /// @inheritdoc IFundVenue
-    function issue() external override nonReentrant seeded returns (uint256 issued, uint256 usdgIn) {
+    function issue() external override nonReentrant seeded fundIdle returns (uint256 issued, uint256 usdgIn) {
         (bool ok, uint256 nav, uint256 supply) = IFund(fund).tryNav();
         if (!ok) return (0, 0);
         PoolId id = _key.toId();
@@ -214,7 +219,14 @@ contract FundVenue is IFundVenue, IUnlockCallback, Initializable, ReentrancyGuar
     }
 
     /// @inheritdoc IFundVenue
-    function collectLpFees() external override nonReentrant seeded returns (uint256 usdgAmount, uint256 burned) {
+    function collectLpFees()
+        external
+        override
+        nonReentrant
+        seeded
+        fundIdle
+        returns (uint256 usdgAmount, uint256 burned)
+    {
         return _collectFees();
     }
 

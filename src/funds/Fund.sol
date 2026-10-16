@@ -349,6 +349,8 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
     function rebalance(
         RebalanceParams calldata params
     ) external override nonReentrant {
+        // Nothing to trade before launch, and `finalize` paying in mid-swap would read as bought.
+        if (!launched) revert NotLaunched();
         if (!IFundFactory(factory).isOperator(msg.sender) && (msg.sender != manager || IFundVenue(venue).isSeeded())) {
             revert NotManager();
         }
@@ -425,6 +427,11 @@ contract Fund is IFund, ERC20, Initializable, ReentrancyGuardTransient {
     ) external override onlyAdmin nonReentrant returns (uint128 liquidity) {
         IERC20(_usdg).safeTransfer(venue, usdgAmount);
         liquidity = IFundVenue(venue).increasePosition(usdgAmount);
+    }
+
+    /// @inheritdoc IFund
+    function entered() external view override returns (bool) {
+        return _reentrancyGuardEntered();
     }
 
     /// @inheritdoc IFund

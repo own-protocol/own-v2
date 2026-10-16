@@ -418,6 +418,34 @@ contract FundLaunchTest is FundTestBase {
         fund.rebalance(p);
     }
 
+    /// @dev A6-M-19: no rebalance before launch, so `finalize` paying in mid-swap can't hide a sale.
+    function test_rebalance_beforeFinalize_reverts() public {
+        vm.warp(launch.endTime() - 1);
+        _refreshFeeds();
+        _deposit(bob, address(tsla), 85e18);
+        _deposit(bob, address(usdg), 100_000e6);
+        vm.warp(launch.endTime());
+        _refreshFeeds();
+
+        IFund.RebalanceParams memory p = IFund.RebalanceParams({
+            sellAsset: address(tsla),
+            sellAmount: 85e18,
+            buyAsset: address(usdg),
+            minBuyAmount: 0,
+            router: address(router),
+            data: abi.encodeCall(
+                MockSwapRouter.callThenPull, (address(launch), abi.encodeCall(launch.finalize, ()), address(tsla), keeper)
+            )
+        });
+        vm.prank(keeper);
+        vm.expectRevert(IFund.NotLaunched.selector);
+        fund.rebalance(p);
+
+        launch.finalize();
+        assertEq(tsla.balanceOf(address(fund)), 85e18);
+        assertEq(tsla.balanceOf(keeper), 0);
+    }
+
     /// @dev A6-L-04: before seeding only USDG bought for the pool is free of the daily cap.
     function test_launchRebalance_capAppliesBeyondPoolUsdg() public {
         _finalizeTwoDepositors();
