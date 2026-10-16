@@ -7,7 +7,7 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 /// @title FundTypes — shared types for Own Curated Funds
 
 /// @dev Maximum number of basket assets (bounds every loop over a basket).
-uint256 constant MAX_BASKET_ASSETS = 20;
+uint256 constant MAX_BASKET_ASSETS = 100;
 
 /// @dev A dropped basket asset worth at most this share of the basket, in basis points, is dust:
 ///      it may be left behind by a basket change.
