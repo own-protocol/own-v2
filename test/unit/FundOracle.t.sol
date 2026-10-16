@@ -55,6 +55,16 @@ contract FundOracleTest is Test {
         assertFalse(ok);
     }
 
+    /// @dev A6-L-16: a feed with more than 18 decimals whose answer normalises to zero is rejected.
+    function test_price_normalisesToZero_reverts() public {
+        feed20.setAnswer(99, block.timestamp);
+        vm.expectRevert(abi.encodeWithSelector(IFundOracle.InvalidPrice.selector, asset2));
+        oracle.price(asset2);
+        (bool ok, uint256 value) = oracle.tryPrice(asset2);
+        assertFalse(ok);
+        assertEq(value, 0);
+    }
+
     function test_price_noFeed_reverts() public {
         address none = makeAddr("none");
         vm.expectRevert(abi.encodeWithSelector(IFundOracle.NoFeed.selector, none));

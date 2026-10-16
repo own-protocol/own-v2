@@ -89,7 +89,9 @@ contract FundOracle is IFundOracle {
         (, int256 answer,, uint256 updatedAt,) = IAggregatorV3(aggregator).latestRoundData();
         if (answer <= 0) revert InvalidPrice(asset);
         if (updatedAt > block.timestamp || block.timestamp - updatedAt > feed.maxStaleness) revert StalePrice(asset);
-        return _normalise(uint256(answer), feed.decimals);
+        uint256 p = _normalise(uint256(answer), feed.decimals);
+        if (p == 0) revert InvalidPrice(asset);
+        return p;
     }
 
     /// @inheritdoc IFundOracle
@@ -105,7 +107,8 @@ contract FundOracle is IFundOracle {
             if (answer <= 0 || updatedAt > block.timestamp || block.timestamp - updatedAt > feed.maxStaleness) {
                 return (false, 0);
             }
-            return (true, _normalise(uint256(answer), feed.decimals));
+            value = _normalise(uint256(answer), feed.decimals);
+            return (value != 0, value);
         } catch {
             return (false, 0);
         }
