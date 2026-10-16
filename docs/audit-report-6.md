@@ -31,8 +31,8 @@ round 5 ran as a **single pass**.
   to A6-L-16 and the leads marked *new, round 5*).
 
 Every item was reviewed with Bhargav: each is fixed (with its commit), acknowledged or by design.
-The round-3 fixes are in `9fb7cee`. The round-4 and round-5 items are open, awaiting Bhargav's
-pick of which to fix.
+The round-3 fixes are in `9fb7cee` and A6-M-19 in `d8810cc`. The other round-4 and round-5 items
+are open, awaiting Bhargav's pick of which to fix.
 
 Each finding was traced against the source by the orchestrator before booking. The severity
 column is the orchestrator's grading; the skill's confidence score is shown per finding. The
@@ -86,7 +86,12 @@ on Bhargav's request with the published skill unchanged** (the reasoning-marker 
 the agents shared their reasoning) on Opus 4.8; all 12 returned with no `[reasoning_extraction]`
 block this time.
 
-### Changes in this update (2026-10-16, round 5)
+### Changes in this update (2026-10-16, A6-M-19 fixed)
+
+Reviewed with Bhargav. **Fixed in `d8810cc`:** A6-M-19 (no rebalance before launch, and the venue
+won't pay into the fund while a fund call runs). The other open items are unchanged.
+
+### Changes in the previous update (2026-10-16, round 5)
 
 A single pass on Opus 4.8 with the published skill (reasoning markers shared), on the same code as
 round 4. The round-4 open items (A6-M-19, A6-L-11 to A6-L-13) are unchanged and still open.
@@ -209,10 +214,10 @@ M-01, M-02, M-03, M-04, M-06, M-08 and L-04 again on its own.
 | -------- | ----- | ----- | ---- | ------------ | --------- |
 | Critical | 0 | 0 | 0 | 0 | 0 |
 | High     | 3 | 3 | 0 | 0 | 0 |
-| Medium   | 18 | 15 | 2 | 0 | 1 |
+| Medium   | 18 | 16 | 1 | 0 | 1 |
 | Low      | 18 | 9 | 6 | 3 | 0 |
 | Info     | 0 | 0 | 0 | 0 | 0 |
-| **Total** | **39** | **27** | **8** | **3** | **1** |
+| **Total** | **39** | **28** | **7** | **3** | **1** |
 
 | ID | Severity | Finding | Conf | Status |
 | -- | -------- | ------- | ---- | ------ |
@@ -237,7 +242,7 @@ M-01, M-02, M-03, M-04, M-06, M-08 and L-04 again on its own.
 | A6-M-16 | Medium | A NAV-locked staker cannot exit while one basket token is frozen | 90 | Fixed (`9fb7cee`) |
 | A6-M-17 | Medium | After a governor swap, a NAV-locked staker clears its lock and anyone burns a boost | 85 | Fixed (`9fb7cee`) |
 | A6-M-18 | Low (was Medium) | Unstake and restake in one block lower the recorded epoch supply | 80 | Fixed (`9fb7cee`) |
-| A6-M-19 | Medium | Before finalize, the manager runs it inside a rebalance swap and keeps the sold asset | 75 | Open |
+| A6-M-19 | Medium | Before finalize, the manager runs it inside a rebalance swap and keeps the sold asset | 75 | Fixed (`d8810cc`) |
 | A6-M-20 | Medium | A withdrawal of one vote token keeps a same-epoch deposit of another vote token counted this epoch | 80 | Open |
 | A6-L-01 | Low | A bribe posted before a failed launch can never be refunded | 80 | Fixed (`6c6fb91`) |
 | A6-L-02 | Low | A reward token whose balance drops below `_reserved` blocks flip and curator changes | 75 | Fixed (`5db4443`) |
@@ -830,7 +835,7 @@ voting stake and a large silent one, it saves only the escrow lock and the warni
 limits (5 points a week, 25% cap, Own's listing veto) cap it. Test
 `test_supplyAt_fixedWhenTheEpochOpens`.
 
-## A6-M-19 — Before finalize, the manager runs it inside a rebalance swap and keeps the sold asset (Medium, Open, new round 4)
+## A6-M-19 — Before finalize, the manager runs it inside a rebalance swap and keeps the sold asset (Medium, Fixed 2026-10-16)
 
 `FundRebalance._swap` (`src/funds/libraries/FundRebalance.sol:115`) via `Fund.rebalance`
 (`src/funds/Fund.sol:349`) and `FundLaunch.finalize` (`src/funds/FundLaunch.sol:165`). Round 4:
@@ -853,6 +858,17 @@ an operator can rebalance; the same shape works for it through `collectLpFees` o
 **Suggested fix:** require `launched` in `Fund.rebalance`, and expose the fund's reentrancy
 state (`entered()`) so `FundLaunch.finalize`, `FundVenue.collectLpFees` and `FundVenue.issue`
 revert while a fund call is running.
+
+**Fixed in `d8810cc`:** `Fund.rebalance` reverts `NotLaunched` before launch, which closes the
+`finalize` path (after launch `finalize` reverts on its own). `Fund.entered()` exposes the fund's
+reentrancy guard, and `FundVenue.issue` and `collectLpFees` revert `FundBusy` while it is set.
+Without the venue check, a hacked operator key could take what `issue` raises: in the test, a
+$20k pool buy made `issue` pay the fund $7,499 of USDG mid-rebalance, the router passed all of it
+to the attacker, and the rebalance recorded nothing sold and no volume. Regression tests:
+`FundLaunchTest.test_rebalance_beforeFinalize_reverts`,
+`FundTest.test_rebalance_issueMidSwap_refused` and `test_rebalance_collectLpFeesMidSwap_refused`.
+Auction fills already revert mid-rebalance (`Fund.auctionPayout` is `nonReentrant`), and they move
+tokens both ways, so the balance checks would catch them anyway.
 
 ## A6-M-20 — A withdrawal of one vote token keeps a same-epoch deposit of another vote token counted this epoch (Medium, Open, new round 5)
 
