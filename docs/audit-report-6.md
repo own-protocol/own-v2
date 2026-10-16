@@ -31,8 +31,7 @@ round 5 ran as a **single pass**.
   to A6-L-16 and the leads marked *new, round 5*).
 
 Every item was reviewed with Bhargav: each is fixed (with its commit), acknowledged or by design.
-The round-3 fixes are in `9fb7cee` and A6-M-19 in `d8810cc`. The other round-4 and round-5 items
-are open, awaiting Bhargav's pick of which to fix.
+The round-3 fixes are in `9fb7cee`, A6-M-19 in `d8810cc` and A6-L-16 in `0ae9bf5`. Nothing is open.
 
 Each finding was traced against the source by the orchestrator before booking. The severity
 column is the orchestrator's grading; the skill's confidence score is shown per finding. The
@@ -86,10 +85,16 @@ on Bhargav's request with the published skill unchanged** (the reasoning-marker 
 the agents shared their reasoning) on Opus 4.8; all 12 returned with no `[reasoning_extraction]`
 block this time.
 
-### Changes in this update (2026-10-16, A6-M-19 fixed)
+### Changes in this update (2026-10-16, round 4 and 5 decisions)
 
-Reviewed with Bhargav. **Fixed in `d8810cc`:** A6-M-19 (no rebalance before launch, and the venue
-won't pay into the fund while a fund call runs). The other open items are unchanged.
+Reviewed with Bhargav item by item. **Fixed:** A6-M-19 in `d8810cc` (no rebalance before launch,
+and the venue won't pay into the fund while a fund call runs) and A6-L-16 in `0ae9bf5` (the oracle
+rejects a Chainlink price that normalises to zero). **Downgraded to Low and acknowledged:**
+A6-M-20 (the vote tokens are one underlying stake, so pooling their pending power is consistent).
+**Acknowledged, no contract change:** A6-L-11 (re-run: pays only with about a quarter of the stake
+at a high premium, and moving value to stakers is intended), A6-L-12 (public curation only, and the
+suggested fix would undo `faa45a6`), A6-L-13, A6-L-14 and A6-L-15. Report 6 has no open items after
+this update.
 
 ### Changes in the previous update (2026-10-16, round 5)
 
@@ -214,10 +219,10 @@ M-01, M-02, M-03, M-04, M-06, M-08 and L-04 again on its own.
 | -------- | ----- | ----- | ---- | ------------ | --------- |
 | Critical | 0 | 0 | 0 | 0 | 0 |
 | High     | 3 | 3 | 0 | 0 | 0 |
-| Medium   | 18 | 16 | 1 | 0 | 1 |
-| Low      | 18 | 9 | 6 | 3 | 0 |
+| Medium   | 17 | 16 | 0 | 0 | 1 |
+| Low      | 19 | 10 | 0 | 9 | 0 |
 | Info     | 0 | 0 | 0 | 0 | 0 |
-| **Total** | **39** | **28** | **7** | **3** | **1** |
+| **Total** | **39** | **29** | **0** | **9** | **1** |
 
 | ID | Severity | Finding | Conf | Status |
 | -- | -------- | ------- | ---- | ------ |
@@ -243,7 +248,7 @@ M-01, M-02, M-03, M-04, M-06, M-08 and L-04 again on its own.
 | A6-M-17 | Medium | After a governor swap, a NAV-locked staker clears its lock and anyone burns a boost | 85 | Fixed (`9fb7cee`) |
 | A6-M-18 | Low (was Medium) | Unstake and restake in one block lower the recorded epoch supply | 80 | Fixed (`9fb7cee`) |
 | A6-M-19 | Medium | Before finalize, the manager runs it inside a rebalance swap and keeps the sold asset | 75 | Fixed (`d8810cc`) |
-| A6-M-20 | Medium | A withdrawal of one vote token keeps a same-epoch deposit of another vote token counted this epoch | 80 | Open |
+| A6-M-20 | Low (was Medium) | A withdrawal of one vote token keeps a same-epoch deposit of another vote token counted this epoch | 80 | Acknowledged |
 | A6-L-01 | Low | A bribe posted before a failed launch can never be refunded | 80 | Fixed (`6c6fb91`) |
 | A6-L-02 | Low | A reward token whose balance drops below `_reserved` blocks flip and curator changes | 75 | Fixed (`5db4443`) |
 | A6-L-03 | Low | A mint at NAV after a 30-minute dump is charged at the TWAP pool reading | 65 | Fixed (`fbde008`) |
@@ -254,12 +259,12 @@ M-01, M-02, M-03, M-04, M-06, M-08 and L-04 again on its own.
 | A6-L-08 | Low | A replaced protocol curator keeps the protocol vote on open proposals | 70 | Fixed (`6c6fb91`) |
 | A6-L-09 | Low | A mint at NAV has no input limit, so a trade just before it raises its cost | 80 | Acknowledged |
 | A6-L-10 | Low | Split pushes let the keeper move a hub price about 35% an hour | 80 | Acknowledged |
-| A6-L-11 | Low | A sell, `issue` and buy-back resets the issuance anchor and mints a pot from holders | 75 | Open |
-| A6-L-12 | Low | A stake added in the proposal epoch is left out of the vote total, so less stake reaches quorum | 80 | Open |
-| A6-L-13 | Low | A change to the compliant curators shares out income earned before the change | 75 | Open |
-| A6-L-14 | Low | The curator vote slice is divided by every seat but paid only to compliant seats | 75 | Open |
-| A6-L-15 | Low | The keeper price clamp stops bounding the move after a long push gap | 75 | Open |
-| A6-L-16 | Low | The Chainlink price branch returns a zero price when a feed has more than 18 decimals | 65 | Open |
+| A6-L-11 | Low | A sell, `issue` and buy-back resets the issuance anchor and mints a pot from holders | 75 | Acknowledged |
+| A6-L-12 | Low | A stake added in the proposal epoch is left out of the vote total, so less stake reaches quorum | 80 | Acknowledged |
+| A6-L-13 | Low | A change to the compliant curators shares out income earned before the change | 75 | Acknowledged |
+| A6-L-14 | Low | The curator vote slice is divided by every seat but paid only to compliant seats | 75 | Acknowledged |
+| A6-L-15 | Low | The keeper price clamp stops bounding the move after a long push gap | 75 | Acknowledged |
+| A6-L-16 | Low | The Chainlink price branch returns a zero price when a feed has more than 18 decimals | 65 | Fixed (`0ae9bf5`) |
 
 ---
 
@@ -870,7 +875,7 @@ to the attacker, and the rebalance recorded nothing sold and no volume. Regressi
 Auction fills already revert mid-rebalance (`Fund.auctionPayout` is `nonReentrant`), and they move
 tokens both ways, so the balance checks would catch them anyway.
 
-## A6-M-20 — A withdrawal of one vote token keeps a same-epoch deposit of another vote token counted this epoch (Medium, Open, new round 5)
+## A6-M-20 — A withdrawal of one vote token keeps a same-epoch deposit of another vote token counted this epoch (Low, downgraded from Medium, Acknowledged 2026-10-16)
 
 `FundGovernor.requestWithdrawal` (`src/funds/FundGovernor.sol:166`), power maths at `:181`. Round 5:
 1 agent, pass 1. Traced against the source.
@@ -903,6 +908,13 @@ single-token stake is unaffected because stake escrow is fungible.
 
 **Suggested fix:** track pending (current-epoch) power per vote token, so a withdrawal reduces only
 the withdrawn token's own current-epoch and pending power rather than the account's pooled pending.
+
+**Acknowledged (Bhargav, 2026-10-16), downgraded to Low, no contract change:** stake and its
+wrappers are the same underlying stake, so treating the vote tokens as one pool matches what a
+single token already does (deposit 100 new, withdraw 100 old, keep 100 counting this epoch). The
+account never has more power than the tokens it holds, and the withdrawn tokens stay locked until
+the next epoch, so nothing is counted twice. It also needs an allowed wrapper (none planned) and
+public curation on. Revisit if a wrapper is added; the governor is a beacon proxy.
 
 ## A6-L-01 — A bribe posted before a failed launch can never be refunded (Low, Fixed 2026-10-14)
 
@@ -1088,7 +1100,7 @@ short pushes allow no more than one long one.
 e^(setting) an hour (a 5-minute cadence already reaches ~34.5% at 30%), and only the keeper can
 push. For a true 30% an hour the admin sets `maxMoveBps` to about 2600 (e^0.26 ≈ 1.297).
 
-## A6-L-11 — A sell, `issue` and buy-back resets the issuance anchor and mints a pot from holders (Low, Open, new round 4)
+## A6-L-11 — A sell, `issue` and buy-back resets the issuance anchor and mints a pot from holders (Low, Acknowledged 2026-10-16)
 
 `FundVenue.issue` (`src/funds/FundVenue.sol:185`, anchor reset at `:200`). Round 4: 2 agents in
 pass 1. PoC run. This is the report-6 lead "a buy above NAV and a sell back fund the pot",
@@ -1111,7 +1123,15 @@ staked supply that the pot goes to.
 by `(activeLiquidity − positionLiquidity) / activeLiquidity`), or do not move the anchor down to a
 spot price inside the call.
 
-## A6-L-12 — A stake added in the proposal epoch is left out of the vote total, so less stake reaches quorum (Low, Open, new round 4)
+**Acknowledged (Bhargav, 2026-10-16), no contract change:** re-run on the current code with
+Hookr's 1.05% tax each way (`audits/poc-2026-10-16/WashSweep.t.sol` in the project files). At a
+1.3x premium the wash loses money at every size even with all the stake ($71 of costs for a $75
+pot). At 2.76x it pays once the trader holds about 24% of the stake ($152 of costs for a $1,024
+pot), and as griefing $1 moves about $7 from unstaked holders to stakers. Bhargav's call: short-term
+activity that moves value to long-term stakers is intended, and a quarter of the stake is unlikely
+once a fund grows.
+
+## A6-L-12 — A stake added in the proposal epoch is left out of the vote total, so less stake reaches quorum (Low, Acknowledged 2026-10-16)
 
 `ProposalBook.propose` (`src/funds/libraries/ProposalBook.sol:45`, totals at `:60`). Round 4:
 2 agents in pass 2. This is the report-6 lead "propose measures next-epoch power against
@@ -1127,7 +1147,14 @@ with 22.5% of the stake where 28.6% is needed. Public curation only; the Own vet
 **Suggested fix:** include `totalSupplyAt(e+1)` in `totalStake`, so the stake added in the current
 epoch is in the total.
 
-## A6-L-13 — A change to the compliant curators shares out income earned before the change (Low, Open, new round 4)
+**Acknowledged (Bhargav, 2026-10-16), no contract change:** only matters with public curation on,
+which every fund starts with off. The suggested fix (adding `totalSupplyAt(e+1)`) would undo the
+`faa45a6` fix that stops a holder staking just before a proposal, without voting, to block
+quorum. The alternatives (proposal votes from stake escrowed before the proposal's epoch, or
+adding this epoch's new escrow to the total) each trade one inaccuracy for another. Revisit
+before a fund turns public curation on (new `ProposalBook` and `upgradeModule`).
+
+## A6-L-13 — A change to the compliant curators shares out income earned before the change (Low, Acknowledged 2026-10-16)
 
 `FundCurators._distributeAll` (`src/funds/FundCurators.sol:405`), called by `addCurator`,
 `removeCurator`, `replaceCurator` and `checkCompliance`. Round 4: 1 agent in pass 1 (lead),
@@ -1146,9 +1173,12 @@ keep the gap small.
 **Suggested fix:** at the start of `_distributeAll`, call `accrue()` on staking and
 `collectTax()` on the venue (in a `try`), so income earned before the change is shared first.
 
+**Acknowledged (Bhargav, 2026-10-16), no contract change:** the hourly `accrue` and daily
+`collectTax` keepers keep what moves to about a day of income.
+
 ---
 
-## A6-L-14 — The curator vote slice is divided by every seat but paid only to compliant seats (Low, Open, new round 5)
+## A6-L-14 — The curator vote slice is divided by every seat but paid only to compliant seats (Low, Acknowledged 2026-10-16)
 
 `FundCurators.voteShares` (`src/funds/FundCurators.sol:217`, divisors at `:236`–`:237`). Round 5:
 2 agents. Traced against the source.
@@ -1177,7 +1207,10 @@ intended per-seat forfeit; the inconsistency is a maintainer decision.
 `_compliantCount` (`m`) to match `silentBps` and `bribeSplit`; otherwise document the per-seat
 intent.
 
-## A6-L-15 — The keeper price clamp stops bounding the move after a long push gap (Low, Open, new round 5)
+**Acknowledged (Bhargav, 2026-10-16), no contract change:** a non-compliant seat's base slice is
+left uncast. Only matters with public curation on.
+
+## A6-L-15 — The keeper price clamp stops bounding the move after a long push gap (Low, Acknowledged 2026-10-16)
 
 `FundPriceHub._clamp` (`src/funds/FundPriceHub.sol:107`, early return at `:109`; `_hourly` at `:119`,
 `MAX_FACTOR` at `:17`). Round 5: 2 agents. Traced against the source. Keeper-trust / defense in depth.
@@ -1200,7 +1233,12 @@ or compromised; it is not an external-attacker path.
 fully disables, or require a fresh baseline (e.g. an admin re-seed) before accepting a push after a
 gap longer than the window.
 
-## A6-L-16 — The Chainlink price branch returns a zero price when a feed has more than 18 decimals (Low, Open, new round 5)
+**Acknowledged (Bhargav, 2026-10-16), no contract change:** at 30% an hour the compounded bound
+is already about 540x after a day without a push, so the clamp only bites on pushes hours apart;
+capping the window adds no real protection. A tighter bound against a compromised keeper would
+need a different design (a fixed maximum move per push).
+
+## A6-L-16 — The Chainlink price branch returns a zero price when a feed has more than 18 decimals (Low, Fixed 2026-10-16)
 
 `FundOracle.price` (`src/funds/FundOracle.sol:90`–`:92`; `tryPrice` at `:105`–`:108`; `_normalise`
 at `:174`). Round 5: 1 agent. Traced against the source. Needs an admin feed with more than 18
@@ -1222,6 +1260,10 @@ use 8 or 18, so this is a defensive gap rather than a live exploit.
 
 **Suggested fix:** reject a normalised zero in the aggregator branch too, matching the verifier
 branch (`if (p == 0) revert InvalidPrice(asset);`).
+
+**Fixed in `0ae9bf5`:** the aggregator branch of `price` reverts `InvalidPrice` on a normalised
+zero, and `tryPrice` returns `(false, 0)`, matching the verifier branch. Regression test:
+`FundOracleTest.test_price_normalisesToZero_reverts`.
 
 ## Leads (not scored — trails for manual review)
 
