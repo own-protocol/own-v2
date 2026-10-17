@@ -16,6 +16,7 @@ import {FundOracle} from "../../src/funds/FundOracle.sol";
 import {FundPriceHub} from "../../src/funds/FundPriceHub.sol";
 import {FundRedeemZap} from "../../src/funds/FundRedeemZap.sol";
 import {FundStaking} from "../../src/funds/FundStaking.sol";
+import {FundSwapAdapter} from "../../src/funds/FundSwapAdapter.sol";
 import {FundVenue} from "../../src/funds/FundVenue.sol";
 import {IFundFactory} from "../../src/interfaces/IFundFactory.sol";
 import {IProtocolRegistry} from "../../src/interfaces/IProtocolRegistry.sol";
@@ -30,7 +31,9 @@ import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.s
 ///         assets without a Chainlink feed and for fund tokens. The factory, oracle, auction house
 ///         and hub are administered by the ProtocolRegistry's FUND_ADMIN role (day-to-day actions also by
 ///         FUND_OPERATOR).
-///         Wiring the auction house, the platform metadata and the USDG (and MONEY, if given) bribe tokens needs
+///         It also deploys the swap adapter funds and zaps trade through Uniswap's Universal Router with.
+///         Wiring the auction house, the platform metadata, the USDG (and MONEY, if given) bribe tokens and the
+///         swap adapter as an allowed router needs
 ///         FUND_ADMIN: executed directly when the deployer holds it, otherwise printed as
 ///         ready-to-paste Safe calls.
 ///
@@ -39,9 +42,10 @@ import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.s
 ///        2. Admin sets a price source for every basket asset. With a Chainlink feed: configure its
 ///           ticker on the ChainlinkOracleVerifier (setChainlinkConfig, and the signer quotes it
 ///           off-hours), then oracle.setVerifierFeed(asset, ticker, staleness). With no Chainlink
-///           feed: hub.createFeed(asset), then oracle.setFeed with the returned feed; the keeper
-///           pushes its pool TWAP to the hub.
-///        3. Admin allows rebalance / zap routers: factory.setRouter(router, true).
+///           feed on this chain (e.g. LLY, SKHY): hub.createFeed(asset), then oracle.setFeed with the returned
+///           feed; the keeper pushes its price to the hub (stock price, market price or pool TWAP, per asset).
+///        3. The swap adapter is allowed as a router by the wiring. Allow any other rebalance / zap router with
+///           factory.setRouter(router, true); never the Universal Router itself (funds can't pay it).
 ///        4. Admin fills the listing eligibility list: factory.setEligibleAsset(token, true).
 ///        5. Admin creates the fund (curators, fund fee, its pool's tax, Hookr share and LP fee,
 ///           minimum curator stake in USD at NAV, 0 for none, the Own keeper as manager). Before
@@ -71,6 +75,10 @@ contract DeployFundsRobinhood is Script {
     address constant HOOKR_RULES = 0x4a71c270b1520F94064268102AebD744b0DE7942;
     address constant HOOKR_TAX = 0xE73fAD0d773b9571a7a9d2A1edc01132fF5f1e1F;
 
+    // Uniswap's Universal Router on Robinhood Chain. Funds and zaps can't call it directly (it pulls only
+    // through Permit2), so they trade through a FundSwapAdapter in front of it.
+    address constant UNIVERSAL_ROUTER = 0x8876789976dEcBfCbBbe364623C63652db8C0904;
+
     uint16 constant AUCTION_START_PREMIUM_BPS = 200;
     uint16 constant AUCTION_FLOOR_DISCOUNT_BPS = 300;
     uint32 constant AUCTION_DURATION = 4 hours;
@@ -78,12 +86,14 @@ contract DeployFundsRobinhood is Script {
 
     // Set by _deployPeripherals for _wiring; a local would push run() past the stack limit.
     address internal _mintZap;
+    address internal _swapAdapter;
 
     function run() external {
         require(block.chainid == ROBINHOOD_CHAIN_ID, "RPC is not Robinhood Chain (4663)");
         require(POOL_MANAGER.code.length > 0, "no v4 PoolManager");
         require(POSITION_MANAGER.code.length > 0, "no v4 PositionManager");
         require(HOOKR_LAUNCHER.code.length > 0, "no Hookr launcher");
+        require(UNIVERSAL_ROUTER.code.length > 0, "no Universal Router");
 
         uint256 key = vm.envUint("DEPLOYER_PRIVATE_KEY_ROBINHOOD");
         IProtocolRegistry registry = IProtocolRegistry(vm.envAddress("PROTOCOL_REGISTRY_ROBINHOOD"));
@@ -126,12 +136,13 @@ contract DeployFundsRobinhood is Script {
     }
 
     function _wiring(address auctions, address money) internal view returns (bytes[] memory calls) {
-        calls = new bytes[](money == address(0) ? 4 : 5);
+        calls = new bytes[](money == address(0) ? 5 : 6);
         calls[0] = abi.encodeCall(FundFactory.setAuctions, (auctions));
         calls[1] = abi.encodeCall(FundFactory.setPlatformMetadata, (_platformMetadata()));
         calls[2] = abi.encodeCall(FundFactory.setBribeToken, (USDG, true));
         calls[3] = abi.encodeCall(FundFactory.setMintZap, (_mintZap));
-        if (money != address(0)) calls[4] = abi.encodeCall(FundFactory.setBribeToken, (money, true));
+        calls[4] = abi.encodeCall(FundFactory.setRouter, (_swapAdapter, true));
+        if (money != address(0)) calls[5] = abi.encodeCall(FundFactory.setBribeToken, (money, true));
     }
 
     function _deployPeripherals(address factory, address registry) internal returns (address, address) {
@@ -141,6 +152,8 @@ contract DeployFundsRobinhood is Script {
         FundAuctions auctions =
             new FundAuctions(factory, AUCTION_START_PREMIUM_BPS, AUCTION_FLOOR_DISCOUNT_BPS, AUCTION_DURATION);
         FundPriceHub hub = new FundPriceHub(registry, vm.envAddress("PRICE_KEEPER"), HUB_MAX_MOVE_BPS);
+        _swapAdapter = address(new FundSwapAdapter(UNIVERSAL_ROUTER));
+        console.log("FundSwapAdapter ", _swapAdapter);
         return (address(auctions), address(hub));
     }
 
