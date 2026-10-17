@@ -27,6 +27,21 @@ contract MockSwapRouter {
         }
     }
 
+    bytes public lastCallError;
+
+    /// @notice Runs `target` mid-swap, as a route through a hooked pool or an executor would, then
+    ///         pulls to `to` whatever `tokenIn` the call paid the caller. A failed call is recorded
+    ///         and nothing is pulled.
+    function callThenPull(address target, bytes calldata data, address tokenIn, address to) external {
+        uint256 before = IERC20(tokenIn).balanceOf(msg.sender);
+        (bool ok, bytes memory err) = target.call(data);
+        if (!ok) {
+            lastCallError = err;
+            return;
+        }
+        IERC20(tokenIn).safeTransferFrom(msg.sender, to, IERC20(tokenIn).balanceOf(msg.sender) - before);
+    }
+
     function alwaysReverts() external payable {
         revert("router revert");
     }

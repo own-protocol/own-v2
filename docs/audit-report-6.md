@@ -1,0 +1,1522 @@
+# Own Protocol v2 — Audit Report & Remediation Status (Pass 6)
+
+**Branch:** `money-market-funds` · **First audited:** `3a96ffe` (2026-10-06) · **Re-audited:** `9fe95f7` (2026-10-13), `68aef25` (2026-10-14), `aff2e91` (2026-10-15), `26e83fc` (2026-10-16) · **Last updated:** 2026-10-16
+
+Five rounds of the multi-agent solidity-auditor (v4, 12-agent pipeline: 9 specialty attackers + 3
+gap-hunters). Rounds 1 to 4 ran in **loop mode with 2 passes** (pass 2 was handed what pass 1
+found and told to spend its effort on new ground while still re-reporting anything it hit again);
+round 5 ran as a **single pass**.
+
+- **Round 1 (2026-10-06, `3a96ffe`)** produced the original A6 report: 2 High, 9 Medium, 4 Low.
+- **Round 2 (2026-10-13, `9fe95f7`)** ran after the yield redesign (`9d49d7c`, `cb3f43a`), the
+  premium cap / mint at NAV / pool top-up (`199a94f`), the Dutch auctions and price hub, and the
+  size/gas pass (`9fe95f7`). Before it ran, every open round-1 item was re-checked against the
+  new code (see "Changes in this update"). Its results were then cross-checked against this
+  report: findings that repeat an open item are noted under that item, and only fresh ones were
+  added, with new IDs continuing the A6 numbering.
+- **Round 3 (2026-10-14, `68aef25`)** ran after every round-1 and round-2 item was fixed or
+  settled, the public curation switch and the NAV-mint lock for good (`68aef25`). Its results were
+  checked against this report the same way: repeats of report-6 items and leads are noted under
+  them, findings that fall under A6-M-14's by-design call were left out, and only fresh, valid
+  items were added (A6-M-15 to A6-M-18, A6-L-09, A6-L-10 and the leads marked *new, round 3*).
+- **Round 4 (2026-10-15, `aff2e91`)** ran after the round-3 fixes, fund pools on Hookr through the
+  per-fund `FundVenue` (`ebdf14f`), fund token metadata (`87a2d1b`), the FUND_ADMIN and
+  FUND_OPERATOR roles (`08c5c3c`) and the size/gas pass (`aff2e91`). It was checked against this
+  report the same way, and only fresh, valid items were added (A6-M-19, A6-L-11 to A6-L-13 and
+  the leads marked *new, round 4*).
+- **Round 5 (2026-10-16, `26e83fc`)** re-ran the fund contracts with no code change since round 4
+  (`26e83fc` is the round-4 report commit on top of `aff2e91`). A **single pass** on **Opus 4.8**,
+  using the **published skill with no edits** so the 12 agents printed their reasoning markers.
+  Checked against this report the same way: only fresh, valid items were added (A6-M-20, A6-L-14
+  to A6-L-16 and the leads marked *new, round 5*).
+
+Every item was reviewed with Bhargav: each is fixed (with its commit), acknowledged or by design.
+The round-3 fixes are in `9fb7cee`, A6-M-19 in `d8810cc` and A6-L-16 in `0ae9bf5`. Nothing is open.
+
+Each finding was traced against the source by the orchestrator before booking. The severity
+column is the orchestrator's grading; the skill's confidence score is shown per finding. The
+round-2 assembled skill report (16 scored findings, 35 leads, exact wording) is at
+`audits/solidity-auditor-run-2026-10-13.md` in the project files, and the round-3 one (10 scored
+findings, 15 leads) at `audits/solidity-auditor-run-2026-10-14.md`. The round-4 one (8 scored
+findings, 31 leads) is at `audits/solidity-auditor-run-2026-10-15-r4.md`, and the round-5 one
+(5 scored findings, 12 leads) at `audits/solidity-auditor-run-2026-10-16.md`.
+
+### Scope (rounds 2 to 4)
+
+```
+src/funds/Fund.sol            src/funds/FundAuctions.sol     src/funds/FundBribes.sol
+src/funds/FundCurators.sol    src/funds/FundFactory.sol      src/funds/FundGovernor.sol
+src/funds/FundHook.sol        src/funds/FundLaunch.sol       src/funds/FundMintZap.sol
+src/funds/FundOracle.sol      src/funds/FundPriceFeed.sol    src/funds/FundPriceHub.sol
+src/funds/FundRedeemZap.sol   src/funds/FundStaking.sol      src/funds/FundTwapFeed.sol
+src/funds/libraries/EpochHistory.sol       src/funds/libraries/FullRangeLiquidity.sol
+src/funds/libraries/FundRebalance.sol      src/funds/libraries/GaugeMath.sol
+src/funds/libraries/LpPositions.sol        src/funds/libraries/PoolIssuance.sol
+src/funds/libraries/ProposalBook.sol
+script/funds/DeployFundsRobinhood.s.sol    script/funds/AddFundTwapFeedRobinhood.s.sol
+script/funds/HookMiner.sol
+```
+
+25 files, 7,110 lines in round 2 and 7,068 in round 3. Interfaces, tests and mocks were read for
+context only.
+
+Round 4 scope: the same list without `FundHook.sol`, `FundTwapFeed.sol`, `HookMiner.sol` and
+`AddFundTwapFeedRobinhood.s.sol` (removed in `ebdf14f`), plus `src/funds/FundVenue.sol` and
+`src/funds/libraries/FundMetadataLib.sol`: 23 files, 7,113 lines.
+
+Round 5 scope: the same 23 files as round 4 at `26e83fc` (no code change since round 4),
+7,251 lines in the assembled bundle.
+
+### Coverage
+
+| Round | Pass 1 | Pass 2 |
+| ----- | ------ | ------ |
+| 1 (2026-10-06) | 12/12 returned: 5 on Opus, 7 on Fable after Opus `[reasoning_extraction]` blocks | 12/12 on Opus |
+| 2 (2026-10-13) | 12/12 on Opus 5.5 | 12/12 on Opus 5.5 |
+| 3 (2026-10-14) | 12/12 on Opus 5.5 | 12/12 on Opus 5.5 |
+| 4 (2026-10-15) | 12/12 on Opus 5.5 | 12/12 on Opus 5.5 |
+| 5 (2026-10-16) | 12/12 on Opus 4.8 (published skill, reasoning shared) | — single pass |
+
+**108/108 agent runs returned across the five rounds.** No agent was blocked in any of rounds 2
+to 5, so Fable 5.1 and Sonnet 5.5 were never needed. Rounds 1 to 4 used the bundle with the
+skill's "print reasoning markers" rule reworded to "apply the method, keep the working private,
+return only FINDING and LEAD blocks", which is what stopped the round-1 blocks. **Round 5 was run
+on Bhargav's request with the published skill unchanged** (the reasoning-marker rule intact, so
+the agents shared their reasoning) on Opus 4.8; all 12 returned with no `[reasoning_extraction]`
+block this time.
+
+### Changes in this update (2026-10-16, round 4 and 5 decisions)
+
+Reviewed with Bhargav item by item. **Fixed:** A6-M-19 in `d8810cc` (no rebalance before launch,
+and the venue won't pay into the fund while a fund call runs) and A6-L-16 in `0ae9bf5` (the oracle
+rejects a Chainlink price that normalises to zero). **Downgraded to Low and acknowledged:**
+A6-M-20 (the vote tokens are one underlying stake, so pooling their pending power is consistent).
+**Acknowledged, no contract change:** A6-L-11 (re-run: pays only with about a quarter of the stake
+at a high premium, and moving value to stakers is intended), A6-L-12 (public curation only, and the
+suggested fix would undo `faa45a6`), A6-L-13, A6-L-14 and A6-L-15. Report 6 has no open items after
+this update.
+
+### Changes in the previous update (2026-10-16, round 5)
+
+A single pass on Opus 4.8 with the published skill (reasoning markers shared), on the same code as
+round 4. The round-4 open items (A6-M-19, A6-L-11 to A6-L-13) are unchanged and still open.
+
+**Added:** A6-M-20 (a withdrawal of one vote token keeps a same-epoch deposit of another vote
+token counted in the current epoch's gauge and bribe tallies) and three Lows — A6-L-14
+(`FundCurators.voteShares` divides the curator base slice by every seat but pays only compliant
+seats), A6-L-15 (`FundPriceHub._clamp` stops bounding the move once the compounded factor
+saturates, so a long push gap removes the clamp) and A6-L-16 (`FundOracle.price` returns a zero
+price for a feed with more than 18 decimals). Each was traced against the source by the
+orchestrator; no Foundry PoC was run this round (`forge` was not available in the session).
+
+**Raised again, not re-booked** (already tracked here): the `FundMintZap.zapMint` router allowlist
+omitting `usdg` (existing lead), `previewRedeem` overstating USDG when spot differs from the
+reference (existing lead), wrapper voting power fixed at deposit (existing lead, `FundGovernor.deposit`),
+and `FundStaking._accrue` dripping the pot while tier yield is frozen during a price outage
+(existing lead). A6-M-15 (`_accrue` taking yield for the whole wait) was raised again by the
+periphery agent.
+
+**Leads marked *new, round 5*** below: the auction credits the buy asset before it removes the
+sold asset (`FundAuctions.fill`, a cross-contract reentrancy gated on a callback basket token, two
+agents), an attacker front-runs an admin add with a spot move (`FundVenue._checkedSpot`), an
+understated fund-token oracle price blocks every mint and redeem (`FundVenue.positionAmounts`), a
+zero-density first step divides by zero (`PoolIssuance._solve`), an extreme seed price reverts at a
+tick bound (`FullRangeLiquidity.liquidityForAmounts`), a fee-on-transfer launch asset leaves the
+fund short (`FundLaunch.finalize`), anyone settles another depositor into staked locked shares
+(`FundLaunch.distribute`), and a launch depositor redeems launch-locked staked shares before the
+lock ends (`Fund.redeem`, appears intended — the exit returns basket at NAV, no liquid tokens to
+dump).
+
+### Changes in this update (2026-10-15, round 4)
+
+Nothing in report 6 was open before this round (27 fixed, 3 acknowledged, A6-M-14 by design).
+Round 4 raised these report-6 items again, so they are not booked twice: A6-M-15 (8 agent runs in
+pass 2, including the LP path), A6-L-09 (6), A6-L-10 (1), the stray-share block on a second
+governor swap noted under A6-M-17 (6), and the leads on uncollected LP fees, `addPot` restarting
+the drip, released pot tokens earning back-yield, launch close timing, the refund loop, an
+unpriced 1-wei donation, mint at NAV before seeding, a basket asset without a feed, `claimable`
+omitting a vest, retroactive admin setters, the new governor's zero curator stake and re-tally,
+and the manager's pre-seed window. Left out as the A6-M-14 class: one `usdPerSec` pooling boosts.
+
+Two report-6 leads are now booked because round 4 traced them: "a buy above NAV and a sell back
+fund the pot" (A6-L-11, through the new `FundVenue.issue`) and "propose measures next-epoch power
+against current-epoch supply" (A6-L-12).
+
+Leads that pointed at removed code no longer apply: the TWAP feed's `updatedAt`
+(`FundTwapFeed`), an extreme tick moving the 30-minute TWAP and the exact-output fund fee
+(`FundHook`). The pool position is now valued at the fund token's oracle price.
+
+**Added from round 4:** A6-M-19, A6-L-11 to A6-L-13 and the leads marked *new, round 4*. A6-M-19
+and A6-L-11 were confirmed with Foundry PoCs on a scratch copy; the test file is in
+`audits/poc-2026-10-15/` in the project files. Nothing is fixed yet.
+
+### Changes in the previous update (2026-10-15, round 3 fixes)
+
+Reviewed with Bhargav item by item. **Fixed in `9fb7cee`:** A6-M-16 (skip list on the staking
+redeem), A6-M-17 (the previous governor's escrow still counts; zero transfers skip the lock and
+boost logic) and A6-M-18 (each epoch's supply is fixed when it opens). **Downgraded to Low:**
+A6-M-15 (outages are expected to last a day at most, so a late stake takes at most ~0.07% to
+0.13%; acknowledged, no change) and A6-M-18 (it needs one holder with both a small voting stake
+and a large silent one, and the gauge limits cap the swing). **Acknowledged, no contract change:**
+A6-L-09 (the app limits what a mint can pull) and A6-L-10 (the admin setting sets the real
+bound). Report 6 had no open items after this update.
+
+### Changes in the previous update (2026-10-14, round 3)
+
+Nothing in report 6 was open before this round (24 fixed, A6-M-14 by design). Round 3 raised these
+report-6 items again, so they are not booked twice: the leads on `addPot` restarting the pot drip,
+uncollected LP fees outside NAV, launch close timing, mint at NAV before seeding, manager lots in
+any direction, retroactive admin setters, exact-output fee basis, the mint pause not stopping
+issuance, `claimable` omitting a vest, proposal power against current-epoch supply, redeem paying
+before the pool share is removed, and a delisted token keeping its weight (now with a full
+trace). Two report-6 leads are promoted to findings because round 3 traced an exploit: the
+governor-swap escrow lead (A6-M-17) and the unstake-and-restake supply lead (A6-M-18).
+
+Left out as the A6-M-14 class (the boost is the minter's own premium): a second low-premium mint
+that speeds up an earlier boost so it finishes before any forfeit, `FundStaking.redeem` burning
+the forfeited boost before the redeem is priced (the redeemer takes back its share of its own
+forfeit), and NAV-locked shares counting as held for a direct-mint boost.
+
+**Added from round 3:** A6-M-15 to A6-M-18, A6-L-09, A6-L-10 and the leads marked *new, round 3*.
+Four were confirmed with Foundry PoCs on a scratch copy (A6-M-15, M-16, M-17 lock path, L-10);
+the test files are in `audits/poc-2026-10-14/` in the project files.
+
+### Changes in the previous update (2026-10-13)
+
+**Removed: fixed before this round.** Their write-ups are dropped; the fixes are in git.
+
+| ID | Finding | Fixed in |
+| -- | ------- | -------- |
+| A6-H-01 | `finalize` reverted after `endTime` | `e4a69df` |
+| A6-H-02 | Launch-epoch proposals counted only escrowed power | `e4a69df` |
+| A6-M-05 | A flip in the launch epoch used up every curator's grace week | `e4a69df` |
+| A6-L-02 | A reward token whose balance fell below `_reserved` blocked flip | `5db4443`; the rest (no unregister path, a reward token with a reverting `balanceOf`) went with the A6-M-03 fix, `195c055` |
+
+**Removed leads** (code changed, so they no longer apply):
+
+- Dust deposit of a cheap asset divides by zero in `FundLaunch.claimable`: fixed in `894d35c`.
+- Pending mint locks for whatever option sits at its index: `setLockOptions` and lock options
+  were removed in the yield redesign.
+- Manager routes each daily rebalance through its own pool, and a router call that triggers
+  `collectLpFees` hides USDG sold: after seeding only the admin can make router swaps
+  (`Fund.rebalance`), and before seeding there is no pool. The pre-seed manager window is
+  A6-L-04.
+
+**Re-checked and still open at `9fe95f7`:** A6-M-01, M-02, M-03, M-04, M-06, M-07, M-08, M-09,
+L-01, L-03, L-04. Locations below are updated to the current code. Changes worth knowing:
+A6-M-06 is smaller now that the yield curve is stepped (12% / 24% / 48% a year), and A6-L-03 is
+partly closed because the pool-price mint uses the higher of spot and TWAP. Round 2 raised
+M-01, M-02, M-03, M-04, M-06, M-08 and L-04 again on its own.
+
+**Added from round 2:** A6-H-03, A6-M-10 to A6-M-14, A6-L-05 to A6-L-08, and the leads marked
+*new* below.
+
+---
+
+## Status at a Glance
+
+| Severity | Total | Fixed | Open | Acknowledged | By design |
+| -------- | ----- | ----- | ---- | ------------ | --------- |
+| Critical | 0 | 0 | 0 | 0 | 0 |
+| High     | 3 | 3 | 0 | 0 | 0 |
+| Medium   | 17 | 16 | 0 | 0 | 1 |
+| Low      | 19 | 10 | 0 | 9 | 0 |
+| Info     | 0 | 0 | 0 | 0 | 0 |
+| **Total** | **39** | **29** | **0** | **9** | **1** |
+
+| ID | Severity | Finding | Conf | Status |
+| -- | -------- | ------- | ---- | ------ |
+| A6-H-01 | High | `finalize` reverts after `endTime`, so a launch without an early close always fails | 100 | Fixed (`e4a69df`) |
+| A6-H-02 | High | Launch-epoch proposals count only escrowed power, so one holder passes any proposal | 90 | Fixed (`e4a69df`) |
+| A6-H-03 | High | A curator claim credits the claimed staked shares a second time | 90 | Fixed (`10998a7`) |
+| A6-M-01 | Medium | A 30-minute pool crash shrinks the redeem supply and over-pays the basket | 75 | Fixed (`fbde008`) |
+| A6-M-02 | Medium | Right after seeding the position TWAP covers seconds; one block sets redeem supply | 75 | Fixed (`fbde008`) |
+| A6-M-03 | Medium | Dust bribes fill the 32 reward-token slots; later bribes in new tokens revert | 90 | Fixed (`195c055`) |
+| A6-M-04 | Medium | Compliance uses live supply, so mint → flip → redeem fails an honest curator | 80 | Fixed (`93c4e24`) |
+| A6-M-05 | Medium | A flip in the launch epoch uses up every curator's grace week | 80 | Fixed (`e4a69df`) |
+| A6-M-06 | Medium | One premium reading prices up to 8 h of staking yield; caller picks the moment | 80 | Fixed (`0dcbeb0`) |
+| A6-M-07 | Medium | One paused / blacklisting basket token blocks every redeem | 80 | Fixed (`0dcbeb0`) |
+| A6-M-08 | Medium | After `setGovernor`, bribers refund bribes that voters already claimed | 75 | Fixed (`e8b2f45`) |
+| A6-M-09 | Medium | `stake` moves the caller's launch lock onto any receiver | 85 | Fixed (`ff2cfe7`) |
+| A6-M-10 | Medium | Anyone can mint to any receiver and put a lock and a boost on it | 85 | Fixed (`ff2cfe7`) |
+| A6-M-11 | Medium | A stake made while NAV has no price takes pot drip it did not earn | 80 | Fixed (`eb3ff2b`) |
+| A6-M-12 | Medium | One stale basket price blocks every redeem while the reserve holds value | 80 | Fixed (`bcea925`) |
+| A6-M-13 | Medium | The price keeper moves a hub price without limit by repeating pushes | 75 | Fixed (`d06dace`) |
+| A6-M-14 | Medium | Other staked shares shield a boost after its minted shares are sold | 75 | By design |
+| A6-M-15 | Low (was Medium) | A stake made while no premium price exists takes yield for the whole wait | 95 | Acknowledged |
+| A6-M-16 | Medium | A NAV-locked staker cannot exit while one basket token is frozen | 90 | Fixed (`9fb7cee`) |
+| A6-M-17 | Medium | After a governor swap, a NAV-locked staker clears its lock and anyone burns a boost | 85 | Fixed (`9fb7cee`) |
+| A6-M-18 | Low (was Medium) | Unstake and restake in one block lower the recorded epoch supply | 80 | Fixed (`9fb7cee`) |
+| A6-M-19 | Medium | Before finalize, the manager runs it inside a rebalance swap and keeps the sold asset | 75 | Fixed (`d8810cc`) |
+| A6-M-20 | Low (was Medium) | A withdrawal of one vote token keeps a same-epoch deposit of another vote token counted this epoch | 80 | Acknowledged |
+| A6-L-01 | Low | A bribe posted before a failed launch can never be refunded | 80 | Fixed (`6c6fb91`) |
+| A6-L-02 | Low | A reward token whose balance drops below `_reserved` blocks flip and curator changes | 75 | Fixed (`5db4443`) |
+| A6-L-03 | Low | A mint at NAV after a 30-minute dump is charged at the TWAP pool reading | 65 | Fixed (`fbde008`) |
+| A6-L-04 | Low | Before seeding, every rebalance swap skips the daily volume cap (manager-only) | 75 | Fixed (`6c6fb91`) |
+| A6-L-05 | Low | The auction rate rounds down, so some lots start at the floor price | 75 | Fixed (`6c6fb91`) |
+| A6-L-06 | Low | The pool opens at the close price after the basket has moved | 75 | Fixed (`6c6fb91`) |
+| A6-L-07 | Low | A tiny direct mint makes a boost that never ends | 75 | Fixed (`6c6fb91`) |
+| A6-L-08 | Low | A replaced protocol curator keeps the protocol vote on open proposals | 70 | Fixed (`6c6fb91`) |
+| A6-L-09 | Low | A mint at NAV has no input limit, so a trade just before it raises its cost | 80 | Acknowledged |
+| A6-L-10 | Low | Split pushes let the keeper move a hub price about 35% an hour | 80 | Acknowledged |
+| A6-L-11 | Low | A sell, `issue` and buy-back resets the issuance anchor and mints a pot from holders | 75 | Acknowledged |
+| A6-L-12 | Low | A stake added in the proposal epoch is left out of the vote total, so less stake reaches quorum | 80 | Acknowledged |
+| A6-L-13 | Low | A change to the compliant curators shares out income earned before the change | 75 | Acknowledged |
+| A6-L-14 | Low | The curator vote slice is divided by every seat but paid only to compliant seats | 75 | Acknowledged |
+| A6-L-15 | Low | The keeper price clamp stops bounding the move after a long push gap | 75 | Acknowledged |
+| A6-L-16 | Low | The Chainlink price branch returns a zero price when a feed has more than 18 decimals | 65 | Fixed (`0ae9bf5`) |
+
+---
+
+## A6-H-03 — A curator claim credits the claimed staked shares a second time (High, Fixed 2026-10-14)
+
+`FundCurators.claim` (`src/funds/FundCurators.sol:176`) with `notifyYield` (`:133`). Round 2,
+pass 2: 7 of 12 agents, independently.
+
+`claim` lowers `_reserved[token]` and **then** transfers the shares:
+
+```solidity
+_reserved[token] -= amount;
+IERC20(token).safeTransfer(msg.sender, amount);
+```
+
+For the staking token, `FundStaking.transfer` first runs `_settleBefore(sender)`. When the
+curators module has a boost, that accrues: `_accrue` mints curator shares and calls the
+unguarded `notifyYield` → `_distribute`, which computes `fresh = balance − _reserved`. The
+balance still holds `amount`, but `_reserved` no longer does, so the claimed shares are shared
+out a second time (to `_protocolOwed` and every compliant curator). Then the transfer sends them
+out, leaving `_reserved` above the balance by `amount`. `_forfeit` avoids exactly this ordering
+("the shares leave `_reserved` only once they are gone"); `claim` does not.
+
+The module gets a boost from anyone: `Fund.mint(dust, 0, receiver = curators module,
+atNav = false)` while the fund trades above NAV (A6-M-10). With a dust payment the boost speed
+rounds to zero and it never ends (A6-L-07). Cost: about $1 or less.
+
+Worked numbers (protocol share 33.33%, curators X and Y compliant, module holds 9,000 staked
+shares all owed: X 3,000, Y 3,000, protocol 3,000):
+
+1. Attacker gives the module a dust boost.
+2. X claims 3,000 in a new block. Inside the transfer the accrual re-shares ~3,000: protocol
+   +1,000, X and Y +1,000 each (vesting). After the claim the module holds ~6,000 but owes ~9,000.
+3. Y claims 3,000 the same way. The module holds ~3,000 but owes ~9,000.
+4. The protocol curator's claim of ~5,000 reverts (insufficient balance). `_fresh` returns 0
+   until the gap is filled, so the next ~6,000 of real curator income is credited to no one.
+   Early claimers take later claimers' shares, every claim in a fresh block widens the gap, and
+   `_forfeit` (curator removal) reverts once a vest exceeds the balance.
+
+**Fix (`10998a7`, 2026-10-14):** `claim` now lowers `_reserved[token]` after the `safeTransfer`, as
+`_forfeit` does, so the callback sees the claimed shares as still reserved. Test
+`test_claim_boostedModule_doesNotRecountClaimedShares` gifts the module a boosted mint, claims, and
+checks that what the module owes equals what it holds (it failed by ~2.13 shares before the fix).
+The cheap trigger itself (mints to fund modules) is A6-M-10, fixed in `ff2cfe7`.
+
+## A6-M-01 — A 30-minute pool crash shrinks the redeem supply and over-pays the basket (Medium, Fixed 2026-10-14)
+
+`Fund.redeem` (`src/funds/Fund.sol:290`) → `_redeemQuote` → `_poolAndSupplyAt` (`:837`) →
+`FundHook.positionAmounts` (`src/funds/FundHook.sol:434`) at the 30-minute TWAP tick. Round 1:
+boundary (finding) plus three leads. Round 2: raised again as a lead (`twap-supply-vs-spot`).
+
+`redeem` divides each basket balance by `supply = totalSupply − poolTokens`, where `poolTokens`
+is the fund's position valued at the **TWAP** tick. Only the USDG leg is capped (`usdgCap` in
+`redeemPosition`); the basket legs are not. A holder sells fund tokens into the pool, holds the
+crashed price for 30 minutes, buys back, and redeems in the same transaction: the TWAP still sees
+the crash, so `poolTokens` is far above the real holding and `supply` is too small.
+
+Numbers (100M supply, $900k basket + $100k USDG, 10% pool, attacker holds 20M): TWAP pool tokens
+29.09M vs ~9.09M real → `supply` 70.91M instead of 90.91M → the attacker's 19.8M net shares take
+27.9% of the basket instead of 21.8%: **$260.0k vs $217.8k fair, +$42k for ~$1.4k of swap fees**,
+repeatable every ~60 minutes, paid by remaining holders. The open question is cost: the
+attacker must keep the pool crashed for 30 minutes against arbitrage, and an arb who buys the
+cheap tokens and redeems also pushes the TWAP back. Not run as a PoC.
+
+**Fix (`fbde008`, 2026-10-14):** `FundHook.positionBounds` splits the fund's position at the TWAP
+tick and at the spot tick; redeem (and `previewRedeem`) takes the lower USDG and the lower fund-token
+amount, mint takes the higher of each. A move held past the window and reversed, or one made inside
+a block, moves only one of the two readings. Views and valuation keep the TWAP. Tests in
+`test/unit/FundPoolReading.t.sol` fail on the old code (redeem paid ~36% over fair; a mint at NAV was
+charged about half) and pass now. Residual: a same-block spot push can raise what a mint costs, up
+to the minter's approval (the direct mint already prices at max(spot, TWAP)).
+
+## A6-M-02 — Right after seeding the position TWAP covers seconds, so one block sets the redeem supply (Medium, Fixed 2026-10-14)
+
+`FundHook._positionTick` (`src/funds/FundHook.sol:632`) and `_twap` (`:639`). Round 1:
+math-precision, first-principles (PoC), invariant. Round 2: raised again as a lead
+(`young-pool-twap`).
+
+For the first 30 minutes after `seedPool`, `_twap` falls back to the oldest observation (the
+seed), and `_positionTick` ignores `found`, so the "30-minute" mean can cover a few seconds. One
+block held at a low tick moves it a long way, which feeds A6-M-01's `supply` directly without
+the 30-minute hold. PoC (round-1 fixture): sell half of 67,708 tokens right after seeding, buy
+back 1 s later, redeem: **$76.6k paid vs $74.4k baseline for ~$330 of swaps**, loss on other
+holders. Precondition: unlocked fund tokens at seed time, i.e. `depositorLock == 0` or
+`FundLaunch.seedPool` (manager or admin) runs after `depositorUnlockAt` (depositor tokens are
+locked 7 days by default).
+
+**Fix (`fbde008`, 2026-10-14):** closed by the A6-M-01 fix: the one-second push leaves spot fair by
+the redeem, so the lower reading is spot. The young-pool TWAP itself is unchanged (still a short
+window right after seeding), which matters only for views and valuation.
+
+## A6-M-03 — Dust bribes fill the 32 reward-token slots; later bribes in new tokens revert (Medium, Fixed 2026-10-14)
+
+`FundCurators.registerRewardToken` (`src/funds/FundCurators.sol:141`), entered from
+`FundBribes._pull` (`src/funds/FundBribes.sol:199-219`). Round 1: 12 agent runs. Round 2: raised
+again by 11 of 24 agent runs, unchanged in code.
+
+`_pull` accepts `reward == token` for any **eligible** asset, not only basket assets, and calls
+`registerRewardToken(reward)` whenever `cut != 0`. At the default `bribeCutBps = 1500`, 7 wei
+gives `cut = 1`, `net = 6`. Registration is permanent and capped at `MAX_REWARD_TOKENS = 32`. The
+attacker posts `postBribe(X, epoch, X, 7)` for 32 eligible tokens before or after launch (no
+`launched` check), and later reclaims the 6 wei per token with `refundBribe` because nobody can
+vote for a non-basket token. Cost: gas plus 32 wei.
+
+After that, every bribe whose reward token is not yet registered reverts `TooManyRewardTokens`,
+including **MONEY** (an allowed bribe token in `DeployFundsRobinhood.s.sol:132` but not a core
+token) and a token team's listing bribe paid in its own token. Every `_distributeAll` (flip,
+curator changes, claims) also loops the junk tokens forever. Precondition: at least 32 allowed
+tokens (eligible + basket + bribe tokens), likely with a tokenized-stock eligibility list.
+
+**Fix (`195c055`, 2026-10-14, Bhargav's direction):** the reward-token list is gone. `FundBribes`
+pays the curators' cut out in the same transaction as the bribe, split by
+`FundCurators.bribeSplit`: the protocol curator its share plus rounding, the curators compliant at
+that moment the rest equally; a curator that cannot receive the token forfeits its part to the
+protocol curator. `FundCurators` now tracks only the fund token, USDG and staking shares, so
+`registerRewardToken`, the 32 cap and its errors are removed and every `_distributeAll` loops three
+tokens. Test `test_postBribe_manyRewardTokens_neverBlocked` posts 40 dust bribes in 40 tokens.
+
+## A6-M-04 — Compliance uses live supply, so mint → flip → redeem fails an honest curator (Medium, Fixed 2026-10-14)
+
+`FundCurators.checkCompliance` (`src/funds/FundCurators.sol:153`). Round 1: 3 agents. Round 2:
+raised again as a lead (`compliance-supply-timing`).
+
+```solidity
+uint256 required = Math.mulDiv(f.totalSupply(), minStakeBps, BPS, Math.Rounding.Ceil);
+bool ok = gov.stakedAssetsAt(c, epoch) >= required;
+```
+
+The stake side is a past-epoch record; the supply side is live. `FundGovernor.flip` is
+permissionless. Mints now land staked and locked, but `FundStaking.redeem` redeems locked stake
+at NAV, so `mint(atNav)` → `flip` → `FundStaking.redeem` still works in one transaction.
+Example (100M supply, `minStakeBps = 50` → 500k required, curator C has 520k): minting ~4M
+shares raises `required` to 520,000.005e18 and C fails. Two flips in a row (or one call that
+runs two missed flips) set C non-compliant: C loses its income share, its base and silent vote
+slice in `_castVotes`, and its proposal votes. Cost ≈ the 1% mint + 1% redeem fee (≈$8k per flip
+at $0.10 NAV on that example), partly refunded if the attacker is itself a curator. The reverse
+(redeem before flip so an under-staked curator passes) also works.
+
+Only live when `minStakeBps > 0`. Project memory says the minimum is 0 at launch, but the deploy
+script comment still documents 50 bps (`DeployFundsRobinhood.s.sol:45`).
+
+**Suggested fix:** compare against a fund-supply checkpoint for the tallied epoch (an
+`EpochHistory` of `Fund.totalSupply`, minimum-in-epoch like staking).
+
+**Fix (`93c4e24`, 2026-10-14, Bhargav's direction):** the minimum is now a dollar value,
+`minStakeUsd` (18 decimals; `CreateFundParams.minCuratorStakeUsd`, admin `setMinStake`), compared
+with the curator's stake record for the epoch valued at `tryNav()`. Mints and redeems happen at
+NAV, so they no longer move the bar. With no NAV price the check returns before touching anyone, so
+a stale feed changes nobody's standing that week. The bps cap and `InvalidMinStake` are gone. Tests
+`test_checkCompliance_mintBeforeFlipDoesNotFailCurator` and
+`test_checkCompliance_noNavPrice_changesNobody`.
+
+## A6-M-06 — One premium reading prices up to 8 h of staking yield; caller picks the moment (Medium, Fixed 2026-10-14)
+
+`FundStaking._accrue` (`src/funds/FundStaking.sol:497`). Round 1: 6 agent runs. Round 2: raised
+again as a lead (`caller-timed-premium-reading`).
+
+`accrue()` is permissionless (and runs inside every stake, unstake and boosted transfer). It
+reads `premiumBps()` once and applies `rateForPremium(premium)` to `elapsed = min(now −
+lastAccrual, 8 h)`. A staker waits until `lastAccrual` is ~8 h old and calls it while the
+30-minute TWAP premium sits in a higher tier (or holds the pool price up for 30 minutes to put
+it there).
+
+Since the yield redesign the curve is stepped (default 12% a year at a premium of 0, 24% from
+25%, 48% from 100%), so the swing is smaller than in round 1. Example: 50M staked; one call at a
+100% premium instead of 0 adds 36% × 8/8,760 × 50M ≈ **16,400 fund tokens** that dilute every
+non-staker. The reverse also works: a call while the premium is below the first tier or a feed
+is stale consumes the 8 hours with zero yield (`lastAccrual` is written before the `ok` check;
+the NatSpec now calls this intended).
+
+**Suggested fix:** accrue against a time-weighted premium over the elapsed period, or cap
+`elapsed` per reading to the TWAP window and have the keeper accrue every ~30 minutes; pay each
+chunk at the lower of the rate at its start and its end.
+
+**Fix (`0dcbeb0`, 2026-10-14, Bhargav's direction):** `_accrue` stores the rate of each fresh
+reading and pays the time since the last accrual at the lower of that stored rate and the rate
+read now, so a call timed at a high premium earns no more than the earlier reading allows. When
+the premium can't be read the clock no longer moves, so the stretch waits and is paid once a price
+is back. The 8-hour cap is removed (it would clip that stretch). The first reading after staking
+begins has nothing to compare with and pays at its own rate. The keeper will call `accrue` hourly
+(a keeper job, not built yet). Trade-off: a stake made during a stale stretch shares that stretch
+when it is paid, the same class as A6-M-11. Tests `test_accrue_paysLowerOfTwoReadings`,
+`test_accrue_staleOracle_timeWaits`, `test_accrue_paysTheWholeStretch`.
+
+## A6-M-07 — One paused / blacklisting basket token blocks every redeem (Medium, Fixed 2026-10-14)
+
+`Fund.redeem` (`src/funds/Fund.sol:290`). Round 1: economic-security, invariant.
+
+The redeem loop calls `safeTransfer` for every basket asset with `amounts[i] != 0` and has no
+way to skip one. If one tokenized stock pauses transfers or blacklists the fund, every `redeem`,
+`FundStaking.redeem` and `FundRedeemZap.redeemToUsdg` reverts for every holder, and the NAV
+floor disappears. The token cannot be removed: `flip` → `setBasket` reverts `AssetHasBalance`
+unless it is dust (`FundRebalance.sol:226`), `sweep` refuses listed tokens (`Fund.sol:423`), and
+neither a rebalance nor an auction can sell it because the transfer itself fails. The same
+transfer in `FundLaunch.finalize` blocks finalisation. The docs say redeem "cannot be paused".
+A6-M-12 is a second way to the same effect.
+
+**Suggested fix:** let the caller name assets to skip (forfeiting that slice to remaining
+holders), or credit a failed transfer to the receiver as a later claim.
+
+**Fix (`0dcbeb0`, 2026-10-14, Bhargav's pick):** `Fund.redeemSkipping(shares, receiver,
+minAmountsOut, minUsdgOut, skip)` pays nothing of the named basket assets; those slices stay in
+the fund for the remaining holders. `redeem` is unchanged and shares the code path. Unchanged:
+`FundStaking.redeem` and `FundRedeemZap` have no skip (a staker unstakes and calls the fund), and
+`FundLaunch.finalize` still needs every launch token to transfer. Tests
+`test_redeemSkipping_frozenAssetLeftInFund`, `test_redeemSkipping_minimumOnSkippedAsset_reverts`,
+`test_redeemSkipping_unknownTokenIgnored`.
+
+## A6-M-08 — After `setGovernor`, bribers refund bribes that voters already claimed (Medium, Fixed 2026-10-14)
+
+`FundBribes.refundBribe` (`src/funds/FundBribes.sol:88`), `claimListingBribe` (`:125`) and the
+other listing-bribe paths, all through `_governor()` (`:221`). Round 1: trust-gap, boundary.
+Round 2: raised again by 2 agents as findings, with the listing variant worked through.
+
+`FundBribes` reads `IFund(fund).governor()` live, but its ledgers are keyed only by epoch or
+proposal id. `claimBribe` never lowers `_bribes` or `_bribesBy`. After the admin's documented
+upgrade path `Fund.setGovernor(G2)`: epoch E's 1,000 USDG bribe was 60% claimed under G1. G2's
+first flip tallies E with empty bribe votes, so `refundBribe` sees `bribeVotes == 0` and the
+briber takes back the full net, part of it from other bribers' pools, while the remaining voters
+can no longer claim. Listing variant (round 2): proposal ids restart on G2, so a yes voter on G2
+proposal #0 claims the listing bribe posted for G1 proposal #0, and the G1 briber's refund
+reverts. Admin-triggered, but the harm is taken by unprivileged bribers and voters.
+
+**Suggested fix:** key bribe ledgers by the governor that was live when the bribe was posted,
+and refuse claims and refunds against a different governor (or migrate them explicitly).
+
+**Fix (`e8b2f45`, 2026-10-14):** every `FundBribes` ledger is keyed by the governor live when the
+bribe was posted. `claimBribe`, `refundBribe`, `claimListingBribe`, `refundListingBribe`,
+`bribeOf`, `listingBribeOf` and `claimableBribe` take that governor as their first argument and read
+its votes, tallies and proposals, so G2's empty tally of epoch E cannot refund a G1 bribe and G2
+proposal #0 cannot claim G1 proposal #0's bribe. Naming any other address reads an empty ledger. A
+bribe for an epoch its governor never tallied becomes refundable once that governor is replaced.
+Tests `test_governorSwap_bribeStaysWithItsGovernor`, `test_governorSwap_untalliedEpochRefundable`.
+
+## A6-M-09 — `stake` moves the caller's launch lock onto any receiver (Medium, Fixed 2026-10-14)
+
+`FundStaking._stake` (`src/funds/FundStaking.sol:471-489`). Round 1: 8 agent runs.
+
+`_stake` releases the caller's launch lock (`releaseLaunchLock(msg.sender, assets)`) and puts it
+on `receiver` (`_addLock(receiver, locked)`). `unstake` refuses this
+(`lockedAfter != lockedBefore && receiver != msg.sender`); `stake` has no matching check. A
+holder of launch-locked tokens stakes for:
+
+- **the curators module**: the donated shares count as fresh income and are shared out, but the
+  module's last `locked` worth of staked-share claims revert `SharesLocked` until
+  `depositorUnlockAt` (default 7 days, max 30);
+- **an admin-listed ERC-4626 wrapper**: its last withdrawals revert until unlock;
+- **the Uniswap v4 PoolManager** (sync → stake → settle inside `unlock`): credits the caller,
+  so launch-locked value could be swapped out through any sFUND pool. Not proven; needs an sFUND
+  pool with outside liquidity.
+
+The cost is the gifted stake. This is the `stake` twin of 10-04 Medium #2. A6-M-10 is the same
+shape through `Fund.mint`, with a longer lock, and its fix is separate.
+
+**Suggested fix:** in `_stake`, revert `SharesLocked` when `moved != 0 && receiver != msg.sender`.
+
+**Fix (`ff2cfe7`, 2026-10-14):** as suggested. Staking unlocked tokens for another address is still
+allowed. Test `test_stake_launchLockedForOthers_reverts`.
+
+## A6-M-10 — Anyone can mint to any receiver and put a lock and a boost on it (Medium, Fixed 2026-10-14, new 2026-10-13)
+
+`Fund.mint` (`src/funds/Fund.sol:242`) → `_stakeMinted` → `FundStaking.stakeMinted`
+(`src/funds/FundStaking.sol:173`) → `_joinMintLock`, with the effect in `FundCurators._forfeit`
+(`src/funds/FundCurators.sol:328`). Round 2: 2 agents in pass 1, 6 in pass 2.
+
+`mint` checks only `receiver != address(0)`. The staked shares, the mint lock (180 days for a mint
+at NAV, `mintLock` for a direct mint) and, for a direct mint above NAV, a boost all land on
+`receiver`. Effects:
+
+- **Curator removal reverts.** A NAV mint to the curators module puts a 180-day lock on its
+  shares. `_distribute` shares the gift out as income, so a curator's vest grows, and `_forfeit`
+  → `FundStaking.unstake(vest)` reverts because `_held < shares + mintLocked`. Example: module
+  holds 1,000 shares (X's vest); a 99-share gift makes X's vest 1,033, and
+  `1,099 < 1,033 + 99` → `SharesLocked`. `removeCurator`, `replaceCurator` and the governance
+  proposals that call them revert for as long as the gift share exceeds the module's other
+  balance. A curator facing removal can do this for a fraction of its own income.
+- **The last staked-share claims revert** until the lock ends.
+- **A holder's own lock stretches.** A mint equal to a holder's NAV-locked balance with 1 day
+  left gives all of it a share-weighted end ~90.5 days out.
+- **The curators module gets a boost,** which is the trigger for A6-H-03.
+- Same for an admin-listed vote wrapper (lead in round 2).
+
+A6-M-09's fix (in `_stake`) does not cover this path.
+
+**Suggested fix (pick one or combine):** (A) revert when `receiver` is a module of the fund
+(curators, staking, launch, governor); (B) require `receiver == msg.sender` for a mint that
+creates a lock or a boost, or keep a lock someone else creates separate from the receiver's.
+
+**Fix (`ff2cfe7`, 2026-10-14, Bhargav's pick, B):** `Fund.mint` reverts `NotReceiver` when a staked
+(locked or boosted) mint goes to anyone but the caller. The one exception is the factory's mint zap
+(`FundFactory.mintZap`, admin-set with `setMintZap`), which now always mints for its own caller
+(`zapMint` lost its `receiver` argument). The capped mint, unlocked with no boost, still goes to any
+receiver. A module can still mint for itself, but only with its own tokens. Tests
+`test_mint_lockedForOthers_reverts`, `test_mint_cappedForOthers_allowed`,
+`test_zapMint_notFactoryZap_reverts`.
+
+## A6-M-11 — A stake made while NAV has no price takes pot drip it did not earn (Medium, Fixed 2026-10-14, new 2026-10-13)
+
+`FundStaking._releasePot` (`src/funds/FundStaking.sol:563`). Round 2: 1 agent in pass 1,
+1 in pass 1 (boundary), 1 in pass 2.
+
+`_checkpointPot` keeps moving the drip into `potPending`, but `_releasePot` returns early while
+`nav == 0`, which happens whenever any basket feed is stale (`Valuation.nav` needs every price).
+Staking still works during that time (`_stake` → `_accrue` skips without reverting), and a
+direct stake has no lock. When the price returns, the whole `potPending` goes into the vault's
+share price at once, shared by whoever is staked at that moment.
+
+Numbers: Chainlink stock feeds go quiet from about Friday 20:00 to Monday 00:00 UTC. With a basket
+feed staleness under that gap, NAV has no price all weekend. Pot $70,000 over 7 days → 52 h
+moves ~$21,700 into `potPending`. 1M shares are staked; the attacker stakes 1M liquid tokens on
+Sunday night, calls `accrue()` when the feed returns, and unstakes: **+~$10.8k for minutes of
+staking**, taken from stakers who held all weekend.
+
+**Suggested fix:** while NAV is unavailable, keep the drip time in `potLeft` (move
+`_potUpdatedAt` forward without moving dollars into `potPending`), or refuse a new stake while
+`potPending > 0`.
+
+**Fix (`eb3ff2b`, 2026-10-14, Bhargav's pick):** `_releasePot` reads NAV first; without a price it
+marks the pot held, and `_checkpointPot` then moves `potEnd` out by the time held instead of
+dripping, so the drip resumes where it stopped (`addPot` honours the same flag). Separately, fund
+assets with Chainlink can now be priced through the in-house `ChainlinkOracleVerifier`
+(`FundOracle.setVerifierFeed`), whose signer quotes stocks while their feeds are silent, so NAV
+stays priced over weekends and this path is left for real outages. Tests
+`test_pot_pausesWhileNavUnpriced`, `test_pot_stakeWhileUnpricedTakesNothing` (both fail on the old
+code). The pause was later replaced by A6-M-12's fix (`bcea925`): the pot is held in fund tokens
+and drips without a price, so nothing piles up.
+
+## A6-M-12 — One stale basket price blocks every redeem while the reserve holds value (Medium, Fixed 2026-10-14, new 2026-10-13)
+
+`Fund._claim` (`src/funds/Fund.sol:706`), reached from `redeem`, `FundStaking.redeem` and
+`FundRedeemZap`. Round 2: 2 agents as findings, 4 as leads.
+
+While `reserveUsd > 0`, `_claim` calls `_totalValue` → `_basketValue(..., soft = false)` →
+`o.price(a)` for every held basket asset, and that reverts on a stale or missing feed. Any
+direct mint above NAV (boost budget) or any pool issuance (pot) makes `reserveUsd > 0`, and
+boosts take months to pay out, so in practice the reserve is never empty. Then one stale feed
+stops every in-kind redeem, though the pro-rata exit itself needs no price. Triggers: the weekend
+gap of stock feeds (if staleness is set below it), or a `FundPriceHub` asset whose real move is
+over `maxMoveBps` so the keeper's push is rejected and `updatedAt` ages.
+
+This was a build choice in the yield redesign (reserve held in dollars), and
+`docs/own-curated-funds.md:147` says so, but `:151` ("It needs no oracle and cannot be paused")
+and `:312` ("Redeem depends on neither") say the opposite. A6-M-07 reaches the same effect through
+a frozen token.
+
+**Suggested fix (pick one):** (A) value the basket with `tryPrice` in `_claim` and count an
+unpriced asset at zero, which only shrinks the redeemer's claim (holders are protected, and
+`minAmountsOut` protects the redeemer); (B) hold the reserve in kind (fund tokens or a basket
+slice) so redeem needs no price. Either way, fix the docs.
+
+**Fix (`bcea925`, 2026-10-14, Bhargav's pick: B, in fund tokens):** the dollar reserve is gone. A
+direct mint's boost is minted at once as fund tokens (the boost share of `navShares` less the
+tokens issued) and held by the staking module, paid out as staked shares at the boost speed in
+tokens; the pot's share of an issuance's premium is minted as fund tokens at the NAV issuance
+already reads, held there and dripped into the vault. Forfeited boost tokens, and pot drips with
+under one whole share staked, are burned. NAV is value over supply, so mint and redeem no longer
+scale by a reserve and `_claim` is gone: a redeem reads no price. Boost and pot tokens count in
+supply, so recipients share the fund's price moves and holders carry no fixed dollar claim. The
+pot drip no longer needs a price either, replacing the A6-M-11 pause. Docs updated. This also
+retires the two reserve leads below and A6-L-07's effect on this finding. Tests
+`test_redeem_stalePriceWithBoostOwed`, `test_boost_sharesPriceMoves`, `test_pot_dripsWhileUnpriced`;
+the invariant now checks the staking module holds exactly the stakes plus boost and pot tokens
+owed.
+
+## A6-M-13 — The price keeper moves a hub price without limit by repeating pushes (Medium, Fixed 2026-10-14, new 2026-10-13)
+
+`FundPriceHub.pushPrices` (`src/funds/FundPriceHub.sol:48`). Round 2: 8 agents in pass 1, 5 in
+pass 2.
+
+The keeper is meant to be bounded ("bounded per push by `maxMoveBps`",
+`docs/own-curated-funds.md:308`). The bound compares each new price with `p.price`, the last
+stored price, and nothing reads `p.updatedAt`. So the keeper repeats an asset in one call
+(`[X, X, X, …]`) or sends several calls in one block, and each step passes. With the deploy
+value `HUB_MAX_MOVE_BPS = 3000`: nine +30% steps take X to 10.6x in one transaction; seven −30%
+steps take it to 0.08x. The price is stored as fresh.
+
+Impact with a compromised or buggy keeper key: in the same transaction anyone can call the
+permissionless `FundLaunch.finalize`, which fixes close prices from the oracle. Example: honest
+deposits $900k of A, attacker deposits $100k of hub asset X; X pushed 10.6x → the attacker gets
+~54% of the depositor supply instead of ~10% and redeems ~$540k of basket. The same price feeds
+auction rates and floors, the rebalance slippage bound, and the reserve scaling in mint/redeem.
+Keeper-only, so not an open attack; listed because the bound is the documented control on the
+keeper.
+
+**Suggested fix:** reject a keeper push for an asset whose `updatedAt == block.timestamp`, or
+scale the allowed move by the time since `updatedAt` (e.g. `maxMoveBps` per hour).
+
+**Fix (`d06dace`, 2026-10-14, Bhargav's pick):** `maxMoveBps` (admin-set, 30% at deploy) is now
+the largest move per hour since the asset's last push, compounding by the hour and pro rata
+within it, so pushes in one block move nothing and a 10x takes about 9 hours. A push past the
+bound is stored at the bound (`PriceClamped`) instead of skipped, so a real jump catches up rather
+than going stale. Admin pushes are removed (Bhargav: raising the bound or swapping the keeper does
+the same job). The allowance grows with silence, so after about a week without a push (visible as
+stale prices) any move is allowed. Tests `test_moveBound_repeatPushesGainNothing`,
+`test_moveBound_realJumpCatchesUpHourly`, `test_moveBound_fallsSymmetricallyAndProRataWithinTheHour`,
+`test_moveBound_offOrLongSilenceIsUnbounded`. The keeper's hub job (keeper PR #25) pre-skips
+pushes over the old per-push bound and should now push every price.
+
+## A6-M-14 — Other staked shares shield a boost after its minted shares are sold (Medium, By design, new 2026-10-13)
+
+`FundStaking._forfeit` (`src/funds/FundStaking.sol:635`). Round 2 pass 2: numerical-gap.
+
+The design says selling or moving staked tokens forfeits the unpaid boost. `_forfeit` checks
+`held >= b.shares`, where `held` is **all** the account's staked shares (plus governor escrow),
+not the shares the boost was paid for. So shares the account held before the mint, or bought
+since, shield the boost.
+
+Numbers (NAV $1, market $1.25, defaults): a $1M direct mint stakes 792,000 shares with a
+$150,000 budget paid over ~73 days. After the 15-day mint lock ~$119k is unpaid. The minter also
+holds 792,000 other staked shares, unstakes the 792,000 boosted ones and sells them at ~$1.25:
+`held = 792,000 >= 792,000`, nothing is forfeited, and the remaining ~$119k keeps paying out from
+the reserve. Without the other shares it would go to backing. Also, `if (b.usdLeft == 0)
+b.shares = 0` lets shares from a finished boost shield the next one.
+
+**Suggested fix:** record the account's staked holdings before each boosted mint and forfeit when
+holdings fall below that baseline plus `b.shares`.
+
+**By design (Bhargav, 2026-10-14):** the boost is the minter's own premium returned (since
+`bcea925`, boost tokens minted from it at the mint), so a minter who keeps the boost after
+selling an equal number of staked tokens takes nothing other holders were owed: 25% of the
+premium already went to backing, and a forfeit only hands holders a windfall. Staked tokens are
+interchangeable, so the sale can as well be read as selling the older ones. Repeating mint and
+sell grows TVL each time; its only effect on others is selling pressure on the pool premium.
+
+## A6-M-15 — A stake made while no premium price exists takes yield for the whole wait (Low, downgraded from Medium, Acknowledged 2026-10-15)
+
+`FundStaking._accrue` (`src/funds/FundStaking.sol:506`, early return at `:522`). Round 3: 9 of
+12 agents in pass 1 and 9 in pass 2, independently. PoC run (forge 1.3.5, scratch copy).
+
+The A6-M-06 fix made the clock wait while the premium cannot be read: `if (!ok) return 0;` runs
+before `lastAccrual` moves. `_stake`, `stakeMinted` and `_stakePosition` still add to
+`_totalStaked` / `lpLiquidity` during the wait, and the first priced accrual pays
+`staked × rate × (now − lastAccrual)` on the stake that exists **at payout**, not the stake that
+sat through the wait. A plain stake has no fee and no lock, so a holder with free fund tokens
+stakes one block before the price returns and unstakes right after. The A6-M-06 fix note called
+this a trade-off; these numbers size it.
+
+The premium is unreadable whenever any basket asset with a balance has no fresh price (a late
+hub push, a feed outage), and after every launch from `finalize` until the fund's TWAP feed is
+registered and has 30 minutes of history (the launch stake is made at finalize, so the first
+reading also pays that whole stretch). Anyone who relays a signed quote through the open
+`ChainlinkOracleVerifier.updatePrice` can end the wait in the same transaction.
+
+Numbers: PoC on the test fixture (0.1% a day tier): Alice has 67,708 staked, the feeds go stale
+for 10 days, Bob stakes 44,958 one block before they return and unstakes at once: **Bob takes
+449.6 fund tokens (1% of his stake) for 0 seconds staked**. At the default curve: 10M staked,
+a 72-hour outage at 24%/yr, an attacker stakes 10M at hour 71 and takes 19,726 tokens instead of
+274. The extra tokens are minted on top (plus the 15% curator cut), so every holder who is not
+staked pays through NAV. Staked LP positions get the same back-pay through `_lpYieldPerLiquidity`.
+The reverse also holds: a staker who leaves during the wait loses its part of the wait.
+
+Second path, same root (6 agent runs): `Fund.mint` and `Fund._redeem` never call `accrue`, so a
+holder who redeems during a wait leaves before the pending yield is minted and the holders who
+stay take all of it (500k of 1M outside supply, 30 days at 48%: the redeemer avoids ~$6k of
+dilution on $500k). With the hourly keeper accrual the normal-case gap is at most an hour.
+
+**Suggested fix:** when the reading fails, pay the wait at `_lastRate` on the stake that sat in
+it (or, before any reading exists, move `lastAccrual` to now and pay nothing), so a later stake
+never earns for time before it joined; and call `IFundStaking.accrue()` at the start of
+`Fund.mint` and `Fund._redeem`.
+
+**Acknowledged (Bhargav, 2026-10-15):** outages are expected to last a few hours, a day at most.
+At a day, a stake made just before the price returns takes about 0.07% of itself at the 24% tier
+(0.13% at 48%). Paying the wait as it passes, at the last rate read, would instead pay stakers the
+old rate if the premium fell during the outage; Bhargav preferred keeping the A6-M-06 behaviour
+(the clock waits and the stretch is paid once a price is back). The `Fund.mint` / `_redeem` path
+is left to the hourly keeper accrual. Downgraded to Low.
+
+Round 4 raised this again (8 agent runs in pass 2), with the LP path through `_stakePosition` and
+one stale basket feed stopping the clock. No change to the call above.
+
+## A6-M-16 — A NAV-locked staker cannot exit while one basket token is frozen (Medium, Fixed 2026-10-15)
+
+`FundStaking.redeem` (`src/funds/FundStaking.sol:230`). Round 3: 2 agents in pass 1, 5 in pass 2.
+PoC run.
+
+Since `68aef25` a mint at NAV is locked for good (`unlockAt = type(uint64).max`), and its only
+exit is `FundStaking.redeem`. `unstake` always reverts `SharesLocked` for those shares, and
+`_update` blocks every transfer except into the governor. `FundStaking.redeem` calls
+`IFund(fund).redeem`, never `redeemSkipping`, so if one basket token pauses transfers or
+blacklists the fund, the whole call reverts. The A6-M-07 fix note assumed "a staker unstakes and
+calls the fund"; NAV-locked stakers no longer can. The token cannot be removed either
+(`AssetHasBalance`, auctions and rebalances need it to transfer, `sweep` refuses listed tokens).
+PoC: a NAV mint, then a mocked revert on one basket token's `transfer`: `redeem` reverts and
+`unstake` reverts `SharesLocked`. NAV-locked stakers stay in the fund until the token is free
+again (forever for a permanent blacklist); direct-mint and launch locks are stuck for the rest
+of their lock.
+
+**Suggested fix:** give `FundStaking.redeem` a skip list and forward it to
+`IFund.redeemSkipping` (a new function or an extra argument).
+
+**Fix (`9fb7cee`, 2026-10-15):** `FundStaking.redeem` takes a `skip` list and redeems through
+`Fund.redeemSkipping`, so a locked staker can leave a frozen token's slice in the fund, as plain
+holders already can. Callers pass an empty list for the whole basket. Test
+`test_navMint_redeemSkipsAFrozenToken`.
+
+## A6-M-17 — After a governor swap, a NAV-locked staker clears its permanent lock, and anyone can burn a staker's boost (Medium, Fixed 2026-10-15)
+
+`FundStaking._held` (`src/funds/FundStaking.sol:650`) via `_update` (`:729`). Round 3: 1 agent
+in pass 1, 4 in pass 2. PoC run for the lock path. Round 1 and 2 had this root as a lead ("after
+a governor swap, old escrow stops counting"); it is booked now because the permanent NAV lock
+and the zero-value transfer give it an exploit.
+
+`_held` counts `balanceOf + escrowOf` in the **current** governor only. After
+`Fund.setGovernor(G2)`, shares still escrowed in G1 stop counting, while G1 still returns them
+through `withdraw`. Two paths:
+
+1. **Lock clear.** A NAV-locked staker with its shares in G1 withdraws one share from G1 and
+   redeems it. The burn runs `_capMintLock(from, true, _held(from, G2))` with held = 0, so the
+   NAV lock drops to 0. It then withdraws the rest from G1 and unstakes. PoC: 9,899 fund tokens
+   unstaked from a NAV-locked stake, free to sell at the pool premium.
+2. **Boost burn by anyone.** OpenZeppelin v5 lets `transferFrom(victim, x, 0)` pass with no
+   allowance. `_update` then calls `_forfeit(victim, G2)` with held excluding the G1 escrow, and
+   burns most of the victim's unpaid boost (example: ~640 of 684 boost tokens). The victim can
+   leave G1 only after the epoch ends (or 28 days if bribe-locked), so it cannot get out first.
+
+Precondition: the admin replaces a fund's governor, which `IFund` documents and `FundBribes`
+already plans for (A6-M-08).
+
+**Suggested fix:** keep each account's escrowed shares per governor inside `FundStaking` (or
+record the governor that holds them) and count that in `_held`; return early from the lock and
+forfeit logic when `value == 0`.
+
+**Fix (`9fb7cee`, 2026-10-15, Bhargav's direction: keep `setGovernor`; stakers in the old governor can
+only move or redeem):** `Fund.setGovernor` keeps the replaced governor as `previousGovernor`, and
+`_held` adds the account's escrow in it, so a NAV-locked staker withdrawing from the old governor
+is still locked (it can only move into the new governor or redeem at NAV) and its boost stays.
+A second swap reverts `PreviousGovernorHoldsStake` while the governor before the current one still
+holds staked shares (swapping back to it is allowed), so no escrow ever drops out of the count.
+`_update` returns straight after the transfer when `value == 0`, so a zero transfer never touches
+a lock or a boost. Note: anyone can send stray staked shares to an old governor and so delay a
+second swap; a governor beacon upgrade can release them. Tests
+`test_govSwap_oldEscrowKeepsTheNavLock`, `test_govSwap_oldEscrowKeepsTheBoost`,
+`test_zeroTransfer_neverTouchesTheBoost`, `test_setGovernor_waitsUntilTheGovernorBeforeIsEmpty`.
+
+Round 4 raised the stray-share block again (6 agent runs): a plain `transfer` of 1 wei to the old
+governor is enough, nothing in the governor can move it, and a replaced governor still accepts
+`deposit`. Covered by the note above; the agents suggested checking the old governor's recorded
+escrow instead of its balance, and having `deposit` revert in a governor that is not current.
+
+## A6-M-18 — Unstake and restake in one block lower the recorded epoch supply (Low, downgraded from Medium, Fixed 2026-10-15)
+
+`FundStaking._recordSupply` (`src/funds/FundStaking.sol:754`), read by `FundGovernor._castVotes`
+(through `_stakedSupplyNow`) and `ProposalBook.propose`. Round 3 pass 2: asymmetry. Rounds 1 and
+2 had this as a lead ("gain not measured"); the impact is now traced.
+
+A burn lowers the current epoch's supply at once (`min(valueAt(e), live)`), and a mint in the
+same epoch never raises it back, even to the supply the epoch opened with. So `unstake` then
+`stake` in one transaction lowers `totalSupplyAt(e)` for the rest of the epoch at the cost of
+gas. Example: 1,000,000 staked, 100,000 escrowed voting power, 30% curator slice. A holder of
+900,000 unescrowed staked shares unstakes and restakes in the last block of the epoch, so the
+flip uses total = 100,000:
+
+- Weight vote: voters cast the full 70% stakers' slice instead of 7%, and the curators lose all
+  63% of silent weight.
+- Proposals: the same move before `propose` sets `totalStake` to 100,000, so a proposer with
+  30,000 escrowed power (3% of the stake) casts 21% and meets the 20% quorum alone (the Own veto
+  still applies to listings).
+
+Only matters while public curation is on (new funds start off).
+
+**Suggested fix:** cap the current epoch at the supply it opened with, not at the running
+minimum, so a mint can restore what a burn removed in the same epoch but never go above the
+opening supply.
+
+**Fix (`9fb7cee`, 2026-10-15, downgraded to Low):** the suggested fix above has a hole (unstake,
+wait for the flip, restake), so the epoch's supply is now fixed when it opens:
+`_recordSupply` keeps the current epoch's value and writes only the next one. No stake or unstake
+during an epoch moves its total; new stake still counts from the next epoch. Side effect,
+accepted: stake that leaves mid-epoch counts as silent (curator) weight until the epoch ends, as
+in standard snapshot voting. Downgraded because the gain needs one holder with both a small
+voting stake and a large silent one, it saves only the escrow lock and the warning, and the gauge
+limits (5 points a week, 25% cap, Own's listing veto) cap it. Test
+`test_supplyAt_fixedWhenTheEpochOpens`.
+
+## A6-M-19 — Before finalize, the manager runs it inside a rebalance swap and keeps the sold asset (Medium, Fixed 2026-10-16)
+
+`FundRebalance._swap` (`src/funds/libraries/FundRebalance.sol:115`) via `Fund.rebalance`
+(`src/funds/Fund.sol:349`) and `FundLaunch.finalize` (`src/funds/FundLaunch.sol:165`). Round 4:
+1 agent in pass 1. PoC run.
+
+`_swap` measures what a rebalance sold and bought from the fund's balances before and after
+`router.call`. Before seeding, `Fund.rebalance` lets the manager swap, and it has no `launched`
+check. `FundLaunch.finalize` is permissionless and guarded only by its own `nonReentrant`, so it
+can run inside the router call, and it moves the launch deposits into the fund. That inflow
+cancels the sale in the balance deltas: the router pulls the sold tokens and passes them to the
+manager, and the fund records a sale of 0.
+
+PoC: a $125k launch holds 85 TSLA ($34k). The manager calls `rebalance` before finalize, selling
+all 85 TSLA for USDG through a router that first calls `finalize` and then pulls the TSLA to the
+manager. The manager keeps 85 TSLA, the fund holds 0 TSLA, and `rebalanceVolume` stays 0. It
+needs an allowed router (`factory.setRouter`) that runs other code before it pulls the sold
+tokens, for example a multi-hop route through a pool or token with a callback. After seeding only
+an operator can rebalance; the same shape works for it through `collectLpFees` or `issue`.
+
+**Suggested fix:** require `launched` in `Fund.rebalance`, and expose the fund's reentrancy
+state (`entered()`) so `FundLaunch.finalize`, `FundVenue.collectLpFees` and `FundVenue.issue`
+revert while a fund call is running.
+
+**Fixed in `d8810cc`:** `Fund.rebalance` reverts `NotLaunched` before launch, which closes the
+`finalize` path (after launch `finalize` reverts on its own). `Fund.entered()` exposes the fund's
+reentrancy guard, and `FundVenue.issue` and `collectLpFees` revert `FundBusy` while it is set.
+Without the venue check, a hacked operator key could take what `issue` raises: in the test, a
+$20k pool buy made `issue` pay the fund $7,499 of USDG mid-rebalance, the router passed all of it
+to the attacker, and the rebalance recorded nothing sold and no volume. Regression tests:
+`FundLaunchTest.test_rebalance_beforeFinalize_reverts`,
+`FundTest.test_rebalance_issueMidSwap_refused` and `test_rebalance_collectLpFeesMidSwap_refused`.
+Auction fills already revert mid-rebalance (`Fund.auctionPayout` is `nonReentrant`), and they move
+tokens both ways, so the balance checks would catch them anyway.
+
+## A6-M-20 — A withdrawal of one vote token keeps a same-epoch deposit of another vote token counted this epoch (Low, downgraded from Medium, Acknowledged 2026-10-16)
+
+`FundGovernor.requestWithdrawal` (`src/funds/FundGovernor.sol:166`), power maths at `:181`. Round 5:
+1 agent, pass 1. Traced against the source.
+
+A voter's power is one per-account `EpochHistory`; `next - active` is the account's total pending
+power across **all** of its vote tokens (stake and any allowlisted ERC4626 wrapper), deposited this
+epoch and counting only from the next epoch. `requestWithdrawal(token, amount)` computes the
+withdrawn token's `power`, then charges it against that pooled pending bucket:
+
+```solidity
+uint256 fromPending = Math.min(power, next - active);
+_setPower(msg.sender, e, active, next, active - (power - fromPending), next - power);
+```
+
+When the withdrawn token's power was **active** since an earlier epoch but a **different** token was
+deposited this epoch, `fromPending` wrongly absorbs the withdrawal into the other token's pending
+power, so `active` for the current epoch is left unchanged instead of falling.
+
+Trace: epoch `e-1` deposit 100 stake, so at `e` `active = 100`, `next = 100`. At `e` deposit a
+wrapper worth 100, so `active = 100`, `next = 200` (the wrapper is pending, counts from `e+1`). At
+`e` `requestWithdrawal(stake, 100)`: `power = 100`, `fromPending = min(100, 200 - 100) = 100`, new
+`active = 100 - (100 - 100) = 100`, new `next = 100`. The stake is gone and only the wrapper (a
+current-epoch deposit) remains, yet `active(e)` is still 100. `flip()` reads `_power.valueAt(e)`
+for the epoch-`e` gauge tally, and `_setPower` moved the same inflated `active` into `_bribeVotes`,
+so the attacker takes a share of epoch-`e` bribes and gauge weight that honest epoch-`e` voters
+earned. The aggregate `next = total escrowPower` invariant still holds (no net power is minted —
+this is the `next ≥ active` property the round-1 pass checked), so the defect is a timing and
+attribution error, not unlimited power. It needs a second configured vote token (a wrapper);
+single-token stake is unaffected because stake escrow is fungible.
+
+**Suggested fix:** track pending (current-epoch) power per vote token, so a withdrawal reduces only
+the withdrawn token's own current-epoch and pending power rather than the account's pooled pending.
+
+**Acknowledged (Bhargav, 2026-10-16), downgraded to Low, no contract change:** stake and its
+wrappers are the same underlying stake, so treating the vote tokens as one pool matches what a
+single token already does (deposit 100 new, withdraw 100 old, keep 100 counting this epoch). The
+account never has more power than the tokens it holds, and the withdrawn tokens stay locked until
+the next epoch, so nothing is counted twice. It also needs an allowed wrapper (none planned) and
+public curation on. Revisit if a wrapper is added; the governor is a beacon proxy.
+
+## A6-L-01 — A bribe posted before a failed launch can never be refunded (Low, Fixed 2026-10-14)
+
+`FundBribes.postBribe` (`src/funds/FundBribes.sol:55`) / `refundBribe` (`:88`). Round 1:
+execution-trace.
+
+`postBribe` does not check `launched`. If the launch fails, `flip` reverts `NotLaunched` forever,
+so no epoch is ever tallied and `nextEpochToTally` stays 0: `refundBribe` is `NotRefundable`
+(`epoch < 0`) and `claimBribe` is `EpochNotTallied`. The net bribe stays in `FundBribes` with no
+exit; the cut has already gone to the curators module.
+
+**Suggested fix:** revert `postBribe` (and `postListingBribe`) until `launched`, or refund when
+the launch status is Failed.
+
+**Fix (`6c6fb91`, 2026-10-14):** `postBribe` reverts `NotLaunched` until the fund has launched, so
+no bribe can predate a failed launch. Listing bribes need an open proposal, which cannot exist
+before governance starts. Test `test_postBribe_beforeLaunch_reverts`.
+
+## A6-L-03 — A mint at NAV after a 30-minute dump is charged at the TWAP pool reading (Low, Fixed 2026-10-14)
+
+`Fund._mintQuote` (`src/funds/Fund.sol:605`) and `_mintAmounts` (`:644`). Round 1:
+economic-security (finding at 65), invariant (lead).
+
+The mint mirror of A6-M-01. Since round 1 the pool-price mint uses the higher of spot and TWAP
+(`_poolMintPrice`, `:631`), so a dump can no longer lower the direct mint price. What is left:
+the in-kind amounts and the NAV for a mint at NAV still use `_poolAndSupplyAt`, which values
+the pool at the TWAP tick. Dump, wait 30 minutes, buy back, mint at NAV in the same block → the
+TWAP-valued pool USDG (which scales with √price) and supply are off in the minter's favour when
+`poolUsdgBps` is high. Round-1 model on $1M TVL: break-even at defaults (`poolUsdgBps` 1000, fee
+100 bps); profitable at `poolUsdgBps` 3000–5000 or fee 10 bps. A NAV mint is locked 180 days but
+can be redeemed at once through `FundStaking.redeem`.
+
+**Fix (`fbde008`, 2026-10-14):** closed by the A6-M-01 fix: a mint takes the higher pool USDG and
+the higher pool fund-token amount of the TWAP and spot readings.
+
+## A6-L-04 — Before seeding, every rebalance swap skips the daily volume cap (Low, Fixed 2026-10-14)
+
+`FundRebalance.rebalance` (`src/funds/libraries/FundRebalance.sol:64,100`), via `Fund.rebalance`
+(`src/funds/Fund.sol:330`). Round 1: trust-gap (PoC), invariant. Round 2: raised again by 4
+agent runs.
+
+`launching = !hook.isSeeded(fund)` exempts **all** swaps from `_trackVolume`, not only the
+intended USDG buys, and the manager may router-swap only in that window. Round-1 PoC: 40 round
+trips at 98.5% of oracle value in one block took `totalValue` from 80,000 to 35,256 (−56%).
+Round 2 framed it as theft: a manager contract finalizes and loops A → USDG → A swaps through a
+pool it owns; 20 legs at 2% keep 0.98^20 = 66.8% of the basket. Selling the USDG reserved for
+the pool also makes `FundLaunch.seedPool` revert `InsufficientPoolUsdg`, and `seedPool` is
+manager-or-admin only with no deadline, so the manager decides when the window ends.
+
+**Suggested fix:** track volume while launching too (keep only the buy-USDG allowance), or cap
+the total sold before seeding at a one-time launch allowance.
+
+**Fix (`6c6fb91`, 2026-10-14):** before seeding, a USDG buy is free of the daily cap only for the
+part that takes idle USDG up to the launch's `poolUsdg`; the rest of that buy and every other swap
+count toward the cap. Tests `test_launchRebalance_capAppliesBeyondPoolUsdg`,
+`test_launchRebalance_usdgBeyondPoolCounts`; `test_seedPool_shortOfUsdg_rebalanceSellsTokensFirst`
+still passes.
+
+## A6-L-05 — The auction rate rounds down, so some lots start at the floor price (Low, Fixed 2026-10-14, new 2026-10-13)
+
+`FundAuctions.openLot` (`src/funds/FundAuctions.sol:84-91`). Round 2: 2 leads in pass 1, a
+finding in pass 2.
+
+`rate = mulDiv(pSell · 10^dBuy, 1e18, pBuy · 10^dSell)` is an integer number of buy units per
+1e18 sell units. For a low-priced sell asset against a high-priced buy asset it keeps only a few
+digits. Example: sell an 18-decimal $0.0123 token for 8-decimal $100k WBTC: true rate 12.3 →
+12; start = floor(12 × 1.02) = 12; floor = ceil(12 × 0.97) = 12. The auction never descends: a
+filler takes the lot at once 2.4% under oracle value, and the `_checkValue` 3% bound passes. A
+true rate of 10.99 → 10 is 9% low, so every fill reverts and the lot never fills. Bounded by the
+3% floor check and the daily auction cap.
+
+**Suggested fix:** keep the rate at 1e36 scale, or compute the payment at fill time from both
+prices and decimals in one `mulDiv`.
+
+**Fix (`6c6fb91`, 2026-10-14):** lot prices are buy units per 1e36 sell units (`PRICE_SCALE`), so
+the start premium and floor discount keep their digits for any pair. Test
+`test_openLot_cheapForExpensiveKeepsPrecision` (the report's 12.3 example now starts at 12.546 and
+floors at 11.931).
+
+## A6-L-06 — The pool opens at the close price after the basket has moved (Low, Fixed 2026-10-14, new 2026-10-13)
+
+`FundLaunch.seedPool` (`src/funds/FundLaunch.sol:210-226`). Round 2 pass 2: two agents (leads,
+promoted).
+
+`finalize` fixes `poolUsdg` and `poolShares` so the pool opens at NAV (times `launchPremiumBps`)
+at the close. `seedPool` rescales them for supply changes only, never for value changes, and
+seeding waits for the manager's rebalance. If the basket rises before seeding, the pool opens
+below NAV and a buyer takes cheap pool tokens and redeems them at NAV, paid by holders through
+the fund's own position. Example: $10M raise, 10% pool, basket +20% before seeding → ~$7.4k
+gross from one trade; ~$50k at +50%. A6-M-02 makes the first redeem worse in the same block.
+
+**Suggested fix:** in `seedPool`, re-price the seed from the current NAV (keep the USDG, size the
+fund-token side at the current NAV), or refuse to seed when the close-time price is off current
+NAV by more than a tolerance.
+
+**Fix (`6c6fb91`, 2026-10-14):** `seedPool` keeps the USDG (scaled for redemptions) and sizes the
+fund tokens at the NAV at seeding times the launch premium, rounding down; it reverts
+`NavUnavailable` without a NAV price. Tests `test_seedPool_basketMovedSinceClose_opensAtCurrentNav`,
+`test_seedPool_noNavPrice_reverts`.
+
+## A6-L-07 — A tiny direct mint makes a boost that never ends (Low, Fixed 2026-10-14, new 2026-10-13)
+
+`FundStaking.stakeMinted` (`src/funds/FundStaking.sol:192`). Round 2: lead in pass 1, finding
+plus lead in pass 2.
+
+`usdPerSec += mulDiv(paymentUsd, boostSpeedBpsPerYear, BPS * YEAR)` rounds to 0 when
+`paymentUsd` is below ~4.2e7 wei-USD (at 7,500 bps), while `budgetUsd` is still above 0 at any
+premium. The boost then never pays and never ends: the budget stays in `reserveUsd` forever
+(keeping A6-M-12 live), and the receiver stays "boosted", so every transfer of its shares
+accrues first. That is the cheapest trigger for A6-H-03. Amounts are dust on their own.
+
+**Suggested fix:** in `stakeMinted`, revert (or skip the boost) when `budgetUsd != 0` and the
+added speed is 0.
+
+**Fix (`6c6fb91`, 2026-10-14):** Bhargav's pick, skip the boost: when a direct mint's boost speed
+rounds to zero, `stakeMinted` records no boost and burns its boost tokens into backing. Test
+`test_boost_tinyMintSkipsBoost`.
+
+## A6-L-08 — A replaced protocol curator keeps the protocol vote on open proposals (Low, Fixed 2026-10-14, new 2026-10-13)
+
+`ProposalBook._curatorVotes` (`src/funds/libraries/ProposalBook.sol:316`). Round 2 pass 2:
+access-control.
+
+The protocol branch checks only `msg.sender == cs[0]`, the protocol curator recorded when the
+proposal opened; other curators are checked live. After `FundFactory.setProtocolCurator(P2)`
+(for example because P's key leaked), P can still cast the protocol slice (0.3 × 33.33% ≈ 10% of
+the vote, half of the 20% quorum) on every open List or Delist proposal, and P2 casts nothing
+(it reverts `NoVotingPower` without escrow). Admin-triggered; the old key acts in the window.
+
+**Suggested fix:** give the protocol slice only when `msg.sender` is the live
+`protocolCurator()`.
+
+**Fix (`6c6fb91`, 2026-10-14):** the protocol slice goes to the live `protocolCurator()`; the
+snapshot's first entry (the protocol curator at the proposal) gets nothing unless it is still the
+protocol curator. Test `test_castVote_replacedProtocolCuratorVotesNothing`.
+
+## A6-L-09 — A mint at NAV has no input limit, so a trade just before it raises its cost (Low, Acknowledged 2026-10-15)
+
+`Fund.mint` (`src/funds/Fund.sol:236`) → `_mintQuote` (`:608`) → `_boundedPoolAndSupply(hook,
+true)` (`:834`). Round 3: 3 agents in pass 2.
+
+Since the A6-M-01 fix a mint reads the higher of the TWAP and spot pool amounts, so a same-block
+trade can only raise what a mint costs. For a mint at NAV `gross = navShares` whatever the pool
+reading, so `minSharesOut` always passes, and `mint` has no maximum input amounts; only the
+allowance limits the cost (`FundMintZap` approves its whole balance). The A6-M-01 fix note
+listed this as a residual; the agents sized it. Example: supply 1,000,000, the fund's position
+is the whole pool (70,000 tokens + 70,000 USDG). An attacker sells 70,000 tokens before a
+100,000-share NAV mint: the minter pays $108,140 for a $100,000 slice and gets the same 99,000
+shares. The attacker buys back (~$700 of fees) and, holding 300,000 tokens, nets ~$1,670; the
+rest goes to all holders. It needs transaction ordering on the sequencer. Without an attacker, a
+user who approved exactly the `previewMint` amounts gets a revert instead.
+
+**Suggested fix:** add per-asset and USDG maximum input amounts to `mint` and `zapMint`, and revert
+when a pulled amount is above its maximum.
+
+**Acknowledged (Bhargav, 2026-10-15), no contract change:** what a mint can pull is already
+capped by what the minter allows. The app must approve the `previewMint` amounts plus a small
+buffer (about 0.5%), never an unlimited allowance, for a direct `mint`, and send only the previewed
+amount plus the same buffer to `FundMintZap` (it spends only what it receives and refunds the
+rest). A front-run trade can then cost a minter at most that buffer; beyond it the mint reverts.
+
+Round 4 raised this again (6 agent runs, 5% to 11% in their examples). No change to the call above.
+
+## A6-L-10 — Split pushes let the keeper move a hub price about 35% an hour, not 30% (Low, Acknowledged 2026-10-15)
+
+`FundPriceHub._clamp` (`src/funds/FundPriceHub.sol:107`). Round 3: 2 agents in pass 1, 5 in
+pass 2. PoC run.
+
+The A6-M-13 fix bounds each push by `(1 + bound)` per whole hour and a **linear** share of it for
+the part hour, measured from the last push. Each push resets `updatedAt` and re-bases on the
+price it stored, so short pushes compound: pushes 1 s apart give `(1 + 0.3/3600)^3600 ≈ e^0.3`.
+PoC with `maxMoveBps = 3000`: 3,600 pushes one second apart move the price **1.3498x in one
+hour**, against 1.30x for one push. Over 24 hours that is ~1,336x against 1.3^24 ≈ 542x; falls
+compound the same way (0.741 an hour against 0.769). The interface says repeated pushes gain
+nothing; that holds only inside one block. Keeper-only, so it weakens the limit on a compromised
+keeper rather than opening an attack.
+
+**Suggested fix:** measure the bound from a stored anchor price and time (for example the price
+at the start of the hour), or use a per-second compounding factor for the part hour, so many
+short pushes allow no more than one long one.
+
+**Acknowledged (Bhargav, 2026-10-15), no contract change:** frequent pushes compound to about
+e^(setting) an hour (a 5-minute cadence already reaches ~34.5% at 30%), and only the keeper can
+push. For a true 30% an hour the admin sets `maxMoveBps` to about 2600 (e^0.26 ≈ 1.297).
+
+## A6-L-11 — A sell, `issue` and buy-back resets the issuance anchor and mints a pot from holders (Low, Acknowledged 2026-10-16)
+
+`FundVenue.issue` (`src/funds/FundVenue.sol:185`, anchor reset at `:200`). Round 4: 2 agents in
+pass 1. PoC run. This is the report-6 lead "a buy above NAV and a sell back fund the pot",
+traced through the new venue.
+
+`issue` is permissionless. When spot is below the anchor it issues nothing and moves the anchor
+down to spot. A trader sells to push spot down, calls `issue`, then buys back. The next `issue`
+measures the whole rise from the lowered anchor as demand, sells new tokens into the pool, and
+mints the pot on `usdgIn − issued × NAV`. Much of that USDG came from the fund's own position,
+not from an outside buyer, and the position is valued at the oracle price, not at its reserves.
+
+PoC (FundPremiumTest setup): sell 2,200 tokens (spot 1.442 → 1.136), `issue` returns 0 and resets
+the anchor, buy back 2,200 (spot 1.443), `issue` sells 328.3 tokens for 464 USDG and mints a pot
+of 67.46 tokens (~$74.8 at NAV 1.1095). NAV with the position at its real reserves falls 0.059%
+(1.109467 → 1.108810) while the oracle-view NAV rises to 1.109688. The round trip costs the
+trader ~$12 plus ~$55 of Hookr tax (1.05% a way), so it pays only a trader who holds most of the
+staked supply that the pot goes to.
+
+**Suggested fix:** count as premium only the part of `usdgIn` that outside liquidity paid (scale
+by `(activeLiquidity − positionLiquidity) / activeLiquidity`), or do not move the anchor down to a
+spot price inside the call.
+
+**Acknowledged (Bhargav, 2026-10-16), no contract change:** re-run on the current code with
+Hookr's 1.05% tax each way (`audits/poc-2026-10-16/WashSweep.t.sol` in the project files). At a
+1.3x premium the wash loses money at every size even with all the stake ($71 of costs for a $75
+pot). At 2.76x it pays once the trader holds about 24% of the stake ($152 of costs for a $1,024
+pot), and as griefing $1 moves about $7 from unstaked holders to stakers. Bhargav's call: short-term
+activity that moves value to long-term stakers is intended, and a quarter of the stake is unlikely
+once a fund grows.
+
+## A6-L-12 — A stake added in the proposal epoch is left out of the vote total, so less stake reaches quorum (Low, Acknowledged 2026-10-16)
+
+`ProposalBook.propose` (`src/funds/libraries/ProposalBook.sol:45`, totals at `:60`). Round 4:
+2 agents in pass 2. This is the report-6 lead "propose measures next-epoch power against
+current-epoch supply", now traced.
+
+`propose` sets `totalStake = max(totalSupplyAt(e), totalPower(e), totalPower(e+1))`. Since the
+A6-M-18 fix a stake made in epoch `e` is recorded only from `e+1`, but the voter's power is read
+at `e+1`. Example: 100,000 staked at the start of `e`, little of it escrowed. A holder stakes and
+escrows 20,000 in `e` and proposes AddCurator: its vote is 20,000 / 100,000 = 20%, the curator
+quorum, with 16.7% of the real stake. For List and Delist (stakers 70%, quorum 20%), 29,000 passes
+with 22.5% of the stake where 28.6% is needed. Public curation only; the Own veto still applies.
+
+**Suggested fix:** include `totalSupplyAt(e+1)` in `totalStake`, so the stake added in the current
+epoch is in the total.
+
+**Acknowledged (Bhargav, 2026-10-16), no contract change:** only matters with public curation on,
+which every fund starts with off. The suggested fix (adding `totalSupplyAt(e+1)`) would undo the
+`faa45a6` fix that stops a holder staking just before a proposal, without voting, to block
+quorum. The alternatives (proposal votes from stake escrowed before the proposal's epoch, or
+adding this epoch's new escrow to the total) each trade one inaccuracy for another. Revisit
+before a fund turns public curation on (new `ProposalBook` and `upgradeModule`).
+
+## A6-L-13 — A change to the compliant curators shares out income earned before the change (Low, Acknowledged 2026-10-16)
+
+`FundCurators._distributeAll` (`src/funds/FundCurators.sol:405`), called by `addCurator`,
+`removeCurator`, `replaceCurator` and `checkCompliance`. Round 4: 1 agent in pass 1 (lead),
+2 in pass 2.
+
+`_distributeAll` shares out only what the module already holds. It does not run
+`FundStaking.accrue` (the curators' 15% yield cut) or `FundVenue.collectTax` (Hookr tax waiting in
+the Directional Tax queues) first, so income earned under the old set is shared by the new set.
+The NatSpec says income goes to the curators that were compliant when it came in. Example: a
+curator calls `flip`, which makes another curator non-compliant, then calls `payCreator` in the
+same transaction: a week of queued tax (9,000) is split only among the remaining curators, and
+the removed curator loses its 2,000. A 3-day accrual gap on 1,000,000 staked at 24% leaves ~296
+unminted curator tokens, ~99 of which move. The hourly accrual and daily `collectTax` keepers
+keep the gap small.
+
+**Suggested fix:** at the start of `_distributeAll`, call `accrue()` on staking and
+`collectTax()` on the venue (in a `try`), so income earned before the change is shared first.
+
+**Acknowledged (Bhargav, 2026-10-16), no contract change:** the hourly `accrue` and daily
+`collectTax` keepers keep what moves to about a day of income.
+
+---
+
+## A6-L-14 — The curator vote slice is divided by every seat but paid only to compliant seats (Low, Acknowledged 2026-10-16)
+
+`FundCurators.voteShares` (`src/funds/FundCurators.sol:217`, divisors at `:236`–`:237`). Round 5:
+2 agents. Traced against the source.
+
+`voteShares` returns, per curator seat, a base share and a silent-staker share of the vote:
+
+```solidity
+uint256 n = _curators.length;      // every curator seat
+uint256 m = _compliantCount;       // compliant seats only
+...
+    if (!_state[c].compliant) continue;
+    baseBps[i + 1] = (BPS - protocolShare) / n;
+    silentBps[i + 1] = (BPS - protocolShare) / m;
+```
+
+`baseBps` divides the curator slice by `n` (all seats) but only compliant seats receive it, while
+`silentBps` divides by `m` (compliant seats). When a curator is non-compliant (`n > m`), the
+compliant curators together cast `m · (BPS - protocolShare) / n`, which is less than the full
+curator slice; the uncast `(n - m) / n` of it is cast by nobody and `GaugeMath` treats it as
+status-quo weight. The governor's sum-of-votes stays at or below `WAD`, so this is a governance
+weight inaccuracy, not over-counting or fund loss. `bribeSplit` divides the same base by the
+compliant count `m`, so the `n`-vs-`m` treatment is also internally inconsistent. It may be an
+intended per-seat forfeit; the inconsistency is a maintainer decision.
+
+**Suggested fix:** if compliant curators should split the base slice, divide `baseBps` by
+`_compliantCount` (`m`) to match `silentBps` and `bribeSplit`; otherwise document the per-seat
+intent.
+
+**Acknowledged (Bhargav, 2026-10-16), no contract change:** a non-compliant seat's base slice is
+left uncast. Only matters with public curation on.
+
+## A6-L-15 — The keeper price clamp stops bounding the move after a long push gap (Low, Acknowledged 2026-10-16)
+
+`FundPriceHub._clamp` (`src/funds/FundPriceHub.sol:107`, early return at `:109`; `_hourly` at `:119`,
+`MAX_FACTOR` at `:17`). Round 5: 2 agents. Traced against the source. Keeper-trust / defense in depth.
+
+`_clamp` holds a pushed price within a per-hour move of the previous one, compounding the allowed
+factor over the elapsed hours. `_hourly` saturates at `MAX_FACTOR = 1e36`, and `_clamp` returns the
+raw pushed price once the factor reaches it:
+
+```solidity
+if (factor >= MAX_FACTOR) return price;   // bound removed
+```
+
+With `maxMoveBps` around 3000 (30%/h), the factor reaches `MAX_FACTOR` after about 158 hours
+(~6.6 days). So if an asset is not pushed for roughly a week — a plausible gap for a stock token
+over a long market close — the next push is accepted with no move bound, which removes the clamp
+that was added for A6-M-13. The keeper is `onlyKeeper`, so this matters only when the keeper is late
+or compromised; it is not an external-attacker path.
+
+**Suggested fix:** cap the elapsed window the clamp compounds over, so the per-push move bound never
+fully disables, or require a fresh baseline (e.g. an admin re-seed) before accepting a push after a
+gap longer than the window.
+
+**Acknowledged (Bhargav, 2026-10-16), no contract change:** at 30% an hour the compounded bound
+is already about 540x after a day without a push, so the clamp only bites on pushes hours apart;
+capping the window adds no real protection. A tighter bound against a compromised keeper would
+need a different design (a fixed maximum move per push).
+
+## A6-L-16 — The Chainlink price branch returns a zero price when a feed has more than 18 decimals (Low, Fixed 2026-10-16)
+
+`FundOracle.price` (`src/funds/FundOracle.sol:90`–`:92`; `tryPrice` at `:105`–`:108`; `_normalise`
+at `:174`). Round 5: 1 agent. Traced against the source. Needs an admin feed with more than 18
+decimals.
+
+The aggregator branch rejects a non-positive answer and then returns the normalised value with no
+zero check:
+
+```solidity
+if (answer <= 0) revert InvalidPrice(asset);
+return _normalise(uint256(answer), feed.decimals);
+```
+
+`_normalise` divides by `10 ** (dec - 18)` when `dec > 18`, so a small positive answer can floor to
+zero and `price` returns 0. The in-house verifier branch guards this (`if (value == 0) revert
+InvalidPrice(asset);`), so the two branches are inconsistent. A zero price undervalues a basket
+asset in mint and redeem maths. Feed decimals are admin-set via `setFeed` and real Chainlink feeds
+use 8 or 18, so this is a defensive gap rather than a live exploit.
+
+**Suggested fix:** reject a normalised zero in the aggregator branch too, matching the verifier
+branch (`if (p == 0) revert InvalidPrice(asset);`).
+
+**Fixed in `0ae9bf5`:** the aggregator branch of `price` reverts `InvalidPrice` on a normalised
+zero, and `tryPrice` returns `(false, 0)`, matching the verifier branch. Regression test:
+`FundOracleTest.test_price_normalisesToZero_reverts`.
+
+## Leads (not scored — trails for manual review)
+
+Carried from round 1 and still present at `9fe95f7` unless marked *new*. Re-checked at `68aef25`
+in round 3: all still present except the two now booked as A6-M-17 and A6-M-18. Round 4 at `aff2e91`:
+the two booked as A6-L-11 and A6-L-12 and the three on removed code are marked; the leads marked
+*new, round 4* are from the new venue and the code around it.
+
+- **Unstake + restake in one epoch lowers the recorded supply** — `FundStaking._recordSupply`.
+  Booked as A6-M-18 in round 3.
+- ***New:* a burn of old shares keeps its weight in the epoch supply** —
+  `FundStaking._recordSupply`. After a mint of X in the epoch, burning Y ≤ X old shares leaves the
+  record unchanged, so voting stakers get a smaller share of the tally. No attacker profit shown.
+- **One curator's slice is 20.001%, enough for the 20% quorum alone** —
+  `ProposalBook._curatorVotes`. With defaults (30% slice, protocol share 33.33%) a single
+  non-protocol curator can list or delist without staker support; only a staker "no" above 20% or
+  the veto stops it. Intent not confirmed.
+- **One wei of bribe-locked votes takes the whole bribe and blocks its refund** —
+  `FundBribes.claimBribe` / `refundBribe` / `claimListingBribe`. Refund needs zero bribe votes;
+  `_share` has no minimum. Raised again in round 2.
+- **After a governor swap, old escrow stops counting** — `FundStaking._update` / `_held`. Booked
+  as A6-M-17 in round 3.
+- ***New:* after a governor swap, every curator shows zero stake** —
+  `FundCurators.checkCompliance` reads the new governor, whose first flip re-tallies the last
+  epoch, so all curators can lose compliance and the protocol curator takes all income.
+- **After a governor swap, voters cannot claim epochs the old governor tallied** —
+  `FundBribes.claimBribe`. Same root as A6-M-08.
+- **Uncollected LP fees are left out of NAV and counted in supply** — `Fund._poolAndSupplyAt` /
+  `FundHook.positionAmounts`. Mint at NAV → `collectLpFees` → `FundStaking.redeem` in one block.
+  At a 0.3% LP fee the gap was ~0.3% of NAV after 10 idle days, below the 2% fees.
+- **Propose measures next-epoch power against current-epoch supply** — `ProposalBook.propose`:
+  stake + escrow + propose in one epoch votes against a denominator without that stake, so
+  quorum is reached with less. Raised again in round 2. Booked as A6-L-12 in round 4.
+- **Stale basket feed through the grace period turns a successful raise into a refund** —
+  `FundLaunch.markFailed`; `finalize` uses the hard `price()` for every launch asset.
+- **Anyone picks the moment that fixes every launch close price** — `FundLaunch.finalize`, now
+  callable at any time from `endTime` to `finalizeDeadline` (since the A6-H-01 fix), and early
+  once the target is met. A depositor closes at its asset's peak, or a caller forces Failed near
+  `minRaiseUsd`. Raised by 3 agents in round 2.
+- **Launch pays recorded amounts** — `FundLaunch.refund` / `finalize`; a balance-lowering stock
+  token blocks finalize and the last refunds.
+- **Delisted token keeps its weight when every other token is under the minimum vote** —
+  `GaugeMath.targets`; the `total == 0` fallback ignores `delisted`. Round 3 traced it: with
+  weights 9,750 / 150 / 100 and the 2% minimum, a passed Delist of the large token changes nothing
+  until a voter puts 2% on another token. Public curation only.
+- **Remainder rounding can hold a target-zero token at 1 bps** — `GaugeMath.move`; with all
+  remainders 0 the leftover goes to index 0. Delays `_drop`.
+- **`previewRedeem` overstates USDG when spot < TWAP** — integrators that copy it into
+  `minUsdgOut` get reverts. No loss. Raised again in round 2.
+- **Lowering spot before someone's redeem moves value to other holders** —
+  `FundHook.redeemPosition` (removal at spot, pay at `min(spot, TWAP cap)`). Profit not shown.
+- **An extreme tick held across one second moves the 30-minute TWAP by ~5%** —
+  `FundHook._observe`; feeds `premiumBps` (A6-M-06) and `_poolAndSupplyAt` (A6-M-01). Code removed in `ebdf14f`.
+- **`zapMint` accepts USDG / basket tokens as routers** — `FundMintZap.zapMint` only rejects
+  `router == fund`, unlike the redeem zap and rebalance; if the admin ever allows such a router,
+  anyone spends other users' allowances to the zap.
+- **`claimable` omits an unlocked vest of a non-compliant curator** — `FundCurators.claimable`
+  view shows less than `claim` pays. Raised again in round 2.
+- **Admin setters that apply retroactively** — `setProtocolCuratorShare` splits income that
+  arrived before it (round 2 also: `setProtocolCurator` hands unclaimed `_protocolOwed` to the
+  new address); `FundFactory.setMaxYieldRate` prices up to 8 h of yield earned before it;
+  `FundGovernor.setWrapper` removal leaves deposited wrapper power in votes, bribes and
+  compliance. Admin-only.
+- ***New:* the mint pause does not stop pool issuance** — `Fund.hookIssue` /
+  `FundHook.beforeSwap` never read `mintPaused`, so pool buys keep minting fund tokens and adding
+  to the pot during a pause, at whatever NAV the oracle shows. Intent not confirmed.
+- ***New:* each issuance buy restarts the pot drip for the whole pot** — `FundStaking.addPot`.
+  Documented ("each top-up re-spreads what is left"), but dust buys can keep delaying the pot.
+- ***New:* the TWAP feed always reports the current block as `updatedAt`** —
+  `FundTwapFeed.latestRoundData`; `consult` accepts a checkpoint of any age, so the oracle's
+  staleness bound never rejects an old pool price after days without swaps. No gain shown. Code removed in `ebdf14f`.
+- ***New:* a new NAV mint joins an expiring lock and unlocks in days** —
+  `FundStaking._joinMintLock`. 10M NAV-locked shares with 1 h left plus a 1M NAV mint unlock
+  together in ~16 days, not 180. Profit after fees not computed.
+- ***New:* the speed of a finished boost pays later boost budgets** — `FundStaking.stakeMinted`
+  keeps one `usdPerSec` per account, so a large earlier mint pays a later budget ~10x faster.
+  The reserve already holds the budget, so no holder loss was found.
+- ***New:* the holder picks the NAV at which a boost turns into tokens** —
+  `FundStaking._settleBoost` is permissionless and converts at the NAV of the call. Gain not sized.
+- ***New:* a buy above NAV and a sell back fund the pot from holders** — `PoolIssuance.issue`:
+  75% of the issued premium goes to the reserve, while the fund's position buys the tokens back
+  near spot. Net gain after fees not simulated. Booked as A6-L-11 in round 4.
+- ***New:* a stale price moves part of the reserve to a minter or redeemer** —
+  `Fund._mintQuote` / `_claim` scale the slice by `(T − R) / T` at oracle prices. Below the 2%
+  round-trip fees in the numbers tried; grows with the reserve share.
+- ***New:* redeem burns shares and pays zero when the reserve exceeds the value** —
+  `Fund.redeem`: `_claim` returns 0 when `total <= reserveUsd`; a caller with no minimums loses
+  the shares.
+- ***New:* redeem sends basket tokens before it reduces the pool position** — `Fund.redeem`; a
+  token transfer callback would read NAV with the full `poolUsdg` against a smaller supply. No
+  basket token with a callback found.
+- ***New:* mint at NAV works between finalize and `seedPool`** — `Fund.mint`; `IFundLaunch` says
+  nobody can mint until the pool is seeded. No loss found.
+- ***New:* lots open in any direction and the manager fills at the floor** —
+  `FundAuctions.openLot` does not check lots against target weights; ~0.3% of the basket a day
+  could leave within the daily cap. Manager trust model not confirmed.
+- ***New:* exact-output swaps pay the fund fee on the net USDG amount** — `FundHook.beforeSwap` /
+  `afterSwap`: the effective rate is f/(1+f), so at the 1% default a trader saves ~1% of the fee. Code removed in `ebdf14f`.
+- ***New:* several missed epochs tally in one block** — `FundGovernor.flip`; each call moves
+  weights by the weekly shift, so after four missed weeks they move 2,000 bps at once.
+- ***New:* every flip reverts if a kept basket asset loses its feed** — `FundRebalance.setBasket`
+  needs `hasFeed` for every asset, not only new ones. Admin-triggered.
+- ***New, round 3:* the first premium reading, and the two readings at the ends of a quiet
+  stretch, price the whole stretch** — `FundStaking._accrue`. The first reading after launch has
+  no earlier rate to bound it and pays everything since `finalize`; later stretches pay at
+  `min` of only two 30-minute TWAP readings, so a staker who holds the pool price up at both
+  `accrue` calls gets the top tier between them. Raised by 8 agent runs; the cost of the TWAP
+  pushes was not set against the gain, and the hourly keeper accrual (not built yet) limits it.
+- ***New, round 3:* one wei of an unpriced basket token stops mints, seeding and auctions** —
+  `Fund._basketValue` (also `FundLaunch._closeValues` for a 1-wei launch deposit). Only zero
+  balances are skipped; listing checks `hasFeed`, and a hub `FundPriceFeed` answers 0 until its
+  first push. A 1-wei donation then reverts mint, `seedPool`, `fill` and `rebalance`, stops
+  issuance and holds the accrual clock (feeding A6-M-15), and the token cannot be dropped
+  (`AssetHasBalance`). Raised by 5 agent runs; how long a listed token stays unpriced is open.
+- ***New, round 3:* one paused launch token blocks a depositor's whole refund** —
+  `FundLaunch.refund` sends every launch asset in one loop with no skip. Not tested against the
+  real Robinhood stock tokens.
+- ***New, round 3:* two flips in one transaction remove a curator's grace week** —
+  `FundCurators.checkCompliance`. After a missed flip anyone tallies the backlog twice in one
+  transaction, so a curator below the minimum fails twice at the same NAV.
+- ***New, round 3:* released pot tokens earn yield for time before they dripped** —
+  `FundStaking._accrue` releases the pot before it reads `staked`. About 16 tokens a day on a
+  100,000-token daily drip.
+- ***New, round 3:* a premium mint makes staking read a low premium mid-mint** — `Fund.mint` →
+  `stakeMinted` accrues after the deposit and the new shares, so NAV reads high and the stretch
+  (and `_lastRate`) is priced at a lower tier. No minter gain found.
+- ***New, round 3:* the hook issues tokens below backing when an oracle price lags a rise** —
+  `PoolIssuance.issue` uses `tryNav` at oracle prices; when an oracle trails the market (hub
+  prices clamped per hour), spot can sit above oracle NAV but below the in-kind redeem value.
+  Usual lag not measured.
+- ***New, round 3:* a keeper that also manages the fund can sell through a lot at a price it
+  lowered** — `FundAuctions.fill` and the lot rate read the hub price the keeper pushes. Needs
+  both roles on one key.
+- ***New, round 3:* the manager decides when the pool is seeded** — `Fund.rebalance` /
+  `FundLaunch.seedPool`: no deadline, so the manager keeps the pre-seed router path (2% loss
+  bound) open as long as it likes.
+- ***New, round 3:* wrapper voting power is fixed at deposit** — `FundGovernor.deposit` stores
+  `convertToAssets` once, so a later fall in the wrapper rate leaves power no stake backs. No
+  allowed wrapper whose rate falls was found.
+- ***New, round 3:* removed curators still count in the proposal vote divisor** —
+  `ProposalBook._curatorVotes` divides by the snapshot size, so the shares of removed or
+  non-compliant curators are lost rather than split among compliant ones. No fund loss.
+- ***New, round 3:* votes for a dropped token become curator votes** — `FundGovernor._castVotes`
+  sums only over `f.assets()`, so stakers still voting for a dropped token lose those votes to
+  the silent share.
+- ***New, round 3:* locked voters claim a bribe for a token that left the basket** —
+  `FundBribes.claimBribe`: carried-over allocations keep `_bribeVotes` above 0 after `_drop`,
+  so the briber cannot refund. How often a dropped token keeps bribe votes was not checked.
+- ***New, round 4:* a narrow outside position changes how much `issue` sells** —
+  `PoolIssuance.target` / `FundVenue.issue` treat the liquidity at the current tick as constant
+  down to the target, so a narrow LP range near spot stops the sale early (the anchor reset then
+  drops what stays due) or lets it run to the hourly cap. Raised by 5 agent runs; no LP profit
+  shown.
+- ***New, round 4:* the venue can sell new tokens below NAV after the sell tax** —
+  `FundVenue.issue`: the sale starts at NAV × 1.01 by default and pays Hookr's sell tax (up to
+  10%), and nothing ties `issuanceStartBps` to the tax. Loss not sized.
+- ***New, round 4:* `issue` values the position at the last fund price, however old** —
+  `FundVenue._reference` reads `lastPrice` with no age limit for the pot and the issuance start.
+- ***New, round 4:* someone can open the fund's Hookr pool before the venue** —
+  `FundVenue.seedPool`: the pool key is fixed by the root, USDG and the settings, so a pool opened
+  first makes `seedPool` revert. Not checked whether Hookr lets a non-owner launch the token.
+- ***New, round 4:* a Hookr withdraw or a USDG pause blocks every redeem** — `Fund._redeem`: the
+  A6-M-07 skip list covers basket tokens, not the pool leg or USDG. Hookr and USDG pause powers
+  not checked.
+- ***New, round 4:* `collectTax` and `lastPrice` call addresses without a code check** —
+  `FundVenue.collectTax` (a queue with no code fails both queues) and `FundOracle.lastPrice` (a
+  verifier with no code reverts every redeem through `_reference`). Misconfiguration only.
+- ***New, round 4:* a clamped hub price is marked fresh** — `FundPriceHub.pushPrices` sets
+  `updatedAt` to now on a clamped push, so after a crash in a hub-priced asset `FundAuctions.fill`
+  passes its value check at a price the hub knows is wrong. The daily cap limits it; not sized.
+- ***New, round 4:* a spot lift turns a locked direct mint into an unlocked capped mint** —
+  `Fund._poolMintPrice` uses `max(oracle, spot)`, so with a negative `mintAdjustmentBps` a caller
+  lifts spot, mints unlocked at the cap and sells into the pool. No profit at zero or above.
+- ***New, round 4:* mint at NAV adds the pool share as idle USDG, redeem takes it from the
+  pool** — `Fund.mint` / `_redeem`: mint-and-redeem cycles move value out of the pool position.
+  No profit shown.
+- ***New, round 4:* the old and the new protocol curator both cast the protocol slice** —
+  `ProposalBook._curatorVotes` reads the protocol curator live and keys `voted` by address, so
+  rotating it while a proposal is open counts the slice twice. Residual of the A6-L-08 fix;
+  admin-triggered.
+- ***New, round 4:* a flip while a price is stale gives no compliance verdict** —
+  `FundCurators.checkCompliance`: a curator below the minimum calls `flip` while a basket price is
+  stale and stays compliant for that epoch.
+- ***New, round 4:* `createFund` skips the eligible-asset list** — `FundFactory.createFund` →
+  `setBasket` checks only `hasFeed`, while `curate` and a List proposal check `isEligibleAsset`.
+  No loss found.
+- ***New, round 5:* the auction credits the buy asset before it removes the sold asset** —
+  `FundAuctions.fill` pulls the payment into the fund before `auctionPayout` sends the sold asset,
+  and holds only the FundAuctions guard while `Fund.redeem` is guarded on a different contract, so
+  a buy asset that calls back on transfer can reenter `Fund.redeem` while the fund holds both
+  assets and over-pay the redeemer. Two agents. No basket or eligible token with a post-credit
+  sender callback was found in scope, so the window is unproven; worth excluding callback/ERC777
+  tokens from baskets, or sharing one reentrancy guard across `Fund` and `FundAuctions`.
+- ***New, round 5:* an attacker front-runs an admin add with a spot move** —
+  `FundVenue._checkedSpot`. `increasePosition` and `migrate` revert `PriceOffReference` when spot is
+  more than ~1% off the oracle reference; an attacker pushes spot past that to make the admin call
+  revert, then recovers. Only blocks admin adds; `withdrawPosition` is not gated, so funds are never
+  trapped, and sustaining the gap against arbitrage has an unproven cost.
+- ***New, round 5:* an understated fund-token oracle price blocks every mint and redeem** —
+  `FundVenue.positionAmounts` values the position at `_reference()` (the oracle fund price, however
+  old), and `Fund._supplyOutside` floors supply to 0 when reported pool tokens exceed supply, so
+  `navPerShare` is 0 and `_mintQuote`/`_redeemQuote` revert until the price is corrected. Gated on a
+  keeper/oracle misconfiguration; a liveness impact, not fund loss.
+- ***New, round 5:* a zero-density first step divides by zero** — `PoolIssuance._solve`. `stepsValid`
+  permits `densityBps == 0` (so `c == 0`) and `_solve` divides by `a / q + c`, which reaches zero for
+  a low-liquidity pool, reverting `issue`. Non-default admin config, blocks only the keeper, moves no
+  funds.
+- ***New, round 5:* an extreme seed price reverts the position math at a tick bound** —
+  `FullRangeLiquidity.liquidityForAmounts` divides by `sqrtUpper - sqrtPrice` and by `sqrtPrice`,
+  which revert when the price sits exactly on a usable-tick bound, so an extreme admin/manager seed
+  price makes `_open` revert. A revert of one operation, not fund loss.
+- ***New, round 5:* a fee-on-transfer launch asset leaves the fund short** — `FundLaunch.finalize`
+  sends the recorded `totalDeposited[a]` to the fund and sizes shares from `raised` without
+  re-measuring the transfer, so a fee-on-transfer launch asset makes the fund hold less than the
+  minted shares assume. Basket assets carry oracle feeds and fee-on-transfer tokens are not expected
+  in a curated basket.
+- ***New, round 5:* anyone settles another depositor into staked locked shares** —
+  `FundLaunch.distribute` is permissionless and calls `_settle(..., stake=true)` for any account
+  rather than letting them pick `claim(false)` for launch-locked fund tokens. Both outcomes lock the
+  tokens and the shares stay the depositor's, so it is minor griefing.
+- ***New, round 5:* a launch depositor redeems launch-locked staked shares before the lock ends** —
+  `Fund.redeem`. `Fund._update` and `FundStaking._update` block transfer and unstake of locked shares
+  but allow burn, and `FundStaking.redeem` has no lock check. The exit returns basket assets at NAV
+  (no liquid fund tokens to dump) and affects only the redeemer, so it appears to be the sanctioned
+  NAV-neutral exit rather than a bug.
+
+## Attacked and held (round 1, re-confirmed where later rounds touched the same code)
+
+- Fund mint/redeem rounding: ceil on deposit, floor on payout; minted fund tokens never exceed
+  `navShares`; `RedeemTooLarge` holds.
+- In-block TWAP manipulation: the accumulator adds the current tick for 0 seconds in the same
+  block; the `usdgCap` plus burning pool tokens at spot leaves no same-block profit.
+- Seeding after pre-seed redeems: the USDG reduction telescopes exactly.
+- `GaugeMath`: weights never sum above 10,000, so `BPS − sum` cannot underflow; each token gets
+  at most one remainder point.
+- Vote, bribe and listing-bribe aggregates: `_bribeVotes` equals the sum of
+  `floor(power × bps / BPS)`; claims never exceed the bribe.
+- `FundCurators`: epoch-boundary vesting and the reentrant `_forfeit` → unstake → `notifyYield`
+  ordering (but not the same callback inside `claim`, A6-H-03).
+- `FundStaking`: virtual-share offsets, curator-cut pricing in `_accrue`, curator and LP yield
+  accounting.
+- `EpochHistory` set/valueAt ordering; `requestWithdrawal` keeps `next ≥ active`.
+- `FullRangeLiquidity` seed amounts never exceed what is provided; `FundHook` fee signs, signed
+  tick rounding and `PositionInfo` offsets.
+- `FundTwapFeed` / `FundOracle` decimal scaling and overflow bounds; `HookMiner` flag mask.
+- Round 2, periphery: `LpPositions`, `PoolIssuance`, `FundPriceFeed`, the zaps and the deploy
+  scripts showed no provable defect beyond the items above.
+- Round 3: mint and redeem rounding with the bounded pool readings (max for mint, min for
+  redeem), PoolIssuance split and pot pricing (never below NAV at oracle prices), the TWAP ring
+  and same-timestamp blocks, FundHook deltas and fee signs, the NAV-lock "leaves only at NAV"
+  rule while the governor stays the same, `_joinMintLock` weighting, vote / bribe / power
+  aggregates, `GaugeMath` sums, curator vesting and `_forfeit` reentrancy, lot pricing, zap
+  approvals, initializers and upgrade gates, and every downcast traced.
+- Round 4: governor and bribe tallies, curator income and vesting, staking locks and boosts, the
+  zaps, auctions, price hub, launch points and gauge math held; `withdrawPosition` without a spot
+  check costs a sandwicher (~0.0125·L) rather than holders.
