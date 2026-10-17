@@ -33,3 +33,5 @@ Thumbs.db
 .claude/*
 !.claude/commands/
 !.claude/settings.json
+# Chainlink CCIP bytecode (tools/fetch-ccip-bytecode.sh)
+ccip-bytecode/

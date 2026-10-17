@@ -7,6 +7,8 @@ evm_version = "cancun"
 optimizer = true
 optimizer_runs = 200
 via_ir = false
+# Chainlink CCIP pool bytecode for script/ccip (tools/fetch-ccip-bytecode.sh)
+fs_permissions = [{ access = "read", path = "./ccip-bytecode" }]
 
 # Remappings
 remappings = [
