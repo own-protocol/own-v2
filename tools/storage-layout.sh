@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Storage-layout guard for upgradeable (UUPS) contracts.
 #
+# Fund modules are BeaconProxies behind FundFactory's beacons, so the same rules apply to them.
+#
 # Each vault binds its own BorrowManager proxy, so implementations are upgraded per vault and a
 # layout change that is harmless in one deployment can silently corrupt another. This snapshots the
 # layout of every contract listed below and fails CI when it changes.
@@ -12,7 +14,7 @@
 # remove. Re-run with --update and review the diff in the PR when you do append.
 set -euo pipefail
 
-CONTRACTS=(BorrowManager OwnMarket EUSDManager StakedEUSD MoneyFeeCollector OwnStakingV2 OwnStakeZap)
+CONTRACTS=(BorrowManager OwnMarket EUSDManager StakedEUSD MoneyFeeCollector OwnStakingV2 OwnStakeZap FundFactory Fund FundLaunch FundStaking FundGovernor FundCurators FundBribes FundVenue)
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SNAP_DIR="$DIR/storage-layout"
 MODE="${1:-check}"

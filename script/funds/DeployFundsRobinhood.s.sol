@@ -74,7 +74,7 @@ contract DeployFundsRobinhood is Script {
     uint16 constant AUCTION_START_PREMIUM_BPS = 200;
     uint16 constant AUCTION_FLOOR_DISCOUNT_BPS = 300;
     uint32 constant AUCTION_DURATION = 4 hours;
-    uint16 constant HUB_MAX_MOVE_BPS = 3000;
+    uint16 constant HUB_MAX_MOVE_BPS = 2600;
 
     // Set by _deployPeripherals for _wiring; a local would push run() past the stack limit.
     address internal _mintZap;
