@@ -88,7 +88,7 @@ contract DeployFundsRobinhood is Script {
     address internal _mintZap;
     address internal _swapAdapter;
 
-    function run() external {
+    function run() external virtual {
         require(block.chainid == ROBINHOOD_CHAIN_ID, "RPC is not Robinhood Chain (4663)");
         require(POOL_MANAGER.code.length > 0, "no v4 PoolManager");
         require(POSITION_MANAGER.code.length > 0, "no v4 PositionManager");

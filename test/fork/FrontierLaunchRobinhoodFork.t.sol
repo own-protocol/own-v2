@@ -2,6 +2,7 @@
 pragma solidity 0.8.28;
 
 import {DeployFundsRobinhood} from "../../script/funds/DeployFundsRobinhood.s.sol";
+import {FrontierFundBatches} from "../../script/funds/FrontierFundBatches.s.sol";
 import {Fund} from "../../src/funds/Fund.sol";
 
 import {FundAuctions} from "../../src/funds/FundAuctions.sol";
@@ -85,16 +86,49 @@ interface IVerifierFL {
 
 /// @dev Exposes the deploy script's wiring so the test replays exactly what it prints for the Safe.
 contract DeployFundsHarness is DeployFundsRobinhood {
-    function wiringCalls(address auctions, address money) external view returns (bytes[] memory) {
-        return _wiring(auctions, money);
-    }
-
     function mintZap() external view returns (address) {
         return _mintZap;
     }
 
     function swapAdapter() external view returns (address) {
         return _swapAdapter;
+    }
+}
+
+/// @dev Exposes the Safe batches FrontierFundBatches writes, so the test executes exactly those calls.
+contract FrontierBatchesHarness is FrontierFundBatches {
+    function setupCalls(
+        Deployment memory d
+    ) external returns (Call[] memory) {
+        return _setupCalls(d);
+    }
+
+    function createFundCalls(
+        Deployment memory d
+    ) external pure returns (Call[] memory) {
+        return _createFundCalls(d);
+    }
+
+    function beforeCloseCalls(Deployment memory d, address fund) external view returns (Call[] memory) {
+        return _beforeCloseCalls(d, fund);
+    }
+
+    function afterLaunchWeekCalls(
+        Deployment memory d
+    ) external pure returns (Call[] memory) {
+        return _afterLaunchWeekCalls(d);
+    }
+
+    function checkDeployment(
+        Deployment memory d
+    ) external view {
+        _checkDeployment(d);
+    }
+
+    function checkSetup(
+        Deployment memory d
+    ) external view {
+        _checkSetup(d);
     }
 }
 
@@ -183,8 +217,6 @@ contract FrontierLaunchRobinhoodForkTest is Test {
     bytes32 constant FUND_OPERATOR = keccak256("FUND_OPERATOR");
 
     // Rehearsal choices for the FundOracle staleness bounds (not fixed anywhere yet).
-    uint32 constant STOCK_STALENESS = 6 hours;
-    uint32 constant CL_24H_STALENESS = 25 hours;
     uint32 constant HUB_STALENESS = 2 hours;
 
     // Stand-in prices (GeckoTerminal 2026-10-17: cbZEC/USDC on Base, WHYPE on HyperEVM).
@@ -231,6 +263,8 @@ contract FrontierLaunchRobinhoodForkTest is Test {
 
     // Deployment.
     DeployFundsHarness internal harness;
+    FrontierBatchesHarness internal batches;
+    FrontierFundBatches.Deployment internal deployment;
     address internal deployer;
     FundOracle internal oracle;
     FundFactory internal factory;
@@ -334,14 +368,48 @@ contract FrontierLaunchRobinhoodForkTest is Test {
         assertEq(auctions.floorDiscountBps(), 300);
         assertEq(auctions.duration(), 4 hours);
 
-        // The deployer is not a FUND_ADMIN, so the script printed the wiring for the Safe.
-        bytes[] memory wiring = harness.wiringCalls(address(auctions), address(0));
+        rzec = new MockERC20("Robinhood ZEC (stand-in)", "rZEC", 8);
+        rhype = new MockERC20("Robinhood HYPE (stand-in)", "rHYPE", 18);
+        _defineBasket();
+
+        batches = new FrontierBatchesHarness();
+        deployment = FrontierFundBatches.Deployment({
+            oracle: address(oracle),
+            factory: address(factory),
+            auctions: address(auctions),
+            hub: address(hub),
+            mintZap: harness.mintZap(),
+            swapAdapter: address(adapter),
+            money: address(0),
+            rzec: address(rzec),
+            rhype: address(rhype)
+        });
+        batches.checkDeployment(deployment);
+    }
+
+    /// @dev Executes a Safe batch as the Safe, in order, like the Safe's MultiSend; returns the last result.
+    function _execBatch(
+        FrontierFundBatches.Call[] memory calls
+    ) internal returns (bytes memory ret) {
+        bool ok;
         vm.startPrank(SAFE);
-        for (uint256 i; i < wiring.length; ++i) {
-            (bool ok,) = address(factory).call(wiring[i]);
-            assertTrue(ok, "wiring call failed");
+        for (uint256 i; i < calls.length; ++i) {
+            (ok, ret) = calls[i].to.call(calls[i].data);
+            assertTrue(ok, string.concat("Safe batch call failed: ", calls[i].label));
         }
         vm.stopPrank();
+    }
+
+    function _step2Feeds() internal {
+        _recordChainlink();
+        IVerifierFL verifier = IVerifierFL(IAccessFL(REGISTRY).inhouseOracle());
+
+        // Safe batch 1 (FrontierFundBatches.setupBatch): the deploy script's wiring, the R.PLTR ticker,
+        // a price source and eligibility for every basket token.
+        uint256 g = gasleft();
+        _execBatch(batches.setupCalls(deployment));
+        emit log_named_uint("gas Safe batch 1 (setup)", g - gasleft());
+        batches.checkSetup(deployment);
         assertEq(factory.auctions(), address(auctions));
         assertEq(factory.mintZap(), harness.mintZap());
         assertTrue(factory.isRouter(address(adapter)));
@@ -350,47 +418,27 @@ contract FrontierLaunchRobinhoodForkTest is Test {
         assertEq(factory.rebalanceVolumeCapBps(), 1000);
         assertEq(factory.maxRebalanceSlippageBps(), 200);
 
-        rzec = new MockERC20("Robinhood ZEC (stand-in)", "rZEC", 8);
-        rhype = new MockERC20("Robinhood HYPE (stand-in)", "rHYPE", 18);
-        _defineBasket();
-    }
-
-    function _step2Feeds() internal {
-        _recordChainlink();
-        IVerifierFL verifier = IVerifierFL(IAccessFL(REGISTRY).inhouseOracle());
-
-        // PLTR: the verifier's admin is the registry ADMIN, which the Safe holds. Same settings as
-        // the live R.NVDA ticker.
+        // The batch gives R.PLTR the live R.NVDA settings.
         VerifierConfigFL memory c = verifier.getChainlinkConfig(bytes32("R.NVDA"));
-        vm.prank(SAFE);
-        verifier.setChainlinkConfig(
-            bytes32("R.PLTR"),
-            FEED_PLTR,
-            address(0),
-            c.clSilence,
-            c.clFreshWindow,
-            c.maxAnchorAge,
-            c.inhouseMaxStaleness,
-            c.bandBps
+        VerifierConfigFL memory pltrCfg = verifier.getChainlinkConfig(bytes32("R.PLTR"));
+        assertEq(pltrCfg.aggregator, FEED_PLTR);
+        assertEq(
+            abi.encode(
+                pltrCfg.clSilence,
+                pltrCfg.clFreshWindow,
+                pltrCfg.maxAnchorAge,
+                pltrCfg.inhouseMaxStaleness,
+                pltrCfg.bandBps
+            ),
+            abi.encode(c.clSilence, c.clFreshWindow, c.maxAnchorAge, c.inhouseMaxStaleness, c.bandBps)
         );
+        assertEq(pltrCfg.multiplierToken, c.multiplierToken);
 
-        vm.startPrank(SAFE);
-        oracle.setVerifierFeed(NVDA, bytes32("R.NVDA"), STOCK_STALENESS);
-        oracle.setVerifierFeed(SPCX, bytes32("R.SPCX"), STOCK_STALENESS);
-        oracle.setVerifierFeed(PLTR, bytes32("R.PLTR"), STOCK_STALENESS);
-        oracle.setVerifierFeed(META, bytes32("R.META"), STOCK_STALENESS);
-        oracle.setVerifierFeed(TSLA, bytes32("R.TSLA"), STOCK_STALENESS);
-        oracle.setVerifierFeed(GOOGL, bytes32("R.GOOGL"), STOCK_STALENESS);
-        oracle.setFeed(WETH, FEED_ETH, CL_24H_STALENESS);
-        oracle.setFeed(CBBTC, FEED_CBBTC, CL_24H_STALENESS);
         hubAssets = [LLY, SKHY, address(rzec), address(rhype), UNI, PONS, AI, CASHCAT, WSNET, HOOKR];
         for (uint256 i; i < hubAssets.length; ++i) {
-            oracle.setFeed(hubAssets[i], hub.createFeed(hubAssets[i]), HUB_STALENESS);
+            assertEq(oracle.feedOf(hubAssets[i]).aggregator, hub.feedOf(hubAssets[i]));
+            assertEq(oracle.feedOf(hubAssets[i]).maxStaleness, HUB_STALENESS);
         }
-        for (uint256 i; i < basket.length; ++i) {
-            factory.setEligibleAsset(basket[i], true);
-        }
-        vm.stopPrank();
 
         // Hub prices: the stand-ins at their home-market price, the rest at the mid of the pool the
         // launch rebalance buys through (chosen here, by output, at the planned $100k raise).
@@ -424,10 +472,12 @@ contract FrontierLaunchRobinhoodForkTest is Test {
         p.info.description =
             "AI, space, longevity and onchain money in one token. Curated by Own, always redeemable for what's inside.";
         p.info.website = "https://own.money";
+        p.info.x = "https://x.com/owndotmoney";
         p.info.telegram = "https://t.me/owndotmoney";
         p.assets = basket;
         p.weightsBps = weights;
         p.manager = KEEPER;
+        p.feeBps = 100;
         p.minRaiseUsd = 50_000e18;
         p.targetRaiseUsd = 100_000e18;
         p.launchDuration = 15 days;
@@ -438,9 +488,12 @@ contract FrontierLaunchRobinhoodForkTest is Test {
         p.pool =
             PoolSettings({buyTaxPips: 9500, sellTaxPips: 9500, hookrShareBps: 2000, lpFeePips: 1500, tickSpacing: 0});
 
-        vm.prank(SAFE);
+        // Safe batch 2 (FrontierFundBatches.createFundBatch) must be these confirmed parameters.
+        FrontierFundBatches.Call[] memory calls = batches.createFundCalls(deployment);
+        assertEq(calls.length, 1);
+        assertEq(calls[0].data, abi.encodeCall(FundFactory.createFund, (p)), "batch 2 params differ");
         uint256 g = gasleft();
-        IFundFactory.FundModules memory m = factory.createFund(p);
+        IFundFactory.FundModules memory m = abi.decode(_execBatch(calls), (IFundFactory.FundModules));
         emit log_named_uint("gas createFund", g - gasleft());
         fund = Fund(m.fund);
         launch = FundLaunch(m.launch);
@@ -481,6 +534,12 @@ contract FrontierLaunchRobinhoodForkTest is Test {
     }
 
     function _step5Finalize() internal {
+        // Safe batch 3 (FrontierFundBatches.beforeCloseBatch), signed during the window: the fund token's
+        // hub feed and the launch-week cap.
+        _execBatch(batches.beforeCloseCalls(deployment, address(fund)));
+        assertEq(oracle.feedOf(address(fund)).aggregator, hub.feedOf(address(fund)));
+        assertEq(factory.rebalanceVolumeCapBps(), 5000);
+
         // The keeper closes by hand a couple of days after the target, still inside the window.
         _warpTo(launch.startTime() + 7 days);
         assertLt(block.timestamp, launch.endTime());
@@ -509,9 +568,6 @@ contract FrontierLaunchRobinhoodForkTest is Test {
     }
 
     function _step6LaunchRebalance() internal {
-        vm.prank(SAFE);
-        factory.setRebalanceVolumeCap(5000);
-
         _checkUniversalRouterDirect();
 
         for (uint256 i; i < basket.length; ++i) {
@@ -542,10 +598,6 @@ contract FrontierLaunchRobinhoodForkTest is Test {
     }
 
     function _step7SeedPool() internal {
-        vm.startPrank(SAFE);
-        address feed = hub.createFeed(address(fund));
-        oracle.setFeed(address(fund), feed, HUB_STALENESS);
-        vm.stopPrank();
         (bool ok, uint256 nav,) = fund.tryNav();
         assertTrue(ok);
         hubAssets.push(address(fund));
@@ -588,9 +640,10 @@ contract FrontierLaunchRobinhoodForkTest is Test {
         id = _openLot(address(rzec), lotZec);
         _fillLot(id, 3 hours);
 
-        // Launch week ends: back to 10% a day. The auction volume already sold counts against it.
-        vm.prank(SAFE);
-        factory.setRebalanceVolumeCap(1000);
+        // Launch week ends, Safe batch 4 (FrontierFundBatches.afterLaunchWeekBatch): back to 10% a day.
+        // The auction volume already sold counts against it.
+        _execBatch(batches.afterLaunchWeekCalls(deployment));
+        assertEq(factory.rebalanceVolumeCapBps(), 1000);
         uint256 lotHype = _auctionTarget(address(rhype));
         emit log_named_decimal_uint("auction lot rHYPE (USDG)", lotHype, 6);
         id = _openLot(address(rhype), lotHype);

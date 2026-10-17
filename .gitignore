@@ -35,3 +35,5 @@ Thumbs.db
 !.claude/settings.json
 # Chainlink CCIP bytecode (tools/fetch-ccip-bytecode.sh)
 ccip-bytecode/
+# Safe batches written by script/funds/FrontierFundBatches
+safe-batches/
