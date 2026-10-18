@@ -59,13 +59,26 @@ contract MockCcipRouter {
         bytes calldata sender,
         bytes calldata data
     ) external {
+        deliverFrom(keccak256("msg"), 6_180_753_054_346_818_345, receiver, token, amount, sender, data);
+    }
+
+    /// @notice {deliver} with a chosen message id and source chain.
+    function deliverFrom(
+        bytes32 messageId,
+        uint64 sourceChainSelector,
+        address receiver,
+        address token,
+        uint256 amount,
+        bytes calldata sender,
+        bytes calldata data
+    ) public {
         IERC20(token).transfer(receiver, amount);
         CcipClient.EVMTokenAmount[] memory tokens = new CcipClient.EVMTokenAmount[](1);
         tokens[0] = CcipClient.EVMTokenAmount({token: token, amount: amount});
         IAny2EVMMessageReceiver(receiver).ccipReceive(
             CcipClient.Any2EVMMessage({
-                messageId: keccak256("msg"),
-                sourceChainSelector: 6_180_753_054_346_818_345,
+                messageId: messageId,
+                sourceChainSelector: sourceChainSelector,
                 sender: sender,
                 data: data,
                 destTokenAmounts: tokens

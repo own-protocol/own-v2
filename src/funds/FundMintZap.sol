@@ -4,6 +4,7 @@ pragma solidity 0.8.28;
 import {IFund} from "../interfaces/IFund.sol";
 import {IFundFactory} from "../interfaces/IFundFactory.sol";
 import {IFundMintZap} from "../interfaces/IFundMintZap.sol";
+import {IProtocolRegistry} from "../interfaces/IProtocolRegistry.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuardTransient} from "@openzeppelin/contracts/utils/ReentrancyGuardTransient.sol";
@@ -15,6 +16,8 @@ contract FundMintZap is IFundMintZap, ReentrancyGuardTransient {
 
     /// @inheritdoc IFundMintZap
     address public immutable override factory;
+
+    bytes32 private constant GATEWAY_ROLE = keccak256("FUND_GATEWAY");
 
     address private immutable _usdg;
 
@@ -67,6 +70,38 @@ contract FundMintZap is IFundMintZap, ReentrancyGuardTransient {
         }
 
         emit ZapMinted(fund, msg.sender, tokenIn, amountIn, shares);
+    }
+
+    /// @inheritdoc IFundMintZap
+    function zapMintFor(
+        address fund,
+        uint256 navShares,
+        uint256 minSharesOut,
+        address receiver,
+        bool atNav
+    ) external override nonReentrant returns (uint256 shares) {
+        IFundFactory fac = IFundFactory(factory);
+        if (!IProtocolRegistry(fac.registry()).hasRole(GATEWAY_ROLE, msg.sender)) revert NotGateway();
+        if (!fac.isFund(fund)) revert NotFund();
+
+        address[] memory assets = IFund(fund).assets();
+        address usdg = _usdg;
+        (,, uint256[] memory amounts, uint256 usdgAmount,) = IFund(fund).previewMint(navShares, atNav);
+        for (uint256 i; i < assets.length; ++i) {
+            if (amounts[i] != 0) IERC20(assets[i]).safeTransferFrom(msg.sender, address(this), amounts[i]);
+        }
+        if (usdgAmount != 0) IERC20(usdg).safeTransferFrom(msg.sender, address(this), usdgAmount);
+
+        _approveAll(fund, assets, usdg, true);
+        shares = IFund(fund).mint(navShares, minSharesOut, receiver, atNav);
+        _approveAll(fund, assets, usdg, false);
+
+        _refund(usdg);
+        for (uint256 i; i < assets.length; ++i) {
+            _refund(assets[i]);
+        }
+
+        emit ZapMintedFor(fund, msg.sender, receiver, navShares, shares);
     }
 
     function _approveAll(address fund, address[] memory assets, address usdg, bool on) internal {

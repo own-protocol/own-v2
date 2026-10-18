@@ -41,6 +41,19 @@ interface IFundMintZap {
     /// @notice A required address is zero.
     error ZeroAddress();
 
+    /// @notice Caller does not hold the registry's FUND_GATEWAY role.
+    error NotGateway();
+
+    /// @notice Emitted on a gateway mint for a user.
+    /// @param fund      The fund.
+    /// @param gateway   Gateway that paid the basket.
+    /// @param receiver  Owner of the mint.
+    /// @param navShares Size of the slice, in fund tokens at NAV.
+    /// @param shares    Fund tokens for the receiver.
+    event ZapMintedFor(
+        address indexed fund, address indexed gateway, address indexed receiver, uint256 navShares, uint256 shares
+    );
+
     /// @notice Pay `amountIn` of `tokenIn`, swap it into the slice a mint of `navShares` needs and
     ///         mint for the caller, who owns the mint (its stake, lock and boost when staked). See
     ///         {IFund-previewMint} for the slice.
@@ -59,6 +72,23 @@ interface IFundMintZap {
         Swap[] calldata swaps,
         uint256 navShares,
         uint256 minSharesOut,
+        bool atNav
+    ) external returns (uint256 shares);
+
+    /// @notice Mint for `receiver` from a basket the caller already holds (FUND_GATEWAY role only): pulls
+    ///         exactly {IFund-previewMint}'s amounts from the caller, mints to `receiver` (staked or locked
+    ///         as a direct mint would be) and refunds anything left to the caller.
+    /// @param fund         The fund.
+    /// @param navShares    Size of the slice, in fund tokens at NAV.
+    /// @param minSharesOut Minimum fund tokens for the receiver.
+    /// @param receiver     Owner of the mint.
+    /// @param atNav        Mint at NAV instead of the pool price.
+    /// @return shares Fund tokens for the receiver.
+    function zapMintFor(
+        address fund,
+        uint256 navShares,
+        uint256 minSharesOut,
+        address receiver,
         bool atNav
     ) external returns (uint256 shares);
 

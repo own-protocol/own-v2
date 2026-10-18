@@ -6,8 +6,10 @@ import {FrontierFundBatches} from "../../script/funds/FrontierFundBatches.s.sol"
 import {Fund} from "../../src/funds/Fund.sol";
 
 import {FundAuctions} from "../../src/funds/FundAuctions.sol";
+import {FundExitGateway} from "../../src/funds/FundExitGateway.sol";
 import {FundFactory} from "../../src/funds/FundFactory.sol";
 import {FundLaunch} from "../../src/funds/FundLaunch.sol";
+import {FundMintGateway} from "../../src/funds/FundMintGateway.sol";
 import {FundOracle} from "../../src/funds/FundOracle.sol";
 import {FundPriceHub} from "../../src/funds/FundPriceHub.sol";
 import {FundStaking} from "../../src/funds/FundStaking.sol";
@@ -15,7 +17,10 @@ import {FundSwapAdapter} from "../../src/funds/FundSwapAdapter.sol";
 import {FundVenue} from "../../src/funds/FundVenue.sol";
 import {IFund} from "../../src/interfaces/IFund.sol";
 import {IFundAuctions} from "../../src/interfaces/IFundAuctions.sol";
+import {IFundExitGateway} from "../../src/interfaces/IFundExitGateway.sol";
 import {IFundFactory} from "../../src/interfaces/IFundFactory.sol";
+import {IFundMintGateway} from "../../src/interfaces/IFundMintGateway.sol";
+import {CcipClient} from "../../src/interfaces/external/ICcip.sol";
 import {CreateFundParams, PoolSettings, YieldPoint} from "../../src/interfaces/types/FundTypes.sol";
 import {MockERC20} from "../helpers/MockERC20.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -154,12 +159,14 @@ contract TransferProbe {
 ///         grants and wiring, the price feeds for all 18 basket tokens, `createFund`, the deposit
 ///         window, the keeper's manual close, the launch rebalance through Uniswap's Universal
 ///         Router on the live pools, pool seeding on Hookr, the auctions for the cbBTC / rZEC /
-///         rHYPE share, distribution, trading, issuance, tax, accrual, a mint and a redeem, against
-///         live tokens, pools, Hookr and Chainlink. Numbers are emitted as logs (run with -vv).
+///         rHYPE share, distribution, trading, issuance, tax, accrual, a mint and a redeem, then the
+///         USDG gateways (an exit with live CCIP sends of rZEC/rHYPE, a mint from stock, a queued mint
+///         filled after a restock), against live tokens, pools, Hookr, Chainlink, CCIP and Across. Numbers are emitted as logs (run with -vv).
 /// @dev Fork-only workarounds, each marked where it is used:
 ///      - Chainlink answers are re-stamped (`vm.mockCall`, same answer) after every warp: a fork's
 ///        feeds never update, and warping 15+ days would make every one stale.
-///      - rZEC and rHYPE are plain ERC20 stand-ins; their wrappers are not deployed yet.
+///      - rZEC and rHYPE are the live Robinhood tokens, minted with `deal` (their CCIP pools mint
+///        only on a Base delivery); a restock's CCIP arrival is replayed as the Router.
 ///      The launch rebalance goes through {FundSwapAdapter}, the router a fund trades through on Robinhood Chain:
 ///      the fund can't call Uniswap's Universal Router directly (`_checkUniversalRouterDirect`).
 contract FrontierLaunchRobinhoodForkTest is Test {
@@ -168,6 +175,14 @@ contract FrontierLaunchRobinhoodForkTest is Test {
     using PoolIdLibrary for PoolKey;
 
     uint256 constant ROBINHOOD_CHAIN_ID = 4663;
+
+    // Live CCIP and Across.
+    address constant RZEC = 0xaB100cbD80441499A4cBEe4927B1F2424B09a5fC;
+    address constant RHYPE = 0x133b1D01554B5665cf93358959857BDf063a26aF;
+    address constant RH_CCIP_ROUTER = 0x06fC836cf9839B1cd891C440A0a45242DA6Ae1c9;
+    uint64 constant BASE_SELECTOR = 15_971_525_489_660_198_786;
+    address constant RH_SPOKE_POOL = 0xD29C85F15DF544bA632C9E25829fd29d767d7978;
+    address constant BASE_USDC = 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913;
 
     // Live Robinhood Chain contracts.
     address constant REGISTRY = 0x93e08ca467046737F75AAD4C936356c196AaA36F;
@@ -329,6 +344,7 @@ contract FrontierLaunchRobinhoodForkTest is Test {
         _step7SeedPool();
         _step8Auctions();
         _step9Live();
+        _step10Gateways();
     }
 
     function _step1Deploy() internal {
@@ -368,8 +384,8 @@ contract FrontierLaunchRobinhoodForkTest is Test {
         assertEq(auctions.floorDiscountBps(), 300);
         assertEq(auctions.duration(), 4 hours);
 
-        rzec = new MockERC20("Robinhood ZEC (stand-in)", "rZEC", 8);
-        rhype = new MockERC20("Robinhood HYPE (stand-in)", "rHYPE", 18);
+        rzec = MockERC20(RZEC);
+        rhype = MockERC20(RHYPE);
         _defineBasket();
 
         batches = new FrontierBatchesHarness();
@@ -638,8 +654,8 @@ contract FrontierLaunchRobinhoodForkTest is Test {
 
     function _step8Auctions() internal {
         _give(CBBTC, relay, 1e8);
-        rzec.mint(relay, 100e8);
-        rhype.mint(relay, 1000e18);
+        _give(address(rzec), relay, 100e8);
+        _give(address(rhype), relay, 1000e18);
         vm.startPrank(relay);
         IERC20(CBBTC).approve(address(auctions), type(uint256).max);
         rzec.approve(address(auctions), type(uint256).max);
@@ -810,6 +826,292 @@ contract FrontierLaunchRobinhoodForkTest is Test {
         emit log_named_decimal_uint("redeem: tokens x NAV (USD)", atNav, 18);
         // The 1% fund fee, nothing else.
         assertApproxEqRel(value, atNav * 99 / 100, 0.003e18, "redeem not at NAV");
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Step 10: the USDG gateways
+    // ──────────────────────────────────────────────────────────
+
+    address internal baseGatewayStandIn = makeAddr("baseGateway");
+
+    function _step10Gateways() internal {
+        _refreshPrices();
+        // cbBTC has no launch route (it comes by auction); the gateways buy and sell it through WETH.
+        PoolKey memory none;
+        chosen[CBBTC] = Route(
+            "v3 USDG-WETH-cbBTC",
+            K_V3,
+            abi.encodePacked(USDG, uint24(100), WETH, uint24(3000), CBBTC),
+            none,
+            0xD30e44aaE604B42a63f6F9A8109FD0408F35b9fb,
+            true
+        );
+        _exitWithUsdg();
+        _mintWithUsdg();
+    }
+
+    /// @dev Trader exits at NAV: WETH and cbBTC sold for USDG, rZEC and rHYPE sent to Base over live CCIP,
+    ///      the rest in kind.
+    function _exitWithUsdg() internal {
+        FundExitGateway gw = new FundExitGateway(address(factory), RH_CCIP_ROUTER, BASE_SELECTOR, baseGatewayStandIn);
+        uint256 shares = IERC20(address(fund)).balanceOf(trader);
+        assertGt(shares, 0);
+        (IFundExitGateway.Route[] memory routes, uint256 fees) = _exitRoutes(gw, shares);
+        emit log_named_decimal_uint("exit: CCIP fees for rZEC + rHYPE (ETH)", fees, 18);
+
+        uint256 zecSupply = rzec.totalSupply();
+        uint256 hypeSupply = rhype.totalSupply();
+        uint256 usdgBefore = IERC20(USDG).balanceOf(trader);
+        vm.deal(trader, 1 ether);
+        vm.startPrank(trader);
+        IERC20(address(fund)).approve(address(gw), shares);
+        uint256 g = gasleft();
+        uint256 usdgOut = gw.exit{value: 1 ether}(address(fund), shares, routes, 1, trader);
+        emit log_named_uint("gas exit (2 sells, 2 CCIP sends, 14 in kind)", g - gasleft());
+        vm.stopPrank();
+
+        emit log_named_decimal_uint("exit: USDG paid at once", usdgOut, 6);
+        assertEq(IERC20(USDG).balanceOf(trader) - usdgBefore, usdgOut);
+        assertEq(trader.balance, 1 ether - fees, "unused fee refunded");
+        assertEq(rzec.totalSupply(), zecSupply - _exitZec, "rZEC not burned by the CCIP pool");
+        assertEq(rhype.totalSupply(), hypeSupply - _exitHype, "rHYPE not burned by the CCIP pool");
+        assertEq(IERC20(WETH).balanceOf(trader), 0);
+        assertGt(IERC20(NVDA).balanceOf(trader), 0, "in-kind leg missing");
+        address[] memory a = fund.assets();
+        for (uint256 i; i < a.length; ++i) {
+            assertEq(IERC20(a[i]).balanceOf(address(gw)), 0, "exit gateway kept a token");
+        }
+    }
+
+    uint256 internal _exitZec;
+    uint256 internal _exitHype;
+
+    function _exitRoutes(
+        FundExitGateway gw,
+        uint256 shares
+    ) internal returns (IFundExitGateway.Route[] memory routes, uint256 fees) {
+        address[] memory a = fund.assets();
+        (uint256[] memory amounts,) = fund.previewRedeem(shares);
+        routes = new IFundExitGateway.Route[](a.length);
+        for (uint256 i; i < a.length; ++i) {
+            if (amounts[i] == 0) continue;
+            if (a[i] == WETH || a[i] == CBBTC) {
+                bytes memory path = a[i] == WETH
+                    ? abi.encodePacked(WETH, uint24(100), USDG)
+                    : abi.encodePacked(CBBTC, uint24(3000), WETH, uint24(100), USDG);
+                bytes[] memory inputs = new bytes[](1);
+                inputs[0] = abi.encode(MSG_SENDER, amounts[i], uint256(0), path, false, new uint256[](0));
+                routes[i].router = address(adapter);
+                routes[i].data = abi.encodeCall(FundSwapAdapter.swap, (a[i], amounts[i], USDG, hex"00", inputs));
+            } else if (a[i] == address(rzec) || a[i] == address(rhype)) {
+                routes[i].bridge = true;
+                routes[i].minOut = 1;
+                fees += gw.quoteBridge(a[i], amounts[i], trader, 1);
+                if (a[i] == address(rzec)) _exitZec = amounts[i];
+                else _exitHype = amounts[i];
+            }
+        }
+        assertGt(_exitZec, 0);
+        assertGt(_exitHype, 0);
+    }
+
+    /// @dev Erin mints a $1k slice with USDG from stock in one transaction, then a second one that the
+    ///      stock can't cover: queued, revenue bridged to Base through live Across, restocked over CCIP
+    ///      (replayed), and filled by the keeper.
+    function _mintWithUsdg() internal {
+        FundMintGateway gw = new FundMintGateway(
+            SAFE,
+            address(factory),
+            factory.mintZap(),
+            RH_CCIP_ROUTER,
+            BASE_SELECTOR,
+            baseGatewayStandIn,
+            RH_SPOKE_POOL,
+            BASE_USDC,
+            8453
+        );
+        (, uint256 nav,) = fund.tryNav();
+        uint256 navShares = 1000e18 * 1e18 / nav;
+        (,, uint256[] memory amounts,,) = fund.previewMint(navShares, false);
+        uint256 zecNeed = _amountOf(address(rzec), amounts);
+        uint256 hypeNeed = _amountOf(address(rhype), amounts);
+
+        vm.startPrank(SAFE);
+        IAccessFL(REGISTRY).grantRole(keccak256("FUND_GATEWAY"), address(gw));
+        gw.setBaseAsset(address(rzec), true);
+        gw.setBaseAsset(address(rhype), true);
+        gw.setKeeper(KEEPER, true);
+        vm.stopPrank();
+        // Own's float: stock for one and a half slices.
+        _addStock(gw, address(rzec), zecNeed * 3 / 2);
+        _addStock(gw, address(rhype), hypeNeed * 3 / 2);
+        _pickGatewayRoutes(gw, navShares);
+
+        uint256 stakedBefore = staking.balanceOf(erin);
+        (uint256 shares, uint256 id) = _gatewayMint(gw, navShares);
+        assertEq(id, 0, "first mint should come from stock");
+        assertGt(shares, 0);
+        assertGt(staking.balanceOf(erin), stakedBefore);
+        emit log_named_decimal_uint("gateway mint from stock: $1k slice -> fund tokens", shares, 18);
+        assertEq(IERC20(USDG).balanceOf(address(gw)), gw.revenue(), "gateway kept user USDG");
+
+        _queuedMint(gw, navShares, zecNeed, hypeNeed);
+    }
+
+    function _queuedMint(FundMintGateway gw, uint256 navShares, uint256 zecNeed, uint256 hypeNeed) internal {
+        (uint256 shares, uint256 id) = _gatewayMint(gw, navShares);
+        assertEq(shares, 0);
+        assertEq(id, 1, "second mint should queue");
+        IFundMintGateway.Order memory o = gw.getOrder(1);
+        emit log_named_decimal_uint("queued: USDG prepaid for rZEC + rHYPE", o.prepaid, 6);
+        emit log_named_decimal_uint("queued: USDG held for the Robinhood part", o.usdg, 6);
+
+        // Keeper bridges the float's USDG to the Base gateway through the live SpokePool.
+        uint256 rev = gw.revenue();
+        uint256 spokeBefore = IERC20(USDG).balanceOf(RH_SPOKE_POOL);
+        vm.prank(KEEPER);
+        gw.bridgeRevenue(rev, rev - 1.5e6, uint32(block.timestamp));
+        assertEq(IERC20(USDG).balanceOf(RH_SPOKE_POOL) - spokeBefore, rev, "Across deposit missing");
+        emit log_named_decimal_uint("revenue bridged to Base (USDG)", rev, 6);
+
+        // The Base gateway buys, wraps and sends one CCIP message per asset; replayed as the Router.
+        _arrive(gw, address(rzec), zecNeed, keccak256("restock-zec"));
+        _arrive(gw, address(rhype), hypeNeed, keccak256("restock-hype"));
+
+        _warpTo(block.timestamp + 30 minutes);
+        uint256 before = staking.balanceOf(erin);
+        IFundMintGateway.Swap[] memory swaps = _gatewaySwaps(gw, navShares);
+        vm.prank(KEEPER);
+        uint256 g = gasleft();
+        shares = gw.fill(1, swaps, navShares);
+        emit log_named_uint("gas fill (16 swaps, 18 assets)", g - gasleft());
+        assertGt(shares, 0);
+        assertGt(staking.balanceOf(erin), before);
+        assertEq(uint8(gw.getOrder(1).status), uint8(IFundMintGateway.Status.Filled));
+        assertEq(IERC20(USDG).balanceOf(address(gw)), gw.revenue(), "gateway kept user USDG after fill");
+        emit log_named_decimal_uint("queued mint filled after restock -> fund tokens", shares, 18);
+    }
+
+    function _gatewayMint(FundMintGateway gw, uint256 navShares) internal returns (uint256 shares, uint256 id) {
+        IFundMintGateway.Swap[] memory swaps = _gatewaySwaps(gw, navShares);
+        uint256 pay = _stockPay(gw, navShares);
+        for (uint256 i; i < swaps.length; ++i) {
+            pay += swaps[i].amountIn;
+        }
+        _give(USDG, erin, pay);
+        uint256 before = IERC20(USDG).balanceOf(erin);
+        vm.startPrank(erin);
+        IERC20(USDG).approve(address(gw), pay);
+        uint256 g = gasleft();
+        (shares, id) = gw.mint(address(fund), pay, swaps, navShares, 0, false);
+        emit log_named_uint(id == 0 ? "gas gateway mint (16 swaps)" : "gas gateway mint (queued)", g - gasleft());
+        vm.stopPrank();
+        emit log_named_decimal_uint("  USDG paid", before - IERC20(USDG).balanceOf(erin), 6);
+    }
+
+    mapping(address => Route) internal gwRoute;
+
+    /// @dev The route the gateway buys each Robinhood asset through: the launch's choice or another candidate
+    ///      that fills the slice. Fork-only: with no arbitrage after the launch rebalance some pools stay drained
+    ///      (and WETH unwraps fail on a fork), so an asset no route can fill is stocked like rZEC and rHYPE.
+    function _pickGatewayRoutes(FundMintGateway gw, uint256 navShares) internal {
+        (,, uint256[] memory amounts,,) = fund.previewMint(navShares, false);
+        address[] memory a = fund.assets();
+        for (uint256 i; i < a.length; ++i) {
+            if (amounts[i] == 0 || gw.isBaseAsset(a[i])) continue;
+            uint256 usdgIn = _swapBudget(a[i], amounts[i]);
+            bool found;
+            (bool ok, uint256 out) = _probe(chosen[a[i]], a[i], usdgIn);
+            if (ok && out >= amounts[i]) (gwRoute[a[i]], found) = (chosen[a[i]], true);
+            Route[] storage list = candidates[a[i]];
+            for (uint256 j; j < list.length && !found; ++j) {
+                (ok, out) = _probe(list[j], a[i], usdgIn);
+                if (ok && out >= amounts[i]) (gwRoute[a[i]], found) = (list[j], true);
+            }
+            if (found) {
+                emit log_named_string(string.concat("gateway route ", _sym(a[i])), gwRoute[a[i]].label);
+                continue;
+            }
+            emit log_named_string("no fork route fills the slice; stocked in the gateway", _sym(a[i]));
+            vm.prank(SAFE);
+            gw.setBaseAsset(a[i], true);
+            _addStock(gw, a[i], amounts[i] * 3);
+        }
+    }
+
+    function _swapBudget(address asset, uint256 amount) internal view returns (uint256) {
+        return _value(asset, amount) * 130 / 100 / 1e12 + 1e6;
+    }
+
+    /// @dev USDG -> every asset of the slice the gateway doesn't stock, 30% over the oracle value (the excess
+    ///      comes back to the minter).
+    function _gatewaySwaps(
+        FundMintGateway gw,
+        uint256 navShares
+    ) internal view returns (IFundMintGateway.Swap[] memory swaps) {
+        (,, uint256[] memory amounts,,) = fund.previewMint(navShares, false);
+        address[] memory a = fund.assets();
+        uint256 n;
+        for (uint256 i; i < a.length; ++i) {
+            if (amounts[i] != 0 && !gw.isBaseAsset(a[i])) ++n;
+        }
+        swaps = new IFundMintGateway.Swap[](n);
+        uint256 k;
+        for (uint256 i; i < a.length; ++i) {
+            if (amounts[i] == 0 || gw.isBaseAsset(a[i])) continue;
+            uint256 usdgIn = _swapBudget(a[i], amounts[i]);
+            (bytes memory commands, bytes[] memory inputs) = _urCalldata(gwRoute[a[i]], a[i], usdgIn);
+            swaps[k++] = IFundMintGateway.Swap({
+                router: address(adapter),
+                tokenIn: USDG,
+                amountIn: usdgIn,
+                data: abi.encodeCall(FundSwapAdapter.swap, (USDG, usdgIn, a[i], commands, inputs))
+            });
+        }
+    }
+
+    /// @dev The fund's USDG slice plus the stock's cost, plus a margin the gateway refunds.
+    function _stockPay(FundMintGateway gw, uint256 navShares) internal view returns (uint256 pay) {
+        (,, uint256[] memory amounts, uint256 usdgSlice,) = fund.previewMint(navShares, false);
+        address[] memory a = fund.assets();
+        pay = usdgSlice + 5e6;
+        for (uint256 i; i < a.length; ++i) {
+            if (amounts[i] != 0 && gw.isBaseAsset(a[i])) pay += gw.stockCost(a[i], amounts[i]);
+        }
+    }
+
+    function _addStock(FundMintGateway gw, address asset, uint256 amount) internal {
+        _give(asset, SAFE, amount);
+        vm.startPrank(SAFE);
+        IERC20(asset).approve(address(gw), amount);
+        gw.addStock(asset, amount);
+        vm.stopPrank();
+    }
+
+    function _arrive(FundMintGateway gw, address asset, uint256 amount, bytes32 messageId) internal {
+        _give(asset, address(gw), amount);
+        CcipClient.EVMTokenAmount[] memory tokens = new CcipClient.EVMTokenAmount[](1);
+        tokens[0] = CcipClient.EVMTokenAmount({token: asset, amount: amount});
+        uint256 before = gw.stock(asset);
+        vm.prank(RH_CCIP_ROUTER);
+        gw.ccipReceive(
+            CcipClient.Any2EVMMessage({
+                messageId: messageId,
+                sourceChainSelector: BASE_SELECTOR,
+                sender: abi.encode(baseGatewayStandIn),
+                data: "",
+                destTokenAmounts: tokens
+            })
+        );
+        assertEq(gw.stock(asset) - before, amount);
+    }
+
+    function _amountOf(address asset, uint256[] memory amounts) internal view returns (uint256) {
+        address[] memory a = fund.assets();
+        for (uint256 i; i < a.length; ++i) {
+            if (a[i] == asset) return amounts[i];
+        }
+        return 0;
     }
 
     // ──────────────────────────────────────────────────────────
@@ -1399,7 +1701,8 @@ contract FrontierLaunchRobinhoodForkTest is Test {
     /// @dev `deal` adjusts the balance slot (and leaves supply alone); the stand-ins are minted.
     function _give(address token, address to, uint256 amount) internal {
         if (token == address(rzec) || token == address(rhype)) {
-            MockERC20(token).mint(to, amount);
+            // Supply moves too, so a CCIP pool burn on the way out doesn't underflow it.
+            deal(token, to, IERC20(token).balanceOf(to) + amount, true);
             return;
         }
         deal(token, to, IERC20(token).balanceOf(to) + amount);
