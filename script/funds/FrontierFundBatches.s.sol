@@ -20,7 +20,7 @@ import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IER
 ///         Safe Transaction Builder, with `<name>.md` listing every call for the signers. In order:
 ///
 ///         1. `setupBatch()` after `DeployFundsRobinhood` and once rZEC / rHYPE exist on Robinhood Chain:
-///            the deploy script's wiring, the R.PLTR verifier ticker, a price source for all 18 basket
+///            the deploy script's wiring, the R.PLTR, ETH and CBBTC verifier tickers, a price source for all 18 basket
 ///            tokens and their listing eligibility. The keeper then pushes hub prices.
 ///         2. `createFundBatch()`: Frontier Fund 1 with the confirmed parameters
 ///            (/mnt/project-files/plans/frontier-fund-params.md). Its 15-day deposit window starts here.
@@ -29,7 +29,7 @@ import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IER
 ///         4. `afterLaunchWeekBatch()` once the launch rebalance and auctions are done: the cap back to 10%.
 ///
 ///         Needs FUND_ADMIN (the Safe holds it after safe-txns/grant-fund-admin-operator-2026-10-17.json);
-///         the R.PLTR ticker needs the registry ADMIN, which the Safe also holds.
+///         the verifier tickers need the registry ADMIN, which the Safe also holds.
 ///
 /// Env: FUND_ORACLE, FUND_FACTORY, FUND_AUCTIONS, FUND_PRICE_HUB, FUND_MINT_ZAP, FUND_SWAP_ADAPTER (the
 ///      addresses DeployFundsRobinhood prints), RZEC, RHYPE (the CrossChainTokens on Robinhood Chain),
@@ -91,10 +91,13 @@ contract FrontierFundBatches is DeployFundsRobinhood {
     uint32 constant PLTR_INHOUSE_MAX_STALENESS = 1 hours;
     uint16 constant PLTR_BAND_BPS = 300;
 
-    // FundOracle staleness: verifier tickers (signer quotes off-hours), 24h-heartbeat Chainlink feeds,
-    // hub feeds (the keeper pushes at least every 2 hours).
+    // ETH and CBBTC tickers: the stock settings, but a 24/7 feed (0.5% deviation, 24h heartbeat) never
+    // goes quiet for days, so the anchor may not be older than one heartbeat plus slack.
+    uint32 constant CRYPTO_MAX_ANCHOR_AGE = 26 hours;
+
+    // FundOracle staleness: verifier tickers (the signer quotes while the feed is quiet), hub feeds
+    // (the keeper pushes at least every 2 hours).
     uint32 constant STOCK_STALENESS = 6 hours;
-    uint32 constant CL_24H_STALENESS = 25 hours;
     uint32 constant HUB_STALENESS = 2 hours;
 
     uint16 constant LAUNCH_WEEK_CAP_BPS = 5000;
@@ -107,7 +110,7 @@ contract FrontierFundBatches is DeployFundsRobinhood {
         setupBatch();
     }
 
-    /// @notice Batch 1: wiring, R.PLTR ticker, 18 price sources, 18 eligible assets.
+    /// @notice Batch 1: wiring, R.PLTR / ETH / CBBTC tickers, 18 price sources, 18 eligible assets.
     function setupBatch() public {
         Deployment memory d = _deploymentFromEnv();
         Call[] memory calls = _setupCalls(d);
@@ -115,7 +118,7 @@ contract FrontierFundBatches is DeployFundsRobinhood {
         _checkSetup(d);
         _write(
             "frontier-1-setup",
-            "Frontier Fund 1, batch 1 of 4: platform wiring, R.PLTR ticker, price sources and eligibility for the 18 basket tokens",
+            "Frontier Fund 1, batch 1 of 4: platform wiring, R.PLTR / ETH / CBBTC verifier tickers, price sources and eligibility for the 18 basket tokens",
             calls
         );
     }
@@ -208,7 +211,7 @@ contract FrontierFundBatches is DeployFundsRobinhood {
         address[] memory hubAssets = _hubAssets(d);
         (address[] memory basket,) = _basket(d);
 
-        calls = new Call[](wiring.length + 1 + 8 + 2 * hubAssets.length + basket.length);
+        calls = new Call[](wiring.length + 3 + 8 + 2 * hubAssets.length + basket.length);
         uint256 n;
         string[6] memory wiringLabels = [
             "factory.setAuctions(FundAuctions)",
@@ -222,22 +225,23 @@ contract FrontierFundBatches is DeployFundsRobinhood {
             calls[n++] = Call(d.factory, wiring[i], wiringLabels[i]);
         }
 
-        calls[n++] = Call(
-            IProtocolRegistry(REGISTRY).inhouseOracle(),
-            abi.encodeCall(
-                ChainlinkOracleVerifier.setChainlinkConfig,
-                (
-                    bytes32("R.PLTR"),
-                    FEED_PLTR,
-                    address(0),
-                    PLTR_CL_SILENCE,
-                    PLTR_CL_FRESH_WINDOW,
-                    PLTR_MAX_ANCHOR_AGE,
-                    PLTR_INHOUSE_MAX_STALENESS,
-                    PLTR_BAND_BPS
-                )
-            ),
+        calls[n++] = _verifierConfig(
+            "R.PLTR",
+            FEED_PLTR,
+            PLTR_MAX_ANCHOR_AGE,
             "verifier.setChainlinkConfig(R.PLTR, Chainlink PLTR/USD, same settings as R.NVDA)"
+        );
+        calls[n++] = _verifierConfig(
+            "ETH",
+            FEED_ETH,
+            CRYPTO_MAX_ANCHOR_AGE,
+            "verifier.setChainlinkConfig(ETH, Chainlink ETH/USD, R.NVDA settings, anchor at most 26h old)"
+        );
+        calls[n++] = _verifierConfig(
+            "CBBTC",
+            FEED_CBBTC,
+            CRYPTO_MAX_ANCHOR_AGE,
+            "verifier.setChainlinkConfig(CBBTC, Chainlink CBBTC/USD, R.NVDA settings, anchor at most 26h old)"
         );
 
         calls[n++] = _verifierFeed(d, NVDA, "R.NVDA");
@@ -246,16 +250,8 @@ contract FrontierFundBatches is DeployFundsRobinhood {
         calls[n++] = _verifierFeed(d, META, "R.META");
         calls[n++] = _verifierFeed(d, TSLA, "R.TSLA");
         calls[n++] = _verifierFeed(d, GOOGL, "R.GOOGL");
-        calls[n++] = Call(
-            d.oracle,
-            abi.encodeCall(FundOracle.setFeed, (WETH, FEED_ETH, CL_24H_STALENESS)),
-            "oracle.setFeed(WETH, Chainlink ETH/USD, 25h)"
-        );
-        calls[n++] = Call(
-            d.oracle,
-            abi.encodeCall(FundOracle.setFeed, (CBBTC, FEED_CBBTC, CL_24H_STALENESS)),
-            "oracle.setFeed(cbBTC, Chainlink CBBTC/USD, 25h)"
-        );
+        calls[n++] = _verifierFeed(d, WETH, "ETH");
+        calls[n++] = _verifierFeed(d, CBBTC, "CBBTC");
 
         // A hub feed is a CREATE from the hub, so its address follows the hub's nonce; setFeed reads the
         // feed's decimals() and reverts the batch if a predicted address is wrong.
@@ -347,6 +343,31 @@ contract FrontierFundBatches is DeployFundsRobinhood {
             d.factory,
             abi.encodeCall(FundFactory.setRebalanceVolumeCap, (NORMAL_CAP_BPS)),
             "factory.setRebalanceVolumeCap(1000): back to 10% a day"
+        );
+    }
+
+    function _verifierConfig(
+        string memory ticker,
+        address feed,
+        uint32 maxAnchorAge,
+        string memory label
+    ) internal view returns (Call memory) {
+        return Call(
+            IProtocolRegistry(REGISTRY).inhouseOracle(),
+            abi.encodeCall(
+                ChainlinkOracleVerifier.setChainlinkConfig,
+                (
+                    bytes32(bytes(ticker)),
+                    feed,
+                    address(0),
+                    PLTR_CL_SILENCE,
+                    PLTR_CL_FRESH_WINDOW,
+                    maxAnchorAge,
+                    PLTR_INHOUSE_MAX_STALENESS,
+                    PLTR_BAND_BPS
+                )
+            ),
+            label
         );
     }
 

@@ -434,6 +434,19 @@ contract FrontierLaunchRobinhoodForkTest is Test {
         );
         assertEq(pltrCfg.multiplierToken, c.multiplierToken);
 
+        // ETH and CBBTC take the same settings, with an anchor at most 26h old.
+        address[2] memory cryptoFeeds = [FEED_ETH, FEED_CBBTC];
+        bytes32[2] memory cryptoTickers = [bytes32("ETH"), bytes32("CBBTC")];
+        for (uint256 i; i < 2; ++i) {
+            VerifierConfigFL memory k = verifier.getChainlinkConfig(cryptoTickers[i]);
+            assertEq(k.aggregator, cryptoFeeds[i]);
+            assertEq(k.multiplierToken, address(0));
+            assertEq(
+                abi.encode(k.clSilence, k.clFreshWindow, k.maxAnchorAge, k.inhouseMaxStaleness, k.bandBps),
+                abi.encode(c.clSilence, c.clFreshWindow, uint32(26 hours), c.inhouseMaxStaleness, c.bandBps)
+            );
+        }
+
         hubAssets = [LLY, SKHY, address(rzec), address(rhype), UNI, PONS, AI, CASHCAT, WSNET, HOOKR];
         for (uint256 i; i < hubAssets.length; ++i) {
             assertEq(oracle.feedOf(hubAssets[i]).aggregator, hub.feedOf(hubAssets[i]));
@@ -463,6 +476,12 @@ contract FrontierLaunchRobinhoodForkTest is Test {
         }
         (uint256 pltr,) = verifier.getPrice(bytes32("R.PLTR"));
         assertEq(pltr, uint256(clAnswer[FEED_PLTR]) * 1e10);
+        (uint256 eth,) = verifier.getPrice(bytes32("ETH"));
+        assertEq(eth, uint256(clAnswer[FEED_ETH]) * 1e10);
+        (uint256 cbbtc,) = verifier.getPrice(bytes32("CBBTC"));
+        assertEq(cbbtc, uint256(clAnswer[FEED_CBBTC]) * 1e10);
+        assertEq(oracle.feedOf(WETH).ticker, bytes32("ETH"));
+        assertEq(oracle.feedOf(CBBTC).ticker, bytes32("CBBTC"));
     }
 
     function _step3CreateFund() internal {
