@@ -4,6 +4,7 @@ pragma solidity 0.8.28;
 import {BaseGateway} from "../../src/bridge/BaseGateway.sol";
 import {IBaseGateway} from "../../src/interfaces/IBaseGateway.sol";
 import {CcipClient} from "../../src/interfaces/external/ICcip.sol";
+import {GatewayProxies} from "../helpers/GatewayProxies.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Test} from "forge-std/Test.sol";
 
@@ -37,7 +38,8 @@ contract BaseGatewayBaseForkTest is Test {
         vm.createSelectFork(rpc);
         require(block.chainid == 8453, "not Base");
         _forkActive = true;
-        gw = new BaseGateway(safe, BASE_ROUTER, RH_SELECTOR, USDC, SPOKE_POOL, RH_CHAIN_ID, RH_USDG);
+        gw =
+            GatewayProxies.base(safe, new BaseGateway(BASE_ROUTER, RH_SELECTOR, USDC, SPOKE_POOL, RH_CHAIN_ID, RH_USDG));
         vm.startPrank(safe);
         gw.setRemoteGateway(exitGateway);
         gw.setKeeper(keeper, true);

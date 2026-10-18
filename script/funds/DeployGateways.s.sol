@@ -9,12 +9,13 @@ import {FundFactory} from "../../src/funds/FundFactory.sol";
 import {FundMintGateway} from "../../src/funds/FundMintGateway.sol";
 import {IProtocolRegistry} from "../../src/interfaces/IProtocolRegistry.sol";
 import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
+import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
 /// @title DeployGateways — the USDG mint and exit gateways on Robinhood Chain and their Base counterpart
-/// @notice In order:
+/// @notice Each gateway is an ERC-1967 (UUPS) proxy; its owner upgrades it. In order:
 ///         1. `deployBase()` on Base: the {BaseGateway} (and its float), owned by the deployer for now.
-///         2. `deployRobinhood()` on Robinhood Chain (BASE_GATEWAY set): the ownerless {FundExitGateway} and the
-///            {FundMintGateway}, owned by the governance Safe.
+///         2. `deployRobinhood()` on Robinhood Chain (BASE_GATEWAY set): the {FundExitGateway} and the
+///            {FundMintGateway}, both owned by the governance Safe.
 ///         3. `configureBase()` on Base, right after step 2: the deployer points the Base gateway at both
 ///            Robinhood gateways, allows the keeper, the rZEC and rHYPE wrappers and the swap router, and
 ///            offers ownership to the Base Safe. Until this runs, an exit's Base leg would arrive claim-only
@@ -78,16 +79,19 @@ contract DeployGateways is Script {
         require(block.chainid == BASE_CHAIN_ID, "RPC is not Base (8453)");
         uint256 key = vm.envUint("DEPLOYER_PRIVATE_KEY_BASE");
         vm.startBroadcast(key);
-        BaseGateway gw = new BaseGateway(
-            vm.addr(key), BASE_CCIP_ROUTER, RH_SELECTOR, BASE_USDC, BASE_SPOKE_POOL, ROBINHOOD_CHAIN_ID, USDG
+        BaseGateway impl =
+            new BaseGateway(BASE_CCIP_ROUTER, RH_SELECTOR, BASE_USDC, BASE_SPOKE_POOL, ROBINHOOD_CHAIN_ID, USDG);
+        BaseGateway gw = BaseGateway(
+            address(new ERC1967Proxy(address(impl), abi.encodeCall(BaseGateway.initialize, (vm.addr(key)))))
         );
         vm.stopBroadcast();
         require(gw.revenueFloat() == floatOf(address(gw)), "float address");
+        console.log("BaseGateway impl", address(impl));
         console.log("BaseGateway     ", address(gw));
         console.log("GatewayFloat    ", gw.revenueFloat());
     }
 
-    /// @notice The float a Base gateway deploys in its constructor (its first CREATE).
+    /// @notice The float a Base gateway proxy deploys in `initialize` (its first CREATE).
     function floatOf(
         address baseGateway
     ) public pure returns (address) {
@@ -102,9 +106,11 @@ contract DeployGateways is Script {
         address zap = FundFactory(factory).mintZap();
         require(zap != address(0), "factory has no mint zap");
         vm.startBroadcast(vm.envUint("DEPLOYER_PRIVATE_KEY_ROBINHOOD"));
-        FundExitGateway exitGw = new FundExitGateway(factory, RH_CCIP_ROUTER, BASE_SELECTOR, baseGateway);
-        FundMintGateway mintGw = new FundMintGateway(
-            RH_SAFE,
+        FundExitGateway exitImpl = new FundExitGateway(factory, RH_CCIP_ROUTER, BASE_SELECTOR, baseGateway);
+        FundExitGateway exitGw = FundExitGateway(
+            address(new ERC1967Proxy(address(exitImpl), abi.encodeCall(FundExitGateway.initialize, (RH_SAFE))))
+        );
+        FundMintGateway mintImpl = new FundMintGateway(
             factory,
             zap,
             RH_CCIP_ROUTER,
@@ -115,7 +121,11 @@ contract DeployGateways is Script {
             BASE_USDC,
             BASE_CHAIN_ID
         );
+        FundMintGateway mintGw = FundMintGateway(
+            address(new ERC1967Proxy(address(mintImpl), abi.encodeCall(FundMintGateway.initialize, (RH_SAFE))))
+        );
         vm.stopBroadcast();
+        require(exitGw.owner() == RH_SAFE && mintGw.owner() == RH_SAFE, "owners");
         console.log("FundExitGateway ", address(exitGw));
         console.log("FundMintGateway ", address(mintGw));
     }

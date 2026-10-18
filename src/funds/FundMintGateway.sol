@@ -9,6 +9,9 @@ import {IFundOracle} from "../interfaces/IFundOracle.sol";
 import {IAcrossSpokePool} from "../interfaces/external/IAcrossSpokePool.sol";
 import {CcipClient, IAny2EVMMessageReceiver} from "../interfaces/external/ICcip.sol";
 import {Ownable, Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
+
+import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
+import {UUPSUpgradeable} from "@openzeppelin/contracts/proxy/utils/UUPSUpgradeable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
@@ -18,12 +21,15 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 /// @title FundMintGateway — mint with USDG from a float-funded stock of Base-sourced assets
 /// @notice See {IFundMintGateway}.
+/// @dev Runs behind an ERC-1967 proxy (UUPS, owner upgrades); storage is append-only across upgrades.
 contract FundMintGateway is
     IFundMintGateway,
     IAny2EVMMessageReceiver,
     IERC165,
     Ownable2Step,
-    ReentrancyGuardTransient
+    ReentrancyGuardTransient,
+    Initializable,
+    UUPSUpgradeable
 {
     using SafeERC20 for IERC20;
 
@@ -109,7 +115,6 @@ contract FundMintGateway is
         _;
     }
 
-    /// @param owner_        Owner (the governance Safe).
     /// @param factory_      The fund factory.
     /// @param zap_          The factory's mint zap.
     /// @param ccipRouter_   The CCIP Router on this chain.
@@ -120,7 +125,6 @@ contract FundMintGateway is
     /// @param baseUsdc_     USDC on Base.
     /// @param baseChainId_  EVM chain id of Base.
     constructor(
-        address owner_,
         address factory_,
         address zap_,
         address ccipRouter_,
@@ -130,7 +134,7 @@ contract FundMintGateway is
         address spokePool_,
         address baseUsdc_,
         uint256 baseChainId_
-    ) Ownable(owner_) {
+    ) Ownable(msg.sender) {
         if (
             factory_ == address(0) || zap_ == address(0) || ccipRouter_ == address(0) || baseGateway_ == address(0)
                 || baseFloat_ == address(0) || spokePool_ == address(0) || baseUsdc_ == address(0) || baseSelector_ == 0
@@ -148,6 +152,16 @@ contract FundMintGateway is
         address usdg = IFundFactory(factory_).usdg();
         _usdg = usdg;
         _usdgScale = 10 ** IERC20Metadata(usdg).decimals();
+        _disableInitializers();
+    }
+
+    /// @notice Initialise the proxy.
+    /// @param owner_ Owner (the governance Safe).
+    function initialize(
+        address owner_
+    ) external initializer {
+        if (owner_ == address(0)) revert ZeroAddress();
+        _transferOwnership(owner_);
         markupBps = 30;
         maxWait = 1 days;
         maxFeeBps = 50;
@@ -198,16 +212,17 @@ contract FundMintGateway is
         Order storage o = _orders[id];
         if (o.status != Status.Queued) revert NotQueued();
         address receiver = o.receiver;
-        if (!_keepers[msg.sender] && msg.sender != receiver) revert NotKeeper();
+        bool keeper = _keepers[msg.sender];
+        if (!keeper && msg.sender != receiver) revert NotKeeper();
         uint256 orderShares = o.navShares;
         if (navShares == 0 || navShares > orderShares) revert InvalidParam();
-        if (navShares != orderShares && !_keepers[msg.sender]) revert InvalidParam();
+        if (navShares != orderShares && !keeper) revert InvalidParam();
+        // A receiver may not take a restock that earlier orders wait for; the keeper fills in queue order.
+        if (!keeper && !_covers(o)) revert InsufficientStock();
 
         o.status = Status.Filled;
-        uint256 budget = o.usdg;
-        queuedUsdg -= budget;
         address fund = o.fund;
-        Run memory run = _run(fund, receiver, IFund(fund).assets(), new uint256[](0), budget);
+        Run memory run = _run(fund, receiver, IFund(fund).assets(), new uint256[](0), _budget(o, navShares));
         run.taken = _takeOwed(o, run.assets, receiver);
         shares = _execute(
             run,
@@ -226,29 +241,29 @@ contract FundMintGateway is
     ) external override nonReentrant {
         Order storage o = _orders[id];
         if (o.status != Status.Queued) revert NotQueued();
-        if (msg.sender != o.receiver) revert NotReceiver();
-        if (block.timestamp < o.createdAt + maxWait) revert TooEarly();
+        address receiver = o.receiver;
+        bool keeper = _keepers[msg.sender];
+        if (msg.sender != receiver && !keeper) revert NotReceiver();
+        if (!keeper && block.timestamp < o.createdAt + maxWait) revert TooEarly();
         uint256 usdg = o.usdg;
-        uint256 prepaid = o.prepaid;
         bool inKind = _covers(o);
-        if (!inKind && revenue < prepaid) {
+        // Never more than the owed assets are worth now, so a price fall is not refunded at the old price.
+        uint256 back = inKind ? 0 : Math.min(o.prepaid, _owedCost(o));
+        if (!inKind && revenue < back) {
             // The prepaid part is on Base; release the order's own USDG and keep the order open.
             if (usdg == 0) revert InsufficientRevenue();
             o.usdg = 0;
             queuedUsdg -= usdg;
-            IERC20(_usdg).safeTransfer(msg.sender, usdg);
+            IERC20(_usdg).safeTransfer(receiver, usdg);
             emit UsdgReleased(id, usdg);
             return;
         }
         o.status = Status.Cancelled;
         queuedUsdg -= usdg;
-        uint256 refund = usdg;
-        if (!inKind) {
-            revenue -= prepaid;
-            refund += prepaid;
-        }
-        _releaseOwed(o, inKind, msg.sender);
-        if (refund != 0) IERC20(_usdg).safeTransfer(msg.sender, refund);
+        revenue -= back;
+        uint256 refund = usdg + back;
+        _releaseOwed(o, inKind, receiver);
+        if (refund != 0) IERC20(_usdg).safeTransfer(receiver, refund);
         emit Cancelled(id, refund, inKind);
     }
 
@@ -281,7 +296,8 @@ contract FundMintGateway is
     ) external override onlyKeeper nonReentrant {
         if (usdgIn == 0) revert ZeroAddress();
         uint256 rev = revenue;
-        if (usdgIn > rev) revert InsufficientRevenue();
+        if (usdgIn == type(uint256).max) usdgIn = rev;
+        if (usdgIn == 0 || usdgIn > rev) revert InsufficientRevenue();
         // Below the size where the flat cap dominates, only a bridge of all revenue, so the cap can't be split.
         if (usdgIn != rev && usdgIn * maxFeeBps / BPS < maxFeeFlat) revert InvalidParam();
         if (usdcOut > usdgIn || usdgIn - usdcOut > Math.max(maxFeeFlat, usdgIn * maxFeeBps / BPS)) {
@@ -502,10 +518,31 @@ contract FundMintGateway is
         Order storage o
     ) internal view returns (bool) {
         for (uint256 j; j < o.assets.length; ++j) {
-            if (_stock[o.assets[j]] < o.owed[j]) return false;
+            // Covering every reservation keeps a later order from taking stock an earlier one paid for.
+            if (_stock[o.assets[j]] < _reserved[o.assets[j]]) return false;
         }
         return true;
     }
+
+    /// @dev A partial fill spends only its share of the order's USDG; the rest goes back to the receiver.
+    function _budget(Order storage o, uint256 navShares) internal returns (uint256 budget) {
+        uint256 usdg = o.usdg;
+        queuedUsdg -= usdg;
+        budget = Math.mulDiv(usdg, navShares, o.navShares);
+        if (usdg != budget) IERC20(_usdg).safeTransfer(o.receiver, usdg - budget);
+    }
+
+    function _owedCost(
+        Order storage o
+    ) internal view returns (uint256 cost) {
+        for (uint256 j; j < o.assets.length; ++j) {
+            cost += stockCost(o.assets[j], o.owed[j]);
+        }
+    }
+
+    function _authorizeUpgrade(
+        address
+    ) internal view override onlyOwner {}
 
     /// @dev Drops the order's reservation; `take` also hands the owed stock to `to` in kind.
     function _releaseOwed(Order storage o, bool take, address to) internal {
@@ -586,11 +623,14 @@ contract FundMintGateway is
         IFundFactory fac = IFundFactory(factory);
         for (uint256 i; i < swaps.length; ++i) {
             Swap calldata s = swaps[i];
-            if (!fac.isRouter(s.router) || s.router == run.fund || s.tokenIn != usdg) revert RouterNotAllowed();
-            IERC20(usdg).forceApprove(s.router, s.amountIn);
-            (bool ok,) = s.router.call(s.data);
+            address r = s.router;
+            if (!fac.isRouter(r) || r == run.fund || r == usdg || _baseAssets[r] || s.tokenIn != usdg) {
+                revert RouterNotAllowed();
+            }
+            IERC20(usdg).forceApprove(r, s.amountIn);
+            (bool ok,) = r.call(s.data);
             if (!ok) revert SwapFailed();
-            IERC20(usdg).forceApprove(s.router, 0);
+            IERC20(usdg).forceApprove(r, 0);
         }
         spent = run.usdgBefore - IERC20(usdg).balanceOf(address(this));
         if (spent > run.budget) revert InsufficientUsdg();

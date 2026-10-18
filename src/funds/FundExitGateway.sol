@@ -5,13 +5,18 @@ import {IFund} from "../interfaces/IFund.sol";
 import {IFundExitGateway} from "../interfaces/IFundExitGateway.sol";
 import {IFundFactory} from "../interfaces/IFundFactory.sol";
 import {CcipClient, ICcipRouter} from "../interfaces/external/ICcip.sol";
+
+import {Ownable, Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
+import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
+import {UUPSUpgradeable} from "@openzeppelin/contracts/proxy/utils/UUPSUpgradeable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuardTransient} from "@openzeppelin/contracts/utils/ReentrancyGuardTransient.sol";
 
 /// @title FundExitGateway — exit a fund at NAV to USDG, selling Base-sourced assets on Base
 /// @notice See {IFundExitGateway}.
-contract FundExitGateway is IFundExitGateway, ReentrancyGuardTransient {
+/// @dev Runs behind an ERC-1967 proxy (UUPS); the owner's only power is upgrading it.
+contract FundExitGateway is IFundExitGateway, Ownable2Step, ReentrancyGuardTransient, Initializable, UUPSUpgradeable {
     using SafeERC20 for IERC20;
 
     /// @notice Gas for the Base gateway's `ccipReceive` (unwrap plus one order record).
@@ -32,7 +37,7 @@ contract FundExitGateway is IFundExitGateway, ReentrancyGuardTransient {
     /// @param router_       The CCIP Router on this chain.
     /// @param baseSelector_ CCIP selector of Base.
     /// @param baseGateway_  The Base gateway.
-    constructor(address factory_, address router_, uint64 baseSelector_, address baseGateway_) {
+    constructor(address factory_, address router_, uint64 baseSelector_, address baseGateway_) Ownable(msg.sender) {
         if (factory_ == address(0) || router_ == address(0) || baseGateway_ == address(0) || baseSelector_ == 0) {
             revert ZeroAddress();
         }
@@ -41,6 +46,16 @@ contract FundExitGateway is IFundExitGateway, ReentrancyGuardTransient {
         baseSelector = baseSelector_;
         baseGateway = baseGateway_;
         _usdg = IFundFactory(factory_).usdg();
+        _disableInitializers();
+    }
+
+    /// @notice Initialise the proxy.
+    /// @param owner_ Owner (the governance Safe), who alone may upgrade.
+    function initialize(
+        address owner_
+    ) external initializer {
+        if (owner_ == address(0)) revert ZeroAddress();
+        _transferOwnership(owner_);
     }
 
     /// @inheritdoc IFundExitGateway
@@ -173,4 +188,8 @@ contract FundExitGateway is IFundExitGateway, ReentrancyGuardTransient {
             )
         });
     }
+
+    function _authorizeUpgrade(
+        address
+    ) internal view override onlyOwner {}
 }

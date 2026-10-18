@@ -5,8 +5,11 @@ import {FundExitGateway} from "../../src/funds/FundExitGateway.sol";
 import {IFundExitGateway} from "../../src/interfaces/IFundExitGateway.sol";
 import {CcipClient} from "../../src/interfaces/external/ICcip.sol";
 import {FundTestBase} from "../helpers/FundTestBase.sol";
+import {GatewayProxies} from "../helpers/GatewayProxies.sol";
 import {MockCcipRouter} from "../helpers/MockCcipRouter.sol";
 import {MockSwapRouter} from "../helpers/MockSwapRouter.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
 
 contract NoReceive {
     function exit(
@@ -38,7 +41,7 @@ contract FundExitGatewayTest is FundTestBase {
         _passDepositorLock();
 
         ccip = new MockCcipRouter();
-        gateway = new FundExitGateway(address(factory), address(ccip), BASE, baseGateway);
+        gateway = GatewayProxies.exit(admin, new FundExitGateway(address(factory), address(ccip), BASE, baseGateway));
         router = new MockSwapRouter();
         vm.prank(admin);
         factory.setRouter(address(router), true);
@@ -58,6 +61,22 @@ contract FundExitGatewayTest is FundTestBase {
         new FundExitGateway(address(factory), address(ccip), BASE, address(0));
         vm.expectRevert(IFundExitGateway.ZeroAddress.selector);
         new FundExitGateway(address(factory), address(ccip), 0, baseGateway);
+    }
+
+    function test_initialize_once_upgrade_onlyOwner() public {
+        assertEq(gateway.owner(), admin);
+        vm.expectRevert(Initializable.InvalidInitialization.selector);
+        gateway.initialize(bob);
+        FundExitGateway impl = new FundExitGateway(address(factory), address(ccip), BASE, baseGateway);
+        vm.expectRevert(Initializable.InvalidInitialization.selector);
+        impl.initialize(bob);
+        vm.prank(bob);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, bob));
+        gateway.upgradeToAndCall(address(impl), "");
+        vm.prank(admin);
+        gateway.upgradeToAndCall(address(impl), "");
+        assertEq(gateway.owner(), admin);
+        assertEq(gateway.baseGateway(), baseGateway);
     }
 
     function test_views() public view {

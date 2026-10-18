@@ -4,6 +4,7 @@ pragma solidity 0.8.28;
 import {DeployFundsRobinhood} from "../../script/funds/DeployFundsRobinhood.s.sol";
 import {FrontierFundBatches} from "../../script/funds/FrontierFundBatches.s.sol";
 import {Fund} from "../../src/funds/Fund.sol";
+import {GatewayProxies} from "../helpers/GatewayProxies.sol";
 
 import {FundAuctions} from "../../src/funds/FundAuctions.sol";
 import {FundExitGateway} from "../../src/funds/FundExitGateway.sol";
@@ -853,7 +854,9 @@ contract FrontierLaunchRobinhoodForkTest is Test {
     /// @dev Trader exits at NAV: WETH and cbBTC sold for USDG, rZEC and rHYPE sent to Base over live CCIP,
     ///      the rest in kind.
     function _exitWithUsdg() internal {
-        FundExitGateway gw = new FundExitGateway(address(factory), RH_CCIP_ROUTER, BASE_SELECTOR, baseGatewayStandIn);
+        FundExitGateway gw = GatewayProxies.exit(
+            SAFE, new FundExitGateway(address(factory), RH_CCIP_ROUTER, BASE_SELECTOR, baseGatewayStandIn)
+        );
         uint256 shares = IERC20(address(fund)).balanceOf(trader);
         assertGt(shares, 0);
         (IFundExitGateway.Route[] memory routes, uint256 fees) = _exitRoutes(gw, shares);
@@ -919,17 +922,19 @@ contract FrontierLaunchRobinhoodForkTest is Test {
     ///      stock can't cover: queued, revenue bridged to Base through live Across, restocked over CCIP
     ///      (replayed), and filled by the keeper.
     function _mintWithUsdg() internal {
-        FundMintGateway gw = new FundMintGateway(
+        FundMintGateway gw = GatewayProxies.mint(
             SAFE,
-            address(factory),
-            factory.mintZap(),
-            RH_CCIP_ROUTER,
-            BASE_SELECTOR,
-            baseGatewayStandIn,
-            makeAddr("baseFloat"),
-            RH_SPOKE_POOL,
-            BASE_USDC,
-            8453
+            new FundMintGateway(
+                address(factory),
+                factory.mintZap(),
+                RH_CCIP_ROUTER,
+                BASE_SELECTOR,
+                baseGatewayStandIn,
+                makeAddr("baseFloat"),
+                RH_SPOKE_POOL,
+                BASE_USDC,
+                8453
+            )
         );
         (, uint256 nav,) = fund.tryNav();
         uint256 navShares = 1000e18 * 1e18 / nav;

@@ -8,6 +8,9 @@ import {IAcrossSpokePool} from "../interfaces/external/IAcrossSpokePool.sol";
 import {CcipClient, IAny2EVMMessageReceiver, ICcipRouter} from "../interfaces/external/ICcip.sol";
 import {GatewayFloat} from "./GatewayFloat.sol";
 import {Ownable, Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
+
+import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
+import {UUPSUpgradeable} from "@openzeppelin/contracts/proxy/utils/UUPSUpgradeable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {ERC20Wrapper} from "@openzeppelin/contracts/token/ERC20/extensions/ERC20Wrapper.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
@@ -18,7 +21,16 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 /// @title BaseGateway — sells fund exit legs on Base and bridges the USDC back as USDG
 /// @notice See {IBaseGateway}.
-contract BaseGateway is IBaseGateway, IAny2EVMMessageReceiver, IERC165, Ownable2Step, ReentrancyGuardTransient {
+/// @dev Runs behind an ERC-1967 proxy (UUPS, owner upgrades); storage is append-only across upgrades.
+contract BaseGateway is
+    IBaseGateway,
+    IAny2EVMMessageReceiver,
+    IERC165,
+    Ownable2Step,
+    ReentrancyGuardTransient,
+    Initializable,
+    UUPSUpgradeable
+{
     using SafeERC20 for IERC20;
 
     uint256 private constant BPS = 10_000;
@@ -41,8 +53,7 @@ contract BaseGateway is IBaseGateway, IAny2EVMMessageReceiver, IERC165, Ownable2
     /// @notice USDG on Robinhood Chain (the Across output token).
     address public immutable remoteUsdg;
     /// @inheritdoc IBaseGateway
-    address public immutable override revenueFloat;
-
+    address public override revenueFloat;
     /// @inheritdoc IBaseGateway
     address public override remoteGateway;
     /// @notice Bridge fee cap as a share of the USDC bridged.
@@ -58,13 +69,13 @@ contract BaseGateway is IBaseGateway, IAny2EVMMessageReceiver, IERC165, Ownable2
     mapping(address => bool) private _keepers;
     mapping(address => bool) private _routers;
     mapping(address => bool) private _wrappers;
+    mapping(address => bool) private _underlyings;
 
     modifier onlyRouter() {
         if (msg.sender != ccipRouter) revert NotRouter();
         _;
     }
 
-    /// @param owner_          Owner (the Base Safe).
     /// @param ccipRouter_     The CCIP Router on Base.
     /// @param remoteSelector_ CCIP selector of Robinhood Chain.
     /// @param usdc_           USDC on Base.
@@ -72,14 +83,13 @@ contract BaseGateway is IBaseGateway, IAny2EVMMessageReceiver, IERC165, Ownable2
     /// @param remoteChainId_  EVM chain id of Robinhood Chain.
     /// @param remoteUsdg_     USDG on Robinhood Chain.
     constructor(
-        address owner_,
         address ccipRouter_,
         uint64 remoteSelector_,
         address usdc_,
         address spokePool_,
         uint256 remoteChainId_,
         address remoteUsdg_
-    ) Ownable(owner_) {
+    ) Ownable(msg.sender) {
         if (
             ccipRouter_ == address(0) || usdc_ == address(0) || spokePool_ == address(0) || remoteUsdg_ == address(0)
                 || remoteSelector_ == 0 || remoteChainId_ == 0
@@ -90,6 +100,16 @@ contract BaseGateway is IBaseGateway, IAny2EVMMessageReceiver, IERC165, Ownable2
         spokePool = spokePool_;
         remoteChainId = remoteChainId_;
         remoteUsdg = remoteUsdg_;
+        _disableInitializers();
+    }
+
+    /// @notice Initialise the proxy; deploys the float as the proxy's first contract.
+    /// @param owner_ Owner (the Base Safe).
+    function initialize(
+        address owner_
+    ) external initializer {
+        if (owner_ == address(0)) revert ZeroAddress();
+        _transferOwnership(owner_);
         maxFeeBps = 50;
         maxFeeFlat = 2e6;
         fillWindow = 4 hours;
@@ -287,7 +307,7 @@ contract BaseGateway is IBaseGateway, IAny2EVMMessageReceiver, IERC165, Ownable2
             allowed
                 && (
                     router == usdc || router == spokePool || router == ccipRouter || router == revenueFloat
-                        || _wrappers[router]
+                        || _wrappers[router] || _underlyings[router]
                 )
         ) {
             revert InvalidParam();
@@ -300,7 +320,10 @@ contract BaseGateway is IBaseGateway, IAny2EVMMessageReceiver, IERC165, Ownable2
     function setWrapper(address wrapper, bool allowed) external override onlyOwner {
         if (wrapper == address(0)) revert ZeroAddress();
         if (allowed && _routers[wrapper]) revert InvalidParam();
+        address underlying = address(ERC20Wrapper(wrapper).underlying());
+        if (allowed && _routers[underlying]) revert InvalidParam();
         _wrappers[wrapper] = allowed;
+        _underlyings[underlying] = allowed;
         emit WrapperSet(wrapper, allowed);
     }
 
@@ -501,4 +524,8 @@ contract BaseGateway is IBaseGateway, IAny2EVMMessageReceiver, IERC165, Ownable2
         uint256 w = abi.decode(data, (uint256));
         return w <= type(uint160).max ? address(uint160(w)) : address(0);
     }
+
+    function _authorizeUpgrade(
+        address
+    ) internal view override onlyOwner {}
 }

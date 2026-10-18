@@ -2,6 +2,7 @@
 pragma solidity 0.8.28;
 
 import {BaseGateway} from "../../src/bridge/BaseGateway.sol";
+import {GatewayProxies} from "../helpers/GatewayProxies.sol";
 
 import {CcipWrappedToken} from "../../src/bridge/CcipWrappedToken.sol";
 import {GatewayFloat} from "../../src/bridge/GatewayFloat.sol";
@@ -12,6 +13,7 @@ import {MockBlocklistToken, MockCcipRouter} from "../helpers/MockCcipRouter.sol"
 import {MockERC20} from "../helpers/MockERC20.sol";
 import {MockSwapRouter} from "../helpers/MockSwapRouter.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC165} from "@openzeppelin/contracts/utils/introspection/IERC165.sol";
 import {Test} from "forge-std/Test.sol";
@@ -43,7 +45,9 @@ contract BaseGatewayTest is Test {
         usdc = new MockERC20("USD Coin", "USDC", 6);
         cbZec = new MockBlocklistToken("Coinbase Wrapped ZEC", "cbZEC", 8);
         rZec = new CcipWrappedToken(IERC20(address(cbZec)), "Own Wrapped cbZEC", "rZEC", address(this));
-        gw = new BaseGateway(owner, address(ccip), RH, address(usdc), address(spoke), RH_CHAIN, rhUsdg);
+        gw = GatewayProxies.base(
+            owner, new BaseGateway(address(ccip), RH, address(usdc), address(spoke), RH_CHAIN, rhUsdg)
+        );
 
         vm.startPrank(owner);
         gw.setRemoteGateway(remote);
@@ -503,6 +507,8 @@ contract BaseGatewayTest is Test {
         gw.setRouter(float, true);
         vm.expectRevert(IBaseGateway.InvalidParam.selector);
         gw.setWrapper(address(router), true);
+        vm.expectRevert(IBaseGateway.InvalidParam.selector);
+        gw.setRouter(address(cbZec), true);
         vm.expectRevert(IBaseGateway.ZeroAddress.selector);
         gw.setRemoteGateway(address(0));
         vm.expectRevert(IBaseGateway.ZeroAddress.selector);
@@ -510,11 +516,49 @@ contract BaseGatewayTest is Test {
         vm.stopPrank();
     }
 
+    function test_setWrapper_underlyingIsRouter_reverts() public {
+        MockERC20 tok = new MockERC20("Token", "TOK", 18);
+        CcipWrappedToken wrapped = new CcipWrappedToken(IERC20(address(tok)), "Wrapped", "rTOK", address(this));
+        vm.startPrank(owner);
+        gw.setRouter(address(tok), true);
+        vm.expectRevert(IBaseGateway.InvalidParam.selector);
+        gw.setWrapper(address(wrapped), true);
+        gw.setRouter(address(tok), false);
+        gw.setWrapper(address(wrapped), true);
+        vm.stopPrank();
+    }
+
+    function test_initialize_once() public {
+        address float = gw.revenueFloat();
+        assertEq(GatewayFloat(float).gateway(), address(gw));
+        assertEq(gw.owner(), owner);
+        vm.expectRevert(Initializable.InvalidInitialization.selector);
+        gw.initialize(alice);
+        BaseGateway impl = new BaseGateway(address(ccip), RH, address(usdc), address(spoke), RH_CHAIN, rhUsdg);
+        vm.expectRevert(Initializable.InvalidInitialization.selector);
+        impl.initialize(alice);
+    }
+
+    function test_upgrade_onlyOwner_keepsState() public {
+        bytes32 id = _deliver(2e8, alice, 900e6);
+        address float = gw.revenueFloat();
+        BaseGateway impl = new BaseGateway(address(ccip), RH, address(usdc), address(spoke), RH_CHAIN, rhUsdg);
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, alice));
+        gw.upgradeToAndCall(address(impl), "");
+        vm.prank(owner);
+        gw.upgradeToAndCall(address(impl), "");
+        assertEq(gw.getOrder(id).receiver, alice);
+        assertEq(gw.revenueFloat(), float);
+        assertEq(gw.remoteGateway(), remote);
+        assertEq(gw.owner(), owner);
+    }
+
     function test_constructor_zero_reverts() public {
         vm.expectRevert(IBaseGateway.ZeroAddress.selector);
-        new BaseGateway(owner, address(0), RH, address(usdc), address(spoke), RH_CHAIN, rhUsdg);
+        new BaseGateway(address(0), RH, address(usdc), address(spoke), RH_CHAIN, rhUsdg);
         vm.expectRevert(IBaseGateway.ZeroAddress.selector);
-        new BaseGateway(owner, address(ccip), RH, address(usdc), address(spoke), RH_CHAIN, address(0));
+        new BaseGateway(address(ccip), RH, address(usdc), address(spoke), RH_CHAIN, address(0));
     }
 
     // ---------------------------------------------------------------- restock

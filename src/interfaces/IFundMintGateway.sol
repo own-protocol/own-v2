@@ -196,16 +196,19 @@ interface IFundMintGateway {
         bool atNav
     ) external returns (uint256 shares, uint256 id);
 
-    /// @notice Mint a queued order once stock covers it (keeper or receiver).
+    /// @notice Mint a queued order once stock covers it (keeper or receiver). A receiver needs stock for
+    ///         every queued reservation, so it cannot take a restock earlier orders wait for.
     /// @param id        Order id.
     /// @param swaps     Purchases of the Robinhood assets with the order's USDG.
     /// @param navShares Slice to mint, at most the order's; only a keeper may mint less (if the basket
-    ///                  moved), and the minimum scales.
+    ///                  moved); the minimum and the USDG it may spend scale, and the rest of the
+    ///                  order's USDG goes back to the receiver.
     /// @return shares Fund tokens minted.
     function fill(uint256 id, Swap[] calldata swaps, uint256 navShares) external returns (uint256 shares);
 
-    /// @notice Cancel a queued order after {maxWait} (receiver only). Its USDG comes back; the prepaid
-    ///         part comes back as the owed assets in kind if stock covers them, else as USDG from revenue.
+    /// @notice Cancel a queued order: the receiver after {maxWait}, a keeper at any time; refunds go to
+    ///         the receiver. Its USDG comes back; the prepaid part comes back as the owed assets in kind if
+    ///         stock covers them, else as USDG from revenue, at most what those assets are worth now.
     ///         If neither is available yet, only the order's own USDG comes back and the order stays open
     ///         for a later fill or cancel.
     /// @param id Order id.
@@ -216,7 +219,7 @@ interface IFundMintGateway {
     /// @notice Bridge revenue USDG to the Base gateway's float through Across (keeper). A bridge small
     ///         enough that the flat fee cap applies must take all revenue. An unfilled bridge refunds the
     ///         owner, who sends it back for {syncRevenue}.
-    /// @param usdgIn         USDG deposited.
+    /// @param usdgIn         USDG deposited; `type(uint256).max` deposits all revenue.
     /// @param usdcOut        USDC the relayer pays on Base (from a fresh Across quote).
     /// @param quoteTimestamp Timestamp of that quote.
     function bridgeRevenue(uint256 usdgIn, uint256 usdcOut, uint32 quoteTimestamp) external;
