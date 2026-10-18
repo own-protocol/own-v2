@@ -38,12 +38,17 @@ contract FundSwapAdapter is IFundSwapAdapter, ReentrancyGuardTransient {
         if (tokenIn == tokenOut) revert SameToken();
         if (amountIn == 0) revert ZeroAmount();
 
+        // Measure against the balances held before the swap, so the caller receives only what this
+        // swap produced — never a token donated or stranded in the adapter by an earlier caller.
+        uint256 outBefore = IERC20(tokenOut).balanceOf(address(this));
+        uint256 inBefore = IERC20(tokenIn).balanceOf(address(this));
+
         IERC20(tokenIn).safeTransferFrom(msg.sender, universalRouter, amountIn);
         IUniversalRouter(universalRouter).execute(commands, inputs, block.timestamp);
 
-        amountOut = IERC20(tokenOut).balanceOf(address(this));
+        amountOut = IERC20(tokenOut).balanceOf(address(this)) - outBefore;
         if (amountOut != 0) IERC20(tokenOut).safeTransfer(msg.sender, amountOut);
-        uint256 refund = IERC20(tokenIn).balanceOf(address(this));
+        uint256 refund = IERC20(tokenIn).balanceOf(address(this)) - inBefore;
         if (refund != 0) IERC20(tokenIn).safeTransfer(msg.sender, refund);
 
         emit Swapped(msg.sender, tokenIn, amountIn, tokenOut, amountOut, refund);

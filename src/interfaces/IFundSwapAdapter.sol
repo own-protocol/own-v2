@@ -7,7 +7,9 @@ pragma solidity 0.8.28;
 ///         only through Permit2, so it can't be called that way. This adapter is the allowlisted router
 ///         instead: it pulls the approved amount from the caller straight into the Universal Router, runs
 ///         the caller's commands with the router paying from its own balance (`payerIsUser = false`), and
-///         sends the caller every `tokenOut` and leftover `tokenIn` it holds afterwards.
+///         sends the caller the `tokenOut` and leftover `tokenIn` this swap produced, measured as the
+///         balance gained during the call so a token donated or stranded in the adapter earlier is left
+///         untouched rather than paid to the next caller.
 ///
 ///         Commands must send their output to this adapter (the router's `MSG_SENDER` recipient) and may
 ///         sweep unused `tokenIn` to it too. The caller still checks what it got back: a fund's rebalance

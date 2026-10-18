@@ -91,13 +91,34 @@ contract FundSwapAdapterTest is FundTestBase {
         assertEq(tokenB.balanceOf(caller), 20e6);
     }
 
-    function test_swap_forwardsDonatedOutput() public {
+    function test_swap_leavesDonatedOutputUntouched() public {
+        // A token donated or stranded in the adapter before the call must not be paid to this caller:
+        // the caller receives only the output this swap produced, and the donation stays resident.
         tokenB.mint(address(adapter), 1e6);
         vm.prank(caller);
         uint256 out = adapter.swap(
             address(tokenA), 1e18, address(tokenB), hex"00", _inputs(address(tokenA), 1e18, address(tokenB), 2e6, 0)
         );
-        assertEq(out, 3e6);
+        assertEq(out, 2e6);
+        assertEq(tokenB.balanceOf(caller), 2e6);
+        assertEq(tokenB.balanceOf(address(adapter)), 1e6);
+    }
+
+    function test_swap_leavesDonatedInputUntouched() public {
+        // Same for a resident `tokenIn`: only the input swept back by this call is refunded,
+        // not a balance that was already sitting in the adapter.
+        tokenA.mint(address(adapter), 3e18);
+        vm.prank(caller);
+        adapter.swap(
+            address(tokenA),
+            10e18,
+            address(tokenB),
+            hex"00",
+            _inputs(address(tokenA), 8e18, address(tokenB), 20e6, 2e18)
+        );
+        // Caller sold 10, got 2 back: net 8 out. The 3e18 donation stays in the adapter.
+        assertEq(tokenA.balanceOf(caller), 92e18);
+        assertEq(tokenA.balanceOf(address(adapter)), 3e18);
     }
 
     function test_swap_withoutApproval_reverts() public {
