@@ -95,7 +95,8 @@ contract FundExitGateway is IFundExitGateway, ReentrancyGuardTransient {
             Route calldata r = routes[i];
             if (amounts[i] == 0 || assets[i] == usdg) continue;
             if (r.bridge) {
-                if (r.router != address(0)) revert InvalidRoute();
+                // The maximum is the Base gateway's claim-only marker.
+                if (r.router != address(0) || r.minOut == type(uint256).max) revert InvalidRoute();
                 feePaid += _bridge(assets[i], amounts[i], receiver, r.minOut, msg.value - feePaid);
                 ++bridged;
             } else if (r.router != address(0)) {

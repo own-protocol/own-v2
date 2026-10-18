@@ -155,6 +155,15 @@ contract FundExitGatewayTest is FundTestBase {
         gateway.exit{value: FEE}(address(fund), SHARES, routes, 0, bob);
     }
 
+    function test_exit_claimOnlyMinOut_reverts() public {
+        (uint256[] memory amounts,) = fund.previewRedeem(SHARES);
+        IFundExitGateway.Route[] memory routes = _routes(amounts);
+        routes[2] = _bridgeRoute(type(uint256).max);
+        vm.prank(bob);
+        vm.expectRevert(IFundExitGateway.InvalidRoute.selector);
+        gateway.exit{value: FEE}(address(fund), SHARES, routes, 0, bob);
+    }
+
     function test_exit_belowMinimum_reverts() public {
         (uint256[] memory amounts,) = fund.previewRedeem(SHARES);
         IFundExitGateway.Route[] memory routes = _routes(amounts);

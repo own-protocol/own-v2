@@ -926,6 +926,7 @@ contract FrontierLaunchRobinhoodForkTest is Test {
             RH_CCIP_ROUTER,
             BASE_SELECTOR,
             baseGatewayStandIn,
+            makeAddr("baseFloat"),
             RH_SPOKE_POOL,
             BASE_USDC,
             8453

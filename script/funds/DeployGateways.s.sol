@@ -12,13 +12,16 @@ import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol"
 
 /// @title DeployGateways — the USDG mint and exit gateways on Robinhood Chain and their Base counterpart
 /// @notice In order:
-///         1. `deployBase()` on Base: the {BaseGateway}, owned by the Base Safe.
+///         1. `deployBase()` on Base: the {BaseGateway} (and its float), owned by the deployer for now.
 ///         2. `deployRobinhood()` on Robinhood Chain (BASE_GATEWAY set): the ownerless {FundExitGateway} and the
 ///            {FundMintGateway}, owned by the governance Safe.
-///         3. `robinhoodBatch()`: the governance Safe grants the mint gateway FUND_GATEWAY (so the mint zap
+///         3. `configureBase()` on Base, right after step 2: the deployer points the Base gateway at both
+///            Robinhood gateways, allows the keeper, the rZEC and rHYPE wrappers and the swap router, and
+///            offers ownership to the Base Safe. Until this runs, an exit's Base leg would arrive claim-only
+///            for the exit gateway's address and be stuck, so run it before anyone can use step 2's gateways.
+///         4. `robinhoodBatch()`: the governance Safe grants the mint gateway FUND_GATEWAY (so the mint zap
 ///            mints for its users), marks rZEC and rHYPE as stocked and allows the keeper.
-///         4. `baseBatch()`: the Base Safe points the Base gateway at both Robinhood gateways, allows the
-///            keeper, the rZEC and rHYPE wrappers and the swap router.
+///         5. `baseBatch()`: the Base Safe checks the configuration and accepts ownership.
 ///         Each batch is simulated as its Safe on the RPC's chain and written to `safe-batches/<name>.json`
 ///         for the Safe Transaction Builder, with `<name>.md` listing every call.
 ///         After both batches: Own's float stocks the mint gateway (`addStock`, any amount, from the Safe).
@@ -30,6 +33,7 @@ import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol"
 /// Usage:
 ///   forge script script/funds/DeployGateways.s.sol --rpc-url base --sig "deployBase()" --broadcast
 ///   forge script script/funds/DeployGateways.s.sol --rpc-url robinhood --sig "deployRobinhood()" --broadcast
+///   forge script script/funds/DeployGateways.s.sol --rpc-url base --sig "configureBase()" --broadcast
 ///   forge script script/funds/DeployGateways.s.sol --rpc-url robinhood --sig "robinhoodBatch()"
 ///   forge script script/funds/DeployGateways.s.sol --rpc-url base --sig "baseBatch()"
 contract DeployGateways is Script {
@@ -69,15 +73,25 @@ contract DeployGateways is Script {
         revert("pick a step with --sig, see the header");
     }
 
-    /// @notice Step 1 (Base): deploy the Base gateway, owned by the Base Safe.
+    /// @notice Step 1 (Base): deploy the Base gateway, owned by the deployer until `configureBase()`.
     function deployBase() external {
         require(block.chainid == BASE_CHAIN_ID, "RPC is not Base (8453)");
-        vm.startBroadcast(vm.envUint("DEPLOYER_PRIVATE_KEY_BASE"));
+        uint256 key = vm.envUint("DEPLOYER_PRIVATE_KEY_BASE");
+        vm.startBroadcast(key);
         BaseGateway gw = new BaseGateway(
-            BASE_SAFE, BASE_CCIP_ROUTER, RH_SELECTOR, BASE_USDC, BASE_SPOKE_POOL, ROBINHOOD_CHAIN_ID, USDG
+            vm.addr(key), BASE_CCIP_ROUTER, RH_SELECTOR, BASE_USDC, BASE_SPOKE_POOL, ROBINHOOD_CHAIN_ID, USDG
         );
         vm.stopBroadcast();
+        require(gw.revenueFloat() == floatOf(address(gw)), "float address");
         console.log("BaseGateway     ", address(gw));
+        console.log("GatewayFloat    ", gw.revenueFloat());
+    }
+
+    /// @notice The float a Base gateway deploys in its constructor (its first CREATE).
+    function floatOf(
+        address baseGateway
+    ) public pure returns (address) {
+        return vm.computeCreateAddress(baseGateway, 1);
     }
 
     /// @notice Step 2 (Robinhood Chain): deploy the exit and mint gateways against the Base gateway.
@@ -90,20 +104,54 @@ contract DeployGateways is Script {
         vm.startBroadcast(vm.envUint("DEPLOYER_PRIVATE_KEY_ROBINHOOD"));
         FundExitGateway exitGw = new FundExitGateway(factory, RH_CCIP_ROUTER, BASE_SELECTOR, baseGateway);
         FundMintGateway mintGw = new FundMintGateway(
-            RH_SAFE, factory, zap, RH_CCIP_ROUTER, BASE_SELECTOR, baseGateway, RH_SPOKE_POOL, BASE_USDC, BASE_CHAIN_ID
+            RH_SAFE,
+            factory,
+            zap,
+            RH_CCIP_ROUTER,
+            BASE_SELECTOR,
+            baseGateway,
+            floatOf(baseGateway),
+            RH_SPOKE_POOL,
+            BASE_USDC,
+            BASE_CHAIN_ID
         );
         vm.stopBroadcast();
         console.log("FundExitGateway ", address(exitGw));
         console.log("FundMintGateway ", address(mintGw));
     }
 
-    /// @notice Step 3 (Robinhood Chain): the governance Safe's batch.
+    /// @notice Step 3 (Base): the deployer configures the Base gateway and offers ownership to the Base Safe.
+    function configureBase() external {
+        require(block.chainid == BASE_CHAIN_ID, "RPC is not Base (8453)");
+        BaseGateway gw = BaseGateway(vm.envAddress("BASE_GATEWAY"));
+        address exitGw = vm.envAddress("FUND_EXIT_GATEWAY");
+        address mintGw = vm.envAddress("FUND_MINT_GATEWAY");
+        address keeper = vm.envOr("GATEWAY_KEEPER", KEEPER);
+        address swapRouter = vm.envOr("BASE_SWAP_ROUTER", ONE_INCH_V6);
+        uint256 key = vm.envUint("DEPLOYER_PRIVATE_KEY_BASE");
+        require(gw.owner() == vm.addr(key), "deployer must own the Base gateway");
+        vm.startBroadcast(key);
+        gw.setRemoteGateway(exitGw);
+        gw.setRemoteMintGateway(mintGw);
+        gw.setKeeper(keeper, true);
+        gw.setWrapper(RZEC_BASE, true);
+        gw.setWrapper(RHYPE_BASE, true);
+        gw.setRouter(swapRouter, true);
+        gw.transferOwnership(BASE_SAFE);
+        vm.stopBroadcast();
+        _checkBase(gw, exitGw, mintGw, keeper, swapRouter);
+        require(gw.pendingOwner() == BASE_SAFE, "pending owner");
+    }
+
+    /// @notice Step 4 (Robinhood Chain): the governance Safe's batch.
     function robinhoodBatch() external {
         require(block.chainid == ROBINHOOD_CHAIN_ID, "RPC is not Robinhood Chain (4663)");
         address mintGw = vm.envAddress("FUND_MINT_GATEWAY");
         address keeper = vm.envOr("GATEWAY_KEEPER", KEEPER);
         require(FundMintGateway(mintGw).owner() == RH_SAFE, "mint gateway owner");
-        require(FundMintGateway(mintGw).baseGateway() == vm.envAddress("BASE_GATEWAY"), "mint gateway Base side");
+        address baseGateway = vm.envAddress("BASE_GATEWAY");
+        require(FundMintGateway(mintGw).baseGateway() == baseGateway, "mint gateway Base side");
+        require(FundMintGateway(mintGw).baseFloat() == floatOf(baseGateway), "mint gateway Base float");
 
         Call[] memory calls = new Call[](4);
         calls[0] = Call(
@@ -125,33 +173,43 @@ contract DeployGateways is Script {
         );
     }
 
-    /// @notice Step 4 (Base): the Base Safe's batch.
+    /// @notice Step 5 (Base): the Base Safe's batch, after checking what `configureBase()` set.
     function baseBatch() external {
         require(block.chainid == BASE_CHAIN_ID, "RPC is not Base (8453)");
-        address gw = vm.envAddress("BASE_GATEWAY");
+        BaseGateway gw = BaseGateway(vm.envAddress("BASE_GATEWAY"));
         address exitGw = vm.envAddress("FUND_EXIT_GATEWAY");
         address mintGw = vm.envAddress("FUND_MINT_GATEWAY");
         address keeper = vm.envOr("GATEWAY_KEEPER", KEEPER);
         address swapRouter = vm.envOr("BASE_SWAP_ROUTER", ONE_INCH_V6);
-        require(BaseGateway(gw).owner() == BASE_SAFE, "Base gateway owner");
+        _checkBase(gw, exitGw, mintGw, keeper, swapRouter);
+        require(gw.pendingOwner() == BASE_SAFE, "ownership not offered to the Base Safe");
 
-        Call[] memory calls = new Call[](6);
-        calls[0] = Call(gw, abi.encodeCall(BaseGateway.setRemoteGateway, (exitGw)), "setRemoteGateway(exit gateway)");
-        calls[1] =
-            Call(gw, abi.encodeCall(BaseGateway.setRemoteMintGateway, (mintGw)), "setRemoteMintGateway(mint gateway)");
-        calls[2] = Call(gw, abi.encodeCall(BaseGateway.setKeeper, (keeper, true)), "setKeeper(keeper)");
-        calls[3] = Call(gw, abi.encodeCall(BaseGateway.setWrapper, (RZEC_BASE, true)), "setWrapper(rZEC)");
-        calls[4] = Call(gw, abi.encodeCall(BaseGateway.setWrapper, (RHYPE_BASE, true)), "setWrapper(rHYPE)");
-        calls[5] = Call(gw, abi.encodeCall(BaseGateway.setRouter, (swapRouter, true)), "setRouter(swap router)");
+        Call[] memory calls = new Call[](1);
+        calls[0] = Call(address(gw), abi.encodeCall(gw.acceptOwnership, ()), "acceptOwnership()");
         _simulate(BASE_SAFE, calls);
-        require(BaseGateway(gw).remoteGateway() == exitGw, "remote gateway");
+        require(gw.owner() == BASE_SAFE, "Base gateway owner");
         _write(
             "gateways-base",
-            "USDG gateways on Base: the Base gateway accepts sells from the Robinhood exit gateway, restocks the mint gateway, and may wrap rZEC and rHYPE and swap through the router",
+            "USDG gateways on Base: the Base Safe takes ownership of the Base gateway, already pointed at the Robinhood exit and mint gateways with the keeper, the rZEC and rHYPE wrappers and the swap router allowed",
             BASE_CHAIN_ID,
             BASE_SAFE,
             calls
         );
+    }
+
+    function _checkBase(
+        BaseGateway gw,
+        address exitGw,
+        address mintGw,
+        address keeper,
+        address swapRouter
+    ) internal view {
+        require(gw.remoteGateway() == exitGw, "remote gateway");
+        require(gw.remoteMintGateway() == mintGw, "remote mint gateway");
+        require(gw.isKeeper(keeper), "keeper");
+        require(gw.isWrapper(RZEC_BASE) && gw.isWrapper(RHYPE_BASE), "wrappers");
+        require(gw.isRouter(swapRouter), "router");
+        require(gw.revenueFloat() == floatOf(address(gw)), "float");
     }
 
     function _simulate(address safe, Call[] memory calls) internal {

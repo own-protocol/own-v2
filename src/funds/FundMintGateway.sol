@@ -67,8 +67,10 @@ contract FundMintGateway is
     address public immutable ccipRouter;
     /// @notice CCIP selector of Base.
     uint64 public immutable baseSelector;
-    /// @notice The Base gateway: sends restock over CCIP and receives the bridged revenue.
+    /// @notice The Base gateway: sends restock over CCIP.
     address public immutable baseGateway;
+    /// @notice The Base gateway's float: receives the bridged revenue.
+    address public immutable baseFloat;
     /// @notice The Across SpokePool on this chain.
     address public immutable spokePool;
     /// @notice USDC on Base (the Across output token).
@@ -97,6 +99,7 @@ contract FundMintGateway is
     uint256 public orderCount;
 
     mapping(address => uint256) private _stock;
+    mapping(address => uint256) private _reserved;
     mapping(address => bool) private _baseAssets;
     mapping(address => bool) private _keepers;
     mapping(uint256 => Order) private _orders;
@@ -112,6 +115,7 @@ contract FundMintGateway is
     /// @param ccipRouter_   The CCIP Router on this chain.
     /// @param baseSelector_ CCIP selector of Base.
     /// @param baseGateway_  The Base gateway.
+    /// @param baseFloat_    The Base gateway's float.
     /// @param spokePool_    The Across SpokePool on this chain.
     /// @param baseUsdc_     USDC on Base.
     /// @param baseChainId_  EVM chain id of Base.
@@ -122,19 +126,22 @@ contract FundMintGateway is
         address ccipRouter_,
         uint64 baseSelector_,
         address baseGateway_,
+        address baseFloat_,
         address spokePool_,
         address baseUsdc_,
         uint256 baseChainId_
     ) Ownable(owner_) {
         if (
             factory_ == address(0) || zap_ == address(0) || ccipRouter_ == address(0) || baseGateway_ == address(0)
-                || spokePool_ == address(0) || baseUsdc_ == address(0) || baseSelector_ == 0 || baseChainId_ == 0
+                || baseFloat_ == address(0) || spokePool_ == address(0) || baseUsdc_ == address(0) || baseSelector_ == 0
+                || baseChainId_ == 0
         ) revert ZeroAddress();
         factory = factory_;
         zap = zap_;
         ccipRouter = ccipRouter_;
         baseSelector = baseSelector_;
         baseGateway = baseGateway_;
+        baseFloat = baseFloat_;
         spokePool = spokePool_;
         baseUsdc = baseUsdc_;
         baseChainId = baseChainId_;
@@ -161,13 +168,18 @@ contract FundMintGateway is
         if (usdgIn == 0 || navShares == 0) revert ZeroAddress();
         IERC20(_usdg).safeTransferFrom(msg.sender, address(this), usdgIn);
         Req memory q = Req(fund, usdgIn, navShares, minSharesOut, atNav, IFund(fund).assets(), new uint256[](0), 0);
-        (,, q.amounts,,) = IFund(fund).previewMint(navShares, atNav);
+        uint256 quoted;
+        (quoted,, q.amounts,,) = IFund(fund).previewMint(navShares, atNav);
         bool short;
         (q.cost, short) = _quote(q.assets, q.amounts);
         if (q.cost > usdgIn) revert InsufficientUsdg();
         revenue += q.cost;
 
-        if (short) return (0, _queue(q));
+        if (short) {
+            // A minimum above today's quote would let the receiver block keeper fills.
+            if (minSharesOut > quoted) revert Slippage();
+            return (0, _queue(q));
+        }
         shares = _mintNow(q, swaps);
     }
 
@@ -189,6 +201,7 @@ contract FundMintGateway is
         if (!_keepers[msg.sender] && msg.sender != receiver) revert NotKeeper();
         uint256 orderShares = o.navShares;
         if (navShares == 0 || navShares > orderShares) revert InvalidParam();
+        if (navShares != orderShares && !_keepers[msg.sender]) revert InvalidParam();
 
         o.status = Status.Filled;
         uint256 budget = o.usdg;
@@ -215,23 +228,38 @@ contract FundMintGateway is
         if (o.status != Status.Queued) revert NotQueued();
         if (msg.sender != o.receiver) revert NotReceiver();
         if (block.timestamp < o.createdAt + maxWait) revert TooEarly();
+        uint256 usdg = o.usdg;
         uint256 prepaid = o.prepaid;
-        if (revenue < prepaid) revert InsufficientRevenue();
+        bool inKind = _covers(o);
+        if (!inKind && revenue < prepaid) {
+            // The prepaid part is on Base; release the order's own USDG and keep the order open.
+            if (usdg == 0) revert InsufficientRevenue();
+            o.usdg = 0;
+            queuedUsdg -= usdg;
+            IERC20(_usdg).safeTransfer(msg.sender, usdg);
+            emit UsdgReleased(id, usdg);
+            return;
+        }
         o.status = Status.Cancelled;
-        revenue -= prepaid;
-        queuedUsdg -= o.usdg;
-        uint256 refund = o.usdg + prepaid;
-        IERC20(_usdg).safeTransfer(msg.sender, refund);
-        emit Cancelled(id, refund);
+        queuedUsdg -= usdg;
+        uint256 refund = usdg;
+        if (!inKind) {
+            revenue -= prepaid;
+            refund += prepaid;
+        }
+        _releaseOwed(o, inKind, msg.sender);
+        if (refund != 0) IERC20(_usdg).safeTransfer(msg.sender, refund);
+        emit Cancelled(id, refund, inKind);
     }
 
     /// @notice Adds Base-sourced assets the Base gateway sends to the stock (called by the CCIP Router).
-    /// @dev Never reverts for a router delivery. Anything not from the Base gateway, or not a Base-sourced
+    /// @dev Never reverts for a router delivery, except one re-entered from inside a call here (the message
+    ///      then stays open for manual execution). Anything not from the Base gateway, or not a Base-sourced
     ///      asset, stays untracked for the owner to sweep.
     /// @param message The CCIP message.
     function ccipReceive(
         CcipClient.Any2EVMMessage calldata message
-    ) external override {
+    ) external override nonReentrant {
         if (msg.sender != ccipRouter) revert NotRouter();
         if (message.sourceChainSelector != baseSelector || message.sender.length != 32) return;
         if (abi.decode(message.sender, (uint256)) != uint256(uint160(baseGateway))) return;
@@ -252,16 +280,20 @@ contract FundMintGateway is
         uint32 quoteTimestamp
     ) external override onlyKeeper nonReentrant {
         if (usdgIn == 0) revert ZeroAddress();
-        if (usdgIn > revenue) revert InsufficientRevenue();
+        uint256 rev = revenue;
+        if (usdgIn > rev) revert InsufficientRevenue();
+        // Below the size where the flat cap dominates, only a bridge of all revenue, so the cap can't be split.
+        if (usdgIn != rev && usdgIn * maxFeeBps / BPS < maxFeeFlat) revert InvalidParam();
         if (usdcOut > usdgIn || usdgIn - usdcOut > Math.max(maxFeeFlat, usdgIn * maxFeeBps / BPS)) {
             revert BridgeFeeTooHigh();
         }
-        revenue -= usdgIn;
+        revenue = rev - usdgIn;
         address pool = spokePool;
         IERC20(_usdg).forceApprove(pool, usdgIn);
+        // An unfilled bridge refunds the owner, so no refund can land here in the middle of a swap.
         IAcrossSpokePool(pool).depositV3(
-            address(this),
-            baseGateway,
+            owner(),
+            baseFloat,
             _usdg,
             baseUsdc,
             usdgIn,
@@ -299,7 +331,7 @@ contract FundMintGateway is
     /// @inheritdoc IFundMintGateway
     function removeStock(address asset, uint256 amount, address to) external override onlyOwner nonReentrant {
         if (to == address(0)) revert ZeroAddress();
-        if (_stock[asset] < amount) revert InsufficientStock();
+        if (_free(asset) < amount) revert InsufficientStock();
         _stock[asset] -= amount;
         IERC20(asset).safeTransfer(to, amount);
         emit StockRemoved(asset, amount, to);
@@ -335,7 +367,7 @@ contract FundMintGateway is
     /// @inheritdoc IFundMintGateway
     function setBaseAsset(address asset, bool allowed) external override onlyOwner {
         if (asset == address(0)) revert ZeroAddress();
-        if (asset == _usdg || (!allowed && _stock[asset] != 0)) revert InvalidParam();
+        if (asset == _usdg || (!allowed && (_stock[asset] != 0 || _reserved[asset] != 0))) revert InvalidParam();
         _baseAssets[asset] = allowed;
         emit BaseAssetSet(asset, allowed);
     }
@@ -382,6 +414,13 @@ contract FundMintGateway is
         return _stock[asset];
     }
 
+    /// @inheritdoc IFundMintGateway
+    function reserved(
+        address asset
+    ) external view override returns (uint256) {
+        return _reserved[asset];
+    }
+
     /// @notice Whether `asset` is Base-sourced (stocked here).
     /// @param asset The asset.
     /// @return True if stocked.
@@ -416,7 +455,7 @@ contract FundMintGateway is
         for (uint256 i; i < assets.length; ++i) {
             if (!_baseAssets[assets[i]] || amounts[i] == 0) continue;
             cost += stockCost(assets[i], amounts[i]);
-            if (_stock[assets[i]] < amounts[i]) short = true;
+            if (_free(assets[i]) < amounts[i]) short = true;
         }
     }
 
@@ -441,12 +480,43 @@ contract FundMintGateway is
             uint256 owed = o.owed[j];
             if (_stock[asset] < owed) revert InsufficientStock();
             _stock[asset] -= owed;
+            _reserved[asset] -= owed;
             bool inBasket;
             for (uint256 i; i < assets.length; ++i) {
                 if (assets[i] == asset) (taken[i], inBasket) = (owed, true);
             }
             // An asset dropped from the basket while the order waited is the receiver's in kind.
             if (!inBasket) IERC20(asset).safeTransfer(receiver, owed);
+        }
+    }
+
+    function _free(
+        address asset
+    ) internal view returns (uint256) {
+        uint256 s = _stock[asset];
+        uint256 r = _reserved[asset];
+        return s > r ? s - r : 0;
+    }
+
+    function _covers(
+        Order storage o
+    ) internal view returns (bool) {
+        for (uint256 j; j < o.assets.length; ++j) {
+            if (_stock[o.assets[j]] < o.owed[j]) return false;
+        }
+        return true;
+    }
+
+    /// @dev Drops the order's reservation; `take` also hands the owed stock to `to` in kind.
+    function _releaseOwed(Order storage o, bool take, address to) internal {
+        for (uint256 j; j < o.assets.length; ++j) {
+            address asset = o.assets[j];
+            uint256 owed = o.owed[j];
+            _reserved[asset] -= owed;
+            if (take) {
+                _stock[asset] -= owed;
+                IERC20(asset).safeTransfer(to, owed);
+            }
         }
     }
 
@@ -469,6 +539,7 @@ contract FundMintGateway is
             if (!_baseAssets[q.assets[i]] || q.amounts[i] == 0) continue;
             o.assets.push(q.assets[i]);
             o.owed.push(q.amounts[i]);
+            _reserved[q.assets[i]] += q.amounts[i];
         }
         queuedUsdg += usdg;
         emit Queued(id, q.fund, msg.sender, usdg, q.cost);
@@ -546,12 +617,15 @@ contract FundMintGateway is
         for (uint256 i; i < run.assets.length; ++i) {
             IERC20 a = IERC20(run.assets[i]);
             a.forceApprove(z, 0);
-            uint256 left = run.avail[i] - (run.pre[i] - a.balanceOf(address(this)));
+            // Saturating: a zap refund above what it pulled (a donation) must not revert the mint.
+            uint256 have = a.balanceOf(address(this)) + run.avail[i];
+            uint256 left = have > run.pre[i] ? have - run.pre[i] : 0;
             if (left == 0) continue;
             if (run.taken[i] != 0 && restock) _stock[run.assets[i]] += left;
             else a.safeTransfer(run.receiver, left);
         }
-        uint256 usdgLeft = run.budget - (run.usdgBefore - usdg.balanceOf(address(this)));
+        uint256 usdgHave = usdg.balanceOf(address(this)) + run.budget;
+        uint256 usdgLeft = usdgHave > run.usdgBefore ? usdgHave - run.usdgBefore : 0;
         if (usdgLeft != 0) usdg.safeTransfer(run.receiver, usdgLeft);
     }
 }

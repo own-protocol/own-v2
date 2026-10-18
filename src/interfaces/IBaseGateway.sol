@@ -11,9 +11,9 @@ pragma solidity 0.8.28;
 ///         claim the asset on Base instead. A message from any other sender is held for the sender to
 ///         claim and is never sold.
 ///
-///         Restock: USDC the Robinhood mint gateway bridges here (Across, no order attached) is free
-///         float. A keeper spends it on an allowed wrapper's underlying, wraps it and sends it over CCIP
-///         to the mint gateway's stock.
+///         Restock: USDC the Robinhood mint gateway bridges over Across lands in {revenueFloat}, a separate
+///         contract, never here. A keeper spends it on an allowed wrapper's underlying, wraps it and sends
+///         it over CCIP to the mint gateway's stock.
 ///
 ///         Manual options: buy an allowed wrapper with USDC, or unwrap and sell it for USDC, in one
 ///         transaction each. These measure balance changes, so they never touch orders held here.
@@ -143,6 +143,12 @@ interface IBaseGateway {
     /// @param maxFeeFlat Cap in USDC; the larger of the two applies.
     event BridgeFeeCapSet(uint256 maxFeeBps, uint256 maxFeeFlat);
 
+    /// @notice Emitted when the owner takes tokens out of the float.
+    /// @param token  The token.
+    /// @param to     Recipient.
+    /// @param amount Amount.
+    event FloatWithdrawn(address indexed token, address indexed to, uint256 amount);
+
     /// @notice Emitted when the Across fill window changes.
     /// @param fillWindow Seconds a relayer has to fill before the deposit refunds to the receiver on Base.
     event FillWindowSet(uint32 fillWindow);
@@ -192,7 +198,7 @@ interface IBaseGateway {
     /// @notice A parameter is out of range.
     error InvalidParam();
 
-    /// @notice USDC free of orders does not cover the amount.
+    /// @notice The float does not cover the amount.
     error InsufficientUsdc();
 
     /// @notice The native value sent does not cover the CCIP fee.
@@ -251,10 +257,10 @@ interface IBaseGateway {
     ) external returns (uint256 usdcOut);
 
     /// @notice Restock the Robinhood mint gateway (keeper): buy an allowed wrapper's underlying with USDC
-    ///         free of orders (the float bridged from Robinhood Chain), wrap it and send it over CCIP. The
-    ///         keeper pays the CCIP fee; any excess is refunded.
+    ///         from the float (bridged from Robinhood Chain), wrap it and send it over CCIP. The keeper pays
+    ///         the CCIP fee; any excess is refunded.
     /// @param wrapper The wrapper (rZEC, rHYPE).
-    /// @param usdcIn  USDC the router is approved for; any it leaves stays free here.
+    /// @param usdcIn  USDC taken from the float; any the router leaves goes back to it.
     /// @param swap    Purchase of the underlying with USDC.
     /// @param minOut  Minimum wrapper sent.
     /// @return messageId CCIP message id.
@@ -271,9 +277,19 @@ interface IBaseGateway {
         address gateway
     ) external;
 
-    /// @notice USDC held here free of orders.
+    /// @notice USDC in the float, free for restocks.
     /// @return Amount.
     function freeUsdc() external view returns (uint256);
+
+    /// @notice The contract the mint gateway's revenue bridge pays on Base.
+    /// @return The float.
+    function revenueFloat() external view returns (address);
+
+    /// @notice Take tokens out of the float (owner).
+    /// @param token  The token.
+    /// @param to     Recipient.
+    /// @param amount Amount.
+    function withdrawFloat(address token, address to, uint256 amount) external;
 
     /// @notice Set the Robinhood exit gateway whose messages become sellable orders (owner).
     /// @param gateway The gateway.

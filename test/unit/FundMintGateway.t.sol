@@ -26,6 +26,7 @@ contract FundMintGatewayTest is FundTestBase {
     MockSwapRouter internal router;
     address internal safe = makeAddr("safe");
     address internal baseGateway = makeAddr("baseGateway");
+    address internal baseFloat = makeAddr("baseFloat");
     address internal baseUsdc = makeAddr("baseUsdc");
 
     uint256 internal tslaNeed;
@@ -43,7 +44,16 @@ contract FundMintGatewayTest is FundTestBase {
         vm.stopPrank();
 
         gw = new FundMintGateway(
-            safe, address(factory), address(zap), address(ccip), BASE, baseGateway, address(spoke), baseUsdc, 8453
+            safe,
+            address(factory),
+            address(zap),
+            address(ccip),
+            BASE,
+            baseGateway,
+            baseFloat,
+            address(spoke),
+            baseUsdc,
+            8453
         );
         vm.prank(admin);
         registry.grantRole(keccak256("FUND_GATEWAY"), address(gw));
@@ -234,15 +244,126 @@ contract FundMintGatewayTest is FundTestBase {
         assertEq(uint8(gw.getOrder(1).status), uint8(IFundMintGateway.Status.Cancelled));
     }
 
-    function test_cancel_revenueBridged_reverts() public {
+    function test_cancel_revenueBridged_releasesUsdg_thenInKind() public {
         _queue();
         uint256 rev = gw.revenue();
         vm.prank(keeper);
         gw.bridgeRevenue(rev, rev - 1e6, uint32(block.timestamp));
         vm.warp(block.timestamp + 1 days);
+        uint256 before = usdg.balanceOf(alice);
+        vm.prank(alice);
+        gw.cancel(1);
+        assertEq(usdg.balanceOf(alice) - before, PAY - rev, "order USDG back");
+        assertEq(gw.queuedUsdg(), 0);
+        assertEq(uint8(gw.getOrder(1).status), uint8(IFundMintGateway.Status.Queued), "prepaid part still open");
         vm.prank(alice);
         vm.expectRevert(IFundMintGateway.InsufficientRevenue.selector);
         gw.cancel(1);
+
+        _restock(tslaNeed);
+        vm.prank(alice);
+        gw.cancel(1);
+        assertEq(tsla.balanceOf(alice), tslaNeed, "prepaid stock in kind");
+        assertEq(gw.stock(address(tsla)), 0);
+        assertEq(gw.reserved(address(tsla)), 0);
+        assertEq(uint8(gw.getOrder(1).status), uint8(IFundMintGateway.Status.Cancelled));
+    }
+
+    function test_cancel_stockCovers_paysInKind() public {
+        _queue();
+        _restock(tslaNeed);
+        uint256 rev = gw.revenue();
+        vm.warp(block.timestamp + 1 days);
+        uint256 before = usdg.balanceOf(alice);
+        vm.prank(alice);
+        gw.cancel(1);
+        assertEq(usdg.balanceOf(alice) - before, PAY - rev, "only the order USDG");
+        assertEq(tsla.balanceOf(alice), tslaNeed, "owed stock in kind");
+        assertEq(gw.revenue(), rev, "Own keeps the prepaid");
+        assertEq(gw.reserved(address(tsla)), 0);
+    }
+
+    function test_mint_queuedMinAboveQuote_reverts() public {
+        (uint256 quoted,,,,) = fund.previewMint(NAV_SHARES, false);
+        IFundMintGateway.Swap[] memory sw = _swaps(0);
+        vm.prank(alice);
+        vm.expectRevert(IFundMintGateway.Slippage.selector);
+        gw.mint(address(fund), PAY, sw, NAV_SHARES, quoted + 1, false);
+    }
+
+    function test_fill_receiverPartial_reverts() public {
+        _queue();
+        _restock(tslaNeed);
+        IFundMintGateway.Swap[] memory sw = _swaps(0);
+        vm.prank(alice);
+        vm.expectRevert(IFundMintGateway.InvalidParam.selector);
+        gw.fill(1, sw, 1);
+    }
+
+    function test_queuedStock_reservedFromNewMints() public {
+        _queue();
+        assertEq(gw.reserved(address(tsla)), tslaNeed);
+        _restock(tslaNeed);
+        IFundMintGateway.Swap[] memory sw = _swaps(0);
+        vm.prank(alice);
+        (, uint256 id) = gw.mint(address(fund), PAY, sw, NAV_SHARES, 1, false);
+        assertEq(id, 2, "second mint queues instead of taking the first order's stock");
+        assertEq(gw.reserved(address(tsla)), 2 * tslaNeed);
+        vm.prank(keeper);
+        gw.fill(1, sw, NAV_SHARES);
+        assertEq(gw.reserved(address(tsla)), tslaNeed);
+
+        vm.startPrank(safe);
+        vm.expectRevert(IFundMintGateway.InvalidParam.selector);
+        gw.setBaseAsset(address(tsla), false);
+        vm.stopPrank();
+    }
+
+    function test_removeStock_keepsReserved() public {
+        _queue();
+        _stock(tslaNeed);
+        vm.prank(safe);
+        vm.expectRevert(IFundMintGateway.InsufficientStock.selector);
+        gw.removeStock(address(tsla), 1, bob);
+        _stock(5);
+        vm.prank(safe);
+        gw.removeStock(address(tsla), 5, bob);
+    }
+
+    function test_zapDonation_doesNotBlockMint() public {
+        _stock(10e18);
+        (,, uint256[] memory amounts,,) = fund.previewMint(NAV_SHARES, false);
+        net.mint(address(zap), amounts[0] * 2);
+        usdg.mint(address(zap), 10_000e6);
+        IFundMintGateway.Swap[] memory sw = _swaps(0);
+        vm.prank(alice);
+        (uint256 shares,) = gw.mint(address(fund), PAY, sw, NAV_SHARES, 1, false);
+        assertGt(shares, 0);
+        assertEq(net.balanceOf(alice), amounts[0] * 2, "donation passed on");
+        assertEq(net.balanceOf(address(zap)), 0);
+    }
+
+    function test_ccipReceive_insideSwap_reverts() public {
+        _stock(10e18);
+        IFundMintGateway.Swap[] memory sw = _swaps(0);
+        bytes memory deliver = abi.encodeCall(
+            MockCcipRouter.deliverFrom,
+            (keccak256("mid"), BASE, address(gw), address(tsla), 1e18, abi.encode(baseGateway), bytes(""))
+        );
+        IFundMintGateway.Swap[] memory all = new IFundMintGateway.Swap[](3);
+        all[0] = sw[0];
+        all[1] = sw[1];
+        all[2] = IFundMintGateway.Swap({
+            router: address(router),
+            tokenIn: address(usdg),
+            amountIn: 0,
+            data: abi.encodeCall(MockSwapRouter.callThenPull, (address(ccip), deliver, address(tsla), alice))
+        });
+        vm.prank(alice);
+        gw.mint(address(fund), PAY, all, NAV_SHARES, 1, false);
+        assertGt(router.lastCallError().length, 0, "restock re-entry refused");
+        assertEq(gw.stock(address(tsla)), 10e18 - tslaNeed);
+        assertEq(tsla.balanceOf(address(gw)), gw.stock(address(tsla)));
     }
 
     // ---------------------------------------------------------------- restock and revenue
@@ -278,8 +399,8 @@ contract FundMintGatewayTest is FundTestBase {
         vm.prank(keeper);
         gw.bridgeRevenue(rev, rev - 1e6, 4990);
         MockAcrossSpokePool.Deposit memory d = spoke.lastDeposit();
-        assertEq(d.depositor, address(gw));
-        assertEq(d.recipient, baseGateway);
+        assertEq(d.depositor, safe, "an unfilled bridge refunds the owner");
+        assertEq(d.recipient, baseFloat);
         assertEq(d.inputToken, address(usdg));
         assertEq(d.outputToken, baseUsdc);
         assertEq(d.inputAmount, rev);
@@ -303,6 +424,8 @@ contract FundMintGatewayTest is FundTestBase {
         gw.bridgeRevenue(rev, rev + 1, 0);
         vm.expectRevert(IFundMintGateway.BridgeFeeTooHigh.selector);
         gw.bridgeRevenue(rev, rev - 3e6, 0);
+        vm.expectRevert(IFundMintGateway.InvalidParam.selector);
+        gw.bridgeRevenue(2e6, 0, 0);
         vm.stopPrank();
     }
 
@@ -395,7 +518,7 @@ contract FundMintGatewayTest is FundTestBase {
     function test_constructor_zero_reverts() public {
         vm.expectRevert(IFundMintGateway.ZeroAddress.selector);
         new FundMintGateway(
-            safe, address(0), address(zap), address(ccip), BASE, baseGateway, address(spoke), baseUsdc, 8453
+            safe, address(0), address(zap), address(ccip), BASE, baseGateway, baseFloat, address(spoke), baseUsdc, 8453
         );
     }
 

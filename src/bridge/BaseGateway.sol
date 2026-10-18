@@ -2,9 +2,11 @@
 pragma solidity 0.8.28;
 
 import {IBaseGateway} from "../interfaces/IBaseGateway.sol";
+
 import {ICcipWrappedToken} from "../interfaces/ICcipWrappedToken.sol";
 import {IAcrossSpokePool} from "../interfaces/external/IAcrossSpokePool.sol";
 import {CcipClient, IAny2EVMMessageReceiver, ICcipRouter} from "../interfaces/external/ICcip.sol";
+import {GatewayFloat} from "./GatewayFloat.sol";
 import {Ownable, Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {ERC20Wrapper} from "@openzeppelin/contracts/token/ERC20/extensions/ERC20Wrapper.sol";
@@ -38,6 +40,8 @@ contract BaseGateway is IBaseGateway, IAny2EVMMessageReceiver, IERC165, Ownable2
     uint256 public immutable remoteChainId;
     /// @notice USDG on Robinhood Chain (the Across output token).
     address public immutable remoteUsdg;
+    /// @inheritdoc IBaseGateway
+    address public immutable override revenueFloat;
 
     /// @inheritdoc IBaseGateway
     address public override remoteGateway;
@@ -49,8 +53,6 @@ contract BaseGateway is IBaseGateway, IAny2EVMMessageReceiver, IERC165, Ownable2
     uint32 public fillWindow;
     /// @notice The Robinhood mint gateway restocks go to.
     address public remoteMintGateway;
-
-    uint256 private _reservedUsdc;
 
     mapping(bytes32 => Order) private _orders;
     mapping(address => bool) private _keepers;
@@ -91,16 +93,18 @@ contract BaseGateway is IBaseGateway, IAny2EVMMessageReceiver, IERC165, Ownable2
         maxFeeBps = 50;
         maxFeeFlat = 2e6;
         fillWindow = 4 hours;
+        revenueFloat = address(new GatewayFloat());
     }
 
     /// @notice Records each delivered token as an order for its receiver.
-    /// @dev Never reverts for a router delivery, so the CCIP transfer always lands. Only a message from
+    /// @dev Never reverts for a router delivery, so the CCIP transfer always lands, except one re-entered
+    ///      from inside a call here (the message then stays open for manual execution). Only a message from
     ///      {remoteGateway} on Robinhood Chain carrying `abi.encode(receiver, minOut)` becomes a sellable
     ///      order; anything else is held claim-only for the sender's address.
     /// @param message The CCIP message.
     function ccipReceive(
         CcipClient.Any2EVMMessage calldata message
-    ) external override onlyRouter {
+    ) external override onlyRouter nonReentrant {
         (address receiver, uint256 minOut) = _parse(message);
         if (receiver == address(0)) return;
         uint256 n = message.destTokenAmounts.length;
@@ -109,7 +113,6 @@ contract BaseGateway is IBaseGateway, IAny2EVMMessageReceiver, IERC165, Ownable2
             uint256 amount = message.destTokenAmounts[i].amount;
             if (amount == 0) continue;
             if (_wrappers[token]) (token, amount) = _tryUnwrap(token, amount);
-            if (token == usdc) _reservedUsdc += amount;
             bytes32 id = orderId(message.messageId, i);
             _orders[id] =
                 Order({receiver: receiver, status: Status.Pending, token: token, amount: amount, minOut: minOut});
@@ -133,7 +136,6 @@ contract BaseGateway is IBaseGateway, IAny2EVMMessageReceiver, IERC165, Ownable2
         address token = o.token;
         uint256 amount = o.amount;
         o.status = Status.Settled;
-        if (token == usdc) _reservedUsdc -= amount;
 
         uint256 usdcIn = token == usdc ? amount : _sell(token, amount, swap);
         if (outputAmount < minOut) revert Slippage();
@@ -153,7 +155,6 @@ contract BaseGateway is IBaseGateway, IAny2EVMMessageReceiver, IERC165, Ownable2
         if (msg.sender != o.receiver) revert NotReceiver();
         if (to == address(0)) revert ZeroAddress();
         o.status = Status.Claimed;
-        if (o.token == usdc) _reservedUsdc -= o.amount;
         IERC20(o.token).safeTransfer(to, o.amount);
         emit OrderClaimed(id, to, o.token, o.amount);
     }
@@ -239,7 +240,10 @@ contract BaseGateway is IBaseGateway, IAny2EVMMessageReceiver, IERC165, Ownable2
         if (mintGateway == address(0) || usdcIn == 0) revert ZeroAddress();
         if (usdcIn > freeUsdc()) revert InsufficientUsdc();
 
+        GatewayFloat(revenueFloat).pay(usdc, address(this), usdcIn);
         (uint256 spent, uint256 out) = _buyWrapped(wrapper, usdcIn, swap, minOut);
+        if (spent > usdcIn) revert InsufficientUsdc();
+        if (spent != usdcIn) IERC20(usdc).safeTransfer(revenueFloat, usdcIn - spent);
         uint256 fee;
         (messageId, fee) = _sendRestock(wrapper, out, mintGateway);
         emit Restocked(messageId, wrapper, spent, out, fee);
@@ -279,7 +283,13 @@ contract BaseGateway is IBaseGateway, IAny2EVMMessageReceiver, IERC165, Ownable2
     /// @inheritdoc IBaseGateway
     function setRouter(address router, bool allowed) external override onlyOwner {
         if (router == address(0)) revert ZeroAddress();
-        if (allowed && (router == usdc || router == spokePool || router == ccipRouter || _wrappers[router])) {
+        if (
+            allowed
+                && (
+                    router == usdc || router == spokePool || router == ccipRouter || router == revenueFloat
+                        || _wrappers[router]
+                )
+        ) {
             revert InvalidParam();
         }
         _routers[router] = allowed;
@@ -314,9 +324,15 @@ contract BaseGateway is IBaseGateway, IAny2EVMMessageReceiver, IERC165, Ownable2
     }
 
     /// @inheritdoc IBaseGateway
+    function withdrawFloat(address token, address to, uint256 amount) external override onlyOwner nonReentrant {
+        if (to == address(0)) revert ZeroAddress();
+        GatewayFloat(revenueFloat).pay(token, to, amount);
+        emit FloatWithdrawn(token, to, amount);
+    }
+
+    /// @inheritdoc IBaseGateway
     function freeUsdc() public view override returns (uint256) {
-        uint256 held = IERC20(usdc).balanceOf(address(this));
-        return held > _reservedUsdc ? held - _reservedUsdc : 0;
+        return IERC20(usdc).balanceOf(revenueFloat);
     }
 
     /// @inheritdoc IBaseGateway

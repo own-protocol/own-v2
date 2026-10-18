@@ -87,7 +87,13 @@ interface IFundMintGateway {
     /// @notice Emitted when a queued order is cancelled.
     /// @param id       Order id.
     /// @param refunded USDG returned.
-    event Cancelled(uint256 indexed id, uint256 refunded);
+    /// @param inKind   Whether the owed Base-sourced assets were paid in kind instead of the prepaid USDG.
+    event Cancelled(uint256 indexed id, uint256 refunded, bool inKind);
+
+    /// @notice Emitted when a cancel returns the order's own USDG while its prepaid part waits on Base.
+    /// @param id     Order id.
+    /// @param amount USDG returned.
+    event UsdgReleased(uint256 indexed id, uint256 amount);
 
     /// @notice Emitted when stock is added (by the owner or a CCIP arrival).
     /// @param asset  The asset.
@@ -177,7 +183,7 @@ interface IFundMintGateway {
     /// @param usdgIn       USDG pulled from the caller; anything unused is refunded.
     /// @param swaps        Purchases of the Robinhood assets with USDG (used only when minted now).
     /// @param navShares    Size of the slice, in fund tokens at NAV.
-    /// @param minSharesOut Minimum fund tokens for the caller.
+    /// @param minSharesOut Minimum fund tokens for the caller; when queued, at most today's quote.
     /// @param atNav        Mint at NAV instead of the pool price.
     /// @return shares Fund tokens minted now (zero when queued).
     /// @return id     Queued order id (zero when minted now).
@@ -193,17 +199,23 @@ interface IFundMintGateway {
     /// @notice Mint a queued order once stock covers it (keeper or receiver).
     /// @param id        Order id.
     /// @param swaps     Purchases of the Robinhood assets with the order's USDG.
-    /// @param navShares Slice to mint, at most the order's (less if the basket moved); the minimum scales.
+    /// @param navShares Slice to mint, at most the order's; only a keeper may mint less (if the basket
+    ///                  moved), and the minimum scales.
     /// @return shares Fund tokens minted.
     function fill(uint256 id, Swap[] calldata swaps, uint256 navShares) external returns (uint256 shares);
 
-    /// @notice Cancel a queued order after {maxWait}, refunding all its USDG (receiver only).
+    /// @notice Cancel a queued order after {maxWait} (receiver only). Its USDG comes back; the prepaid
+    ///         part comes back as the owed assets in kind if stock covers them, else as USDG from revenue.
+    ///         If neither is available yet, only the order's own USDG comes back and the order stays open
+    ///         for a later fill or cancel.
     /// @param id Order id.
     function cancel(
         uint256 id
     ) external;
 
-    /// @notice Bridge revenue USDG to the Base gateway through Across (keeper).
+    /// @notice Bridge revenue USDG to the Base gateway's float through Across (keeper). A bridge small
+    ///         enough that the flat fee cap applies must take all revenue. An unfilled bridge refunds the
+    ///         owner, who sends it back for {syncRevenue}.
     /// @param usdgIn         USDG deposited.
     /// @param usdcOut        USDC the relayer pays on Base (from a fresh Across quote).
     /// @param quoteTimestamp Timestamp of that quote.
@@ -217,7 +229,7 @@ interface IFundMintGateway {
     /// @param amount Amount.
     function addStock(address asset, uint256 amount) external;
 
-    /// @notice Remove stock (owner).
+    /// @notice Remove stock not owed to queued orders (owner).
     /// @param asset  The asset.
     /// @param amount Amount.
     /// @param to     Recipient.
@@ -269,6 +281,13 @@ interface IFundMintGateway {
     /// @param asset The asset.
     /// @return Amount.
     function stock(
+        address asset
+    ) external view returns (uint256);
+
+    /// @notice Amount of `asset` owed to queued orders; new mints use only stock above it.
+    /// @param asset The asset.
+    /// @return Amount.
+    function reserved(
         address asset
     ) external view returns (uint256);
 

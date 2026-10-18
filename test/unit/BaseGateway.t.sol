@@ -2,7 +2,9 @@
 pragma solidity 0.8.28;
 
 import {BaseGateway} from "../../src/bridge/BaseGateway.sol";
+
 import {CcipWrappedToken} from "../../src/bridge/CcipWrappedToken.sol";
+import {GatewayFloat} from "../../src/bridge/GatewayFloat.sol";
 import {IBaseGateway} from "../../src/interfaces/IBaseGateway.sol";
 import {CcipClient, IAny2EVMMessageReceiver} from "../../src/interfaces/external/ICcip.sol";
 import {MockAcrossSpokePool} from "../helpers/MockAcrossSpokePool.sol";
@@ -407,6 +409,61 @@ contract BaseGatewayTest is Test {
         gw.setBridgeFeeCap(1, 1);
         vm.expectRevert(err);
         gw.setFillWindow(1 hours);
+        vm.expectRevert(err);
+        gw.withdrawFloat(address(usdc), alice, 1);
+        vm.stopPrank();
+    }
+
+    function test_withdrawFloat() public {
+        address float = gw.revenueFloat();
+        usdc.mint(float, 50e6);
+        vm.expectRevert(GatewayFloat.NotGateway.selector);
+        GatewayFloat(float).pay(address(usdc), alice, 1);
+        vm.startPrank(owner);
+        vm.expectRevert(IBaseGateway.ZeroAddress.selector);
+        gw.withdrawFloat(address(usdc), address(0), 1);
+        gw.withdrawFloat(address(usdc), bob, 20e6);
+        vm.stopPrank();
+        assertEq(usdc.balanceOf(bob), 20e6);
+        assertEq(gw.freeUsdc(), 30e6);
+    }
+
+    function test_revenueFillDuringSwap_notCaptured() public {
+        address float = gw.revenueFloat();
+        bytes memory fill = abi.encodeCall(MockERC20.mint, (float, 400e6));
+        IBaseGateway.Swap memory s = IBaseGateway.Swap(
+            address(router), abi.encodeCall(MockSwapRouter.callThenPull, (address(usdc), fill, address(usdc), alice))
+        );
+        _wrapFor(alice, 1e8);
+        vm.prank(alice);
+        uint256 out = gw.unwrapAndSell(address(rZec), 1e8, s, 0, alice);
+        assertEq(out, 0, "the fill is not counted as sale output");
+        assertEq(usdc.balanceOf(alice), 0);
+        assertEq(cbZec.balanceOf(alice), 1e8);
+        assertEq(gw.freeUsdc(), 400e6, "the fill stays in the float");
+    }
+
+    function test_ccipReceive_insideSwap_reverts() public {
+        bytes memory deliver = abi.encodeCall(
+            MockCcipRouter.deliverFrom,
+            (keccak256("mid"), RH, address(gw), address(rZec), 1e8, abi.encode(remote), abi.encode(alice, 1))
+        );
+        IBaseGateway.Swap memory s = IBaseGateway.Swap(
+            address(router), abi.encodeCall(MockSwapRouter.callThenPull, (address(ccip), deliver, address(usdc), alice))
+        );
+        _wrapFor(alice, 1e8);
+        vm.prank(alice);
+        gw.unwrapAndSell(address(rZec), 1e8, s, 0, alice);
+        assertGt(router.lastCallError().length, 0, "re-entry refused");
+        assertEq(gw.getOrder(gw.orderId(keccak256("mid"), 0)).amount, 0, "no order recorded mid-swap");
+    }
+
+    function _wrapFor(address who, uint256 amount) internal {
+        cbZec.mint(who, amount);
+        vm.startPrank(who);
+        cbZec.approve(address(rZec), amount);
+        rZec.depositFor(who, amount);
+        rZec.approve(address(gw), amount);
         vm.stopPrank();
     }
 
@@ -426,6 +483,7 @@ contract BaseGatewayTest is Test {
     }
 
     function test_admin_invalidParams_revert() public {
+        address float = gw.revenueFloat();
         vm.startPrank(owner);
         vm.expectRevert(IBaseGateway.InvalidParam.selector);
         gw.setBridgeFeeCap(1001, 0);
@@ -441,6 +499,8 @@ contract BaseGatewayTest is Test {
         gw.setRouter(address(ccip), true);
         vm.expectRevert(IBaseGateway.InvalidParam.selector);
         gw.setRouter(address(rZec), true);
+        vm.expectRevert(IBaseGateway.InvalidParam.selector);
+        gw.setRouter(float, true);
         vm.expectRevert(IBaseGateway.InvalidParam.selector);
         gw.setWrapper(address(router), true);
         vm.expectRevert(IBaseGateway.ZeroAddress.selector);
@@ -463,7 +523,7 @@ contract BaseGatewayTest is Test {
         address mintGw = makeAddr("rhMintGateway");
         vm.prank(owner);
         gw.setRemoteMintGateway(mintGw);
-        usdc.mint(address(gw), 1000e6);
+        usdc.mint(gw.revenueFloat(), 1000e6);
         ccip.setFee(0.01 ether);
         vm.deal(keeper, 1 ether);
         IBaseGateway.Swap memory s = _buySwap(900e6, 2e8);
@@ -476,7 +536,8 @@ contract BaseGatewayTest is Test {
         assertEq(ccip.lastAmount(), 2e8);
         assertEq(abi.decode(ccip.lastReceiver(), (address)), mintGw);
         assertEq(rZec.balanceOf(address(ccip)), 100e8 + 2e8);
-        assertEq(usdc.balanceOf(address(gw)), 100e6, "unspent USDC stays free");
+        assertEq(usdc.balanceOf(gw.revenueFloat()), 100e6, "unspent USDC back in the float");
+        assertEq(usdc.balanceOf(address(gw)), 0);
         assertEq(keeper.balance, 1 ether - 0.01 ether, "excess fee refunded");
         assertEq(cbZec.balanceOf(address(gw)), 0);
     }
@@ -487,7 +548,7 @@ contract BaseGatewayTest is Test {
         usdc.mint(address(ccip), 500e6);
         ccip.deliverFrom(MSG, RH, address(gw), address(usdc), 500e6, abi.encode(remote), abi.encode(alice, 1));
         assertEq(gw.freeUsdc(), 0);
-        usdc.mint(address(gw), 300e6);
+        usdc.mint(gw.revenueFloat(), 300e6);
         assertEq(gw.freeUsdc(), 300e6);
         ccip.setFee(0);
 
@@ -507,7 +568,7 @@ contract BaseGatewayTest is Test {
 
     function test_restock_guards() public {
         IBaseGateway.Swap memory s = _buySwap(100e6, 1e7);
-        usdc.mint(address(gw), 100e6);
+        usdc.mint(gw.revenueFloat(), 100e6);
         vm.expectRevert(IBaseGateway.NotKeeper.selector);
         gw.restock(address(rZec), 100e6, s, 1);
         vm.startPrank(keeper);
