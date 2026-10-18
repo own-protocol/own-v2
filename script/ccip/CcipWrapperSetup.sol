@@ -2,7 +2,9 @@
 pragma solidity 0.8.28;
 
 import {CcipWrappedToken} from "../../src/bridge/CcipWrappedToken.sol";
+import {ICcipWrappedToken} from "../../src/interfaces/ICcipWrappedToken.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {CommonBase} from "forge-std/Base.sol";
 
 /// @notice Chainlink CCIP 2.0.0 types and calls the setup uses (field order matches the deployed contracts).
@@ -197,6 +199,20 @@ abstract contract CcipWrapperSetup is CommonBase {
         address deployer
     ) internal returns (address wrapper, address pool, address lockBox) {
         wrapper = address(new CcipWrappedToken(IERC20(s.underlying), s.name, s.symbol, deployer));
+        (pool, lockBox) = _setupBasePool(s, wrapper, deployer);
+    }
+
+    /// @notice Step 1 (Base) for a wrapper deployed on its own: the pool, lockbox and registry. On mainnet the
+    ///         wrapper is deployed by a plain transaction first, since its constructor reads the underlying's
+    ///         decimals and Base's B20 tokens (cbZEC, cbHYPE) can't run in forge's local simulation.
+    function _setupBasePool(
+        WrapperSpec memory s,
+        address wrapper,
+        address deployer
+    ) internal returns (address pool, address lockBox) {
+        require(ICcipWrappedToken(wrapper).getCCIPAdmin() == deployer, "wrapper ccipAdmin is not the deployer");
+        require(IERC20Metadata(wrapper).decimals() == s.decimals, "wrapper decimals");
+        require(address(CcipWrappedToken(wrapper).underlying()) == s.underlying, "wrapper underlying");
         pool = ITokenPoolFactory(BASE_POOL_FACTORY).deployTokenPoolWithExistingToken(
             wrapper,
             s.decimals,

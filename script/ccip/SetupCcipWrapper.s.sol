@@ -15,6 +15,8 @@ import {Script, console} from "forge-std/Script.sol";
 /// Usage (bytecode first: tools/fetch-ccip-bytecode.sh):
 ///   1. forge script script/ccip/SetupCcipWrapper.s.sol --rpc-url base --broadcast --verify \
 ///        --sig "base(string)" ZEC
+///      On mainnet, where forge can't simulate cbZEC / cbHYPE, deploy the wrapper with `cast send --create`
+///      instead and run --sig "basePool(string,address)" ZEC <wrapper>.
 ///   2. forge script script/ccip/SetupCcipWrapper.s.sol --rpc-url robinhood --broadcast \
 ///        --sig "robinhood(string,address,address)" ZEC <baseWrapper> <basePool>
 ///   3. forge script script/ccip/SetupCcipWrapper.s.sol --rpc-url base --broadcast \
@@ -34,6 +36,21 @@ contract SetupCcipWrapper is Script, CcipWrapperSetup {
         (address wrapper, address pool, address lockBox) = _setupBase(s, vm.addr(pk));
         vm.stopBroadcast();
         console.log("wrapper", wrapper);
+        console.log("pool", pool);
+        console.log("lockBox", lockBox);
+    }
+
+    /// @notice Step 1 on Base for a wrapper already deployed by a plain transaction (mainnet: forge can't simulate
+    ///         the wrapper's constructor, which reads cbZEC / cbHYPE decimals). Deploy it first with
+    ///         `cast send --create` and constructor (underlying, name, symbol, deployer) from {_spec}.
+    /// @param key     "ZEC" or "HYPE".
+    /// @param wrapper The deployed wrapper.
+    function basePool(string calldata key, address wrapper) external {
+        WrapperSpec memory s = _spec(key);
+        uint256 pk = vm.envUint("DEPLOYER_PRIVATE_KEY");
+        vm.startBroadcast(pk);
+        (address pool, address lockBox) = _setupBasePool(s, wrapper, vm.addr(pk));
+        vm.stopBroadcast();
         console.log("pool", pool);
         console.log("lockBox", lockBox);
     }
