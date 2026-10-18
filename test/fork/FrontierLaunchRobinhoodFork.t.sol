@@ -172,7 +172,7 @@ contract FrontierLaunchRobinhoodForkTest is Test {
     // Live Robinhood Chain contracts.
     address constant REGISTRY = 0x93e08ca467046737F75AAD4C936356c196AaA36F;
     address constant SAFE = 0x470f35a7e5d4Cd490D74799AC01E7bEea7F478e2;
-    address constant KEEPER = 0xD9eA00C71df5b50493fCbD1f7e8c5C8DbB525bD1;
+    address constant KEEPER = 0xB1284eC8A142d71A3694b66e2fe9a8e0014de88e;
     address constant TREASURY = 0x8f974d82EEaa9725ecC40600f12093B14080dA54;
     address constant POOL_MANAGER = 0x8366a39CC670B4001A1121B8F6A443A643e40951;
     address constant UNIVERSAL_ROUTER = 0x8876789976dEcBfCbBbe364623C63652db8C0904;
