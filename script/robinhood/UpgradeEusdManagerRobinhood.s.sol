@@ -18,7 +18,7 @@ import {UUPSUpgradeable} from "@openzeppelin/contracts/proxy/utils/UUPSUpgradeab
 ///           `forge inspect EUSDManager storageLayout` against the deployed implementation's
 ///           layout. Reordered/removed/retyped slots corrupt live positions.
 ///        2. `forge test` green, including the UUPS suite in test/unit/EUSDManager.t.sol.
-///        3. Post-upgrade smoke test: totalDebt, stakeZap and the eTSLA head position must be
+///        3. Post-upgrade smoke test: totalDebt, stakeZap and the eSPY head position must be
 ///           unchanged, with the appended feesAccrued field reading zero for live positions.
 ///
 /// Env: DEPLOYER_PRIVATE_KEY_ROBINHOOD. Registry and proxy addresses are pinned as constants
@@ -34,7 +34,7 @@ contract UpgradeEusdManagerRobinhood is Script {
     // ── Live Robinhood Chain (4663) addresses — docs/contracts-robinhood.md ──
     address constant PROTOCOL_REGISTRY = 0x93e08ca467046737F75AAD4C936356c196AaA36F;
     address constant EUSD_MANAGER_PROXY = 0x9748964d733Ff5d47F1d7E3fea620aF014dA5a9b;
-    address constant ETSLA = 0x82D2F4e0649Fc77C2dF7fcF3b6c7e50a1F2F50f4;
+    address constant ESPY = 0xb9D2F8A79F59b84269Adf7d82Fe44ad41139FcF5;
 
     function run() external {
         IProtocolRegistry registry = IProtocolRegistry(PROTOCOL_REGISTRY);
@@ -45,12 +45,12 @@ contract UpgradeEusdManagerRobinhood is Script {
         // three fields, so the head position is read raw — the new four-field ABI would revert.
         uint256 totalDebtBefore = EUSDManager(proxy).totalDebt();
         address stakeZapBefore = EUSDManager(proxy).stakeZap();
-        address headBefore = EUSDManager(proxy).listHead(ETSLA);
+        address headBefore = EUSDManager(proxy).listHead(ESPY);
         uint256 headCollBefore;
         uint256 headDebtBefore;
         if (headBefore != address(0)) {
             (bool ok, bytes memory raw) =
-                proxy.staticcall(abi.encodeCall(IEUSDManager.getPosition, (ETSLA, headBefore)));
+                proxy.staticcall(abi.encodeCall(IEUSDManager.getPosition, (ESPY, headBefore)));
             require(ok, "pre-upgrade position read failed");
             (headCollBefore, headDebtBefore) = abi.decode(raw, (uint256, uint256));
         }
@@ -79,9 +79,9 @@ contract UpgradeEusdManagerRobinhood is Script {
             require(address(EUSDManager(proxy).registry()) == address(registry), "registry mismatch after upgrade");
             require(EUSDManager(proxy).totalDebt() == totalDebtBefore, "totalDebt drift after upgrade");
             require(EUSDManager(proxy).stakeZap() == stakeZapBefore, "stakeZap drift after upgrade");
-            require(EUSDManager(proxy).listHead(ETSLA) == headBefore, "eTSLA list head drift after upgrade");
+            require(EUSDManager(proxy).listHead(ESPY) == headBefore, "eSPY list head drift after upgrade");
             if (headBefore != address(0)) {
-                IEUSDManager.Position memory head = EUSDManager(proxy).getPosition(ETSLA, headBefore);
+                IEUSDManager.Position memory head = EUSDManager(proxy).getPosition(ESPY, headBefore);
                 require(head.collateral == headCollBefore, "head collateral drift after upgrade");
                 require(head.debt == headDebtBefore, "head debt drift after upgrade");
                 require(head.feesAccrued == 0, "head feesAccrued not zero-initialized");
