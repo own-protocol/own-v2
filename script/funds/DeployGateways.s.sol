@@ -7,6 +7,7 @@ import {BaseGateway} from "../../src/bridge/BaseGateway.sol";
 import {FundExitGateway} from "../../src/funds/FundExitGateway.sol";
 import {FundFactory} from "../../src/funds/FundFactory.sol";
 import {FundMintGateway} from "../../src/funds/FundMintGateway.sol";
+import {FundMintZap} from "../../src/funds/FundMintZap.sol";
 import {IProtocolRegistry} from "../../src/interfaces/IProtocolRegistry.sol";
 import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
@@ -29,7 +30,8 @@ import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.s
 ///
 /// Env: DEPLOYER_PRIVATE_KEY_BASE / DEPLOYER_PRIVATE_KEY_ROBINHOOD (deploys), FUND_FACTORY, BASE_GATEWAY,
 ///      FUND_EXIT_GATEWAY, FUND_MINT_GATEWAY, GATEWAY_KEEPER (optional, default the Own keeper),
-///      BASE_SWAP_ROUTER (optional, default 1inch's AggregationRouterV6).
+///      BASE_SWAP_ROUTER (optional, default 1inch's AggregationRouterV6), FUND_MINT_ZAP (optional, default
+///      the factory's mint zap).
 ///
 /// Usage:
 ///   forge script script/funds/DeployGateways.s.sol --rpc-url base --sig "deployBase()" --broadcast
@@ -103,8 +105,10 @@ contract DeployGateways is Script {
         require(block.chainid == ROBINHOOD_CHAIN_ID, "RPC is not Robinhood Chain (4663)");
         address factory = vm.envAddress("FUND_FACTORY");
         address baseGateway = vm.envAddress("BASE_GATEWAY");
-        address zap = FundFactory(factory).mintZap();
+        // Before the Safe's wiring sets the factory's mint zap, FUND_MINT_ZAP names the deployed one.
+        address zap = vm.envOr("FUND_MINT_ZAP", FundFactory(factory).mintZap());
         require(zap != address(0), "factory has no mint zap");
+        require(FundMintZap(zap).factory() == factory, "zap is for another factory");
         vm.startBroadcast(vm.envUint("DEPLOYER_PRIVATE_KEY_ROBINHOOD"));
         FundExitGateway exitImpl = new FundExitGateway(factory, RH_CCIP_ROUTER, BASE_SELECTOR, baseGateway);
         FundExitGateway exitGw = FundExitGateway(
