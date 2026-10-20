@@ -12,7 +12,8 @@ via_ir = false
 remappings = [
     "forge-std/=lib/forge-std/src/",
     "@openzeppelin/=lib/openzeppelin-contracts/",
-    "@pythnetwork/=lib/pyth-sdk-solidity/"
+    "@pythnetwork/=lib/pyth-sdk-solidity/",
+    "v4-core/=lib/v4-core/"
 ]
 
 # Testing
