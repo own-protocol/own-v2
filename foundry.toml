@@ -7,8 +7,6 @@ evm_version = "cancun"
 optimizer = true
 optimizer_runs = 200
 via_ir = false
-# Read: Chainlink CCIP pool bytecode for script/ccip (tools/fetch-ccip-bytecode.sh). Write: Safe batches from script/funds/FrontierFundBatches.
-fs_permissions = [{ access = "read", path = "./ccip-bytecode" }, { access = "write", path = "./safe-batches" }]
 
 # Remappings
 remappings = [
