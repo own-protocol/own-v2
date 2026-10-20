@@ -400,6 +400,64 @@ contract FundStakingTest is FundTestBase {
         assertEq(staking.curatorYieldCapBps(), 200);
     }
 
+    // ──────────────────────────────────────────────────────────
+    //  Referral yield, minted on top to the referral wallet
+    // ──────────────────────────────────────────────────────────
+
+    function test_referralYield_offByDefault() public view {
+        assertEq(staking.referralYieldBps(), 0);
+        assertEq(staking.referralWallet(), address(0));
+    }
+
+    function test_referralYield_mintedOnTopToWallet() public {
+        address wallet = makeAddr("referrals");
+        vm.startPrank(admin);
+        staking.setCuratorYield(1500, 0);
+        staking.setReferralYield(1000, wallet);
+        vm.stopPrank();
+        vm.warp(block.timestamp + 8 hours);
+        _refreshFeeds();
+        uint256 minted = staking.accrue();
+        uint256 base = staked * 10 * 8 hours / (10_000 * 1 days);
+        assertApproxEqRel(minted, base * 125 / 100, 0.001e18);
+
+        // Stakers keep the full rate; the curators get 15% and the referral wallet 10% on top.
+        assertApproxEqRel(staking.convertToAssets(staking.balanceOf(alice)) - staked, base, 0.001e18);
+        assertApproxEqRel(staking.convertToAssets(staking.balanceOf(address(curators))), base * 15 / 100, 0.001e18);
+        assertApproxEqRel(staking.convertToAssets(staking.balanceOf(wallet)), base * 10 / 100, 0.001e18);
+        assertApproxEqAbs(staking.totalAssets(), staked + minted, 1);
+    }
+
+    function test_referralYield_turnedOff() public {
+        address wallet = makeAddr("referrals");
+        vm.startPrank(admin);
+        staking.setReferralYield(1000, wallet);
+        staking.setReferralYield(0, address(0));
+        vm.stopPrank();
+        vm.warp(block.timestamp + 8 hours);
+        _refreshFeeds();
+        staking.accrue();
+        assertEq(staking.balanceOf(wallet), 0);
+    }
+
+    function test_setReferralYield_adminOnlyAndBounded() public {
+        address wallet = makeAddr("referrals");
+        vm.prank(curatorA);
+        vm.expectRevert(IFundStaking.NotAdmin.selector);
+        staking.setReferralYield(1000, wallet);
+        vm.startPrank(admin);
+        vm.expectRevert(IFundStaking.InvalidReferralYield.selector);
+        staking.setReferralYield(3001, wallet);
+        vm.expectRevert(IFundStaking.InvalidReferralYield.selector);
+        staking.setReferralYield(1000, address(0));
+        vm.expectEmit(address(staking));
+        emit IFundStaking.ReferralYieldSet(3000, wallet);
+        staking.setReferralYield(3000, wallet);
+        vm.stopPrank();
+        assertEq(staking.referralYieldBps(), 3000);
+        assertEq(staking.referralWallet(), wallet);
+    }
+
     function test_nameFollowsFundMetadata() public {
         assertEq(staking.name(), "Staked Own Curated Fund 1");
         assertEq(staking.symbol(), "sOCF1");

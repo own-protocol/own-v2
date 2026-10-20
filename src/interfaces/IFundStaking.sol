@@ -105,6 +105,11 @@ interface IFundStaking is IERC20, IERC721Receiver {
     /// @param capBpsPerYear Cap, in basis points of the staked balance a year (0 for none).
     event CuratorYieldSet(uint16 shareBps, uint16 capBpsPerYear);
 
+    /// @notice Emitted when the referral yield changes.
+    /// @param shareBps Referral yield as a share of the stakers' yield, in basis points.
+    /// @param wallet   Wallet the referral yield is minted to, as staked shares.
+    event ReferralYieldSet(uint16 shareBps, address wallet);
+
     /// @notice Emitted when the fund moves to a new pool: positions staked in earlier pools stop
     ///         earning (they keep what they earned and can always be unstaked).
     /// @param epoch The new pool's number, counting from 0 at launch.
@@ -200,6 +205,9 @@ interface IFundStaking is IERC20, IERC721Receiver {
 
     /// @notice The curators' share of staker yield is above its cap.
     error InvalidCuratorYield();
+
+    /// @notice The referral share is above 30%, or is set without a wallet.
+    error InvalidReferralYield();
 
     /// @notice Caller is not the fund's launch module.
     error NotLaunch();
@@ -462,6 +470,20 @@ interface IFundStaking is IERC20, IERC721Receiver {
     /// @notice Cap on the curators' share, in basis points of the staked balance a year (0 for none).
     /// @return The cap.
     function curatorYieldCapBps() external view returns (uint16);
+
+    /// @notice Set the referral yield, minted on top of the stakers' yield to `wallet` as staked
+    ///         shares. Admin only; yield up to now accrues first. A share of 0 turns it off.
+    /// @param shareBps Referral yield as a share of the stakers' yield, in basis points (at most 30%).
+    /// @param wallet   Wallet that receives it.
+    function setReferralYield(uint16 shareBps, address wallet) external;
+
+    /// @notice The referral yield as a share of the stakers' yield, in basis points.
+    /// @return The share.
+    function referralYieldBps() external view returns (uint16);
+
+    /// @notice Wallet the referral yield is minted to.
+    /// @return The wallet.
+    function referralWallet() external view returns (address);
 
     /// @notice The fund token.
     /// @return The fund.

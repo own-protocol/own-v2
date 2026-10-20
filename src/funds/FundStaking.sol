@@ -43,6 +43,8 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuardTrans
     // Hard cap on the curators' share of staker yield.
     uint16 private constant MAX_CURATOR_YIELD_BPS = 5000;
 
+    uint16 private constant MAX_REFERRAL_YIELD_BPS = 3000;
+
     uint256 private constant YEAR = 365 days;
 
     // Below one whole share staked the pot is burned into backing: dripping it onto dust would
@@ -144,6 +146,12 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuardTrans
 
     // `_lpYieldPerLiquidity` when each earlier pool stopped earning.
     mapping(uint32 epoch => uint256) private _lpAccAtEnd;
+
+    /// @inheritdoc IFundStaking
+    address public override referralWallet;
+
+    /// @inheritdoc IFundStaking
+    uint16 public override referralYieldBps;
 
     /// @param positionManager_ The Uniswap v4 PositionManager whose positions can be staked.
     constructor(
@@ -396,6 +404,17 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuardTrans
         _setCuratorYield(shareBps, capBpsPerYear);
     }
 
+    /// @inheritdoc IFundStaking
+    function setReferralYield(uint16 shareBps, address wallet) external override nonReentrant {
+        _checkAdmin();
+        _accrue();
+        if (shareBps > MAX_REFERRAL_YIELD_BPS || (shareBps != 0 && wallet == address(0))) {
+            revert InvalidReferralYield();
+        }
+        (referralYieldBps, referralWallet) = (shareBps, wallet);
+        emit ReferralYieldSet(shareBps, wallet);
+    }
+
     /// @notice Share token name, following the fund's current name.
     /// @return The name.
     function name() public view override returns (string memory) {
@@ -547,14 +566,12 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuardTrans
         if (rate == 0) return 0;
 
         uint256 curatorShares;
+        uint256 referralShares;
         if (stakers) {
             uint256 stakerYield = Math.mulDiv(staked, rate * elapsed, PRECISION * YEAR);
-            uint256 cut = Math.mulDiv(stakerYield, curatorYieldBps, BPS);
-            uint256 cap = curatorYieldCapBps;
-            if (cap != 0) cut = Math.min(cut, Math.mulDiv(staked, cap * elapsed, BPS * YEAR));
-            // Priced after the stakers' yield lands, so the shares are worth `cut`, rounded down.
-            if (cut != 0) curatorShares = Math.mulDiv(cut, totalSupply() + 1, staked + stakerYield + 1);
-            minted = stakerYield + cut;
+            uint256 cuts;
+            (curatorShares, referralShares, cuts) = _cuts(staked, stakerYield, elapsed);
+            minted = stakerYield + cuts;
             _totalStaked += minted;
         }
         uint256 lpMinted;
@@ -572,7 +589,26 @@ contract FundStaking is IFundStaking, ERC20, Initializable, ReentrancyGuardTrans
             _mint(cur, curatorShares);
             IFundCurators(cur).notifyYield();
         }
+        if (referralShares != 0) _mint(referralWallet, referralShares);
         emit YieldAccrued(elapsed, premium, rate, minted, lpMinted, curatorShares);
+    }
+
+    /// @dev The curators' and the referral cuts of `stakerYield`, as shares priced after the stakers'
+    ///      yield lands (so each is worth its cut, rounded down), and the two cuts' fund tokens.
+    function _cuts(
+        uint256 staked,
+        uint256 stakerYield,
+        uint256 elapsed
+    ) internal view returns (uint256 curatorShares, uint256 referralShares, uint256 cuts) {
+        uint256 cut = Math.mulDiv(stakerYield, curatorYieldBps, BPS);
+        uint256 cap = curatorYieldCapBps;
+        if (cap != 0) cut = Math.min(cut, Math.mulDiv(staked, cap * elapsed, BPS * YEAR));
+        uint256 referralCut = Math.mulDiv(stakerYield, referralYieldBps, BPS);
+        uint256 supply = totalSupply() + 1;
+        uint256 assets = staked + stakerYield + 1;
+        curatorShares = Math.mulDiv(cut, supply, assets);
+        referralShares = Math.mulDiv(referralCut, supply, assets);
+        cuts = cut + referralCut;
     }
 
     /// @dev Moves the pot's drip since the last checkpoint into `potPending`: the rest drips
