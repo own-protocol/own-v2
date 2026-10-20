@@ -512,6 +512,20 @@ contract FundFactoryTest is FundTestBase {
         vm.prank(admin);
         vm.expectRevert(IFundFactory.InvalidLaunchConfig.selector);
         factory.setLaunchConfig(cfg);
+
+        cfg = factory.launchConfig();
+        cfg.earlyYieldBpsPerDay = 1001;
+        vm.prank(admin);
+        vm.expectRevert(IFundFactory.InvalidLaunchConfig.selector);
+        factory.setLaunchConfig(cfg);
+    }
+
+    function test_setLaunchConfig_earlyYieldUpToTenPercentADay() public {
+        LaunchConfig memory cfg = factory.launchConfig();
+        cfg.earlyYieldBpsPerDay = 1000;
+        vm.prank(admin);
+        factory.setLaunchConfig(cfg);
+        assertEq(factory.launchConfig().earlyYieldBpsPerDay, 1000);
     }
 
     function test_setRebalanceVolumeCap() public {

@@ -405,7 +405,7 @@ contract FundFactory is IFundFactory, Initializable, UUPSUpgradeable {
         if (
             config.duration < 1 days || config.duration > 30 days || config.finalizeGrace < 1 hours
                 || config.finalizeGrace > 30 days || config.poolUsdgBps == 0 || config.poolUsdgBps > MAX_POOL_USDG_BPS
-                || config.launchPremiumBps > BPS || config.earlyYieldBpsPerDay > 100 || config.overweightHaircutBps > 5000
+                || config.launchPremiumBps > BPS || config.earlyYieldBpsPerDay > 1000 || config.overweightHaircutBps > 5000
                 || config.depositorLock > 30 days
         ) revert InvalidLaunchConfig();
         _launchConfig = config;
