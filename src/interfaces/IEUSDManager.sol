@@ -2,16 +2,14 @@
 pragma solidity 0.8.28;
 
 /// @title IEUSDManager — CDP engine for the eUSD stablecoin
-/// @notice Custodies eToken collateral (eSPY at launch, extensible to other eTokens) and owns all
-///         CDP logic: open/adjust positions, mint eUSD against a FRESH oracle price, repay/close,
+/// @notice Custodies collateral tokens (Robinhood stock tokens, WETH) and owns all CDP logic: open/adjust positions, mint eUSD against a FRESH oracle price, repay/close,
 ///         keeper liquidation at a fixed bonus, and riskiest-first redemption (peg anchor).
 ///
-///         Price-freshness asymmetry (mirrors the PSM, docs/psm-design.md §2): risk-increasing
-///         actions (mint, collateral withdrawal against debt) require an in-session price no older
-///         than `mintPriceMaxAge`; exits (repay, close, redeem, liquidate) work off-hours against
-///         the last oracle anchor with no age bound, so no holder or keeper is ever blocked by a
-///         market being closed. Collateral here is debtor collateral — never LP equity — so
-///         redemptions transfer value only from the position owner whose debt they retire.
+///         Price-freshness asymmetry: risk-increasing actions (mint, collateral withdrawal
+///         against debt) require a price no older than `mintPriceMaxAge`; exits (repay, close,
+///         redeem, liquidate) work off-hours against the last oracle anchor with no age bound, so
+///         no holder or keeper is ever blocked by a market being closed. Redemptions transfer value
+///         only from the position owner whose debt they retire.
 ///
 ///         Positions with both debt and collateral are kept in a per-collateral sorted list ordered
 ///         by nominal ratio (collateral units per debt unit — price-invariant within one
@@ -21,17 +19,9 @@ pragma solidity 0.8.28;
 ///         (last-accrued) debt, so positions untouched for long periods are marginally riskier
 ///         than their list position implies — the drift is bounded by the stability fee rate.
 ///
-///         A permanently halted asset (VaultManager.haltAsset) is valued at its fixed halt price
-///         — the only value its eToken can still be redeemed for — and the feed is not consulted,
-///         so exits never brick; mint and collateral withdrawal against debt are refused. The
-///         same two actions are refused while the asset's trading is paused (leverage pauses
-///         with trading, as in BorrowManager); exits are never gated on a pause.
-///
-///         Collateral is custodied by token address but priced by ticker, and ticker prices are
-///         per active eToken unit. After an `AssetRegistry.migrateToken` split the held token
-///         becomes legacy; the manager scales its price by `legacyRatioToActive` so every open
-///         position keeps its pre-split USD value, and continues to hold and pay out the legacy
-///         token. New positions open on the new active token once it is added as collateral.
+///         Collateral is custodied by token address and priced by the oracle ticker set when it
+///         is added; the ticker's price is per token unit. To stop new exposure to one collateral
+///         the admin disables it; exits are never gated.
 ///
 ///         The stability fee is a fixed annual rate, accrued lazily per position from a global
 ///         bps-seconds index (simple interest between touches). Accrued fees are added to position
@@ -65,7 +55,7 @@ interface IEUSDManager {
         uint256 mintPriceMaxAge;
     }
 
-    /// @notice Configuration of one supported collateral eToken.
+    /// @notice Configuration of one supported collateral token.
     /// @param ticker  Asset ticker used for oracle lookups (e.g. bytes32("SPY")).
     /// @param enabled Whether new deposits/mints are accepted. Exits are never gated by this.
     /// @param exists  Whether the collateral has been added.
@@ -76,7 +66,7 @@ interface IEUSDManager {
     }
 
     /// @notice A CDP position, keyed by (collateral token, owner).
-    /// @param collateral       Collateral held (eToken units, 18 decimals).
+    /// @param collateral       Collateral held (token units, 18 decimals).
     /// @param debt             eUSD debt including fees accrued up to `feeIndexSnapshot` (18 decimals).
     /// @param feeIndexSnapshot Global fee index (bps-seconds) at the last accrual.
     /// @param feesAccrued      Stability fees folded into `debt` and not yet repaid, clamped to
@@ -93,13 +83,13 @@ interface IEUSDManager {
     //  Events
     // ──────────────────────────────────────────────────────────
 
-    /// @notice Emitted when a collateral eToken is added.
-    /// @param collateral Collateral eToken address.
+    /// @notice Emitted when a collateral token is added.
+    /// @param collateral Collateral token address.
     /// @param ticker     Oracle ticker bound to the collateral.
     event CollateralAdded(address indexed collateral, bytes32 indexed ticker);
 
     /// @notice Emitted when a collateral's enabled flag changes.
-    /// @param collateral Collateral eToken address.
+    /// @param collateral Collateral token address.
     /// @param enabled    New enabled state.
     event CollateralEnabledSet(address indexed collateral, bool enabled);
 
@@ -130,26 +120,26 @@ interface IEUSDManager {
     event MintPausedSet(bool paused);
 
     /// @notice Emitted when collateral is deposited into a position.
-    /// @param collateral Collateral eToken.
+    /// @param collateral Collateral token.
     /// @param owner      Position owner.
     /// @param amount     Collateral added (18 decimals).
     event CollateralDeposited(address indexed collateral, address indexed owner, uint256 amount);
 
     /// @notice Emitted when collateral is withdrawn from a position.
-    /// @param collateral Collateral eToken.
+    /// @param collateral Collateral token.
     /// @param owner      Position owner.
     /// @param amount     Collateral removed (18 decimals).
     event CollateralWithdrawn(address indexed collateral, address indexed owner, uint256 amount);
 
     /// @notice Emitted when eUSD is minted against a position.
-    /// @param collateral Collateral eToken.
+    /// @param collateral Collateral token.
     /// @param owner      Position owner.
     /// @param amount     eUSD minted (18 decimals).
     /// @param newDebt    Position debt after the mint (18 decimals).
     event EUSDMinted(address indexed collateral, address indexed owner, uint256 amount, uint256 newDebt);
 
     /// @notice Emitted when position debt is repaid.
-    /// @param collateral Collateral eToken.
+    /// @param collateral Collateral token.
     /// @param owner      Position owner.
     /// @param payer      Account whose eUSD was burned.
     /// @param amount     eUSD burned (18 decimals).
@@ -159,7 +149,7 @@ interface IEUSDManager {
     );
 
     /// @notice Emitted when a position is fully closed by its owner.
-    /// @param collateral         Collateral eToken.
+    /// @param collateral         Collateral token.
     /// @param owner              Position owner.
     /// @param collateralReturned Collateral returned to the owner (18 decimals).
     /// @param debtRepaid         eUSD burned to retire the debt (18 decimals).
@@ -168,7 +158,7 @@ interface IEUSDManager {
     );
 
     /// @notice Emitted when a position close settles its accrued fees from collateral.
-    /// @param collateral    Collateral eToken.
+    /// @param collateral    Collateral token.
     /// @param owner         Position owner.
     /// @param feesSettled   Fee debt retired by burning the treasury's eUSD (18 decimals).
     /// @param feeCollateral Collateral transferred to the treasury in exchange (18 decimals).
@@ -176,14 +166,8 @@ interface IEUSDManager {
         address indexed collateral, address indexed owner, uint256 feesSettled, uint256 feeCollateral
     );
 
-    /// @notice Emitted when collateral eToken dividends held by the manager are swept to the treasury.
-    /// @param collateral  Collateral eToken whose rewards were claimed.
-    /// @param rewardToken Reward token forwarded.
-    /// @param amount      Amount forwarded (reward-token decimals).
-    event CollateralRewardsSwept(address indexed collateral, address indexed rewardToken, uint256 amount);
-
     /// @notice Emitted when a position is liquidated.
-    /// @param collateral         Collateral eToken.
+    /// @param collateral         Collateral token.
     /// @param owner              Position owner.
     /// @param liquidator         Keeper that repaid the debt.
     /// @param debtRepaid         eUSD burned from the liquidator (18 decimals).
@@ -199,7 +183,7 @@ interface IEUSDManager {
     );
 
     /// @notice Emitted once per position touched by a redemption.
-    /// @param collateral       Collateral eToken.
+    /// @param collateral       Collateral token.
     /// @param owner            Redeemed position owner.
     /// @param debtRepaid       Debt retired on this position (18 decimals).
     /// @param collateralSeized Collateral seized from this position (18 decimals).
@@ -208,14 +192,14 @@ interface IEUSDManager {
     );
 
     /// @notice Emitted at the end of a redemption.
-    /// @param collateral    Collateral eToken.
+    /// @param collateral    Collateral token.
     /// @param redeemer      Account that burned eUSD.
     /// @param debtRepaid    Total eUSD burned (18 decimals).
     /// @param collateralOut Total collateral paid to the redeemer (18 decimals).
     event Redeemed(address indexed collateral, address indexed redeemer, uint256 debtRepaid, uint256 collateralOut);
 
     /// @notice Emitted when a position's pending stability fee is folded into its debt.
-    /// @param collateral Collateral eToken.
+    /// @param collateral Collateral token.
     /// @param owner      Position owner.
     /// @param fee        Fee added to debt and minted to the treasury (18 decimals).
     event StabilityFeeAccrued(address indexed collateral, address indexed owner, uint256 fee);
@@ -243,16 +227,8 @@ interface IEUSDManager {
     error CollateralDisabled(address collateral);
     /// @notice The collateral token was already added.
     error CollateralAlreadySupported(address collateral);
-    /// @notice Collateral eTokens must have 18 decimals.
+    /// @notice Collateral tokens must have 18 decimals.
     error InvalidCollateralDecimals(uint8 decimals);
-    /// @notice The token is not a valid eToken for the ticker in the AssetRegistry.
-    error TickerTokenMismatch(bytes32 ticker, address collateral);
-    /// @notice The asset is permanently halted; only wind-down actions are allowed.
-    error CollateralHalted(bytes32 ticker);
-    /// @notice Trading in the asset is paused; mint and withdrawal against debt wait for resume.
-    error CollateralPaused(bytes32 ticker);
-    /// @notice The token is already a legacy (post-split) eToken; onboard the active token instead.
-    error LegacyCollateral(address collateral);
     /// @notice Risk parameter bounds are inconsistent (see setters for the exact constraints).
     error InvalidRiskParams();
     /// @notice Minting (and collateral withdrawal against debt) is paused by the operator.
@@ -287,8 +263,6 @@ interface IEUSDManager {
     /// @param ratioBps     Current ratio (BPS).
     /// @param thresholdBps Liquidation threshold (BPS).
     error PositionNotLiquidatable(uint256 ratioBps, uint256 thresholdBps);
-    /// @notice The collateral eToken has no claimable rewards for the manager.
-    error NoRewardsToSweep(address collateral);
     /// @notice No debt exists to redeem against for this collateral.
     error NothingToRedeem(address collateral);
     /// @notice Redemption returned less collateral than the caller's floor.
@@ -305,7 +279,7 @@ interface IEUSDManager {
     /// @notice Deposit collateral into the caller's position. Needs no oracle price (health only
     ///         improves). While the collateral is disabled only existing debtors may deposit (a
     ///         defensive top-up); a debt-free caller cannot open new exposure.
-    /// @param collateral Collateral eToken to deposit.
+    /// @param collateral Collateral token to deposit.
     /// @param amount     Amount to deposit (18 decimals).
     /// @param hint       Sorted-list insert hint: the position owner expected to precede the
     ///                   caller's position after the update (address(0) = walk from the head).
@@ -315,7 +289,7 @@ interface IEUSDManager {
     ///         minting not to be paused, a fresh oracle price (≤ mintPriceMaxAge) and the resulting
     ///         ratio ≥ MCR — the same gates as minting, since withdrawal is risk-increasing.
     ///         Debt-free withdrawals need no price and work off-hours.
-    /// @param collateral Collateral eToken to withdraw.
+    /// @param collateral Collateral token to withdraw.
     /// @param amount     Amount to withdraw (18 decimals).
     /// @param hint       Sorted-list insert hint (see {deposit}).
     function withdrawCollateral(address collateral, uint256 amount, address hint) external;
@@ -323,7 +297,7 @@ interface IEUSDManager {
     /// @notice Mint eUSD against the caller's position, valued at the live oracle price. Requires
     ///         a fresh in-session price (≤ mintPriceMaxAge), resulting ratio ≥ MCR, resulting
     ///         position debt ≥ minDebt, and total debt ≤ debtCeiling. Reverts while paused.
-    /// @param collateral Collateral eToken backing the mint.
+    /// @param collateral Collateral token backing the mint.
     /// @param amount     eUSD to mint to the caller (18 decimals).
     /// @param hint       Sorted-list insert hint (see {deposit}).
     function mint(address collateral, uint256 amount, address hint) external;
@@ -331,7 +305,7 @@ interface IEUSDManager {
     /// @notice Repay debt on any position; the eUSD is burned from the caller. Amounts above the
     ///         position's debt are capped to it. The remaining debt must be zero or ≥ minDebt.
     ///         Works off-hours — no oracle price involved.
-    /// @param collateral Collateral eToken of the position.
+    /// @param collateral Collateral token of the position.
     /// @param owner      Position owner (anyone may repay on an owner's behalf).
     /// @param amount     eUSD to burn from the caller (18 decimals, capped to the debt).
     /// @param hint       Sorted-list insert hint (see {deposit}).
@@ -340,7 +314,7 @@ interface IEUSDManager {
     /// @notice Close the caller's position: burn its full debt (including pending fees) from the
     ///         caller and return all collateral. Needs no oracle price — the guaranteed off-hours
     ///         exit.
-    /// @param collateral Collateral eToken of the position.
+    /// @param collateral Collateral token of the position.
     function closePosition(
         address collateral
     ) external;
@@ -352,9 +326,9 @@ interface IEUSDManager {
     ///         the treasury when the fees accrued — is burned from the treasury's balance,
     ///         preserving `eusd.totalSupply() == totalDebt`. Value-neutral for the treasury; the
     ///         settleable amount is capped at the position's tracked `feesAccrued`. Works
-    ///         off-hours (anchor price, halt price for halted assets). Reverts if the treasury
+    ///         off-hours (anchor price). Reverts if the treasury
     ///         balance cannot cover the burn — fall back to {closePosition}.
-    /// @param collateral Collateral eToken of the position.
+    /// @param collateral Collateral token of the position.
     function closePositionPrincipalOnly(
         address collateral
     ) external;
@@ -364,7 +338,7 @@ interface IEUSDManager {
     ///         every position-touching flow already accrues on entry, so this never changes what a
     ///         position owes, only when the stored debt and treasury balance catch up. Reverts on
     ///         a debt-free position. Needs no oracle price and works while minting is paused.
-    /// @param collateral Collateral eToken of the position.
+    /// @param collateral Collateral token of the position.
     /// @param owner      Position owner.
     /// @param hint       Sorted-list insert hint (see {deposit}).
     function accrue(address collateral, address owner, address hint) external;
@@ -377,7 +351,7 @@ interface IEUSDManager {
     ///         rules as {deposit} — health only improves, so acting on another owner is safe; the
     ///         zap only ever passes its own transaction sender as `owner`.
     /// @param owner      Position owner credited with the collateral.
-    /// @param collateral Collateral eToken to deposit.
+    /// @param collateral Collateral token to deposit.
     /// @param amount     Amount to deposit (18 decimals).
     /// @param hint       Sorted-list insert hint (see {deposit}).
     function depositFor(address owner, address collateral, uint256 amount, address hint) external;
@@ -387,7 +361,7 @@ interface IEUSDManager {
     ///         which stakes the minted eUSD for `owner` in the same transaction. Same gates as
     ///         {mint}: fresh price, MCR, min debt, ceiling, pause.
     /// @param owner      Position owner taking on the debt.
-    /// @param collateral Collateral eToken backing the mint.
+    /// @param collateral Collateral token backing the mint.
     /// @param amount     eUSD to mint to the caller (18 decimals).
     /// @param hint       Sorted-list insert hint (see {deposit}).
     function mintFor(address owner, address collateral, uint256 amount, address hint) external;
@@ -408,7 +382,7 @@ interface IEUSDManager {
     ///         is always absorbed by the liquidator, never left as unbacked debt. Partial
     ///         liquidation means a position can always be cleared in chunks, so no single debt
     ///         can exceed the eUSD any one liquidator can assemble.
-    /// @param collateral Collateral eToken of the position.
+    /// @param collateral Collateral token of the position.
     /// @param owner      Position owner to liquidate.
     /// @param amount     Max eUSD debt to repay (type(uint256).max = full).
     /// @param hint       Sorted-list insert hint for the remainder (see {deposit}).
@@ -424,7 +398,7 @@ interface IEUSDManager {
     ///         A partial redemption never leaves a listed position below minDebt: the last touch
     ///         is clamped to leave exactly minDebt, so `debtRepaid` can fall short of `amount` by
     ///         up to minDebt even while positions remain.
-    /// @param collateral       Collateral eToken to redeem into.
+    /// @param collateral       Collateral token to redeem into.
     /// @param amount           Max eUSD to burn from the caller (18 decimals).
     /// @param minCollateralOut Min collateral acceptable for the burned amount (18 decimals).
     /// @param maxPositions     Max positions to touch (0 = unlimited).
@@ -439,29 +413,19 @@ interface IEUSDManager {
         address hint
     ) external returns (uint256 collateralOut, uint256 debtRepaid);
 
-    /// @notice Claim the dividends a collateral eToken has accrued to the manager (the holder of
-    ///         record while eTokens sit as CDP collateral) and forward them to the protocol
-    ///         treasury — the same rule as `OwnMarket.sweepDividends` and the borrow manager's
-    ///         collateral-dividend sweep. Permissionless. Reverts if nothing is claimable.
-    /// @param collateral Collateral eToken to sweep.
-    /// @return amount Reward tokens forwarded.
-    function sweepCollateralRewards(
-        address collateral
-    ) external returns (uint256 amount);
-
     // ──────────────────────────────────────────────────────────
     //  Admin (ADMIN role via ProtocolRegistry)
     // ──────────────────────────────────────────────────────────
 
-    /// @notice Add a collateral eToken. The token must have 18 decimals and be a valid eToken for
-    ///         `ticker` in the AssetRegistry (active or legacy). Enabled on add.
-    /// @param collateral Collateral eToken address.
+    /// @notice Add a collateral token. The token must have 18 decimals and `ticker` must have a
+    ///         nonzero price in the oracle. Enabled on add.
+    /// @param collateral Collateral token address.
     /// @param ticker     Oracle ticker for valuations.
     function addCollateral(address collateral, bytes32 ticker) external;
 
     /// @notice Enable or disable new exposure for a collateral: first deposits and all minting.
     ///         Existing debtors may still top up, and exits are unaffected.
-    /// @param collateral Collateral eToken address.
+    /// @param collateral Collateral token address.
     /// @param enabled    New enabled state.
     function setCollateralEnabled(address collateral, bool enabled) external;
 
@@ -524,7 +488,7 @@ interface IEUSDManager {
     function riskParams() external view returns (RiskParams memory);
 
     /// @notice Configuration of a collateral token.
-    /// @param collateral Collateral eToken address.
+    /// @param collateral Collateral token address.
     function collateralConfig(
         address collateral
     ) external view returns (CollateralConfig memory);
@@ -541,69 +505,69 @@ interface IEUSDManager {
 
     /// @notice Total collateral held for a token across all positions (18 decimals). Equals the
     ///         manager's token balance absent direct transfers.
-    /// @param collateral Collateral eToken address.
+    /// @param collateral Collateral token address.
     function totalCollateral(
         address collateral
     ) external view returns (uint256);
 
     /// @notice A position's stored state (debt as of its last accrual).
-    /// @param collateral Collateral eToken address.
+    /// @param collateral Collateral token address.
     /// @param owner      Position owner.
     function getPosition(address collateral, address owner) external view returns (Position memory);
 
     /// @notice A position's live debt including pending (unaccrued) stability fees.
-    /// @param collateral Collateral eToken address.
+    /// @param collateral Collateral token address.
     /// @param owner      Position owner.
     function currentDebt(address collateral, address owner) external view returns (uint256);
 
     /// @notice A position's live collateral ratio in BPS at the current oracle anchor, using live
     ///         debt. Returns type(uint256).max for debt-free positions.
-    /// @param collateral Collateral eToken address.
+    /// @param collateral Collateral token address.
     /// @param owner      Position owner.
     function collateralRatioBps(address collateral, address owner) external view returns (uint256);
 
     /// @notice Whether a position can be liquidated right now (live ratio < threshold).
-    /// @param collateral Collateral eToken address.
+    /// @param collateral Collateral token address.
     /// @param owner      Position owner.
     function isLiquidatable(address collateral, address owner) external view returns (bool);
 
     /// @notice A position's nominal ratio — stored collateral × 1e18 / stored debt — the
     ///         sorted-list ordering key. Reverts for debt-free positions.
-    /// @param collateral Collateral eToken address.
+    /// @param collateral Collateral token address.
     /// @param owner      Position owner.
     function nominalRatio(address collateral, address owner) external view returns (uint256);
 
     /// @notice Riskiest position (lowest nominal ratio) for a collateral; address(0) if none.
-    /// @param collateral Collateral eToken address.
+    /// @param collateral Collateral token address.
     function listHead(
         address collateral
     ) external view returns (address);
 
     /// @notice Safest position (highest nominal ratio) for a collateral; address(0) if none.
-    /// @param collateral Collateral eToken address.
+    /// @param collateral Collateral token address.
     function listTail(
         address collateral
     ) external view returns (address);
 
     /// @notice Next (safer) position after `owner` in the sorted list; address(0) at the tail.
-    /// @param collateral Collateral eToken address.
+    /// @param collateral Collateral token address.
     /// @param owner      Position owner currently in the list.
     function listNext(address collateral, address owner) external view returns (address);
 
     /// @notice Previous (riskier) position before `owner`; address(0) at the head.
-    /// @param collateral Collateral eToken address.
+    /// @param collateral Collateral token address.
     /// @param owner      Position owner currently in the list.
     function listPrev(address collateral, address owner) external view returns (address);
 
     /// @notice Number of positions with debt for a collateral.
-    /// @param collateral Collateral eToken address.
+    /// @param collateral Collateral token address.
     function listSize(
         address collateral
     ) external view returns (uint256);
 
     /// @notice Off-chain helper: the owner whose node should precede a position with nominal
     ///         ratio `ratio` (address(0) = would become the new head). Walks the whole list.
-    /// @param collateral Collateral eToken address.
+    /// @param collateral Collateral token address.
     /// @param ratio      Nominal ratio of the position being (re)inserted (1e18 scale).
     function findInsertHint(address collateral, uint256 ratio) external view returns (address);
 

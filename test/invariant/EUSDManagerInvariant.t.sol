@@ -8,10 +8,8 @@ import {ProtocolRegistry} from "../../src/registry/ProtocolRegistry.sol";
 
 import {Actors} from "../helpers/Actors.sol";
 import {deployEUSDManager} from "../helpers/DeployEusdModule.sol";
-import {MockAssetRegistry} from "../helpers/MockAssetRegistry.sol";
 import {MockERC20} from "../helpers/MockERC20.sol";
 import {MockOracleVerifier} from "../helpers/MockOracleVerifier.sol";
-import {MockVaultManager} from "../helpers/MockVaultManager.sol";
 import {EUSDHandler} from "./handlers/EUSDHandler.sol";
 import {Test} from "forge-std/Test.sol";
 
@@ -25,8 +23,6 @@ import {Test} from "forge-std/Test.sol";
 contract EUSDManagerInvariantTest is Test {
     ProtocolRegistry internal registry;
     MockOracleVerifier internal oracle;
-    MockAssetRegistry internal assetRegistry;
-    MockVaultManager internal vaultManager;
     MockERC20 internal eSPY;
     MockERC20 internal eQQQ;
     EUSD internal eusd;
@@ -45,23 +41,17 @@ contract EUSDManagerInvariantTest is Test {
 
         registry = new ProtocolRegistry(admin, 2 days, 300);
         oracle = new MockOracleVerifier();
-        assetRegistry = new MockAssetRegistry();
-        vaultManager = new MockVaultManager();
 
         vm.startPrank(admin);
         registry.setAddress(keccak256("INHOUSE_ORACLE"), address(oracle));
-        registry.setAddress(keccak256("ASSET_REGISTRY"), address(assetRegistry));
-        registry.setAddress(keccak256("VAULT_MANAGER"), address(vaultManager));
         registry.setAddress(keccak256("TREASURY"), treasury);
         registry.grantRole(keccak256("ADMIN"), admin);
         vm.stopPrank();
 
         eSPY = new MockERC20("eSPY", "eSPY", 18);
         eQQQ = new MockERC20("eQQQ", "eQQQ", 18);
-        assetRegistry.setOracleType(SPY, 1);
-        assetRegistry.setValidToken(SPY, address(eSPY), true);
-        assetRegistry.setOracleType(QQQ, 1);
-        assetRegistry.setValidToken(QQQ, address(eQQQ), true);
+        oracle.setPrice(SPY, 500e18);
+        oracle.setPrice(QQQ, 400e18);
 
         eusd = new EUSD(admin);
         manager = deployEUSDManager(
@@ -82,9 +72,6 @@ contract EUSDManagerInvariantTest is Test {
         manager.addCollateral(address(eSPY), SPY);
         manager.addCollateral(address(eQQQ), QQQ);
         vm.stopPrank();
-
-        oracle.setPrice(SPY, 500e18);
-        oracle.setPrice(QQQ, 400e18);
 
         address[] memory actorList = new address[](4);
         actorList[0] = Actors.MINTER1;

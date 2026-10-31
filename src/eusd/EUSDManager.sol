@@ -1,14 +1,10 @@
 // SPDX-License-Identifier: BUSL-1.1
 pragma solidity 0.8.28;
 
-import {IAssetRegistry} from "../interfaces/IAssetRegistry.sol";
-
-import {IEToken} from "../interfaces/IEToken.sol";
 import {IEUSD} from "../interfaces/IEUSD.sol";
 import {IEUSDManager} from "../interfaces/IEUSDManager.sol";
 import {IOracleVerifier} from "../interfaces/IOracleVerifier.sol";
 import {IProtocolRegistry} from "../interfaces/IProtocolRegistry.sol";
-import {IVaultManager} from "../interfaces/IVaultManager.sol";
 import {BPS, PRECISION} from "../interfaces/types/Types.sol";
 import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
 import {UUPSUpgradeable} from "@openzeppelin/contracts/proxy/utils/UUPSUpgradeable.sol";
@@ -19,16 +15,15 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 /// @title EUSDManager — CDP engine for the eUSD stablecoin
-/// @notice Custodies eToken collateral (debtor collateral, never LP equity — see
-///         docs/psm-design.md §2) and owns all CDP logic: deposits/withdrawals, minting against a
-///         fresh oracle price, repay/close, keeper liquidation at a fixed bonus, and
-///         riskiest-first redemption as the peg anchor. Standalone module: touches no existing
-///         protocol contract, resolves the oracle and roles through the ProtocolRegistry.
+/// @notice Custodies collateral tokens (debtor collateral) and owns all CDP logic:
+///         deposits/withdrawals, minting against a fresh oracle price, repay/close, keeper
+///         liquidation at a fixed bonus, and riskiest-first redemption as the peg anchor. Resolves
+///         the oracle, treasury and roles through the ProtocolRegistry.
 /// @dev Positions with debt live in a per-collateral doubly-linked list sorted ascending by
 ///      nominal ratio (stored collateral / stored debt) — price-invariant within one collateral,
 ///      so ordering only changes when a position is touched. Insertions take an O(1) hint (the
-///      prospective predecessor) and fall back to a head walk. Collateral tokens are protocol
-///      eTokens (18 decimals, no transfer fees), validated against the AssetRegistry at add time.
+///      prospective predecessor) and fall back to a head walk. Collateral tokens are 18-decimal ERC-20s
+///      without transfer fees, each priced by the oracle ticker set at add time.
 ///      Runs behind an ERC-1967 proxy (UUPS) so the manager address — and the positions it
 ///      custodies — survive upgrades (e.g. the planned per-collateral risk params). Upgrades are
 ///      ADMIN-gated ({_authorizeUpgrade}); ossification is a final upgrade to an implementation
@@ -60,7 +55,7 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
     //  State
     // ──────────────────────────────────────────────────────────
 
-    /// @notice ProtocolRegistry used to resolve the oracle, AssetRegistry, treasury and roles.
+    /// @notice ProtocolRegistry used to resolve the oracle, treasury and roles.
     /// @dev Initializer-set, fixed thereafter (storage, not immutable, so an upgraded
     ///      implementation can never silently rebind it).
     IProtocolRegistry public registry;
@@ -185,7 +180,7 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
         // Risk-increasing while debt exists: same gates as minting — pause, fresh price, MCR.
         if (p.debt > 0) {
             if (mintPaused) revert MintingPaused();
-            uint256 ratio = _ratioBps(p.collateral, p.debt, _freshPrice(collateral, cfg.ticker));
+            uint256 ratio = _ratioBps(p.collateral, p.debt, _freshPrice(cfg.ticker));
             if (ratio < _riskParams.mcrBps) revert CollateralRatioTooLow(ratio, _riskParams.mcrBps);
         }
         _reindex(collateral, msg.sender, hint);
@@ -208,7 +203,7 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
         uint256 newTotal = totalDebt + amount;
         if (newTotal > _riskParams.debtCeiling) revert DebtCeilingExceeded(newTotal, _riskParams.debtCeiling);
 
-        uint256 ratio = _ratioBps(p.collateral, newDebt, _freshPrice(collateral, cfg.ticker));
+        uint256 ratio = _ratioBps(p.collateral, newDebt, _freshPrice(cfg.ticker));
         if (ratio < _riskParams.mcrBps) revert CollateralRatioTooLow(ratio, _riskParams.mcrBps);
 
         p.debt = newDebt;
@@ -285,7 +280,7 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
         uint256 newTotal = totalDebt + amount;
         if (newTotal > _riskParams.debtCeiling) revert DebtCeilingExceeded(newTotal, _riskParams.debtCeiling);
 
-        uint256 ratio = _ratioBps(p.collateral, newDebt, _freshPrice(collateral, cfg.ticker));
+        uint256 ratio = _ratioBps(p.collateral, newDebt, _freshPrice(cfg.ticker));
         if (ratio < _riskParams.mcrBps) revert CollateralRatioTooLow(ratio, _riskParams.mcrBps);
 
         p.debt = newDebt;
@@ -332,7 +327,7 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
         uint256 feeCollateral;
         if (feesFromCollateral && p.feesAccrued > 0) {
             fees = p.feesAccrued;
-            uint256 price = _anchorPrice(collateral, _collateralConfigs[collateral].ticker);
+            uint256 price = _anchorPrice(_collateralConfigs[collateral].ticker);
             feeCollateral = Math.mulDiv(fees, PRECISION, price, Math.Rounding.Ceil);
             if (feeCollateral > coll) {
                 feeCollateral = coll;
@@ -380,7 +375,7 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
         Position storage p = _accrue(collateral, owner);
         if (p.debt == 0) revert NoDebt(collateral, owner);
 
-        uint256 price = _anchorPrice(collateral, ticker);
+        uint256 price = _anchorPrice(ticker);
         {
             uint256 ratio = _ratioBps(p.collateral, p.debt, price);
             uint16 threshold = _riskParams.liquidationThresholdBps;
@@ -419,7 +414,7 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
         CollateralConfig storage cfg = _requireCollateral(collateral);
         if (amount == 0) revert ZeroAmount();
 
-        uint256 price = _anchorPrice(collateral, cfg.ticker);
+        uint256 price = _anchorPrice(cfg.ticker);
         uint256 remaining = amount;
         uint256 touched;
 
@@ -444,19 +439,6 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
         emit Redeemed(collateral, msg.sender, debtRepaid, collateralOut);
     }
 
-    /// @inheritdoc IEUSDManager
-    function sweepCollateralRewards(
-        address collateral
-    ) external override nonReentrant returns (uint256 amount) {
-        _requireCollateral(collateral);
-        amount = IEToken(collateral).claimableRewards(address(this));
-        if (amount == 0) revert NoRewardsToSweep(collateral);
-        IEToken(collateral).claimRewards();
-        address rewardToken = IEToken(collateral).rewardToken();
-        IERC20(rewardToken).safeTransfer(registry.treasury(), amount);
-        emit CollateralRewardsSwept(collateral, rewardToken, amount);
-    }
-
     // ──────────────────────────────────────────────────────────
     //  External — admin
     // ──────────────────────────────────────────────────────────
@@ -467,9 +449,8 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
         if (_collateralConfigs[collateral].exists) revert CollateralAlreadySupported(collateral);
         uint8 dec = IERC20Metadata(collateral).decimals();
         if (dec != 18) revert InvalidCollateralDecimals(dec);
-        IAssetRegistry assetRegistry = IAssetRegistry(registry.assetRegistry());
-        if (!assetRegistry.isValidToken(ticker, collateral)) revert TickerTokenMismatch(ticker, collateral);
-        if (assetRegistry.legacyRatioToActive(collateral) != 0) revert LegacyCollateral(collateral);
+        (uint256 price,) = _oracle().getPrice(ticker);
+        if (price == 0) revert ZeroOraclePrice(ticker);
         _collateralConfigs[collateral] = CollateralConfig({ticker: ticker, enabled: true, exists: true});
         emit CollateralAdded(collateral, ticker);
     }
@@ -693,55 +674,31 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
     //  Views & pricing
     // ──────────────────────────────────────────────────────────
 
-    /// @dev Resolve the oracle for a ticker via the AssetRegistry, as OwnMarket does.
-    function _oracle(
-        bytes32 ticker
-    ) private view returns (IOracleVerifier) {
-        uint8 oracleType = IAssetRegistry(registry.assetRegistry()).getOracleType(ticker);
-        return IOracleVerifier(oracleType == 0 ? registry.pythOracle() : registry.inhouseOracle());
+    /// @dev The protocol's Chainlink-primary oracle verifier, resolved through the registry.
+    function _oracle() private view returns (IOracleVerifier) {
+        return IOracleVerifier(registry.inhouseOracle());
     }
 
-    /// @dev Live price for risk-increasing actions: must be in-session, no older than
-    ///      mintPriceMaxAge. Future-dated timestamps are treated as current. Leverage pauses with
-    ///      trading (as in BorrowManager): a halted asset has no live value to lever against and a
-    ///      paused one cannot be turned into cash — both are wind-down only (repay / close /
-    ///      liquidate / redeem stay open).
-    function _freshPrice(address collateral, bytes32 ticker) private view returns (uint256 price) {
-        IVaultManager vm = _vaultManager();
-        if (vm.isAssetHalted(ticker)) revert CollateralHalted(ticker);
-        if (vm.isTradingPaused(ticker)) revert CollateralPaused(ticker);
+    /// @dev Live price for risk-increasing actions: no older than mintPriceMaxAge. Future-dated
+    ///      timestamps are treated as current.
+    function _freshPrice(
+        bytes32 ticker
+    ) private view returns (uint256 price) {
         uint256 ts;
-        (price, ts) = _oracle(ticker).getPrice(ticker);
+        (price, ts) = _oracle().getPrice(ticker);
         if (price == 0) revert ZeroOraclePrice(ticker);
         uint256 maxAge = _riskParams.mintPriceMaxAge;
         if (block.timestamp > ts + maxAge) revert StaleMintPrice(ts, maxAge);
-        price = _effectivePrice(collateral, price);
     }
 
     /// @dev Last oracle anchor for exits (repay-side paths, liquidation, redemption): no age
     ///      bound, so closed markets never block an exit. The oracle itself rejects prices beyond
-    ///      its own hard usability window. A halted asset is worth exactly its fixed halt price
-    ///      (its only redeemable value, via OwnMarket.redeemHalted) — the feed is not consulted, so
-    ///      exits keep working after the feed dies.
-    function _anchorPrice(address collateral, bytes32 ticker) private view returns (uint256 price) {
-        IVaultManager vm = _vaultManager();
-        if (vm.isAssetHalted(ticker)) return _effectivePrice(collateral, vm.assetHaltPrice(ticker));
-        (price,) = _oracle(ticker).getPrice(ticker);
+    ///      its own hard usability window.
+    function _anchorPrice(
+        bytes32 ticker
+    ) private view returns (uint256 price) {
+        (price,) = _oracle().getPrice(ticker);
         if (price == 0) revert ZeroOraclePrice(ticker);
-        price = _effectivePrice(collateral, price);
-    }
-
-    function _vaultManager() private view returns (IVaultManager) {
-        return IVaultManager(registry.vaultManager());
-    }
-
-    /// @dev Ticker prices are per ACTIVE eToken unit. A legacy (post-split) collateral is worth
-    ///      `legacyRatioToActive` active units, so its price is scaled by that ratio (same rule as
-    ///      BorrowManager). Active tokens have ratio 0 → identity. Floor rounding errs against
-    ///      the debtor.
-    function _effectivePrice(address collateral, uint256 price) private view returns (uint256) {
-        uint256 ratio = IAssetRegistry(registry.assetRegistry()).legacyRatioToActive(collateral);
-        return ratio == 0 ? price : Math.mulDiv(price, ratio, PRECISION);
     }
 
     /// @dev Liquidation seizure: collateral worth repaid × (1 + bonus), capped at `coll`. Floor
@@ -815,9 +772,7 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
         uint256 debt = currentDebt(collateral, owner);
         if (debt == 0) return type(uint256).max;
         return _ratioBps(
-            _positions[collateral][owner].collateral,
-            debt,
-            _anchorPrice(collateral, _collateralConfigs[collateral].ticker)
+            _positions[collateral][owner].collateral, debt, _anchorPrice(_collateralConfigs[collateral].ticker)
         );
     }
 
