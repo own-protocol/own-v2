@@ -1,0 +1,308 @@
+{
+  "storage": [
+    {
+      "label": "_balances",
+      "offset": 0,
+      "slot": "0",
+      "type": "t_mapping(t_address,t_uint256)"
+    },
+    {
+      "label": "_allowances",
+      "offset": 0,
+      "slot": "1",
+      "type": "t_mapping(t_address,t_mapping(t_address,t_uint256))"
+    },
+    {
+      "label": "_totalSupply",
+      "offset": 0,
+      "slot": "2",
+      "type": "t_uint256"
+    },
+    {
+      "label": "_name",
+      "offset": 0,
+      "slot": "3",
+      "type": "t_string_storage"
+    },
+    {
+      "label": "_symbol",
+      "offset": 0,
+      "slot": "4",
+      "type": "t_string_storage"
+    },
+    {
+      "label": "factory",
+      "offset": 0,
+      "slot": "5",
+      "type": "t_address"
+    },
+    {
+      "label": "mintLock",
+      "offset": 20,
+      "slot": "5",
+      "type": "t_uint32"
+    },
+    {
+      "label": "mintAdjustmentBps",
+      "offset": 24,
+      "slot": "5",
+      "type": "t_int16"
+    },
+    {
+      "label": "maxPremiumBps",
+      "offset": 26,
+      "slot": "5",
+      "type": "t_uint32"
+    },
+    {
+      "label": "manager",
+      "offset": 0,
+      "slot": "6",
+      "type": "t_address"
+    },
+    {
+      "label": "launch",
+      "offset": 0,
+      "slot": "7",
+      "type": "t_address"
+    },
+    {
+      "label": "staking",
+      "offset": 0,
+      "slot": "8",
+      "type": "t_address"
+    },
+    {
+      "label": "launched",
+      "offset": 20,
+      "slot": "8",
+      "type": "t_bool"
+    },
+    {
+      "label": "mintPaused",
+      "offset": 21,
+      "slot": "8",
+      "type": "t_bool"
+    },
+    {
+      "label": "feeBps",
+      "offset": 22,
+      "slot": "8",
+      "type": "t_uint16"
+    },
+    {
+      "label": "depositorUnlockAt",
+      "offset": 24,
+      "slot": "8",
+      "type": "t_uint64"
+    },
+    {
+      "label": "curators",
+      "offset": 0,
+      "slot": "9",
+      "type": "t_address"
+    },
+    {
+      "label": "_fundName",
+      "offset": 0,
+      "slot": "10",
+      "type": "t_string_storage"
+    },
+    {
+      "label": "_fundSymbol",
+      "offset": 0,
+      "slot": "11",
+      "type": "t_string_storage"
+    },
+    {
+      "label": "_assets",
+      "offset": 0,
+      "slot": "12",
+      "type": "t_array(t_address)dyn_storage"
+    },
+    {
+      "label": "_basket",
+      "offset": 0,
+      "slot": "13",
+      "type": "t_mapping(t_address,t_struct(BasketEntry)_storage)"
+    },
+    {
+      "label": "rebalanceVolumeUpdatedAt",
+      "offset": 0,
+      "slot": "14",
+      "type": "t_uint64"
+    },
+    {
+      "label": "rebalanceVolume",
+      "offset": 8,
+      "slot": "14",
+      "type": "t_uint192"
+    },
+    {
+      "label": "governor",
+      "offset": 0,
+      "slot": "15",
+      "type": "t_address"
+    },
+    {
+      "label": "_info",
+      "offset": 0,
+      "slot": "16",
+      "type": "t_struct(FundInfo)_storage"
+    },
+    {
+      "label": "launchLocked",
+      "offset": 0,
+      "slot": "22",
+      "type": "t_mapping(t_address,t_uint256)"
+    },
+    {
+      "label": "previousGovernor",
+      "offset": 0,
+      "slot": "23",
+      "type": "t_address"
+    },
+    {
+      "label": "venue",
+      "offset": 0,
+      "slot": "24",
+      "type": "t_address"
+    }
+  ],
+  "types": {
+    "t_address": {
+      "encoding": "inplace",
+      "label": "address",
+      "numberOfBytes": "20"
+    },
+    "t_array(t_address)dyn_storage": {
+      "base": "t_address",
+      "encoding": "dynamic_array",
+      "label": "address[]",
+      "numberOfBytes": "32"
+    },
+    "t_bool": {
+      "encoding": "inplace",
+      "label": "bool",
+      "numberOfBytes": "1"
+    },
+    "t_int16": {
+      "encoding": "inplace",
+      "label": "int16",
+      "numberOfBytes": "2"
+    },
+    "t_mapping(t_address,t_mapping(t_address,t_uint256))": {
+      "encoding": "mapping",
+      "key": "t_address",
+      "label": "mapping(address => mapping(address => uint256))",
+      "numberOfBytes": "32",
+      "value": "t_mapping(t_address,t_uint256)"
+    },
+    "t_mapping(t_address,t_struct(BasketEntry)_storage)": {
+      "encoding": "mapping",
+      "key": "t_address",
+      "label": "mapping(address => struct BasketEntry)",
+      "numberOfBytes": "32",
+      "value": "t_struct(BasketEntry)_storage"
+    },
+    "t_mapping(t_address,t_uint256)": {
+      "encoding": "mapping",
+      "key": "t_address",
+      "label": "mapping(address => uint256)",
+      "numberOfBytes": "32",
+      "value": "t_uint256"
+    },
+    "t_string_storage": {
+      "encoding": "bytes",
+      "label": "string",
+      "numberOfBytes": "32"
+    },
+    "t_struct(BasketEntry)_storage": {
+      "encoding": "inplace",
+      "label": "struct BasketEntry",
+      "members": [
+        {
+          "label": "listed",
+          "offset": 0,
+          "slot": "0",
+          "type": "t_bool"
+        },
+        {
+          "label": "weightBps",
+          "offset": 1,
+          "slot": "0",
+          "type": "t_uint16"
+        }
+      ],
+      "numberOfBytes": "32"
+    },
+    "t_struct(FundInfo)_storage": {
+      "encoding": "inplace",
+      "label": "struct FundInfo",
+      "members": [
+        {
+          "label": "logo",
+          "offset": 0,
+          "slot": "0",
+          "type": "t_string_storage"
+        },
+        {
+          "label": "description",
+          "offset": 0,
+          "slot": "1",
+          "type": "t_string_storage"
+        },
+        {
+          "label": "website",
+          "offset": 0,
+          "slot": "2",
+          "type": "t_string_storage"
+        },
+        {
+          "label": "x",
+          "offset": 0,
+          "slot": "3",
+          "type": "t_string_storage"
+        },
+        {
+          "label": "telegram",
+          "offset": 0,
+          "slot": "4",
+          "type": "t_string_storage"
+        },
+        {
+          "label": "discord",
+          "offset": 0,
+          "slot": "5",
+          "type": "t_string_storage"
+        }
+      ],
+      "numberOfBytes": "192"
+    },
+    "t_uint16": {
+      "encoding": "inplace",
+      "label": "uint16",
+      "numberOfBytes": "2"
+    },
+    "t_uint192": {
+      "encoding": "inplace",
+      "label": "uint192",
+      "numberOfBytes": "24"
+    },
+    "t_uint256": {
+      "encoding": "inplace",
+      "label": "uint256",
+      "numberOfBytes": "32"
+    },
+    "t_uint32": {
+      "encoding": "inplace",
+      "label": "uint32",
+      "numberOfBytes": "4"
+    },
+    "t_uint64": {
+      "encoding": "inplace",
+      "label": "uint64",
+      "numberOfBytes": "8"
+    }
+  }
+}

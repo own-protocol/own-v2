@@ -76,7 +76,7 @@ test/
   invariant/      Stateful property tests
   fork/           Mainnet-fork tests
 script/           Deployment scripts (Robinhood Chain + legacy Base)
-archive/          Retired contracts kept for reference (sEUSD, ETH routers, old oracles)
+archive/          Retired contracts kept for reference (sEUSD, ETH routers, old oracles, fund gateways and rZEC/rHYPE)
 docs/             Protocol, PSM design, and deployment documentation
 ```
 
