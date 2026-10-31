@@ -13,19 +13,22 @@ risk group of collateral with its own parameters, and every manager mints the sa
 
 **StakingVault** is the staking layer: a fixed-APR ERC-4626 vault deployed once per asset (eUSD →
 seUSD, $MONEY → sMONEY). Rewards drip in the staked asset from a pre-funded reserve at the target APR
-up to a cap on total staked; above the cap the APR falls as TVL grows. **MoneyFeeCollector** buys
-back $MONEY with a share of the $MONEY trading fees and sends it to the protocol reserve.
+up to a cap on total staked; above the cap the APR falls as TVL grows.
+
+`misc/` holds **MoneyFeeCollector**, a standalone contract outside the eUSD core: it buys back $MONEY
+with a share of the $MONEY trading fees and sends it to the protocol reserve.
 
 ## Contracts
 
 ```
 src/
   eusd/        EUSD (token), EUSDManager (CDP engine, UUPS proxy per risk group)
-  staking/     StakingVault (seUSD, sMONEY), MoneyFeeCollector (UUPS proxy)
+  staking/     StakingVault (seUSD, sMONEY)
   oracle/      ChainlinkOracleVerifier (Chainlink primary, band-limited in-house fallback)
   registry/    ProtocolRegistry (oracle, treasury and roles)
   interfaces/  Interfaces and shared constants
-test/          unit/, invariant/, fork/, helpers/
+misc/          MoneyFeeCollector (UUPS proxy) and its interfaces, independent of the core
+test/          unit/, invariant/, fork/, helpers/, misc/
 script/        Robinhood Chain deploy and ops scripts
 docs/          Deployment record, oracle feeds, eUSD Q&A, audit reports
 ```

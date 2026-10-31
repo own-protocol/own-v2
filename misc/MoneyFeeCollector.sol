@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: BUSL-1.1
 pragma solidity 0.8.28;
 
-import {IMoneyFeeCollector} from "../interfaces/IMoneyFeeCollector.sol";
-import {IPonsFeeEscrowV2} from "../interfaces/external/IPonsFeeEscrowV2.sol";
-import {BPS} from "../interfaces/types/Types.sol";
+import {BPS} from "../src/interfaces/types/Types.sol";
+import {IMoneyFeeCollector} from "./interfaces/IMoneyFeeCollector.sol";
+import {IPonsFeeEscrowV2} from "./interfaces/IPonsFeeEscrowV2.sol";
 import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
 import {UUPSUpgradeable} from "@openzeppelin/contracts/proxy/utils/UUPSUpgradeable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";

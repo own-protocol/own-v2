@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {IMoneyFeeCollector} from "../../src/interfaces/IMoneyFeeCollector.sol";
-import {MoneyFeeCollector} from "../../src/staking/MoneyFeeCollector.sol";
+import {MoneyFeeCollector} from "../../misc/MoneyFeeCollector.sol";
+import {IMoneyFeeCollector} from "../../misc/interfaces/IMoneyFeeCollector.sol";
 import {Actors} from "../helpers/Actors.sol";
 import {MockERC20} from "../helpers/MockERC20.sol";
-import {MockMoney} from "../helpers/MockMoney.sol";
-import {MockPonsFeeEscrow} from "../helpers/MockPonsFeeEscrow.sol";
-import {MockSwapRouter} from "../helpers/MockSwapRouter.sol";
+import {MockMoney} from "./MockMoney.sol";
+import {MockPonsFeeEscrow} from "./MockPonsFeeEscrow.sol";
+import {MockSwapRouter} from "./MockSwapRouter.sol";
 import {IERC20Errors} from "@openzeppelin/contracts/interfaces/draft-IERC6093.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";

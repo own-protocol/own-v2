@@ -30,10 +30,11 @@ slither src/ --config-file slither.config.json
 ```
 src/
   eusd/        EUSD (ERC-20 + permit, MINTER_ROLE held by each manager), EUSDManager (CDP engine)
-  staking/     StakingVault, MoneyFeeCollector
+  staking/     StakingVault
   oracle/      ChainlinkOracleVerifier
   registry/    ProtocolRegistry
   interfaces/  Interfaces and shared constants (BPS, PRECISION)
+misc/          MoneyFeeCollector: standalone, not part of the eUSD core (tests in test/misc/)
 ```
 
 **EUSDManager**
