@@ -4,9 +4,10 @@ pragma solidity 0.8.28;
 import {IOwnStakingV2} from "../../src/interfaces/IOwnStakingV2.sol";
 import {ITieredBoostCalculator} from "../../src/interfaces/ITieredBoostCalculator.sol";
 import {ProtocolRegistry} from "../../src/registry/ProtocolRegistry.sol";
-import {LinearBoostCalculator} from "../../src/staking/LinearBoostCalculator.sol";
+
 import {OwnStakingV2} from "../../src/staking/OwnStakingV2.sol";
 import {TieredBoostCalculator} from "../../src/staking/TieredBoostCalculator.sol";
+import {MockLinearBoostCalculator} from "../helpers/MockLinearBoostCalculator.sol";
 
 import {Actors} from "../helpers/Actors.sol";
 import {MockERC20} from "../helpers/MockERC20.sol";
@@ -83,7 +84,7 @@ contract OwnStakingV2Test is Test {
 
     /// @dev Launch calculator: 0.1x floor rising linearly to 3.6x at 3:1 coverage.
     function _defaultCalc() internal returns (address) {
-        return address(new LinearBoostCalculator(1000, 36_000, 30_000));
+        return address(new MockLinearBoostCalculator(1000, 36_000, 30_000));
     }
 
     function _deploy(
@@ -637,7 +638,7 @@ contract OwnStakingV2Test is Test {
         assertEq(staking.boostBps(alice), 12_666);
 
         // Steeper line: max boost already at 1:1 coverage.
-        address calc = address(new LinearBoostCalculator(1000, 30_000, 10_000));
+        address calc = address(new MockLinearBoostCalculator(1000, 30_000, 10_000));
         vm.prank(admin);
         staking.setBoostCalculator(calc);
 

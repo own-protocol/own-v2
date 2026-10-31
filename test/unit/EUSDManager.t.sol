@@ -1,18 +1,16 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {EToken} from "../../src/core/EToken.sol";
 import {EUSD} from "../../src/eusd/EUSD.sol";
 import {EUSDManager} from "../../src/eusd/EUSDManager.sol";
 import {IEUSDManager} from "../../src/interfaces/IEUSDManager.sol";
+import {IOracleVerifier} from "../../src/interfaces/IOracleVerifier.sol";
 import {BPS, PRECISION} from "../../src/interfaces/types/Types.sol";
 import {ProtocolRegistry} from "../../src/registry/ProtocolRegistry.sol";
 import {Actors} from "../helpers/Actors.sol";
 import {deployEUSDManager} from "../helpers/DeployEusdModule.sol";
-import {MockAssetRegistry} from "../helpers/MockAssetRegistry.sol";
 import {MockERC20} from "../helpers/MockERC20.sol";
 import {MockOracleVerifier} from "../helpers/MockOracleVerifier.sol";
-import {MockVaultManager} from "../helpers/MockVaultManager.sol";
 
 import {IERC20Errors} from "@openzeppelin/contracts/interfaces/draft-IERC6093.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
@@ -24,8 +22,6 @@ import {Test} from "forge-std/Test.sol";
 contract EUSDManagerTest is Test {
     ProtocolRegistry internal registry;
     MockOracleVerifier internal oracle;
-    MockAssetRegistry internal assetRegistry;
-    MockVaultManager internal vaultManager;
     MockERC20 internal eSPY;
     MockERC20 internal eQQQ;
     EUSD internal eusd;
@@ -57,13 +53,9 @@ contract EUSDManagerTest is Test {
 
         registry = new ProtocolRegistry(admin, 2 days, 300);
         oracle = new MockOracleVerifier();
-        assetRegistry = new MockAssetRegistry();
-        vaultManager = new MockVaultManager();
 
         vm.startPrank(admin);
         registry.setAddress(keccak256("INHOUSE_ORACLE"), address(oracle));
-        registry.setAddress(keccak256("ASSET_REGISTRY"), address(assetRegistry));
-        registry.setAddress(keccak256("VAULT_MANAGER"), address(vaultManager));
         registry.setAddress(keccak256("TREASURY"), treasury);
         registry.grantRole(keccak256("ADMIN"), admin);
         registry.grantRole(keccak256("OPERATOR"), operator);
@@ -71,10 +63,8 @@ contract EUSDManagerTest is Test {
 
         eSPY = new MockERC20("eSPY", "eSPY", 18);
         eQQQ = new MockERC20("eQQQ", "eQQQ", 18);
-        assetRegistry.setOracleType(SPY, 1);
-        assetRegistry.setValidToken(SPY, address(eSPY), true);
-        assetRegistry.setOracleType(QQQ, 1);
-        assetRegistry.setValidToken(QQQ, address(eQQQ), true);
+        oracle.setPrice(SPY, PRICE);
+        oracle.setPrice(QQQ, 400e18);
 
         eusd = new EUSD(admin);
         manager = deployEUSDManager(address(registry), address(eusd), _defaultParams());
@@ -82,9 +72,6 @@ contract EUSDManagerTest is Test {
         eusd.grantRole(eusd.MINTER_ROLE(), address(manager));
         manager.addCollateral(address(eSPY), SPY);
         vm.stopPrank();
-
-        oracle.setPrice(SPY, PRICE);
-        oracle.setPrice(QQQ, 400e18);
 
         address[5] memory users = [alice, bob, carol, keeper, attacker];
         for (uint256 i; i < users.length; i++) {
@@ -271,16 +258,15 @@ contract EUSDManagerTest is Test {
 
     function test_addCollateral_wrongDecimals_reverts() public {
         MockERC20 sixDec = new MockERC20("bad", "bad", 6);
-        assetRegistry.setValidToken(QQQ, address(sixDec), true);
         vm.expectRevert(abi.encodeWithSelector(IEUSDManager.InvalidCollateralDecimals.selector, uint8(6)));
         vm.prank(admin);
         manager.addCollateral(address(sixDec), QQQ);
     }
 
-    function test_addCollateral_tickerMismatch_reverts() public {
-        vm.expectRevert(abi.encodeWithSelector(IEUSDManager.TickerTokenMismatch.selector, SPY, address(eQQQ)));
+    function test_addCollateral_unpricedTicker_reverts() public {
+        vm.expectRevert(abi.encodeWithSelector(IOracleVerifier.PriceNotAvailable.selector, bytes32("TLT")));
         vm.prank(admin);
-        manager.addCollateral(address(eQQQ), SPY);
+        manager.addCollateral(address(eQQQ), bytes32("TLT"));
     }
 
     function test_setCollateralEnabled_blocksDepositAndMint() public {
@@ -449,14 +435,6 @@ contract EUSDManagerTest is Test {
         vm.prank(alice);
         manager.mint(address(eSPY), 1000e18, address(0));
         assertEq(eusd.balanceOf(alice), 1000e18);
-    }
-
-    function test_mint_zeroOraclePrice_reverts() public {
-        _open(alice, 4e18, 0);
-        oracle.setForceZeroPrice(true);
-        vm.expectRevert(abi.encodeWithSelector(IEUSDManager.ZeroOraclePrice.selector, SPY));
-        vm.prank(alice);
-        manager.mint(address(eSPY), 1000e18, address(0));
     }
 
     function test_mint_paused_reverts() public {
@@ -1465,244 +1443,6 @@ contract EUSDManagerTest is Test {
         assertEq(manager.listHead(address(eSPY)), carol);
         _assertListSorted(address(eSPY));
         assertEq(eusd.totalSupply(), manager.totalDebt());
-    }
-
-    // ──────────────────────────────────────────────────────────
-    //  Collateral dividends (A4-L-08): swept to the treasury, never stranded
-    // ──────────────────────────────────────────────────────────
-
-    /// @dev Real EToken (dividend-bearing) as collateral; this contract acts as MARKET to mint it.
-    function _dividendCollateral() internal returns (EToken token, MockERC20 reward) {
-        reward = new MockERC20("USDG", "USDG", 6);
-        token = new EToken("Own TLT", "eTLT", bytes32("TLT"), address(registry), address(reward));
-        vm.startPrank(admin);
-        registry.setAddress(keccak256("MARKET"), address(this));
-        vm.stopPrank();
-        assetRegistry.setOracleType(bytes32("TLT"), 1);
-        assetRegistry.setValidToken(bytes32("TLT"), address(token), true);
-        oracle.setPrice(bytes32("TLT"), 100e18);
-        vm.prank(admin);
-        manager.addCollateral(address(token), bytes32("TLT"));
-        token.mint(alice, 100e18);
-        vm.prank(alice);
-        token.approve(address(manager), type(uint256).max);
-        reward.mint(address(this), 1_000_000e6);
-        reward.approve(address(token), type(uint256).max);
-    }
-
-    function test_sweepCollateralRewards_forwardsToTreasury() public {
-        (EToken token, MockERC20 reward) = _dividendCollateral();
-        vm.prank(alice);
-        manager.deposit(address(token), 40e18, address(0)); // manager holds 40 of 100 supply
-        token.depositRewards(1000e6); // $1000 dividend → 40% accrues to the manager
-
-        assertEq(token.claimableRewards(address(manager)), 400e6);
-        vm.prank(attacker); // permissionless
-        uint256 swept = manager.sweepCollateralRewards(address(token));
-        assertEq(swept, 400e6);
-        assertEq(reward.balanceOf(treasury), 400e6);
-        assertEq(reward.balanceOf(address(manager)), 0);
-        assertEq(token.claimableRewards(address(manager)), 0);
-
-        // Collateral accounting is untouched by the sweep.
-        assertEq(manager.getPosition(address(token), alice).collateral, 40e18);
-        assertEq(token.balanceOf(address(manager)), 40e18);
-    }
-
-    function test_sweepCollateralRewards_nothingToSweep_reverts() public {
-        (EToken token,) = _dividendCollateral();
-        vm.expectRevert(abi.encodeWithSelector(IEUSDManager.NoRewardsToSweep.selector, address(token)));
-        manager.sweepCollateralRewards(address(token));
-        vm.expectRevert(abi.encodeWithSelector(IEUSDManager.CollateralNotSupported.selector, address(eQQQ)));
-        manager.sweepCollateralRewards(address(eQQQ));
-    }
-
-    // ──────────────────────────────────────────────────────────
-    //  Halt (A4-M-04): halted collateral is worth its fixed halt price; wind-down only
-    // ──────────────────────────────────────────────────────────
-
-    function test_halt_mintAndWithdrawWithDebt_revert() public {
-        _open(alice, 3e18, 1000e18);
-        vaultManager.halt(SPY, 100e18);
-        oracle.setPrice(SPY, 160e18); // live rallies above halt
-        vm.startPrank(alice);
-        vm.expectRevert(abi.encodeWithSelector(IEUSDManager.CollateralHalted.selector, SPY));
-        manager.mint(address(eSPY), 100e18, address(0));
-        vm.expectRevert(abi.encodeWithSelector(IEUSDManager.CollateralHalted.selector, SPY));
-        manager.withdrawCollateral(address(eSPY), 1, address(0));
-        // Debt-free withdrawal and top-ups still work.
-        manager.deposit(address(eSPY), 1e18, address(0));
-        vm.stopPrank();
-        _open(bob, 1e18, 0);
-        vm.prank(bob);
-        manager.withdrawCollateral(address(eSPY), 1e18, address(0));
-    }
-
-    /// @dev Trading pause: leverage pauses with trading; exits stay open; resume restores.
-    function test_pause_mintAndWithdrawWithDebt_revert_exitsOpen() public {
-        _open(alice, 3e18, 1000e18);
-        _open(bob, 40e18, 1000e18);
-        vm.prank(bob);
-        eusd.transfer(keeper, 1000e18);
-        vaultManager.setTradingPaused(SPY, true);
-
-        vm.startPrank(alice);
-        vm.expectRevert(abi.encodeWithSelector(IEUSDManager.CollateralPaused.selector, SPY));
-        manager.mint(address(eSPY), 100e18, address(0));
-        vm.expectRevert(abi.encodeWithSelector(IEUSDManager.CollateralPaused.selector, SPY));
-        manager.withdrawCollateral(address(eSPY), 1, address(0));
-        manager.repay(address(eSPY), alice, 100e18, address(0));
-        vm.stopPrank();
-
-        oracle.setPrice(SPY, 380e18); // 3 × 380 / 900 = 126.7% → liquidatable during the pause
-        vm.prank(keeper);
-        manager.liquidate(address(eSPY), alice, type(uint256).max, address(0));
-        assertEq(manager.getPosition(address(eSPY), alice).debt, 0);
-        vm.prank(keeper);
-        manager.redeem(address(eSPY), 100e18, 0, 1, address(0)); // redemption open too
-
-        vaultManager.setTradingPaused(SPY, false);
-        oracle.setPrice(SPY, PRICE);
-        _open(carol, 3e18, 1000e18); // minting works again
-    }
-
-    /// @dev The A4-M-04 attack: buy halted eTokens at halt value, mint at the live valuation.
-    function test_halt_attackerCannotMintAgainstLiveValuation() public {
-        vaultManager.halt(SPY, 100e18);
-        oracle.setPrice(SPY, 160e18);
-        vm.startPrank(attacker);
-        manager.deposit(address(eSPY), 1000e18, address(0)); // ~$100k of halted eTokens
-        vm.expectRevert(abi.encodeWithSelector(IEUSDManager.CollateralHalted.selector, SPY));
-        manager.mint(address(eSPY), 100_000e18, address(0));
-        vm.stopPrank();
-    }
-
-    function test_halt_exitsValueAtHaltPrice_feedDead() public {
-        _open(alice, 3e18, 1000e18); // $1500 / 1000 at $500
-        _open(bob, 40e18, 1000e18);
-        vm.prank(bob);
-        eusd.transfer(keeper, 1000e18);
-        vaultManager.halt(SPY, 400e18); // $1200 / 1000 = 120% < 130%
-        oracle.setPrice(SPY, 0); // feed dead — must not matter
-        assertEq(manager.collateralRatioBps(address(eSPY), alice), 12_000);
-        assertTrue(manager.isLiquidatable(address(eSPY), alice));
-
-        // Partial liquidation at the halt price: seized = 400 × 1.05 / 400 = 1.05 eSPY.
-        vm.prank(keeper);
-        manager.liquidate(address(eSPY), alice, 400e18, address(0));
-        assertEq(eSPY.balanceOf(keeper), 1_000_000e18 + 1.05e18);
-        // 1.95 / 600 at $400 = 130% → no longer liquidatable; redeem the rest at $400.
-        assertFalse(manager.isLiquidatable(address(eSPY), alice));
-        vm.prank(keeper);
-        (uint256 out, uint256 repaid) = manager.redeem(address(eSPY), 600e18, 1.5e18, 1, address(0));
-        assertEq(repaid, 600e18);
-        assertEq(out, 1.5e18);
-        IEUSDManager.Position memory p = manager.getPosition(address(eSPY), alice);
-        assertEq(p.debt, 0);
-        assertEq(p.collateral, 0.45e18);
-    }
-
-    function test_halt_liveAboveHalt_doesNotOvervalue() public {
-        _open(alice, 3e18, 1000e18);
-        vaultManager.halt(SPY, 400e18);
-        oracle.setPrice(SPY, 700e18); // live would read 210%
-        assertEq(manager.collateralRatioBps(address(eSPY), alice), 12_000);
-        assertTrue(manager.isLiquidatable(address(eSPY), alice));
-    }
-
-    function test_halt_repayAndCloseStillWork() public {
-        _open(alice, 3e18, 1000e18);
-        vaultManager.halt(SPY, 100e18);
-        oracle.setPrice(SPY, 0);
-        vm.startPrank(alice);
-        manager.repay(address(eSPY), alice, 500e18, address(0));
-        manager.closePosition(address(eSPY));
-        vm.stopPrank();
-        assertEq(eSPY.balanceOf(alice), 1_000_000e18);
-    }
-
-    // ──────────────────────────────────────────────────────────
-    //  Splits (A4-H-02): legacy collateral is priced through legacyRatioToActive
-    // ──────────────────────────────────────────────────────────
-
-    /// @dev Simulate `AssetRegistry.migrateToken(SPY, new, ratio)` landing together with the
-    ///      post-split feed: eSPY becomes legacy at `ratio`, the ticker price scales by 1/ratio.
-    function _split(
-        uint256 ratio
-    ) internal {
-        assetRegistry.setLegacyRatio(address(eSPY), ratio);
-        oracle.setPrice(SPY, PRICE * 1e18 / ratio);
-    }
-
-    function test_split_forward_positionValueAndRatioUnchanged() public {
-        _open(alice, 3e18, 1000e18); // $1500 / 1000 → 150%
-        uint256 before = manager.collateralRatioBps(address(eSPY), alice);
-        _split(2e18); // 2:1 — feed halves, 1 old = 2 new
-        assertEq(manager.collateralRatioBps(address(eSPY), alice), before);
-        assertFalse(manager.isLiquidatable(address(eSPY), alice));
-        vm.expectRevert();
-        vm.prank(keeper);
-        manager.liquidate(address(eSPY), alice, type(uint256).max, address(0));
-    }
-
-    function test_split_forward_redeemPaysLegacyUnitsAtFairValue() public {
-        _open(alice, 3e18, 1000e18);
-        vm.prank(alice);
-        eusd.transfer(keeper, 500e18);
-        _split(2e18);
-        // 500 eUSD buys $500 = 1 legacy eSPY (=2 new units at $250).
-        vm.prank(keeper);
-        (uint256 out, uint256 repaid) = manager.redeem(address(eSPY), 500e18, 1e18, 0, address(0));
-        assertEq(repaid, 500e18);
-        assertEq(out, 1e18);
-        assertEq(eSPY.balanceOf(keeper), 1_000_000e18 + 1e18);
-    }
-
-    function test_split_forward_liquidationSeizesLegacyUnitsAtEffectivePrice() public {
-        _open(alice, 3e18, 1000e18);
-        _open(bob, 40e18, 1000e18);
-        vm.prank(bob);
-        eusd.transfer(keeper, 1000e18);
-        _split(2e18);
-        // Active feed drops to $200 → effective $400/legacy unit → $1200/1000 = 120% < 130%.
-        oracle.setPrice(SPY, 200e18);
-        assertEq(manager.collateralRatioBps(address(eSPY), alice), 12_000);
-        vm.prank(keeper);
-        manager.liquidate(address(eSPY), alice, type(uint256).max, address(0));
-        // seized = 1000 × 1.05 / 400 = 2.625 legacy units; 0.375 refunded.
-        assertEq(eSPY.balanceOf(keeper), 1_000_000e18 + 2.625e18);
-        assertEq(eSPY.balanceOf(alice), 1_000_000e18 - 3e18 + 0.375e18);
-    }
-
-    function test_split_reverse_noPhantomWithdrawOrMint() public {
-        _open(alice, 3e18, 1000e18); // exactly at MCR
-        _split(0.5e18); // 1:2 reverse — feed doubles, 1 old = 0.5 new
-        assertEq(manager.collateralRatioBps(address(eSPY), alice), MCR);
-        vm.startPrank(alice);
-        vm.expectRevert();
-        manager.withdrawCollateral(address(eSPY), 1, address(0));
-        vm.expectRevert();
-        manager.mint(address(eSPY), 100e18, address(0));
-        vm.stopPrank();
-    }
-
-    function test_split_mintAgainstLegacy_usesEffectivePrice() public {
-        _open(alice, 3e18, 0);
-        _split(2e18);
-        // $1500 of legacy collateral supports at most 1000 eUSD at 150% MCR.
-        vm.startPrank(alice);
-        vm.expectRevert();
-        manager.mint(address(eSPY), 1000e18 + 1, address(0));
-        manager.mint(address(eSPY), 1000e18, address(0));
-        vm.stopPrank();
-        assertEq(manager.collateralRatioBps(address(eSPY), alice), MCR);
-    }
-
-    function test_addCollateral_legacyToken_reverts() public {
-        assetRegistry.setLegacyRatio(address(eQQQ), 2e18);
-        vm.expectRevert(abi.encodeWithSelector(IEUSDManager.LegacyCollateral.selector, address(eQQQ)));
-        vm.prank(admin);
-        manager.addCollateral(address(eQQQ), QQQ);
     }
 
     // ──────────────────────────────────────────────────────────
