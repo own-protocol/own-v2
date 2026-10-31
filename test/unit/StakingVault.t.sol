@@ -18,7 +18,7 @@ contract StakingVaultTest is BaseTest {
     address internal attacker = Actors.ATTACKER;
 
     uint256 internal constant YEAR = 365 days;
-    uint256 internal constant APR = 1600; // 16%
+    uint256 internal constant APR = 2000; // 20%
     uint256 internal constant CAP = 1_000_000e18;
 
     function setUp() public override {
@@ -90,9 +90,9 @@ contract StakingVaultTest is BaseTest {
     function test_fixedApr_oneYear() public {
         _stake(alice, 1000e18);
         vm.warp(block.timestamp + YEAR);
-        assertEq(vault.totalAssets(), 1160e18);
-        assertApproxEqAbs(_exit(alice), 1160e18, 2);
-        assertEq(vault.rewardReserve(), 100_000e18 - 160e18);
+        assertEq(vault.totalAssets(), 1200e18);
+        assertApproxEqAbs(_exit(alice), 1200e18, 2);
+        assertEq(vault.rewardReserve(), 100_000e18 - 200e18);
     }
 
     function test_fixedApr_holdsWhenOthersJoin() public {
@@ -101,9 +101,9 @@ contract StakingVaultTest is BaseTest {
         _stake(bob, 9000e18);
         vm.warp(block.timestamp + YEAR / 2);
 
-        // Each staker earns 16% simple interest on what they held over each period.
-        assertApproxEqAbs(vault.convertToAssets(vault.balanceOf(alice)), 1080e18 * 108 / 100, 1e6);
-        assertApproxEqAbs(vault.convertToAssets(vault.balanceOf(bob)), 9000e18 * 108 / 100, 1e6);
+        // Each staker earns 20% simple interest on what they held over each period.
+        assertApproxEqAbs(vault.convertToAssets(vault.balanceOf(alice)), 1100e18 * 110 / 100, 1e6);
+        assertApproxEqAbs(vault.convertToAssets(vault.balanceOf(bob)), 9000e18 * 110 / 100, 1e6);
     }
 
     function test_fixedApr_holdsWhenOthersLeave() public {
@@ -112,7 +112,7 @@ contract StakingVaultTest is BaseTest {
         vm.warp(block.timestamp + YEAR / 2);
         _exit(bob);
         vm.warp(block.timestamp + YEAR / 2);
-        assertApproxEqAbs(vault.convertToAssets(vault.balanceOf(alice)), 1080e18 * 108 / 100, 1e6);
+        assertApproxEqAbs(vault.convertToAssets(vault.balanceOf(alice)), 1100e18 * 110 / 100, 1e6);
     }
 
     function test_aboveCap_aprFalls() public {
@@ -124,8 +124,8 @@ contract StakingVaultTest is BaseTest {
         assertEq(vault.rewardRate(), 1000e18 * APR / 10_000 / YEAR);
 
         vm.warp(block.timestamp + YEAR);
-        // Drip stays at 16% of the cap: 160 eUSD for the year.
-        assertEq(vault.totalAssets(), 4160e18);
+        // Drip stays at 20% of the cap: 200 eUSD for the year.
+        assertEq(vault.totalAssets(), 4200e18);
     }
 
     function test_atOrBelowCap_currentAprIsTarget() public {
@@ -165,7 +165,7 @@ contract StakingVaultTest is BaseTest {
         assertEq(vault.totalAssets(), 1000e18);
 
         vm.warp(block.timestamp + YEAR / 2);
-        assertEq(vault.totalAssets(), 1080e18);
+        assertEq(vault.totalAssets(), 1100e18);
     }
 
     function test_fund_emitsAndTracks() public {
@@ -216,7 +216,7 @@ contract StakingVaultTest is BaseTest {
     function test_withdrawReserve_neverTouchesStake() public {
         _stake(alice, 1000e18);
         vm.warp(block.timestamp + YEAR);
-        uint256 unspent = 100_000e18 - 160e18;
+        uint256 unspent = 100_000e18 - 200e18;
 
         vm.prank(admin);
         vm.expectRevert(abi.encodeWithSelector(IStakingVault.InsufficientReserve.selector, unspent + 1, unspent));
@@ -225,7 +225,7 @@ contract StakingVaultTest is BaseTest {
         vm.prank(admin);
         vault.withdrawReserve(admin, unspent);
         assertEq(eusd.balanceOf(admin), unspent);
-        assertApproxEqAbs(_exit(alice), 1160e18, 2);
+        assertApproxEqAbs(_exit(alice), 1200e18, 2);
     }
 
     function test_donation_doesNotMoveSharePrice() public {
@@ -243,8 +243,8 @@ contract StakingVaultTest is BaseTest {
         vm.prank(admin);
         vault.setApr(800);
         vm.warp(block.timestamp + YEAR / 2);
-        // 8% for the first half (16% APR), then 4% on 1080 for the second half (8% APR).
-        assertEq(vault.totalAssets(), 1080e18 + 43.2e18);
+        // 10% for the first half (20% APR), then 4% on 1100 for the second half (8% APR).
+        assertEq(vault.totalAssets(), 1100e18 + 44e18);
     }
 
     function test_setApr_invalid_reverts() public {
@@ -259,8 +259,8 @@ contract StakingVaultTest is BaseTest {
         vm.prank(admin);
         vault.setCap(1000e18);
         vm.warp(block.timestamp + YEAR / 2);
-        // 160 on 2000 for the first half, then 80 (16% of the 1000 cap for half a year).
-        assertEq(vault.totalAssets(), 2160e18 + 80e18);
+        // 200 on 2000 for the first half, then 100 (20% of the 1000 cap for half a year).
+        assertEq(vault.totalAssets(), 2200e18 + 100e18);
     }
 
     function test_admin_onlyAdmin() public {

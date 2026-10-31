@@ -135,13 +135,13 @@ introducing a second venue.
 ## Fixed-APR staking (pending deploy)
 
 Replaces OwnStakingV2. One `StakingVault` per asset via `DeployStakingVaultRobinhood.s.sol`:
-seUSD (eUSD, 16% APR) and sMONEY ($MONEY, 12% APR), each with a cap on the staked amount that earns
-the full APR. The treasury Safe (`registry.treasury()`) approves each vault once and the keeper
-(OPERATOR) tops up the reserve weekly with `pullFromTreasury(amount)`; anyone can also add to it
-with `fund(amount)`. Unspent reserve comes back with `withdrawReserve` (ADMIN). OwnStakingV2 winds down: no new `notifyRewardAmount` batches, stakers
-unstake.
+seUSD (eUSD) and sMONEY ($MONEY). Each has an admin-set APR (`setApr`) and cap on the staked amount
+that earns the full APR (`setCap`). The treasury Safe (`registry.treasury()`) approves each vault
+once and the keeper (OPERATOR) tops up the reserve weekly with `pullFromTreasury(amount)`; anyone
+can also add to it with `fund(amount)`. Unspent reserve comes back with `withdrawReserve` (ADMIN).
+OwnStakingV2 winds down: no new `notifyRewardAmount` batches, stakers unstake.
 
 The fee collector is upgraded so the keeper's `buyBack` sends bought $MONEY to `reserve` instead of
 burning it. Safe steps after deploying the new implementation: `upgradeToAndCall(impl, "")`,
-`setReserve(reserve)`, `setBurnShareBps(5000)` (50% of SPY fees bought back as $MONEY, 50% paid to
-the payees in SPY). The keeper must call `buyBack` instead of `buyAndBurn`.
+`setReserve(reserve)`, and the admin-set buy-back share (`setBurnShareBps`; the rest is paid to the
+payees in SPY). The keeper must call `buyBack` instead of `buyAndBurn`.

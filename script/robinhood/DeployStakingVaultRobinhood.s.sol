@@ -12,7 +12,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 ///         Rewards start once the reserve is funded with {StakingVault.fund}.
 ///
 /// Env: DEPLOYER_PRIVATE_KEY_ROBINHOOD, PROTOCOL_REGISTRY_ROBINHOOD, VAULT_ASSET, VAULT_NAME,
-///      VAULT_SYMBOL, VAULT_APR_BPS (e.g. 1600), VAULT_CAP (asset units, 18 dec)
+///      VAULT_SYMBOL, VAULT_APR_BPS (BPS), VAULT_CAP (asset units, 18 dec)
 ///
 /// Usage:
 ///   forge script script/robinhood/DeployStakingVaultRobinhood.s.sol --rpc-url robinhood --broadcast
