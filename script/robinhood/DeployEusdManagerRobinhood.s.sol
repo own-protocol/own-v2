@@ -12,7 +12,8 @@ import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.s
 /// @title DeployEusdManagerRobinhood — one EUSDManager proxy for a collateral risk group
 /// @notice Deploys an EUSDManager proxy minting the existing eUSD, with risk params read from env.
 ///         Reuses EUSD_MANAGER_IMPL when set, otherwise deploys a fresh implementation. The proxy is
-///         inert until the Safe grants it eUSD MINTER_ROLE and adds collateral.
+///         inert until the Safe grants it eUSD MINTER_ROLE and adds collateral. The registry's
+///         oracle and treasury must be set before that: fees mint to the treasury on every touch.
 ///
 /// Env: DEPLOYER_PRIVATE_KEY_ROBINHOOD, PROTOCOL_REGISTRY_ROBINHOOD, EUSD_ROBINHOOD,
 ///      EUSD_MANAGER_IMPL (optional), MCR_BPS, LIQ_THRESHOLD_BPS, LIQ_BONUS_BPS, STABILITY_FEE_BPS,
@@ -25,9 +26,6 @@ contract DeployEusdManagerRobinhood is Script {
     function run() external returns (address manager, address implementation) {
         IProtocolRegistry registry = IProtocolRegistry(vm.envAddress("PROTOCOL_REGISTRY_ROBINHOOD"));
         address eusd = vm.envAddress("EUSD_ROBINHOOD");
-        // Fees mint eUSD to the treasury on every position touch; without it every path reverts.
-        require(registry.treasury() != address(0), "TREASURY not set");
-        require(registry.inhouseOracle() != address(0), "INHOUSE_ORACLE not set");
 
         IEUSDManager.RiskParams memory params = IEUSDManager.RiskParams({
             mcrBps: uint16(vm.envUint("MCR_BPS")),

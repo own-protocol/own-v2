@@ -51,9 +51,9 @@ src/
 
 **Oracle**: `ChainlinkOracleVerifier` is Chainlink-primary with a band-limited, signed in-house
 fallback for when a feed is silent (weekends, off-hours). Managers read it as the registry's
-`INHOUSE_ORACLE`.
+`oracle()`.
 
-**ProtocolRegistry**: addresses (oracle, treasury) and roles (PROTOCOL_ADMIN, ADMIN, OPERATOR).
+**ProtocolRegistry**: the oracle and treasury addresses, and roles (PROTOCOL_ADMIN, ADMIN, OPERATOR).
 Admin actions go through the governance Safe.
 
 ## Development Methodology: Test-Driven, Interface-First

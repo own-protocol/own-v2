@@ -604,7 +604,7 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
 
     /// @dev The protocol's Chainlink-primary oracle verifier, resolved through the registry.
     function _oracle() private view returns (IOracleVerifier) {
-        return IOracleVerifier(registry.inhouseOracle());
+        return IOracleVerifier(registry.oracle());
     }
 
     /// @dev Live price for risk-increasing actions: no older than mintPriceMaxAge. Future-dated

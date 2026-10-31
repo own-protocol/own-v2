@@ -6,34 +6,33 @@
 The retired stack (OwnMarket, VaultManager, PSM ReserveVaults, eTokens, AssetRegistry, lending,
 OwnStakeZap) and its deployment record live on the `legacy-own-v2` branch. OwnStakingV2,
 TieredBoostCalculator and MoneyPriceFeed below are being replaced by fixed-APR StakingVaults (see
-the last section); their code also lives on `legacy-own-v2`. The eSPY EUSDManager
-below still runs on that stack (it reads the AssetRegistry and VaultManager) until its positions
-wind down.
+the last section); their code also lives on `legacy-own-v2`. The eSPY EUSDManager below still runs
+on that stack (it reads the AssetRegistry and VaultManager) until its positions wind down.
 
-## Shared contracts
+## Legacy registry and oracle
 
-| Contract                           | Address                                      |
-| ---------------------------------- | -------------------------------------------- |
-| ProtocolRegistry                   | `0x93e08ca467046737F75AAD4C936356c196AaA36F` |
-| ChainlinkOracleVerifier (in-house) | `0x72158ca9C5Dab08f3c470188a34c6e609fa6af9b` |
+The lending vaults, the eSPY manager and the PSM read these. They stay live and unchanged until
+the last legacy position closes; their code (generic address slots, `verifyPrice`, `priceMaxAge`)
+lives on `legacy-own-v2`. The keeper and the oracle signer keep serving this verifier until then.
 
-## Oracle migration (Chainlink primary + band-limited in-house, 2026-07-20)
+| Contract                          | Address                                      |
+| --------------------------------- | -------------------------------------------- |
+| ProtocolRegistry (legacy)         | `0x93e08ca467046737F75AAD4C936356c196AaA36F` |
+| ChainlinkOracleVerifier (legacy)  | `0x72158ca9C5Dab08f3c470188a34c6e609fa6af9b` |
 
-- [x] `DeployChainlinkOracleRobinhood.s.sol` — ChainlinkOracleVerifier at
-      `0x72158ca9C5Dab08f3c470188a34c6e609fa6af9b`, Blockscout-verified. KMS signer authorised.
-      Configs (verified on-chain): 14 stock tickers (7 underlying + 7 R.\*) @ 15min silence / 4h
-      fresh window / 5d anchor age / 1h in-house staleness; bands 5% SPY+QQQ, 8% singles; no
-      multiplierToken yet (all uiMultipliers 1.0 — set on underlying tickers before first
-      dividend/split). USDG Chainlink-only (band 0, 25h fresh, 48h anchor). Parity vs old oracle
-      at deploy: all 15 within ~1.7%. Design: docs/chainlink-feeds-robinhood.md; findings:
-      docs/audit-report-3.md.
-- [x] `SwitchOracleChainlinkRobinhood.s.sol` — CUTOVER LIVE 2026-07-20, tx `0x79dd1ce2…3eec4`.
-      INHOUSE_ORACLE slot → `0x7215…af9b`; all 15 tickers preflighted and serving; mark-pull
-      route simulated OK post-switch (TSLA / R.TSLA / USDG). Rollback:
-      `registry.setAddress(INHOUSE_ORACLE, 0x654CFb0f871A6a22F184B9a3960BaA4fE3dAe055)`.
-- [x] KMS signer service: repoint EIP-712 verifyingContract to `0x7215…af9b` (old-domain
-      signatures are invalid there), 24/7 gap-filling (quote when feed >15min quiet, band
-      pre-check), feed-age + aggregator-upgrade alerting. Until then, tickers whose feed is >4h quiet read as stale to freshness-checking consumers.
+Live oracle configs (verified on-chain): 14 stock tickers (7 underlying + 7 R.\*) @ 15 min silence /
+4h fresh window / 5d anchor age / 1h in-house staleness; USDG Chainlink-only (band 0, 25h fresh,
+48h anchor). Design: docs/chainlink-feeds-robinhood.md; findings: docs/audit-report-3.md.
+
+## eUSD core (pending deploy)
+
+`DeployCoreRobinhood.s.sol` deploys a fresh `ProtocolRegistry` (Safe as protocol admin, only
+`oracle`, `treasury` and roles) and a fresh `ChainlinkOracleVerifier` (only `getPrice` and the
+signed `updatePrice` push). The new EUSDManagers and StakingVaults point at this registry. The
+Safe then sets `setOracle`, `setTreasury`, grants ADMIN/OPERATOR, and on the verifier calls
+`addSigner` and `setChainlinkConfig` for every collateral ticker. The oracle signer signs for the
+new verifier's EIP-712 domain, and the keeper pushes to both verifiers while the legacy stack
+lives.
 
 ## eUSD stablecoin module (2026-09-09)
 

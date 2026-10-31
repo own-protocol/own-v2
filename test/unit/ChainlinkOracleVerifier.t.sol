@@ -265,97 +265,6 @@ contract ChainlinkOracleVerifierTest is BaseTest {
     }
 
     // ──────────────────────────────────────────────────────────
-    //  verifyPrice
-    // ──────────────────────────────────────────────────────────
-
-    function test_verifyPrice_clFresh_ignoresProof() public {
-        _ageChainlink(60);
-        // Garbage proof must be ignored while Chainlink is fresh.
-        (uint256 price, uint256 ts) = verifier.verifyPrice(ASSET, hex"deadbeef");
-        assertEq(price, CL_PRICE_18);
-        assertEq(ts, block.timestamp);
-    }
-
-    function test_verifyPrice_clSilent_validProof_succeeds() public {
-        _ageChainlink(CL_SILENCE + 1);
-        uint256 proofPrice = CL_PRICE_18 * 97 / 100; // -3%, within band
-        uint256 proofTs = block.timestamp - 5;
-        (uint256 price, uint256 ts) = verifier.verifyPrice(ASSET, _signPrice(ASSET, proofPrice, proofTs));
-        assertEq(price, proofPrice);
-        assertEq(ts, proofTs);
-    }
-
-    function test_verifyPrice_clSilent_proofOutOfBand_reverts() public {
-        _ageChainlink(CL_SILENCE + 1);
-        uint256 proofPrice = CL_PRICE_18 * 90 / 100; // -10% > 5% band
-        bytes memory data = _signPrice(ASSET, proofPrice, block.timestamp);
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                IOracleVerifier.PriceDeviationExceeded.selector, ASSET, proofPrice, CL_PRICE_18, uint256(BAND_BPS)
-            )
-        );
-        verifier.verifyPrice(ASSET, data);
-    }
-
-    function test_verifyPrice_emptyProof_clWithinFreshWindow_succeeds() public {
-        _ageChainlink(3 hours);
-        (uint256 price, uint256 ts) = verifier.verifyPrice(ASSET, "");
-        assertEq(price, CL_PRICE_18);
-        assertEq(ts, block.timestamp);
-    }
-
-    /// @dev A3-L-03 (reopened): with the feed silent and a fresher quote cached, an empty proof must
-    ///      not reach past it to the stale anchor. {getPrice} always preferred the fresher leg, so
-    ///      the two reads disagreed on the same asset in the same block — and a force-executor could
-    ///      pick the higher of the two, settling above the vault's own mark.
-    function test_verifyPrice_emptyProof_prefersFresherInhouseQuote() public {
-        // Feed goes silent, signer posts a lower price inside the anchor band.
-        _ageChainlink(CL_SILENCE + 1);
-        uint256 pushPrice = 364e18; // -4.2% from $380, inside BAND_BPS
-        verifier.updatePrice(ASSET, _signPrice(ASSET, pushPrice, block.timestamp));
-
-        // Still well inside clFreshWindow, so the stale-anchor fallback is reachable.
-        _ageChainlink(30 minutes);
-
-        (uint256 price, uint256 ts) = verifier.verifyPrice(ASSET, "");
-        assertEq(price, pushPrice, "empty proof took the stale anchor over a fresher quote");
-        assertLt(ts, block.timestamp, "must report the quote's own timestamp, not a synthetic one");
-
-        // Both read paths must agree on the same asset in the same block.
-        (uint256 gPrice, uint256 gTs) = verifier.getPrice(ASSET);
-        assertEq(price, gPrice, "verifyPrice and getPrice disagree on price");
-        assertEq(ts, gTs, "verifyPrice and getPrice disagree on timestamp");
-    }
-
-    /// @dev The preference is by freshness, not by leg — a quote past `inhouseMaxStaleness` still
-    ///      yields to the anchor, so this cannot become a way to pin a stale in-house price.
-    function test_verifyPrice_emptyProof_staleInhouseYieldsToAnchor() public {
-        _ageChainlink(CL_SILENCE + 1);
-        verifier.updatePrice(ASSET, _signPrice(ASSET, 364e18, block.timestamp));
-
-        _ageChainlink(uint256(INHOUSE_MAX_STALENESS) + 1);
-
-        (uint256 price,) = verifier.verifyPrice(ASSET, "");
-        assertEq(price, CL_PRICE_18, "stale in-house quote must not win over the anchor");
-    }
-
-    function test_verifyPrice_emptyProof_clBeyondFreshWindow_reverts() public {
-        _ageChainlink(uint256(CL_FRESH_WINDOW) + 1);
-        vm.expectRevert(abi.encodeWithSelector(IOracleVerifier.PriceNotAvailable.selector, ASSET));
-        verifier.verifyPrice(ASSET, "");
-    }
-
-    function test_verifyPriceForSession_delegates() public {
-        _ageChainlink(60);
-        (uint256 price,) = verifier.verifyPriceForSession(ASSET, "", 2);
-        assertEq(price, CL_PRICE_18);
-    }
-
-    function test_verifyFee_isZero() public view {
-        assertEq(verifier.verifyFee(hex"00"), 0);
-    }
-
-    // ──────────────────────────────────────────────────────────
     //  Admin
     // ──────────────────────────────────────────────────────────
 
@@ -421,20 +330,6 @@ contract ChainlinkOracleVerifierTest is BaseTest {
         verifier.updatePrice(ASSET, data);
     }
 
-    function test_legacyConfigSetters_revert() public {
-        vm.startPrank(Actors.ADMIN);
-        vm.expectRevert("ChainlinkOracle: use setChainlinkConfig");
-        verifier.setAssetOracleConfig(ASSET, 1, 1);
-        vm.expectRevert("ChainlinkOracle: use getChainlinkConfig");
-        verifier.getAssetOracleConfig(ASSET);
-        vm.stopPrank();
-    }
-
-    function test_updatePriceFeeds_reverts() public {
-        vm.expectRevert("ChainlinkOracle: use updatePrice + multicall");
-        verifier.updatePriceFeeds(hex"00");
-    }
-
     // ──────────────────────────────────────────────────────────
     //  Multiplier x band interaction
     // ──────────────────────────────────────────────────────────
@@ -472,27 +367,6 @@ contract ChainlinkOracleVerifierTest is BaseTest {
         assertEq(price, goodPrice);
     }
 
-    function test_verifyPrice_multiplierAdjustedAnchor() public {
-        vm.prank(Actors.ADMIN);
-        verifier.setChainlinkConfig(
-            ASSET,
-            address(feed),
-            address(token),
-            CL_SILENCE,
-            CL_FRESH_WINDOW,
-            MAX_ANCHOR_AGE,
-            INHOUSE_MAX_STALENESS,
-            BAND_BPS
-        );
-        token.setUiMultiplier(4e18);
-        _ageChainlink(CL_SILENCE + 1);
-
-        uint256 anchor = CL_PRICE_18 / 4;
-        (uint256 price, uint256 ts) = verifier.verifyPrice(ASSET, _signPrice(ASSET, anchor, block.timestamp));
-        assertEq(price, anchor);
-        assertEq(ts, block.timestamp);
-    }
-
     // ──────────────────────────────────────────────────────────
     //  Non-8-decimal feed normalization
     // ──────────────────────────────────────────────────────────
@@ -507,19 +381,6 @@ contract ChainlinkOracleVerifierTest is BaseTest {
         );
         (uint256 price,) = verifier.getPrice(asset18);
         assertEq(price, CL_PRICE_18);
-    }
-
-    // ──────────────────────────────────────────────────────────
-    //  verifyPriceForSession — proof leg
-    // ──────────────────────────────────────────────────────────
-
-    function test_verifyPriceForSession_proofLeg() public {
-        _ageChainlink(CL_SILENCE + 1);
-        uint256 proofPrice = CL_PRICE_18 * 101 / 100;
-        (uint256 price, uint256 ts) =
-            verifier.verifyPriceForSession(ASSET, _signPrice(ASSET, proofPrice, block.timestamp), 3);
-        assertEq(price, proofPrice);
-        assertEq(ts, block.timestamp);
     }
 
     // ──────────────────────────────────────────────────────────
@@ -565,12 +426,6 @@ contract ChainlinkOracleVerifierTest is BaseTest {
         verifier.updatePrice(ASSET, _signPrice(ASSET, CL_PRICE_18 * 104 / 100, ts));
         (uint256 price,) = verifier.getInhousePrice(ASSET);
         assertEq(price, CL_PRICE_18);
-    }
-
-    function test_verifyPrice_clSilent_garbageProof_reverts() public {
-        _ageChainlink(CL_SILENCE + 1);
-        vm.expectRevert();
-        verifier.verifyPrice(ASSET, hex"deadbeef");
     }
 
     // ──────────────────────────────────────────────────────────

@@ -51,12 +51,12 @@ contract EUSDManagerTest is Test {
     function setUp() public {
         vm.warp(1_000_000);
 
-        registry = new ProtocolRegistry(admin, 2 days, 300);
+        registry = new ProtocolRegistry(admin, 2 days);
         oracle = new MockOracleVerifier();
 
         vm.startPrank(admin);
-        registry.setAddress(keccak256("INHOUSE_ORACLE"), address(oracle));
-        registry.setAddress(keccak256("TREASURY"), treasury);
+        registry.setOracle(address(oracle));
+        registry.setTreasury(treasury);
         registry.grantRole(keccak256("ADMIN"), admin);
         registry.grantRole(keccak256("OPERATOR"), operator);
         vm.stopPrank();

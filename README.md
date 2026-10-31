@@ -23,15 +23,15 @@ src/
   eusd/        EUSD (token), EUSDManager (CDP engine, UUPS proxy per risk group)
   staking/     StakingVault (seUSD, sMONEY), MoneyFeeCollector (UUPS proxy)
   oracle/      ChainlinkOracleVerifier (Chainlink primary, band-limited in-house fallback)
-  registry/    ProtocolRegistry (addresses and roles)
+  registry/    ProtocolRegistry (oracle, treasury and roles)
   interfaces/  Interfaces and shared constants
 test/          unit/, invariant/, fork/, helpers/
 script/        Robinhood Chain deploy and ops scripts
 docs/          Deployment record, oracle feeds, eUSD Q&A, audit reports
 ```
 
-The earlier protocol (OwnMarket, VaultManager, PSM, eTokens, lending, funds, OwnStakingV2) is
-retired and kept on the `legacy-own-v2` branch.
+The earlier protocol (OwnMarket, VaultManager, PSM, eTokens, lending, funds, OwnStakingV2, and the
+registry and oracle they use) is retired and kept on the `legacy-own-v2` branch.
 
 ## Development
 
