@@ -269,13 +269,6 @@ contract EUSDManagerTest is Test {
         manager.addCollateral(address(eQQQ), bytes32("TLT"));
     }
 
-    function test_addCollateral_zeroPrice_reverts() public {
-        oracle.setForceZeroPrice(true);
-        vm.expectRevert(abi.encodeWithSelector(IEUSDManager.ZeroOraclePrice.selector, QQQ));
-        vm.prank(admin);
-        manager.addCollateral(address(eQQQ), QQQ);
-    }
-
     function test_setCollateralEnabled_blocksDepositAndMint() public {
         vm.prank(admin);
         manager.setCollateralEnabled(address(eSPY), false);
@@ -442,14 +435,6 @@ contract EUSDManagerTest is Test {
         vm.prank(alice);
         manager.mint(address(eSPY), 1000e18, address(0));
         assertEq(eusd.balanceOf(alice), 1000e18);
-    }
-
-    function test_mint_zeroOraclePrice_reverts() public {
-        _open(alice, 4e18, 0);
-        oracle.setForceZeroPrice(true);
-        vm.expectRevert(abi.encodeWithSelector(IEUSDManager.ZeroOraclePrice.selector, SPY));
-        vm.prank(alice);
-        manager.mint(address(eSPY), 1000e18, address(0));
     }
 
     function test_mint_paused_reverts() public {

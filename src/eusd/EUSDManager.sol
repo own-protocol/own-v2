@@ -25,9 +25,9 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 ///      prospective predecessor) and fall back to a head walk. Collateral tokens are 18-decimal ERC-20s
 ///      without transfer fees, each priced by the oracle ticker set at add time.
 ///      Runs behind an ERC-1967 proxy (UUPS) so the manager address — and the positions it
-///      custodies — survive upgrades (e.g. the planned per-collateral risk params). Upgrades are
-///      ADMIN-gated ({_authorizeUpgrade}); ossification is a final upgrade to an implementation
-///      whose {_authorizeUpgrade} always reverts.
+///      custodies — survive upgrades. Upgrades are ADMIN-gated ({_authorizeUpgrade});
+///      ossification is a final upgrade to an implementation whose {_authorizeUpgrade} always
+///      reverts.
 contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
@@ -92,10 +92,6 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
     uint256 private _feeIndex;
     uint256 private _feeIndexUpdated;
 
-    /// @inheritdoc IEUSDManager
-    /// @dev Appended for the OwnStakeZap upgrade — storage stays append-only across upgrades.
-    address public override stakeZap;
-
     // ──────────────────────────────────────────────────────────
     //  Modifiers
     // ──────────────────────────────────────────────────────────
@@ -107,12 +103,6 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
 
     modifier onlyOperator() {
         if (!registry.hasRole(OPERATOR, msg.sender)) revert OnlyOperator();
-        _;
-    }
-
-    modifier onlyZap() {
-        // A zero stakeZap disables the surface: msg.sender can never be address(0).
-        if (msg.sender != stakeZap) revert OnlyZap();
         _;
     }
 
@@ -239,60 +229,6 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
     }
 
     /// @inheritdoc IEUSDManager
-    function depositFor(
-        address owner,
-        address collateral,
-        uint256 amount,
-        address hint
-    ) external override nonReentrant onlyZap {
-        CollateralConfig storage cfg = _requireCollateral(collateral);
-        if (owner == address(0)) revert ZeroAddress();
-        if (amount == 0) revert ZeroAmount();
-
-        Position storage p = _accrue(collateral, owner);
-        // Same rule as {deposit}: disabled collateral accepts top-ups from existing debtors only.
-        if (!cfg.enabled && p.debt == 0) revert CollateralDisabled(collateral);
-        p.collateral += amount;
-        totalCollateral[collateral] += amount;
-        _reindex(collateral, owner, hint);
-
-        IERC20(collateral).safeTransferFrom(msg.sender, address(this), amount);
-        emit CollateralDeposited(collateral, owner, amount);
-    }
-
-    /// @inheritdoc IEUSDManager
-    function mintFor(
-        address owner,
-        address collateral,
-        uint256 amount,
-        address hint
-    ) external override nonReentrant onlyZap {
-        CollateralConfig storage cfg = _requireCollateral(collateral);
-        if (owner == address(0)) revert ZeroAddress();
-        if (!cfg.enabled) revert CollateralDisabled(collateral);
-        if (mintPaused) revert MintingPaused();
-        if (amount == 0) revert ZeroAmount();
-
-        Position storage p = _accrue(collateral, owner);
-
-        uint256 newDebt = p.debt + amount;
-        if (newDebt < _riskParams.minDebt) revert BelowMinimumDebt(newDebt, _riskParams.minDebt);
-        uint256 newTotal = totalDebt + amount;
-        if (newTotal > _riskParams.debtCeiling) revert DebtCeilingExceeded(newTotal, _riskParams.debtCeiling);
-
-        uint256 ratio = _ratioBps(p.collateral, newDebt, _freshPrice(cfg.ticker));
-        if (ratio < _riskParams.mcrBps) revert CollateralRatioTooLow(ratio, _riskParams.mcrBps);
-
-        p.debt = newDebt;
-        totalDebt = newTotal;
-        _reindex(collateral, owner, hint);
-
-        // Minted to the zap, which stakes it for `owner` in the same transaction.
-        _eusd.mint(msg.sender, amount);
-        emit EUSDMinted(collateral, owner, amount, newDebt);
-    }
-
-    /// @inheritdoc IEUSDManager
     function closePosition(
         address collateral
     ) external override nonReentrant {
@@ -313,7 +249,7 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
 
     /// @dev Shared close: retire the full debt, delete the position, pay out the collateral.
     ///      With `feesFromCollateral`, the tracked fee portion is settled in kind — collateral of
-    ///      equal value (anchor price, ceil rounding against the debtor) to the treasury, whose
+    ///      equal value (oracle price, ceil rounding against the debtor) to the treasury, whose
     ///      eUSD is burned in the same amount — and the caller burns only the remainder. An
     ///      underwater position caps the settlement at its collateral value; the caller pays the
     ///      rest in eUSD.
@@ -327,7 +263,7 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
         uint256 feeCollateral;
         if (feesFromCollateral && p.feesAccrued > 0) {
             fees = p.feesAccrued;
-            uint256 price = _anchorPrice(_collateralConfigs[collateral].ticker);
+            (uint256 price,) = _oracle().getPrice(_collateralConfigs[collateral].ticker);
             feeCollateral = Math.mulDiv(fees, PRECISION, price, Math.Rounding.Ceil);
             if (feeCollateral > coll) {
                 feeCollateral = coll;
@@ -375,7 +311,7 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
         Position storage p = _accrue(collateral, owner);
         if (p.debt == 0) revert NoDebt(collateral, owner);
 
-        uint256 price = _anchorPrice(ticker);
+        (uint256 price,) = _oracle().getPrice(ticker);
         {
             uint256 ratio = _ratioBps(p.collateral, p.debt, price);
             uint16 threshold = _riskParams.liquidationThresholdBps;
@@ -414,7 +350,7 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
         CollateralConfig storage cfg = _requireCollateral(collateral);
         if (amount == 0) revert ZeroAmount();
 
-        uint256 price = _anchorPrice(cfg.ticker);
+        (uint256 price,) = _oracle().getPrice(cfg.ticker);
         uint256 remaining = amount;
         uint256 touched;
 
@@ -449,8 +385,8 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
         if (_collateralConfigs[collateral].exists) revert CollateralAlreadySupported(collateral);
         uint8 dec = IERC20Metadata(collateral).decimals();
         if (dec != 18) revert InvalidCollateralDecimals(dec);
-        (uint256 price,) = _oracle().getPrice(ticker);
-        if (price == 0) revert ZeroOraclePrice(ticker);
+        // Reverts unless the ticker is priced.
+        _oracle().getPrice(ticker);
         _collateralConfigs[collateral] = CollateralConfig({ticker: ticker, enabled: true, exists: true});
         emit CollateralAdded(collateral, ticker);
     }
@@ -520,14 +456,6 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
         emit MintPausedSet(paused);
     }
 
-    /// @inheritdoc IEUSDManager
-    function setStakeZap(
-        address zap
-    ) external override onlyAdmin {
-        stakeZap = zap;
-        emit StakeZapSet(zap);
-    }
-
     // ──────────────────────────────────────────────────────────
     //  Internal
     // ──────────────────────────────────────────────────────────
@@ -551,7 +479,7 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
     }
 
     /// @dev Fold a position's pending stability fee into its debt and mint it to the treasury,
-    ///      keeping eusd.totalSupply() == totalDebt exact. The mint is a call into the trusted
+    ///      keeping eUSD supply equal to total debt across managers. The mint is a call into the trusted
     ///      EUSD token (no transfer hooks); all callers hold the reentrancy guard.
     function _accrue(address collateral, address owner) private returns (Position storage p) {
         _settleFeeIndex();
@@ -686,19 +614,8 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
     ) private view returns (uint256 price) {
         uint256 ts;
         (price, ts) = _oracle().getPrice(ticker);
-        if (price == 0) revert ZeroOraclePrice(ticker);
         uint256 maxAge = _riskParams.mintPriceMaxAge;
         if (block.timestamp > ts + maxAge) revert StaleMintPrice(ts, maxAge);
-    }
-
-    /// @dev Last oracle anchor for exits (repay-side paths, liquidation, redemption): no age
-    ///      bound, so closed markets never block an exit. The oracle itself rejects prices beyond
-    ///      its own hard usability window.
-    function _anchorPrice(
-        bytes32 ticker
-    ) private view returns (uint256 price) {
-        (price,) = _oracle().getPrice(ticker);
-        if (price == 0) revert ZeroOraclePrice(ticker);
     }
 
     /// @dev Liquidation seizure: collateral worth repaid × (1 + bonus), capped at `coll`. Floor
@@ -771,9 +688,8 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
     function collateralRatioBps(address collateral, address owner) public view override returns (uint256) {
         uint256 debt = currentDebt(collateral, owner);
         if (debt == 0) return type(uint256).max;
-        return _ratioBps(
-            _positions[collateral][owner].collateral, debt, _anchorPrice(_collateralConfigs[collateral].ticker)
-        );
+        (uint256 price,) = _oracle().getPrice(_collateralConfigs[collateral].ticker);
+        return _ratioBps(_positions[collateral][owner].collateral, debt, price);
     }
 
     /// @inheritdoc IEUSDManager

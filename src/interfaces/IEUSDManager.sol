@@ -7,7 +7,7 @@ pragma solidity 0.8.28;
 ///
 ///         Price-freshness asymmetry: risk-increasing actions (mint, collateral withdrawal
 ///         against debt) require a price no older than `mintPriceMaxAge`; exits (repay, close,
-///         redeem, liquidate) work off-hours against the last oracle anchor with no age bound, so
+///         redeem, liquidate) work off-hours against the last oracle price with no age bound, so
 ///         no holder or keeper is ever blocked by a market being closed. Redemptions transfer value
 ///         only from the position owner whose debt they retire.
 ///
@@ -25,8 +25,8 @@ pragma solidity 0.8.28;
 ///
 ///         The stability fee is a fixed annual rate, accrued lazily per position from a global
 ///         bps-seconds index (simple interest between touches). Accrued fees are added to position
-///         debt and simultaneously minted as eUSD to the protocol treasury, preserving
-///         `eusd.totalSupply() == Σ position debt` exactly.
+///         debt and simultaneously minted as eUSD to the protocol treasury, so eUSD supply always
+///         equals the sum of every manager's `totalDebt`.
 interface IEUSDManager {
     // ──────────────────────────────────────────────────────────
     //  Types
@@ -204,10 +204,6 @@ interface IEUSDManager {
     /// @param fee        Fee added to debt and minted to the treasury (18 decimals).
     event StabilityFeeAccrued(address indexed collateral, address indexed owner, uint256 fee);
 
-    /// @notice Emitted when the whitelisted stake zap changes.
-    /// @param zap New zap address (address(0) disables {depositFor}/{mintFor}).
-    event StakeZapSet(address indexed zap);
-
     // ──────────────────────────────────────────────────────────
     //  Errors
     // ──────────────────────────────────────────────────────────
@@ -237,8 +233,6 @@ interface IEUSDManager {
     /// @param priceTimestamp Oracle price observation timestamp (unix seconds).
     /// @param maxAge         Max accepted age (seconds).
     error StaleMintPrice(uint256 priceTimestamp, uint256 maxAge);
-    /// @notice Oracle returned a zero price.
-    error ZeroOraclePrice(bytes32 ticker);
     /// @notice Position debt would end below the minimum.
     /// @param debt    Resulting debt (18 decimals).
     /// @param minDebt Required minimum (18 decimals).
@@ -269,8 +263,6 @@ interface IEUSDManager {
     /// @param collateralOut    Collateral the redemption produced (18 decimals).
     /// @param minCollateralOut Caller's floor (18 decimals).
     error SlippageExceeded(uint256 collateralOut, uint256 minCollateralOut);
-    /// @notice Caller is not the whitelisted stake zap.
-    error OnlyZap();
 
     // ──────────────────────────────────────────────────────────
     //  Position management
@@ -321,12 +313,12 @@ interface IEUSDManager {
 
     /// @notice Close the caller's position paying only the principal in eUSD: the accrued
     ///         stability fees are settled from collateral instead, so a debtor who minted X never
-    ///         needs more than X eUSD to exit. Collateral worth the fee debt at the oracle anchor
+    ///         needs more than X eUSD to exit. Collateral worth the fee debt at the oracle price
     ///         (rounded against the owner) goes to the treasury, and the matching eUSD — minted to
     ///         the treasury when the fees accrued — is burned from the treasury's balance,
-    ///         preserving `eusd.totalSupply() == totalDebt`. Value-neutral for the treasury; the
+    ///         keeping eUSD supply equal to total debt. Value-neutral for the treasury; the
     ///         settleable amount is capped at the position's tracked `feesAccrued`. Works
-    ///         off-hours (anchor price). Reverts if the treasury
+    ///         off-hours (no freshness bound). Reverts if the treasury
     ///         balance cannot cover the burn — fall back to {closePosition}.
     /// @param collateral Collateral token of the position.
     function closePositionPrincipalOnly(
@@ -344,34 +336,11 @@ interface IEUSDManager {
     function accrue(address collateral, address owner, address hint) external;
 
     // ──────────────────────────────────────────────────────────
-    //  Zap surface (whitelisted stake zap only)
-    // ──────────────────────────────────────────────────────────
-
-    /// @notice Deposit collateral into `owner`'s position, pulled from the caller. Zap only. Same
-    ///         rules as {deposit} — health only improves, so acting on another owner is safe; the
-    ///         zap only ever passes its own transaction sender as `owner`.
-    /// @param owner      Position owner credited with the collateral.
-    /// @param collateral Collateral token to deposit.
-    /// @param amount     Amount to deposit (18 decimals).
-    /// @param hint       Sorted-list insert hint (see {deposit}).
-    function depositFor(address owner, address collateral, uint256 amount, address hint) external;
-
-    /// @notice Mint eUSD against `owner`'s position, paid to the caller. Zap only — this is
-    ///         risk-increasing on-behalf surface, reachable solely through the whitelisted zap,
-    ///         which stakes the minted eUSD for `owner` in the same transaction. Same gates as
-    ///         {mint}: fresh price, MCR, min debt, ceiling, pause.
-    /// @param owner      Position owner taking on the debt.
-    /// @param collateral Collateral token backing the mint.
-    /// @param amount     eUSD to mint to the caller (18 decimals).
-    /// @param hint       Sorted-list insert hint (see {deposit}).
-    function mintFor(address owner, address collateral, uint256 amount, address hint) external;
-
-    // ──────────────────────────────────────────────────────────
     //  Liquidation & redemption
     // ──────────────────────────────────────────────────────────
 
     /// @notice Liquidate a position whose ratio is below the liquidation threshold at the current
-    ///         oracle anchor (no freshness bound — works off-hours). The caller burns up to
+    ///         oracle price (no freshness bound — works off-hours). The caller burns up to
     ///         `amount` of the debt and receives collateral worth repaid × (1 + liquidationBonus),
     ///         capped at the position's collateral. A full close (amount ≥ debt) refunds any
     ///         surplus collateral to the owner and deletes the position; a partial leaves the
@@ -388,7 +357,7 @@ interface IEUSDManager {
     /// @param hint       Sorted-list insert hint for the remainder (see {deposit}).
     function liquidate(address collateral, address owner, uint256 amount, address hint) external;
 
-    /// @notice Redeem eUSD for collateral at the oracle anchor price — burn X eUSD, receive X
+    /// @notice Redeem eUSD for collateral at the oracle price — burn X eUSD, receive X
     ///         dollars' worth of collateral (rounded down), sourced from the riskiest positions
     ///         first (list head). The peg anchor: always available, no freshness bound, never
     ///         pausable. Each touched position's debt and collateral shrink at exactly 1:1 value,
@@ -470,13 +439,6 @@ interface IEUSDManager {
         bool paused
     ) external;
 
-    /// @notice Set the whitelisted stake zap allowed to call {depositFor}/{mintFor}
-    ///         (address(0) disables both).
-    /// @param zap New zap address.
-    function setStakeZap(
-        address zap
-    ) external;
-
     // ──────────────────────────────────────────────────────────
     //  Views
     // ──────────────────────────────────────────────────────────
@@ -496,11 +458,8 @@ interface IEUSDManager {
     /// @notice Whether minting is currently paused.
     function mintPaused() external view returns (bool);
 
-    /// @notice The whitelisted stake zap (address(0) = none).
-    function stakeZap() external view returns (address);
-
-    /// @notice Total outstanding eUSD debt across all positions (18 decimals). Equals
-    ///         eusd.totalSupply() at all times.
+    /// @notice Total outstanding eUSD debt across this manager's positions (18 decimals). eUSD supply
+    ///         equals the sum of this value over every manager.
     function totalDebt() external view returns (uint256);
 
     /// @notice Total collateral held for a token across all positions (18 decimals). Equals the
@@ -520,7 +479,7 @@ interface IEUSDManager {
     /// @param owner      Position owner.
     function currentDebt(address collateral, address owner) external view returns (uint256);
 
-    /// @notice A position's live collateral ratio in BPS at the current oracle anchor, using live
+    /// @notice A position's live collateral ratio in BPS at the current oracle price, using live
     ///         debt. Returns type(uint256).max for debt-free positions.
     /// @param collateral Collateral token address.
     /// @param owner      Position owner.
