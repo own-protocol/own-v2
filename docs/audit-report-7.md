@@ -1,0 +1,256 @@
+# Own Protocol v2 — Audit Report & Remediation Status (Pass 7)
+
+**Branch:** `deploy-contracts` (audited at `main` `c5d94b1`) · **Last updated:** 2026-10-31
+
+Pre-deploy audit of the eUSD-only contract set: three **independent** solidity-auditor runs
+(12-agent pipeline each — 9 specialty attackers + 3 gap-hunters, one pass), one per model, merged
+here. Every reported item was deduplicated across the three runs and against Reports 3–5 and
+Report 4 (`audits/09-09-2026`), then re-verified against source before booking. `A7-` items are
+new in this pass; items that restate an earlier, already-decided ID are listed under
+**Duplicates dropped** rather than re-booked.
+
+| Run      | Agents finished | Models                                              |
+| -------- | --------------- | --------------------------------------------------- |
+| Opus 5.5 | 12 / 12         | 10 Opus 5.5, 1 Sonnet 5.5, 1 Opus 4.8 (fallbacks)   |
+| Fable    | 12 / 12         | 12 Fable 5.1                                        |
+| Opus 4.8 | 12 / 12         | 12 Opus 4.8                                         |
+
+The only item all three runs raised as a finding is A7-M-01 (redemption at an unbounded-age price
+with no redemption fee). No unprivileged fund-theft path survived verification.
+
+### Scope
+
+```
+src/eusd/EUSD.sol                     src/eusd/EUSDManager.sol
+src/staking/StakingVault.sol          src/oracle/ChainlinkOracleVerifier.sol
+src/registry/ProtocolRegistry.sol     misc/MoneyFeeCollector.sol
++ interfaces; the Fable run also read script/robinhood/*.s.sol
+```
+
+`EUSD` is already deployed and non-upgradeable; its items are recorded for completeness only.
+
+---
+
+## Status at a Glance
+
+| Severity | Total | Fixed | Open | By design |
+| -------- | ----- | ----- | ---- | --------- |
+| Critical | 0     | 0     | 0    | —         |
+| High     | 0     | 0     | 0    | —         |
+| Medium   | 1     | 0     | 1    | —         |
+| Low      | 6     | 0     | 5    | 1         |
+| Info     | 3     | 0     | 2    | 1         |
+
+| ID      | Severity | Finding                                                                         | Status    |
+| ------- | -------- | ------------------------------------------------------------------------------- | --------- |
+| A7-M-01 | Medium   | `redeem` prices at an unbounded-age oracle price with no redemption fee         | Open      |
+| A7-L-01 | Low      | Permissionless `accrue` compounds the stability fee                             | Open      |
+| A7-L-02 | Low      | `closePositionPrincipalOnly` settles the fee at an unbounded-age price          | Open      |
+| A7-L-03 | Low      | In-house price cache survives reconfig / signer removal; replay after re-enable | Open      |
+| A7-L-04 | Low      | Full liquidation pushes the refund to the owner inline (blocked owner reverts)  | Open      |
+| A7-L-05 | Low      | Manager deploy script truncates risk params with `uint16(...)`                  | Open      |
+| A7-L-06 | Low      | One OPERATOR role covers the oracle kill-switch, mint pause and reward top-ups  | By design |
+| A7-I-01 | Info     | Principal-only close and `pullFromTreasury` draw on the same treasury eUSD      | Open      |
+| A7-I-02 | Info     | `setChainlinkConfig` does not bound `bandBps` to `BPS`                          | Open      |
+| A7-I-03 | Info     | `buyBack` forwards the full held $MONEY, not just the swap output               | By design |
+
+---
+
+## A7-M-01 — `redeem` prices at an unbounded-age oracle price with no redemption fee (Medium, Open)
+
+Raised by all three runs (Opus 5.5: 6 agents, Fable: 5, Opus 4.8: 7 incl. the liquidation side).
+
+`redeem` (`EUSDManager.sol:353`) reads `(price,) = _oracle().getPrice(ticker)` and discards the
+timestamp; `mint`/`withdrawCollateral` use `_freshPrice`. The verifier serves a Chainlink answer
+up to `maxAnchorAge` old (`ChainlinkOracleVerifier.sol:236`), and an in-house quote may only sit
+within `bandBps` of that anchor (`_checkAnchorBand`), so even an honest, always-on signer cannot
+follow an off-hours move larger than the band. Stock tokens keep trading on-chain while their
+feeds are silent, and there is no redemption fee.
+
+When the token trades above the stale anchor by more than the band, a redeemer buys eUSD at or
+below $1, redeems against the head positions at the stale price and sells the collateral at market.
+Example: anchor $600, in-house capped at $618 (3% band), token trades $650 on a weekend gap —
+redeeming 100,000 eUSD seizes 161.8 tokens worth $105,178, a ~$5,000 transfer from head debtors,
+who cannot defend off-hours (mint and withdraw need a fresh price; only `closePosition` with the
+full debt in eUSD is open). In-session, a watcher can take up to the feed's ~0.5% deviation per
+redemption, repeatedly. With several managers the redeemer picks the most-lagged collateral.
+
+**Relation to earlier reports:** Report 4 L-06 acknowledged the stale-anchor exit family against
+the *liquidation bonus*, and the interface documents redemption as "no freshness bound, never
+pausable". That decision predates higher-volatility collateral and was sized for liquidation; the
+redemption-side transfer from head debtors, its dependence on `bandBps`, and the missing fee are
+not covered by it, so it is booked here.
+
+**Fix options (decision needed):** (a) a redemption fee at least the expected off-hours gap,
+paid to the redeemed owner or the treasury (Liquity-style base rate); (b) a redeem-specific max
+price age (fresh price required, so redemptions pause when feeds are silent — peg defense then
+relies on liquidation off-hours); (c) both, with a smaller fee. Liquidation stays on the
+Report 4 L-06 decision.
+
+## A7-L-01 — Permissionless `accrue` compounds the stability fee (Low, Open)
+
+Raised by Opus 5.5 (5 agents, as High) and Fable (2 agents). Verified.
+
+`_accrue` (`EUSDManager.sol:488-490`) charges `fee = p.debt × Δindex / (BPS·YEAR)` and folds it
+into `p.debt`, so the next fee is charged on principal plus earlier fees. `accrue(collateral,
+owner, hint)` is callable by anyone on any position. Untouched for a year, 1,000,000 debt at 8%
+owes 80,000; touched daily by a third party it owes 83,277 (+0.33% of debt per year); hourly,
+83,287 (the e^r − 1 limit). Cost to the caller is gas only. The extra is minted to the treasury, so
+there is no attacker profit — it is borrower griefing — but it contradicts the interface
+("simple interest", and `accrue` "never changes what a position owes", `IEUSDManager.sol:27,329`).
+Distinct from A5-L-04 (ordering only).
+
+**Fix:** charge the fee on principal only — `Math.mulDiv(p.debt - p.feesAccrued, Δindex,
+BPS·YEAR)` — which makes the fee simple interest regardless of touch frequency. One line.
+
+## A7-L-02 — `closePositionPrincipalOnly` settles the fee at an unbounded-age price (Low, Open)
+
+Raised by all three runs (Opus 5.5: 3 findings + 6 leads; Fable: 6 agents; Opus 4.8: lead).
+
+`_close(…, feesFromCollateral = true)` (`EUSDManager.sol:266`) prices the fee collateral with raw
+`getPrice` and burns the full fee from the treasury. The debtor picks `closePosition` (fee in eUSD,
+no price) or `closePositionPrincipalOnly` (fee in collateral at the oracle price) after seeing the
+price, so the treasury is always on the losing side of any staleness: fees 80 eUSD, stale price
+$600, market $540 → the treasury retires 80 eUSD for $72 of collateral. Bounded by
+`feesAccrued × gap` per position; contradicts "value-neutral for the treasury".
+
+**Fix:** use `_freshPrice(ticker)` on the `feesFromCollateral` branch only. `closePosition` stays
+the price-free exit that always works off-hours.
+
+## A7-L-03 — In-house price cache survives reconfig / signer removal; replay after re-enable (Low, Open)
+
+Raised by Opus 5.5 (4 agents) and Fable (4 + 3 agents). Verified.
+
+Only `disableAsset` deletes `_prices[asset]`. After `setChainlinkConfig` re-points a ticker (new
+aggregator or `multiplierToken`), `getPrice` keeps serving the last in-house price — in the old
+units, never re-band-checked — while it is newer than the Chainlink answer and within
+`inhouseMaxStaleness`; the same holds for a price signed by a signer that `removeSigner` just
+revoked. Conversely, because `disableAsset` zeroes the stored timestamp, the replay floor
+(`timestamp <= existing.timestamp`) is lost: after a disable + re-config, anyone can resubmit an
+earlier public attestation that is still within staleness and band. All paths need an admin
+sequence and are bounded by `inhouseMaxStaleness` and the band, but exits read the price with no
+age bound (A7-M-01).
+
+**Fix (fresh verifier, so cheap now):** in `setChainlinkConfig` and `disableAsset`, zero the cached
+price but keep its timestamp as the replay floor (`_prices[asset].price = 0` instead of `delete`).
+Signer removal is covered operationally by following `removeSigner` with `setChainlinkConfig`.
+
+## A7-L-04 — Full liquidation pushes the refund to the owner inline (Low, Open)
+
+Raised by Fable (6 agents) and Opus 5.5 (4 agents). Verified on-chain: Robinhood stock tokens
+(`Stock` implementation behind the BeaconProxy) gate `transfer` with `onlyNotBlocked(to)`.
+
+On a full close, `liquidate` sends `refund` to the owner in the liquidator's call
+(`EUSDManager.sol:338`). If the token issuer blocks the owner, every full liquidation with
+`refund > 0` reverts. Partial liquidations still work but must leave at least `minDebt`, so the
+last `minDebt` of a blocked owner's position cannot be cleared by liquidation (redemption can still
+reach it). Impact is capped at about `minDebt` of debt per blocked position.
+
+**Fix:** credit the refund to the owner as withdrawable collateral (pull pattern) instead of
+transferring it, or wrap the refund transfer so a failure leaves it in the position.
+
+## A7-L-05 — Manager deploy script truncates risk params with `uint16(...)` (Low, Open)
+
+Raised by Fable (7 agents). Verified.
+
+`DeployEusdManagerRobinhood.s.sol:31-34` casts `vm.envUint(...)` to `uint16` without a bound:
+`MCR_BPS=150000` (a typo for 15000) deploys as 18928, and `_validateRatios` only checks ordering.
+The script also lacks the `block.chainid` guard that `DeployCoreRobinhood` has.
+
+**Fix:** `SafeCast.toUint16` (or an explicit `require`) on each value and a chain-id check. Script
+only; no contract change.
+
+## A7-L-06 — One OPERATOR role covers the oracle kill-switch, mint pause and reward top-ups (Low, By design)
+
+Raised by all three runs. `disableAsset` / `removeSigner` (verifier), `setMintPaused` (managers)
+and `pullFromTreasury` (vaults) share the registry OPERATOR role, and it is granted to the keeper
+so it can top up the vaults. A compromised keeper could
+`disableAsset` (every `getPrice` reverts, freezing liquidation, redemption and principal-only
+close until ADMIN re-configures) or pause mints; it cannot move funds anywhere but treasury →
+vault reserve, capped by the treasury's allowance.
+
+**Accepted (2026-10-31):** the keeper key is held in a KMS; the realistic compromise is the server,
+which would expose a separate rewards key too, so a dedicated role adds little.
+Containment: ADMIN re-configures, `withdrawReserve` returns over-pulled rewards.
+
+## A7-I-01 — Principal-only close and `pullFromTreasury` draw on the same treasury eUSD (Info, Open)
+
+`closePositionPrincipalOnly` burns the settled fee from `registry.treasury()`
+(`EUSDManager.sol:283`), and `StakingVault.pullFromTreasury` pulls eUSD from the same address.
+If top-ups take the treasury's eUSD below outstanding `feesAccrued`, principal-only closes revert
+(documented; `closePosition` still works). Ops rule: keep the treasury's eUSD at or above the sum
+of open `feesAccrued`, or fund the seUSD vault from other eUSD.
+
+## A7-I-02 — `setChainlinkConfig` does not bound `bandBps` to `BPS` (Info, Open)
+
+`bandBps` is a `uint16` up to 65,535; at 10,000 or more any lower in-house price passes
+`_checkAnchorBand`. Admin typo plus signer compromise only. One-line `bandBps <= BPS` check.
+
+## A7-I-03 — `buyBack` forwards the full held $MONEY, not just the swap output (Info, By design)
+
+For a non-$MONEY input, `buyBack` forwards `money_.balanceOf(this)` (`MoneyFeeCollector.sol:231`),
+so pre-existing $MONEY moves to `reserve` in one call regardless of `burnSpendBps`. The destination
+is the owner-set reserve (the treasury Safe), so this is a sweep of donations and swap dust, as
+the inline comment says — not a bypass of the keeper cap on the input token. Related keeper-trust
+note (Fable, 6 agents): a compromised keeper can route the per-interval input slice to itself
+through permissive `swapData` with `minMoneyOut = 1`; the header documents that slice as the
+keeper's damage cap, which compounds to most of the held input over a day. Keep `burnInterval`
+and `burnSpendBps` conservative.
+
+---
+
+## Duplicates dropped (→ existing decisions)
+
+- **Underwater head redemption leaves an unbacked residual that liquidation never clears**
+  (Fable F1, Opus 4.8, Opus 5.5 lead) → **Report 4 H-01 / M-01**, the deliberate fix: an
+  underwater head is redeemed value-for-value and the residual stays on the owner's books off-list.
+  The owner self-redeeming gains nothing over walking away from the position. Fee accrual on such
+  residuals → Report 5 lead ("fee accrual on unbacked residuals").
+- **Liquidation at an unbounded-age price** (Opus 4.8 F-1) → **Report 4 L-06**, acknowledged; the
+  redemption side is booked as A7-M-01.
+- **`getPrice` reports `block.timestamp` inside `clFreshWindow`, so `mintPriceMaxAge` can't bind
+  tighter** (Opus 4.8 F-2, Fable) → **Report 4 L-03**, resolved as documented semantics.
+- **Sorted list ordered by stale stored debt** → **A5-L-04 / Report 4 L-04**, acknowledged.
+- **Head at exactly `minDebt` stops sub-`minDebt` redemptions** → **A5-M-04** designed semantics
+  and Report 5's `setMinDebt` lead.
+- **`withdrawCollateral` ignores `cfg.enabled`** → **A5-L-05 / Report 4 L-16**, deliberate.
+- **`EUSD.crosschainBurn` is allowance-free** → **Report 4 I-05 / I-06**, acknowledged; bridging
+  stays disabled. **`_available` `maxLimit × elapsed` overflow** → Report 5 third-scan lead. EUSD
+  is deployed and unchanged by this release.
+- **Initializer front-run** → not reachable: deploy scripts initialize in the `ERC1967Proxy`
+  constructor.
+- **In-house signer may quote in quiet market hours after `clSilence`** → the documented hybrid
+  oracle design (silence gate + band; `docs/chainlink-feeds-robinhood.md`).
+
+## Leads (not scored — trails for manual review)
+
+- **Chainlink leg not wrapped in try/catch** (all runs): a reverting aggregator or
+  `ZeroMultiplier` stops `getPrice` even when a valid in-house price exists. `multiplierToken` is
+  unset on every planned ticker, so `ZeroMultiplier` is unreachable today; revisit if a multiplier
+  token is ever configured.
+- **Registry treasury unset at deploy**: `_accrue` mints to `registry.treasury()`; the go-live
+  batch sets it before any manager can mint (minting needs `MINTER_ROLE`, granted later in the
+  same batch).
+- **StakingVault has no sweep for plain transfers**: direct transfers are locked (by design, they
+  never move the share price). Never set the fee collector's `reserve` to a vault.
+- **`collectFees` reverts if one payee rejects native coin**: the payee is the treasury Safe.
+- **`buyBack` native path** reads `amountIn` from the live balance at execution: fees accrue in
+  SPY, so the native path is unused.
+- **Wrong-hint `_insertNode` walk gas** on long lists: self-limiting (those positions are redeemed
+  first).
+- **`setBridgeLimits` enabling one side of a live bridge starts it at zero capacity** (EUSD,
+  deployed): availability only.
+- **StakingVault 1-wei `_staked` dust at zero supply** and unchecked pre-multiplication in
+  `_seizure` / `_pending` at extreme admin params: dust / admin-bounded.
+
+## Attacked and held
+
+StakingVault: no share-price inflation (donations ignored, `_staked` tracked), no back-pay after an
+empty reserve or zero supply, `setApr`/`setCap` accrue at the old rate first, payouts bounded by
+stake plus reserve. EUSDManager: `eUSD supply == Σ totalDebt` across mint, repay, every `_close`
+branch, liquidation and redemption; `totalCollateral` matches token flows; listed ⇔ debt > 0 ∧
+collateral > 0; partial liquidation and redemption never lower the survivor's ratio; rounding
+protocol-favoring; UUPS initializers locked. Verifier: EIP-712 domain bound to the verifier address
+(no replay from the legacy verifier), future-timestamp and zero-price rejection, `clDecimals <= 18`.
+Registry: two-step delayed admin transfer. MoneyFeeCollector: storage append-only (`reserve` in
+slot 11, namespaced ReentrancyGuard), allowance reset after swaps, balance-delta claim accounting.
