@@ -4,7 +4,9 @@
 [Blockscout](https://robinhoodchain.blockscout.com).
 
 The retired stack (OwnMarket, VaultManager, PSM ReserveVaults, eTokens, AssetRegistry, lending,
-OwnStakeZap) and its deployment record live on the `legacy-own-v2` branch. The eSPY EUSDManager
+OwnStakeZap) and its deployment record live on the `legacy-own-v2` branch. OwnStakingV2,
+TieredBoostCalculator and MoneyPriceFeed below are being replaced by fixed-APR StakingVaults (see
+the last section); their code also lives on `legacy-own-v2`. The eSPY EUSDManager
 below still runs on that stack (it reads the AssetRegistry and VaultManager) until its positions
 wind down.
 
@@ -130,3 +132,16 @@ keeper txs) and the `OwnStakeZap` swap router (`SWAP_ROUTER` in
 not the protocol — integrations must confine it (exact JIT allowance + min-out delta check, as
 both existing consumers do) and any future consumer should reuse this address rather than
 introducing a second venue.
+
+## Fixed-APR staking (pending deploy)
+
+Replaces OwnStakingV2. One `StakingVault` per asset via `DeployStakingVaultRobinhood.s.sol`:
+seUSD (eUSD, 16% APR) and sMONEY ($MONEY, 12% APR), each with a cap on the staked amount that earns
+the full APR. The reserve is funded with `fund(amount)`; unspent reserve comes back with
+`withdrawReserve` (ADMIN). OwnStakingV2 winds down: no new `notifyRewardAmount` batches, stakers
+unstake.
+
+The fee collector is upgraded so the keeper's `buyBack` sends bought $MONEY to `reserve` instead of
+burning it. Safe steps after deploying the new implementation: `upgradeToAndCall(impl, "")`,
+`setReserve(reserve)`, `setBurnShareBps(5000)` (50% of SPY fees bought back as $MONEY, 50% paid to
+the payees in SPY). The keeper must call `buyBack` instead of `buyAndBurn`.

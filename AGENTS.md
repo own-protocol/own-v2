@@ -5,8 +5,8 @@
 eUSD is an overcollateralized stablecoin on Robinhood Chain. Users deposit collateral tokens
 (Robinhood stock tokens, WETH) into an `EUSDManager` and mint eUSD against a fresh oracle price.
 Each manager is a UUPS proxy holding one risk group of collateral with its own risk params; all
-managers share one implementation and mint the same `EUSD` token. `OwnStakingV2` is the staking
-layer (eUSD principal with a $MONEY boost leg). Built with Foundry.
+managers share one implementation and mint the same `EUSD` token. `StakingVault` is the staking
+layer: a fixed-APR ERC-4626 vault per asset (seUSD, sMONEY). Built with Foundry.
 
 This is a production DeFi protocol that will hold millions of dollars. Every line of code must be written with that assumption.
 
@@ -30,8 +30,8 @@ slither src/ --config-file slither.config.json
 ```
 src/
   eusd/        EUSD (ERC-20 + permit, MINTER_ROLE held by each manager), EUSDManager (CDP engine)
-  staking/     OwnStakingV2, TieredBoostCalculator, MoneyFeeCollector
-  oracle/      ChainlinkOracleVerifier, MoneyPriceFeed
+  staking/     StakingVault, MoneyFeeCollector
+  oracle/      ChainlinkOracleVerifier
   registry/    ProtocolRegistry
   interfaces/  Interfaces and shared constants (BPS, PRECISION)
 ```
@@ -41,13 +41,13 @@ src/
   `addCollateral`. Risk params (MCR, liquidation threshold, bonus, stability fee, debt ceiling, min
   debt, mint price max age) are global per manager, so assets of similar volatility share a manager.
 - Mint and collateral withdrawal against debt need a price no older than `mintPriceMaxAge`. Exits
-  (repay, close, liquidate, redeem) use the last oracle anchor with no age bound, so closed markets
+  (repay, close, liquidate, redeem) use the last oracle price with no age bound, so closed markets
   never block an exit.
 - Positions with debt sit in a per-collateral list sorted by nominal ratio; the head is the riskiest.
   Redemptions take $1 of collateral per eUSD from the head. Liquidation is permissionless at a fixed
   bonus.
 - The stability fee accrues lazily from a global index and is minted to the treasury, keeping
-  `eusd.totalSupply() == Σ position debt` across all managers.
+  eUSD supply equal to Σ position debt across all managers.
 
 **Oracle**: `ChainlinkOracleVerifier` is Chainlink-primary with a band-limited, signed in-house
 fallback for when a feed is silent (weekends, off-hours). Managers read it as the registry's
@@ -209,7 +209,7 @@ Do NOT add dependencies without discussion. Every dependency is attack surface. 
 - **ERC-20 + ERC-2612 (Permit)**: EUSD.
 - **EIP-712**: oracle price attestations (`ChainlinkOracleVerifier`). Include chainId and
   verifyingContract in the domain.
-- **ERC-1967 / UUPS**: EUSDManager, OwnStakingV2, MoneyFeeCollector proxies.
+- **ERC-1967 / UUPS**: EUSDManager and MoneyFeeCollector proxies. StakingVault is not upgradeable.
 
 When implementing, reference the EIP directly. Do not rely on memory — check the spec.
 
