@@ -2,126 +2,59 @@
 
 ## Project Overview
 
-Own Protocol is a permissionless protocol for fully collateralised tokenized real-world asset (RWA) exposure onchain. Users mint composable ERC20 eTokens (eTSLA, eGOLD, eTLT) by placing orders in an escrow + claim marketplace. Minters pay in any supported stablecoin (USDC, USDT, USDS) — stablecoins go to vault managers (VMs) for offchain hedge execution. LP collateral in vaults (USDC, aUSDC, ETH, stETH) acts as trustless onchain security. Multiple LPs deposit into vaults and receive ERC-4626 shares. VMs across different vaults compete openly to claim and fulfill orders. Built on Base (Ethereum L2) with Foundry.
+eUSD is an overcollateralized stablecoin on Robinhood Chain. Users deposit collateral tokens
+(Robinhood stock tokens, WETH) into an `EUSDManager` and mint eUSD against a fresh oracle price.
+Each manager is a UUPS proxy holding one risk group of collateral with its own risk params; all
+managers share one implementation and mint the same `EUSD` token. `OwnStakingV2` is the staking
+layer (eUSD principal with a $MONEY boost leg). Built with Foundry.
 
 This is a production DeFi protocol that will hold millions of dollars. Every line of code must be written with that assumption.
 
 ## Quick Reference
 
 ```bash
-# Build
 forge build
-
-# Test (run BEFORE and AFTER every code change)
-forge test -vvv
-
-# Test single file
-forge test --match-path test/unit/OwnVault.t.sol -vvv
-
-# Test single function
-forge test --match-test testMintDuringMarketHours -vvv
-
-# Fuzz tests (increase runs for pre-audit)
-forge test --fuzz-runs 10000
-
-# Invariant tests
+forge test -vvv                                   # run BEFORE and AFTER every code change
+forge test --match-path test/unit/EUSDManager.t.sol -vvv
 forge test --match-path test/invariant/ -vvv
-
-# Gas snapshot
-forge snapshot
-
-# Gas comparison against last snapshot
-forge snapshot --diff
-
-# Coverage
+forge test --fuzz-runs 10000                      # pre-audit
+forge snapshot && forge snapshot --diff
 forge coverage --report lcov
-
-# Format
 forge fmt
-
-# Slither static analysis
+tools/storage-layout.sh                           # upgradeable storage-layout guard
 slither src/ --config-file slither.config.json
-
-# Deploy (testnet)
-forge script script/Deploy.s.sol --rpc-url $BASE_SEPOLIA_RPC --broadcast --verify
 ```
 
 ## Architecture
 
-See `docs/protocol.md` for comprehensive protocol documentation and `docs/deployment.md` for deployment instructions.
-
-### High-Level Architecture
-
-The protocol is organised around an order-based escrow + claim marketplace, per-collateral-type security vaults, and vault managers. Specific contract files and structure will be defined as implementation progresses. The key architectural components are:
-
-**Order Escrow + Claim Marketplace:**
-
-- Minters place orders (market with slippage, or limit price) depositing stablecoins into escrow.
-- VMs see orders and call `claimOrder()` to accept (full or partial).
-- VMs receive the minter's stablecoins, execute the offchain hedge, and confirm with a signed oracle price.
-- eTokens are minted on confirmation. LP collateral is the trustless security throughout.
-- Supports directed orders (specific VM) and open orders (any VM).
-- VMs across different vaults can compete to claim the same order (cross-vault competition).
-
-**One vault per LP collateral type (security pools):**
-
-- USDC vault — accepts USDC deposits from LPs
-- aUSDC vault — accepts aUSDC deposits (yield-bearing; ERC-4626 share price naturally appreciates as aUSDC accrues interest)
-- ETH vault — accepts ETH deposits (wrapped to WETH internally)
-- stETH vault — uses wstETH internally (wraps stETH on deposit, unwraps on withdrawal) to avoid rebasing transfer rounding issues. ERC-4626 share price naturally appreciates as stETH accrues staking yield.
-- **Vaults are NOT fund-flow intermediaries** — minter stablecoins go to VMs via escrow, not through vaults. Vaults hold LP collateral as trustless security/guarantee.
-
-**Public vaults with multiple LPs:**
-
-- All vaults are public. Any LP can deposit collateral into any vault.
-- LP deposits use an async request/accept queue. LP requests deposit, VM accepts, shares are minted.
-- ERC-4626 is used for LP share accounting. LPs receive vault shares proportional to their deposit. Share price increases as yield accrues (for aUSDC, stETH vaults) and as the vault manager distributes lending revenue via `shareYield`.
-- LPs can also be their own vault manager (LP creates a vault with themselves as VM and can deposit directly).
-- LP withdrawals use an async queue (ERC-7540 pattern), fulfilled when utilization allows. No ordering guarantee — any eligible request can be fulfilled.
-
-**Vault managers (1:1 per vault):**
-
-- Each vault has exactly one vault manager (1:1 binding). VMs create their vault.
-- Vault managers claim orders from the escrow marketplace and execute offchain hedging. There is no onchain hedging mechanism.
-- Each vault manager sets exposure caps, accepted stablecoins, and per-asset off-hours toggles.
-
-**eTokens:**
-
-- Each asset has one active eToken (eTSLA, eGOLD, etc.) plus possible legacy tokens from stock splits.
-- eTokens are standard ERC20 + ERC-2612 (Permit) with admin-updatable `name()`/`symbol()`.
-- For dividend-paying assets (eTLT): includes rewards-per-share accumulator.
-
-**Oracle & Utilisation:**
-
-- Signed oracle price feeds and utilisation data verified onchain (ECDSA). MVP uses a protocol-operated signer service.
-- Includes staleness bounds, price deviation checks, and monotonic sequence numbers.
-- On-chain `totalCommittedUSD` counter as sanity check against signed utilisation.
-- OracleVerifier is upgradable via ProtocolRegistry — supports future transition to Pyth, Chainlink, or ZK oracles.
-
-**Revenue Model:**
-
-- **No on-chain mint/redeem fee.** Orders settle at the maker's signed `quote.price`; `OwnMarket` routes the full payment-token amount to the maker (the signer's linked address), who captures the bid/ask spread off-chain.
-- **Lending premium** (charged above Aave's borrow rate) is swept to the vault manager on repay (`LendingFeeAccrued`).
-- **Collateral dividends** earned on borrowed eTokens during the borrow term are swept to the vault manager (`sweepDividends` → `DividendsSwept`).
-- `treasury` (ProtocolRegistry) receives bad-debt collateral, not fees.
-- `volatilityLevel` is stored in AssetRegistry but unused today.
-
-**Protocol Registry:**
-
-- Single governance-upgradable contract holding all protocol contract addresses. All contracts look up dependencies here.
-
 ```
-test/
-├── unit/                    # Isolated contract tests (mocked dependencies)
-├── integration/             # Multi-contract flow tests (real dependencies)
-├── invariant/               # Stateful fuzz tests (protocol invariants)
-├── fork/                    # Base mainnet fork tests (real DEX, real tokens)
-└── helpers/                 # Shared test utilities, mocks, base contracts
-
-script/
-├── Deploy.s.sol             # Deployment script
-└── AddAsset.s.sol           # Asset whitelisting script
+src/
+  eusd/        EUSD (ERC-20 + permit, MINTER_ROLE held by each manager), EUSDManager (CDP engine)
+  staking/     OwnStakingV2, TieredBoostCalculator, MoneyFeeCollector
+  oracle/      ChainlinkOracleVerifier, MoneyPriceFeed
+  registry/    ProtocolRegistry
+  interfaces/  Interfaces and shared constants (BPS, PRECISION)
 ```
+
+**EUSDManager**
+- Collateral: 18-decimal ERC-20s without transfer fees, each priced by the oracle ticker set at
+  `addCollateral`. Risk params (MCR, liquidation threshold, bonus, stability fee, debt ceiling, min
+  debt, mint price max age) are global per manager, so assets of similar volatility share a manager.
+- Mint and collateral withdrawal against debt need a price no older than `mintPriceMaxAge`. Exits
+  (repay, close, liquidate, redeem) use the last oracle anchor with no age bound, so closed markets
+  never block an exit.
+- Positions with debt sit in a per-collateral list sorted by nominal ratio; the head is the riskiest.
+  Redemptions take $1 of collateral per eUSD from the head. Liquidation is permissionless at a fixed
+  bonus.
+- The stability fee accrues lazily from a global index and is minted to the treasury, keeping
+  `eusd.totalSupply() == Σ position debt` across all managers.
+
+**Oracle**: `ChainlinkOracleVerifier` is Chainlink-primary with a band-limited, signed in-house
+fallback for when a feed is silent (weekends, off-hours). Managers read it as the registry's
+`INHOUSE_ORACLE`.
+
+**ProtocolRegistry**: addresses (oracle, treasury) and roles (PROTOCOL_ADMIN, ADMIN, OPERATOR).
+Admin actions go through the governance Safe.
 
 ## Development Methodology: Test-Driven, Interface-First
 
@@ -129,7 +62,7 @@ script/
 
 1. **Write the interface first** (`interfaces/IFoo.sol`). Define the external API, events, errors, and structs. This is the contract's specification.
 2. **Write the tests** (`test/unit/Foo.t.sol`). Tests encode expected behavior. Every public/external function gets at least: one happy-path test, one revert test per error condition, one edge case (zero amounts, max values, boundary conditions).
-3. **Implement the contract** (`src/<domain>/Foo.sol` — e.g. `src/core/`, `src/eusd/`, `src/staking/`, `src/lending/`). Make the tests pass. Nothing more.
+3. **Implement the contract** (`src/<domain>/Foo.sol` — e.g. `src/eusd/`, `src/staking/`, `src/oracle/`). Make the tests pass. Nothing more.
 4. **Run the full suite** before committing. `forge test -vvv` must be green.
 5. **Write invariant tests** for any contract that holds funds or tracks balances. These run after unit tests pass.
 6. **Gas snapshot** after implementation stabilises. `forge snapshot` to baseline, `forge snapshot --diff` on subsequent changes.
@@ -163,8 +96,8 @@ script/
 
 ### Naming Conventions
 
-- Contracts: `PascalCase` (e.g., `OwnVault`, `AssetRegistry`)
-- Interfaces: `I` prefix (e.g., `IOwnVault`)
+- Contracts: `PascalCase` (e.g., `EUSDManager`, `ProtocolRegistry`)
+- Interfaces: `I` prefix (e.g., `IEUSDManager`)
 - Functions: `camelCase` (e.g., `mintAsset`, `getHealthFactor`)
 - State variables: `camelCase` (e.g., `totalCollateral`)
 - Private/internal state: `_underscorePrefixed` (e.g., `_assetConfigs`)
@@ -172,8 +105,8 @@ script/
 - Immutables: `UPPER_SNAKE_CASE` for true constants, `camelCase` if constructor-set
 - Events: `PascalCase` past tense (e.g., `AssetMinted`, `CollateralDeposited`)
 - Errors: `PascalCase` descriptive (e.g., `InsufficientCollateral`, `StalePrice`, `Unauthorized`)
-- Structs: `PascalCase` (e.g., `AssetConfig`, `VaultState`)
-- Enums: `PascalCase` (e.g., `VaultStatus { Active, Halted }`)
+- Structs: `PascalCase` (e.g., `RiskParams`, `Position`)
+- Enums: `PascalCase` (e.g., `Status { Active, Paused }`)
 
 ### Security Patterns — Mandatory
 
@@ -181,7 +114,7 @@ script/
 
 **ReentrancyGuard**: Use OpenZeppelin's `ReentrancyGuard` on every function that transfers tokens or ETH. Even if you think CEI is sufficient — belt and suspenders.
 
-**Access Control**: Use explicit `modifier`s, not inline `require(msg.sender == X)`. Define clear roles: `onlyVaultManager`, `onlyVault`, `onlyRegistry`, `onlyAdmin`.
+**Access Control**: Use explicit `modifier`s, not inline `require(msg.sender == X)`. Define clear roles: `onlyAdmin`, `onlyOperator`.
 
 **Safe Token Transfers**: Always use OpenZeppelin `SafeERC20` for `transfer`, `transferFrom`, `approve`. Never use raw `.transfer()` or `.call()` for ERC20.
 
@@ -245,39 +178,24 @@ Do NOT add dependencies without discussion. Every dependency is attack surface. 
 - Test boundary values: `0`, `1`, `type(uint256).max`, minimum amounts, exact threshold values
 - Every `revert` / custom error in the code must have a corresponding test that triggers it
 
-### Integration Tests (`test/integration/`)
-
-- Test complete flows: LP deposits collateral → LP receives vault shares → minter mints eToken → minter redeems → LP withdraws
-- Use real contract instances (not mocks)
-- Test multi-actor scenarios: multiple LPs, multiple vault managers, multiple minters, multiple assets, concurrent operations
-- Test async deposit flows: LP requests deposit, VM accepts, shares minted
-- Test state transitions: active → halted → active
-
 ### Invariant Tests (`test/invariant/`)
 
-- Define protocol invariants that must ALWAYS hold:
-  - `totalETokenSupply * price <= totalCollateral * collateralRatio` (solvency)
-  - `sum(LP vault shares) == vault.totalSupply()` (ERC-4626 accounting)
-  - `sum(all eToken supplies) == sum(vault.mintedNotional for each asset)` (eToken accounting)
-  - `eToken.totalSupply() >= 0` (no negative supply — sounds obvious, test it)
-  - After any operation: `vault health factor >= 1.0` OR `vault is halted`
+- Define invariants that must ALWAYS hold, e.g. `eusd.totalSupply() == manager.totalDebt()`, the
+  sorted list stays sorted and sized, the manager's token balance covers Σ position collateral
 - Use Foundry's invariant testing framework with handler contracts
-- Handler contracts should exercise: deposit, withdraw, mint eToken, redeem eToken, halt vault
 - Run with `forge test --fuzz-runs 10000` for pre-audit
 
 ### Fork Tests (`test/fork/`)
 
-- Fork Base mainnet to test against real Uniswap pools, real USDC, real price feeds
+- Fork Robinhood Chain to test against real stock tokens and Chainlink feeds
 - Use `vm.createFork()` and `vm.selectFork()`
-- Test with real token decimals and edge cases (USDC = 6 decimals, WETH = 18, aUSDC = 6, stETH = 18)
-- Test wstETH wrapping/unwrapping in the stETH vault
 
 ### Test Helpers (`test/helpers/`)
 
 - `BaseTest.sol`: Common setup, token deployments, utility functions
 - `MockERC20.sol`: Configurable decimals mock token
 - `MockOracleVerifier.sol`: Returns configurable prices, can simulate staleness
-- `Actors.sol`: Predefined addresses for minter, vaultManager, lp, admin, attacker
+- `Actors.sol`: Predefined addresses for admin, minters, liquidator, attacker
 
 ### What "good coverage" means
 
@@ -288,68 +206,16 @@ Do NOT add dependencies without discussion. Every dependency is attack surface. 
 
 ## EIP / Standard Compliance
 
-Contracts should implement or be compatible with these standards where applicable:
-
-- **ERC-20 + ERC-2612 (Permit)**: eToken. Use OpenZeppelin's `ERC20Permit`. Enables single-tx mint flows.
-- **ERC-4626 (Tokenized Vaults)**: Used for LP share accounting in all vaults. Each vault is an ERC-4626 vault where the underlying asset is the collateral type (USDC, aUSDC, WETH, wstETH). Share price naturally appreciates for yield-bearing collateral (aUSDC, stETH) and as the vault manager distributes lending revenue via `shareYield`.
-- **ERC-7540 (Async Vaults)**: Design pattern for non-market-hours redemption queue (future consideration). Keep the interface compatible.
-- **ERC-7575 (Multi-Asset Vaults)**: Relevant for multi-collateral vaults (future consideration). The eToken being external to the vault is already ERC-7575 aligned.
-- **ERC-7535 (Native Asset Vaults)**: For ETH collateral vaults (future consideration). Use via a router periphery contract.
-- **EIP-712 (Typed Structured Data)**: Used for all protocol signatures — RFQ quotes (`OwnMarket`, `Quote` typehash), oracle price attestations (`OracleVerifier`, `PriceAttestation` typehash), and ERC-2612 permits. Domain: `name "Own Protocol", version "1"`, chainId + verifyingContract per contract. Follow the standard for domain separator and type hashing.
+- **ERC-20 + ERC-2612 (Permit)**: EUSD.
+- **EIP-712**: oracle price attestations (`ChainlinkOracleVerifier`). Include chainId and
+  verifyingContract in the domain.
+- **ERC-1967 / UUPS**: EUSDManager, OwnStakingV2, MoneyFeeCollector proxies.
 
 When implementing, reference the EIP directly. Do not rely on memory — check the spec.
 
-## Revenue Model & Price Protection
-
-The protocol charges **no on-chain mint or redeem fee**. Revenue accrues through the RFQ spread and the lending system. Full treatment in `docs/protocol.md` §7.
-
-### Mint & Redeem — RFQ spread (off-chain)
-
-- Orders settle at the maker's signed `quote.price`. `OwnMarket._settleMint` / `_settleRedeem` route the **full** payment-token amount to the maker (the signer's linked settlement address) and mint/burn the user's eTokens — **no fee is deducted on-chain**.
-- The maker's margin is the bid/ask spread baked into the quoted price, captured off-chain.
-- Force-executed redeems settle at the bare oracle `limitPrice` (no maker spread).
-
-### Lending revenue (routed to the VM)
-
-- **One borrow manager per vault (protocol invariant)**: each vault binds exactly one `BorrowManager` for its lifetime (`OwnVault.setBorrowManager` is one-shot, no rotation). The manager's interest-index floor attributes the vault's entire Aave debt to its own book and relies on this. The manager is deployed as a per-vault UUPS/ERC-1967 proxy: the bound proxy address never changes (invariant intact), but ADMIN can upgrade each vault's implementation independently.
-- **Interest premium**: borrowers pay `max(liveAaveRate, floor) + premium(utilisation)`. On repay, the premium above Aave's rate is swept to the vault manager (`LendingFeeAccrued`); the VM redistributes off-chain and/or via `OwnVault.shareYield` (lifts LP share price).
-- **Collateral dividends**: dividends earned on eToken collateral held during a borrow accrue to the VM as lending revenue (not to the borrower) and are swept via `sweepDividends` (`DividendsSwept`). They resume accruing to the borrower once the collateral is returned.
-
-### Treasury
-
-- `ProtocolRegistry.treasury()` receives **bad-debt collateral** (`releaseCollateralForBadDebt`, `absorbBadDebt`), not mint/redeem fees.
-
-### Price protection (not a fee)
-
-- There is no separate on-chain slippage check. A resting order's `limitPrice` bounds execution (mint: max price; redeem: min price); market orders execute at the `quote.price` the taker submits. Force-executed redeems are floored at `limitPrice`.
-
-### Protocol Controls
-
-- **`maxUtilization`**: Hard cap per vault. When exceeded, VMs from that vault can't claim new orders.
-- **`withdrawalWaitPeriod`**: Mandatory queue time for LP exits (protocol-level).
-- **`redemptionGracePeriod`**: Time a VM has to confirm a claimed redemption before LP collateral liquidation is triggered.
-
 ### Key Constants
 
-- Fees: defined in BPS (basis points). `10000` = 100%.
-- Precision constant: `1e18` for price math, `10000` (BPS) for fee math.
-- USDC: 6 decimals. aUSDC: 6 decimals. ETH/WETH: 18 decimals. stETH/wstETH: 18 decimals. eTokens: 18 decimals. Prices: 18 decimals. Always be explicit about decimal conversions.
-
-## Protocol Registry
-
-All protocol contracts are registered in a single `ProtocolRegistry` contract. Other contracts look up addresses from this registry instead of storing immutable/admin-set references. This enables:
-
-- Swapping OracleVerifier (e.g., to Pyth/Chainlink adapter) by updating one address.
-- Governance-controlled upgrades with timelock protection.
-
-## VM Strategy
-
-VMs declare their hedging strategy (DeltaNeutral or Short) on registration. In MVP this is informational. Future versions will enforce strategy compliance via ZK proofs of offchain holdings and trigger liquidation based on strategy type, collateral type, and delta neutral status.
-
-## LP Exits & Liquidation
-
-- **All LP exits are queued** with a mandatory wait period set at protocol level.
-- **LP collateral is liquidated only** when a VM fails to confirm a claimed redemption within the grace period, markets are open, and the user's price is valid. This is the Tier 3 liquidation path.
+- BPS = 10 000 (100%). Prices and accumulators use 1e18 precision. Collateral and eUSD are 18 decimals.
 
 ## Security Vulnerability Checklist
 
@@ -366,12 +232,11 @@ Before any PR to `main`, mentally (or actually) run through this list for every 
 - [ ] Event emission: every state change emits an event? (Needed for off-chain indexing and auditing)
 - [ ] Storage collision: no variable shadowing between inherited contracts?
 - [ ] Signature replay: `chainId` + `contractAddress` in signed messages? Nonce if applicable?
-- [ ] ERC-4626 compliance: share/asset conversion rounding correct? Deposit/withdraw/mint/redeem all consistent?
-- [ ] wstETH wrapping: wrap/unwrap handled correctly? No stETH rounding dust left behind?
+- [ ] Storage layout: upgradeable contracts append-only? `tools/storage-layout.sh` passes?
 
 ## Commit & PR Conventions
 
-- Commit messages: `type(scope): description` (e.g., `feat(vault): add mint with signed price`, `test(vault): add insufficient collateral revert test`, `fix(oracle): check staleness before signer recovery`)
+- Commit messages: `type(scope): description` (e.g., `feat(eusd): add collateral cap`, `test(eusd): add insufficient collateral revert test`, `fix(oracle): check staleness before signer recovery`)
 - Types: `feat`, `fix`, `test`, `refactor`, `docs`, `chore`
 - Every PR must: compile (`forge build`), pass all tests (`forge test`), be formatted (`forge fmt --check`)
 - No PR should mix feature code and refactoring — keep them separate
@@ -396,45 +261,30 @@ Before any PR to `main`, mentally (or actually) run through this list for every 
 
 ### Trust Model
 
-- **Oracle signer**: Trusted (protocol-operated). Single signer for MVP, M-of-N later.
-- **Vault managers**: Semi-trusted. Each vault has exactly one VM (1:1 binding). VMs claim orders from the marketplace, receive minter stablecoins, execute offchain hedges, and confirm with oracle prices. VMs receive minter stablecoins on claim but LP collateral backstops any VM default.
-- **Protocol admin**: Multisig. Can whitelist assets and stablecoins, halt vaults, set `maxUtilization`, rotate oracle signer, register/deregister vault managers.
-- **LPs**: Deposit collateral into public vaults as trustless security. Submit async deposit requests (accepted by VM) and async withdrawal requests (subject to utilisation limits). LP collateral is at risk if the vault's VM defaults.
-- **Minters**: Untrusted. Treat all minter input as adversarial. Minters interact via the escrow marketplace, not directly with vaults.
-
-### Decimal Handling
-
-```
-Collateral amount → price (18 decimals) → eToken amount (18 decimals)
-
-For USDC/aUSDC (6 decimals):
-eTokenAmount = collateralAmount * 1e18 / price * decimalFactor
-
-For ETH/stETH (18 decimals):
-eTokenAmount = collateralAmount * 1e18 / price
-```
-
-Always use `Math.mulDiv` for these conversions. Never do `a * b / c` — use `mulDiv(a, b, c)`.
+- **Oracle**: Chainlink feeds are primary; the in-house signer (KMS) is trusted only within a band
+  around the Chainlink anchor.
+- **Governance**: a multisig Safe holds PROTOCOL_ADMIN and ADMIN (collateral listing, risk params,
+  upgrades). OPERATOR can pause minting.
+- **Borrowers, liquidators, redeemers**: untrusted. Treat all input as adversarial.
 
 ## Security Review Process
 
 When asked to do a security review, follow this process for every contract in `src/`:
 
-### Vulnerability Checklist — Prioritised for Vault Protocols
+### Vulnerability Checklist — Prioritised
 
 Scan in this order. Stop and report any finding immediately.
 
 1. **Reentrancy**: State changes after external calls (token transfers). Verify CEI compliance and ReentrancyGuard usage.
-2. **Oracle manipulation**: Signed price validation, staleness checks, replay protection (chainId + contract address in signed message).
-3. **Access control**: Missing modifiers on state-changing functions, unprotected initialisers, privilege escalation paths. Check vault manager authorization for unauthorized actions.
-4. **Arithmetic**: Rounding direction (protocol-favorable vs user-favorable), precision loss in mulDiv chains, unsafe casting between uint sizes. Check ERC-4626 share/asset conversions.
-5. **Token handling**: Missing SafeERC20, decimal mismatch between collateral types and eTokens, wstETH wrapping edge cases.
-6. **VM authorization**: Can an unauthorized VM act on a vault? Is the 1:1 VM-vault binding enforced?
-7. **Front-running**: Mint/redeem with stale price, sandwich attacks on vault deposits/withdrawals.
-8. **DoS**: Unbounded loops, block gas limit, single-actor griefing (e.g., dust amounts blocking operations).
-9. **Flash loan**: Can flash-minted tokens manipulate vault health or oracle prices?
-10. **Signature replay**: Cross-chain, cross-contract, nonce handling for signed oracle prices.
-11. **ERC-4626 compliance**: Inflation attack on vault shares? Correct rounding in all conversion functions?
+2. **Oracle**: staleness, zero prices, in-house band limits, replay protection on signed prices.
+3. **Access control**: Missing modifiers, unprotected initialisers, upgrade authorisation.
+4. **Arithmetic**: Rounding direction (protocol-favorable vs user-favorable), precision loss in mulDiv chains, unsafe casts.
+5. **Token handling**: Missing SafeERC20, decimals, fee-on-transfer assumptions.
+6. **Liquidation and redemption**: bad-debt paths, list ordering, dust positions below min debt.
+7. **Front-running**: stale-price mints, sandwiching redemptions or liquidations.
+8. **DoS**: Unbounded loops (list walks), griefing with dust positions.
+9. **Flash loans**: can borrowed eUSD or collateral manipulate ratios or redemptions?
+10. **Supply invariant**: `eusd.totalSupply() == Σ debt` across every path.
 
 ### Severity Definitions
 
@@ -560,65 +410,17 @@ When asked to write invariant tests for a contract:
 4. Create the invariant test contract that asserts all invariants after each handler call
 5. Run `forge test --match-path test/invariant/ -vvv` to verify
 
-### Core Protocol Invariants
+### Core Invariants
 
-These must ALWAYS hold, regardless of operation sequence:
-
-- **Solvency**: total LP collateral value >= total outstanding eToken exposure \* min collateral ratio
-- **ERC-4626 Accounting**: sum of all LP vault shares == vault.totalSupply(); vault.totalAssets() >= sum of all deposits minus withdrawals (accounting for yield)
-- **eToken Accounting**: eToken totalSupply matches protocol's tracked outstanding exposure per asset
-- **Escrow Integrity**: stablecoins in escrow + stablecoins released to VMs == total deposited by minters for pending orders; eTokens in escrow == total submitted for pending redemptions
-- **Exposure Caps**: each VM's currentExposure <= maxExposure (and <= maxOffMarketExposure during off-hours)
-- **Health**: vault health factor >= 1.0 OR vault is halted
-- **Utilisation cap**: vault utilisation <= `maxUtilization` for new order claims
+- **Supply**: `eusd.totalSupply()` equals total debt across all managers
+- **Custody**: each manager's collateral balance >= Σ position collateral for that token
+- **List**: per-collateral list sorted ascending by nominal ratio, size and pointers consistent
 - **Access**: only authorised roles can call privileged functions
-- **Supply**: sum of all eToken holder balances == eToken.totalSupply() for every asset
-- **Rewards**: rewards-per-share accounting is consistent across transfers and claims (no double-claim, no lost rewards)
-- **wstETH**: stETH vault's wstETH balance == total deposited stETH (converted to wstETH) minus total withdrawn
 
 ### Handler Contract Pattern
 
-```solidity
-contract VaultHandler is CommonBase, StdCheats, StdUtils {
-    OwnVault vault;
-
-    // Ghost variables for invariant checking
-    uint256 public ghost_totalDeposited;
-    uint256 public ghost_totalWithdrawn;
-    uint256 public ghost_totalMinted;
-    uint256 public ghost_totalRedeemed;
-
-    function deposit(uint256 amount) external {
-        amount = bound(amount, 1e6, 1_000_000e6); // 1 USDC to 1M USDC
-        // ... prank as LP, approve, call vault.deposit()
-        ghost_totalDeposited += amount;
-    }
-
-    function withdraw(uint256 shares) external {
-        shares = bound(shares, 1, vault.balanceOf(lp));
-        // ... prank as LP, call vault.redeem()
-        ghost_totalWithdrawn += shares;
-    }
-
-    function mintEToken(uint256 amount, uint256 priceIndex) external {
-        amount = bound(amount, 1e6, 1_000_000e6);
-        // ... setup signed price, prank as minter, call vault.mint()
-        ghost_totalMinted += amount;
-    }
-
-    function redeemEToken(uint256 amount) external {
-        amount = bound(amount, 1, eToken.totalSupply());
-        // ... setup signed price, prank as minter, call vault.redeem()
-        ghost_totalRedeemed += amount;
-    }
-
-}
-```
-
-### Output
-
-- `test/invariant/handlers/VaultHandler.sol`
-- `test/invariant/OwnVaultInvariant.t.sol`
+See `test/invariant/handlers/EUSDHandler.sol`: bound fuzzed inputs, prank as actors, track ghost
+variables, and assert invariants in `test/invariant/EUSDManagerInvariant.t.sol`.
 
 ## Pre-Audit Checklist
 
@@ -658,12 +460,10 @@ slither src/ --config-file slither.config.json
 - [ ] ReentrancyGuard on functions that make external calls after state changes
 - [ ] SafeERC20 used for all token transfers
 - [ ] Rounding direction commented and correct (protocol-favorable where applicable)
-- [ ] Decimal conversions explicit and tested (USDC/aUSDC 6 decimals, ETH/stETH 18 decimals, eToken 18 decimals, price 18 decimals)
+- [ ] Decimal conversions explicit and tested (collateral and eUSD 18 decimals, price 18 decimals)
 - [ ] No storage variable shadowing between inherited contracts
 - [ ] Events emitted for every state change (needed for off-chain indexing)
-- [ ] ERC-4626 share/asset conversions tested for rounding correctness
-- [ ] wstETH wrap/unwrap logic tested for edge cases and rounding dust
-- [ ] Vault manager authorization logic tested for edge cases
+- [ ] Storage layout of upgradeable contracts unchanged or append-only
 
 ### Report Format
 

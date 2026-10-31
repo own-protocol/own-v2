@@ -11,9 +11,7 @@ via_ir = false
 # Remappings
 remappings = [
     "forge-std/=lib/forge-std/src/",
-    "@openzeppelin/=lib/openzeppelin-contracts/",
-    "@pythnetwork/=lib/pyth-sdk-solidity/",
-    "v4-core/=lib/v4-core/"
+    "@openzeppelin/=lib/openzeppelin-contracts/"
 ]
 
 # Testing
@@ -44,7 +42,7 @@ sort_imports = true
 # Gas reports
 [profile.default.gas_report]
 # Contracts to include in gas report
-include = ["OwnVault", "eToken", "AssetRegistry", "SignedOracleVerifier", "LiquidationEngine", "VaultManager"]
+include = ["EUSD", "EUSDManager", "OwnStakingV2", "ChainlinkOracleVerifier"]
 
 # CI profile: more fuzz runs
 [profile.ci]
@@ -58,13 +56,7 @@ invariant = { runs = 5_000, depth = 200 }
 
 # RPC endpoints
 [rpc_endpoints]
-base = "${BASE_RPC}"
-base_sepolia = "${BASE_SEPOLIA_RPC}"
 robinhood = "${ROBINHOOD_RPC}"
 
-# Etherscan verification
-# NOTE: Robinhood Chain (4663) has no Etherscan — verify via Blockscout with CLI flags:
+# Robinhood Chain (4663) verifies via Blockscout:
 #   --verify --verifier blockscout --verifier-url https://robinhoodchain.blockscout.com/api/
-[etherscan]
-base = { key = "${BASESCAN_API_KEY}", url = "https://api.basescan.org/api" }
-base_sepolia = { key = "${BASESCAN_API_KEY}", url = "https://api-sepolia.basescan.org/api" }

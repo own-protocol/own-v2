@@ -2,8 +2,9 @@
 pragma solidity 0.8.28;
 
 import {ITieredBoostCalculator} from "../../src/interfaces/ITieredBoostCalculator.sol";
-import {LinearBoostCalculator} from "../../src/staking/LinearBoostCalculator.sol";
+
 import {TieredBoostCalculator} from "../../src/staking/TieredBoostCalculator.sol";
+import {MockLinearBoostCalculator} from "../helpers/MockLinearBoostCalculator.sol";
 import {Test} from "forge-std/Test.sol";
 
 contract TieredBoostCalculatorTest is Test {
@@ -225,7 +226,7 @@ contract TieredBoostCalculatorTest is Test {
         ITieredBoostCalculator.Tier[] memory t = new ITieredBoostCalculator.Tier[](1);
         t[0] = ITieredBoostCalculator.Tier(0, 30_000);
         TieredBoostCalculator single = new TieredBoostCalculator(FLOOR, MAX, t);
-        LinearBoostCalculator linear = new LinearBoostCalculator(FLOOR, MAX, 30_000);
+        MockLinearBoostCalculator linear = new MockLinearBoostCalculator(FLOOR, MAX, 30_000);
         assertApproxEqAbs(single.boostBps(moneyValue, eusd), linear.boostBps(moneyValue, eusd), 3);
     }
 
