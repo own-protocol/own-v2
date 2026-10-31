@@ -35,14 +35,15 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 contract MoneyFeeCollector is IMoneyFeeCollector, Initializable, UUPSUpgradeable, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
-    uint256 private constant BPS = 10_000;
-
     // ──────────────────────────────────────────────────────────
     //  Constants
     // ──────────────────────────────────────────────────────────
 
     /// @dev Marker for the chain's native coin in `token` parameters and events.
     address private constant NATIVE = address(0);
+
+    /// @dev Basis-point denominator (10 000 = 100%).
+    uint256 private constant BPS = 10_000;
 
     // ──────────────────────────────────────────────────────────
     //  State
