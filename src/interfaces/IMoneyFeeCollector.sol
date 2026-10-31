@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-/// @title IMoneyFeeCollector — $MONEY fee routing and buy-&-burn
+/// @title IMoneyFeeCollector — $MONEY fee routing and buy-back
 /// @notice Receives the $MONEY trading fees credited to it in the Pons V2 fee escrow, splits
-///         every collected amount into a burn share (retained for keeper-driven $MONEY
-///         buy-&-burns) and a distribution share paid out immediately to a configurable set of
-///         payees. Every balance the contract holds between collections is burn reserve —
-///         including direct transfers in (seeds), which therefore go towards burns in full.
+///         every collected amount into a buy-back share (retained for keeper-driven $MONEY
+///         buy-backs paid to the protocol reserve) and a distribution share paid out immediately
+///         to a configurable set of payees. Every balance the contract holds between collections
+///         is buy-back balance — including direct transfers in, which therefore go towards
+///         buy-backs in full. The `burn*` names predate the switch from burning to buy-backs.
 interface IMoneyFeeCollector {
     // ──────────────────────────────────────────────────────────
     //  Types
@@ -36,11 +37,14 @@ interface IMoneyFeeCollector {
     /// @param amount Amount transferred.
     event FeesDistributed(address indexed token, address indexed payee, uint256 amount);
 
-    /// @notice A keeper converted burn reserve into $MONEY and burned it.
-    /// @param tokenIn     Asset spent (address(0) = native coin; the $MONEY token = direct burn).
-    /// @param amountIn    Amount of `tokenIn` spent (`burnSpendBps` of the held balance).
-    /// @param moneyBurned $MONEY supply burned.
-    event MoneyBurned(address indexed tokenIn, uint256 amountIn, uint256 moneyBurned);
+    /// @notice A keeper converted buy-back balance into $MONEY and sent it to the reserve.
+    /// @param tokenIn  Asset spent (address(0) = native coin; the $MONEY token = forwarded as is).
+    /// @param amountIn Amount of `tokenIn` spent (`burnSpendBps` of the held balance).
+    /// @param moneyOut $MONEY sent to the reserve.
+    event MoneyBoughtBack(address indexed tokenIn, uint256 amountIn, uint256 moneyOut);
+
+    /// @notice The buy-back recipient was updated.
+    event ReserveSet(address indexed reserve);
 
     /// @notice The payee set was replaced.
     event PayeesSet(Payee[] payees);
@@ -109,8 +113,11 @@ interface IMoneyFeeCollector {
     /// @notice The swap produced less $MONEY than the keeper's stated minimum.
     error InsufficientMoneyOut(uint256 received, uint256 minOut);
 
-    /// @notice Swap parameters must be empty for a direct $MONEY burn.
+    /// @notice Swap parameters must be empty when the buy-back balance is already $MONEY.
     error InvalidSwapParams();
+
+    /// @notice No reserve is set to receive bought-back $MONEY.
+    error ReserveNotSet();
 
     /// @notice A native-coin transfer to a payee failed.
     error NativeTransferFailed(address to);
@@ -124,7 +131,7 @@ interface IMoneyFeeCollector {
     // ──────────────────────────────────────────────────────────
 
     /// @notice Claim all accrued fees from the escrow (native coin plus each listed token) and
-    ///         split every claimed amount: `burnShareBps` stays as burn reserve, the remainder is
+    ///         split every claimed amount: `burnShareBps` stays for buy-backs, the remainder is
     ///         paid out to the configured payees pro-rata immediately.
     /// @param tokens ERC-20 fee assets to claim (native coin is always attempted). Assets with a
     ///               zero escrow balance are skipped.
@@ -132,26 +139,26 @@ interface IMoneyFeeCollector {
         address[] calldata tokens
     ) external;
 
-    /// @notice Spend a fixed slice of the held `tokenIn` reserve on $MONEY via an allow-listed
-    ///         swap target, then burn the contract's entire resulting $MONEY balance. Keeper-only,
-    ///         rate-limited to one burn per `burnInterval`. The spend amount is NOT chosen by the
-    ///         keeper: it is always `burnSpendBps` of the contract's current `tokenIn` balance
-    ///         (see {burnSpendAmount}). When `tokenIn` is the $MONEY token itself, no swap is
+    /// @notice Spend a fixed slice of the held `tokenIn` balance on $MONEY via an allow-listed
+    ///         swap target, then send the contract's entire resulting $MONEY balance to `reserve`.
+    ///         Keeper-only, rate-limited to one buy-back per `burnInterval`. The spend amount is
+    ///         NOT chosen by the keeper: it is always `burnSpendBps` of the contract's current
+    ///         `tokenIn` balance (see {burnSpendAmount}). When `tokenIn` is the $MONEY token itself, no swap is
     ///         performed (`swapTarget`/`swapData`/`minMoneyOut` must be empty) and that slice is
-    ///         burned directly.
+    ///         forwarded directly.
     /// @param tokenIn      Reserve asset to spend (address(0) = native coin).
     /// @param swapTarget   Allow-listed contract executing the swap.
     /// @param swapData     Calldata forwarded to `swapTarget` (native input is attached as value;
     ///                     ERC-20 input is approved for exactly the computed spend, so the
     ///                     calldata must not pull more — read {burnSpendAmount} when encoding).
     /// @param minMoneyOut  Minimum $MONEY the swap must produce (slippage bound; must be nonzero).
-    /// @return moneyBurned $MONEY supply burned.
-    function buyAndBurn(
+    /// @return moneyOut   $MONEY sent to the reserve.
+    function buyBack(
         address tokenIn,
         address swapTarget,
         bytes calldata swapData,
         uint256 minMoneyOut
-    ) external returns (uint256 moneyBurned);
+    ) external returns (uint256 moneyOut);
 
     // ──────────────────────────────────────────────────────────
     //  Owner configuration
@@ -181,8 +188,13 @@ interface IMoneyFeeCollector {
     /// @notice Enable or disable a burn keeper.
     function setKeeper(address keeper, bool allowed) external;
 
-    /// @notice Allow-list or remove a swap target for {buyAndBurn}.
+    /// @notice Allow-list or remove a swap target for {buyBack}.
     function setSwapTarget(address target, bool allowed) external;
+
+    /// @notice Set the address that receives bought-back $MONEY (the protocol reserve).
+    function setReserve(
+        address newReserve
+    ) external;
 
     /// @notice Point the collector at a new fee escrow (Pons migration lever).
     function setEscrow(
@@ -215,8 +227,11 @@ interface IMoneyFeeCollector {
     /// @notice Fee escrow currently collected from.
     function escrow() external view returns (address);
 
-    /// @notice The $MONEY token bought and burned.
+    /// @notice The $MONEY token bought back.
     function money() external view returns (address);
+
+    /// @notice Recipient of bought-back $MONEY (address(0) = not set; buy-backs revert).
+    function reserve() external view returns (address);
 
     /// @notice Fraction of every collection retained for burns, in BPS.
     function burnShareBps() external view returns (uint256);
@@ -224,7 +239,7 @@ interface IMoneyFeeCollector {
     /// @notice Slice of the held reserve a keeper spends per burn, in BPS. Zero = burns paused.
     function burnSpendBps() external view returns (uint256);
 
-    /// @notice The exact `tokenIn` amount the next {buyAndBurn} would spend right now
+    /// @notice The exact `tokenIn` amount the next {buyBack} would spend right now
     ///         (`burnSpendBps` of the currently held balance; address(0) = native coin).
     function burnSpendAmount(
         address tokenIn

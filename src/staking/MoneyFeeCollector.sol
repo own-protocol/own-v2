@@ -11,26 +11,27 @@ import {ERC20Burnable} from "@openzeppelin/contracts/token/ERC20/extensions/ERC2
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
-/// @title MoneyFeeCollector — $MONEY fee routing and buy-&-burn
+/// @title MoneyFeeCollector — $MONEY fee routing and buy-back
 /// @notice Registered as the fee recipient of the $MONEY pair in the Pons V2 fee escrow. Anyone
 ///         can trigger {collectFees}: every amount claimed from the escrow is split at that
-///         moment — `burnShareBps` (initially 30%) stays in this contract as burn reserve, the
-///         rest is paid out immediately to the owner-configured payee set. Because the
-///         distribution share never idles here, the contract's entire held balance IS the burn
-///         reserve; assets transferred in directly (e.g. the initial Safe seed) therefore go
-///         towards burns in full, by construction. Keepers convert reserve into $MONEY through an
-///         owner-allow-listed swap target and burn it ({buyAndBurn}), at most once per
-///         `burnInterval` (initially 1 hour).
+///         moment — `burnShareBps` stays in this contract as buy-back balance, the rest is paid
+///         out immediately to the owner-configured payee set. Because the distribution share
+///         never idles here, the contract's entire held balance IS the buy-back balance; assets
+///         transferred in directly therefore go towards buy-backs in full, by construction.
+///         Keepers convert it into $MONEY through an owner-allow-listed swap target and send the
+///         $MONEY to the protocol `reserve` ({buyBack}), at most once per `burnInterval`. The
+///         `burn*` names are kept from the buy-and-burn version so storage and setters are
+///         unchanged.
 /// @dev Runs behind an ERC-1967 proxy (UUPS) so the escrow-credited address survives upgrades;
 ///      upgrades and configuration are owner-gated, with the protocol Safe as owner (two-step
 ///      handover). Storage is append-only across upgrades. Trust model: owner (Safe) is fully
 ///      trusted — it can upgrade and {execute} arbitrarily. Keepers are hot keys trusted only for
-///      burn timing and slippage bounds (`minMoneyOut`): they cannot move funds anywhere but into
-///      an allow-listed swap and the $MONEY burn, and never choose the spend — each burn spends
+///      buy-back timing and slippage bounds (`minMoneyOut`): they cannot move funds anywhere but
+///      into an allow-listed swap and the reserve, and never choose the spend — each buy-back spends
 ///      exactly `burnSpendBps` of the held input balance (initially 10%), so a compromised keeper
 ///      key is capped to that slice per interval even through a permissive swap target. The
 ///      escrow and swap targets are owner-vetted external contracts. Swaps are sandwich-exposed
-///      up to the keeper's `minMoneyOut`, which is why targets are allow-listed and burns
+///      up to the keeper's `minMoneyOut`, which is why targets are allow-listed and buy-backs
 ///      keeper-gated.
 contract MoneyFeeCollector is IMoneyFeeCollector, Initializable, UUPSUpgradeable, ReentrancyGuard {
     using SafeERC20 for IERC20;
@@ -55,8 +56,8 @@ contract MoneyFeeCollector is IMoneyFeeCollector, Initializable, UUPSUpgradeable
     /// @dev Fee escrow claimed from. Owner-settable (Pons migration lever).
     IPonsFeeEscrowV2 private _escrow;
 
-    /// @dev The $MONEY token. Initializer-set, fixed thereafter — burning a different token is a
-    ///      different contract, not a config change.
+    /// @dev The $MONEY token. Initializer-set, fixed thereafter — buying a different token is a
+    ///      different contract, not a config change. Typed ERC20Burnable from the burn version.
     ERC20Burnable private _money;
 
     /// @inheritdoc IMoneyFeeCollector
@@ -79,6 +80,9 @@ contract MoneyFeeCollector is IMoneyFeeCollector, Initializable, UUPSUpgradeable
 
     /// @dev Distribution payee set; shares sum to exactly BPS (validated in {setPayees}).
     Payee[] private _payees;
+
+    /// @inheritdoc IMoneyFeeCollector
+    address public override reserve;
 
     // ──────────────────────────────────────────────────────────
     //  Modifiers
@@ -107,8 +111,8 @@ contract MoneyFeeCollector is IMoneyFeeCollector, Initializable, UUPSUpgradeable
     /// @notice Initialize the collector proxy (runs once, in the proxy's constructor call).
     /// @param owner_   Contract owner (the protocol Safe).
     /// @param escrow_  Pons V2 fee escrow to claim from.
-    /// @param money_   The $MONEY token (must expose ERC20Burnable `burn`).
-    /// @param keeper_  Initial burn keeper (zero = none yet; enable later via {setKeeper}).
+    /// @param money_   The $MONEY token.
+    /// @param keeper_  Initial buy-back keeper (zero = none yet; enable later via {setKeeper}).
     /// @param payees_  Initial distribution payee set (may be empty only if collections are not
     ///                 expected before {setPayees}, or while `burnShareBps` is 10_000).
     function initialize(
@@ -143,7 +147,7 @@ contract MoneyFeeCollector is IMoneyFeeCollector, Initializable, UUPSUpgradeable
     ) internal view override onlyOwner {}
 
     /// @notice Accept native coin: escrow claims arrive as plain transfers, and direct sends are
-    ///         seeds that become burn reserve by construction.
+    ///         seeds that become buy-back balance by construction.
     receive() external payable {}
 
     // ──────────────────────────────────────────────────────────
@@ -181,23 +185,25 @@ contract MoneyFeeCollector is IMoneyFeeCollector, Initializable, UUPSUpgradeable
     /// @dev The keeper has no say in the spend: `amountIn` is derived on-chain from the held
     ///      balance and the owner-set `burnSpendBps`, capping what a compromised keeper key can
     ///      route through a swap to that slice per `burnInterval`.
-    function buyAndBurn(
+    function buyBack(
         address tokenIn,
         address swapTarget,
         bytes calldata swapData,
         uint256 minMoneyOut
-    ) external override onlyKeeper nonReentrant returns (uint256 moneyBurned) {
+    ) external override onlyKeeper nonReentrant returns (uint256 moneyOut) {
+        address reserve_ = reserve;
+        if (reserve_ == address(0)) revert ReserveNotSet();
         if (block.timestamp < lastBurnAt + burnInterval) revert BurnIntervalNotElapsed();
         lastBurnAt = block.timestamp;
         uint256 amountIn = burnSpendAmount(tokenIn);
         if (amountIn == 0) revert ZeroAmount();
 
-        ERC20Burnable money_ = _money;
+        IERC20 money_ = IERC20(address(_money));
         if (tokenIn == address(money_)) {
-            // Reserve already held as $MONEY (e.g. a seed): burn the slice directly, no swap.
+            // Balance already held as $MONEY: forward the slice directly, no swap.
             if (swapTarget != address(0) || swapData.length != 0 || minMoneyOut != 0) revert InvalidSwapParams();
-            money_.burn(amountIn);
-            emit MoneyBurned(tokenIn, amountIn, amountIn);
+            money_.safeTransfer(reserve_, amountIn);
+            emit MoneyBoughtBack(tokenIn, amountIn, amountIn);
             return amountIn;
         }
 
@@ -219,10 +225,10 @@ contract MoneyFeeCollector is IMoneyFeeCollector, Initializable, UUPSUpgradeable
         uint256 received = money_.balanceOf(address(this)) - before;
         if (received < minMoneyOut) revert InsufficientMoneyOut(received, minMoneyOut);
 
-        // Burn the full held balance, not just `received`: sweeps donations and prior swap dust.
-        moneyBurned = money_.balanceOf(address(this));
-        money_.burn(moneyBurned);
-        emit MoneyBurned(tokenIn, amountIn, moneyBurned);
+        // Forward the full held balance, not just `received`: sweeps donations and prior swap dust.
+        moneyOut = money_.balanceOf(address(this));
+        money_.safeTransfer(reserve_, moneyOut);
+        emit MoneyBoughtBack(tokenIn, amountIn, moneyOut);
     }
 
     // ──────────────────────────────────────────────────────────
@@ -277,6 +283,15 @@ contract MoneyFeeCollector is IMoneyFeeCollector, Initializable, UUPSUpgradeable
     }
 
     /// @inheritdoc IMoneyFeeCollector
+    function setReserve(
+        address newReserve
+    ) external override onlyOwner {
+        if (newReserve == address(0)) revert ZeroAddress();
+        reserve = newReserve;
+        emit ReserveSet(newReserve);
+    }
+
+    /// @inheritdoc IMoneyFeeCollector
     function setEscrow(
         address newEscrow
     ) external override onlyOwner {
@@ -326,12 +341,12 @@ contract MoneyFeeCollector is IMoneyFeeCollector, Initializable, UUPSUpgradeable
     //  Internal
     // ──────────────────────────────────────────────────────────
 
-    /// @dev Split one collected amount: retain the burn share (it simply stays on this contract's
+    /// @dev Split one collected amount: retain the buy-back share (it simply stays on this contract's
     ///      balance), pay the rest out to the payee set immediately.
     function _split(address token, uint256 amount) private {
         if (amount == 0) return;
 
-        // Burn share rounds up: ties favour the burn reserve over the payout.
+        // Buy-back share rounds up: ties favour it over the payout.
         uint256 distributable = amount * (BPS - burnShareBps) / BPS;
         emit FeesCollected(token, amount, amount - distributable);
         if (distributable == 0) return;
@@ -356,7 +371,7 @@ contract MoneyFeeCollector is IMoneyFeeCollector, Initializable, UUPSUpgradeable
     }
 
     /// @dev Replace the payee set atomically; shares must sum to exactly BPS. An empty set is
-    ///      allowed (burn-only mode): collections then revert while a distribution share exists.
+    ///      allowed (buy-back-only mode): collections then revert while a distribution share exists.
     function _setPayees(
         Payee[] calldata newPayees
     ) private {

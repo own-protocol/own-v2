@@ -65,6 +65,12 @@
       "offset": 0,
       "slot": "10",
       "type": "t_array(t_struct(Payee)_storage)dyn_storage"
+    },
+    {
+      "label": "reserve",
+      "offset": 0,
+      "slot": "11",
+      "type": "t_address"
     }
   ],
   "types": {
