@@ -36,9 +36,8 @@ interface IScaledUiToken {
 ///      `block.timestamp` for it; beyond that the raw `updatedAt` is reported and consumers' own
 ///      staleness checks push them onto the in-house leg.
 ///      Config is gated by ADMIN; the emergency `disableAsset` / `removeSigner` levers are gated by
-///      the instant OPERATOR role. Both resolved via the ProtocolRegistry. Signature scheme (EIP-712
-///      domain and PriceAttestation typehash) matches OracleVerifier, so the signer service needs no
-///      changes.
+///      the instant OPERATOR role. Both resolved via the ProtocolRegistry. Signatures are EIP-712
+///      PriceAttestations bound to this contract's address.
 contract ChainlinkOracleVerifier is IOracleVerifier, Multicall, EIP712 {
     using ECDSA for bytes32;
 
@@ -162,7 +161,7 @@ contract ChainlinkOracleVerifier is IOracleVerifier, Multicall, EIP712 {
     ///         answer. Batch updates via inherited Multicall.
     /// @param asset     Asset ticker.
     /// @param priceData Encoded as (uint256 price, uint256 timestamp, uint8 v, bytes32 r, bytes32 s).
-    function updatePrice(bytes32 asset, bytes calldata priceData) external {
+    function updatePrice(bytes32 asset, bytes calldata priceData) external override {
         (uint256 price, uint256 timestamp, uint8 v, bytes32 r, bytes32 s) =
             abi.decode(priceData, (uint256, uint256, uint8, bytes32, bytes32));
 
@@ -187,14 +186,6 @@ contract ChainlinkOracleVerifier is IOracleVerifier, Multicall, EIP712 {
 
         _prices[asset] = PriceEntry(price, timestamp);
         emit PriceUpdated(asset, price, timestamp);
-    }
-
-    /// @inheritdoc IOracleVerifier
-    /// @dev Chainlink pushes itself; in-house pushes go through updatePrice + multicall.
-    function updatePriceFeeds(
-        bytes calldata
-    ) external payable override {
-        revert("ChainlinkOracle: use updatePrice + multicall");
     }
 
     // ──────────────────────────────────────────────────────────
@@ -222,83 +213,6 @@ contract ChainlinkOracleVerifier is IOracleVerifier, Multicall, EIP712 {
         }
         if (ih.price > 0) revert StalePrice(asset, ih.timestamp, cfg.inhouseMaxStaleness);
         revert PriceNotAvailable(asset);
-    }
-
-    // ──────────────────────────────────────────────────────────
-    //  Verify — inline proof (borrow / liquidate / force execution)
-    // ──────────────────────────────────────────────────────────
-
-    /// @inheritdoc IOracleVerifier
-    /// @dev Chainlink-first: while the feed is fresh (<= clSilence) the proof is ignored and the
-    ///      Chainlink price is returned as current. When the feed is silent a signed proof is
-    ///      verified against the anchor band; an empty proof takes the cached in-house price if it
-    ///      is fresher, else Chainlink within `clFreshWindow`. Leg selection matches {getPrice}.
-    ///      No ETH required. payable to satisfy the interface.
-    function verifyPrice(
-        bytes32 asset,
-        bytes calldata priceData
-    ) external payable override returns (uint256 price, uint256 timestamp) {
-        AssetConfig storage cfg = _configs[asset];
-        if (cfg.aggregator == address(0)) revert OracleConfigNotSet(asset);
-
-        (uint256 clPrice, uint256 clUpdated, bool clValid) = _chainlink(asset, cfg);
-        uint256 clAge = clValid ? block.timestamp - clUpdated : type(uint256).max;
-
-        if (clValid && clAge <= cfg.clSilence) return (clPrice, block.timestamp);
-
-        if (priceData.length > 0) return _verifyInhouseProof(asset, cfg, priceData);
-
-        // Prefer the fresher leg, as {getPrice} does — else an empty proof selects the stale
-        // anchor over a newer cached quote.
-        PriceEntry storage ih = _prices[asset];
-        if (
-            ih.price > 0 && block.timestamp - ih.timestamp <= cfg.inhouseMaxStaleness
-                && (!clValid || ih.timestamp > clUpdated)
-        ) {
-            return (ih.price, ih.timestamp);
-        }
-
-        if (clValid && clAge <= cfg.clFreshWindow) return (clPrice, block.timestamp);
-        revert PriceNotAvailable(asset);
-    }
-
-    /// @dev Verify a signed in-house proof against the anchor band (the feed-silent leg of verifyPrice).
-    function _verifyInhouseProof(
-        bytes32 asset,
-        AssetConfig storage cfg,
-        bytes calldata priceData
-    ) private view returns (uint256 price, uint256 timestamp) {
-        uint8 v;
-        bytes32 r;
-        bytes32 s;
-        (price, timestamp, v, r, s) = abi.decode(priceData, (uint256, uint256, uint8, bytes32, bytes32));
-
-        if (price == 0) revert ZeroPrice();
-        if (timestamp > block.timestamp) revert FutureTimestamp(asset, timestamp);
-
-        address recoveredSigner = priceDigest(asset, price, timestamp).recover(v, r, s);
-        if (!_signers[recoveredSigner]) revert UnauthorizedSigner(recoveredSigner);
-        if (cfg.bandBps == 0) revert InhouseDisabled(asset);
-
-        _checkAnchorBand(asset, cfg, price);
-    }
-
-    /// @inheritdoc IOracleVerifier
-    /// @dev Sessions are a Pyth concept — delegates to verifyPrice, ignoring sessionId.
-    function verifyPriceForSession(
-        bytes32 asset,
-        bytes calldata priceData,
-        uint8
-    ) external payable override returns (uint256 price, uint256 timestamp) {
-        return this.verifyPrice(asset, priceData);
-    }
-
-    /// @inheritdoc IOracleVerifier
-    /// @dev Never needs ETH for proof verification.
-    function verifyFee(
-        bytes calldata
-    ) external pure override returns (uint256) {
-        return 0;
     }
 
     /// @notice The EIP-712 digest a signer must sign to attest a price.
@@ -423,7 +337,7 @@ contract ChainlinkOracleVerifier is IOracleVerifier, Multicall, EIP712 {
     }
 
     /// @notice Emergency kill-switch: clear an asset's config (and cached in-house price) so all
-    ///         reads/verifies revert `OracleConfigNotSet`. Gated by the instant OPERATOR role.
+    ///         reads revert `OracleConfigNotSet`. Gated by the instant OPERATOR role.
     /// @param asset Asset ticker to disable.
     function disableAsset(
         bytes32 asset
@@ -450,17 +364,5 @@ contract ChainlinkOracleVerifier is IOracleVerifier, Multicall, EIP712 {
     ) external view returns (uint256 price, uint256 timestamp) {
         PriceEntry storage pe = _prices[asset];
         return (pe.price, pe.timestamp);
-    }
-
-    /// @inheritdoc IOracleVerifier
-    function setAssetOracleConfig(bytes32, uint256, uint256) external pure override {
-        revert("ChainlinkOracle: use setChainlinkConfig");
-    }
-
-    /// @inheritdoc IOracleVerifier
-    function getAssetOracleConfig(
-        bytes32
-    ) external pure override returns (uint256, uint256) {
-        revert("ChainlinkOracle: use getChainlinkConfig");
     }
 }

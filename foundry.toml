@@ -42,7 +42,7 @@ sort_imports = true
 # Gas reports
 [profile.default.gas_report]
 # Contracts to include in gas report
-include = ["EUSD", "EUSDManager", "OwnStakingV2", "ChainlinkOracleVerifier"]
+include = ["EUSD", "EUSDManager", "StakingVault", "ChainlinkOracleVerifier"]
 
 # CI profile: more fuzz runs
 [profile.ci]

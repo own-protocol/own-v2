@@ -5,31 +5,36 @@ or WETH into an **EUSDManager** and mint eUSD against a fresh oracle price. Each
 risk group of collateral with its own parameters, and every manager mints the same eUSD.
 
 - **Mint** against collateral at or above the manager's minimum collateral ratio.
-- **Repay / close** any time, including when markets are closed (exits use the last oracle anchor).
+- **Repay / close** any time, including when markets are closed (exits use the last oracle price).
 - **Liquidate** positions below the liquidation threshold; anyone can call it and earns a fixed bonus.
 - **Redeem** eUSD for $1 of a chosen collateral, taken from that collateral's riskiest positions.
 - A fixed annual **stability fee** accrues on debt and is minted to the treasury, keeping
-  `eUSD.totalSupply() == total debt`.
+  eUSD supply equal to total debt across managers.
 
-**OwnStakingV2** is the staking layer: eUSD stakes as earning principal with a $MONEY boost leg.
+**StakingVault** is the staking layer: a fixed-APR ERC-4626 vault deployed once per asset (eUSD →
+seUSD, $MONEY → sMONEY). Rewards drip in the staked asset from a pre-funded reserve at the target APR
+up to a cap on total staked; above the cap the APR falls as TVL grows.
+
+`misc/` holds **MoneyFeeCollector**, a standalone contract outside the eUSD core: it buys back $MONEY
+with a share of the $MONEY trading fees and sends it to the protocol reserve.
 
 ## Contracts
 
 ```
 src/
   eusd/        EUSD (token), EUSDManager (CDP engine, UUPS proxy per risk group)
-  staking/     OwnStakingV2, TieredBoostCalculator, MoneyFeeCollector
-  oracle/      ChainlinkOracleVerifier (Chainlink primary, band-limited in-house fallback),
-               MoneyPriceFeed (keeper-pushed $MONEY mark)
-  registry/    ProtocolRegistry (addresses and roles)
+  staking/     StakingVault (seUSD, sMONEY)
+  oracle/      ChainlinkOracleVerifier (Chainlink primary, band-limited in-house fallback)
+  registry/    ProtocolRegistry (oracle, treasury and roles)
   interfaces/  Interfaces and shared constants
-test/          unit/, invariant/, fork/, helpers/
+misc/          MoneyFeeCollector (UUPS proxy) and its interfaces, independent of the core
+test/          unit/, invariant/, fork/, helpers/, misc/
 script/        Robinhood Chain deploy and ops scripts
 docs/          Deployment record, oracle feeds, eUSD Q&A, audit reports
 ```
 
-The earlier protocol (OwnMarket, VaultManager, PSM, eTokens, lending, funds) is retired and kept on
-the `legacy-own-v2` branch.
+The earlier protocol (OwnMarket, VaultManager, PSM, eTokens, lending, funds, OwnStakingV2, and the
+registry and oracle they use) is retired and kept on the `legacy-own-v2` branch.
 
 ## Development
 

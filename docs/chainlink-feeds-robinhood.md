@@ -75,14 +75,11 @@ No market calendar. The security boundary is the **band**, not the schedule:
 3. **Timestamp clamping (`clFreshWindow`, default 4h):** while a Chainlink answer is
    younger than `clFreshWindow` its value is within the 0.5% deviation band of spot, so
    reads report `block.timestamp`; beyond that the raw `updatedAt` is reported and consumer
-   staleness checks (`priceMaxAge`, `maxMarkAge`) naturally fail over to the in-house leg.
+   staleness checks (the manager's `mintPriceMaxAge`) naturally fail over to the in-house leg.
    Note: mid-week quiet stretches of 5–21h are routine (p90 gap ~3.4h on TSLA), so with a
    4h window the signer service actively fills in-session gaps — it must run 24/7. The
    short window also caps the dead-feed exposure (see audit CL-L03 in
    audit-report-3.md).
-4. **verifyPrice precedence:** feed fresh (≤ `clSilence`) → Chainlink, proof ignored;
-   feed silent + proof supplied → verified in-house leg (band-checked); empty proof →
-   Chainlink up to `clFreshWindow`.
-5. **Multiplier split:** underlying tickers (TSLA) set `multiplierToken` so reads divide
+4. **Multiplier split:** underlying tickers (TSLA) set `multiplierToken` so reads divide
    the feed by the token's live `uiMultiplier()`; wrapper tickers (r.TSLA) read the feed
    as-is. Both may share one aggregator.

@@ -62,7 +62,7 @@ contract ChainlinkOracleRobinhoodForkTest is Test {
         (signer, signerPk) = makeAddrAndKey("forkSigner");
 
         vm.startPrank(admin);
-        ProtocolRegistry registry = new ProtocolRegistry(admin, 2 days, 2 minutes);
+        ProtocolRegistry registry = new ProtocolRegistry(admin, 2 days);
         registry.grantRole(keccak256("ADMIN"), admin);
         registry.grantRole(keccak256("OPERATOR"), admin);
 

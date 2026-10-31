@@ -4,8 +4,7 @@ pragma solidity 0.8.28;
 import {IOracleVerifier} from "../../src/interfaces/IOracleVerifier.sol";
 
 /// @title MockOracleVerifier — Configurable oracle for unit tests
-/// @notice Implements the push-model IOracleVerifier interface.
-///         Prices are set directly via test helpers rather than signed data.
+/// @notice Prices are set directly via test helpers rather than signed data.
 contract MockOracleVerifier is IOracleVerifier {
     // ──────────────────────────────────────────────────────────
     //  State
@@ -52,17 +51,11 @@ contract MockOracleVerifier is IOracleVerifier {
     //  IOracleVerifier — push
     // ──────────────────────────────────────────────────────────
 
-    function updatePriceFeeds(
-        bytes calldata updateData
-    ) external payable override {
-        // In mock, decode as (bytes32[] assets, uint256[] prices, uint256[] timestamps)
-        (bytes32[] memory assets, uint256[] memory prices, uint256[] memory timestamps) =
-            abi.decode(updateData, (bytes32[], uint256[], uint256[]));
-
-        for (uint256 i; i < assets.length; i++) {
-            _prices[assets[i]] = AssetPrice(prices[i], timestamps[i]);
-            emit PriceUpdated(assets[i], prices[i], timestamps[i]);
-        }
+    /// @dev In mock, priceData is abi.encode(uint256 price, uint256 timestamp); no signature check.
+    function updatePrice(bytes32 asset, bytes calldata priceData) external override {
+        (uint256 price, uint256 timestamp) = abi.decode(priceData, (uint256, uint256));
+        _prices[asset] = AssetPrice(price, timestamp);
+        emit PriceUpdated(asset, price, timestamp);
     }
 
     // ──────────────────────────────────────────────────────────
@@ -81,38 +74,7 @@ contract MockOracleVerifier is IOracleVerifier {
     }
 
     // ──────────────────────────────────────────────────────────
-    //  IOracleVerifier — verify (inline proof for force execution)
-    // ──────────────────────────────────────────────────────────
-
-    function verifyPrice(
-        bytes32 asset,
-        bytes calldata priceData
-    ) external payable override returns (uint256 price, uint256 timestamp) {
-        if (forceStale) revert StalePrice(asset, 0, 0);
-
-        // In mock, priceData is just abi.encode(uint256 price, uint256 timestamp)
-        (price, timestamp) = abi.decode(priceData, (uint256, uint256));
-        if (price == 0) revert ZeroPrice();
-    }
-
-    /// @dev Session-aware variant — delegates to verifyPrice in mock (sessions are irrelevant).
-    function verifyPriceForSession(
-        bytes32 asset,
-        bytes calldata priceData,
-        uint8
-    ) external payable override returns (uint256 price, uint256 timestamp) {
-        return this.verifyPrice(asset, priceData);
-    }
-
-    /// @dev Mock always returns 0 fee — no ETH needed for test proofs.
-    function verifyFee(
-        bytes calldata
-    ) external pure override returns (uint256) {
-        return 0;
-    }
-
-    // ──────────────────────────────────────────────────────────
-    //  IOracleVerifier — admin (no-op in mock)
+    //  IOracleVerifier — signers
     // ──────────────────────────────────────────────────────────
 
     function addSigner(
@@ -133,13 +95,5 @@ contract MockOracleVerifier is IOracleVerifier {
         address account
     ) external view override returns (bool) {
         return _signers[account];
-    }
-
-    function setAssetOracleConfig(bytes32, uint256, uint256) external override {}
-
-    function getAssetOracleConfig(
-        bytes32
-    ) external pure override returns (uint256, uint256) {
-        return (0, 0);
     }
 }

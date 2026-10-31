@@ -8,12 +8,12 @@ import {Test} from "forge-std/Test.sol";
 
 /// @title BaseTest — Common setup for eUSD tests
 /// @notice Deploys a ProtocolRegistry (Actors.ADMIN as PROTOCOL_ADMIN, ADMIN and OPERATOR) with a
-///         mock oracle registered as the in-house oracle.
+///         mock oracle registered as the oracle.
 contract BaseTest is Test {
     /// @notice Protocol registry (deployed with Actors.ADMIN as owner).
     ProtocolRegistry public protocolRegistry;
 
-    /// @notice Mock oracle verifier registered as INHOUSE_ORACLE.
+    /// @notice Mock oracle verifier registered as the registry oracle.
     MockOracleVerifier public oracle;
 
     /// @dev Functional access-control roles (mirrors the per-contract inline `keccak256` constants).
@@ -23,10 +23,10 @@ contract BaseTest is Test {
     function setUp() public virtual {
         oracle = new MockOracleVerifier();
         vm.startPrank(Actors.ADMIN);
-        protocolRegistry = new ProtocolRegistry(Actors.ADMIN, 2 days, 2 minutes);
+        protocolRegistry = new ProtocolRegistry(Actors.ADMIN, 2 days);
         protocolRegistry.grantRole(ADMIN_ROLE, Actors.ADMIN);
         protocolRegistry.grantRole(OPERATOR_ROLE, Actors.ADMIN);
-        protocolRegistry.setAddress(keccak256("INHOUSE_ORACLE"), address(oracle));
+        protocolRegistry.setOracle(address(oracle));
         vm.stopPrank();
         vm.label(Actors.ADMIN, "admin");
         vm.label(address(oracle), "oracle");

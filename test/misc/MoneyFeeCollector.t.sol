@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {IMoneyFeeCollector} from "../../src/interfaces/IMoneyFeeCollector.sol";
-import {MoneyFeeCollector} from "../../src/staking/MoneyFeeCollector.sol";
+import {MoneyFeeCollector} from "../../misc/MoneyFeeCollector.sol";
+import {IMoneyFeeCollector} from "../../misc/interfaces/IMoneyFeeCollector.sol";
 import {Actors} from "../helpers/Actors.sol";
 import {MockERC20} from "../helpers/MockERC20.sol";
-import {MockMoney} from "../helpers/MockMoney.sol";
-import {MockPonsFeeEscrow} from "../helpers/MockPonsFeeEscrow.sol";
-import {MockSwapRouter} from "../helpers/MockSwapRouter.sol";
+import {MockMoney} from "./MockMoney.sol";
+import {MockPonsFeeEscrow} from "./MockPonsFeeEscrow.sol";
+import {MockSwapRouter} from "./MockSwapRouter.sol";
 import {IERC20Errors} from "@openzeppelin/contracts/interfaces/draft-IERC6093.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
@@ -29,6 +29,7 @@ contract MoneyFeeCollectorTest is Test {
     address internal payeeA = address(uint160(uint256(keccak256("payeeA"))));
     address internal payeeB = address(uint160(uint256(keccak256("payeeB"))));
     address internal attacker = Actors.ATTACKER;
+    address internal reserveAddr = address(uint160(uint256(keccak256("reserve"))));
 
     uint256 internal constant BPS = 10_000;
 
@@ -44,8 +45,10 @@ contract MoneyFeeCollectorTest is Test {
 
         collector = _deployCollector(safe, address(escrow), address(money), keeper, _defaultPayees());
 
-        vm.prank(safe);
+        vm.startPrank(safe);
         collector.setSwapTarget(address(router), true);
+        collector.setReserve(reserveAddr);
+        vm.stopPrank();
     }
 
     // ── Helpers ───────────────────────────────────────────────
@@ -302,173 +305,195 @@ contract MoneyFeeCollectorTest is Test {
         assertEq(spy.balanceOf(address(escrow)), 0);
     }
 
-    // ── buyAndBurn ────────────────────────────────────────────
+    // ── buyBack ───────────────────────────────────────────────
     // The spend is never keeper-chosen: always burnSpendBps (default 10%) of the held balance.
 
-    function test_buyAndBurn_erc20_spendsOwnerSetSliceOnly() public {
+    function test_buyBack_erc20_spendsOwnerSetSliceOnly() public {
         usdg.mint(address(collector), 300e6);
-        uint256 supplyBefore = money.totalSupply();
 
         assertEq(collector.burnSpendAmount(address(usdg)), 30e6, "10% of held reserve");
         bytes memory data = abi.encodeCall(MockSwapRouter.swap, (address(usdg), 30e6, address(money), 1000e18));
         vm.expectEmit(true, false, false, true);
-        emit IMoneyFeeCollector.MoneyBurned(address(usdg), 30e6, 1000e18);
+        emit IMoneyFeeCollector.MoneyBoughtBack(address(usdg), 30e6, 1000e18);
         vm.prank(keeper);
-        uint256 burned = collector.buyAndBurn(address(usdg), address(router), data, 900e18);
+        uint256 out = collector.buyBack(address(usdg), address(router), data, 900e18);
 
-        assertEq(burned, 1000e18);
-        assertEq(money.totalSupply(), supplyBefore - 1000e18, "supply reduced");
+        assertEq(out, 1000e18);
+        assertEq(money.balanceOf(reserveAddr), 1000e18, "sent to reserve");
         assertEq(money.balanceOf(address(collector)), 0);
         assertEq(usdg.balanceOf(address(collector)), 270e6, "rest of reserve untouched");
         assertEq(usdg.allowance(address(collector), address(router)), 0, "no dangling allowance");
         assertEq(collector.lastBurnAt(), block.timestamp);
     }
 
-    function test_buyAndBurn_keeperCannotExceedSlice() public {
+    function test_buyBack_keeperCannotExceedSlice() public {
         // Calldata trying to pull more than the computed slice fails on the exact-slice allowance.
         usdg.mint(address(collector), 300e6);
         bytes memory data = abi.encodeCall(MockSwapRouter.swap, (address(usdg), 300e6, address(money), 1000e18));
         vm.expectRevert();
         vm.prank(keeper);
-        collector.buyAndBurn(address(usdg), address(router), data, 1);
+        collector.buyBack(address(usdg), address(router), data, 1);
         assertEq(usdg.balanceOf(address(collector)), 300e6, "reserve untouched");
     }
 
-    function test_buyAndBurn_native_spendsSliceAndBurns() public {
+    function test_buyBack_native_spendsSlice() public {
         vm.deal(address(collector), 30 ether);
-        uint256 supplyBefore = money.totalSupply();
 
         bytes memory data = abi.encodeCall(MockSwapRouter.swap, (address(0), 3 ether, address(money), 500e18));
         vm.prank(keeper);
-        uint256 burned = collector.buyAndBurn(address(0), address(router), data, 500e18);
+        uint256 out = collector.buyBack(address(0), address(router), data, 500e18);
 
-        assertEq(burned, 500e18);
-        assertEq(money.totalSupply(), supplyBefore - 500e18);
+        assertEq(out, 500e18);
+        assertEq(money.balanceOf(reserveAddr), 500e18);
         assertEq(address(collector).balance, 27 ether, "only the 10% slice spent");
     }
 
-    function test_buyAndBurn_sweepsHeldMoneyDust() public {
+    function test_buyBack_sweepsHeldMoneyDust() public {
         money.mint(address(collector), 7e18); // donation / prior swap dust
         usdg.mint(address(collector), 1000e6);
 
         bytes memory data = abi.encodeCall(MockSwapRouter.swap, (address(usdg), 100e6, address(money), 100e18));
         vm.prank(keeper);
-        uint256 burned = collector.buyAndBurn(address(usdg), address(router), data, 100e18);
+        uint256 out = collector.buyBack(address(usdg), address(router), data, 100e18);
 
-        assertEq(burned, 107e18, "held dust burned too");
+        assertEq(out, 107e18, "held dust forwarded too");
+        assertEq(money.balanceOf(reserveAddr), 107e18);
         assertEq(money.balanceOf(address(collector)), 0);
     }
 
-    function test_buyAndBurn_directMoneyBurn_burnsSlice() public {
+    function test_buyBack_directMoney_forwardsSlice() public {
         money.mint(address(collector), 50e18);
-        uint256 supplyBefore = money.totalSupply();
 
         vm.prank(keeper);
-        uint256 burned = collector.buyAndBurn(address(money), address(0), "", 0);
+        uint256 out = collector.buyBack(address(money), address(0), "", 0);
 
-        assertEq(burned, 5e18, "10% of held $MONEY");
-        assertEq(money.totalSupply(), supplyBefore - 5e18);
+        assertEq(out, 5e18, "10% of held $MONEY");
+        assertEq(money.balanceOf(reserveAddr), 5e18);
         assertEq(money.balanceOf(address(collector)), 45e18);
     }
 
-    function test_buyAndBurn_directMoneyBurn_withSwapParams_reverts() public {
+    function test_buyBack_directMoney_withSwapParams_reverts() public {
         money.mint(address(collector), 50e18);
         vm.startPrank(keeper);
         vm.expectRevert(IMoneyFeeCollector.InvalidSwapParams.selector);
-        collector.buyAndBurn(address(money), address(router), "", 0);
+        collector.buyBack(address(money), address(router), "", 0);
         vm.expectRevert(IMoneyFeeCollector.InvalidSwapParams.selector);
-        collector.buyAndBurn(address(money), address(0), hex"01", 0);
+        collector.buyBack(address(money), address(0), hex"01", 0);
         vm.expectRevert(IMoneyFeeCollector.InvalidSwapParams.selector);
-        collector.buyAndBurn(address(money), address(0), "", 1);
+        collector.buyBack(address(money), address(0), "", 1);
         vm.stopPrank();
     }
 
-    function test_buyAndBurn_notKeeper_reverts() public {
-        vm.expectRevert(IMoneyFeeCollector.NotKeeper.selector);
-        vm.prank(attacker);
-        collector.buyAndBurn(address(usdg), address(router), "", 1);
+    function test_buyBack_reserveNotSet_reverts() public {
+        MoneyFeeCollector fresh = _deployCollector(safe, address(escrow), address(money), keeper, _defaultPayees());
+        money.mint(address(fresh), 50e18);
+        vm.expectRevert(IMoneyFeeCollector.ReserveNotSet.selector);
+        vm.prank(keeper);
+        fresh.buyBack(address(money), address(0), "", 0);
     }
 
-    function test_buyAndBurn_intervalEnforced() public {
+    function test_setReserve() public {
+        vm.expectEmit(true, false, false, false);
+        emit IMoneyFeeCollector.ReserveSet(payeeA);
+        vm.prank(safe);
+        collector.setReserve(payeeA);
+        assertEq(collector.reserve(), payeeA);
+
+        vm.prank(safe);
+        vm.expectRevert(IMoneyFeeCollector.ZeroAddress.selector);
+        collector.setReserve(address(0));
+
+        vm.prank(attacker);
+        vm.expectRevert(IMoneyFeeCollector.NotOwner.selector);
+        collector.setReserve(attacker);
+    }
+
+    function test_buyBack_notKeeper_reverts() public {
+        vm.expectRevert(IMoneyFeeCollector.NotKeeper.selector);
+        vm.prank(attacker);
+        collector.buyBack(address(usdg), address(router), "", 1);
+    }
+
+    function test_buyBack_intervalEnforced() public {
         money.mint(address(collector), 100e18);
 
         vm.prank(keeper);
-        collector.buyAndBurn(address(money), address(0), "", 0);
+        collector.buyBack(address(money), address(0), "", 0);
 
         vm.warp(block.timestamp + 1 hours - 1);
         vm.expectRevert(IMoneyFeeCollector.BurnIntervalNotElapsed.selector);
         vm.prank(keeper);
-        collector.buyAndBurn(address(money), address(0), "", 0);
+        collector.buyBack(address(money), address(0), "", 0);
 
         vm.warp(block.timestamp + 1);
         vm.prank(keeper);
-        collector.buyAndBurn(address(money), address(0), "", 0);
+        collector.buyBack(address(money), address(0), "", 0);
     }
 
-    function test_buyAndBurn_emptyReserve_reverts() public {
+    function test_buyBack_emptyReserve_reverts() public {
         vm.expectRevert(IMoneyFeeCollector.ZeroAmount.selector);
         vm.prank(keeper);
-        collector.buyAndBurn(address(usdg), address(router), "", 1);
+        collector.buyBack(address(usdg), address(router), "", 1);
     }
 
-    function test_buyAndBurn_zeroSpendBps_pausesBurns() public {
+    function test_buyBack_zeroSpendBps_pausesBuyBacks() public {
         vm.prank(safe);
         collector.setBurnSpendBps(0);
         usdg.mint(address(collector), 100e6);
         assertEq(collector.burnSpendAmount(address(usdg)), 0);
         vm.expectRevert(IMoneyFeeCollector.ZeroAmount.selector);
         vm.prank(keeper);
-        collector.buyAndBurn(address(usdg), address(router), "", 1);
+        collector.buyBack(address(usdg), address(router), "", 1);
     }
 
-    function test_buyAndBurn_fullSpendBps_spendsWholeReserve() public {
+    function test_buyBack_fullSpendBps_spendsWholeReserve() public {
         vm.prank(safe);
         collector.setBurnSpendBps(BPS);
         usdg.mint(address(collector), 100e6);
 
         bytes memory data = abi.encodeCall(MockSwapRouter.swap, (address(usdg), 100e6, address(money), 100e18));
         vm.prank(keeper);
-        collector.buyAndBurn(address(usdg), address(router), data, 100e18);
+        collector.buyBack(address(usdg), address(router), data, 100e18);
         assertEq(usdg.balanceOf(address(collector)), 0);
     }
 
-    function test_buyAndBurn_zeroMinOut_reverts() public {
+    function test_buyBack_zeroMinOut_reverts() public {
         usdg.mint(address(collector), 100e6);
         vm.expectRevert(IMoneyFeeCollector.ZeroAmount.selector);
         vm.prank(keeper);
-        collector.buyAndBurn(address(usdg), address(router), "", 0);
+        collector.buyBack(address(usdg), address(router), "", 0);
     }
 
-    function test_buyAndBurn_unlistedTarget_reverts() public {
+    function test_buyBack_unlistedTarget_reverts() public {
         MockSwapRouter rogue = new MockSwapRouter();
         usdg.mint(address(collector), 100e6);
         vm.expectRevert(IMoneyFeeCollector.SwapTargetNotAllowed.selector);
         vm.prank(keeper);
-        collector.buyAndBurn(address(usdg), address(rogue), "", 1);
+        collector.buyBack(address(usdg), address(rogue), "", 1);
     }
 
-    function test_buyAndBurn_insufficientOut_reverts() public {
+    function test_buyBack_insufficientOut_reverts() public {
         usdg.mint(address(collector), 1000e6);
         bytes memory data = abi.encodeCall(MockSwapRouter.swap, (address(usdg), 100e6, address(money), 10e18));
         vm.expectRevert(abi.encodeWithSelector(IMoneyFeeCollector.InsufficientMoneyOut.selector, 10e18, 11e18));
         vm.prank(keeper);
-        collector.buyAndBurn(address(usdg), address(router), data, 11e18);
+        collector.buyBack(address(usdg), address(router), data, 11e18);
     }
 
-    function test_buyAndBurn_totalLossFill_reverts() public {
+    function test_buyBack_totalLossFill_reverts() public {
         usdg.mint(address(collector), 1000e6);
         bytes memory data = abi.encodeCall(MockSwapRouter.swapAndKeep, (address(usdg), 100e6));
         vm.expectRevert(abi.encodeWithSelector(IMoneyFeeCollector.InsufficientMoneyOut.selector, 0, 1));
         vm.prank(keeper);
-        collector.buyAndBurn(address(usdg), address(router), data, 1);
+        collector.buyBack(address(usdg), address(router), data, 1);
     }
 
-    function test_buyAndBurn_swapReverts_bubbles() public {
+    function test_buyBack_swapReverts_bubbles() public {
         usdg.mint(address(collector), 100e6);
         bytes memory data = abi.encodeCall(MockSwapRouter.alwaysReverts, ());
         vm.expectRevert(IMoneyFeeCollector.SwapFailed.selector);
         vm.prank(keeper);
-        collector.buyAndBurn(address(usdg), address(router), data, 1);
+        collector.buyBack(address(usdg), address(router), data, 1);
     }
 
     // ── owner configuration ───────────────────────────────────
@@ -552,7 +577,7 @@ contract MoneyFeeCollectorTest is Test {
 
         vm.expectRevert(IMoneyFeeCollector.NotKeeper.selector);
         vm.prank(keeper);
-        collector.buyAndBurn(address(usdg), address(router), "", 1);
+        collector.buyBack(address(usdg), address(router), "", 1);
 
         vm.prank(safe);
         vm.expectRevert(IMoneyFeeCollector.ZeroAddress.selector);
@@ -567,7 +592,7 @@ contract MoneyFeeCollectorTest is Test {
         usdg.mint(address(collector), 100e6);
         vm.expectRevert(IMoneyFeeCollector.SwapTargetNotAllowed.selector);
         vm.prank(keeper);
-        collector.buyAndBurn(address(usdg), address(router), "", 1);
+        collector.buyBack(address(usdg), address(router), "", 1);
 
         vm.prank(safe);
         vm.expectRevert(IMoneyFeeCollector.ZeroAddress.selector);
