@@ -47,6 +47,8 @@ interface IStakingVault is IERC4626 {
     error ZeroAmount();
     /// @notice Caller is not the admin.
     error OnlyAdmin();
+    /// @notice Caller is not the operator.
+    error OnlyOperator();
     /// @notice APR above the allowed maximum (100%).
     error InvalidApr();
     /// @notice Withdrawal exceeds the unspent reserve.
@@ -62,6 +64,13 @@ interface IStakingVault is IERC4626 {
     ///         Permissionless: funding can only ever pay stakers.
     /// @param amount Asset units to add.
     function fund(
+        uint256 amount
+    ) external;
+
+    /// @notice Pull `amount` of the asset from the registry treasury into the reward reserve
+    ///         (OPERATOR). The treasury approves the vault once; the keeper tops up weekly.
+    /// @param amount Asset units to add.
+    function pullFromTreasury(
         uint256 amount
     ) external;
 

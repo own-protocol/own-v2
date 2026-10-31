@@ -136,8 +136,9 @@ introducing a second venue.
 
 Replaces OwnStakingV2. One `StakingVault` per asset via `DeployStakingVaultRobinhood.s.sol`:
 seUSD (eUSD, 16% APR) and sMONEY ($MONEY, 12% APR), each with a cap on the staked amount that earns
-the full APR. The reserve is funded with `fund(amount)`; unspent reserve comes back with
-`withdrawReserve` (ADMIN). OwnStakingV2 winds down: no new `notifyRewardAmount` batches, stakers
+the full APR. The treasury Safe (`registry.treasury()`) approves each vault once and the keeper
+(OPERATOR) tops up the reserve weekly with `pullFromTreasury(amount)`; anyone can also add to it
+with `fund(amount)`. Unspent reserve comes back with `withdrawReserve` (ADMIN). OwnStakingV2 winds down: no new `notifyRewardAmount` batches, stakers
 unstake.
 
 The fee collector is upgraded so the keeper's `buyBack` sends bought $MONEY to `reserve` instead of

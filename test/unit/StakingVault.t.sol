@@ -184,6 +184,29 @@ contract StakingVaultTest is BaseTest {
         vault.fund(0);
     }
 
+    function test_pullFromTreasury_fundsReserve() public {
+        address treasury = makeAddr("treasury");
+        vm.prank(admin);
+        protocolRegistry.setTreasury(treasury);
+        eusd.mint(treasury, 3000e18);
+        vm.prank(treasury);
+        eusd.approve(address(vault), type(uint256).max);
+
+        vm.expectEmit(address(vault));
+        emit IStakingVault.ReserveFunded(treasury, 3000e18);
+        vm.prank(admin);
+        vault.pullFromTreasury(3000e18);
+
+        assertEq(vault.rewardReserve(), 103_000e18);
+        assertEq(eusd.balanceOf(treasury), 0);
+    }
+
+    function test_pullFromTreasury_onlyOperator() public {
+        vm.expectRevert(IStakingVault.OnlyOperator.selector);
+        vm.prank(attacker);
+        vault.pullFromTreasury(1);
+    }
+
     function test_withdrawReserve_onlyAdmin() public {
         vm.expectRevert(IStakingVault.OnlyAdmin.selector);
         vm.prank(attacker);

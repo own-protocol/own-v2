@@ -25,6 +25,7 @@ contract StakingVault is IStakingVault, ERC4626 {
 
     uint256 private constant YEAR = 365 days;
     bytes32 private constant ADMIN = keccak256("ADMIN");
+    bytes32 private constant OPERATOR = keccak256("OPERATOR");
 
     /// @notice ProtocolRegistry used to resolve the ADMIN role.
     IProtocolRegistry public immutable registry;
@@ -45,6 +46,11 @@ contract StakingVault is IStakingVault, ERC4626 {
 
     modifier onlyAdmin() {
         if (!registry.hasRole(ADMIN, msg.sender)) revert OnlyAdmin();
+        _;
+    }
+
+    modifier onlyOperator() {
+        if (!registry.hasRole(OPERATOR, msg.sender)) revert OnlyOperator();
         _;
     }
 
@@ -80,12 +86,14 @@ contract StakingVault is IStakingVault, ERC4626 {
     function fund(
         uint256 amount
     ) external override {
-        if (amount == 0) revert ZeroAmount();
-        // Accrue first so an empty reserve never back-pays the time it was empty.
-        _accrue();
-        _reserve += amount;
-        IERC20(asset()).safeTransferFrom(msg.sender, address(this), amount);
-        emit ReserveFunded(msg.sender, amount);
+        _fund(msg.sender, amount);
+    }
+
+    /// @inheritdoc IStakingVault
+    function pullFromTreasury(
+        uint256 amount
+    ) external override onlyOperator {
+        _fund(registry.treasury(), amount);
     }
 
     /// @inheritdoc IStakingVault
@@ -173,6 +181,15 @@ contract StakingVault is IStakingVault, ERC4626 {
     // ──────────────────────────────────────────────────────────
     //  Internal
     // ──────────────────────────────────────────────────────────
+
+    function _fund(address from, uint256 amount) private {
+        if (amount == 0) revert ZeroAmount();
+        // Accrue first so an empty reserve never back-pays the time it was empty.
+        _accrue();
+        _reserve += amount;
+        IERC20(asset()).safeTransferFrom(from, address(this), amount);
+        emit ReserveFunded(from, amount);
+    }
 
     /// @dev Move rewards dripped since the last touch from the reserve into staked assets.
     function _accrue() private {
