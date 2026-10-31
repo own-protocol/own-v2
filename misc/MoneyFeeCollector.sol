@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: BUSL-1.1
 pragma solidity 0.8.28;
 
-import {BPS} from "../src/interfaces/types/Types.sol";
 import {IMoneyFeeCollector} from "./interfaces/IMoneyFeeCollector.sol";
 import {IPonsFeeEscrowV2} from "./interfaces/IPonsFeeEscrowV2.sol";
 import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
@@ -35,6 +34,8 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 ///      keeper-gated.
 contract MoneyFeeCollector is IMoneyFeeCollector, Initializable, UUPSUpgradeable, ReentrancyGuard {
     using SafeERC20 for IERC20;
+
+    uint256 private constant BPS = 10_000;
 
     // ──────────────────────────────────────────────────────────
     //  Constants
