@@ -2,12 +2,11 @@
 pragma solidity 0.8.28;
 
 /// @title IMoneyFeeCollector — $MONEY fee routing and buy-back
-/// @notice Receives the $MONEY trading fees credited to it in the Pons V2 fee escrow, splits
-///         every collected amount into a buy-back share (retained for keeper-driven $MONEY
-///         buy-backs paid to the protocol reserve) and a distribution share paid out immediately
-///         to a configurable set of payees. Every balance the contract holds between collections
-///         is buy-back balance — including direct transfers in, which therefore go towards
-///         buy-backs in full. The `burn*` names predate the switch from burning to buy-backs.
+/// @notice Collects the $MONEY trading fees credited to it in the Pons V2 fee escrow and splits
+///         each collected amount into a buy-back share, kept for keeper-run $MONEY buy-backs
+///         paid to the protocol reserve, and a distribution share paid out immediately to the
+///         payees. Everything the contract holds between collections, including direct
+///         transfers, is buy-back balance. Parameters named `burn*` configure the buy-back.
 interface IMoneyFeeCollector {
     // ──────────────────────────────────────────────────────────
     //  Types
@@ -28,7 +27,7 @@ interface IMoneyFeeCollector {
     /// @notice A fee amount was claimed from the escrow and split.
     /// @param token       Claimed asset (address(0) = native coin).
     /// @param amount      Total amount claimed in this collection.
-    /// @param burnAmount  Portion retained in the burn reserve.
+    /// @param burnAmount  Portion kept as buy-back balance.
     event FeesCollected(address indexed token, uint256 amount, uint256 burnAmount);
 
     /// @notice A payee received its cut of a collection's distribution share.
@@ -49,13 +48,13 @@ interface IMoneyFeeCollector {
     /// @notice The payee set was replaced.
     event PayeesSet(Payee[] payees);
 
-    /// @notice The burn share was updated.
+    /// @notice The buy-back share was updated.
     event BurnShareSet(uint256 burnShareBps);
 
-    /// @notice The per-burn reserve spend slice was updated.
+    /// @notice The share of the held balance spent per buy-back was updated.
     event BurnSpendSet(uint256 burnSpendBps);
 
-    /// @notice The minimum interval between burns was updated.
+    /// @notice The minimum interval between buy-backs was updated.
     event BurnIntervalSet(uint256 burnInterval);
 
     /// @notice A keeper was enabled or disabled.
@@ -101,7 +100,7 @@ interface IMoneyFeeCollector {
     /// @notice A collection produced a distribution share but no payees are configured.
     error PayeesNotConfigured();
 
-    /// @notice The minimum interval since the last burn has not elapsed.
+    /// @notice The minimum interval since the last buy-back has not elapsed.
     error BurnIntervalNotElapsed();
 
     /// @notice The swap target is not allow-listed.
@@ -131,22 +130,19 @@ interface IMoneyFeeCollector {
     // ──────────────────────────────────────────────────────────
 
     /// @notice Claim all accrued fees from the escrow (native coin plus each listed token) and
-    ///         split every claimed amount: `burnShareBps` stays for buy-backs, the remainder is
-    ///         paid out to the configured payees pro-rata immediately.
+    ///         split each claimed amount: `burnShareBps` stays for buy-backs and the rest is paid
+    ///         to the payees pro rata. Permissionless.
     /// @param tokens ERC-20 fee assets to claim (native coin is always attempted). Assets with a
     ///               zero escrow balance are skipped.
     function collectFees(
         address[] calldata tokens
     ) external;
 
-    /// @notice Spend a fixed slice of the held `tokenIn` balance on $MONEY via an allow-listed
-    ///         swap target, then send the contract's entire resulting $MONEY balance to `reserve`.
-    ///         Keeper-only, rate-limited to one buy-back per `burnInterval`. The spend amount is
-    ///         NOT chosen by the keeper: it is always `burnSpendBps` of the contract's current
-    ///         `tokenIn` balance (see {burnSpendAmount}). When `tokenIn` is the $MONEY token itself, no swap is
-    ///         performed (`swapTarget`/`swapData`/`minMoneyOut` must be empty) and that slice is
-    ///         forwarded directly.
-    /// @param tokenIn      Reserve asset to spend (address(0) = native coin).
+    /// @notice Spend `burnSpendBps` of the held `tokenIn` balance (see {burnSpendAmount}) on $MONEY
+    ///         through an allow-listed swap target, then send the contract's whole $MONEY balance to
+    ///         `reserve`. Keeper only, at most once per `burnInterval`. When `tokenIn` is $MONEY,
+    ///         the slice is forwarded without a swap and the swap arguments must be empty.
+    /// @param tokenIn      Held asset to spend (address(0) = native coin).
     /// @param swapTarget   Allow-listed contract executing the swap.
     /// @param swapData     Calldata forwarded to `swapTarget` (native input is attached as value;
     ///                     ERC-20 input is approved for exactly the computed spend, so the
@@ -169,23 +165,23 @@ interface IMoneyFeeCollector {
         Payee[] calldata newPayees
     ) external;
 
-    /// @notice Set the fraction of every collection retained for burns, in BPS (≤ 10_000).
+    /// @notice Set the share of every collection kept for buy-backs, in BPS (≤ 10_000).
     function setBurnShareBps(
         uint256 newBurnShareBps
     ) external;
 
-    /// @notice Set the slice of the held reserve a keeper spends per burn, in BPS (≤ 10_000).
-    ///         Zero pauses burns entirely.
+    /// @notice Set the share of the held balance spent per buy-back, in BPS (≤ 10_000). Zero
+    ///         pauses buy-backs.
     function setBurnSpendBps(
         uint256 newBurnSpendBps
     ) external;
 
-    /// @notice Set the minimum interval between burns.
+    /// @notice Set the minimum interval between buy-backs.
     function setBurnInterval(
         uint256 newBurnInterval
     ) external;
 
-    /// @notice Enable or disable a burn keeper.
+    /// @notice Enable or disable a buy-back keeper.
     function setKeeper(address keeper, bool allowed) external;
 
     /// @notice Allow-list or remove a swap target for {buyBack}.
@@ -196,14 +192,13 @@ interface IMoneyFeeCollector {
         address newReserve
     ) external;
 
-    /// @notice Point the collector at a new fee escrow (Pons migration lever).
+    /// @notice Point the collector at a new fee escrow.
     function setEscrow(
         address newEscrow
     ) external;
 
-    /// @notice Execute an arbitrary owner-authorized call from this contract — the lever for
-    ///         managing this contract's fee-recipient rights on the Pons side (which are bound to
-    ///         this address) and for rescuing mis-sent assets.
+    /// @notice Execute an arbitrary call from this contract (owner). Used to manage this
+    ///         contract's fee-recipient rights on Pons and to rescue mis-sent assets.
     function execute(address target, uint256 value, bytes calldata data) external returns (bytes memory result);
 
     /// @notice Start the two-step ownership handover to `newOwner`.
@@ -218,7 +213,7 @@ interface IMoneyFeeCollector {
     //  Views
     // ──────────────────────────────────────────────────────────
 
-    /// @notice Contract owner (admin; intended to be the protocol Safe).
+    /// @notice Contract owner (the protocol Safe).
     function owner() external view returns (address);
 
     /// @notice Address that can complete a started ownership handover.
@@ -233,10 +228,10 @@ interface IMoneyFeeCollector {
     /// @notice Recipient of bought-back $MONEY (address(0) = not set; buy-backs revert).
     function reserve() external view returns (address);
 
-    /// @notice Fraction of every collection retained for burns, in BPS.
+    /// @notice Share of every collection kept for buy-backs, in BPS.
     function burnShareBps() external view returns (uint256);
 
-    /// @notice Slice of the held reserve a keeper spends per burn, in BPS. Zero = burns paused.
+    /// @notice Share of the held balance spent per buy-back, in BPS. Zero = buy-backs paused.
     function burnSpendBps() external view returns (uint256);
 
     /// @notice The exact `tokenIn` amount the next {buyBack} would spend right now
@@ -245,13 +240,13 @@ interface IMoneyFeeCollector {
         address tokenIn
     ) external view returns (uint256);
 
-    /// @notice Minimum interval between burns.
+    /// @notice Minimum interval between buy-backs.
     function burnInterval() external view returns (uint256);
 
-    /// @notice Timestamp of the last burn.
+    /// @notice Timestamp of the last buy-back.
     function lastBurnAt() external view returns (uint256);
 
-    /// @notice Whether `account` is an enabled burn keeper.
+    /// @notice Whether `account` is an enabled buy-back keeper.
     function isKeeper(
         address account
     ) external view returns (bool);

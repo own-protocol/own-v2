@@ -5,11 +5,10 @@ import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
 
 /// @title IStakingVault — Fixed-APR staking vault (seUSD, sMONEY)
 /// @notice ERC-4626 vault paying a fixed APR in its own asset. Rewards drip from a pre-funded
-///         reserve held by the vault into staked assets, raising the share price. The drip rate is
-///         `aprBps × min(totalStaked, cap)` per year and is re-set on every deposit, withdrawal and
-///         admin change, so every staker earns exactly `aprBps` while total staked is at or below
-///         `cap`. Above the cap the drip stays at `aprBps × cap` and the effective APR falls as TVL
-///         grows. When the reserve runs out the drip stops until it is refunded.
+///         reserve into staked assets, raising the share price. The drip rate is
+///         `aprBps × min(totalStaked, cap)` per year, so stakers earn `aprBps` while total staked
+///         is at or below `cap` (compounding whenever the vault is touched) and a lower rate above
+///         it. When the reserve runs out the drip stops until it is refunded.
 interface IStakingVault is IERC4626 {
     // ──────────────────────────────────────────────────────────
     //  Events
@@ -68,7 +67,7 @@ interface IStakingVault is IERC4626 {
     ) external;
 
     /// @notice Pull `amount` of the asset from the registry treasury into the reward reserve
-    ///         (OPERATOR). The treasury approves the vault once; the keeper tops up weekly.
+    ///         (OPERATOR). Needs the treasury's allowance.
     /// @param amount Asset units to add.
     function pullFromTreasury(
         uint256 amount
@@ -106,7 +105,7 @@ interface IStakingVault is IERC4626 {
     /// @notice Staked amount (asset units) that earns the full APR.
     function cap() external view returns (uint256);
 
-    /// @notice Unspent reward reserve, net of rewards accrued since the last update.
+    /// @notice Unspent reward reserve, net of rewards dripped since the last update.
     function rewardReserve() external view returns (uint256);
 
     /// @notice Current drip in asset units per second.

@@ -16,10 +16,9 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 /// @notice One deployment per staked asset. Stakers deposit the asset for shares; rewards in the
 ///         same asset drip from a pre-funded reserve into staked assets, so the share price rises
 ///         and there is nothing to claim. See {IStakingVault} for the drip rule.
-/// @dev Staked assets are tracked in `_staked`, not read from the balance, so the reserve and any
-///      direct transfers never count toward the share price. Accrual is simple interest on
-///      `_staked` between touches, and every state change accrues first, so a new rate only ever
-///      applies from the moment it is set. Not upgradeable: a changed design is a new vault.
+/// @dev Staked assets are tracked in `_staked`, not read from the balance, so the reserve and
+///      direct transfers never count toward the share price. Every state change accrues first, so
+///      a new rate applies only from the moment it is set. Not upgradeable.
 contract StakingVault is IStakingVault, ERC4626 {
     using SafeERC20 for IERC20;
 
@@ -27,7 +26,7 @@ contract StakingVault is IStakingVault, ERC4626 {
     bytes32 private constant ADMIN = keccak256("ADMIN");
     bytes32 private constant OPERATOR = keccak256("OPERATOR");
 
-    /// @notice ProtocolRegistry used to resolve the ADMIN role.
+    /// @notice ProtocolRegistry used to resolve the ADMIN and OPERATOR roles and the treasury.
     IProtocolRegistry public immutable registry;
 
     /// @inheritdoc IStakingVault
@@ -42,6 +41,7 @@ contract StakingVault is IStakingVault, ERC4626 {
     /// @dev Unspent reward reserve as of `_lastAccrual`.
     uint256 private _reserve;
 
+    /// @dev Timestamp of the last accrual.
     uint256 private _lastAccrual;
 
     modifier onlyAdmin() {
@@ -57,7 +57,7 @@ contract StakingVault is IStakingVault, ERC4626 {
     /// @param asset_    Staked and reward asset (eUSD or $MONEY).
     /// @param name_     Share token name.
     /// @param symbol_   Share token symbol.
-    /// @param registry_ ProtocolRegistry holding the ADMIN role.
+    /// @param registry_ ProtocolRegistry address.
     /// @param aprBps_   Target APR in BPS.
     /// @param cap_      Staked amount that earns the full APR (asset units).
     constructor(
@@ -184,7 +184,7 @@ contract StakingVault is IStakingVault, ERC4626 {
 
     function _fund(address from, uint256 amount) private {
         if (amount == 0) revert ZeroAmount();
-        // Accrue first so an empty reserve never back-pays the time it was empty.
+        // Accrue first so a refill never back-pays the time the reserve was empty.
         _accrue();
         _reserve += amount;
         IERC20(asset()).safeTransferFrom(from, address(this), amount);

@@ -5,12 +5,8 @@ pragma solidity 0.8.28;
 /// @notice Pull-based escrow the Pons V2 DEX pays trading fees into. Fees are credited to a
 ///         per-recipient balance (native coin and ERC-20s tracked separately) and only the
 ///         credited recipient can claim its own balance (`msg.sender`-scoped).
-/// @dev Interface reconstructed from the deployed, unverified escrow at
-///      0xd3AFEB2a57f70eF218Aa82451c51B2fb0416Ac9e on Robinhood Chain (chainId 4663); function
-///      signatures verified against the dispatcher selectors in the on-chain bytecode
-///      (claim() 0x4e71d92d, claim(uint256) 0x379607f5, claimToken(address) 0x32f289cf,
-///      claimToken(address,uint256) 0x1698755f, balanceOf 0x70a08231, balanceOfToken 0xf59e38b7).
-///      Claims of a zero balance revert in the escrow — check the view first.
+/// @dev Reconstructed from the deployed escrow 0xd3AFEB2a57f70eF218Aa82451c51B2fb0416Ac9e on
+///      Robinhood Chain; selectors match its bytecode. Claiming a zero balance reverts.
 interface IPonsFeeEscrowV2 {
     /// @notice Credit native coin to `account` (fee deposit path used by the DEX).
     function credit(

@@ -2,52 +2,47 @@
 pragma solidity 0.8.28;
 
 /// @title IEUSDManager — CDP engine for the eUSD stablecoin
-/// @notice Custodies collateral tokens (Robinhood stock tokens, WETH) and owns all CDP logic: open/adjust positions, mint eUSD against a FRESH oracle price, repay/close,
-///         keeper liquidation at a fixed bonus, and riskiest-first redemption (peg anchor).
+/// @notice Overcollateralized eUSD minting against tokenized assets (Robinhood stock tokens, WETH).
+///         One manager runs per collateral risk group, and every manager mints the same eUSD.
+///         Covers deposits and withdrawals, minting, repay and close, keeper liquidation at a fixed
+///         bonus, and riskiest-first redemption, which anchors the peg.
 ///
-///         Price freshness: mint, collateral withdrawal against debt, redemption and the fee leg
-///         of a principal-only close require a price no older than `mintPriceMaxAge`, so value
-///         never moves between users at a stale price. Repay and {closePosition} need no price,
-///         and liquidation uses the last oracle price with no age bound, so a debtor can always
-///         exit and an unsafe position can always be cleared while a market is closed.
-///         Redemptions transfer value only from the position owner whose debt they retire.
+///         Price freshness: mint, withdrawal against debt, redemption and the fee leg of a
+///         principal-only close need a price no older than `mintPriceMaxAge`. Repay and
+///         {closePosition} need no price, and liquidation uses the latest oracle price with no age
+///         bound, so a debtor can always exit and an unsafe position can always be cleared while a
+///         market is closed.
 ///
-///         Positions with both debt and collateral are kept in a per-collateral sorted list ordered
-///         by nominal ratio (collateral units per debt unit — price-invariant within one
-///         collateral). The list head is the riskiest position; redemptions consume from the head.
-///         A debt-only residual (an underwater position whose collateral was fully redeemed) stays
-///         off-list until it is repaid, closed, liquidated or topped up. Ordering uses stored
-///         (last-accrued) debt, so positions untouched for long periods are marginally riskier
-///         than their list position implies — the drift is bounded by the stability fee rate.
+///         Positions with both debt and collateral sit in a per-collateral list sorted by nominal
+///         ratio (collateral units per debt unit, which is price-invariant within one collateral).
+///         The head is the riskiest position; redemptions consume from the head. A debt-only
+///         residual (an underwater position whose collateral was fully redeemed) stays off the list
+///         until it is repaid, closed, liquidated or topped up. Ordering uses stored debt, so a
+///         position untouched for a long time is slightly riskier than its place implies.
 ///
-///         Collateral is custodied by token address and priced by the oracle ticker set when it
-///         is added; the ticker's price is per token unit. To stop new exposure to one collateral
-///         the admin disables it; exits are never gated.
+///         Each collateral is priced by the oracle ticker set when it is added, per token unit.
+///         Disabling a collateral stops new exposure; exits are never gated.
 ///
-///         The stability fee is a fixed annual rate, accrued lazily per position from a global
-///         bps-seconds index and charged on principal only (`debt - feesAccrued`), so it is simple
-///         interest however often a position is touched. Accrued fees are added to position
-///         debt and simultaneously minted as eUSD to the protocol treasury, so eUSD supply always
-///         equals the sum of every manager's `totalDebt`.
+///         The stability fee is a fixed annual rate charged on principal (`debt - feesAccrued`) as
+///         simple interest, accrued lazily from a global index. Accrued fees are added to the
+///         position's debt and minted to the treasury, so eUSD supply equals the sum of every
+///         manager's `totalDebt`.
 interface IEUSDManager {
     // ──────────────────────────────────────────────────────────
     //  Types
     // ──────────────────────────────────────────────────────────
 
-    /// @notice Global risk parameters.
-    /// @param mcrBps            Min collateral ratio to mint / withdraw collateral (BPS, e.g. 15000).
-    /// @param liquidationThresholdBps Ratio below which a position is liquidatable (BPS, e.g. 13000).
-    /// @param liquidationBonusBps Collateral bonus paid to the liquidator on top of repaid debt (BPS).
-    /// @param stabilityFeeBps   Fixed annual stability fee on outstanding principal (BPS, simple interest).
-    /// @param debtCeiling       Global cap on total eUSD debt (18 decimals).
-    /// @param minDebt           Minimum debt per position after mint/repay (18 decimals).
-    /// @param mintPriceMaxAge   Max oracle price age accepted for mint / withdraw / redeem and the
-    ///                          fee leg of {closePositionPrincipalOnly} (seconds). Bounds
-    ///                          the timestamp the oracle *reports*: the Chainlink leg reports
-    ///                          `block.timestamp` for any answer younger than its `clFreshWindow`
-    ///                          (deviation-bounded while live), so the effective bound on that leg is
-    ///                          `max(mintPriceMaxAge, clFreshWindow)`; the knob bites on the in-house
-    ///                          leg and on Chainlink answers older than the window.
+    /// @notice Risk parameters of this manager.
+    /// @param mcrBps                  Min collateral ratio to mint or withdraw against debt (BPS).
+    /// @param liquidationThresholdBps Ratio below which a position is liquidatable (BPS).
+    /// @param liquidationBonusBps     Collateral bonus paid to the liquidator on top of repaid debt (BPS).
+    /// @param stabilityFeeBps         Annual stability fee on principal (BPS, simple interest).
+    /// @param debtCeiling             Cap on this manager's total debt (18 decimals).
+    /// @param minDebt                 Minimum debt of a position with debt (18 decimals).
+    /// @param mintPriceMaxAge         Max age of the oracle price for actions that need a fresh price
+    ///                                (seconds). Applies to the timestamp the oracle reports, so on
+    ///                                the Chainlink leg the effective bound is
+    ///                                `max(mintPriceMaxAge, clFreshWindow)`.
     struct RiskParams {
         uint16 mcrBps;
         uint16 liquidationThresholdBps;
@@ -230,9 +225,9 @@ interface IEUSDManager {
     error InvalidCollateralDecimals(uint8 decimals);
     /// @notice Risk parameter bounds are inconsistent (see setters for the exact constraints).
     error InvalidRiskParams();
-    /// @notice Minting (and collateral withdrawal against debt) is paused by the operator.
+    /// @notice Minting (and collateral withdrawal against debt) is paused.
     error MintingPaused();
-    /// @notice Oracle price is too old for a risk-increasing action (mint / withdraw).
+    /// @notice The oracle price is older than `mintPriceMaxAge`.
     /// @param priceTimestamp Oracle price observation timestamp (unix seconds).
     /// @param maxAge         Max accepted age (seconds).
     error StaleMintPrice(uint256 priceTimestamp, uint256 maxAge);
@@ -280,18 +275,17 @@ interface IEUSDManager {
     ///                   caller's position after the update (address(0) = walk from the head).
     function deposit(address collateral, uint256 amount, address hint) external;
 
-    /// @notice Withdraw collateral from the caller's position. If the position has debt, requires
-    ///         minting not to be paused, a fresh oracle price (≤ mintPriceMaxAge) and the resulting
-    ///         ratio ≥ MCR — the same gates as minting, since withdrawal is risk-increasing.
-    ///         Debt-free withdrawals need no price and work off-hours.
+    /// @notice Withdraw collateral from the caller's position. With debt, this has the same gates
+    ///         as minting: not paused, a fresh price and a resulting ratio ≥ MCR. Debt-free
+    ///         withdrawals need no price.
     /// @param collateral Collateral token to withdraw.
     /// @param amount     Amount to withdraw (18 decimals).
     /// @param hint       Sorted-list insert hint (see {deposit}).
     function withdrawCollateral(address collateral, uint256 amount, address hint) external;
 
-    /// @notice Mint eUSD against the caller's position, valued at the live oracle price. Requires
-    ///         a fresh in-session price (≤ mintPriceMaxAge), resulting ratio ≥ MCR, resulting
-    ///         position debt ≥ minDebt, and total debt ≤ debtCeiling. Reverts while paused.
+    /// @notice Mint eUSD against the caller's position. Requires a fresh price, a resulting ratio
+    ///         ≥ MCR, resulting debt ≥ minDebt and total debt ≤ debtCeiling. Reverts while paused or
+    ///         while the collateral is disabled.
     /// @param collateral Collateral token backing the mint.
     /// @param amount     eUSD to mint to the caller (18 decimals).
     /// @param hint       Sorted-list insert hint (see {deposit}).
@@ -299,7 +293,7 @@ interface IEUSDManager {
 
     /// @notice Repay debt on any position; the eUSD is burned from the caller. Amounts above the
     ///         position's debt are capped to it. The remaining debt must be zero or ≥ minDebt.
-    ///         Works off-hours — no oracle price involved.
+    ///         Needs no oracle price.
     /// @param collateral Collateral token of the position.
     /// @param owner      Position owner (anyone may repay on an owner's behalf).
     /// @param amount     eUSD to burn from the caller (18 decimals, capped to the debt).
@@ -307,32 +301,26 @@ interface IEUSDManager {
     function repay(address collateral, address owner, uint256 amount, address hint) external;
 
     /// @notice Close the caller's position: burn its full debt (including pending fees) from the
-    ///         caller and return all collateral. Needs no oracle price — the guaranteed off-hours
-    ///         exit.
+    ///         caller and return all collateral. Needs no oracle price, so it always works.
     /// @param collateral Collateral token of the position.
     function closePosition(
         address collateral
     ) external;
 
-    /// @notice Close the caller's position paying only the principal in eUSD: the accrued
-    ///         stability fees are settled from collateral instead, so a debtor who minted X never
-    ///         needs more than X eUSD to exit. Collateral worth the fee debt at the oracle price
-    ///         (rounded against the owner) goes to the treasury, and the matching eUSD — minted to
-    ///         the treasury when the fees accrued — is burned from the treasury's balance,
-    ///         keeping eUSD supply equal to total debt. Value-neutral for the treasury; the
-    ///         settleable amount is capped at the position's tracked `feesAccrued`. With fees to
-    ///         settle, needs a price no older than `mintPriceMaxAge`. Reverts if the price is stale
-    ///         or the treasury balance cannot cover the burn — fall back to {closePosition}.
+    /// @notice Close the caller's position paying only the principal in eUSD, so a debtor who
+    ///         minted X never needs more than X eUSD to exit. Accrued fees (up to `feesAccrued`) are
+    ///         settled by sending collateral of equal value, rounded against the owner, to the
+    ///         treasury and burning the same amount of eUSD from the treasury. With fees to settle
+    ///         it needs a fresh price, and it reverts if the treasury's eUSD balance cannot cover
+    ///         the burn; {closePosition} always works instead.
     /// @param collateral Collateral token of the position.
     function closePositionPrincipalOnly(
         address collateral
     ) external;
 
-    /// @notice Crystallize the pending stability fee on any position: fold it into the position's
-    ///         debt, mint it to the treasury and re-sort the position. Permissionless bookkeeping —
-    ///         every position-touching flow already accrues on entry, so this never changes what a
-    ///         position owes, only when the stored debt and treasury balance catch up. Reverts on
-    ///         a debt-free position. Needs no oracle price and works while minting is paused.
+    /// @notice Fold any position's pending stability fee into its debt, mint it to the treasury and
+    ///         re-sort the position. Permissionless bookkeeping: it never changes what a position
+    ///         owes. Reverts on a debt-free position. Needs no oracle price.
     /// @param collateral Collateral token of the position.
     /// @param owner      Position owner.
     /// @param hint       Sorted-list insert hint (see {deposit}).
@@ -342,35 +330,26 @@ interface IEUSDManager {
     //  Liquidation & redemption
     // ──────────────────────────────────────────────────────────
 
-    /// @notice Liquidate a position whose ratio is below the liquidation threshold at the current
-    ///         oracle price (no freshness bound — works off-hours). The caller burns up to
-    ///         `amount` of the debt and receives collateral worth repaid × (1 + liquidationBonus),
-    ///         capped at the position's collateral. A full close (amount ≥ debt) refunds any
-    ///         surplus collateral to the owner and deletes the position; a partial leaves the
-    ///         remainder in place, re-sorted, and must not drop the debt below `minDebt`. A
-    ///         partial is also capped at the pro-rata share of collateral (`collateral × repaid /
-    ///         debt`), so below 1 + bonus the liquidator's bonus shrinks to the position's cushion
-    ///         and the remainder's ratio never worsens — the shortfall on an under-bonus position
-    ///         is always absorbed by the liquidator, never left as unbacked debt. Partial
-    ///         liquidation means a position can always be cleared in chunks, so no single debt
-    ///         can exceed the eUSD any one liquidator can assemble.
+    /// @notice Liquidate a position whose ratio is below the liquidation threshold at the latest
+    ///         oracle price (no age bound). The caller burns up to `amount` of the debt and receives
+    ///         collateral worth repaid × (1 + bonus), capped at the position's collateral. A full
+    ///         liquidation refunds any surplus collateral to the owner and deletes the position. A
+    ///         partial one must leave at least `minDebt` and is also capped at the pro-rata share
+    ///         `collateral × repaid / debt`, so the remaining position's ratio never worsens.
+    ///         Partial liquidation lets any position be cleared in chunks.
     /// @param collateral Collateral token of the position.
     /// @param owner      Position owner to liquidate.
     /// @param amount     Max eUSD debt to repay (type(uint256).max = full).
     /// @param hint       Sorted-list insert hint for the remainder (see {deposit}).
     function liquidate(address collateral, address owner, uint256 amount, address hint) external;
 
-    /// @notice Redeem eUSD for collateral at the oracle price — burn X eUSD, receive X
-    ///         dollars' worth of collateral (rounded down), sourced from the riskiest positions
-    ///         first (list head). The peg anchor: never pausable, but needs a price no older than
-    ///         `mintPriceMaxAge`, so redeemers can never take collateral at a stale price. Each
-    ///         touched position's debt and collateral shrink at exactly 1:1 value, so its ratio
-    ///         improves (deleveraging). An underwater head only redeems its
-    ///         collateral-backed portion: the burn is capped at that collateral's value, the
-    ///         unbacked debt residual stays on the owner's books off-list, and the walk continues.
-    ///         A partial redemption never leaves a listed position below minDebt: the last touch
-    ///         is clamped to leave exactly minDebt, so `debtRepaid` can fall short of `amount` by
-    ///         up to minDebt even while positions remain.
+    /// @notice Redeem eUSD for collateral at the oracle price: burn X eUSD and receive X dollars of
+    ///         collateral (rounded down), taken from the riskiest positions first. Never pausable,
+    ///         but needs a fresh price. Each touched position loses debt and collateral of equal
+    ///         value, so its ratio improves. An underwater position only redeems its collateral
+    ///         value; the unbacked residual stays on the owner's books off the list. The last
+    ///         position touched is left at zero or at least `minDebt`, so `debtRepaid` can be up to
+    ///         `minDebt` short of `amount`.
     /// @param collateral       Collateral token to redeem into.
     /// @param amount           Max eUSD to burn from the caller (18 decimals).
     /// @param minCollateralOut Min collateral acceptable for the burned amount (18 decimals).
@@ -390,8 +369,8 @@ interface IEUSDManager {
     //  Admin (ADMIN role via ProtocolRegistry)
     // ──────────────────────────────────────────────────────────
 
-    /// @notice Add a collateral token. The token must have 18 decimals and `ticker` must have a
-    ///         nonzero price in the oracle. Enabled on add.
+    /// @notice Add a collateral token, enabled. The token must have 18 decimals and `ticker` must
+    ///         be priced by the oracle.
     /// @param collateral Collateral token address.
     /// @param ticker     Oracle ticker for valuations.
     function addCollateral(address collateral, bytes32 ticker) external;
@@ -416,7 +395,7 @@ interface IEUSDManager {
         uint16 stabilityFeeBps
     ) external;
 
-    /// @notice Set the global debt ceiling. Only gates new mints — fee accrual may exceed it.
+    /// @notice Set this manager's debt ceiling. Only gates new mints; fee accrual may exceed it.
     /// @param debtCeiling New ceiling (18 decimals).
     function setDebtCeiling(
         uint256 debtCeiling
@@ -428,17 +407,15 @@ interface IEUSDManager {
         uint256 minDebt
     ) external;
 
-    /// @notice Set the price freshness bound for mint / withdraw / redeem / principal-only close.
-    ///         Must be non-zero. See the
-    ///         `RiskParams.mintPriceMaxAge` note: on the Chainlink leg the effective bound is
-    ///         `max(mintPriceMaxAge, oracle clFreshWindow)`.
+    /// @notice Set the price age bound for actions that need a fresh price. Must be nonzero. See
+    ///         {RiskParams}.
     /// @param mintPriceMaxAge New max age (seconds).
     function setMintPriceMaxAge(
         uint256 mintPriceMaxAge
     ) external;
 
-    /// @notice Pause or unpause minting (OPERATOR — instant emergency brake). Deposits, repays,
-    ///         closes, redemptions and liquidations are never pausable.
+    /// @notice Pause or unpause minting and withdrawal against debt (OPERATOR). Deposits, repays,
+    ///         closes, redemptions and liquidations are never paused.
     /// @param paused New paused state.
     function setMintPaused(
         bool paused
@@ -451,7 +428,7 @@ interface IEUSDManager {
     /// @notice The eUSD token this manager mints and burns.
     function eusd() external view returns (address);
 
-    /// @notice Current global risk parameters.
+    /// @notice Current risk parameters.
     function riskParams() external view returns (RiskParams memory);
 
     /// @notice Configuration of a collateral token.
@@ -468,7 +445,7 @@ interface IEUSDManager {
     function totalDebt() external view returns (uint256);
 
     /// @notice Total collateral held for a token across all positions (18 decimals). Equals the
-    ///         manager's token balance absent direct transfers.
+    ///         manager's token balance, excluding direct transfers.
     /// @param collateral Collateral token address.
     function totalCollateral(
         address collateral
@@ -523,14 +500,14 @@ interface IEUSDManager {
     /// @param owner      Position owner currently in the list.
     function listPrev(address collateral, address owner) external view returns (address);
 
-    /// @notice Number of positions with debt for a collateral.
+    /// @notice Number of listed positions (debt and collateral) for a collateral.
     /// @param collateral Collateral token address.
     function listSize(
         address collateral
     ) external view returns (uint256);
 
-    /// @notice Off-chain helper: the owner whose node should precede a position with nominal
-    ///         ratio `ratio` (address(0) = would become the new head). Walks the whole list.
+    /// @notice Off-chain helper: the owner that should precede a position with nominal ratio
+    ///         `ratio` (address(0) = new head). Walks the list from the head.
     /// @param collateral Collateral token address.
     /// @param ratio      Nominal ratio of the position being (re)inserted (1e18 scale).
     function findInsertHint(address collateral, uint256 ratio) external view returns (address);

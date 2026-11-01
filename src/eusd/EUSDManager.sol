@@ -15,19 +15,13 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 /// @title EUSDManager — CDP engine for the eUSD stablecoin
-/// @notice Custodies collateral tokens (debtor collateral) and owns all CDP logic:
-///         deposits/withdrawals, minting against a fresh oracle price, repay/close, keeper
-///         liquidation at a fixed bonus, and riskiest-first redemption as the peg anchor. Resolves
-///         the oracle, treasury and roles through the ProtocolRegistry.
-/// @dev Positions with debt live in a per-collateral doubly-linked list sorted ascending by
-///      nominal ratio (stored collateral / stored debt) — price-invariant within one collateral,
-///      so ordering only changes when a position is touched. Insertions take an O(1) hint (the
-///      prospective predecessor) and fall back to a head walk. Collateral tokens are 18-decimal ERC-20s
-///      without transfer fees, each priced by the oracle ticker set at add time.
-///      Runs behind an ERC-1967 proxy (UUPS) so the manager address — and the positions it
-///      custodies — survive upgrades. Upgrades are ADMIN-gated ({_authorizeUpgrade});
-///      ossification is a final upgrade to an implementation whose {_authorizeUpgrade} always
-///      reverts.
+/// @notice See {IEUSDManager}. Resolves the oracle, treasury and roles through the
+///         ProtocolRegistry.
+/// @dev Listed positions form a per-collateral doubly linked list sorted ascending by nominal
+///      ratio (stored collateral / stored debt), so ordering only changes when a position is
+///      touched. Inserts take a hint (the expected predecessor) and fall back to a walk from the
+///      head. Collateral tokens must be 18-decimal ERC-20s without transfer fees.
+///      Runs behind an ERC-1967 proxy (UUPS); upgrades are ADMIN-gated.
 contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
@@ -55,12 +49,11 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
     //  State
     // ──────────────────────────────────────────────────────────
 
-    /// @notice ProtocolRegistry used to resolve the oracle, treasury and roles.
-    /// @dev Initializer-set, fixed thereafter (storage, not immutable, so an upgraded
-    ///      implementation can never silently rebind it).
+    /// @notice ProtocolRegistry used to resolve the oracle, treasury and roles. Set once at
+    ///         initialization.
     IProtocolRegistry public registry;
 
-    /// @dev The eUSD token minted and burned by this manager. Initializer-set, fixed thereafter.
+    /// @dev The eUSD token minted and burned by this manager. Set once at initialization.
     IEUSD private _eusd;
 
     RiskParams private _riskParams;
@@ -88,7 +81,7 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
     /// @inheritdoc IEUSDManager
     mapping(address => uint256) public override listSize;
 
-    /// @dev Global stability-fee index: cumulative stabilityFeeBps × elapsed seconds.
+    /// @dev Stability fee index: cumulative `stabilityFeeBps` × elapsed seconds.
     uint256 private _feeIndex;
     uint256 private _feeIndexUpdated;
 
@@ -110,13 +103,12 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
     //  Construction / initialization (UUPS)
     // ──────────────────────────────────────────────────────────
 
-    /// @dev The implementation is only ever used behind an ERC-1967 proxy; lock its own
-    ///      initializers so the bare implementation can never be initialized or taken over.
+    /// @dev Locks the implementation's initializers; it is only used behind a proxy.
     constructor() {
         _disableInitializers();
     }
 
-    /// @notice Initialize the manager proxy (runs once, in the proxy's constructor call).
+    /// @notice Initialize the proxy (called once, in the proxy's constructor).
     /// @param registry_ ProtocolRegistry contract address.
     /// @param eusd_     EUSD token address (this manager must hold its MINTER_ROLE).
     /// @param params    Initial risk parameters (validated as in the setters).
@@ -130,8 +122,7 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
         _feeIndexUpdated = block.timestamp;
     }
 
-    /// @dev UUPS upgrade gate: only the protocol ADMIN role may upgrade this proxy's
-    ///      implementation.
+    /// @dev UUPS upgrade gate: ADMIN only.
     function _authorizeUpgrade(
         address
     ) internal view override onlyAdmin {}
@@ -146,8 +137,7 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
         if (amount == 0) revert ZeroAmount();
 
         Position storage p = _accrue(collateral, msg.sender);
-        // Disabled = no new exposure. An existing debtor may still top up (defensive lever —
-        // liquidation is never gated); minting stays blocked regardless.
+        // A disabled collateral takes no new exposure, but an existing debtor may still top up.
         if (!cfg.enabled && p.debt == 0) revert CollateralDisabled(collateral);
         p.collateral += amount;
         totalCollateral[collateral] += amount;
@@ -167,7 +157,7 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
         p.collateral -= amount;
         totalCollateral[collateral] -= amount;
 
-        // Risk-increasing while debt exists: same gates as minting — pause, fresh price, MCR.
+        // With debt, a withdrawal increases risk: same gates as minting.
         if (p.debt > 0) {
             if (mintPaused) revert MintingPaused();
             uint256 ratio = _ratioBps(p.collateral, p.debt, _freshPrice(cfg.ticker));
@@ -237,9 +227,8 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
     }
 
     /// @inheritdoc IEUSDManager
-    /// @dev The entry accrual mints any pending fee to the treasury and folds it into
-    ///      `feesAccrued`, so the treasury burn nets pending fees to zero and retires previously
-    ///      minted ones from its balance.
+    /// @dev Accrual on entry mints pending fees to the treasury first, so the treasury burn covers
+    ///      every fee the position owes.
     function closePositionPrincipalOnly(
         address collateral
     ) external override nonReentrant {
@@ -247,12 +236,10 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
         _close(collateral, true);
     }
 
-    /// @dev Shared close: retire the full debt, delete the position, pay out the collateral.
-    ///      With `feesFromCollateral`, the tracked fee portion is settled in kind — collateral of
-    ///      equal value (fresh oracle price, ceil rounding against the debtor) to the treasury, whose
-    ///      eUSD is burned in the same amount — and the caller burns only the remainder. An
-    ///      underwater position caps the settlement at its collateral value; the caller pays the
-    ///      rest in eUSD.
+    /// @dev Retire the full debt, delete the position and pay out the collateral. With
+    ///      `feesFromCollateral`, `feesAccrued` is settled with collateral of equal value at a fresh
+    ///      price (rounded up, against the owner) sent to the treasury, whose eUSD is burned by the
+    ///      same amount; the caller burns the rest. Settlement is capped at the collateral value.
     function _close(address collateral, bool feesFromCollateral) private {
         Position storage p = _accrue(collateral, msg.sender);
         uint256 debt = p.debt;
@@ -358,8 +345,7 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
             address owner = listHead[collateral];
             if (owner == address(0)) break;
             (uint256 repaid, uint256 seized) = _redeemFrom(collateral, owner, price, remaining, hint);
-            // The head yields nothing when the minDebt clamp consumes the whole request; every
-            // other outcome delists or shrinks it, so this is the only zero-progress case.
+            // Only a head where the minDebt clamp leaves nothing to redeem yields zero; stop there.
             if (repaid == 0 && seized == 0) break;
             remaining -= repaid;
             collateralOut += seized;
@@ -448,7 +434,7 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
     }
 
     /// @inheritdoc IEUSDManager
-    /// @dev Instant OPERATOR lever. Only gates {mint}; every exit path stays open.
+    /// @dev Gates {mint} and withdrawal against debt; every exit stays open.
     function setMintPaused(
         bool paused
     ) external override onlyOperator {
@@ -460,8 +446,7 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
     //  Internal
     // ──────────────────────────────────────────────────────────
 
-    /// @dev Revert unless the collateral has been added. Does not check `enabled` — exits are
-    ///      never gated on it.
+    /// @dev Revert unless the collateral has been added. Does not check `enabled`.
     function _requireCollateral(
         address collateral
     ) private view returns (CollateralConfig storage cfg) {
@@ -478,14 +463,13 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
         }
     }
 
-    /// @dev Fold a position's pending stability fee into its debt and mint it to the treasury,
-    ///      keeping eUSD supply equal to total debt across managers. The mint is a call into the trusted
-    ///      EUSD token (no transfer hooks); all callers hold the reentrancy guard.
+    /// @dev Fold a position's pending stability fee into its debt and mint it to the treasury.
+    ///      EUSD has no transfer hooks, and every caller holds the reentrancy guard.
     function _accrue(address collateral, address owner) private returns (Position storage p) {
         _settleFeeIndex();
         p = _positions[collateral][owner];
         if (p.debt > 0 && _feeIndex > p.feeIndexSnapshot) {
-            // Charged on principal only, so the fee stays simple however often a position is touched.
+            // Charged on principal only, so the fee is simple interest however often it accrues.
             uint256 fee = Math.mulDiv(p.debt - p.feesAccrued, _feeIndex - p.feeIndexSnapshot, BPS * YEAR);
             if (fee > 0) {
                 p.debt += fee;
@@ -498,13 +482,10 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
         p.feeIndexSnapshot = _feeIndex;
     }
 
-    /// @dev Redeem up to `maxAmount` of debt from `owner`'s position at `price`. Floor rounding:
-    ///      the redeemer receives at most $1 of collateral per eUSD burned. An underwater position
-    ///      only redeems its collateral-backed portion; the unbacked residual stays on the books
-    ///      off-list (clearable by repay/close/liquidation) so it never pins the head at ratio 0.
-    ///      A partial redemption may not leave dust: the remaining debt is either 0 or >= minDebt
-    ///      (repaid is clamped to leave exactly minDebt, same rule as {repay}); a node where even
-    ///      that clamp yields nothing redeemable returns zeros and the caller stops the walk.
+    /// @dev Redeem up to `maxAmount` of debt from `owner`'s position at `price`, rounding down so
+    ///      the redeemer gets at most $1 of collateral per eUSD. An underwater position only
+    ///      redeems its collateral value and its residual leaves the list. The remaining debt is
+    ///      either 0 or ≥ minDebt; a position where that leaves nothing to redeem returns zeros.
     function _redeemFrom(
         address collateral,
         address owner,
@@ -535,23 +516,20 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
         totalDebt -= repaid;
         totalCollateral[collateral] -= seized;
 
-        // Partial redemption improves the ratio — re-sort with the caller's hint. An exhausted
-        // node (no debt, or no collateral) leaves the list; an empty position is deleted.
+        // Re-sort with the caller's hint; an exhausted position leaves the list, an empty one is deleted.
         _reindex(collateral, owner, hint);
         if (p.debt == 0 && p.collateral == 0) delete _positions[collateral][owner];
         emit RedeemedFromPosition(collateral, owner, repaid, seized);
     }
 
-    /// @dev Re-sort a position after any collateral/debt change. Listed ⇔ debt > 0 and
-    ///      collateral > 0: a debt-only residual (underwater redemption) stays off-list.
+    /// @dev Re-sort a position after a change. A position is listed iff it has debt and collateral.
     function _reindex(address collateral, address owner, address hint) private {
         if (_isListed(collateral, owner)) _removeNode(collateral, owner);
         Position storage p = _positions[collateral][owner];
         if (p.debt > 0 && p.collateral > 0) _insertNode(collateral, owner, hint);
     }
 
-    /// @dev List membership from the links themselves (head, or has a predecessor) — never
-    ///      inferred from position state.
+    /// @dev List membership, read from the links (the head, or has a predecessor).
     function _isListed(address collateral, address owner) private view returns (bool) {
         return listHead[collateral] == owner || _nodes[collateral][owner].prev != address(0);
     }
@@ -603,13 +581,12 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
     //  Views & pricing
     // ──────────────────────────────────────────────────────────
 
-    /// @dev The protocol's Chainlink-primary oracle verifier, resolved through the registry.
+    /// @dev The oracle, resolved through the registry.
     function _oracle() private view returns (IOracleVerifier) {
         return IOracleVerifier(registry.oracle());
     }
 
-    /// @dev Live price, no older than mintPriceMaxAge, for mint, withdraw against debt, redeem and
-    ///      the fee leg of a principal-only close. Future-dated timestamps are treated as current.
+    /// @dev Oracle price no older than `mintPriceMaxAge`. A future timestamp counts as current.
     function _freshPrice(
         bytes32 ticker
     ) private view returns (uint256 price) {
@@ -619,12 +596,9 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
         if (block.timestamp > ts + maxAge) revert StaleMintPrice(ts, maxAge);
     }
 
-    /// @dev Liquidation seizure: collateral worth repaid × (1 + bonus), capped at `coll`. Floor
-    ///      rounding favours the position owner. Surplus is refunded only on a full close; a
-    ///      partial leaves it in the position. A partial is additionally capped at the pro-rata
-    ///      share `coll × repaid / debt`, so the remainder's ratio never falls below the
-    ///      pre-liquidation ratio and the bonus cannot be extracted from collateral the remaining
-    ///      debt needs. The cap is inert while ratio >= 1 + bonus.
+    /// @dev Collateral seized for repaying `repaid`: worth repaid × (1 + bonus), rounded down and
+    ///      capped at `coll`. A partial liquidation is also capped at `coll × repaid / debt`, so the
+    ///      remaining position's ratio never falls.
     function _seizure(
         uint256 coll,
         uint256 debt,
@@ -648,8 +622,8 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
         return Math.mulDiv(Math.mulDiv(coll, price, PRECISION), BPS, debt);
     }
 
-    /// @dev Shared ratio-parameter validation: a fresh mint can never be instantly liquidatable
-    ///      (mcr ≥ threshold) and a threshold liquidation is always solvent (threshold ≥ 1+bonus).
+    /// @dev Require mcr ≥ threshold (a fresh mint is never liquidatable) and threshold ≥ 1 + bonus
+    ///      (a liquidation at the threshold is solvent).
     function _validateRatios(uint16 mcrBps, uint16 liquidationThresholdBps, uint16 liquidationBonusBps) private pure {
         if (mcrBps < liquidationThresholdBps || uint256(liquidationThresholdBps) < BPS + liquidationBonusBps) {
             revert InvalidRiskParams();
