@@ -1,11 +1,13 @@
 # Own Protocol v2 — Audit Report & Remediation Status (Pass 7)
 
-**Branch:** `deploy-contracts` (audited at `main` `c5d94b1`) · **Last updated:** 2026-11-01
+**Branch:** `deploy-contracts` (audited at `main` `c5d94b1`) · **Last updated:** 2026-11-01 ·
+**PDF:** `audits/01-11-2026_Own_V2.pdf` (`A7-` prefix dropped)
 
 Pre-deploy audit of the eUSD-only contract set: three **independent** solidity-auditor runs
 (12-agent pipeline each — 9 specialty attackers + 3 gap-hunters, one pass), one per model, merged
 here. Every reported item was deduplicated across the three runs and against Reports 3–5 and
-Report 4 (`audits/09-09-2026`), then re-verified against source before booking. `A7-` items are
+Report 4 (`audits/09-09-2026_Own_V2.pdf`, eUSD-only edition; Report 4 IDs below use its numbering),
+then re-verified against source before booking. `A7-` items are
 new in this pass; items that restate an earlier, already-decided ID are listed under
 **Duplicates dropped** rather than re-booked.
 
@@ -86,7 +88,7 @@ who cannot defend off-hours (mint and withdraw need a fresh price; only `closePo
 full debt in eUSD is open). In-session, a watcher can take up to the feed's ~0.5% deviation per
 redemption, repeatedly. With several managers the redeemer picks the most-lagged collateral.
 
-**Relation to earlier reports:** Report 4 L-06 acknowledged the stale-anchor exit family against
+**Relation to earlier reports:** Report 4 L-04 acknowledged the stale-anchor exit family against
 the *liquidation bonus*, and the interface documents redemption as "no freshness bound, never
 pausable". That decision predates higher-volatility collateral and was sized for liquidation; the
 redemption-side transfer from head debtors, its dependence on `bandBps`, and the missing fee are
@@ -99,7 +101,7 @@ anchor band is an admin config sized so it can track off-hours moves; a move bey
 pauses redemption until prices catch up. A redemption fee was considered and not added: it only
 deters gaps smaller than the fee and loosens the peg floor by the same amount. The residual
 in-session gap (Chainlink deviation threshold, ~0.5% measured on-chain) is accepted; the manager is
-upgradeable if a fee is ever needed. Liquidation stays on the Report 4 L-06 decision. Tests:
+upgradeable if a fee is ever needed. Liquidation stays on the Report 4 L-04 decision. Tests:
 `test_redeem_stalePrice_reverts_thenFreshPriceWorks`; invariant handler re-posts the price.
 
 ## A7-L-01 — Permissionless `accrue` compounds the stability fee (Low, Fixed 2026-11-01)
@@ -147,7 +149,7 @@ revoked. Conversely, because `disableAsset` zeroes the stored timestamp, the rep
 (`timestamp <= existing.timestamp`) is lost: after a disable + re-config, anyone can resubmit an
 earlier public attestation that is still within staleness and band. All paths need an admin
 sequence and are bounded by `inhouseMaxStaleness` and the band, but liquidation reads the price
-with no age bound (Report 4 L-06).
+with no age bound (Report 4 L-04).
 
 **Acknowledged (2026-11-01):** handled operationally, so the verifier code is unchanged. Replay only
 accepts signatures from signers that are still authorized and prices within `inhouseMaxStaleness`,
@@ -295,14 +297,14 @@ range-checks `minDebt`, `debtCeiling` and `mintPriceMaxAge`. Scripts only.
   underwater head is redeemed value-for-value and the residual stays on the owner's books off-list.
   The owner self-redeeming gains nothing over walking away from the position. Fee accrual on such
   residuals → Report 5 lead ("fee accrual on unbacked residuals").
-- **Liquidation at an unbounded-age price** (Opus 4.8 F-1) → **Report 4 L-06**, acknowledged; the
+- **Liquidation at an unbounded-age price** (Opus 4.8 F-1) → **Report 4 L-04**, acknowledged; the
   redemption side is booked as A7-M-01.
 - **`getPrice` reports `block.timestamp` inside `clFreshWindow`, so `mintPriceMaxAge` can't bind
-  tighter** (Opus 4.8 F-2, Fable) → **Report 4 L-03**, resolved as documented semantics.
-- **Sorted list ordered by stale stored debt** → **A5-L-04 / Report 4 L-04**, acknowledged.
+  tighter** (Opus 4.8 F-2, Fable) → **Report 4 L-01**, resolved as documented semantics.
+- **Sorted list ordered by stale stored debt** → **A5-L-04 / Report 4 L-02**, acknowledged.
 - **Head at exactly `minDebt` stops sub-`minDebt` redemptions** → **A5-M-04** designed semantics
   and Report 5's `setMinDebt` lead.
-- **`withdrawCollateral` ignores `cfg.enabled`** → **A5-L-05 / Report 4 L-16**, deliberate.
+- **`withdrawCollateral` ignores `cfg.enabled`** → **A5-L-05 / Report 4 L-10**, deliberate.
 - **`EUSD.crosschainBurn` is allowance-free** → **Report 4 I-05 / I-06**, acknowledged; bridging
   stays disabled. **`_available` `maxLimit × elapsed` overflow** → Report 5 third-scan lead. EUSD
   is deployed and unchanged by this release.
