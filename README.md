@@ -1,4 +1,4 @@
-# Own — eUSD
+# Own | eUSD
 
 **eUSD** is an overcollateralized stablecoin on Robinhood Chain. Users deposit Robinhood stock tokens
 or WETH into an **EUSDManager** and mint eUSD against a fresh oracle price. Each manager holds one
