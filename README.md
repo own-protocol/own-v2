@@ -50,6 +50,7 @@ tools/storage-layout.sh   # storage-layout guard for upgradeable contracts
 ## Documentation
 
 - [Robinhood Chain deployment](docs/contracts-robinhood.md)
+- [Legacy contracts](docs/legacy.md)
 - [Chainlink feeds](docs/chainlink-feeds-robinhood.md)
 - [eUSD Q&A](docs/eusd-qa.md)
 - [Development guide](AGENTS.md)

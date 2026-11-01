@@ -260,6 +260,13 @@ Before any PR to `main`, mentally (or actually) run through this list for every 
 
 ## Project-Specific Context
 
+### Legacy code
+
+`main` holds only the eUSD contracts. Everything retired (OwnMarket, VaultManager, PSM, eTokens,
+AssetRegistry, lending, funds, OwnStakingV2, the old registry and verifier) lives on the
+`legacy-own-v2` branch, a full snapshot of `main` before the cleanup. Some of it is still live
+on-chain while it winds down; addresses are in `docs/legacy.md`.
+
 ### Trust Model
 
 - **Oracle**: Chainlink feeds are primary; the in-house signer (KMS) is trusted only within a band
