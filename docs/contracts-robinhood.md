@@ -6,7 +6,7 @@
 The retired stack (OwnMarket, VaultManager, PSM ReserveVaults, eTokens, AssetRegistry, lending,
 OwnStakeZap) and its deployment record live on the `legacy-own-v2` branch. OwnStakingV2,
 TieredBoostCalculator and MoneyPriceFeed below are being replaced by fixed-APR StakingVaults (see
-the last section); their code also lives on `legacy-own-v2`. The eSPY EUSDManager below still runs
+the eUSD core and last sections); their code also lives on `legacy-own-v2`. The eSPY EUSDManager below still runs
 on that stack (it reads the AssetRegistry and VaultManager) until its positions wind down.
 
 ## Legacy registry and oracle
@@ -24,15 +24,33 @@ Live oracle configs (verified on-chain): 14 stock tickers (7 underlying + 7 R.\*
 4h fresh window / 5d anchor age / 1h in-house staleness; USDG Chainlink-only (band 0, 25h fresh,
 48h anchor). Design: docs/chainlink-feeds-robinhood.md; findings: audits/09-09-2026_Own_V2.pdf.
 
-## eUSD core (pending deploy)
+## eUSD core (2026-11-01)
 
-`DeployCoreRobinhood.s.sol` deploys a fresh `ProtocolRegistry` (Safe as protocol admin, only
-`oracle`, `treasury` and roles) and a fresh `ChainlinkOracleVerifier` (only `getPrice` and the
-signed `updatePrice` push). The new EUSDManagers and StakingVaults point at this registry. The
-Safe then sets `setOracle`, `setTreasury`, grants ADMIN/OPERATOR, and on the verifier calls
-`addSigner` and `setChainlinkConfig` for every collateral ticker. The oracle signer signs for the
-new verifier's EIP-712 domain, and the keeper pushes to both verifiers while the legacy stack
-lives.
+Deployed from branch `deploy-contracts` commit `54e39f1` (forge 1.3.5, solc 0.8.28, optimizer 200,
+cancun) via `DeployCoreRobinhood.s.sol`, `DeployEusdManagerRobinhood.s.sol` and
+`DeployStakingVaultRobinhood.s.sol`. All sources verified on robin.etherscan.io (bytecode matches
+the build byte for byte); the manager proxies are linked to their implementation. The deployer
+holds no role: the registry's default admin is the governance Safe `0x470f…78e2` (3h transfer
+delay), and every other contract is gated through the registry's ADMIN / OPERATOR roles.
+
+| Contract                          | Address                                      |
+| --------------------------------- | -------------------------------------------- |
+| ProtocolRegistry                  | `0x348C42672FEf9dEcd678B631bf1D3BaEf5fD0085` |
+| ChainlinkOracleVerifier           | `0x985bd81406341956411BE122ea64Fa1Cc0839F24` |
+| EUSDManager implementation        | `0x3B0bb2203aFe55AD088362279c6a34b609AB9150` |
+| EUSDManager A (ERC-1967 proxy)    | `0xF9c9a09ef44B9003f4E9CD76C30431389848cbF5` |
+| EUSDManager B (ERC-1967 proxy)    | `0xbd0A8dea2964C61dBC225dB3C1b4cE341A0c32C2` |
+| EUSDManager C (ERC-1967 proxy)    | `0x6d491928BBEc0c508A939b103753A3472b63Cc8C` |
+| EUSDManager D (ERC-1967 proxy)    | `0x948df8d22c8025f587697D02b4888fE432758d0e` |
+| StakingVault seUSD (eUSD)         | `0xa13A08828A78577D39e253a30E64b354D813Ade5` |
+| StakingVault sMONEY ($MONEY)      | `0xB6B87Ff4BA072851d1E7E69D39eEb7341b3A5F11` |
+| MoneyFeeCollector implementation  | `0x0b427Ed2ba730d721D1f06e122fe4367aF43014F` |
+
+Each manager is one collateral risk profile minting the same eUSD. A manager is inert until the
+Safe grants it eUSD `MINTER_ROLE` and adds its collateral. The Safe also sets the registry's
+`oracle` and `treasury`, grants ADMIN/OPERATOR, and on the verifier calls `addSigner` and
+`setChainlinkConfig` for every collateral ticker. The oracle signer signs for the new verifier's
+EIP-712 domain, and the keeper pushes to both verifiers while the legacy stack lives.
 
 ## eUSD stablecoin module (2026-09-09)
 
@@ -132,16 +150,16 @@ not the protocol — integrations must confine it (exact JIT allowance + min-out
 both existing consumers do) and any future consumer should reuse this address rather than
 introducing a second venue.
 
-## Fixed-APR staking (pending deploy)
+## Fixed-APR staking (2026-11-01)
 
 Replaces OwnStakingV2. One `StakingVault` per asset via `DeployStakingVaultRobinhood.s.sol`:
-seUSD (eUSD) and sMONEY ($MONEY). Each has an admin-set APR (`setApr`) and cap on the staked amount
+seUSD (eUSD) and sMONEY ($MONEY); addresses in the eUSD core table above. Each has an admin-set APR (`setApr`) and cap on the staked amount
 that earns the full APR (`setCap`). The treasury Safe (`registry.treasury()`) approves each vault
 once and the keeper (OPERATOR) tops up the reserve weekly with `pullFromTreasury(amount)`; anyone
 can also add to it with `fund(amount)`. Unspent reserve comes back with `withdrawReserve` (ADMIN).
 OwnStakingV2 winds down: no new `notifyRewardAmount` batches, stakers unstake.
 
-The fee collector is upgraded so the keeper's `buyBack` sends bought $MONEY to `reserve` instead of
+The fee collector is upgraded (new implementation in the eUSD core table) so the keeper's `buyBack` sends bought $MONEY to `reserve` instead of
 burning it. Safe steps after deploying the new implementation: `upgradeToAndCall(impl, "")`,
 `setReserve(reserve)`, and the admin-set buy-back share (`setBurnShareBps`; the rest is paid to the
 payees in SPY). The keeper must call `buyBack` instead of `buyAndBurn`.
