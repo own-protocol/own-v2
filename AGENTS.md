@@ -394,6 +394,9 @@ The fix and its regression test name, or why it is acknowledged plus any ops rul
   severity order. Status is `Fixed` or `Acknowledged` (by-design items are `Acknowledged`).
 - A finding that restates an earlier report's finding is not re-booked; record its current state
   under "Status of Earlier Findings", citing the earlier report's date and ID.
+- A report only refers back: a newer report may cite an older one, never the reverse.
+- Scope is contracts only (`src/`, `misc/`). Deploy scripts and tooling are not part of an audit
+  report; fix script issues without booking them as findings.
 
 **PDF layout** (match the existing PDFs): US Letter, cover page with "Audit Report", "Own Protocol
 v2" in orange (#e89a55) and "Date: ...". Sans-serif body, monospace code in grey-violet (#8b8bb0),
