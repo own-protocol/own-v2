@@ -17,7 +17,16 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 /// Usage:
 ///   forge script script/robinhood/DeployStakingVaultRobinhood.s.sol --rpc-url robinhood --broadcast
 contract DeployStakingVaultRobinhood is Script {
+    uint256 constant ROBINHOOD_CHAIN_ID = 4663;
+
     function run() external returns (address vault) {
+        require(block.chainid == ROBINHOOD_CHAIN_ID, "RPC is not Robinhood Chain (4663)");
+        uint256 aprBps = vm.envUint("VAULT_APR_BPS");
+        uint256 cap = vm.envUint("VAULT_CAP");
+        // Typo guards: APR at most 50%, cap 18-dec between 1 and 1B tokens.
+        require(aprBps <= 5000, "apr out of range");
+        require(cap >= 1e18 && cap <= 1e27, "cap out of range");
+
         vm.startBroadcast(vm.envUint("DEPLOYER_PRIVATE_KEY_ROBINHOOD"));
         vault = address(
             new StakingVault(
@@ -25,8 +34,8 @@ contract DeployStakingVaultRobinhood is Script {
                 vm.envString("VAULT_NAME"),
                 vm.envString("VAULT_SYMBOL"),
                 vm.envAddress("PROTOCOL_REGISTRY_ROBINHOOD"),
-                vm.envUint("VAULT_APR_BPS"),
-                vm.envUint("VAULT_CAP")
+                aprBps,
+                cap
             )
         );
         vm.stopBroadcast();

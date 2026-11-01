@@ -43,6 +43,10 @@ contract DeployEusdManagerRobinhood is Script {
         // Typo guards: ratios within 100%..500%, bonus and fee at most 20%.
         require(params.mcrBps <= 50_000 && params.liquidationThresholdBps >= 10_000, "ratio out of range");
         require(params.liquidationBonusBps <= 2000 && params.stabilityFeeBps <= 2000, "bonus/fee out of range");
+        // Unit guards: amounts are 18-dec (1 to 1B eUSD), price age is seconds (at most 1h).
+        require(params.minDebt >= 1e18 && params.minDebt <= params.debtCeiling, "minDebt out of range");
+        require(params.debtCeiling <= 1e27, "debtCeiling out of range");
+        require(params.mintPriceMaxAge <= 1 hours, "mintPriceMaxAge out of range");
 
         vm.startBroadcast(vm.envUint("DEPLOYER_PRIVATE_KEY_ROBINHOOD"));
         implementation = vm.envOr("EUSD_MANAGER_IMPL", address(0));
