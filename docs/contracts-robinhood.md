@@ -1,4 +1,4 @@
-# eUSD — Robinhood Chain Deployment
+# eUSD | Robinhood Chain Deployment
 
 **Network:** Robinhood Chain (chainId `4663`). All contracts below are verified on
 [robin.etherscan.io](https://robin.etherscan.io).
