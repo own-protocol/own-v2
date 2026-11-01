@@ -165,7 +165,7 @@ contract EUSDHandler is CommonBase, StdCheats, StdUtils {
         uint256 debt = manager.currentDebt(address(token), actor);
 
         // Mirror the contract's fee cap (pending fee folds into feesAccrued on entry, then
-        // clamped to debt and to the collateral's value) to know what the actor must fund.
+        // capped at the collateral's value) to know what the actor must fund.
         uint256 fees = p.feesAccrued + (debt - p.debt);
         if (fees > debt) fees = debt;
         if (fees > 0) {

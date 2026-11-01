@@ -723,11 +723,8 @@ contract EUSDManagerTest is Test {
     }
 
     function test_repay_retiresFeesFirst() public {
-        vm.prank(admin);
-        manager.setMinDebt(1e18);
         _open(alice, 40e18, 1000e18);
         vm.warp(block.timestamp + 10 * 365 days); // 20% simple → 200 fee, debt 1200
-        oracle.setPrice(SPY, PRICE);
 
         vm.prank(alice);
         manager.repay(address(eSPY), alice, 150e18, address(0));

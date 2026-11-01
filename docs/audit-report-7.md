@@ -268,7 +268,7 @@ p.feesAccrued)` in `repay`, `liquidate` and `_redeemFrom`. `feesAccrued <= debt`
 
 ### A7-I-04 — Deploy scripts lack unit and chain guards (Info, Fixed 2026-11-01)
 
-Raised by 6 agents each. `DeployStakingVaultRobinhood` had no `block.chainid` check and no range
+Raised by 6 agents per script. `DeployStakingVaultRobinhood` had no `block.chainid` check and no range
 check on the APR or the 18-decimal cap; `DeployEusdManagerRobinhood` did not bound `MIN_DEBT`,
 `DEBT_CEILING` or `MINT_PRICE_MAX_AGE`, so a unit typo (milliseconds for seconds) would silently
 turn off the A7-M-01 / A7-L-02 fresh-price gate. Admin setters could correct each value later.
