@@ -265,7 +265,7 @@ Before any PR to `main`, mentally (or actually) run through this list for every 
 `main` holds only the eUSD contracts. Everything retired (OwnMarket, VaultManager, PSM, eTokens,
 AssetRegistry, lending, funds, OwnStakingV2, the old registry and verifier) lives on the
 `legacy-own-v2` branch, a full snapshot of `main` before the cleanup. Some of it is still live
-on-chain while it winds down; addresses are in `docs/legacy.md`.
+on-chain while it winds down; addresses are in `docs/legacy-contracts-rh.md`.
 
 ### Trust Model
 
