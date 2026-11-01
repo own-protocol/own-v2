@@ -6,8 +6,9 @@
 The retired stack (OwnMarket, VaultManager, PSM ReserveVaults, eTokens, AssetRegistry, lending,
 OwnStakeZap) and its deployment record live on the `legacy-own-v2` branch. OwnStakingV2,
 TieredBoostCalculator and MoneyPriceFeed below are being replaced by fixed-APR StakingVaults (see
-the eUSD core and last sections); their code also lives on `legacy-own-v2`. The eSPY EUSDManager below still runs
-on that stack (it reads the AssetRegistry and VaultManager) until its positions wind down.
+the eUSD core and last sections); their code also lives on `legacy-own-v2`. The eSPY EUSDManager
+below still runs on that stack (it reads the AssetRegistry and VaultManager) until its positions
+wind down.
 
 ## Legacy registry and oracle
 
@@ -152,14 +153,16 @@ introducing a second venue.
 
 ## Fixed-APR staking (2026-11-01)
 
-Replaces OwnStakingV2. One `StakingVault` per asset via `DeployStakingVaultRobinhood.s.sol`:
-seUSD (eUSD) and sMONEY ($MONEY); addresses in the eUSD core table above. Each has an admin-set APR (`setApr`) and cap on the staked amount
-that earns the full APR (`setCap`). The treasury Safe (`registry.treasury()`) approves each vault
-once and the keeper (OPERATOR) tops up the reserve weekly with `pullFromTreasury(amount)`; anyone
-can also add to it with `fund(amount)`. Unspent reserve comes back with `withdrawReserve` (ADMIN).
-OwnStakingV2 winds down: no new `notifyRewardAmount` batches, stakers unstake.
+Replaces OwnStakingV2. One `StakingVault` per asset via `DeployStakingVaultRobinhood.s.sol`: seUSD
+(eUSD) and sMONEY ($MONEY); addresses in the eUSD core table above. Each has an admin-set APR
+(`setApr`) and cap on the staked amount that earns the full APR (`setCap`). The treasury Safe
+(`registry.treasury()`) approves each vault once and the keeper (OPERATOR) tops up the reserve
+weekly with `pullFromTreasury(amount)`; anyone can also add to it with `fund(amount)`. Unspent
+reserve comes back with `withdrawReserve` (ADMIN). OwnStakingV2 winds down: no new
+`notifyRewardAmount` batches, stakers unstake.
 
-The fee collector is upgraded (new implementation in the eUSD core table) so the keeper's `buyBack` sends bought $MONEY to `reserve` instead of
-burning it. Safe steps after deploying the new implementation: `upgradeToAndCall(impl, "")`,
-`setReserve(reserve)`, and the admin-set buy-back share (`setBurnShareBps`; the rest is paid to the
-payees in SPY). The keeper must call `buyBack` instead of `buyAndBurn`.
+The fee collector is upgraded (new implementation in the eUSD core table) so the keeper's `buyBack`
+sends bought $MONEY to `reserve` instead of burning it. Safe steps after deploying the new
+implementation: `upgradeToAndCall(impl, "")`, `setReserve(reserve)`, and the admin-set buy-back
+share (`setBurnShareBps`; the rest is paid to the payees in SPY). The keeper must call `buyBack`
+instead of `buyAndBurn`.
