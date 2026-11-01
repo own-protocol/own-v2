@@ -22,7 +22,7 @@ lives on `legacy-own-v2`. The keeper and the oracle signer keep serving this ver
 
 Live oracle configs (verified on-chain): 14 stock tickers (7 underlying + 7 R.\*) @ 15 min silence /
 4h fresh window / 5d anchor age / 1h in-house staleness; USDG Chainlink-only (band 0, 25h fresh,
-48h anchor). Design: docs/chainlink-feeds-robinhood.md; findings: docs/audit-report-3.md.
+48h anchor). Design: docs/chainlink-feeds-robinhood.md; findings: audits/09-09-2026_Own_V2.pdf.
 
 ## eUSD core (pending deploy)
 
