@@ -220,7 +220,7 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
         }
 
         p.debt = remaining;
-        if (p.feesAccrued > remaining) p.feesAccrued = remaining;
+        p.feesAccrued -= Math.min(repaid, p.feesAccrued);
         totalDebt -= repaid;
         _reindex(collateral, owner, hint);
 
@@ -328,7 +328,7 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
         totalDebt -= repaid;
         totalCollateral[collateral] -= seized + refund;
         p.debt = remaining;
-        if (p.feesAccrued > remaining) p.feesAccrued = remaining;
+        p.feesAccrued -= Math.min(repaid, p.feesAccrued);
         p.collateral -= seized + refund;
         _reindex(collateral, owner, hint);
         if (remaining == 0) delete _positions[collateral][owner];
@@ -530,7 +530,7 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
         }
 
         p.debt -= repaid;
-        if (p.feesAccrued > p.debt) p.feesAccrued = p.debt;
+        p.feesAccrued -= Math.min(repaid, p.feesAccrued);
         p.collateral -= seized;
         totalDebt -= repaid;
         totalCollateral[collateral] -= seized;

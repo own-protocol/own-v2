@@ -722,25 +722,30 @@ contract EUSDManagerTest is Test {
         assertEq(eusd.totalSupply(), 0);
     }
 
-    function test_closePrincipalOnly_repayClampsFeesAccrued() public {
+    function test_repay_retiresFeesFirst() public {
         vm.prank(admin);
         manager.setMinDebt(1e18);
         _open(alice, 40e18, 1000e18);
         vm.warp(block.timestamp + 10 * 365 days); // 20% simple → 200 fee, debt 1200
         oracle.setPrice(SPY, PRICE);
 
-        vm.prank(address(manager));
-        eusd.mint(alice, 100e18); // top up so alice can repay 1100
         vm.prank(alice);
-        manager.repay(address(eSPY), alice, 1100e18, address(0));
-        assertEq(manager.getPosition(address(eSPY), alice).feesAccrued, 100e18); // clamped to debt
+        manager.repay(address(eSPY), alice, 150e18, address(0));
+        assertEq(manager.getPosition(address(eSPY), alice).feesAccrued, 50e18); // repayment retires fees first
+        assertEq(manager.getPosition(address(eSPY), alice).debt, 1050e18);
 
+        vm.warp(block.timestamp + 365 days); // fee still charged on the full 1000 principal
+        oracle.setPrice(SPY, PRICE);
+        assertEq(manager.currentDebt(address(eSPY), alice), 1070e18);
+
+        vm.prank(address(manager));
+        eusd.mint(alice, 150e18); // top up so alice holds the 1000 principal
         vm.prank(alice);
         manager.closePositionPrincipalOnly(address(eSPY));
 
-        assertEq(eusd.balanceOf(alice), 0); // remaining 100 debt settled entirely from collateral
-        assertEq(eusd.balanceOf(treasury), 100e18); // 200 minted over time − 100 burned
-        assertEq(eSPY.balanceOf(treasury), Math.mulDiv(100e18, PRECISION, PRICE, Math.Rounding.Ceil));
+        assertEq(eusd.balanceOf(alice), 0);
+        assertEq(eusd.balanceOf(treasury), 150e18); // 220 minted over time − 70 burned
+        assertEq(eSPY.balanceOf(treasury), Math.mulDiv(70e18, PRECISION, PRICE, Math.Rounding.Ceil));
         assertEq(manager.totalDebt(), 0);
     }
 

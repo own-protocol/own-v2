@@ -21,6 +21,10 @@ with no redemption fee). No unprivileged fund-theft path survived verification.
 **Remediation (2026-11-01):** M-01, L-01, L-02 and L-05 are fixed on this branch; L-03, L-04,
 I-01 and I-02 are acknowledged with the operating rules below; L-06 and I-03 are by design.
 
+**Final pass (2026-11-01):** one more Opus 5.5 run on the fixed code (`67bff71`) booked L-07 to
+L-09 and I-04 (see [Final pass](#final-pass-opus-55-2026-11-01)). L-09 and I-04 are fixed; L-07 and
+L-08 are acknowledged.
+
 ### Scope
 
 ```
@@ -41,8 +45,8 @@ src/registry/ProtocolRegistry.sol     misc/MoneyFeeCollector.sol
 | Critical | 0     | 0     | 0    | —         |
 | High     | 0     | 0     | 0    | —         |
 | Medium   | 1     | 1     | 0    | —         |
-| Low      | 6     | 3     | 0    | 3         |
-| Info     | 3     | 0     | 0    | 3         |
+| Low      | 9     | 4     | 0    | 5         |
+| Info     | 4     | 1     | 0    | 3         |
 
 | ID      | Severity | Finding                                                                         | Status    |
 | ------- | -------- | ------------------------------------------------------------------------------- | --------- |
@@ -56,6 +60,10 @@ src/registry/ProtocolRegistry.sol     misc/MoneyFeeCollector.sol
 | A7-I-01 | Info     | Principal-only close and `pullFromTreasury` draw on the same treasury eUSD      | Acknowledged |
 | A7-I-02 | Info     | `setChainlinkConfig` does not bound `bandBps` to `BPS`                          | Acknowledged |
 | A7-I-03 | Info     | `buyBack` forwards the full held $MONEY, not just the swap output               | By design |
+| A7-L-07 | Low      | Off-hours redemption can use an in-house price up to `mintPriceMaxAge` old      | Acknowledged |
+| A7-L-08 | Low      | `StakingVault` rewards compound on every touch, above `aprBps`                  | Acknowledged |
+| A7-L-09 | Low      | Repayments retired principal before fees, shrinking the fee base                | Fixed     |
+| A7-I-04 | Info     | Deploy scripts lack unit and chain guards (vault script, manager amounts/age)   | Fixed     |
 
 ---
 
@@ -211,6 +219,72 @@ note (Fable, 6 agents): a compromised keeper can route the per-interval input sl
 through permissive `swapData` with `minMoneyOut = 1`; the header documents that slice as the
 keeper's damage cap, which compounds to most of the held input over a day. Keep `burnInterval`
 and `burnSpendBps` conservative.
+
+## Final pass (Opus 5.5, 2026-11-01)
+
+One more solidity-auditor run (Opus 5.5 only, one pass, skill unchanged) on `deploy-contracts`
+`67bff71`, after the fixes above. Scope: `src/` with interfaces, `misc/MoneyFeeCollector.sol`,
+`script/robinhood/*.s.sol`. 12/12 agents returned; two (economic-security, trust-gap) finished
+partially after model safeguard stops, and their files were covered by other agents. Every other
+item restated an ID already booked here or in Reports 4–5.
+
+### A7-L-07 — Off-hours redemption can use an in-house price up to `mintPriceMaxAge` old (Low, Acknowledged)
+
+Raised by 3 agents as the selective-push variant, plus 4 agents on the redeem side. After A7-M-01,
+`redeem` accepts any price no older than `mintPriceMaxAge`. Off-hours the stored price is the last
+in-house push, so a redeemer can redeem against it after the market has moved. `updatePrice` is
+permissionless and accepts any valid signature newer than the stored one (never an older one), and
+the oracle service publishes each signed price, so a caller can also push a signed price from
+between two keeper pushes and redeem in the same transaction. Either way the transfer from head
+debtors is capped by the token's price move inside one push interval, and by the anchor band.
+
+**Acknowledged (2026-11-01):** the go-live batch sets the anchor band on every ticker, and large
+off-hours moves within one push interval are rare for the listed collateral. If they become
+material, the keeper pushes more often; no contract change. Same class as the in-session residual
+accepted under A7-M-01.
+
+### A7-L-08 — `StakingVault` rewards compound on every touch (Low, Acknowledged)
+
+Raised by 7 agents. `_accrue` adds `earned` to `_staked`, and `_pending` charges
+`aprBps × min(_staked, cap)`, so below the cap rewards earn rewards. `deposit(0)`, `fund(1)` and
+every deposit or withdraw are touches, so the effective rate trends to `e^apr − 1` (10% APR touched
+every block pays about 10.52%). The reserve pays the difference; no user loses funds. Above the cap
+the drip is fixed and nothing compounds.
+
+**Acknowledged (2026-11-01):** the extra comes out of the admin-funded reserve, not from users, and
+is a few percent of the reward budget; size the reserve and APR with the compounded rate in mind.
+
+### A7-L-09 — Repayments retired principal before fees, shrinking the fee base (Low, Fixed 2026-11-01)
+
+Raised by 4 agents; a side effect of the A7-L-01 fix. The fee is charged on `debt - feesAccrued`,
+but `repay`, `liquidate` and `_redeemFrom` only clamped `feesAccrued` down to the new debt, so a
+repayment reduced principal first. Example at 8%: 1,000 debt grows to 1,080 (80 fee); the borrower
+repays 80 and still owes 1,000, but year 2 charges 8% on 920 (73.6, not 80). The treasury lost 8% a
+year of every fee a borrower had already repaid while the position stayed open.
+
+**Fix:** every debt reduction retires fees first — `p.feesAccrued -= Math.min(repaid,
+p.feesAccrued)` in `repay`, `liquidate` and `_redeemFrom`. `feesAccrued <= debt` still holds. Test:
+`test_repay_retiresFeesFirst` (replaces `test_closePrincipalOnly_repayClampsFeesAccrued`).
+
+### A7-I-04 — Deploy scripts lack unit and chain guards (Info, Fixed 2026-11-01)
+
+Raised by 6 agents each. `DeployStakingVaultRobinhood` had no `block.chainid` check and no range
+check on the APR or the 18-decimal cap; `DeployEusdManagerRobinhood` did not bound `MIN_DEBT`,
+`DEBT_CEILING` or `MINT_PRICE_MAX_AGE`, so a unit typo (milliseconds for seconds) would silently
+turn off the A7-M-01 / A7-L-02 fresh-price gate. Admin setters could correct each value later.
+
+**Fix:** the vault script requires chain 4663 and range-checks APR and cap; the manager script
+range-checks `minDebt`, `debtCeiling` and `mintPriceMaxAge`. Scripts only.
+
+### Leads from the final pass
+
+- `ChainlinkOracleVerifier._chainlink` only divides by `uiMultiplier()`; a ticker priced by a
+  share-price feed (not a token feed) would be valued at the share price. Check per ticker.
+- `CheckChainlinkFeedsRobinhood` checks a fixed feed list; run it against every configured ticker.
+- `MoneyFeeCollector.collectFees` is permissionless and splits pending fees at the
+  `burnShareBps` in force at collect time, so a caller can order it around `setBurnShareBps`.
+  Protocol-only impact.
+- `StakingVault.rewardRate` / `currentAprBps` read stored `_staked` without pending rewards (UI only).
 
 ---
 

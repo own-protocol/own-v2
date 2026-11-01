@@ -72,8 +72,8 @@ interface IEUSDManager {
     /// @param collateral       Collateral held (token units, 18 decimals).
     /// @param debt             eUSD debt including fees accrued up to `feeIndexSnapshot` (18 decimals).
     /// @param feeIndexSnapshot Global fee index (bps-seconds) at the last accrual.
-    /// @param feesAccrued      Stability fees folded into `debt` and not yet repaid, clamped to
-    ///                         `debt` whenever debt shrinks (18 decimals). Bounds the fee portion
+    /// @param feesAccrued      Stability fees folded into `debt` and not yet repaid (18 decimals).
+    ///                         Every debt reduction retires these fees first. Bounds the fee portion
     ///                         settleable from collateral in {closePositionPrincipalOnly}.
     struct Position {
         uint256 collateral;
