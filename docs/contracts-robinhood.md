@@ -5,8 +5,8 @@
 
 Deployed 2026-11-01 from branch `deploy-contracts` commit `54e39f1` (forge 1.3.5, solc 0.8.28,
 optimizer 200, cancun) with `DeployCoreRobinhood.s.sol`, `DeployEusdManagerRobinhood.s.sol` and
-`DeployStakingVaultRobinhood.s.sol`. Older contracts are listed in [legacy-contracts-rh.md](legacy-contracts-rh.md); their
-code is on the `legacy-own-v2` branch.
+`DeployStakingVaultRobinhood.s.sol`. Older contracts are listed in
+[legacy-contracts-rh.md](legacy-contracts-rh.md); their code is on the `legacy-own-v2` branch.
 
 ## Contracts
 
