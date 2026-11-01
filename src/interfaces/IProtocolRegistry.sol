@@ -10,26 +10,32 @@ import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol"
 ///         own transfer is two-step and delayed.
 interface IProtocolRegistry is IAccessControl {
     /// @notice Emitted when the oracle changes.
+    /// @param oracle New oracle address.
     event OracleSet(address indexed oracle);
 
     /// @notice Emitted when the treasury changes.
+    /// @param treasury New treasury address.
     event TreasurySet(address indexed treasury);
 
     /// @notice A required address was the zero address.
     error ZeroAddress();
 
     /// @notice The price oracle (ChainlinkOracleVerifier) read by the managers.
+    /// @return Oracle address.
     function oracle() external view returns (address);
 
-    /// @notice The protocol treasury: receives stability fees.
+    /// @notice The protocol treasury: receives stability fees and funds staking rewards.
+    /// @return Treasury address.
     function treasury() external view returns (address);
 
     /// @notice Set the price oracle (protocol admin).
+    /// @param oracle_ New oracle address.
     function setOracle(
         address oracle_
     ) external;
 
     /// @notice Set the treasury (protocol admin).
+    /// @param treasury_ New treasury address.
     function setTreasury(
         address treasury_
     ) external;

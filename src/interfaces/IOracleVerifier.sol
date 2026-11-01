@@ -39,14 +39,17 @@ interface IOracleVerifier {
     /// @param maxDeviation  Allowed deviation (BPS).
     error PriceDeviationExceeded(bytes32 asset, uint256 reportedPrice, uint256 lastPrice, uint256 maxDeviation);
     /// @notice Price was signed by an address that is not an authorized signer.
+    /// @param signer Recovered signer.
     error UnauthorizedSigner(address signer);
     /// @notice Price is zero.
     error ZeroPrice();
     /// @notice A required address was the zero address.
     error ZeroAddress();
     /// @notice No usable price exists for the asset.
+    /// @param asset Asset ticker.
     error PriceNotAvailable(bytes32 asset);
     /// @notice The asset has no oracle config.
+    /// @param asset Asset ticker.
     error OracleConfigNotSet(bytes32 asset);
     /// @notice Caller is not the admin.
     error OnlyAdmin();
@@ -75,16 +78,20 @@ interface IOracleVerifier {
     // ──────────────────────────────────────────────────────────
 
     /// @notice Add an authorized oracle signer (ADMIN).
+    /// @param signer Signer address.
     function addSigner(
         address signer
     ) external;
 
     /// @notice Remove an authorized oracle signer (OPERATOR).
+    /// @param signer Signer address.
     function removeSigner(
         address signer
     ) external;
 
     /// @notice Whether `account` is an authorized signer.
+    /// @param account Address to check.
+    /// @return Whether it is a signer.
     function isSigner(
         address account
     ) external view returns (bool);

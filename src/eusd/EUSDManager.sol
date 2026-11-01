@@ -29,7 +29,9 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
     //  Types
     // ──────────────────────────────────────────────────────────
 
-    /// @dev Sorted-list node. prev points toward the head (riskier), next toward the tail (safer).
+    /// @dev Sorted-list links of one position.
+    /// @param prev Neighbor toward the head (riskier).
+    /// @param next Neighbor toward the tail (safer).
     struct ListNode {
         address prev;
         address next;
@@ -42,7 +44,10 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
     /// @dev Stability-fee year basis (simple interest).
     uint256 private constant YEAR = 365 days;
 
+    /// @dev ProtocolRegistry role for configuration and upgrades.
     bytes32 private constant ADMIN = keccak256("ADMIN");
+
+    /// @dev ProtocolRegistry role for the mint pause.
     bytes32 private constant OPERATOR = keccak256("OPERATOR");
 
     // ──────────────────────────────────────────────────────────
@@ -56,6 +61,7 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
     /// @dev The eUSD token minted and burned by this manager. Set once at initialization.
     IEUSD private _eusd;
 
+    /// @dev Current risk parameters (see {riskParams}).
     RiskParams private _riskParams;
 
     /// @inheritdoc IEUSDManager
@@ -67,9 +73,13 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
     /// @inheritdoc IEUSDManager
     mapping(address => uint256) public override totalCollateral;
 
+    /// @dev Collateral token => its configuration.
     mapping(address => CollateralConfig) private _collateralConfigs;
+
+    /// @dev Collateral token => owner => position.
     mapping(address => mapping(address => Position)) private _positions;
 
+    /// @dev Collateral token => owner => sorted-list links.
     mapping(address => mapping(address => ListNode)) private _nodes;
 
     /// @inheritdoc IEUSDManager
@@ -83,17 +93,21 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
 
     /// @dev Stability fee index: cumulative `stabilityFeeBps` × elapsed seconds.
     uint256 private _feeIndex;
+
+    /// @dev Timestamp `_feeIndex` was last settled.
     uint256 private _feeIndexUpdated;
 
     // ──────────────────────────────────────────────────────────
     //  Modifiers
     // ──────────────────────────────────────────────────────────
 
+    /// @dev Reverts unless the caller holds ADMIN in the registry.
     modifier onlyAdmin() {
         if (!registry.hasRole(ADMIN, msg.sender)) revert OnlyAdmin();
         _;
     }
 
+    /// @dev Reverts unless the caller holds OPERATOR in the registry.
     modifier onlyOperator() {
         if (!registry.hasRole(OPERATOR, msg.sender)) revert OnlyOperator();
         _;
@@ -240,6 +254,8 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
     ///      `feesFromCollateral`, `feesAccrued` is settled with collateral of equal value at a fresh
     ///      price (rounded up, against the owner) sent to the treasury, whose eUSD is burned by the
     ///      same amount; the caller burns the rest. Settlement is capped at the collateral value.
+    /// @param collateral         Collateral token of the caller's position.
+    /// @param feesFromCollateral Whether to settle `feesAccrued` from collateral instead of eUSD.
     function _close(address collateral, bool feesFromCollateral) private {
         Position storage p = _accrue(collateral, msg.sender);
         uint256 debt = p.debt;
@@ -447,6 +463,8 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
     // ──────────────────────────────────────────────────────────
 
     /// @dev Revert unless the collateral has been added. Does not check `enabled`.
+    /// @param collateral Collateral token.
+    /// @return cfg The collateral's configuration.
     function _requireCollateral(
         address collateral
     ) private view returns (CollateralConfig storage cfg) {
@@ -465,6 +483,9 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
 
     /// @dev Fold a position's pending stability fee into its debt and mint it to the treasury.
     ///      EUSD has no transfer hooks, and every caller holds the reentrancy guard.
+    /// @param collateral Collateral token.
+    /// @param owner      Position owner.
+    /// @return p The position, with its debt brought up to date.
     function _accrue(address collateral, address owner) private returns (Position storage p) {
         _settleFeeIndex();
         p = _positions[collateral][owner];
@@ -486,6 +507,13 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
     ///      the redeemer gets at most $1 of collateral per eUSD. An underwater position only
     ///      redeems its collateral value and its residual leaves the list. The remaining debt is
     ///      either 0 or ≥ minDebt; a position where that leaves nothing to redeem returns zeros.
+    /// @param collateral Collateral token.
+    /// @param owner      Position owner.
+    /// @param price      Fresh collateral price (18 decimals).
+    /// @param maxAmount  Max debt to retire (18 decimals).
+    /// @param hint       Sorted-list insert hint for the re-sorted position.
+    /// @return repaid Debt retired (18 decimals).
+    /// @return seized Collateral taken (18 decimals).
     function _redeemFrom(
         address collateral,
         address owner,
@@ -523,6 +551,9 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
     }
 
     /// @dev Re-sort a position after a change. A position is listed iff it has debt and collateral.
+    /// @param collateral Collateral token.
+    /// @param owner      Position owner.
+    /// @param hint       Sorted-list insert hint.
     function _reindex(address collateral, address owner, address hint) private {
         if (_isListed(collateral, owner)) _removeNode(collateral, owner);
         Position storage p = _positions[collateral][owner];
@@ -530,6 +561,9 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
     }
 
     /// @dev List membership, read from the links (the head, or has a predecessor).
+    /// @param collateral Collateral token.
+    /// @param owner      Position owner.
+    /// @return Whether the position is in the sorted list.
     function _isListed(address collateral, address owner) private view returns (bool) {
         return listHead[collateral] == owner || _nodes[collateral][owner].prev != address(0);
     }
@@ -537,6 +571,9 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
     /// @dev Insert `owner` keeping ascending nominal-ratio order (head = riskiest). Equal ratios
     ///      insert after existing nodes. `hint` is the prospective predecessor; an unusable hint
     ///      falls back to a walk from the head.
+    /// @param collateral Collateral token.
+    /// @param owner      Position owner to insert.
+    /// @param hint       Expected predecessor (address(0) = walk from the head).
     function _insertNode(address collateral, address owner, address hint) private {
         Position storage p = _positions[collateral][owner];
         uint256 ratio = Math.mulDiv(p.collateral, PRECISION, p.debt);
@@ -567,6 +604,8 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
     }
 
     /// @dev Unlink `owner` from the sorted list. Callers guarantee membership.
+    /// @param collateral Collateral token.
+    /// @param owner      Position owner to remove.
     function _removeNode(address collateral, address owner) private {
         ListNode memory node = _nodes[collateral][owner];
         if (node.prev == address(0)) listHead[collateral] = node.next;
@@ -582,11 +621,14 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
     // ──────────────────────────────────────────────────────────
 
     /// @dev The oracle, resolved through the registry.
+    /// @return The current oracle.
     function _oracle() private view returns (IOracleVerifier) {
         return IOracleVerifier(registry.oracle());
     }
 
     /// @dev Oracle price no older than `mintPriceMaxAge`. A future timestamp counts as current.
+    /// @param ticker Oracle ticker.
+    /// @return price Price (18 decimals).
     function _freshPrice(
         bytes32 ticker
     ) private view returns (uint256 price) {
@@ -599,6 +641,13 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
     /// @dev Collateral seized for repaying `repaid`: worth repaid × (1 + bonus), rounded down and
     ///      capped at `coll`. A partial liquidation is also capped at `coll × repaid / debt`, so the
     ///      remaining position's ratio never falls.
+    /// @param coll      Position collateral (18 decimals).
+    /// @param debt      Position debt (18 decimals).
+    /// @param repaid    Debt being repaid (18 decimals).
+    /// @param price     Collateral price (18 decimals).
+    /// @param fullClose Whether the liquidation retires the whole debt.
+    /// @return seized Collateral paid to the liquidator (18 decimals).
+    /// @return refund Surplus collateral returned to the owner on a full close (18 decimals).
     function _seizure(
         uint256 coll,
         uint256 debt,
@@ -617,6 +666,10 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
     }
 
     /// @dev Collateral ratio in BPS. Floor rounding: measured ratios err against the debtor.
+    /// @param coll  Collateral (18 decimals).
+    /// @param debt  Debt (18 decimals).
+    /// @param price Collateral price (18 decimals).
+    /// @return Ratio in BPS (type(uint256).max when debt is 0).
     function _ratioBps(uint256 coll, uint256 debt, uint256 price) private pure returns (uint256) {
         if (debt == 0) return type(uint256).max;
         return Math.mulDiv(Math.mulDiv(coll, price, PRECISION), BPS, debt);
@@ -624,6 +677,9 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
 
     /// @dev Require mcr ≥ threshold (a fresh mint is never liquidatable) and threshold ≥ 1 + bonus
     ///      (a liquidation at the threshold is solvent).
+    /// @param mcrBps                  Min collateral ratio (BPS).
+    /// @param liquidationThresholdBps Liquidation threshold (BPS).
+    /// @param liquidationBonusBps     Liquidation bonus (BPS).
     function _validateRatios(uint16 mcrBps, uint16 liquidationThresholdBps, uint16 liquidationBonusBps) private pure {
         if (mcrBps < liquidationThresholdBps || uint256(liquidationThresholdBps) < BPS + liquidationBonusBps) {
             revert InvalidRiskParams();

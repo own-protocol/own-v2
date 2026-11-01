@@ -11,8 +11,8 @@ import {IERC165} from "@openzeppelin/contracts/utils/introspection/IERC165.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 
 /// @title EUSD — CDP stablecoin (ERC-20 + ERC-2612 Permit + ERC-7802 crosschain)
-/// @notice Minimal stablecoin token. CDP supply changes go through MINTER_ROLE (held only by the
-///         EUSDManager; burns are allowance-free so the manager can retire debt directly from the
+/// @notice Minimal stablecoin token. CDP supply changes go through MINTER_ROLE (held by the
+///         EUSDManagers; burns are allowance-free so a manager can retire debt directly from the
 ///         payer). Crosschain transfers go through the ERC-7802 surface, authorized purely by
 ///         per-bridge rolling rate limits — a transport with zero limits can do nothing, and a
 ///         compromised one is bounded to its per-window limit and de-authorized by zeroing it.
@@ -32,6 +32,7 @@ contract EUSD is IEUSD, ERC20Permit, AccessControl {
     /// @dev Defaults to 0 (fail-closed): no net inbound bridging until governance raises it.
     uint256 public override maxNetBridgedIn;
 
+    /// @dev Bridge => its rate-limit state.
     mapping(address => BridgeConfig) private _bridges;
 
     /// @param admin Initial holder of DEFAULT_ADMIN_ROLE (grants/revokes MINTER_ROLE, sets
@@ -44,7 +45,7 @@ contract EUSD is IEUSD, ERC20Permit, AccessControl {
     }
 
     // ──────────────────────────────────────────────────────────
-    //  Supply (MINTER_ROLE — the EUSDManager)
+    //  Supply (MINTER_ROLE — the EUSDManagers)
     // ──────────────────────────────────────────────────────────
 
     /// @inheritdoc IEUSD
@@ -127,6 +128,8 @@ contract EUSD is IEUSD, ERC20Permit, AccessControl {
 
     /// @dev Settle the caller's rolling limits and consume `amount` from the mint or burn side.
     ///      Non-bridges have zero capacity and revert here — limits are the authorization.
+    /// @param isMint Whether to consume mint (true) or burn (false) capacity.
+    /// @param amount Amount to consume (18 decimals).
     function _consumeLimit(bool isMint, uint256 amount) private {
         BridgeConfig storage cfg = _bridges[msg.sender];
         uint256 mintAvail = _available(cfg.mintRemaining, cfg.mintMaxLimit, cfg.lastUpdate);
@@ -144,6 +147,10 @@ contract EUSD is IEUSD, ERC20Permit, AccessControl {
     }
 
     /// @dev Linear refill toward `maxLimit` over LIMIT_DURATION since `lastUpdate`.
+    /// @param remaining  Remaining capacity at `lastUpdate` (18 decimals).
+    /// @param maxLimit   Per-window limit (18 decimals).
+    /// @param lastUpdate Timestamp the remaining capacity was settled.
+    /// @return Available capacity now (18 decimals).
     function _available(uint256 remaining, uint256 maxLimit, uint256 lastUpdate) private view returns (uint256) {
         if (maxLimit == 0) return 0;
         uint256 avail = remaining + maxLimit * (block.timestamp - lastUpdate) / LIMIT_DURATION;

@@ -7,9 +7,9 @@ import {IERC20Permit} from "@openzeppelin/contracts/token/ERC20/extensions/IERC2
 
 /// @title IEUSD — CDP stablecoin token
 /// @notice Minimal ERC-20 + ERC-2612 (Permit) stablecoin. CDP supply changes go through
-///         MINTER_ROLE — in production exactly one holder: the EUSDManager. Burns are
-///         allowance-free and restricted to the same role, so the manager can retire debt
-///         (repay / redeem / liquidate) directly from the payer's balance.
+///         MINTER_ROLE, held by the EUSDManagers. Burns are allowance-free and restricted to the
+///         same role, so a manager can retire debt (repay, redeem, liquidate) directly from the
+///         payer's balance.
 ///
 ///         Crosschain transfers use the ERC-7802 surface ({crosschainMint}/{crosschainBurn}),
 ///         gated by per-bridge rolling rate limits rather than a role: a bridge's limits ARE its
@@ -18,7 +18,7 @@ import {IERC20Permit} from "@openzeppelin/contracts/token/ERC20/extensions/IERC2
 ///         set by the token admin; zeroing them instantly de-authorizes a compromised transport.
 ///
 ///         Accounting: with bridging, the per-chain CDP invariant becomes
-///         `totalSupply() == EUSDManager.totalDebt + netBridgedIn()`; the strict
+///         `totalSupply() == Σ EUSDManager.totalDebt + netBridgedIn()`; the strict
 ///         supply == debt equality holds only over the sum of all chains.
 interface IEUSD is IERC20, IERC20Permit, IERC7802 {
     // ──────────────────────────────────────────────────────────
@@ -79,34 +79,40 @@ interface IEUSD is IERC20, IERC20Permit, IERC7802 {
     //  Views
     // ──────────────────────────────────────────────────────────
 
-    /// @notice Role allowed to mint and burn. Held only by the EUSDManager.
+    /// @notice Role allowed to mint and burn. Held by the EUSDManagers.
+    /// @return Role id.
     function MINTER_ROLE() external view returns (bytes32);
 
-    /// @notice Rolling window over which bridge limits refill (seconds).
+    /// @notice Rolling window over which bridge limits refill.
+    /// @return Window length (seconds).
     function LIMIT_DURATION() external view returns (uint256);
 
     /// @notice A bridge's stored limit configuration (remaining values as of `lastUpdate`;
     ///         use {bridgeMintAvailable}/{bridgeBurnAvailable} for live values).
     /// @param bridge Bridge address.
+    /// @return The stored config.
     function bridgeConfig(
         address bridge
     ) external view returns (BridgeConfig memory);
 
-    /// @notice A bridge's currently available mint capacity, including refill (18 decimals).
+    /// @notice A bridge's currently available mint capacity, including refill.
     /// @param bridge Bridge address.
+    /// @return Capacity (18 decimals).
     function bridgeMintAvailable(
         address bridge
     ) external view returns (uint256);
 
-    /// @notice A bridge's currently available burn capacity, including refill (18 decimals).
+    /// @notice A bridge's currently available burn capacity, including refill.
     /// @param bridge Bridge address.
+    /// @return Capacity (18 decimals).
     function bridgeBurnAvailable(
         address bridge
     ) external view returns (uint256);
 
     /// @notice Net eUSD bridged onto this chain: Σ crosschainMint − Σ crosschainBurn. Negative on
     ///         a net-exporter chain. Monitoring invariant:
-    ///         totalSupply() == EUSDManager.totalDebt + netBridgedIn().
+    ///         totalSupply() == Σ EUSDManager.totalDebt + netBridgedIn().
+    /// @return Net bridged-in amount (18 decimals, signed).
     function netBridgedIn() external view returns (int256);
 
     /// @notice Hard ceiling on {netBridgedIn} — the maximum bridged eUSD this chain may hold above
@@ -116,6 +122,7 @@ interface IEUSD is IERC20, IERC20Permit, IERC7802 {
     ///         home/CDP chain stays fully backed by construction while destination chains get an
     ///         explicit, capped allowance. Re-importing previously-exported eUSD is always allowed
     ///         (it only moves netBridgedIn back toward 0).
+    /// @return Ceiling (18 decimals).
     function maxNetBridgedIn() external view returns (uint256);
 
     // ──────────────────────────────────────────────────────────

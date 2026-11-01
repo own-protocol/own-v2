@@ -76,11 +76,13 @@ contract MoneyFeeCollector is IMoneyFeeCollector, Initializable, UUPSUpgradeable
     //  Modifiers
     // ──────────────────────────────────────────────────────────
 
+    /// @dev Reverts unless the caller is the owner.
     modifier onlyOwner() {
         if (msg.sender != owner) revert NotOwner();
         _;
     }
 
+    /// @dev Reverts unless the caller is an enabled keeper.
     modifier onlyKeeper() {
         if (!isKeeper[msg.sender]) revert NotKeeper();
         _;
@@ -325,6 +327,8 @@ contract MoneyFeeCollector is IMoneyFeeCollector, Initializable, UUPSUpgradeable
 
     /// @dev Split one collected amount: the buy-back share stays in this contract and the rest is
     ///      paid to the payees.
+    /// @param token  Collected asset (address(0) = native coin).
+    /// @param amount Amount collected.
     function _split(address token, uint256 amount) private {
         if (amount == 0) return;
 
@@ -354,6 +358,7 @@ contract MoneyFeeCollector is IMoneyFeeCollector, Initializable, UUPSUpgradeable
 
     /// @dev Replace the payee set; shares must sum to exactly BPS. An empty set is allowed, but
     ///      collections then revert while the distribution share is nonzero.
+    /// @param newPayees New payee set.
     function _setPayees(
         Payee[] calldata newPayees
     ) private {

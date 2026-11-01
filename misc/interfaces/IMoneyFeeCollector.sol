@@ -43,36 +43,54 @@ interface IMoneyFeeCollector {
     event MoneyBoughtBack(address indexed tokenIn, uint256 amountIn, uint256 moneyOut);
 
     /// @notice The buy-back recipient was updated.
+    /// @param reserve New recipient.
     event ReserveSet(address indexed reserve);
 
     /// @notice The payee set was replaced.
+    /// @param payees New payee set.
     event PayeesSet(Payee[] payees);
 
     /// @notice The buy-back share was updated.
+    /// @param burnShareBps New share (BPS).
     event BurnShareSet(uint256 burnShareBps);
 
     /// @notice The share of the held balance spent per buy-back was updated.
+    /// @param burnSpendBps New share (BPS).
     event BurnSpendSet(uint256 burnSpendBps);
 
     /// @notice The minimum interval between buy-backs was updated.
+    /// @param burnInterval New interval (seconds).
     event BurnIntervalSet(uint256 burnInterval);
 
     /// @notice A keeper was enabled or disabled.
+    /// @param keeper  Keeper address.
+    /// @param allowed Whether it is enabled.
     event KeeperSet(address indexed keeper, bool allowed);
 
     /// @notice A swap target was allow-listed or removed.
+    /// @param target  Swap target.
+    /// @param allowed Whether it is allow-listed.
     event SwapTargetSet(address indexed target, bool allowed);
 
     /// @notice The fee escrow reference was updated.
+    /// @param escrow New escrow.
     event EscrowSet(address indexed escrow);
 
     /// @notice An owner-authorized arbitrary call was executed.
+    /// @param target Called contract.
+    /// @param value  Native coin sent.
+    /// @param data   Calldata.
+    /// @param result Returned data.
     event Executed(address indexed target, uint256 value, bytes data, bytes result);
 
     /// @notice Two-step ownership handover started.
+    /// @param currentOwner Current owner.
+    /// @param pendingOwner Proposed owner.
     event OwnershipTransferStarted(address indexed currentOwner, address indexed pendingOwner);
 
     /// @notice Ownership handover completed.
+    /// @param previousOwner Previous owner.
+    /// @param newOwner      New owner.
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
 
     // ──────────────────────────────────────────────────────────
@@ -110,6 +128,8 @@ interface IMoneyFeeCollector {
     error SwapFailed();
 
     /// @notice The swap produced less $MONEY than the keeper's stated minimum.
+    /// @param received $MONEY received.
+    /// @param minOut   Required minimum.
     error InsufficientMoneyOut(uint256 received, uint256 minOut);
 
     /// @notice Swap parameters must be empty when the buy-back balance is already $MONEY.
@@ -119,6 +139,7 @@ interface IMoneyFeeCollector {
     error ReserveNotSet();
 
     /// @notice A native-coin transfer to a payee failed.
+    /// @param to Payee address.
     error NativeTransferFailed(address to);
 
     /// @notice The owner-authorized arbitrary call reverted without returning a reason (a revert
@@ -161,47 +182,62 @@ interface IMoneyFeeCollector {
     // ──────────────────────────────────────────────────────────
 
     /// @notice Replace the distribution payee set. Shares must sum to exactly 10_000 BPS.
+    /// @param newPayees New payee set.
     function setPayees(
         Payee[] calldata newPayees
     ) external;
 
     /// @notice Set the share of every collection kept for buy-backs, in BPS (≤ 10_000).
+    /// @param newBurnShareBps New share (BPS).
     function setBurnShareBps(
         uint256 newBurnShareBps
     ) external;
 
     /// @notice Set the share of the held balance spent per buy-back, in BPS (≤ 10_000). Zero
     ///         pauses buy-backs.
+    /// @param newBurnSpendBps New share (BPS).
     function setBurnSpendBps(
         uint256 newBurnSpendBps
     ) external;
 
     /// @notice Set the minimum interval between buy-backs.
+    /// @param newBurnInterval New interval (seconds).
     function setBurnInterval(
         uint256 newBurnInterval
     ) external;
 
     /// @notice Enable or disable a buy-back keeper.
+    /// @param keeper  Keeper address.
+    /// @param allowed Whether to enable it.
     function setKeeper(address keeper, bool allowed) external;
 
     /// @notice Allow-list or remove a swap target for {buyBack}.
+    /// @param target  Swap target.
+    /// @param allowed Whether to allow-list it.
     function setSwapTarget(address target, bool allowed) external;
 
     /// @notice Set the address that receives bought-back $MONEY (the protocol reserve).
+    /// @param newReserve New recipient.
     function setReserve(
         address newReserve
     ) external;
 
     /// @notice Point the collector at a new fee escrow.
+    /// @param newEscrow New escrow.
     function setEscrow(
         address newEscrow
     ) external;
 
     /// @notice Execute an arbitrary call from this contract (owner). Used to manage this
     ///         contract's fee-recipient rights on Pons and to rescue mis-sent assets.
+    /// @param target Contract to call.
+    /// @param value  Native coin to send.
+    /// @param data   Calldata.
+    /// @return result Returned data.
     function execute(address target, uint256 value, bytes calldata data) external returns (bytes memory result);
 
     /// @notice Start the two-step ownership handover to `newOwner`.
+    /// @param newOwner Proposed owner.
     function transferOwnership(
         address newOwner
     ) external;
@@ -214,52 +250,70 @@ interface IMoneyFeeCollector {
     // ──────────────────────────────────────────────────────────
 
     /// @notice Contract owner (the protocol Safe).
+    /// @return Owner address.
     function owner() external view returns (address);
 
     /// @notice Address that can complete a started ownership handover.
+    /// @return Pending owner (address(0) = none).
     function pendingOwner() external view returns (address);
 
     /// @notice Fee escrow currently collected from.
+    /// @return Escrow address.
     function escrow() external view returns (address);
 
     /// @notice The $MONEY token bought back.
+    /// @return $MONEY token address.
     function money() external view returns (address);
 
     /// @notice Recipient of bought-back $MONEY (address(0) = not set; buy-backs revert).
+    /// @return Reserve address.
     function reserve() external view returns (address);
 
     /// @notice Share of every collection kept for buy-backs, in BPS.
+    /// @return Share (BPS).
     function burnShareBps() external view returns (uint256);
 
     /// @notice Share of the held balance spent per buy-back, in BPS. Zero = buy-backs paused.
+    /// @return Share (BPS).
     function burnSpendBps() external view returns (uint256);
 
     /// @notice The exact `tokenIn` amount the next {buyBack} would spend right now
     ///         (`burnSpendBps` of the currently held balance; address(0) = native coin).
+    /// @param tokenIn Held asset to spend (address(0) = native coin).
+    /// @return Amount the next buy-back would spend.
     function burnSpendAmount(
         address tokenIn
     ) external view returns (uint256);
 
     /// @notice Minimum interval between buy-backs.
+    /// @return Interval (seconds).
     function burnInterval() external view returns (uint256);
 
     /// @notice Timestamp of the last buy-back.
+    /// @return Unix seconds.
     function lastBurnAt() external view returns (uint256);
 
     /// @notice Whether `account` is an enabled buy-back keeper.
+    /// @param account Address to check.
+    /// @return Whether it is a keeper.
     function isKeeper(
         address account
     ) external view returns (bool);
 
     /// @notice Whether `target` is an allow-listed swap target.
+    /// @param target Address to check.
+    /// @return Whether it is allow-listed.
     function isSwapTarget(
         address target
     ) external view returns (bool);
 
     /// @notice The current payee set.
+    /// @return The payees.
     function payees() external view returns (Payee[] memory);
 
     /// @notice Fees claimable from the escrow (address(0) = native coin).
+    /// @param token Asset to query (address(0) = native coin).
+    /// @return Claimable amount.
     function claimableFees(
         address token
     ) external view returns (uint256);

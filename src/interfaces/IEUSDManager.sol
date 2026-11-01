@@ -215,13 +215,17 @@ interface IEUSDManager {
     /// @notice Caller is not the operator.
     error OnlyOperator();
     /// @notice The collateral token has not been added.
+    /// @param collateral Collateral token.
     error CollateralNotSupported(address collateral);
     /// @notice The collateral token is disabled for new positions and minting. Existing debtors
     ///         may still top up collateral.
+    /// @param collateral Collateral token.
     error CollateralDisabled(address collateral);
     /// @notice The collateral token was already added.
+    /// @param collateral Collateral token.
     error CollateralAlreadySupported(address collateral);
     /// @notice Collateral tokens must have 18 decimals.
+    /// @param decimals The token's decimals.
     error InvalidCollateralDecimals(uint8 decimals);
     /// @notice Risk parameter bounds are inconsistent (see setters for the exact constraints).
     error InvalidRiskParams();
@@ -248,14 +252,19 @@ interface IEUSDManager {
     /// @param available Position collateral (18 decimals).
     error InsufficientCollateral(uint256 requested, uint256 available);
     /// @notice The position has no debt.
+    /// @param collateral Collateral token.
+    /// @param owner      Position owner.
     error NoDebt(address collateral, address owner);
     /// @notice The position is empty (no collateral, no debt).
+    /// @param collateral Collateral token.
+    /// @param owner      Position owner.
     error EmptyPosition(address collateral, address owner);
     /// @notice The position's ratio is at or above the liquidation threshold.
     /// @param ratioBps     Current ratio (BPS).
     /// @param thresholdBps Liquidation threshold (BPS).
     error PositionNotLiquidatable(uint256 ratioBps, uint256 thresholdBps);
     /// @notice No debt exists to redeem against for this collateral.
+    /// @param collateral Collateral token.
     error NothingToRedeem(address collateral);
     /// @notice Redemption returned less collateral than the caller's floor.
     /// @param collateralOut    Collateral the redemption produced (18 decimals).
@@ -426,27 +435,33 @@ interface IEUSDManager {
     // ──────────────────────────────────────────────────────────
 
     /// @notice The eUSD token this manager mints and burns.
+    /// @return eUSD token address.
     function eusd() external view returns (address);
 
     /// @notice Current risk parameters.
+    /// @return The risk parameters.
     function riskParams() external view returns (RiskParams memory);
 
     /// @notice Configuration of a collateral token.
     /// @param collateral Collateral token address.
+    /// @return The collateral's configuration.
     function collateralConfig(
         address collateral
     ) external view returns (CollateralConfig memory);
 
     /// @notice Whether minting is currently paused.
+    /// @return Whether minting is paused.
     function mintPaused() external view returns (bool);
 
     /// @notice Total outstanding eUSD debt across this manager's positions (18 decimals). eUSD supply
     ///         equals the sum of this value over every manager.
+    /// @return Total debt (18 decimals).
     function totalDebt() external view returns (uint256);
 
     /// @notice Total collateral held for a token across all positions (18 decimals). Equals the
     ///         manager's token balance, excluding direct transfers.
     /// @param collateral Collateral token address.
+    /// @return Total collateral (18 decimals).
     function totalCollateral(
         address collateral
     ) external view returns (uint256);
@@ -454,38 +469,45 @@ interface IEUSDManager {
     /// @notice A position's stored state (debt as of its last accrual).
     /// @param collateral Collateral token address.
     /// @param owner      Position owner.
+    /// @return The stored position.
     function getPosition(address collateral, address owner) external view returns (Position memory);
 
     /// @notice A position's live debt including pending (unaccrued) stability fees.
     /// @param collateral Collateral token address.
     /// @param owner      Position owner.
+    /// @return Live debt (18 decimals).
     function currentDebt(address collateral, address owner) external view returns (uint256);
 
     /// @notice A position's live collateral ratio in BPS at the current oracle price, using live
     ///         debt. Returns type(uint256).max for debt-free positions.
     /// @param collateral Collateral token address.
     /// @param owner      Position owner.
+    /// @return Ratio in BPS.
     function collateralRatioBps(address collateral, address owner) external view returns (uint256);
 
     /// @notice Whether a position can be liquidated right now (live ratio < threshold).
     /// @param collateral Collateral token address.
     /// @param owner      Position owner.
+    /// @return Whether the position is liquidatable.
     function isLiquidatable(address collateral, address owner) external view returns (bool);
 
     /// @notice A position's nominal ratio — stored collateral × 1e18 / stored debt — the
     ///         sorted-list ordering key. Reverts for debt-free positions.
     /// @param collateral Collateral token address.
     /// @param owner      Position owner.
+    /// @return Nominal ratio (1e18 scale).
     function nominalRatio(address collateral, address owner) external view returns (uint256);
 
     /// @notice Riskiest position (lowest nominal ratio) for a collateral; address(0) if none.
     /// @param collateral Collateral token address.
+    /// @return Owner of the head position.
     function listHead(
         address collateral
     ) external view returns (address);
 
     /// @notice Safest position (highest nominal ratio) for a collateral; address(0) if none.
     /// @param collateral Collateral token address.
+    /// @return Owner of the tail position.
     function listTail(
         address collateral
     ) external view returns (address);
@@ -493,15 +515,18 @@ interface IEUSDManager {
     /// @notice Next (safer) position after `owner` in the sorted list; address(0) at the tail.
     /// @param collateral Collateral token address.
     /// @param owner      Position owner currently in the list.
+    /// @return The next owner.
     function listNext(address collateral, address owner) external view returns (address);
 
     /// @notice Previous (riskier) position before `owner`; address(0) at the head.
     /// @param collateral Collateral token address.
     /// @param owner      Position owner currently in the list.
+    /// @return The previous owner.
     function listPrev(address collateral, address owner) external view returns (address);
 
     /// @notice Number of listed positions (debt and collateral) for a collateral.
     /// @param collateral Collateral token address.
+    /// @return Number of listed positions.
     function listSize(
         address collateral
     ) external view returns (uint256);
@@ -510,9 +535,11 @@ interface IEUSDManager {
     ///         `ratio` (address(0) = new head). Walks the list from the head.
     /// @param collateral Collateral token address.
     /// @param ratio      Nominal ratio of the position being (re)inserted (1e18 scale).
+    /// @return The owner to pass as `hint`.
     function findInsertHint(address collateral, uint256 ratio) external view returns (address);
 
     /// @notice Global stability-fee index (bps-seconds), including time elapsed since the last
     ///         settlement.
+    /// @return Fee index (BPS × seconds).
     function globalFeeIndex() external view returns (uint256);
 }

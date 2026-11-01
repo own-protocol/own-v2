@@ -99,19 +99,24 @@ interface IStakingVault is IERC4626 {
     //  Views
     // ──────────────────────────────────────────────────────────
 
-    /// @notice Target APR in BPS.
+    /// @notice Target APR.
+    /// @return APR in BPS.
     function aprBps() external view returns (uint256);
 
-    /// @notice Staked amount (asset units) that earns the full APR.
+    /// @notice Staked amount that earns the full APR.
+    /// @return Cap in asset units.
     function cap() external view returns (uint256);
 
     /// @notice Unspent reward reserve, net of rewards dripped since the last update.
+    /// @return Reserve in asset units.
     function rewardReserve() external view returns (uint256);
 
-    /// @notice Current drip in asset units per second.
+    /// @notice Current reward drip.
+    /// @return Asset units per second.
     function rewardRate() external view returns (uint256);
 
     /// @notice APR stakers currently earn in BPS: `aprBps` up to the cap, lower above it, 0 when
     ///         the reserve is empty.
+    /// @return APR in BPS.
     function currentAprBps() external view returns (uint256);
 }
