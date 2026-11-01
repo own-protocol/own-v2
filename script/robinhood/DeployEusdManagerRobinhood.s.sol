@@ -8,6 +8,7 @@ import {IEUSDManager} from "../../src/interfaces/IEUSDManager.sol";
 import {IProtocolRegistry} from "../../src/interfaces/IProtocolRegistry.sol";
 
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
+import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 
 /// @title DeployEusdManagerRobinhood — one EUSDManager proxy for a collateral risk group
 /// @notice Deploys an EUSDManager proxy minting the existing eUSD, with risk params read from env.
@@ -23,19 +24,25 @@ import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.s
 ///   forge script script/robinhood/DeployEusdManagerRobinhood.s.sol --rpc-url robinhood --broadcast \
 ///     --verify --verifier blockscout --verifier-url https://robinhoodchain.blockscout.com/api/
 contract DeployEusdManagerRobinhood is Script {
+    uint256 constant ROBINHOOD_CHAIN_ID = 4663;
+
     function run() external returns (address manager, address implementation) {
+        require(block.chainid == ROBINHOOD_CHAIN_ID, "RPC is not Robinhood Chain (4663)");
         IProtocolRegistry registry = IProtocolRegistry(vm.envAddress("PROTOCOL_REGISTRY_ROBINHOOD"));
         address eusd = vm.envAddress("EUSD_ROBINHOOD");
 
         IEUSDManager.RiskParams memory params = IEUSDManager.RiskParams({
-            mcrBps: uint16(vm.envUint("MCR_BPS")),
-            liquidationThresholdBps: uint16(vm.envUint("LIQ_THRESHOLD_BPS")),
-            liquidationBonusBps: uint16(vm.envUint("LIQ_BONUS_BPS")),
-            stabilityFeeBps: uint16(vm.envUint("STABILITY_FEE_BPS")),
+            mcrBps: SafeCast.toUint16(vm.envUint("MCR_BPS")),
+            liquidationThresholdBps: SafeCast.toUint16(vm.envUint("LIQ_THRESHOLD_BPS")),
+            liquidationBonusBps: SafeCast.toUint16(vm.envUint("LIQ_BONUS_BPS")),
+            stabilityFeeBps: SafeCast.toUint16(vm.envUint("STABILITY_FEE_BPS")),
             debtCeiling: vm.envUint("DEBT_CEILING"),
             minDebt: vm.envUint("MIN_DEBT"),
             mintPriceMaxAge: vm.envUint("MINT_PRICE_MAX_AGE")
         });
+        // Typo guards: ratios within 100%..500%, bonus and fee at most 20%.
+        require(params.mcrBps <= 50_000 && params.liquidationThresholdBps >= 10_000, "ratio out of range");
+        require(params.liquidationBonusBps <= 2000 && params.stabilityFeeBps <= 2000, "bonus/fee out of range");
 
         vm.startBroadcast(vm.envUint("DEPLOYER_PRIVATE_KEY_ROBINHOOD"));
         implementation = vm.envOr("EUSD_MANAGER_IMPL", address(0));

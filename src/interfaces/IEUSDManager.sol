@@ -5,11 +5,12 @@ pragma solidity 0.8.28;
 /// @notice Custodies collateral tokens (Robinhood stock tokens, WETH) and owns all CDP logic: open/adjust positions, mint eUSD against a FRESH oracle price, repay/close,
 ///         keeper liquidation at a fixed bonus, and riskiest-first redemption (peg anchor).
 ///
-///         Price-freshness asymmetry: risk-increasing actions (mint, collateral withdrawal
-///         against debt) require a price no older than `mintPriceMaxAge`; exits (repay, close,
-///         redeem, liquidate) work off-hours against the last oracle price with no age bound, so
-///         no holder or keeper is ever blocked by a market being closed. Redemptions transfer value
-///         only from the position owner whose debt they retire.
+///         Price freshness: mint, collateral withdrawal against debt, redemption and the fee leg
+///         of a principal-only close require a price no older than `mintPriceMaxAge`, so value
+///         never moves between users at a stale price. Repay and {closePosition} need no price,
+///         and liquidation uses the last oracle price with no age bound, so a debtor can always
+///         exit and an unsafe position can always be cleared while a market is closed.
+///         Redemptions transfer value only from the position owner whose debt they retire.
 ///
 ///         Positions with both debt and collateral are kept in a per-collateral sorted list ordered
 ///         by nominal ratio (collateral units per debt unit — price-invariant within one
@@ -24,7 +25,8 @@ pragma solidity 0.8.28;
 ///         the admin disables it; exits are never gated.
 ///
 ///         The stability fee is a fixed annual rate, accrued lazily per position from a global
-///         bps-seconds index (simple interest between touches). Accrued fees are added to position
+///         bps-seconds index and charged on principal only (`debt - feesAccrued`), so it is simple
+///         interest however often a position is touched. Accrued fees are added to position
 ///         debt and simultaneously minted as eUSD to the protocol treasury, so eUSD supply always
 ///         equals the sum of every manager's `totalDebt`.
 interface IEUSDManager {
@@ -36,10 +38,11 @@ interface IEUSDManager {
     /// @param mcrBps            Min collateral ratio to mint / withdraw collateral (BPS, e.g. 15000).
     /// @param liquidationThresholdBps Ratio below which a position is liquidatable (BPS, e.g. 13000).
     /// @param liquidationBonusBps Collateral bonus paid to the liquidator on top of repaid debt (BPS).
-    /// @param stabilityFeeBps   Fixed annual stability fee on outstanding debt (BPS, simple interest).
+    /// @param stabilityFeeBps   Fixed annual stability fee on outstanding principal (BPS, simple interest).
     /// @param debtCeiling       Global cap on total eUSD debt (18 decimals).
     /// @param minDebt           Minimum debt per position after mint/repay (18 decimals).
-    /// @param mintPriceMaxAge   Max oracle price age accepted for mint / withdraw (seconds). Bounds
+    /// @param mintPriceMaxAge   Max oracle price age accepted for mint / withdraw / redeem and the
+    ///                          fee leg of {closePositionPrincipalOnly} (seconds). Bounds
     ///                          the timestamp the oracle *reports*: the Chainlink leg reports
     ///                          `block.timestamp` for any answer younger than its `clFreshWindow`
     ///                          (deviation-bounded while live), so the effective bound on that leg is
@@ -317,9 +320,9 @@ interface IEUSDManager {
     ///         (rounded against the owner) goes to the treasury, and the matching eUSD — minted to
     ///         the treasury when the fees accrued — is burned from the treasury's balance,
     ///         keeping eUSD supply equal to total debt. Value-neutral for the treasury; the
-    ///         settleable amount is capped at the position's tracked `feesAccrued`. Works
-    ///         off-hours (no freshness bound). Reverts if the treasury
-    ///         balance cannot cover the burn — fall back to {closePosition}.
+    ///         settleable amount is capped at the position's tracked `feesAccrued`. With fees to
+    ///         settle, needs a price no older than `mintPriceMaxAge`. Reverts if the price is stale
+    ///         or the treasury balance cannot cover the burn — fall back to {closePosition}.
     /// @param collateral Collateral token of the position.
     function closePositionPrincipalOnly(
         address collateral
@@ -359,9 +362,10 @@ interface IEUSDManager {
 
     /// @notice Redeem eUSD for collateral at the oracle price — burn X eUSD, receive X
     ///         dollars' worth of collateral (rounded down), sourced from the riskiest positions
-    ///         first (list head). The peg anchor: always available, no freshness bound, never
-    ///         pausable. Each touched position's debt and collateral shrink at exactly 1:1 value,
-    ///         so its ratio improves (deleveraging). An underwater head only redeems its
+    ///         first (list head). The peg anchor: never pausable, but needs a price no older than
+    ///         `mintPriceMaxAge`, so redeemers can never take collateral at a stale price. Each
+    ///         touched position's debt and collateral shrink at exactly 1:1 value, so its ratio
+    ///         improves (deleveraging). An underwater head only redeems its
     ///         collateral-backed portion: the burn is capped at that collateral's value, the
     ///         unbacked debt residual stays on the owner's books off-list, and the walk continues.
     ///         A partial redemption never leaves a listed position below minDebt: the last touch
@@ -424,7 +428,8 @@ interface IEUSDManager {
         uint256 minDebt
     ) external;
 
-    /// @notice Set the price freshness bound for mint / withdraw. Must be non-zero. See the
+    /// @notice Set the price freshness bound for mint / withdraw / redeem / principal-only close.
+    ///         Must be non-zero. See the
     ///         `RiskParams.mintPriceMaxAge` note: on the Chainlink leg the effective bound is
     ///         `max(mintPriceMaxAge, oracle clFreshWindow)`.
     /// @param mintPriceMaxAge New max age (seconds).

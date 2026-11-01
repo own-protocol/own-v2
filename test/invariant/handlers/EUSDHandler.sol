@@ -161,6 +161,7 @@ contract EUSDHandler is CommonBase, StdCheats, StdUtils {
         (address actor, MockERC20 token, uint256 c) = _pick(actorSeed, collSeed);
         IEUSDManager.Position memory p = manager.getPosition(address(token), actor);
         if (p.collateral == 0 && p.debt == 0) return;
+        _pushFreshPrice(c);
         uint256 debt = manager.currentDebt(address(token), actor);
 
         // Mirror the contract's fee cap (pending fee folds into feesAccrued on entry, then
@@ -204,8 +205,9 @@ contract EUSDHandler is CommonBase, StdCheats, StdUtils {
     }
 
     function redeem(uint256 actorSeed, uint256 collSeed, uint256 amount) external {
-        (address actor, MockERC20 token,) = _pick(actorSeed, collSeed);
+        (address actor, MockERC20 token, uint256 c) = _pick(actorSeed, collSeed);
         if (manager.listHead(address(token)) == address(0)) return;
+        _pushFreshPrice(c);
         uint256 balance = eusd.balanceOf(actor);
         if (balance == 0) return;
 
@@ -244,7 +246,7 @@ contract EUSDHandler is CommonBase, StdCheats, StdUtils {
         token = _tokens[c];
     }
 
-    /// @dev Re-attest the current price at the current timestamp so mint-path freshness holds.
+    /// @dev Re-attest the current price at the current timestamp so freshness-gated paths hold.
     function _pushFreshPrice(
         uint256 c
     ) private {

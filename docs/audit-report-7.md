@@ -1,6 +1,6 @@
 # Own Protocol v2 — Audit Report & Remediation Status (Pass 7)
 
-**Branch:** `deploy-contracts` (audited at `main` `c5d94b1`) · **Last updated:** 2026-10-31
+**Branch:** `deploy-contracts` (audited at `main` `c5d94b1`) · **Last updated:** 2026-11-01
 
 Pre-deploy audit of the eUSD-only contract set: three **independent** solidity-auditor runs
 (12-agent pipeline each — 9 specialty attackers + 3 gap-hunters, one pass), one per model, merged
@@ -17,6 +17,9 @@ new in this pass; items that restate an earlier, already-decided ID are listed u
 
 The only item all three runs raised as a finding is A7-M-01 (redemption at an unbounded-age price
 with no redemption fee). No unprivileged fund-theft path survived verification.
+
+**Remediation (2026-11-01):** M-01, L-01, L-02 and L-05 are fixed on this branch; L-03, L-04,
+I-01 and I-02 are acknowledged with the operating rules below; L-06 and I-03 are by design.
 
 ### Scope
 
@@ -37,26 +40,26 @@ src/registry/ProtocolRegistry.sol     misc/MoneyFeeCollector.sol
 | -------- | ----- | ----- | ---- | --------- |
 | Critical | 0     | 0     | 0    | —         |
 | High     | 0     | 0     | 0    | —         |
-| Medium   | 1     | 0     | 1    | —         |
-| Low      | 6     | 0     | 5    | 1         |
-| Info     | 3     | 0     | 2    | 1         |
+| Medium   | 1     | 1     | 0    | —         |
+| Low      | 6     | 3     | 0    | 3         |
+| Info     | 3     | 0     | 0    | 3         |
 
 | ID      | Severity | Finding                                                                         | Status    |
 | ------- | -------- | ------------------------------------------------------------------------------- | --------- |
-| A7-M-01 | Medium   | `redeem` prices at an unbounded-age oracle price with no redemption fee         | Open      |
-| A7-L-01 | Low      | Permissionless `accrue` compounds the stability fee                             | Open      |
-| A7-L-02 | Low      | `closePositionPrincipalOnly` settles the fee at an unbounded-age price          | Open      |
-| A7-L-03 | Low      | In-house price cache survives reconfig / signer removal; replay after re-enable | Open      |
-| A7-L-04 | Low      | Full liquidation pushes the refund to the owner inline (blocked owner reverts)  | Open      |
-| A7-L-05 | Low      | Manager deploy script truncates risk params with `uint16(...)`                  | Open      |
+| A7-M-01 | Medium   | `redeem` prices at an unbounded-age oracle price with no redemption fee         | Fixed     |
+| A7-L-01 | Low      | Permissionless `accrue` compounds the stability fee                             | Fixed     |
+| A7-L-02 | Low      | `closePositionPrincipalOnly` settles the fee at an unbounded-age price          | Fixed     |
+| A7-L-03 | Low      | In-house price cache survives reconfig / signer removal; replay after re-enable | Acknowledged |
+| A7-L-04 | Low      | Full liquidation pushes the refund to the owner inline (blocked owner reverts)  | Acknowledged |
+| A7-L-05 | Low      | Manager deploy script truncates risk params with `uint16(...)`                  | Fixed     |
 | A7-L-06 | Low      | One OPERATOR role covers the oracle kill-switch, mint pause and reward top-ups  | By design |
-| A7-I-01 | Info     | Principal-only close and `pullFromTreasury` draw on the same treasury eUSD      | Open      |
-| A7-I-02 | Info     | `setChainlinkConfig` does not bound `bandBps` to `BPS`                          | Open      |
+| A7-I-01 | Info     | Principal-only close and `pullFromTreasury` draw on the same treasury eUSD      | Acknowledged |
+| A7-I-02 | Info     | `setChainlinkConfig` does not bound `bandBps` to `BPS`                          | Acknowledged |
 | A7-I-03 | Info     | `buyBack` forwards the full held $MONEY, not just the swap output               | By design |
 
 ---
 
-## A7-M-01 — `redeem` prices at an unbounded-age oracle price with no redemption fee (Medium, Open)
+## A7-M-01 — `redeem` prices at an unbounded-age oracle price with no redemption fee (Medium, Fixed 2026-11-01)
 
 Raised by all three runs (Opus 5.5: 6 agents, Fable: 5, Opus 4.8: 7 incl. the liquidation side).
 
@@ -81,13 +84,17 @@ pausable". That decision predates higher-volatility collateral and was sized for
 redemption-side transfer from head debtors, its dependence on `bandBps`, and the missing fee are
 not covered by it, so it is booked here.
 
-**Fix options (decision needed):** (a) a redemption fee at least the expected off-hours gap,
-paid to the redeemed owner or the treasury (Liquity-style base rate); (b) a redeem-specific max
-price age (fresh price required, so redemptions pause when feeds are silent — peg defense then
-relies on liquidation off-hours); (c) both, with a smaller fee. Liquidation stays on the
-Report 4 L-06 decision.
+**Fix:** `redeem` now prices through `_freshPrice` (no older than `mintPriceMaxAge`, the same
+bound as mint), so collateral is never redeemed at a stale price; with no fresh price the call
+reverts `StaleMintPrice` and waits. Off-hours redemption follows the in-house signer, whose
+anchor band is an admin config sized so it can track off-hours moves; a move beyond the band
+pauses redemption until prices catch up. A redemption fee was considered and not added: it only
+deters gaps smaller than the fee and loosens the peg floor by the same amount. The residual
+in-session gap (Chainlink deviation threshold, ~0.5% measured on-chain) is accepted; the manager is
+upgradeable if a fee is ever needed. Liquidation stays on the Report 4 L-06 decision. Tests:
+`test_redeem_stalePrice_reverts_thenFreshPriceWorks`; invariant handler re-posts the price.
 
-## A7-L-01 — Permissionless `accrue` compounds the stability fee (Low, Open)
+## A7-L-01 — Permissionless `accrue` compounds the stability fee (Low, Fixed 2026-11-01)
 
 Raised by Opus 5.5 (5 agents, as High) and Fable (2 agents). Verified.
 
@@ -100,10 +107,12 @@ there is no attacker profit — it is borrower griefing — but it contradicts t
 ("simple interest", and `accrue` "never changes what a position owes", `IEUSDManager.sol:27,329`).
 Distinct from A5-L-04 (ordering only).
 
-**Fix:** charge the fee on principal only — `Math.mulDiv(p.debt - p.feesAccrued, Δindex,
-BPS·YEAR)` — which makes the fee simple interest regardless of touch frequency. One line.
+**Fix:** `_accrue` and `currentDebt` charge the fee on principal only — `p.debt - p.feesAccrued`
+— so the fee is simple interest however often a position is touched. Debt that is only unpaid fees
+accrues no further fee. Test: `test_fee_frequentAccrue_doesNotCompound` (365 daily third-party
+touches match an untouched position to within rounding dust).
 
-## A7-L-02 — `closePositionPrincipalOnly` settles the fee at an unbounded-age price (Low, Open)
+## A7-L-02 — `closePositionPrincipalOnly` settles the fee at an unbounded-age price (Low, Fixed 2026-11-01)
 
 Raised by all three runs (Opus 5.5: 3 findings + 6 leads; Fable: 6 agents; Opus 4.8: lead).
 
@@ -114,10 +123,11 @@ price, so the treasury is always on the losing side of any staleness: fees 80 eU
 $600, market $540 → the treasury retires 80 eUSD for $72 of collateral. Bounded by
 `feesAccrued × gap` per position; contradicts "value-neutral for the treasury".
 
-**Fix:** use `_freshPrice(ticker)` on the `feesFromCollateral` branch only. `closePosition` stays
-the price-free exit that always works off-hours.
+**Fix:** the `feesFromCollateral` branch prices through `_freshPrice`. `closePosition` stays the
+price-free exit that always works off-hours, and a principal-only close with no fees to settle
+still needs no price. Test: `test_closePrincipalOnly_stalePrice_reverts_closePositionStillWorks`.
 
-## A7-L-03 — In-house price cache survives reconfig / signer removal; replay after re-enable (Low, Open)
+## A7-L-03 — In-house price cache survives reconfig / signer removal; replay after re-enable (Low, Acknowledged)
 
 Raised by Opus 5.5 (4 agents) and Fable (4 + 3 agents). Verified.
 
@@ -128,14 +138,16 @@ units, never re-band-checked — while it is newer than the Chainlink answer and
 revoked. Conversely, because `disableAsset` zeroes the stored timestamp, the replay floor
 (`timestamp <= existing.timestamp`) is lost: after a disable + re-config, anyone can resubmit an
 earlier public attestation that is still within staleness and band. All paths need an admin
-sequence and are bounded by `inhouseMaxStaleness` and the band, but exits read the price with no
-age bound (A7-M-01).
+sequence and are bounded by `inhouseMaxStaleness` and the band, but liquidation reads the price
+with no age bound (Report 4 L-06).
 
-**Fix (fresh verifier, so cheap now):** in `setChainlinkConfig` and `disableAsset`, zero the cached
-price but keep its timestamp as the replay floor (`_prices[asset].price = 0` instead of `delete`).
-Signer removal is covered operationally by following `removeSigner` with `setChainlinkConfig`.
+**Acknowledged (2026-11-01):** handled operationally, so the verifier code is unchanged. Replay only
+accepts signatures from signers that are still authorized and prices within `inhouseMaxStaleness`,
+and any newer attestation overwrites the cache and raises the replay floor. Rules: push a fresh
+price right after every `setChainlinkConfig` or re-enable; on a signer compromise run
+`removeSigner(old)`, `addSigner(new)` and push fresh prices for every ticker.
 
-## A7-L-04 — Full liquidation pushes the refund to the owner inline (Low, Open)
+## A7-L-04 — Full liquidation pushes the refund to the owner inline (Low, Acknowledged)
 
 Raised by Fable (6 agents) and Opus 5.5 (4 agents). Verified on-chain: Robinhood stock tokens
 (`Stock` implementation behind the BeaconProxy) gate `transfer` with `onlyNotBlocked(to)`.
@@ -146,10 +158,11 @@ On a full close, `liquidate` sends `refund` to the owner in the liquidator's cal
 last `minDebt` of a blocked owner's position cannot be cleared by liquidation (redemption can still
 reach it). Impact is capped at about `minDebt` of debt per blocked position.
 
-**Fix:** credit the refund to the owner as withdrawable collateral (pull pattern) instead of
-transferring it, or wrap the refund transfer so a failure leaves it in the position.
+**Acknowledged (2026-11-01):** rare (issuer blocklist), capped at about `minDebt` per position and
+still reachable by redemption; a pull-pattern refund would add a claim step for every liquidated
+owner. Revisit by upgrade if a blocked owner ever holds a position.
 
-## A7-L-05 — Manager deploy script truncates risk params with `uint16(...)` (Low, Open)
+## A7-L-05 — Manager deploy script truncates risk params with `uint16(...)` (Low, Fixed 2026-11-01)
 
 Raised by Fable (7 agents). Verified.
 
@@ -157,7 +170,8 @@ Raised by Fable (7 agents). Verified.
 `MCR_BPS=150000` (a typo for 15000) deploys as 18928, and `_validateRatios` only checks ordering.
 The script also lacks the `block.chainid` guard that `DeployCoreRobinhood` has.
 
-**Fix:** `SafeCast.toUint16` (or an explicit `require`) on each value and a chain-id check. Script
+**Fix:** each value goes through `SafeCast.toUint16` (out-of-range reverts), plus typo guards on
+ratio, bonus and fee ranges and the same `block.chainid` check as `DeployCoreRobinhood`. Script
 only; no contract change.
 
 ## A7-L-06 — One OPERATOR role covers the oracle kill-switch, mint pause and reward top-ups (Low, By design)
@@ -173,18 +187,19 @@ vault reserve, capped by the treasury's allowance.
 which would expose a separate rewards key too, so a dedicated role adds little.
 Containment: ADMIN re-configures, `withdrawReserve` returns over-pulled rewards.
 
-## A7-I-01 — Principal-only close and `pullFromTreasury` draw on the same treasury eUSD (Info, Open)
+## A7-I-01 — Principal-only close and `pullFromTreasury` draw on the same treasury eUSD (Info, Acknowledged)
 
 `closePositionPrincipalOnly` burns the settled fee from `registry.treasury()`
 (`EUSDManager.sol:283`), and `StakingVault.pullFromTreasury` pulls eUSD from the same address.
 If top-ups take the treasury's eUSD below outstanding `feesAccrued`, principal-only closes revert
 (documented; `closePosition` still works). Ops rule: keep the treasury's eUSD at or above the sum
-of open `feesAccrued`, or fund the seUSD vault from other eUSD.
+of open `feesAccrued`, or fund the seUSD vault from other eUSD. **Acknowledged** as that ops rule.
 
-## A7-I-02 — `setChainlinkConfig` does not bound `bandBps` to `BPS` (Info, Open)
+## A7-I-02 — `setChainlinkConfig` does not bound `bandBps` to `BPS` (Info, Acknowledged)
 
 `bandBps` is a `uint16` up to 65,535; at 10,000 or more any lower in-house price passes
-`_checkAnchorBand`. Admin typo plus signer compromise only. One-line `bandBps <= BPS` check.
+`_checkAnchorBand`. Admin typo plus signer compromise only. **Acknowledged:** the band is set in
+the reviewed go-live Safe batch; the verifier code stays unchanged.
 
 ## A7-I-03 — `buyBack` forwards the full held $MONEY, not just the swap output (Info, By design)
 

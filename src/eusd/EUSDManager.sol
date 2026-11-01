@@ -249,7 +249,7 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
 
     /// @dev Shared close: retire the full debt, delete the position, pay out the collateral.
     ///      With `feesFromCollateral`, the tracked fee portion is settled in kind — collateral of
-    ///      equal value (oracle price, ceil rounding against the debtor) to the treasury, whose
+    ///      equal value (fresh oracle price, ceil rounding against the debtor) to the treasury, whose
     ///      eUSD is burned in the same amount — and the caller burns only the remainder. An
     ///      underwater position caps the settlement at its collateral value; the caller pays the
     ///      rest in eUSD.
@@ -263,7 +263,7 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
         uint256 feeCollateral;
         if (feesFromCollateral && p.feesAccrued > 0) {
             fees = p.feesAccrued;
-            (uint256 price,) = _oracle().getPrice(_collateralConfigs[collateral].ticker);
+            uint256 price = _freshPrice(_collateralConfigs[collateral].ticker);
             feeCollateral = Math.mulDiv(fees, PRECISION, price, Math.Rounding.Ceil);
             if (feeCollateral > coll) {
                 feeCollateral = coll;
@@ -350,7 +350,7 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
         CollateralConfig storage cfg = _requireCollateral(collateral);
         if (amount == 0) revert ZeroAmount();
 
-        (uint256 price,) = _oracle().getPrice(cfg.ticker);
+        uint256 price = _freshPrice(cfg.ticker);
         uint256 remaining = amount;
         uint256 touched;
 
@@ -485,7 +485,8 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
         _settleFeeIndex();
         p = _positions[collateral][owner];
         if (p.debt > 0 && _feeIndex > p.feeIndexSnapshot) {
-            uint256 fee = Math.mulDiv(p.debt, _feeIndex - p.feeIndexSnapshot, BPS * YEAR);
+            // Charged on principal only, so the fee stays simple however often a position is touched.
+            uint256 fee = Math.mulDiv(p.debt - p.feesAccrued, _feeIndex - p.feeIndexSnapshot, BPS * YEAR);
             if (fee > 0) {
                 p.debt += fee;
                 p.feesAccrued += fee;
@@ -607,8 +608,8 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
         return IOracleVerifier(registry.oracle());
     }
 
-    /// @dev Live price for risk-increasing actions: no older than mintPriceMaxAge. Future-dated
-    ///      timestamps are treated as current.
+    /// @dev Live price, no older than mintPriceMaxAge, for mint, withdraw against debt, redeem and
+    ///      the fee leg of a principal-only close. Future-dated timestamps are treated as current.
     function _freshPrice(
         bytes32 ticker
     ) private view returns (uint256 price) {
@@ -681,7 +682,7 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
     function currentDebt(address collateral, address owner) public view override returns (uint256) {
         Position storage p = _positions[collateral][owner];
         if (p.debt == 0) return 0;
-        return p.debt + Math.mulDiv(p.debt, globalFeeIndex() - p.feeIndexSnapshot, BPS * YEAR);
+        return p.debt + Math.mulDiv(p.debt - p.feesAccrued, globalFeeIndex() - p.feeIndexSnapshot, BPS * YEAR);
     }
 
     /// @inheritdoc IEUSDManager
