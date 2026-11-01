@@ -260,6 +260,13 @@ Before any PR to `main`, mentally (or actually) run through this list for every 
 
 ## Project-Specific Context
 
+### Legacy code
+
+`main` holds only the eUSD contracts. Everything retired (OwnMarket, VaultManager, PSM, eTokens,
+AssetRegistry, lending, funds, OwnStakingV2, the old registry and verifier) lives on the
+`legacy-own-v2` branch, a full snapshot of `main` before the cleanup. Some of it is still live
+on-chain while it winds down; addresses are in `docs/legacy-contracts-rh.md`.
+
 ### Trust Model
 
 - **Oracle**: Chainlink feeds are primary; the in-house signer (KMS) is trusted only within a band
@@ -314,63 +321,101 @@ After all findings, provide a summary table with severity counts and overall ris
 
 ### Audit Document Format
 
-The canonical audit doc is a **living remediation tracker**, not a point-in-time report. Reference
-implementation: `docs/audit-report-3.md`. When generating a new one, follow this structure exactly.
+Audit reports are published as PDFs in `audits/`, one per review, named `DD-MM-YYYY_Own_V2.pdf` (the
+review's end date). Each review covers a 15-day window. Working notes live outside the repo; only the
+PDF is committed (no `docs/audit-report-*.md`, no `.audit-*/` scratch). Never put unannounced launch
+parameters (APRs, caps, bands, ceilings) in a report; use illustrative numbers in worked examples.
 
-**Header**
+When a markdown draft is needed (to review findings before the PDF), use this structure. The PDF
+follows the same sections in the same order.
 
+```markdown
+# Audit Report: Own Protocol v2
+
+**Date:** Month D — Month D, YYYY (15 days)
+
+## Introduction
+
+What eUSD is (overcollateralized stablecoin issued against tokenized RWAs, one EUSDManager per
+collateral risk group, all minting the same eUSD), how collateral is priced, which contracts
+support it, and how the review was run (independent multi-agent passes, re-verification against
+source, re-audit after fixes). No agent counts per finding, no model names.
+
+## Scope
+
+Repository: `own-protocol/own-v2`
+Audited Commit: `<full 40-char hash>`
+Re-audit Commit: `<full hash>` (if fixes were re-reviewed)
+Files:
+- `src/...`
+
+One short note on anything already deployed or out of scope.
+
+## Findings
+
+Severity legend (Critical/High, Medium, Low/Info; same wording as earlier PDFs) and the
+RESOLVED / ACKNOWLEDGED badge explanation.
+
+### Issues Found
+
+| Critical | High | Medium | Low | Info |
+| -------- | ---- | ------ | --- | ---- |
+| 0        | 0    | 1      | 9   | 4    |
+
+### Issues Not Fixed and Not Acknowledged
+
+(same table; should be all zeros before deploy)
+
+### Summary of Findings
+
+| ID   | Severity | Title                                     | Status       |
+| ---- | -------- | ----------------------------------------- | ------------ |
+| M-01 | Medium   | Title states the defect, not the symptom  | Fixed        |
+| L-01 | Low      | ...                                       | Acknowledged |
+
+## Status of Earlier Findings
+
+Bullets, by the earlier report's IDs: only findings whose status or code changed since.
+
+## Properties Attacked and Held
+
+Bullets per contract: invariants that were attacked and held.
+
+## Issue M-01: Title  [RESOLVED | ACKNOWLEDGED]   (each issue starts on a new page)
+
+Severity: Medium
+
+### Vulnerability Detail
+Mechanism first, then a worked numeric case.
+
+### Impact
+Who loses what, and the bound.
+
+### Resolution
+The fix and its regression test name, or why it is acknowledged plus any ops rule.
 ```
-# Own Protocol v2 — Audit Report & Remediation Status (Pass N)
-
-**Branch:** `x` · **Last updated:** YYYY-MM-DD · **Test suite:** N passing
-```
-
-Then consolidation prose: which passes and which superseded documents this doc absorbs, an explicit
-"IDs are stable across passes" statement, a headline paragraph naming the *shape* of the findings
-(not just counts), and any scope changes made during the pass. Then a fenced `Scope (N files, ~N LOC)`
-block listing every reviewed file, plus the exclusion list.
-
-**Sections, in order**
-
-1. `## Status at a Glance` — two tables. First: severity × (Total / Fixed / Open / By design).
-   Second: the master index — `ID | Severity | Finding | Status`, one row per finding, status in
-   bold (`**Fixed** (date)`, `**Open**`, `**By design** — reason`).
-2. `## 1. Fixed Findings` — full write-ups for anything fixed.
-3. `## 2. Open Findings` — full write-ups for anything outstanding.
-4. `## 3. By-Design / Withdrawn` — bulleted, each with the decision and its rationale.
-5. `## 4. Low Findings` — bulleted, grouped by status and date.
-6. `## 5. Leads` — grouped by theme, then `Noted, no action`.
-7. `## 6. Migration / ops checklist (open)` — `- [ ]` items, each tagged with the finding ID.
-8. `## 7. Verified sound (no finding)` — what was attacked and held. Do not omit this; negative
-   results are how a later pass avoids re-treading closed ground.
-9. `## 8. Verification notes` — methodology corrections and traps for future passes.
-
-**Per-finding write-up** (sections 1 and 2) uses bold-lead paragraphs, not tables:
-
-- `### ID (Severity) — Title` — title states the defect, not the symptom.
-- `**Problem.**` — mechanism first, then a worked numeric case with real deployed parameters.
-- `**Fix.**` (applied) or `**Suggested fix.**` (open) — a ```diff block. Where genuinely distinct
-  approaches exist, give `**Suggested fix (Option A — label):**` / `(Option B — label)`.
-- `**Tests.**` — name the tests, and state honestly if a regression test is still missing.
-- `**Residual.**` / `**Overlaps.**` / `**Open question.**` — as applicable.
-- `**Detected by** N of 12 agents (specialty names).`
 
 **ID rules**
 
-- Per-pass prefix, stable forever: `A2-`, `A3-` for full passes; `CL-` for a contract-scoped review;
-  `PA-` for pre-audit hardening. Severity letter + number: `A3-H-01`, `CL-I02`.
-- **Never renumber or reuse an ID.** When a new pass re-surfaces a closed item, reopen the existing
-  ID rather than minting a new one, and cross-reference overlapping findings to the IDs they extend.
-- Findings from passes whose document is no longer in-tree are referenced, not restated.
-- A downgrade or withdrawal keeps the ID and records the reason under §3.
+- IDs are plain `H-01`, `M-01`, `L-01`, `I-01`, numbered from 01 per report with no gaps, in
+  severity order. Status is `Fixed` or `Acknowledged` (by-design items are `Acknowledged`).
+- A finding that restates an earlier report's finding is not re-booked; record its current state
+  under "Status of Earlier Findings", citing the earlier report's date and ID.
+- A report only refers back: a newer report may cite an older one, never the reverse.
+- Scope is contracts only (`src/`, `misc/`). Deploy scripts and tooling are not part of an audit
+  report; fix script issues without booking them as findings.
+
+**PDF layout** (match the existing PDFs): US Letter, cover page with "Audit Report", "Own Protocol
+v2" in orange (#e89a55) and "Date: ...". Sans-serif body, monospace code in grey-violet (#8b8bb0),
+severity colours High #d33c5e, Medium #e08914, Low/Info #4a74b8; badges RESOLVED (#ddefe2 on
+#35845c) and ACKNOWLEDGED (#faeed3 on #b3821e). Render from HTML with headless Chromium
+(Playwright `page.pdf({ format: 'Letter', printBackground: true })`).
 
 **Rules of thumb**
 
-- Severity is impact × likelihood, and is stated separately from confidence.
+- Severity is impact × likelihood.
 - Rate configuration-dependent findings against `broadcast/<Script>.s.sol/<chainId>/run-latest.json`,
   never against `script/` alone — executed scripts are sometimes deleted from the tree.
-- One document per protocol, superseding earlier ones; fold contract-scoped reviews in rather than
-  leaving them to drift as separate files.
 
 ## Gas Optimisation Review Process
 

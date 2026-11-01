@@ -11,27 +11,14 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 /// @title MoneyFeeCollector — $MONEY fee routing and buy-back
-/// @notice Registered as the fee recipient of the $MONEY pair in the Pons V2 fee escrow. Anyone
-///         can trigger {collectFees}: every amount claimed from the escrow is split at that
-///         moment — `burnShareBps` stays in this contract as buy-back balance, the rest is paid
-///         out immediately to the owner-configured payee set. Because the distribution share
-///         never idles here, the contract's entire held balance IS the buy-back balance; assets
-///         transferred in directly therefore go towards buy-backs in full, by construction.
-///         Keepers convert it into $MONEY through an owner-allow-listed swap target and send the
-///         $MONEY to the protocol `reserve` ({buyBack}), at most once per `burnInterval`. The
-///         `burn*` names are kept from the buy-and-burn version so storage and setters are
-///         unchanged.
-/// @dev Runs behind an ERC-1967 proxy (UUPS) so the escrow-credited address survives upgrades;
-///      upgrades and configuration are owner-gated, with the protocol Safe as owner (two-step
-///      handover). Storage is append-only across upgrades. Trust model: owner (Safe) is fully
-///      trusted — it can upgrade and {execute} arbitrarily. Keepers are hot keys trusted only for
-///      buy-back timing and slippage bounds (`minMoneyOut`): they cannot move funds anywhere but
-///      into an allow-listed swap and the reserve, and never choose the spend — each buy-back spends
-///      exactly `burnSpendBps` of the held input balance (initially 10%), so a compromised keeper
-///      key is capped to that slice per interval even through a permissive swap target. The
-///      escrow and swap targets are owner-vetted external contracts. Swaps are sandwich-exposed
-///      up to the keeper's `minMoneyOut`, which is why targets are allow-listed and buy-backs
-///      keeper-gated.
+/// @notice See {IMoneyFeeCollector}. Registered as the fee recipient of the $MONEY pair in the
+///         Pons V2 fee escrow.
+/// @dev Runs behind an ERC-1967 proxy (UUPS) so the escrow-credited address survives upgrades.
+///      Storage is append-only across upgrades. The owner (protocol Safe, two-step handover) is
+///      fully trusted: it upgrades, configures and can {execute} arbitrary calls. Keepers only
+///      choose when to buy back and the slippage bound (`minMoneyOut`); each buy-back spends
+///      exactly `burnSpendBps` of the held balance through an allow-listed target, which caps a
+///      compromised keeper to that slice per interval.
 contract MoneyFeeCollector is IMoneyFeeCollector, Initializable, UUPSUpgradeable, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
@@ -55,11 +42,10 @@ contract MoneyFeeCollector is IMoneyFeeCollector, Initializable, UUPSUpgradeable
     /// @inheritdoc IMoneyFeeCollector
     address public override pendingOwner;
 
-    /// @dev Fee escrow claimed from. Owner-settable (Pons migration lever).
+    /// @dev Fee escrow claimed from. Owner-settable.
     IPonsFeeEscrowV2 private _escrow;
 
-    /// @dev The $MONEY token. Initializer-set, fixed thereafter — buying a different token is a
-    ///      different contract, not a config change. Typed ERC20Burnable from the burn version.
+    /// @dev The $MONEY token. Set once at initialization.
     ERC20Burnable private _money;
 
     /// @inheritdoc IMoneyFeeCollector
@@ -90,11 +76,13 @@ contract MoneyFeeCollector is IMoneyFeeCollector, Initializable, UUPSUpgradeable
     //  Modifiers
     // ──────────────────────────────────────────────────────────
 
+    /// @dev Reverts unless the caller is the owner.
     modifier onlyOwner() {
         if (msg.sender != owner) revert NotOwner();
         _;
     }
 
+    /// @dev Reverts unless the caller is an enabled keeper.
     modifier onlyKeeper() {
         if (!isKeeper[msg.sender]) revert NotKeeper();
         _;
@@ -104,19 +92,17 @@ contract MoneyFeeCollector is IMoneyFeeCollector, Initializable, UUPSUpgradeable
     //  Construction / initialization (UUPS)
     // ──────────────────────────────────────────────────────────
 
-    /// @dev The implementation is only ever used behind an ERC-1967 proxy; lock its own
-    ///      initializers so the bare implementation can never be initialized or taken over.
+    /// @dev Locks the implementation's initializers; it is only used behind a proxy.
     constructor() {
         _disableInitializers();
     }
 
-    /// @notice Initialize the collector proxy (runs once, in the proxy's constructor call).
+    /// @notice Initialize the proxy (called once, in the proxy's constructor).
     /// @param owner_   Contract owner (the protocol Safe).
     /// @param escrow_  Pons V2 fee escrow to claim from.
     /// @param money_   The $MONEY token.
-    /// @param keeper_  Initial buy-back keeper (zero = none yet; enable later via {setKeeper}).
-    /// @param payees_  Initial distribution payee set (may be empty only if collections are not
-    ///                 expected before {setPayees}, or while `burnShareBps` is 10_000).
+    /// @param keeper_  Initial buy-back keeper (zero = none).
+    /// @param payees_  Initial payee set (may be empty while no distribution share is collected).
     function initialize(
         address owner_,
         address escrow_,
@@ -143,13 +129,13 @@ contract MoneyFeeCollector is IMoneyFeeCollector, Initializable, UUPSUpgradeable
         _setPayees(payees_);
     }
 
-    /// @dev UUPS upgrade gate: only the owner (Safe) may upgrade this proxy's implementation.
+    /// @dev UUPS upgrade gate: owner only.
     function _authorizeUpgrade(
         address
     ) internal view override onlyOwner {}
 
-    /// @notice Accept native coin: escrow claims arrive as plain transfers, and direct sends are
-    ///         seeds that become buy-back balance by construction.
+    /// @notice Accept native coin: escrow claims arrive as plain transfers, and direct sends become
+    ///         buy-back balance.
     receive() external payable {}
 
     // ──────────────────────────────────────────────────────────
@@ -157,10 +143,8 @@ contract MoneyFeeCollector is IMoneyFeeCollector, Initializable, UUPSUpgradeable
     // ──────────────────────────────────────────────────────────
 
     /// @inheritdoc IMoneyFeeCollector
-    /// @dev Permissionless: claimed funds can only travel the configured split, so a third-party
-    ///      trigger merely moves fees along. Claimed amounts are measured as balance deltas
-    ///      around each escrow call rather than trusted return values, so pre-existing reserve
-    ///      (seeds) is never re-split.
+    /// @dev Claimed amounts are measured as balance deltas around each escrow call, so balance
+    ///      already held is never split again.
     function collectFees(
         address[] calldata tokens
     ) external override nonReentrant {
@@ -184,9 +168,8 @@ contract MoneyFeeCollector is IMoneyFeeCollector, Initializable, UUPSUpgradeable
     }
 
     /// @inheritdoc IMoneyFeeCollector
-    /// @dev The keeper has no say in the spend: `amountIn` is derived on-chain from the held
-    ///      balance and the owner-set `burnSpendBps`, capping what a compromised keeper key can
-    ///      route through a swap to that slice per `burnInterval`.
+    /// @dev `amountIn` is derived from the held balance and `burnSpendBps`, never chosen by the
+    ///      keeper.
     function buyBack(
         address tokenIn,
         address swapTarget,
@@ -303,8 +286,7 @@ contract MoneyFeeCollector is IMoneyFeeCollector, Initializable, UUPSUpgradeable
     }
 
     /// @inheritdoc IMoneyFeeCollector
-    /// @dev No privilege escalation: the owner already controls upgrades, so this adds reach
-    ///      (Pons-side fee-rights calls, asset rescue) without adding trust.
+    /// @dev Adds no trust: the owner already controls upgrades.
     function execute(
         address target,
         uint256 value,
@@ -313,7 +295,7 @@ contract MoneyFeeCollector is IMoneyFeeCollector, Initializable, UUPSUpgradeable
         bool ok;
         (ok, result) = target.call{value: value}(data);
         if (!ok) {
-            // Bubble the target's revert reason so Safe simulations show the real cause.
+            // Bubble up the target's revert reason.
             if (result.length == 0) revert ExecuteFailed();
             assembly ("memory-safe") {
                 revert(add(result, 0x20), mload(result))
@@ -343,12 +325,14 @@ contract MoneyFeeCollector is IMoneyFeeCollector, Initializable, UUPSUpgradeable
     //  Internal
     // ──────────────────────────────────────────────────────────
 
-    /// @dev Split one collected amount: retain the buy-back share (it simply stays on this contract's
-    ///      balance), pay the rest out to the payee set immediately.
+    /// @dev Split one collected amount: the buy-back share stays in this contract and the rest is
+    ///      paid to the payees.
+    /// @param token  Collected asset (address(0) = native coin).
+    /// @param amount Amount collected.
     function _split(address token, uint256 amount) private {
         if (amount == 0) return;
 
-        // Buy-back share rounds up: ties favour it over the payout.
+        // The buy-back share rounds up.
         uint256 distributable = amount * (BPS - burnShareBps) / BPS;
         emit FeesCollected(token, amount, amount - distributable);
         if (distributable == 0) return;
@@ -358,7 +342,7 @@ contract MoneyFeeCollector is IMoneyFeeCollector, Initializable, UUPSUpgradeable
         uint256 remaining = distributable;
         for (uint256 i; i < len; ++i) {
             Payee memory p = _payees[i];
-            // Last payee takes the remainder so rounding dust never accretes into the reserve.
+            // The last payee takes the remainder, so no rounding dust is left behind.
             uint256 cut = i == len - 1 ? remaining : distributable * p.shareBps / BPS;
             remaining -= cut;
             if (cut == 0) continue;
@@ -372,8 +356,9 @@ contract MoneyFeeCollector is IMoneyFeeCollector, Initializable, UUPSUpgradeable
         }
     }
 
-    /// @dev Replace the payee set atomically; shares must sum to exactly BPS. An empty set is
-    ///      allowed (buy-back-only mode): collections then revert while a distribution share exists.
+    /// @dev Replace the payee set; shares must sum to exactly BPS. An empty set is allowed, but
+    ///      collections then revert while the distribution share is nonzero.
+    /// @param newPayees New payee set.
     function _setPayees(
         Payee[] calldata newPayees
     ) private {

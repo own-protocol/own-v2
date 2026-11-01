@@ -10,7 +10,16 @@ import {EIP712} from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 
 /// @notice Minimal Chainlink AggregatorV3 proxy surface used by this verifier.
 interface IAggregatorV3 {
+    /// @notice Decimals of the feed's answer.
+    /// @return Answer decimals.
     function decimals() external view returns (uint8);
+
+    /// @notice Latest round of the feed.
+    /// @return roundId         Round id.
+    /// @return answer          Price answer, in the feed's decimals.
+    /// @return startedAt       Round start timestamp.
+    /// @return updatedAt       Timestamp of the answer.
+    /// @return answeredInRound Round in which the answer was computed.
     function latestRoundData()
         external
         view
@@ -19,25 +28,24 @@ interface IAggregatorV3 {
 
 /// @notice ERC-8056 (Scaled UI Amount) surface — the corporate-action multiplier on Gen-2 Stock Tokens.
 interface IScaledUiToken {
+    /// @notice Current UI multiplier (18 decimals).
+    /// @return The multiplier.
     function uiMultiplier() external view returns (uint256);
 }
 
 /// @title ChainlinkOracleVerifier — Chainlink-primary oracle with band-limited in-house fallback
-/// @notice Chainlink is the authoritative price source. The in-house signer may quote only while
-///         the asset's Chainlink feed has been silent longer than `clSilence`, and only within
-///         `bandBps` of the last Chainlink answer (the anchor) — so a compromised signer can never
-///         move a price more than the band away from Chainlink, and cannot quote at all while the
-///         feed is live. Robinhood stock feeds return the TOKEN price (share price x ERC-8056
-///         uiMultiplier); tickers tracking the underlying set `multiplierToken` so reads divide the
-///         feed by the token's live uiMultiplier().
-/// @dev Feeds are deviation-driven (0.5%) with a 24h in-session heartbeat and go fully silent off
-///      market hours (see docs/chainlink-feeds-robinhood.md). While a Chainlink answer is younger
-///      than `clFreshWindow` its value is within the deviation band of spot, so reads report
-///      `block.timestamp` for it; beyond that the raw `updatedAt` is reported and consumers' own
-///      staleness checks push them onto the in-house leg.
-///      Config is gated by ADMIN; the emergency `disableAsset` / `removeSigner` levers are gated by
-///      the instant OPERATOR role. Both resolved via the ProtocolRegistry. Signatures are EIP-712
-///      PriceAttestations bound to this contract's address.
+/// @notice Chainlink is the primary price source. The in-house signer may quote only while the
+///         asset's feed has been silent longer than `clSilence`, and only within `bandBps` of the
+///         last Chainlink answer (the anchor), so a compromised signer can never move a price more
+///         than the band away from Chainlink and cannot quote at all while the feed is live.
+///         Robinhood stock feeds return the token price (share price × ERC-8056 `uiMultiplier`);
+///         tickers tracking the underlying set `multiplierToken` so reads divide by it.
+/// @dev Feeds are deviation-driven and go silent outside market hours. While an answer is younger
+///      than `clFreshWindow` reads report `block.timestamp` for it; beyond that they report the raw
+///      `updatedAt`, so consumers' staleness checks fall through to the in-house leg.
+///      Configuration is ADMIN-gated; the emergency levers {disableAsset} and {removeSigner} are
+///      OPERATOR-gated. Roles resolve through the ProtocolRegistry. Signatures are EIP-712
+///      `PriceAttestation`s bound to this contract's address.
 contract ChainlinkOracleVerifier is IOracleVerifier, Multicall, EIP712 {
     using ECDSA for bytes32;
 
@@ -49,17 +57,29 @@ contract ChainlinkOracleVerifier is IOracleVerifier, Multicall, EIP712 {
     //  Types
     // ──────────────────────────────────────────────────────────
 
+    /// @notice Per-asset oracle configuration.
+    /// @param aggregator          Chainlink proxy address.
+    /// @param clSilence           Feed silence required before in-house prices are accepted (seconds).
+    /// @param clFreshWindow       Feed age reported as current on reads (seconds).
+    /// @param bandBps             Max in-house deviation from the anchor (BPS); 0 disables the in-house leg.
+    /// @param clDecimals          Cached aggregator decimals.
+    /// @param multiplierToken     ERC-8056 token whose `uiMultiplier` divides the feed (0 = none).
+    /// @param maxAnchorAge        Feed age beyond which the Chainlink leg and anchor are unusable (seconds).
+    /// @param inhouseMaxStaleness Max age of an in-house price at read and push time (seconds).
     struct AssetConfig {
-        address aggregator; // Chainlink proxy (required)
-        uint32 clSilence; // in-house quotes allowed only when the feed is silent longer than this
-        uint32 clFreshWindow; // feed age within which reads report block.timestamp (e.g. 4h)
-        uint16 bandBps; // max in-house deviation from the Chainlink anchor; 0 disables the in-house leg
-        uint8 clDecimals; // cached aggregator.decimals()
-        address multiplierToken; // when set, reads divide the feed by its uiMultiplier() (underlying tickers)
-        uint32 maxAnchorAge; // feed age beyond which the Chainlink leg (and the anchor) is unusable
-        uint32 inhouseMaxStaleness; // max age of an in-house price at read/push time
+        address aggregator;
+        uint32 clSilence;
+        uint32 clFreshWindow;
+        uint16 bandBps;
+        uint8 clDecimals;
+        address multiplierToken;
+        uint32 maxAnchorAge;
+        uint32 inhouseMaxStaleness;
     }
 
+    /// @notice Last pushed in-house price.
+    /// @param price     Price (18 decimals).
+    /// @param timestamp Attestation timestamp (unix seconds).
     struct PriceEntry {
         uint256 price;
         uint256 timestamp;
@@ -70,18 +90,23 @@ contract ChainlinkOracleVerifier is IOracleVerifier, Multicall, EIP712 {
     // ──────────────────────────────────────────────────────────
 
     /// @notice In-house quoting is disabled for this asset (bandBps == 0).
+    /// @param asset Asset ticker.
     error InhouseDisabled(bytes32 asset);
-    /// @notice The Chainlink feed updated within `clSilence` — the in-house signer may not quote.
+    /// @notice The Chainlink feed updated within `clSilence`, so the in-house signer may not quote.
     /// @param updatedAt The feed's latest round timestamp (unix seconds).
+    /// @param asset     Asset ticker.
     error ChainlinkFresh(bytes32 asset, uint256 updatedAt);
-    /// @notice No usable Chainlink anchor (feed dead, halted beyond maxAnchorAge, or bad answer).
+    /// @notice No usable Chainlink anchor (no answer, a bad answer, or older than `maxAnchorAge`).
+    /// @param asset Asset ticker.
     error NoAnchor(bytes32 asset);
     /// @notice Signed price timestamp is in the future.
     /// @param timestamp The offending attestation timestamp (unix seconds).
+    /// @param asset     Asset ticker.
     error FutureTimestamp(bytes32 asset, uint256 timestamp);
     /// @notice The token's uiMultiplier() is zero.
+    /// @param asset Asset ticker.
     error ZeroMultiplier(bytes32 asset);
-    /// @notice Config bounds are inconsistent (see setChainlinkConfig).
+    /// @notice Config bounds are inconsistent (see {setChainlinkConfig}).
     error InvalidConfig();
 
     // ──────────────────────────────────────────────────────────
@@ -108,7 +133,7 @@ contract ChainlinkOracleVerifier is IOracleVerifier, Multicall, EIP712 {
         uint16 bandBps
     );
 
-    /// @notice Emitted when an asset is disabled (emergency kill-switch).
+    /// @notice Emitted when an asset is disabled.
     /// @param asset Asset ticker disabled.
     event AssetDisabled(bytes32 indexed asset);
 
@@ -116,25 +141,35 @@ contract ChainlinkOracleVerifier is IOracleVerifier, Multicall, EIP712 {
     //  State
     // ──────────────────────────────────────────────────────────
 
-    /// @notice ProtocolRegistry used to resolve ADMIN / OPERATOR roles.
+    /// @notice ProtocolRegistry used to resolve the ADMIN and OPERATOR roles.
     IProtocolRegistry public immutable registry;
 
+    /// @dev Signer => authorized.
     mapping(address => bool) private _signers;
+
+    /// @dev Asset ticker => oracle config.
     mapping(bytes32 => AssetConfig) private _configs;
+
+    /// @dev Asset ticker => last pushed in-house price.
     mapping(bytes32 => PriceEntry) private _prices;
 
     // ──────────────────────────────────────────────────────────
     //  Modifiers
     // ──────────────────────────────────────────────────────────
 
+    /// @dev ProtocolRegistry role for asset configs and adding signers.
     bytes32 private constant ADMIN = keccak256("ADMIN");
+
+    /// @dev ProtocolRegistry role for {disableAsset} and {removeSigner}.
     bytes32 private constant OPERATOR = keccak256("OPERATOR");
 
+    /// @dev Reverts unless the caller holds ADMIN in the registry.
     modifier onlyAdmin() {
         if (!registry.hasRole(ADMIN, msg.sender)) revert OnlyAdmin();
         _;
     }
 
+    /// @dev Reverts unless the caller holds OPERATOR in the registry.
     modifier onlyOperator() {
         if (!registry.hasRole(OPERATOR, msg.sender)) revert OnlyOperator();
         _;
@@ -144,7 +179,7 @@ contract ChainlinkOracleVerifier is IOracleVerifier, Multicall, EIP712 {
     //  Constructor
     // ──────────────────────────────────────────────────────────
 
-    /// @param registry_ ProtocolRegistry address (resolves ADMIN / OPERATOR roles).
+    /// @param registry_ ProtocolRegistry address.
     constructor(
         address registry_
     ) EIP712("Own Protocol", "1") {
@@ -153,14 +188,14 @@ contract ChainlinkOracleVerifier is IOracleVerifier, Multicall, EIP712 {
     }
 
     // ──────────────────────────────────────────────────────────
-    //  Push — in-house signed quote (off-hours / feed-silent only)
+    //  Push — signed in-house price
     // ──────────────────────────────────────────────────────────
 
-    /// @notice Push a signed in-house price for `asset`. Accepted only while the Chainlink feed has
-    ///         been silent longer than `clSilence`, and only within `bandBps` of the last Chainlink
-    ///         answer. Batch updates via inherited Multicall.
-    /// @param asset     Asset ticker.
-    /// @param priceData Encoded as (uint256 price, uint256 timestamp, uint8 v, bytes32 r, bytes32 s).
+    /// @inheritdoc IOracleVerifier
+    /// @dev Permissionless; the signature authenticates the price. Accepted only while the feed has
+    ///      been silent longer than `clSilence`, within `bandBps` of the anchor and no older than
+    ///      `inhouseMaxStaleness`. A price not newer than the stored one is ignored, so batched
+    ///      pushes (via {multicall}) are idempotent.
     function updatePrice(bytes32 asset, bytes calldata priceData) external override {
         (uint256 price, uint256 timestamp, uint8 v, bytes32 r, bytes32 s) =
             abi.decode(priceData, (uint256, uint256, uint8, bytes32, bytes32));
@@ -178,7 +213,6 @@ contract ChainlinkOracleVerifier is IOracleVerifier, Multicall, EIP712 {
             revert StalePrice(asset, timestamp, cfg.inhouseMaxStaleness);
         }
 
-        // Only accept newer prices (idempotent multicall / relay races).
         PriceEntry storage existing = _prices[asset];
         if (existing.timestamp > 0 && timestamp <= existing.timestamp) return;
 
@@ -189,13 +223,12 @@ contract ChainlinkOracleVerifier is IOracleVerifier, Multicall, EIP712 {
     }
 
     // ──────────────────────────────────────────────────────────
-    //  Read — cached prices
+    //  Read
     // ──────────────────────────────────────────────────────────
 
     /// @inheritdoc IOracleVerifier
-    /// @dev Returns the freshest valid leg. A Chainlink answer younger than `clFreshWindow` reports
-    ///      `block.timestamp` (deviation guarantee holds while the feed is live); older answers
-    ///      report raw `updatedAt` so consumer staleness checks fail over to the in-house leg.
+    /// @dev Returns the newer of the two valid legs. A Chainlink answer younger than
+    ///      `clFreshWindow` reports `block.timestamp`; older answers report their raw `updatedAt`.
     function getPrice(
         bytes32 asset
     ) external view override returns (uint256 price, uint256 timestamp) {
@@ -216,6 +249,10 @@ contract ChainlinkOracleVerifier is IOracleVerifier, Multicall, EIP712 {
     }
 
     /// @notice The EIP-712 digest a signer must sign to attest a price.
+    /// @param asset     Asset ticker.
+    /// @param price     Price (18 decimals).
+    /// @param timestamp Price observation timestamp (unix seconds).
+    /// @return The EIP-712 digest.
     function priceDigest(bytes32 asset, uint256 price, uint256 timestamp) public view returns (bytes32) {
         return _hashTypedDataV4(keccak256(abi.encode(PRICE_ATTESTATION_TYPEHASH, asset, price, timestamp)));
     }
@@ -224,9 +261,14 @@ contract ChainlinkOracleVerifier is IOracleVerifier, Multicall, EIP712 {
     //  Internal
     // ──────────────────────────────────────────────────────────
 
-    /// @dev Read + normalize the asset's Chainlink leg. `valid` is false when the feed has no
-    ///      usable answer (non-positive, future-dated, or older than maxAnchorAge) — callers treat
-    ///      that as "no Chainlink leg" rather than reverting, so the in-house leg can still serve.
+    /// @dev Read and scale the asset's Chainlink answer to 18 decimals. `valid` is false (instead of
+    ///      reverting) for a non-positive, future-dated or older-than-`maxAnchorAge` answer, so the
+    ///      in-house leg can still serve.
+    /// @param asset Asset ticker.
+    /// @param cfg   The asset's config.
+    /// @return price     Price (18 decimals).
+    /// @return updatedAt Timestamp of the answer.
+    /// @return valid     Whether the answer is usable.
     function _chainlink(
         bytes32 asset,
         AssetConfig storage cfg
@@ -244,8 +286,11 @@ contract ChainlinkOracleVerifier is IOracleVerifier, Multicall, EIP712 {
         return (price, updated, true);
     }
 
-    /// @dev Gate an in-house price: the feed must have been silent longer than `clSilence`, a valid
-    ///      anchor must exist, and the price must sit within `bandBps` of it. Fail closed on all three.
+    /// @dev Gate an in-house price: a valid anchor must exist, the feed must have been silent longer
+    ///      than `clSilence`, and the price must sit within `bandBps` of the anchor.
+    /// @param asset Asset ticker.
+    /// @param cfg   The asset's config.
+    /// @param price Proposed in-house price (18 decimals).
     function _checkAnchorBand(bytes32 asset, AssetConfig storage cfg, uint256 price) private view {
         (uint256 anchor, uint256 clUpdated, bool clValid) = _chainlink(asset, cfg);
         if (!clValid) revert NoAnchor(asset);
@@ -271,8 +316,7 @@ contract ChainlinkOracleVerifier is IOracleVerifier, Multicall, EIP712 {
     }
 
     /// @inheritdoc IOracleVerifier
-    /// @dev Emergency lever — gated by the instant OPERATOR role so a compromised
-    ///      signer can be revoked without a timelock delay.
+    /// @dev OPERATOR-gated so a compromised signer can be revoked immediately.
     function removeSigner(
         address signer
     ) external onlyOperator {
@@ -291,16 +335,17 @@ contract ChainlinkOracleVerifier is IOracleVerifier, Multicall, EIP712 {
     //  Admin — per-asset configuration
     // ──────────────────────────────────────────────────────────
 
-    /// @notice Set an asset's Chainlink config. Reads and caches the aggregator's decimals.
+    /// @notice Set an asset's Chainlink config (ADMIN). Reads and caches the aggregator's decimals.
+    ///         Requires `0 < clSilence <= clFreshWindow <= maxAnchorAge`, and a nonzero
+    ///         `inhouseMaxStaleness` when the in-house leg is enabled.
     /// @param asset               Asset ticker.
     /// @param aggregator          Chainlink proxy address.
-    /// @param multiplierToken     ERC-8056 token whose uiMultiplier() divides the feed (0 = use as-is).
-    /// @param clSilence           Feed silence required before in-house quotes are accepted (e.g. 15 min).
-    /// @param clFreshWindow       Feed age treated as current on reads (e.g. 4h); older reads report the
-    ///                            raw feed timestamp, pushing consumers onto the in-house leg.
-    /// @param maxAnchorAge        Feed age beyond which the Chainlink leg/anchor is unusable (e.g. 5 days).
-    /// @param inhouseMaxStaleness Max age of an in-house price at read/push time.
-    /// @param bandBps             Max in-house deviation from the anchor; 0 disables in-house quoting.
+    /// @param multiplierToken     ERC-8056 token whose `uiMultiplier` divides the feed (0 = use as is).
+    /// @param clSilence           Feed silence required before in-house prices are accepted (seconds).
+    /// @param clFreshWindow       Feed age reported as current on reads (seconds).
+    /// @param maxAnchorAge        Feed age beyond which the Chainlink leg and anchor are unusable (seconds).
+    /// @param inhouseMaxStaleness Max age of an in-house price at read and push time (seconds).
+    /// @param bandBps             Max in-house deviation from the anchor (BPS); 0 disables the in-house leg.
     function setChainlinkConfig(
         bytes32 asset,
         address aggregator,
@@ -336,8 +381,8 @@ contract ChainlinkOracleVerifier is IOracleVerifier, Multicall, EIP712 {
         );
     }
 
-    /// @notice Emergency kill-switch: clear an asset's config (and cached in-house price) so all
-    ///         reads revert `OracleConfigNotSet`. Gated by the instant OPERATOR role.
+    /// @notice Emergency stop (OPERATOR): clear an asset's config and cached in-house price, so every
+    ///         read reverts `OracleConfigNotSet` until ADMIN configures it again.
     /// @param asset Asset ticker to disable.
     function disableAsset(
         bytes32 asset
@@ -347,17 +392,18 @@ contract ChainlinkOracleVerifier is IOracleVerifier, Multicall, EIP712 {
         emit AssetDisabled(asset);
     }
 
-    /// @notice Return an asset's full Chainlink config.
+    /// @notice An asset's oracle config.
     /// @param asset Asset ticker.
+    /// @return The config (all zero if unset).
     function getChainlinkConfig(
         bytes32 asset
     ) external view returns (AssetConfig memory) {
         return _configs[asset];
     }
 
-    /// @notice Return the last in-house pushed price (0,0 if none).
+    /// @notice The last pushed in-house price, unfiltered by staleness ((0, 0) if none).
     /// @param asset Asset ticker.
-    /// @return price     Last pushed price (18 dec), unfiltered by staleness.
+    /// @return price     Last pushed price (18 dec).
     /// @return timestamp Attestation timestamp of that price (unix seconds).
     function getInhousePrice(
         bytes32 asset

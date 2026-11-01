@@ -16,18 +16,22 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 /// @notice One deployment per staked asset. Stakers deposit the asset for shares; rewards in the
 ///         same asset drip from a pre-funded reserve into staked assets, so the share price rises
 ///         and there is nothing to claim. See {IStakingVault} for the drip rule.
-/// @dev Staked assets are tracked in `_staked`, not read from the balance, so the reserve and any
-///      direct transfers never count toward the share price. Accrual is simple interest on
-///      `_staked` between touches, and every state change accrues first, so a new rate only ever
-///      applies from the moment it is set. Not upgradeable: a changed design is a new vault.
+/// @dev Staked assets are tracked in `_staked`, not read from the balance, so the reserve and
+///      direct transfers never count toward the share price. Every state change accrues first, so
+///      a new rate applies only from the moment it is set. Not upgradeable.
 contract StakingVault is IStakingVault, ERC4626 {
     using SafeERC20 for IERC20;
 
+    /// @dev Seconds per year for APR accrual.
     uint256 private constant YEAR = 365 days;
+
+    /// @dev ProtocolRegistry role for the APR, cap and reserve withdrawals.
     bytes32 private constant ADMIN = keccak256("ADMIN");
+
+    /// @dev ProtocolRegistry role for {pullFromTreasury}.
     bytes32 private constant OPERATOR = keccak256("OPERATOR");
 
-    /// @notice ProtocolRegistry used to resolve the ADMIN role.
+    /// @notice ProtocolRegistry used to resolve the ADMIN and OPERATOR roles and the treasury.
     IProtocolRegistry public immutable registry;
 
     /// @inheritdoc IStakingVault
@@ -42,13 +46,16 @@ contract StakingVault is IStakingVault, ERC4626 {
     /// @dev Unspent reward reserve as of `_lastAccrual`.
     uint256 private _reserve;
 
+    /// @dev Timestamp of the last accrual.
     uint256 private _lastAccrual;
 
+    /// @dev Reverts unless the caller holds ADMIN in the registry.
     modifier onlyAdmin() {
         if (!registry.hasRole(ADMIN, msg.sender)) revert OnlyAdmin();
         _;
     }
 
+    /// @dev Reverts unless the caller holds OPERATOR in the registry.
     modifier onlyOperator() {
         if (!registry.hasRole(OPERATOR, msg.sender)) revert OnlyOperator();
         _;
@@ -57,7 +64,7 @@ contract StakingVault is IStakingVault, ERC4626 {
     /// @param asset_    Staked and reward asset (eUSD or $MONEY).
     /// @param name_     Share token name.
     /// @param symbol_   Share token symbol.
-    /// @param registry_ ProtocolRegistry holding the ADMIN role.
+    /// @param registry_ ProtocolRegistry address.
     /// @param aprBps_   Target APR in BPS.
     /// @param cap_      Staked amount that earns the full APR (asset units).
     constructor(
@@ -133,17 +140,29 @@ contract StakingVault is IStakingVault, ERC4626 {
     //  ERC-4626
     // ──────────────────────────────────────────────────────────
 
+    /// @inheritdoc IERC4626
     /// @dev Includes rewards dripped since the last touch, so previews match execution.
     function totalAssets() public view override(ERC4626, IERC4626) returns (uint256) {
         return _staked + _pending();
     }
 
+    /// @dev Accrues, then adds `assets` to staked assets before minting shares.
+    /// @param caller   Account paying the assets.
+    /// @param receiver Account receiving the shares.
+    /// @param assets   Assets deposited.
+    /// @param shares   Shares minted.
     function _deposit(address caller, address receiver, uint256 assets, uint256 shares) internal override {
         _accrue();
         _staked += assets;
         super._deposit(caller, receiver, assets, shares);
     }
 
+    /// @dev Accrues, then removes `assets` from staked assets before burning shares.
+    /// @param caller   Account initiating the withdrawal.
+    /// @param receiver Account receiving the assets.
+    /// @param owner    Account whose shares are burned.
+    /// @param assets   Assets withdrawn.
+    /// @param shares   Shares burned.
     function _withdraw(
         address caller,
         address receiver,
@@ -182,9 +201,12 @@ contract StakingVault is IStakingVault, ERC4626 {
     //  Internal
     // ──────────────────────────────────────────────────────────
 
+    /// @dev Add `amount` to the reward reserve, pulled from `from`.
+    /// @param from   Account the assets are pulled from.
+    /// @param amount Asset units to add.
     function _fund(address from, uint256 amount) private {
         if (amount == 0) revert ZeroAmount();
-        // Accrue first so an empty reserve never back-pays the time it was empty.
+        // Accrue first so a refill never back-pays the time the reserve was empty.
         _accrue();
         _reserve += amount;
         IERC20(asset()).safeTransferFrom(from, address(this), amount);
@@ -203,6 +225,7 @@ contract StakingVault is IStakingVault, ERC4626 {
 
     /// @dev Rewards owed since the last touch at the rate set then, capped by the reserve. Nothing
     ///      accrues while no shares exist.
+    /// @return Rewards owed (asset units).
     function _pending() private view returns (uint256) {
         if (totalSupply() == 0) return 0;
         uint256 owed = Math.mulDiv(Math.min(_staked, cap) * aprBps, block.timestamp - _lastAccrual, BPS * YEAR);
