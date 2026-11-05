@@ -5,8 +5,10 @@
 eUSD is an overcollateralized stablecoin on Robinhood Chain. Users deposit collateral tokens
 (Robinhood stock tokens, WETH) into an `EUSDManager` and mint eUSD against a fresh oracle price.
 Each manager is a UUPS proxy holding one risk group of collateral with its own risk params; all
-managers share one implementation and mint the same `EUSD` token. `StakingVault` is the staking
-layer: a fixed-APR ERC-4626 vault per asset (seUSD, sMONEY). Built with Foundry.
+managers share one implementation and mint the same `EUSD` token. `EUSDLiquidityManager` mints eUSD
+straight into DEX liquidity: a user's asset and the minted eUSD go into an asset/eUSD range, held in
+a per-position vault. `StakingVault` is the staking layer: a fixed-APR ERC-4626 vault per asset
+(seUSD, sMONEY). Built with Foundry.
 
 This is a production DeFi protocol that will hold millions of dollars. Every line of code must be written with that assumption.
 
@@ -29,7 +31,10 @@ slither src/ --config-file slither.config.json
 
 ```
 src/
-  eusd/        EUSD (ERC-20 + permit, MINTER_ROLE held by each manager), EUSDManager (CDP engine)
+  eusd/        EUSD (ERC-20 + permit, MINTER_ROLE held by each manager), EUSDManager (CDP engine),
+               EUSDLiquidityManager (CDP engine over DEX liquidity)
+  eusd/adapters/ FablesAdapter (per-position liquidity vault for Fables pools, behind a beacon)
+  libraries/   LiquidityMath (v4 tick math, vendored, and liquidity/amount formulas)
   staking/     StakingVault
   oracle/      ChainlinkOracleVerifier
   registry/    ProtocolRegistry
@@ -49,6 +54,19 @@ misc/          MoneyFeeCollector: standalone, not part of the eUSD core (tests i
   bonus.
 - The stability fee accrues lazily from a global index and is minted to the treasury, keeping
   eUSD supply equal to Σ position debt across all managers.
+
+**EUSDLiquidityManager**
+- One UUPS proxy per volatility group; pools from any DEX. Each pool has a vault beacon (one per
+  DEX adapter), the asset's oracle ticker and DEX pool data. Each (pool, owner) position gets its own
+  vault, a BeaconProxy created on first use, holding the range plus idle asset and eUSD. The manager
+  stores only debt; the vault holds the tokens and only the manager moves principal.
+- Minted eUSD only goes into the range (no wallet mint). eUSD the vault gets back is burned against
+  the debt at once. The liquidity is valued at the oracle price (amounts the range would hold there),
+  a lower bound of its value wherever the pool trades. Adding or moving liquidity needs the pool
+  price within a band of the oracle.
+- Two stability fees, staked (earns DEX emissions) and unstaked. Liquidation is full: unwind, burn
+  the vault's eUSD, the liquidator pays the rest for asset at a bonus, the owner gets what is left.
+  No redemptions against LP positions.
 
 **Oracle**: `ChainlinkOracleVerifier` is Chainlink-primary with a band-limited, signed in-house
 fallback for when a feed is silent (weekends, off-hours). Managers read it as the registry's
@@ -210,7 +228,9 @@ Do NOT add dependencies without discussion. Every dependency is attack surface. 
 - **ERC-20 + ERC-2612 (Permit)**: EUSD.
 - **EIP-712**: oracle price attestations (`ChainlinkOracleVerifier`). Include chainId and
   verifyingContract in the domain.
-- **ERC-1967 / UUPS**: EUSDManager and MoneyFeeCollector proxies. StakingVault is not upgradeable.
+- **ERC-1967 / UUPS**: EUSDManager, EUSDLiquidityManager and MoneyFeeCollector proxies. Liquidity
+  vaults are ERC-1967 BeaconProxies; each DEX adapter has one UpgradeableBeacon owned by the
+  governance Safe. StakingVault is not upgradeable.
 
 When implementing, reference the EIP directly. Do not rely on memory — check the spec.
 
