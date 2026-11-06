@@ -64,8 +64,10 @@ misc/          MoneyFeeCollector: standalone, not part of the eUSD core (tests i
   the debt at once. The liquidity is valued at the oracle price (amounts the range would hold there),
   a lower bound of its value wherever the pool trades. Adding or moving liquidity needs the pool
   price within a band of the oracle.
-- Two stability fees, staked (earns DEX emissions) and unstaked. Liquidation is full: unwind, burn
-  the vault's eUSD, the liquidator pays the rest for asset at a bonus, the owner gets what is left.
+- Two stability fees, staked (earns DEX emissions) and unstaked. Liquidation can be partial: clearing
+  part of the debt unwinds the same share of the range (the rest stays staked), burns the vault's
+  eUSD, and the liquidator pays the rest for asset at a bonus. A full one returns what is left to
+  the owner.
   No redemptions against LP positions.
 
 **Oracle**: `ChainlinkOracleVerifier` is Chainlink-primary with a band-limited, signed in-house

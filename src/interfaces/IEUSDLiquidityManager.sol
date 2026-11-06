@@ -32,9 +32,11 @@ pragma solidity 0.8.28;
 ///         for unstaked liquidity. The fee is simple interest on principal, minted to the treasury.
 ///
 ///         Exits need no fresh price: repay and close use no price, and liquidation uses the latest
-///         oracle price with no age bound. Liquidation is full: the vault's liquidity is removed,
-///         its eUSD is burned against the debt, the liquidator burns the rest and receives asset
-///         worth that plus the bonus, and everything left goes to the owner.
+///         oracle price with no age bound. Liquidation can be partial: clearing part of the debt
+///         removes the same share of the range, its eUSD is burned against the debt, the liquidator
+///         burns the rest of the cleared debt and receives asset worth that plus the bonus. The
+///         remaining range stays in place (and staked); a full liquidation sends everything left
+///         to the owner.
 interface IEUSDLiquidityManager {
     // ──────────────────────────────────────────────────────────
     //  Types
@@ -271,11 +273,12 @@ interface IEUSDLiquidityManager {
     /// @param poolId      Pool id.
     /// @param owner       Position owner.
     /// @param liquidator  Liquidator.
-    /// @param debt        Debt retired (18 decimals).
-    /// @param repaid      Part of the debt burned from the liquidator (18 decimals).
-    /// @param seized      Asset paid to the liquidator (asset units).
-    /// @param assetRefund Asset returned to the owner (asset units).
-    /// @param eusdRefund  eUSD returned to the owner (18 decimals).
+    /// @param debt          Debt cleared by the liquidation (18 decimals).
+    /// @param repaid        Part of it burned from the liquidator (18 decimals).
+    /// @param seized        Asset paid to the liquidator (asset units).
+    /// @param assetRefund   Asset returned to the owner, on a full liquidation (asset units).
+    /// @param eusdRefund    eUSD returned to the owner, on a full liquidation (18 decimals).
+    /// @param remainingDebt Debt left on the position (18 decimals).
     event PositionLiquidated(
         uint256 indexed poolId,
         address indexed owner,
@@ -284,7 +287,8 @@ interface IEUSDLiquidityManager {
         uint256 repaid,
         uint256 seized,
         uint256 assetRefund,
-        uint256 eusdRefund
+        uint256 eusdRefund,
+        uint256 remainingDebt
     );
 
     // ──────────────────────────────────────────────────────────
@@ -442,13 +446,18 @@ interface IEUSDLiquidityManager {
     /// @param owner  Position owner.
     function accrue(uint256 poolId, address owner) external;
 
-    /// @notice Liquidate a position below the liquidation threshold, in full. Removes the vault's
-    ///         liquidity, burns its eUSD against the debt, burns the rest of the debt from the
-    ///         caller, pays the caller asset worth that plus the bonus at the oracle price (capped at
-    ///         the vault's asset), and returns everything left to the owner.
+    /// @notice Liquidate a position below the liquidation threshold, in part or in full. Clearing
+    ///         `amount` of the debt removes the same share of the range (all of it on a full
+    ///         liquidation), burns the vault's eUSD against the cleared debt, burns the rest of it
+    ///         from the caller, and pays the caller asset worth that plus the bonus at the oracle
+    ///         price (capped at the vault's asset). On a partial liquidation the remaining range
+    ///         stays in place, and leftover eUSD is burned against the remaining debt; on a full one
+    ///         everything left goes to the owner. The remaining debt must be zero or at least
+    ///         `minDebt`.
     /// @param poolId Pool id.
     /// @param owner  Position owner.
-    function liquidate(uint256 poolId, address owner) external;
+    /// @param amount Debt to clear, capped at the debt (18 decimals; `type(uint256).max` for all).
+    function liquidate(uint256 poolId, address owner, uint256 amount) external;
 
     // ──────────────────────────────────────────────────────────
     //  Admin

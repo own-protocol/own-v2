@@ -276,12 +276,47 @@ contract EUSDLiquidityManagerRobinhoodFork is Test {
         deal(EUSD, keeper, 10_000e18);
         uint256 aliceSpy = IERC20(SPY).balanceOf(alice);
         vm.prank(keeper);
-        manager.liquidate(0, alice);
+        manager.liquidate(0, alice, type(uint256).max);
         assertEq(manager.getPosition(0, alice).debt, 0);
         assertEq(manager.totalDebt(), 0);
         assertEq(IFablesLedgerView(FABLES_RAMP).balanceOf(address(_vault(0)), id), 0);
         assertEq(IERC20(SPY).balanceOf(address(_vault(0))), 0);
         assertGt(IERC20(SPY).balanceOf(alice), aliceSpy);
+    }
+
+    function test_fork_spy_partialLiquidationStaysStaked() public requiresFork {
+        (uint128 liquidity, int24 lower, int24 upper) = _openSpy();
+        uint256 id = IFablesLedgerView(FABLES_RAMP).rangeId(keccak256(abi.encode(spyKey)), lower, upper);
+        (uint256 price,) = oracle.getPrice(SPY_TICKER);
+        // Below the threshold but above 1 + bonus, where a partial liquidation helps.
+        oracle.setPrice(SPY_TICKER, (price * 38) / 100);
+        assertTrue(manager.isLiquidatable(0, alice));
+        uint256 ratioBefore = manager.collateralRatioBps(0, alice);
+        assertGt(ratioBefore, 10_500);
+
+        uint256 debt = manager.getPosition(0, alice).debt;
+        deal(EUSD, keeper, debt);
+        vm.prank(keeper);
+        manager.liquidate(0, alice, debt / 2);
+
+        (,, uint128 left) = _vault(0).range();
+        assertGt(left, 0);
+        assertLt(left, liquidity);
+        assertEq(IFablesLedgerView(FABLES_RAMP).balanceOf(address(_vault(0)), id), left, "shares");
+        assertEq(IFablesLedgerView(FABLES_RAMP).userPosition(id, address(_vault(0))).staked, left, "staked");
+        assertLe(manager.getPosition(0, alice).debt, debt - debt / 2);
+        assertEq(manager.totalDebt(), manager.getPosition(0, alice).debt);
+        // The pool lags the oracle, so the unwound share returns about the eUSD cleared (the pool
+        // rounds withdrawals down by a wei or two).
+        assertApproxEqAbs(IERC20(EUSD).balanceOf(keeper), debt, 2, "keeper pays ~nothing");
+        assertGt(manager.collateralRatioBps(0, alice), ratioBefore, "ratio improves");
+
+        // The rest of the position stays open and can be liquidated in full later.
+        oracle.setPrice(SPY_TICKER, price / 5);
+        vm.prank(keeper);
+        manager.liquidate(0, alice, type(uint256).max);
+        assertEq(manager.getPosition(0, alice).debt, 0);
+        assertEq(IFablesLedgerView(FABLES_RAMP).balanceOf(address(_vault(0)), id), 0);
     }
 
     function test_fork_usdg_sixDecimalAsset() public requiresFork {

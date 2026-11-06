@@ -15,10 +15,10 @@ import {StdCheats} from "forge-std/StdCheats.sol";
 import {StdUtils} from "forge-std/StdUtils.sol";
 
 /// @title LiquidityManagerHandler — stateful fuzz handler for EUSDLiquidityManager invariants
-/// @notice Exercises add, remove, reposition, stake toggles, withdraw, repay, close, liquidation,
-///         price moves (oracle and pool together) and time warps on the SPY pool. The handler
-///         holds eUSD MINTER_ROLE to fund wallets and the mock pool's reserves, tracked in
-///         `ghost_outsideMinted`, so supply == totalDebt + ghost_outsideMinted.
+/// @notice Exercises add, remove, reposition, stake toggles, withdraw, repay, close, partial and
+///         full liquidation, price moves (oracle and pool together) and time warps on the SPY pool.
+///         The handler holds eUSD MINTER_ROLE to fund wallets and the mock pool's reserves, tracked
+///         in `ghost_outsideMinted`, so supply == totalDebt + ghost_outsideMinted.
 contract LiquidityManagerHandler is CommonBase, StdCheats, StdUtils {
     EUSDLiquidityManager public immutable manager;
     EUSD public immutable eusd;
@@ -171,15 +171,20 @@ contract LiquidityManagerHandler is CommonBase, StdCheats, StdUtils {
         } catch {}
     }
 
-    function liquidate(
-        uint256 actorSeed
-    ) external {
+    function liquidate(uint256 actorSeed, uint256 fractionBps) external {
         address actor = _actor(actorSeed);
         if (!manager.isLiquidatable(poolId, actor)) return;
-        _fund(keeper, manager.currentDebt(poolId, actor));
+        uint256 debt = manager.currentDebt(poolId, actor);
+        // Half the calls clear everything, half a random share.
+        fractionBps = bound(fractionBps, 1, 20_000);
+        uint256 amount = fractionBps > 10_000 ? debt : (debt * fractionBps) / 10_000;
+        uint256 minDebt = manager.riskParams().minDebt;
+        bool partial_ = amount < debt && amount > 0 && debt - amount >= minDebt;
+        if (!partial_) amount = type(uint256).max;
+        _fund(keeper, debt);
         vm.prank(keeper);
-        manager.liquidate(poolId, actor);
-        ghost_calls["liquidate"]++;
+        manager.liquidate(poolId, actor, amount);
+        ghost_calls[partial_ ? bytes32("liquidatePartial") : bytes32("liquidate")]++;
     }
 
     function movePrice(

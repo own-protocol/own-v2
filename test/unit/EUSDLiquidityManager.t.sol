@@ -15,6 +15,7 @@ import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.s
 import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
 import {UUPSUpgradeable} from "@openzeppelin/contracts/proxy/utils/UUPSUpgradeable.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+import {Vm} from "forge-std/Vm.sol";
 
 /// @dev Upgrade target with one extra view, used to prove the proxy upgraded.
 contract EUSDLiquidityManagerV2 is EUSDLiquidityManager {
@@ -891,12 +892,12 @@ contract EUSDLiquidityManagerTest is LiquidityManagerSetup {
             abi.encodeWithSelector(IEUSDLiquidityManager.PositionNotLiquidatable.selector, ratio, LIQ_THRESHOLD)
         );
         vm.prank(keeper);
-        manager.liquidate(SPY_POOL, alice);
+        manager.liquidate(SPY_POOL, alice, type(uint256).max);
     }
 
     function test_liquidate_noDebt_reverts() public {
         vm.expectRevert(abi.encodeWithSelector(IEUSDLiquidityManager.NoDebt.selector, SPY_POOL, alice));
-        manager.liquidate(SPY_POOL, alice);
+        manager.liquidate(SPY_POOL, alice, type(uint256).max);
     }
 
     function _crash(
@@ -915,7 +916,7 @@ contract EUSDLiquidityManagerTest is LiquidityManagerSetup {
         uint256 aliceSpy = spy.balanceOf(alice);
 
         vm.prank(keeper);
-        manager.liquidate(SPY_POOL, alice);
+        manager.liquidate(SPY_POOL, alice, type(uint256).max);
 
         uint256 repaid = keeperEusd - eusd.balanceOf(keeper);
         uint256 seized = spy.balanceOf(keeper) - 1_000_000e18;
@@ -936,7 +937,7 @@ contract EUSDLiquidityManagerTest is LiquidityManagerSetup {
         assertTrue(manager.isLiquidatable(SPY_POOL, alice));
         giveEusd(keeper, 10_000e18);
         vm.prank(keeper);
-        manager.liquidate(SPY_POOL, alice);
+        manager.liquidate(SPY_POOL, alice, type(uint256).max);
         assertEq(_debt(SPY_POOL, alice), 0);
     }
 
@@ -945,7 +946,7 @@ contract EUSDLiquidityManagerTest is LiquidityManagerSetup {
         _crash(100e18);
         giveEusd(keeper, 10_000e18);
         vm.prank(keeper);
-        manager.liquidate(SPY_POOL, alice);
+        manager.liquidate(SPY_POOL, alice, type(uint256).max);
         assertEq(spy.balanceOf(address(_vault(SPY_POOL, alice))), 0);
         assertEq(spy.balanceOf(alice), 1_000_000e18 - 10e18, "no refund when underwater");
     }
@@ -955,9 +956,122 @@ contract EUSDLiquidityManagerTest is LiquidityManagerSetup {
         _crash(250e18);
         giveEusd(keeper, 10_000e18);
         vm.expectEmit(true, true, true, false, address(manager));
-        emit IEUSDLiquidityManager.PositionLiquidated(SPY_POOL, alice, keeper, 0, 0, 0, 0, 0);
+        emit IEUSDLiquidityManager.PositionLiquidated(SPY_POOL, alice, keeper, 0, 0, 0, 0, 0, 0);
         vm.prank(keeper);
-        manager.liquidate(SPY_POOL, alice);
+        manager.liquidate(SPY_POOL, alice, type(uint256).max);
+    }
+
+    function test_liquidate_zeroAmount_reverts() public {
+        openSpy(alice, 10e18, 3500e18);
+        _crash(250e18);
+        vm.expectRevert(IEUSDLiquidityManager.ZeroAmount.selector);
+        vm.prank(keeper);
+        manager.liquidate(SPY_POOL, alice, 0);
+    }
+
+    function test_liquidate_partial_removesShareAndKeepsRange() public {
+        openSpy(alice, 10e18, 3500e18);
+        _crash(250e18);
+        FablesAdapter v = _vault(SPY_POOL, alice);
+        (int24 lower, int24 upper, uint128 held) = v.range();
+        uint256 debt = _debt(SPY_POOL, alice);
+        uint256 cleared = debt / 2;
+        _partialLiquidate(cleared);
+
+        (int24 lowerAfter, int24 upperAfter, uint128 left) = v.range();
+        assertEq(lowerAfter, lower);
+        assertEq(upperAfter, upper);
+        assertEq(left, held - uint128(Math.mulDiv(held, cleared, debt, Math.Rounding.Ceil)));
+        assertEq(ledger.stakedOf(address(v), ledger.rangeId(spyKey, lower, upper)), left, "rest stays staked");
+        assertLe(_debt(SPY_POOL, alice), debt - cleared);
+        assertGe(_debt(SPY_POOL, alice), MIN_DEBT);
+        assertEq(manager.totalDebt(), _debt(SPY_POOL, alice));
+    }
+
+    /// @dev Liquidate `cleared` as the keeper; checks the payout, no owner refund and a better ratio.
+    function _partialLiquidate(
+        uint256 cleared
+    ) internal {
+        uint256 ratioBefore = manager.collateralRatioBps(SPY_POOL, alice);
+        uint256 aliceSpy = spy.balanceOf(alice);
+        giveEusd(keeper, cleared);
+        uint256 keeperEusd = eusd.balanceOf(keeper);
+        uint256 keeperSpy = spy.balanceOf(keeper);
+        vm.prank(keeper);
+        manager.liquidate(SPY_POOL, alice, cleared);
+        uint256 repaid = keeperEusd - eusd.balanceOf(keeper);
+        assertLe(repaid, cleared);
+        assertEq(spy.balanceOf(keeper) - keeperSpy, (repaid * (BPS + LIQ_BONUS) * 1e18) / (250e18 * BPS));
+        assertEq(spy.balanceOf(alice), aliceSpy, "no refund on a partial liquidation");
+        assertGt(manager.collateralRatioBps(SPY_POOL, alice), ratioBefore, "ratio improves");
+    }
+
+    function test_liquidate_partial_emits() public {
+        openSpy(alice, 10e18, 3500e18);
+        _crash(250e18);
+        uint256 debt = _debt(SPY_POOL, alice);
+        giveEusd(keeper, debt);
+        vm.recordLogs();
+        vm.prank(keeper);
+        manager.liquidate(SPY_POOL, alice, 1000e18);
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        bytes32 topic = IEUSDLiquidityManager.PositionLiquidated.selector;
+        bool found;
+        for (uint256 i; i < logs.length; i++) {
+            if (logs[i].emitter != address(manager) || logs[i].topics[0] != topic) continue;
+            uint256[6] memory data = abi.decode(logs[i].data, (uint256[6]));
+            assertEq(data[0], 1000e18, "cleared");
+            assertEq(data[3], 0, "asset refund");
+            assertEq(data[4], 0, "eusd refund");
+            assertEq(data[5], _debt(SPY_POOL, alice), "remaining");
+            found = true;
+        }
+        assertTrue(found);
+    }
+
+    function test_liquidate_partial_belowMinDebt_reverts() public {
+        openSpy(alice, 10e18, 3500e18);
+        _crash(250e18);
+        uint256 debt = _debt(SPY_POOL, alice);
+        giveEusd(keeper, debt);
+        vm.expectRevert(abi.encodeWithSelector(IEUSDLiquidityManager.BelowMinimumDebt.selector, MIN_DEBT - 1, MIN_DEBT));
+        vm.prank(keeper);
+        manager.liquidate(SPY_POOL, alice, debt - MIN_DEBT + 1);
+    }
+
+    function test_liquidate_partialThenFull() public {
+        openSpy(alice, 10e18, 3500e18);
+        _crash(250e18);
+        giveEusd(keeper, 10_000e18);
+        vm.startPrank(keeper);
+        manager.liquidate(SPY_POOL, alice, 1000e18);
+        if (manager.isLiquidatable(SPY_POOL, alice)) manager.liquidate(SPY_POOL, alice, 1000e18);
+        moveSpy(200e18);
+        manager.liquidate(SPY_POOL, alice, type(uint256).max);
+        vm.stopPrank();
+        assertEq(_debt(SPY_POOL, alice), 0);
+        assertEq(manager.totalDebt(), 0);
+        FablesAdapter v = _vault(SPY_POOL, alice);
+        (,, uint128 left) = v.range();
+        assertEq(left, 0);
+        assertEq(spy.balanceOf(address(v)), 0);
+        assertEq(eusd.balanceOf(address(v)), 0);
+    }
+
+    /// @dev Between 1 + bonus and the threshold, any partial liquidation leaves a healthier position.
+    function testFuzz_liquidate_partial_improvesRatio(uint256 priceSeed, uint256 amountSeed) public {
+        openSpy(alice, 10e18, 3500e18);
+        moveSpy(bound(priceSeed, 200e18, 300e18));
+        uint256 ratioBefore = manager.collateralRatioBps(SPY_POOL, alice);
+        vm.assume(ratioBefore < LIQ_THRESHOLD && ratioBefore > BPS + LIQ_BONUS);
+        uint256 debt = _debt(SPY_POOL, alice);
+        uint256 amount = bound(amountSeed, 1e18, debt - MIN_DEBT);
+        giveEusd(keeper, amount);
+        vm.prank(keeper);
+        manager.liquidate(SPY_POOL, alice, amount);
+        assertGe(manager.collateralRatioBps(SPY_POOL, alice), ratioBefore);
+        assertLe(_debt(SPY_POOL, alice), debt - amount);
+        assertEq(manager.totalDebt(), _debt(SPY_POOL, alice));
     }
 
     // ──────────────────────────────────────────────────────────
