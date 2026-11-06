@@ -128,7 +128,7 @@ interface ILiquidityVault {
     ) external returns (uint256 assetOut, uint256 eusdOut);
 
     /// @notice Stake or unstake all of the vault's liquidity, now and for liquidity added later.
-    ///         New vaults start staked.
+    ///         New vaults start unstaked.
     /// @param staked Whether the liquidity should be staked.
     function setStaked(
         bool staked

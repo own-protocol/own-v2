@@ -104,6 +104,7 @@ interface IEUSDLiquidityManager {
     /// @param assetDeposit Asset pulled from the caller into the vault first (asset units, may be 0).
     /// @param assetMax     Most of the vault's idle asset to put into the range (asset units).
     /// @param eusdMax      Most eUSD to put into the range, minted as needed (18 decimals).
+    /// @param staked       Whether the position is staked from now on, its open range included.
     struct AddLiquidityParams {
         uint256 poolId;
         int24 tickLower;
@@ -111,6 +112,7 @@ interface IEUSDLiquidityManager {
         uint256 assetDeposit;
         uint256 assetMax;
         uint256 eusdMax;
+        bool staked;
     }
 
     /// @notice Arguments of {reposition}.
@@ -393,8 +395,9 @@ interface IEUSDLiquidityManager {
 
     /// @notice Add liquidity to the caller's range: optionally deposit asset, then put up to
     ///         `assetMax` idle asset and up to `eusdMax` eUSD into the range, minting the eUSD the
-    ///         vault lacks. Unused eUSD is burned against the debt; unused asset stays idle. The
-    ///         pool must be enabled and within the price band, and the health rule applies.
+    ///         vault lacks. Unused eUSD is burned against the debt; unused asset stays idle. Sets
+    ///         the position's staked mode first, as {setStaked}. The pool must be enabled and within
+    ///         the price band, and the health rule applies.
     /// @param params See {AddLiquidityParams}.
     /// @return liquidity Liquidity added.
     function addLiquidity(
@@ -421,7 +424,7 @@ interface IEUSDLiquidityManager {
 
     /// @notice Stake or unstake the caller's liquidity. Staked liquidity earns DEX emissions and
     ///         pays the staked fee; unstaked liquidity keeps swap fees and pays the unstaked fee.
-    ///         New positions start staked.
+    ///         New positions start unstaked; {addLiquidity} also sets the mode.
     /// @param poolId Pool id.
     /// @param staked Whether the liquidity should be staked.
     function setStaked(uint256 poolId, bool staked) external;

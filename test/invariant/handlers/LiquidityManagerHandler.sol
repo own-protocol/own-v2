@@ -73,7 +73,13 @@ contract LiquidityManagerHandler is CommonBase, StdCheats, StdUtils {
     //  Actions
     // ──────────────────────────────────────────────────────────
 
-    function addLiquidity(uint256 actorSeed, uint256 rangeSeed, uint256 assetIn, uint256 leverageBps) external {
+    function addLiquidity(
+        uint256 actorSeed,
+        uint256 rangeSeed,
+        uint256 assetIn,
+        uint256 leverageBps,
+        bool staked
+    ) external {
         address actor = _actor(actorSeed);
         assetIn = bound(assetIn, 0.1e18, 50e18);
         leverageBps = bound(leverageBps, 2000, 9500);
@@ -87,7 +93,8 @@ contract LiquidityManagerHandler is CommonBase, StdCheats, StdUtils {
                 tickUpper: upper,
                 assetDeposit: assetIn,
                 assetMax: assetIn / 2,
-                eusdMax: eusdMax
+                eusdMax: eusdMax,
+                staked: staked
             })
         ) {
             ghost_calls["add"]++;

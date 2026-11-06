@@ -108,7 +108,6 @@ contract FablesAdapter is ILiquidityVault, Initializable, ReentrancyGuard {
     }
 
     /// @inheritdoc ILiquidityVault
-    /// @dev New vaults start staked, matching the manager's default.
     function initialize(
         address owner_,
         address asset_,
@@ -123,7 +122,6 @@ contract FablesAdapter is ILiquidityVault, Initializable, ReentrancyGuard {
         _key = key;
         _assetIsZero = assetIsZero;
         _assetScale = 10 ** _decimals(asset_);
-        staked = true;
     }
 
     // ──────────────────────────────────────────────────────────

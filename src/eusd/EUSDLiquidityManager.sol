@@ -42,6 +42,17 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
         uint256 ratioBps;
     }
 
+    /// @dev Both fee indexes and when they were last settled, in one slot. An index is cumulative
+    ///      fee BPS × elapsed seconds; uint64 holds 100% a year for millions of years.
+    /// @param staked   Index of the staked rate.
+    /// @param unstaked Index of the unstaked rate.
+    /// @param updated  Timestamp both indexes were last settled.
+    struct FeeIndexes {
+        uint64 staked;
+        uint64 unstaked;
+        uint64 updated;
+    }
+
     /// @dev Where a liquidation's tokens went.
     /// @param repaid      Debt burned from the liquidator (18 decimals).
     /// @param seized      Asset paid to the liquidator (asset units).
@@ -99,14 +110,8 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
     /// @dev Pool id => owners in vault-creation order.
     mapping(uint256 => address[]) private _owners;
 
-    /// @dev Fee index of the staked rate: cumulative `stakedFeeBps` × elapsed seconds.
-    uint256 private _stakedFeeIndex;
-
-    /// @dev Fee index of the unstaked rate: cumulative `unstakedFeeBps` × elapsed seconds.
-    uint256 private _unstakedFeeIndex;
-
-    /// @dev Timestamp both fee indexes were last settled.
-    uint256 private _feeIndexUpdated;
+    /// @dev Fee indexes (see {FeeIndexes}).
+    FeeIndexes private _feeIndexes;
 
     // ──────────────────────────────────────────────────────────
     //  Modifiers
@@ -114,8 +119,13 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
 
     /// @dev Reverts unless the caller holds ADMIN in the registry.
     modifier onlyAdmin() {
-        if (!registry.hasRole(ADMIN, msg.sender)) revert OnlyAdmin();
+        _onlyAdmin();
         _;
+    }
+
+    /// @dev Reverts unless the caller holds ADMIN in the registry.
+    function _onlyAdmin() private view {
+        if (!registry.hasRole(ADMIN, msg.sender)) revert OnlyAdmin();
     }
 
     /// @dev Reverts unless the caller holds OPERATOR in the registry.
@@ -147,7 +157,7 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
         registry = IProtocolRegistry(registry_);
         _eusd = IEUSD(eusd_);
         _riskParams = params;
-        _feeIndexUpdated = block.timestamp;
+        _feeIndexes.updated = uint64(block.timestamp);
     }
 
     /// @dev UUPS upgrade gate: ADMIN only.
@@ -200,6 +210,7 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
         PoolConfig storage cfg = _requireEnabledPool(poolId);
         Position storage p = _accrue(poolId, msg.sender);
         address vault = _vaultFor(poolId, cfg, p);
+        if (p.staked != params.staked) _setStaked(poolId, p, vault, params.staked);
         if (params.assetDeposit > 0) {
             IERC20(cfg.asset).safeTransferFrom(msg.sender, vault, params.assetDeposit);
             emit AssetDeposited(poolId, msg.sender, params.assetDeposit);
@@ -246,11 +257,7 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
     function setStaked(uint256 poolId, bool staked) external override nonReentrant {
         _requirePool(poolId);
         Position storage p = _accrue(poolId, msg.sender);
-        address vault = _requireVault(poolId, msg.sender, p);
-        p.staked = staked;
-        p.feeIndexSnapshot = staked ? _stakedFeeIndex : _unstakedFeeIndex;
-        ILiquidityVault(vault).setStaked(staked);
-        emit StakedSet(poolId, msg.sender, staked);
+        _setStaked(poolId, p, _requireVault(poolId, msg.sender, p), staked);
     }
 
     /// @inheritdoc IEUSDLiquidityManager
@@ -469,7 +476,7 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
         if (vault == address(0)) revert NoVault(poolId, owner);
     }
 
-    /// @dev The caller's vault, created on first use. A new position starts staked.
+    /// @dev The caller's vault, created on first use. A new position starts unstaked.
     /// @param poolId Pool id.
     /// @param cfg    The pool's configuration.
     /// @param p      The caller's position (accrued).
@@ -484,10 +491,21 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
             )
         );
         p.vault = vault;
-        p.staked = true;
-        p.feeIndexSnapshot = _stakedFeeIndex;
         _owners[poolId].push(msg.sender);
         emit VaultCreated(poolId, msg.sender, vault);
+    }
+
+    /// @dev Switch the caller's position between the staked and unstaked fee. The position must
+    ///      be accrued, so the old rate applies up to now.
+    /// @param poolId Pool id.
+    /// @param p      The caller's position (accrued).
+    /// @param vault  The caller's vault.
+    /// @param staked Whether the position should be staked.
+    function _setStaked(uint256 poolId, Position storage p, address vault, bool staked) private {
+        p.staked = staked;
+        p.feeIndexSnapshot = staked ? _feeIndexes.staked : _feeIndexes.unstaked;
+        ILiquidityVault(vault).setStaked(staked);
+        emit StakedSet(poolId, msg.sender, staked);
     }
 
     /// @dev Put liquidity into the caller's range: mint the eUSD the vault lacks for `eusdMax`, add,
@@ -689,12 +707,15 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
     // ──────────────────────────────────────────────────────────
 
     /// @dev Settle both fee indexes up to now at the current rates.
-    function _settleFeeIndexes() private {
-        uint256 elapsed = block.timestamp - _feeIndexUpdated;
+    /// @return idx The settled indexes.
+    function _settleFeeIndexes() private returns (FeeIndexes memory idx) {
+        idx = _feeIndexes;
+        uint256 elapsed = block.timestamp - idx.updated;
         if (elapsed > 0) {
-            _stakedFeeIndex += uint256(_riskParams.stakedFeeBps) * elapsed;
-            _unstakedFeeIndex += uint256(_riskParams.unstakedFeeBps) * elapsed;
-            _feeIndexUpdated = block.timestamp;
+            idx.staked += uint64(uint256(_riskParams.stakedFeeBps) * elapsed);
+            idx.unstaked += uint64(uint256(_riskParams.unstakedFeeBps) * elapsed);
+            idx.updated = uint64(block.timestamp);
+            _feeIndexes = idx;
         }
     }
 
@@ -704,9 +725,9 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
     /// @param owner  Position owner.
     /// @return p The position, with its debt brought up to date.
     function _accrue(uint256 poolId, address owner) private returns (Position storage p) {
-        _settleFeeIndexes();
+        FeeIndexes memory idx = _settleFeeIndexes();
         p = _positions[poolId][owner];
-        uint256 index = p.staked ? _stakedFeeIndex : _unstakedFeeIndex;
+        uint256 index = p.staked ? idx.staked : idx.unstaked;
         if (p.debt > 0 && index > p.feeIndexSnapshot) {
             // Charged on principal only, so the fee is simple interest however often it accrues.
             uint256 fee = Math.mulDiv(p.debt - p.feesAccrued, index - p.feeIndexSnapshot, BPS * YEAR);
@@ -852,8 +873,9 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
     function globalFeeIndex(
         bool staked
     ) public view override returns (uint256) {
-        uint256 elapsed = block.timestamp - _feeIndexUpdated;
-        if (staked) return _stakedFeeIndex + uint256(_riskParams.stakedFeeBps) * elapsed;
-        return _unstakedFeeIndex + uint256(_riskParams.unstakedFeeBps) * elapsed;
+        FeeIndexes memory idx = _feeIndexes;
+        uint256 elapsed = block.timestamp - idx.updated;
+        if (staked) return idx.staked + uint256(_riskParams.stakedFeeBps) * elapsed;
+        return idx.unstaked + uint256(_riskParams.unstakedFeeBps) * elapsed;
     }
 }

@@ -181,8 +181,18 @@ contract LiquidityManagerSetup is Test {
         return (tickAt(highPrice, 1e6, false, 1), tickAt(lowPrice, 1e6, false, 1));
     }
 
-    /// @dev Open a SPY position for `user`: deposit `assetIn`, put up to `assetIn` and `eusdMax` in ±15%.
+    /// @dev Open a staked SPY position for `user`: deposit `assetIn`, put up to `assetIn` and `eusdMax` in ±15%.
     function openSpy(address user, uint256 assetIn, uint256 eusdMax) internal returns (uint128 liquidity) {
+        return openSpy(user, assetIn, eusdMax, true);
+    }
+
+    /// @dev As {openSpy}, staked or not.
+    function openSpy(
+        address user,
+        uint256 assetIn,
+        uint256 eusdMax,
+        bool staked
+    ) internal returns (uint128 liquidity) {
         (int24 lower, int24 upper) = spyRange(595e18, 805e18);
         vm.prank(user);
         liquidity = manager.addLiquidity(
@@ -192,7 +202,8 @@ contract LiquidityManagerSetup is Test {
                 tickUpper: upper,
                 assetDeposit: assetIn,
                 assetMax: assetIn,
-                eusdMax: eusdMax
+                eusdMax: eusdMax,
+                staked: staked
             })
         );
     }

@@ -186,7 +186,8 @@ contract EUSDLiquidityManagerRobinhoodFork is Test {
                 tickUpper: upper,
                 assetDeposit: 10e18,
                 assetMax: 5e18,
-                eusdMax: 5 * price
+                eusdMax: 5 * price,
+                staked: true
             })
         );
     }
@@ -329,7 +330,8 @@ contract EUSDLiquidityManagerRobinhoodFork is Test {
                 tickUpper: upper,
                 assetDeposit: 2000e6,
                 assetMax: 1000e6,
-                eusdMax: 1000e18
+                eusdMax: 1000e18,
+                staked: true
             })
         );
         assertGt(liquidity, 0);

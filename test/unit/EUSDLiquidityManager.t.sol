@@ -53,7 +53,8 @@ contract EUSDLiquidityManagerTest is LiquidityManagerSetup {
             tickUpper: upper,
             assetDeposit: assetDeposit,
             assetMax: assetMax,
-            eusdMax: eusdMax
+            eusdMax: eusdMax,
+            staked: true
         });
     }
 
@@ -248,17 +249,17 @@ contract EUSDLiquidityManagerTest is LiquidityManagerSetup {
     //  deposit / withdraw
     // ──────────────────────────────────────────────────────────
 
-    function test_deposit_createsVaultStaked() public {
+    function test_deposit_createsVaultUnstaked() public {
         vm.prank(alice);
         manager.deposit(SPY_POOL, 5e18);
         IEUSDLiquidityManager.Position memory p = manager.getPosition(SPY_POOL, alice);
         assertTrue(p.vault != address(0));
-        assertTrue(p.staked);
+        assertFalse(p.staked);
         FablesAdapter v = FablesAdapter(p.vault);
         assertEq(v.owner(), alice);
         assertEq(v.manager(), address(manager));
         assertEq(v.asset(), address(spy));
-        assertTrue(v.staked());
+        assertFalse(v.staked());
         assertEq(spy.balanceOf(p.vault), 5e18);
         assertEq(manager.positionCount(SPY_POOL), 1);
         assertEq(manager.positionOwnerAt(SPY_POOL, 0), alice);
@@ -416,7 +417,8 @@ contract EUSDLiquidityManagerTest is LiquidityManagerSetup {
                 tickUpper: upper,
                 assetDeposit: 5e18,
                 assetMax: 5e18,
-                eusdMax: 0
+                eusdMax: 0,
+                staked: true
             })
         );
         assertGt(liquidity, 0);
@@ -514,12 +516,36 @@ contract EUSDLiquidityManagerTest is LiquidityManagerSetup {
         vm.expectRevert(MockFablesLedger.DeskRetired.selector);
         openSpy(alice, 10e18, 3500e18);
 
-        vm.startPrank(alice);
-        manager.deposit(SPY_POOL, 1e18);
-        manager.setStaked(SPY_POOL, false);
-        vm.stopPrank();
-        openSpy(alice, 10e18, 3500e18);
+        openSpy(alice, 10e18, 3500e18, false);
         assertFalse(manager.getPosition(SPY_POOL, alice).staked);
+    }
+
+    function test_addLiquidity_unstaked_opensUnstakedAtUnstakedRate() public {
+        uint128 liquidity = openSpy(alice, 10e18, 3500e18, false);
+        FablesAdapter v = _vault(SPY_POOL, alice);
+        (int24 lower, int24 upper,) = v.range();
+        IEUSDLiquidityManager.Position memory p = manager.getPosition(SPY_POOL, alice);
+        assertFalse(p.staked);
+        assertFalse(v.staked());
+        assertEq(p.feeIndexSnapshot, manager.globalFeeIndex(false));
+        assertEq(ledger.stakedOf(address(v), ledger.rangeId(spyKey, lower, upper)), 0);
+        assertGt(liquidity, 0);
+    }
+
+    function test_addLiquidity_switchesOpenRangeMode() public {
+        uint128 liquidity = openSpy(alice, 10e18, 3500e18);
+        FablesAdapter v = _vault(SPY_POOL, alice);
+        (int24 lower, int24 upper,) = v.range();
+        uint256 id = ledger.rangeId(spyKey, lower, upper);
+        assertEq(ledger.stakedOf(address(v), id), liquidity);
+
+        vm.expectEmit(address(manager));
+        emit IEUSDLiquidityManager.StakedSet(SPY_POOL, alice, false);
+        uint128 added = openSpy(alice, 1e18, 350e18, false);
+        assertFalse(manager.getPosition(SPY_POOL, alice).staked);
+        assertEq(ledger.stakedOf(address(v), id), 0);
+        (,, uint128 held) = v.range();
+        assertEq(held, liquidity + added);
     }
 
     function test_addLiquidity_assetAsCurrency1_sixDecimals() public {
@@ -532,7 +558,8 @@ contract EUSDLiquidityManagerTest is LiquidityManagerSetup {
                 tickUpper: upper,
                 assetDeposit: 2000e6,
                 assetMax: 1000e6,
-                eusdMax: 1000e18
+                eusdMax: 1000e18,
+                staked: true
             })
         );
         assertGt(liquidity, 0);
