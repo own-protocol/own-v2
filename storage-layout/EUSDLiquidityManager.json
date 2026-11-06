@@ -55,22 +55,10 @@
       "type": "t_mapping(t_uint256,t_array(t_address)dyn_storage)"
     },
     {
-      "label": "_stakedFeeIndex",
+      "label": "_feeIndexes",
       "offset": 0,
       "slot": "12",
-      "type": "t_uint256"
-    },
-    {
-      "label": "_unstakedFeeIndex",
-      "offset": 0,
-      "slot": "13",
-      "type": "t_uint256"
-    },
-    {
-      "label": "_feeIndexUpdated",
-      "offset": 0,
-      "slot": "14",
-      "type": "t_uint256"
+      "type": "t_struct(FeeIndexes)_storage"
     }
   ],
   "types": {
@@ -137,6 +125,31 @@
       "label": "mapping(uint256 => struct IEUSDLiquidityManager.PoolConfig)",
       "numberOfBytes": "32",
       "value": "t_struct(PoolConfig)_storage"
+    },
+    "t_struct(FeeIndexes)_storage": {
+      "encoding": "inplace",
+      "label": "struct EUSDLiquidityManager.FeeIndexes",
+      "members": [
+        {
+          "label": "staked",
+          "offset": 0,
+          "slot": "0",
+          "type": "t_uint64"
+        },
+        {
+          "label": "unstaked",
+          "offset": 8,
+          "slot": "0",
+          "type": "t_uint64"
+        },
+        {
+          "label": "updated",
+          "offset": 16,
+          "slot": "0",
+          "type": "t_uint64"
+        }
+      ],
+      "numberOfBytes": "32"
     },
     "t_struct(PoolConfig)_storage": {
       "encoding": "inplace",
@@ -294,6 +307,11 @@
       "encoding": "inplace",
       "label": "uint256",
       "numberOfBytes": "32"
+    },
+    "t_uint64": {
+      "encoding": "inplace",
+      "label": "uint64",
+      "numberOfBytes": "8"
     },
     "t_uint8": {
       "encoding": "inplace",
