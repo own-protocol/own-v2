@@ -12,7 +12,7 @@
 # remove. Re-run with --update and review the diff in the PR when you do append.
 set -euo pipefail
 
-CONTRACTS=(EUSDManager MoneyFeeCollector EUSDLiquidityManager FablesAdapter)
+CONTRACTS=(EUSDManager MoneyFeeCollector EUSDLiquidityManager FablesAdapter AerodromeAdapter)
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SNAP_DIR="$DIR/storage-layout"
 MODE="${1:-check}"

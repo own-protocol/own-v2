@@ -4,6 +4,7 @@ pragma solidity 0.8.28;
 import {Script, console} from "forge-std/Script.sol";
 
 import {EUSDLiquidityManager} from "../../src/eusd/EUSDLiquidityManager.sol";
+import {AerodromeAdapter} from "../../src/eusd/adapters/AerodromeAdapter.sol";
 import {FablesAdapter} from "../../src/eusd/adapters/FablesAdapter.sol";
 import {IEUSDLiquidityManager} from "../../src/interfaces/IEUSDLiquidityManager.sol";
 
@@ -16,12 +17,14 @@ import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 ///         from env. Reuses EUSD_LIQ_MANAGER_IMPL when set, otherwise deploys a fresh implementation.
 ///         Reuses FABLES_VAULT_BEACON when set, otherwise deploys the FablesAdapter implementation
 ///         and its UpgradeableBeacon owned by the governance Safe (one beacon serves every manager).
-///         The proxy is inert until the Safe grants it eUSD MINTER_ROLE and adds pools with
-///         `addPool(beacon, asset, ticker, abi.encode(poolKey))`.
+///         Likewise for Aero: reuses AERO_VAULT_BEACON when set, otherwise deploys the
+///         AerodromeAdapter implementation and its beacon. The proxy is inert until the Safe grants
+///         it eUSD MINTER_ROLE and adds pools with `addPool(beacon, asset, ticker, poolData)`, where
+///         poolData is `abi.encode(poolKey)` for Fables and `abi.encode(pool)` for Aero.
 ///
 /// Env: DEPLOYER_PRIVATE_KEY_ROBINHOOD, PROTOCOL_REGISTRY_ROBINHOOD, EUSD_ROBINHOOD, GOV_SAFE_ROBINHOOD,
-///      FABLES_POOL_MANAGER, FABLES_EMISSION_STREAM, EUSD_LIQ_MANAGER_IMPL (optional),
-///      FABLES_VAULT_BEACON (optional), MCR_BPS, LIQ_THRESHOLD_BPS, LIQ_BONUS_BPS, STAKED_FEE_BPS,
+///      FABLES_POOL_MANAGER, FABLES_EMISSION_STREAM, AERO_POSITION_MANAGER, AERO_CL_FACTORY,
+///      EUSD_LIQ_MANAGER_IMPL (optional), FABLES_VAULT_BEACON (optional), AERO_VAULT_BEACON (optional), MCR_BPS, LIQ_THRESHOLD_BPS, LIQ_BONUS_BPS, STAKED_FEE_BPS,
 ///      UNSTAKED_FEE_BPS, POOL_PRICE_BAND_BPS, DEBT_CEILING (18 dec), MIN_DEBT (18 dec),
 ///      MINT_PRICE_MAX_AGE (seconds)
 ///
@@ -31,7 +34,7 @@ import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 contract DeployEusdLiquidityManagerRobinhood is Script {
     uint256 constant ROBINHOOD_CHAIN_ID = 4663;
 
-    function run() external returns (address manager, address implementation, address beacon) {
+    function run() external returns (address manager, address implementation, address beacon, address aeroBeacon) {
         require(block.chainid == ROBINHOOD_CHAIN_ID, "RPC is not Robinhood Chain (4663)");
         address registry = vm.envAddress("PROTOCOL_REGISTRY_ROBINHOOD");
         address eusd = vm.envAddress("EUSD_ROBINHOOD");
@@ -45,6 +48,12 @@ contract DeployEusdLiquidityManagerRobinhood is Script {
             );
             beacon = address(new UpgradeableBeacon(vaultImpl, vm.envAddress("GOV_SAFE_ROBINHOOD")));
         }
+        aeroBeacon = vm.envOr("AERO_VAULT_BEACON", address(0));
+        if (aeroBeacon == address(0)) {
+            address vaultImpl =
+                address(new AerodromeAdapter(vm.envAddress("AERO_POSITION_MANAGER"), vm.envAddress("AERO_CL_FACTORY")));
+            aeroBeacon = address(new UpgradeableBeacon(vaultImpl, vm.envAddress("GOV_SAFE_ROBINHOOD")));
+        }
         implementation = vm.envOr("EUSD_LIQ_MANAGER_IMPL", address(0));
         if (implementation == address(0)) implementation = address(new EUSDLiquidityManager());
         manager = address(
@@ -55,6 +64,7 @@ contract DeployEusdLiquidityManagerRobinhood is Script {
         console.log("EUSDLiquidityManager impl: ", implementation);
         console.log("EUSDLiquidityManager proxy:", manager);
         console.log("Fables vault beacon:       ", beacon);
+        console.log("Aero vault beacon:         ", aeroBeacon);
     }
 
     function _params() internal view returns (IEUSDLiquidityManager.RiskParams memory params) {

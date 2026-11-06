@@ -94,7 +94,8 @@ interface ILiquidityVault {
     /// @param owner    Position owner.
     /// @param asset    The pool's non-eUSD token.
     /// @param eusd     The eUSD token.
-    /// @param poolData DEX-specific pool description (for Fables, an abi-encoded `PoolKey`).
+    /// @param poolData DEX-specific pool description (Fables: an abi-encoded `PoolKey`; Aero: the
+    ///                 abi-encoded pool address).
     function initialize(address owner, address asset, address eusd, bytes calldata poolData) external;
 
     /// @notice Add liquidity to the vault's range from its own balances. Pays at most `assetMax`

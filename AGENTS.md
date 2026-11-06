@@ -33,7 +33,8 @@ slither src/ --config-file slither.config.json
 src/
   eusd/        EUSD (ERC-20 + permit, MINTER_ROLE held by each manager), EUSDManager (CDP engine),
                EUSDLiquidityManager (CDP engine over DEX liquidity)
-  eusd/adapters/ FablesAdapter (per-position liquidity vault for Fables pools, behind a beacon)
+  eusd/adapters/ FablesAdapter, AerodromeAdapter (per-position liquidity vaults for Fables and
+               Aero Slipstream pools, one beacon per DEX)
   libraries/   LiquidityMath (v4 tick math, vendored, and liquidity/amount formulas)
   staking/     StakingVault
   oracle/      ChainlinkOracleVerifier
