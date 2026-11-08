@@ -31,7 +31,7 @@ contract EUSDLiquidityManagerInvariantTest is LiquidityManagerSetup {
         vm.stopPrank();
         handler.fundPool();
 
-        bytes4[] memory selectors = new bytes4[](11);
+        bytes4[] memory selectors = new bytes4[](12);
         selectors[0] = handler.addLiquidity.selector;
         selectors[1] = handler.removeLiquidity.selector;
         selectors[2] = handler.reposition.selector;
@@ -43,6 +43,7 @@ contract EUSDLiquidityManagerInvariantTest is LiquidityManagerSetup {
         selectors[8] = handler.movePrice.selector;
         selectors[9] = handler.warp.selector;
         selectors[10] = handler.fundPool.selector;
+        selectors[11] = handler.closePrincipalOnly.selector;
         targetSelector(FuzzSelector({addr: address(handler), selectors: selectors}));
         targetContract(address(handler));
     }

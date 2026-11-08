@@ -256,6 +256,15 @@ interface IEUSDLiquidityManager {
     /// @param fee    Fee added to the debt (18 decimals).
     event StabilityFeeAccrued(uint256 indexed poolId, address indexed owner, uint256 fee);
 
+    /// @notice Emitted when a principal-only close settles accrued fees from the vault's asset.
+    /// @param poolId      Pool id.
+    /// @param owner       Position owner.
+    /// @param feesSettled Fee debt retired by burning the treasury's eUSD (18 decimals).
+    /// @param feeAsset    Asset sent to the treasury in exchange (asset units).
+    event PositionFeesSettledFromAsset(
+        uint256 indexed poolId, address indexed owner, uint256 feesSettled, uint256 feeAsset
+    );
+
     /// @notice Emitted when an owner closes a position.
     /// @param poolId     Pool id.
     /// @param owner      Position owner.
@@ -444,6 +453,19 @@ interface IEUSDLiquidityManager {
     /// @param assetMin Least asset the range must return (asset units).
     /// @param eusdMin  Least eUSD the range must return (18 decimals).
     function close(uint256 poolId, uint256 assetMin, uint256 eusdMin) external;
+
+    /// @notice Close the caller's position like {close}, but the caller never pays accrued fees in
+    ///         eUSD. Of the shortfall the caller would burn, the part that is still accrued fees (up
+    ///         to `feesAccrued`, plus up to 1e9 wei of DEX rounding dust) is settled by sending asset
+    ///         of equal value, rounded against the owner, from the vault to the treasury and burning
+    ///         the same amount of eUSD from the treasury. Any principal shortfall beyond that (the
+    ///         range sold eUSD for asset) is still burned from the caller. With fees to settle it
+    ///         needs a fresh price, and it reverts if the treasury's eUSD balance cannot cover the
+    ///         burn; {close} always works instead.
+    /// @param poolId   Pool id.
+    /// @param assetMin Least asset the range must return (asset units).
+    /// @param eusdMin  Least eUSD the range must return (18 decimals).
+    function closePrincipalOnly(uint256 poolId, uint256 assetMin, uint256 eusdMin) external;
 
     /// @notice Fold a position's pending stability fee into its debt.
     /// @param poolId Pool id.

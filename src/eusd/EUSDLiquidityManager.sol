@@ -72,6 +72,10 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
     /// @dev Stability-fee year basis (simple interest).
     uint256 private constant YEAR = 365 days;
 
+    /// @dev DEX rounding leaves a removed range a few wei short of the eUSD it was given, so a
+    ///      principal-only close also settles up to this much principal from asset.
+    uint256 private constant CLOSE_DUST = 1e9;
+
     /// @dev ProtocolRegistry role for configuration and upgrades.
     bytes32 private constant ADMIN = keccak256("ADMIN");
 
@@ -280,27 +284,14 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
 
     /// @inheritdoc IEUSDLiquidityManager
     function close(uint256 poolId, uint256 assetMin, uint256 eusdMin) external override nonReentrant {
-        PoolConfig storage cfg = _requirePool(poolId);
-        Position storage p = _accrue(poolId, msg.sender);
-        address vault = _requireVault(poolId, msg.sender, p);
-        (,, uint128 held) = ILiquidityVault(vault).range();
-        if (held > 0) _remove(poolId, msg.sender, vault, held, assetMin, eusdMin);
+        _close(poolId, assetMin, eusdMin, false);
+    }
 
-        uint256 debt = p.debt;
-        uint256 vaultEusd = _eusd.balanceOf(vault);
-        uint256 assetOut = IERC20(cfg.asset).balanceOf(vault);
-        if (debt == 0 && held == 0 && vaultEusd == 0 && assetOut == 0) revert EmptyPosition(poolId, msg.sender);
-        uint256 fromVault = Math.min(vaultEusd, debt);
-        uint256 paidByUser = debt - fromVault;
-        _reduceDebt(p, debt);
-
-        if (fromVault > 0) _eusd.burn(vault, fromVault);
-        if (paidByUser > 0) _eusd.burn(msg.sender, paidByUser);
-        if (assetOut > 0) ILiquidityVault(vault).transferToken(cfg.asset, msg.sender, assetOut);
-        if (vaultEusd > fromVault) {
-            ILiquidityVault(vault).transferToken(address(_eusd), msg.sender, vaultEusd - fromVault);
-        }
-        emit PositionClosed(poolId, msg.sender, debt, paidByUser, assetOut, vaultEusd - fromVault);
+    /// @inheritdoc IEUSDLiquidityManager
+    /// @dev Accrual on entry mints pending fees to the treasury first, so the treasury burn covers
+    ///      every fee the position owes.
+    function closePrincipalOnly(uint256 poolId, uint256 assetMin, uint256 eusdMin) external override nonReentrant {
+        _close(poolId, assetMin, eusdMin, true);
     }
 
     /// @inheritdoc IEUSDLiquidityManager
@@ -564,6 +555,88 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
     ) private {
         (uint256 assetOut, uint256 eusdOut) = ILiquidityVault(vault).removeLiquidity(liquidity, assetMin, eusdMin);
         emit LiquidityRemoved(poolId, owner, liquidity, assetOut, eusdOut);
+    }
+
+    /// @dev Remove all liquidity, retire the full debt (the vault's eUSD first, then the caller's)
+    ///      and send what is left to the caller. With `feesFromAsset`, the part of the caller's
+    ///      share that is still accrued fees is settled instead with asset of equal value at a fresh
+    ///      price (rounded up, against the owner) sent to the treasury, whose eUSD is burned by the
+    ///      same amount. Settlement is capped at the vault's asset.
+    /// @param poolId        Pool id.
+    /// @param assetMin      Least asset the range must return (asset units).
+    /// @param eusdMin       Least eUSD the range must return (18 decimals).
+    /// @param feesFromAsset Whether to settle the caller's fee share from the vault's asset.
+    function _close(uint256 poolId, uint256 assetMin, uint256 eusdMin, bool feesFromAsset) private {
+        PoolConfig storage cfg = _requirePool(poolId);
+        Position storage p = _accrue(poolId, msg.sender);
+        address vault = _requireVault(poolId, msg.sender, p);
+        (,, uint128 held) = ILiquidityVault(vault).range();
+        if (held > 0) _remove(poolId, msg.sender, vault, held, assetMin, eusdMin);
+
+        uint256 vaultEusd = _eusd.balanceOf(vault);
+        uint256 assetOut = IERC20(cfg.asset).balanceOf(vault);
+        if (p.debt == 0 && held == 0 && vaultEusd == 0 && assetOut == 0) revert EmptyPosition(poolId, msg.sender);
+        _settleClose(poolId, cfg, p, vault, vaultEusd, assetOut, feesFromAsset);
+    }
+
+    /// @dev Retire a closing position's full debt and pay out the vault (see {_close}).
+    /// @param poolId        Pool id.
+    /// @param cfg           The pool's configuration.
+    /// @param p             The caller's position (accrued, range removed).
+    /// @param vault         The caller's vault.
+    /// @param vaultEusd     The vault's eUSD (18 decimals).
+    /// @param assetOut      The vault's asset (asset units).
+    /// @param feesFromAsset Whether to settle the caller's fee share from the vault's asset.
+    function _settleClose(
+        uint256 poolId,
+        PoolConfig storage cfg,
+        Position storage p,
+        address vault,
+        uint256 vaultEusd,
+        uint256 assetOut,
+        bool feesFromAsset
+    ) private {
+        uint256 debt = p.debt;
+        uint256 fromVault = Math.min(vaultEusd, debt);
+        uint256 paidByUser = debt - fromVault;
+        (uint256 fees, uint256 feeAsset) =
+            feesFromAsset ? _feesFromAsset(cfg, Math.min(p.feesAccrued + CLOSE_DUST, paidByUser), assetOut) : (0, 0);
+        paidByUser -= fees;
+        _reduceDebt(p, debt);
+
+        if (fromVault > 0) _eusd.burn(vault, fromVault);
+        if (paidByUser > 0) _eusd.burn(msg.sender, paidByUser);
+        if (fees > 0) {
+            address treasury = registry.treasury();
+            _eusd.burn(treasury, fees);
+            ILiquidityVault(vault).transferToken(cfg.asset, treasury, feeAsset);
+            emit PositionFeesSettledFromAsset(poolId, msg.sender, fees, feeAsset);
+        }
+        assetOut -= feeAsset;
+        vaultEusd -= fromVault;
+        if (assetOut > 0) ILiquidityVault(vault).transferToken(cfg.asset, msg.sender, assetOut);
+        if (vaultEusd > 0) ILiquidityVault(vault).transferToken(address(_eusd), msg.sender, vaultEusd);
+        emit PositionClosed(poolId, msg.sender, debt, paidByUser, assetOut, vaultEusd);
+    }
+
+    /// @dev Asset that settles `fees` at a fresh price, rounded up, capped at `assetAvailable` (then
+    ///      the fees settled shrink to that asset's value, rounded down).
+    /// @param cfg            The pool's configuration.
+    /// @param fees           Fees to settle (18 decimals).
+    /// @param assetAvailable Asset in the vault (asset units).
+    /// @return settled  Fees settled (18 decimals).
+    /// @return feeAsset Asset paid for them (asset units; 0 when nothing is settled).
+    function _feesFromAsset(
+        PoolConfig storage cfg,
+        uint256 fees,
+        uint256 assetAvailable
+    ) private view returns (uint256 settled, uint256 feeAsset) {
+        if (fees == 0) return (0, 0);
+        uint256 price = _freshPrice(cfg.ticker);
+        feeAsset = Math.mulDiv(fees, 10 ** cfg.assetDecimals, price, Math.Rounding.Ceil);
+        if (feeAsset <= assetAvailable) return (fees, feeAsset);
+        settled = _assetValue(cfg, assetAvailable, price);
+        feeAsset = settled == 0 ? 0 : assetAvailable;
     }
 
     /// @dev Burn the vault's eUSD against the debt, leaving the debt at zero or at least `minDebt`

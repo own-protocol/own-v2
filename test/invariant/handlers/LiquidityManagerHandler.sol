@@ -15,7 +15,7 @@ import {StdCheats} from "forge-std/StdCheats.sol";
 import {StdUtils} from "forge-std/StdUtils.sol";
 
 /// @title LiquidityManagerHandler — stateful fuzz handler for EUSDLiquidityManager invariants
-/// @notice Exercises add, remove, reposition, stake toggles, withdraw, repay, close, partial and
+/// @notice Exercises add, remove, reposition, stake toggles, withdraw, repay, close (both kinds), partial and
 ///         full liquidation, price moves (oracle and pool together) and time warps on the SPY pool.
 ///         The handler holds eUSD MINTER_ROLE to fund wallets and the mock pool's reserves, tracked
 ///         in `ghost_outsideMinted`, so supply == totalDebt + ghost_outsideMinted.
@@ -175,6 +175,18 @@ contract LiquidityManagerHandler is CommonBase, StdCheats, StdUtils {
         vm.prank(actor);
         try manager.close(poolId, 0, 0) {
             ghost_calls["close"]++;
+        } catch {}
+    }
+
+    function closePrincipalOnly(
+        uint256 actorSeed
+    ) external {
+        address actor = _actor(actorSeed);
+        if (manager.getPosition(poolId, actor).vault == address(0)) return;
+        _fund(actor, manager.currentDebt(poolId, actor));
+        vm.prank(actor);
+        try manager.closePrincipalOnly(poolId, 0, 0) {
+            ghost_calls["closePrincipalOnly"]++;
         } catch {}
     }
 

@@ -909,6 +909,208 @@ contract EUSDLiquidityManagerTest is LiquidityManagerSetup {
     }
 
     // ──────────────────────────────────────────────────────────
+    //  closePrincipalOnly
+    // ──────────────────────────────────────────────────────────
+
+    /// @dev The treasury normally holds other positions' fees too; give it some for the dust.
+    function _fundTreasury() internal {
+        giveEusd(treasury, 1e18);
+    }
+
+    function _feesAccrued(uint256 poolId, address owner) internal returns (uint256) {
+        manager.accrue(poolId, owner);
+        return manager.getPosition(poolId, owner).feesAccrued;
+    }
+
+    function test_closePrincipalOnly_atOpenPrice_feesPaidInAsset() public {
+        openSpy(alice, 10e18, 3500e18);
+        vm.warp(block.timestamp + 30 days);
+        oracle.setPrice(SPY, SPY_PRICE);
+        uint256 fees = _feesAccrued(SPY_POOL, alice);
+        assertGt(fees, 0);
+        _fundTreasury();
+        uint256 treasuryEusd = eusd.balanceOf(treasury);
+        uint256 spyBefore = spy.balanceOf(alice);
+
+        vm.prank(alice);
+        manager.closePrincipalOnly(SPY_POOL, 0, 0);
+
+        assertEq(_debt(SPY_POOL, alice), 0);
+        assertEq(manager.totalDebt(), 0);
+        assertApproxEqAbs(eusd.totalSupply(), eusd.balanceOf(treasury), 2);
+        uint256 feeAsset = spy.balanceOf(treasury);
+        uint256 settled = treasuryEusd - eusd.balanceOf(treasury);
+        // The fees plus the range's rounding dust are settled; the owner pays nothing.
+        assertGe(settled, fees);
+        assertLe(settled, fees + 1e9);
+        assertEq(eusd.balanceOf(alice), 0);
+        assertEq(feeAsset, Math.mulDiv(settled, 1e18, SPY_PRICE, Math.Rounding.Ceil));
+        assertApproxEqAbs(spy.balanceOf(alice) - spyBefore, 10e18 - feeAsset, 2);
+        assertEq(spy.balanceOf(address(_vault(SPY_POOL, alice))), 0);
+        assertEq(eusd.balanceOf(address(_vault(SPY_POOL, alice))), 0);
+    }
+
+    function test_closePrincipalOnly_emitsFeesSettled() public {
+        openSpy(alice, 10e18, 3500e18);
+        vm.warp(block.timestamp + 30 days);
+        oracle.setPrice(SPY, SPY_PRICE);
+        _fundTreasury();
+        vm.recordLogs();
+        vm.prank(alice);
+        manager.closePrincipalOnly(SPY_POOL, 0, 0);
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        bytes32 topic = IEUSDLiquidityManager.PositionFeesSettledFromAsset.selector;
+        bool found;
+        for (uint256 i; i < logs.length; i++) {
+            if (logs[i].emitter != address(manager) || logs[i].topics[0] != topic) continue;
+            found = true;
+            assertEq(uint256(logs[i].topics[1]), SPY_POOL);
+            assertEq(address(uint160(uint256(logs[i].topics[2]))), alice);
+            (uint256 settled, uint256 feeAsset) = abi.decode(logs[i].data, (uint256, uint256));
+            assertGt(settled, 0);
+            assertEq(feeAsset, spy.balanceOf(treasury));
+        }
+        assertTrue(found);
+    }
+
+    function test_closePrincipalOnly_afterDrop_userPaysOnlyPrincipalShortfall() public {
+        openSpy(alice, 10e18, 3500e18);
+        vm.warp(block.timestamp + 30 days);
+        moveSpy(600e18);
+        uint256 debt = manager.currentDebt(SPY_POOL, alice);
+        uint256 fees = _feesAccrued(SPY_POOL, alice);
+        giveEusd(alice, 4000e18);
+        _fundTreasury();
+        uint256 treasuryEusd = eusd.balanceOf(treasury);
+
+        vm.prank(alice);
+        manager.closePrincipalOnly(SPY_POOL, 0, 0);
+
+        uint256 paid = 4000e18 - eusd.balanceOf(alice);
+        uint256 settled = treasuryEusd - eusd.balanceOf(treasury);
+        assertEq(settled, fees + 1e9);
+        assertEq(spy.balanceOf(treasury), Math.mulDiv(settled, 1e18, 600e18, Math.Rounding.Ceil));
+        assertGt(paid, 0);
+        assertLt(paid + fees, debt);
+        assertEq(manager.totalDebt(), 0);
+    }
+
+    function test_closePrincipalOnly_paysFeesLessThanClose() public {
+        openSpy(alice, 10e18, 3500e18);
+        vm.warp(block.timestamp + 30 days);
+        moveSpy(600e18);
+        uint256 fees = _feesAccrued(SPY_POOL, alice);
+        giveEusd(alice, 4000e18);
+        _fundTreasury();
+        uint256 snap = vm.snapshotState();
+        vm.prank(alice);
+        manager.close(SPY_POOL, 0, 0);
+        uint256 paidClose = 4000e18 - eusd.balanceOf(alice);
+        vm.revertToState(snap);
+        vm.prank(alice);
+        manager.closePrincipalOnly(SPY_POOL, 0, 0);
+        uint256 paidPrincipalOnly = 4000e18 - eusd.balanceOf(alice);
+        assertEq(paidClose - paidPrincipalOnly, fees + 1e9);
+    }
+
+    function test_closePrincipalOnly_rangeCoversDebt_treasuryUntouched() public {
+        openSpy(alice, 10e18, 3500e18);
+        vm.warp(block.timestamp + 30 days);
+        // A rise leaves the range with more eUSD than the debt, so nothing is settled from asset.
+        giveEusd(address(ledger), 100_000e18);
+        moveSpy(800e18);
+        manager.accrue(SPY_POOL, alice);
+        uint256 treasuryEusd = eusd.balanceOf(treasury);
+        vm.prank(alice);
+        manager.closePrincipalOnly(SPY_POOL, 0, 0);
+        assertEq(eusd.balanceOf(treasury), treasuryEusd);
+        assertEq(spy.balanceOf(treasury), 0);
+        assertEq(manager.totalDebt(), 0);
+        assertGt(eusd.balanceOf(alice), 0);
+    }
+
+    function test_closePrincipalOnly_noFeeShare_needsNoPrice() public {
+        openSpy(alice, 10e18, 3500e18);
+        vm.warp(block.timestamp + 30 days);
+        giveEusd(address(ledger), 100_000e18);
+        moveSpy(800e18);
+        // Stale price: no fee share to settle, so no price is read.
+        vm.warp(block.timestamp + PRICE_MAX_AGE + 1);
+        vm.prank(alice);
+        manager.closePrincipalOnly(SPY_POOL, 0, 0);
+        assertEq(manager.totalDebt(), 0);
+    }
+
+    function test_closePrincipalOnly_stalePrice_reverts() public {
+        openSpy(alice, 10e18, 3500e18);
+        vm.warp(block.timestamp + PRICE_MAX_AGE + 1);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IEUSDLiquidityManager.StaleMintPrice.selector, block.timestamp - PRICE_MAX_AGE - 1, PRICE_MAX_AGE
+            )
+        );
+        vm.prank(alice);
+        manager.closePrincipalOnly(SPY_POOL, 0, 0);
+    }
+
+    function test_closePrincipalOnly_treasuryShort_reverts_closeStillWorks() public {
+        openSpy(alice, 10e18, 3500e18);
+        vm.warp(block.timestamp + 30 days);
+        oracle.setPrice(SPY, SPY_PRICE);
+        manager.accrue(SPY_POOL, alice);
+        uint256 treasuryEusd = eusd.balanceOf(treasury);
+        vm.prank(treasury);
+        eusd.transfer(bob, treasuryEusd);
+        vm.expectRevert();
+        vm.prank(alice);
+        manager.closePrincipalOnly(SPY_POOL, 0, 0);
+        giveEusd(alice, 100e18);
+        vm.prank(alice);
+        manager.close(SPY_POOL, 0, 0);
+        assertEq(manager.totalDebt(), 0);
+    }
+
+    function test_closePrincipalOnly_usdgPool_sixDecimals() public {
+        (int24 lower, int24 upper) = usdRange(0.99e18, 1.01e18);
+        vm.prank(alice);
+        manager.addLiquidity(
+            IEUSDLiquidityManager.AddLiquidityParams({
+                poolId: USD_POOL,
+                tickLower: lower,
+                tickUpper: upper,
+                assetDeposit: 2000e6,
+                assetMax: 2000e6,
+                eusdMax: 1000e18,
+                staked: true
+            })
+        );
+        vm.warp(block.timestamp + 30 days);
+        oracle.setPrice(USDG, 1e18);
+        uint256 fees = _feesAccrued(USD_POOL, alice);
+        _fundTreasury();
+        uint256 treasuryEusd = eusd.balanceOf(treasury);
+        vm.prank(alice);
+        manager.closePrincipalOnly(USD_POOL, 0, 0);
+        uint256 settled = treasuryEusd - eusd.balanceOf(treasury);
+        assertGe(settled, fees);
+        assertLe(settled, fees + 1e9);
+        assertEq(usdg.balanceOf(treasury), Math.mulDiv(settled, 1e6, 1e18, Math.Rounding.Ceil));
+        assertEq(manager.totalDebt(), 0);
+    }
+
+    function test_closePrincipalOnly_empty_reverts() public {
+        vm.expectRevert(abi.encodeWithSelector(IEUSDLiquidityManager.NoVault.selector, SPY_POOL, alice));
+        vm.prank(alice);
+        manager.closePrincipalOnly(SPY_POOL, 0, 0);
+        vm.startPrank(alice);
+        manager.deposit(SPY_POOL, 1e18);
+        manager.closePrincipalOnly(SPY_POOL, 0, 0);
+        vm.expectRevert(abi.encodeWithSelector(IEUSDLiquidityManager.EmptyPosition.selector, SPY_POOL, alice));
+        manager.closePrincipalOnly(SPY_POOL, 0, 0);
+        vm.stopPrank();
+    }
+
+    // ──────────────────────────────────────────────────────────
     //  liquidate
     // ──────────────────────────────────────────────────────────
 
