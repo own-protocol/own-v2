@@ -44,7 +44,7 @@ contract EUSDLiquidityManagerRobinhoodFork is Test {
     address internal constant EUSD = 0x8B84D644CECaeE6d21373F37E1bA00f85eD7CdB7;
     address internal constant GOV_SAFE = 0x470f35a7e5d4Cd490D74799AC01E7bEea7F478e2;
     address internal constant POOL_MANAGER = 0x8366a39CC670B4001A1121B8F6A443A643e40951;
-    address internal constant EMISSION_STREAM = 0x498506256215702f0DA01c0f9Ab0C765488acd07;
+    address internal constant EMISSION_STREAM = 0x4aA54fA62bC8f6052fB4D3494A3fA79741Bda14c;
     address internal constant FABLES_RAMP = 0x08E52564Bad99E05a694b4809F397edcA417A080;
     address internal constant SPY = 0x117cc2133c37B721F49dE2A7a74833232B3B4C0C;
     address internal constant USDG = 0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168;
