@@ -68,6 +68,8 @@ contract LiquidityManagerSetup is Test {
     uint256 internal constant CEILING = 10_000_000e18;
     uint256 internal constant MIN_DEBT = 100e18;
     uint256 internal constant PRICE_MAX_AGE = 1 days;
+    uint16 internal constant REDEEM_SHARE = 7500;
+    uint256 internal constant REDEEM_PRICE_MAX_AGE = 5 minutes;
 
     function setUp() public virtual {
         vm.warp(1_000_000);
@@ -145,9 +147,11 @@ contract LiquidityManagerSetup is Test {
             stakedFeeBps: STAKED_FEE,
             unstakedFeeBps: UNSTAKED_FEE,
             poolPriceBandBps: BAND,
+            redeemMinAssetShareBps: REDEEM_SHARE,
             debtCeiling: CEILING,
             minDebt: MIN_DEBT,
-            mintPriceMaxAge: PRICE_MAX_AGE
+            mintPriceMaxAge: PRICE_MAX_AGE,
+            redeemPriceMaxAge: REDEEM_PRICE_MAX_AGE
         });
     }
 

@@ -145,9 +145,11 @@ contract AerodromeAdapterRobinhoodFork is Test {
                 stakedFeeBps: 700,
                 unstakedFeeBps: 200,
                 poolPriceBandBps: 250,
+                redeemMinAssetShareBps: 7500,
                 debtCeiling: 1_000_000e18,
                 minDebt: 10e18,
-                mintPriceMaxAge: 1 days
+                mintPriceMaxAge: 1 days,
+                redeemPriceMaxAge: 5 minutes
             })
         );
         vm.prank(GOV_SAFE);
