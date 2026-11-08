@@ -157,6 +157,40 @@ interface INonfungiblePositionManager {
         CollectParams calldata params
     ) external payable returns (uint256 amount0, uint256 amount1);
 
+    /// @notice A position's state; only `liquidity` is used.
+    /// @param tokenId Position.
+    /// @return nonce                    Permit nonce.
+    /// @return operator                 Approved operator.
+    /// @return token0                   Lower-sorted token.
+    /// @return token1                   Higher-sorted token.
+    /// @return tickSpacing              Pool tick spacing.
+    /// @return tickLower                Lower tick of the range.
+    /// @return tickUpper                Upper tick of the range.
+    /// @return liquidity                Liquidity in the position, from any depositor.
+    /// @return feeGrowthInside0LastX128 Fee growth of token0 at the last update.
+    /// @return feeGrowthInside1LastX128 Fee growth of token1 at the last update.
+    /// @return tokensOwed0              Token0 owed.
+    /// @return tokensOwed1              Token1 owed.
+    function positions(
+        uint256 tokenId
+    )
+        external
+        view
+        returns (
+            uint96 nonce,
+            address operator,
+            address token0,
+            address token1,
+            int24 tickSpacing,
+            int24 tickLower,
+            int24 tickUpper,
+            uint128 liquidity,
+            uint256 feeGrowthInside0LastX128,
+            uint256 feeGrowthInside1LastX128,
+            uint128 tokensOwed0,
+            uint128 tokensOwed1
+        );
+
     /// @notice Burn an empty, fully collected position.
     /// @param tokenId Position.
     function burn(

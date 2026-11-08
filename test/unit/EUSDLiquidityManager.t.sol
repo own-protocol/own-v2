@@ -1101,6 +1101,81 @@ contract EUSDLiquidityManagerTest is LiquidityManagerSetup {
         assertEq(manager.totalDebt(), _debt(SPY_POOL, alice));
     }
 
+    /// @dev Below 1 + bonus too, and with idle asset in the vault, a partial liquidation takes only
+    ///      its share of the value, so the ratio of what remains never falls.
+    function testFuzz_liquidate_partial_neverLowersRatio(
+        uint256 priceSeed,
+        uint256 amountSeed,
+        uint256 idleSeed
+    ) public {
+        openSpy(alice, 10e18, 3500e18);
+        vm.prank(alice);
+        manager.deposit(SPY_POOL, bound(idleSeed, 1, 5e18));
+        moveSpy(bound(priceSeed, 120e18, 300e18));
+        uint256 ratioBefore = manager.collateralRatioBps(SPY_POOL, alice);
+        vm.assume(ratioBefore < LIQ_THRESHOLD && ratioBefore > BPS);
+        uint256 debt = _debt(SPY_POOL, alice);
+        uint256 amount = bound(amountSeed, 1e18, debt - MIN_DEBT);
+        giveEusd(keeper, amount);
+        vm.prank(keeper);
+        manager.liquidate(SPY_POOL, alice, amount);
+        assertGe(manager.collateralRatioBps(SPY_POOL, alice), ratioBefore);
+        assertEq(manager.totalDebt(), _debt(SPY_POOL, alice));
+    }
+
+    function test_liquidate_partial_belowOnePlusBonus_paysOnlyShareOfValue() public {
+        openSpy(alice, 10e18, 3500e18);
+        vm.prank(alice);
+        manager.deposit(SPY_POOL, 5e18);
+        uint256 price = 175e18;
+        moveSpy(price);
+        uint256 debt = _debt(SPY_POOL, alice);
+        uint256 value = manager.collateralValue(SPY_POOL, alice);
+        uint256 ratioBefore = manager.collateralRatioBps(SPY_POOL, alice);
+        assertGt(ratioBefore, BPS);
+        assertLt(ratioBefore, BPS + LIQ_BONUS);
+
+        uint256 cleared = debt / 2;
+        giveEusd(keeper, cleared);
+        uint256 keeperSpy = spy.balanceOf(keeper);
+        vm.prank(keeper);
+        manager.liquidate(SPY_POOL, alice, cleared);
+        uint256 seizedValue = ((spy.balanceOf(keeper) - keeperSpy) * price) / 1e18;
+        assertLe(seizedValue, Math.mulDiv(value, cleared, debt), "at most the cleared share of the value");
+        assertLt(seizedValue, (cleared * (BPS + LIQ_BONUS)) / BPS, "the full bonus does not fit");
+        assertGe(manager.collateralRatioBps(SPY_POOL, alice), ratioBefore);
+    }
+
+    /// @dev The bonus is on the cleared debt, so a pool that still holds the range's eUSD pays the
+    ///      liquidator the same as one pushed below the range.
+    function test_liquidate_bonusOnCleared_sameWhateverThePoolSplit() public {
+        uint256 lagging = _liquidationProfit(true);
+        uint256 pushed = _liquidationProfit(false);
+        assertApproxEqAbs(lagging, pushed, 1e6);
+    }
+
+    function _liquidationProfit(
+        bool poolLags
+    ) internal returns (uint256 profit) {
+        uint256 snap = vm.snapshotState();
+        openSpy(alice, 10e18, 3500e18);
+        uint256 price = 250e18;
+        oracle.setPrice(SPY, price, block.timestamp);
+        ledger.setPrice(spyKey, address(spy), poolLags ? SPY_PRICE : price);
+        uint256 debt = _debt(SPY_POOL, alice);
+        giveEusd(keeper, debt);
+        uint256 keeperEusd = eusd.balanceOf(keeper);
+        uint256 keeperSpy = spy.balanceOf(keeper);
+        vm.prank(keeper);
+        manager.liquidate(SPY_POOL, alice, type(uint256).max);
+        uint256 repaid = keeperEusd - eusd.balanceOf(keeper);
+        if (poolLags) assertLt(repaid, debt, "the vault's eUSD covered part");
+        else assertEq(repaid, debt);
+        profit = ((spy.balanceOf(keeper) - keeperSpy) * price) / 1e18 - repaid;
+        assertApproxEqAbs(profit, (debt * LIQ_BONUS) / BPS, 1e6, "bonus on the cleared debt");
+        vm.revertToState(snap);
+    }
+
     // ──────────────────────────────────────────────────────────
     //  Views
     // ──────────────────────────────────────────────────────────

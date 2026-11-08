@@ -187,11 +187,14 @@ contract AerodromeAdapter is ILiquidityVault, IERC721Receiver, Initializable, Re
         uint256 assetBefore = IERC20(asset).balanceOf(address(this));
         uint256 eusdBefore = IERC20(_eusd).balanceOf(address(this));
         if (staked) gauge.withdraw(id);
+        // Anyone can add liquidity to the NFT, so a full exit removes all of it or the burn reverts.
+        uint128 toRemove = liquidity;
+        if (held == liquidity) (,,,,,,, toRemove,,,,) = positionManager.positions(id);
         (uint256 min0, uint256 min1) = _assetIsZero ? (assetMin, eusdMin) : (eusdMin, assetMin);
         positionManager.decreaseLiquidity(
             INonfungiblePositionManager.DecreaseLiquidityParams({
                 tokenId: id,
-                liquidity: liquidity,
+                liquidity: toRemove,
                 amount0Min: min0,
                 amount1Min: min1,
                 deadline: block.timestamp

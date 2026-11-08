@@ -82,7 +82,7 @@ contract MockPositionManager is ERC721 {
 
     MockCLFactory public immutable factory;
     uint256 public nextId = 1;
-    mapping(uint256 => Position) public positions;
+    mapping(uint256 => Position) internal _pos;
 
     struct MintParams {
         address token0;
@@ -137,8 +137,8 @@ contract MockPositionManager is ERC721 {
     }
 
     function setFeesOwed(uint256 tokenId, uint256 fee0, uint256 fee1) external {
-        positions[tokenId].owed0 += fee0;
-        positions[tokenId].owed1 += fee1;
+        _pos[tokenId].owed0 += fee0;
+        _pos[tokenId].owed1 += fee1;
     }
 
     function mint(
@@ -146,21 +146,48 @@ contract MockPositionManager is ERC721 {
     ) external returns (uint256 tokenId, uint128 liquidity, uint256 amount0, uint256 amount1) {
         MockCLPool pool = MockCLPool(factory.getPool(p.token0, p.token1, p.tickSpacing));
         tokenId = nextId++;
-        positions[tokenId] = Position(pool, p.tickLower, p.tickUpper, 0, 0, 0);
+        _pos[tokenId] = Position(pool, p.tickLower, p.tickUpper, 0, 0, 0);
         (liquidity, amount0, amount1) = _add(tokenId, p.amount0Desired, p.amount1Desired);
         _mint(p.recipient, tokenId);
     }
 
+    /// @dev Like Slipstream: anyone may add to a position unless it sits in the pool's gauge.
     function increaseLiquidity(
         IncreaseLiquidityParams calldata p
-    ) external authorized(p.tokenId) returns (uint128 liquidity, uint256 amount0, uint256 amount1) {
+    ) external returns (uint128 liquidity, uint256 amount0, uint256 amount1) {
+        address gauge = _pos[p.tokenId].pool.gauge();
+        if (gauge != address(0) && _ownerOf(p.tokenId) == gauge && msg.sender != gauge) revert NotApproved();
         return _add(p.tokenId, p.amount0Desired, p.amount1Desired);
+    }
+
+    function positions(
+        uint256 tokenId
+    )
+        external
+        view
+        returns (uint96, address, address, address, int24, int24, int24, uint128, uint256, uint256, uint128, uint128)
+    {
+        Position storage pos = _pos[tokenId];
+        return (
+            0,
+            address(0),
+            address(0),
+            address(0),
+            0,
+            pos.tickLower,
+            pos.tickUpper,
+            pos.liquidity,
+            0,
+            0,
+            uint128(pos.owed0),
+            uint128(pos.owed1)
+        );
     }
 
     function decreaseLiquidity(
         DecreaseLiquidityParams calldata p
     ) external authorized(p.tokenId) returns (uint256 amount0, uint256 amount1) {
-        Position storage pos = positions[p.tokenId];
+        Position storage pos = _pos[p.tokenId];
         (amount0, amount1) = _amounts(pos, p.liquidity);
         if (amount0 < p.amount0Min || amount1 < p.amount1Min) revert PriceSlippage();
         pos.liquidity -= p.liquidity;
@@ -171,7 +198,7 @@ contract MockPositionManager is ERC721 {
     function collect(
         CollectParams calldata p
     ) external authorized(p.tokenId) returns (uint256 amount0, uint256 amount1) {
-        Position storage pos = positions[p.tokenId];
+        Position storage pos = _pos[p.tokenId];
         amount0 = pos.owed0 < p.amount0Max ? pos.owed0 : p.amount0Max;
         amount1 = pos.owed1 < p.amount1Max ? pos.owed1 : p.amount1Max;
         pos.owed0 -= amount0;
@@ -183,9 +210,9 @@ contract MockPositionManager is ERC721 {
     function burn(
         uint256 tokenId
     ) external authorized(tokenId) {
-        Position storage pos = positions[tokenId];
+        Position storage pos = _pos[tokenId];
         if (pos.liquidity != 0 || pos.owed0 != 0 || pos.owed1 != 0) revert NotEmpty();
-        delete positions[tokenId];
+        delete _pos[tokenId];
         _burn(tokenId);
     }
 
@@ -194,7 +221,7 @@ contract MockPositionManager is ERC721 {
         uint256 desired0,
         uint256 desired1
     ) internal returns (uint128 liquidity, uint256 amount0, uint256 amount1) {
-        Position storage pos = positions[tokenId];
+        Position storage pos = _pos[tokenId];
         liquidity = LiquidityMath.getLiquidityForAmounts(
             pos.pool.sqrtPriceX96(),
             LiquidityMath.getSqrtPriceAtTick(pos.tickLower),

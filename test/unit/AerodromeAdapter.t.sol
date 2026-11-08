@@ -94,7 +94,7 @@ contract AerodromeAdapterTest is LiquidityManagerSetup {
     function _nftLiquidity(
         uint256 id
     ) internal view returns (uint128 liquidity) {
-        (,,, liquidity,,) = npm.positions(id);
+        (,,,,,,, liquidity,,,,) = npm.positions(id);
     }
 
     function _moveAeroSpy(
@@ -399,6 +399,77 @@ contract AerodromeAdapterTest is LiquidityManagerSetup {
         vm.stopPrank();
         assertEq(v.tokenId(), 0);
         assertEq(manager.getPosition(AERO_SPY, alice).debt, 0);
+    }
+
+    /// @dev Slipstream lets anyone add liquidity to an unstaked NFT.
+    function _donate(uint256 id, bytes4 expectedError) internal {
+        address bob = makeAddr("bob");
+        spy.mint(bob, 1e18);
+        giveEusd(bob, 1000e18);
+        vm.startPrank(bob);
+        spy.approve(address(npm), type(uint256).max);
+        eusd.approve(address(npm), type(uint256).max);
+        if (expectedError != bytes4(0)) vm.expectRevert(expectedError);
+        npm.increaseLiquidity(
+            MockPositionManager.IncreaseLiquidityParams({
+                tokenId: id,
+                amount0Desired: 1e15,
+                amount1Desired: 1e15,
+                amount0Min: 0,
+                amount1Min: 0,
+                deadline: block.timestamp
+            })
+        );
+        vm.stopPrank();
+    }
+
+    function test_donatedLiquidity_closeStillBurns() public {
+        _open(alice, 10e18, 3500e18, false);
+        AerodromeAdapter v = _vaultOf(alice);
+        uint256 id = v.tokenId();
+        _donate(id, bytes4(0));
+        assertGt(_nftLiquidity(id), _held(v));
+        uint256 debt = manager.getPosition(AERO_SPY, alice).debt;
+        giveEusd(alice, debt);
+        vm.startPrank(alice);
+        eusd.approve(address(manager), type(uint256).max);
+        manager.close(AERO_SPY, 0, 0);
+        vm.stopPrank();
+        assertEq(v.tokenId(), 0);
+        assertEq(spy.balanceOf(address(v)), 0);
+        assertEq(eusd.balanceOf(address(v)), 0);
+    }
+
+    /// @dev The audit attack: the owner cuts the vault's liquidity to 1 and a donation keeps the NFT
+    ///      from burning. Every liquidation then takes the full-removal path, which must still work.
+    function test_donatedLiquidity_heldOne_liquidationsWork() public {
+        _open(alice, 10e18, 3500e18, false);
+        AerodromeAdapter v = _vaultOf(alice);
+        uint256 id = v.tokenId();
+        _moveAeroSpy(250e18);
+        uint256 debt = manager.getPosition(AERO_SPY, alice).debt;
+        uint128 cut = _held(v) - 1;
+        vm.prank(alice);
+        manager.removeLiquidity(AERO_SPY, cut, 0, 0);
+        assertEq(_held(v), 1);
+        assertEq(manager.getPosition(AERO_SPY, alice).debt, debt, "all-asset range: debt unchanged");
+        _donate(id, bytes4(0));
+        assertTrue(manager.isLiquidatable(AERO_SPY, alice));
+
+        giveEusd(keeper, debt);
+        vm.startPrank(keeper);
+        eusd.approve(address(manager), type(uint256).max);
+        manager.liquidate(AERO_SPY, alice, debt / 2);
+        assertEq(v.tokenId(), 0, "share rounds up to the whole range, NFT burned");
+        manager.liquidate(AERO_SPY, alice, type(uint256).max);
+        vm.stopPrank();
+        assertEq(manager.getPosition(AERO_SPY, alice).debt, 0);
+    }
+
+    function test_increaseLiquidity_stakedNft_onlyGauge() public {
+        _open(alice, 10e18, 3500e18, true);
+        uint256 id = _vaultOf(alice).tokenId();
+        _donate(id, MockPositionManager.NotApproved.selector);
     }
 
     // ──────────────────────────────────────────────────────────

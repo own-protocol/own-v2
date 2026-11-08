@@ -34,9 +34,10 @@ pragma solidity 0.8.28;
 ///         Exits need no fresh price: repay and close use no price, and liquidation uses the latest
 ///         oracle price with no age bound. Liquidation can be partial: clearing part of the debt
 ///         removes the same share of the range, its eUSD is burned against the debt, the liquidator
-///         burns the rest of the cleared debt and receives asset worth that plus the bonus. The
-///         remaining range stays in place (and staked); a full liquidation sends everything left
-///         to the owner.
+///         burns the rest of the cleared debt and receives asset worth that plus the bonus on all of
+///         the cleared debt. A partial liquidation takes at most the cleared share of the position's
+///         value. The remaining range stays in place (and staked); a full liquidation sends
+///         everything left to the owner.
 interface IEUSDLiquidityManager {
     // ──────────────────────────────────────────────────────────
     //  Types
@@ -452,11 +453,12 @@ interface IEUSDLiquidityManager {
     /// @notice Liquidate a position below the liquidation threshold, in part or in full. Clearing
     ///         `amount` of the debt removes the same share of the range (all of it on a full
     ///         liquidation), burns the vault's eUSD against the cleared debt, burns the rest of it
-    ///         from the caller, and pays the caller asset worth that plus the bonus at the oracle
-    ///         price (capped at the vault's asset). On a partial liquidation the remaining range
-    ///         stays in place, and leftover eUSD is burned against the remaining debt; on a full one
-    ///         everything left goes to the owner. The remaining debt must be zero or at least
-    ///         `minDebt`.
+    ///         from the caller, and pays the caller asset worth that plus the bonus on the cleared
+    ///         debt at the oracle price (capped at the vault's asset; on a partial liquidation, also
+    ///         capped so the position loses at most the cleared share of its value). On a partial
+    ///         liquidation the remaining range stays in place, and leftover eUSD is burned against
+    ///         the remaining debt; on a full one everything left goes to the owner. The remaining
+    ///         debt must be zero or at least `minDebt`.
     /// @param poolId Pool id.
     /// @param owner  Position owner.
     /// @param amount Debt to clear, capped at the debt (18 decimals; `type(uint256).max` for all).

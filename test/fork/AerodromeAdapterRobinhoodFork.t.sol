@@ -4,7 +4,7 @@ pragma solidity 0.8.28;
 import {EUSDLiquidityManager} from "../../src/eusd/EUSDLiquidityManager.sol";
 import {AerodromeAdapter} from "../../src/eusd/adapters/AerodromeAdapter.sol";
 import {IEUSDLiquidityManager} from "../../src/interfaces/IEUSDLiquidityManager.sol";
-import {ICLPool} from "../../src/interfaces/external/IAerodrome.sol";
+import {ICLPool, INonfungiblePositionManager} from "../../src/interfaces/external/IAerodrome.sol";
 import {LiquidityMath} from "../../src/libraries/LiquidityMath.sol";
 import {ProtocolRegistry} from "../../src/registry/ProtocolRegistry.sol";
 import {deployEUSDLiquidityManager} from "../helpers/LiquidityManagerSetup.sol";
@@ -37,6 +37,28 @@ interface IGaugeManager {
     function createGauge(
         GaugeCreationRequest calldata request
     ) external returns (address gauge);
+}
+
+interface ICLPoolSwap {
+    function swap(
+        address recipient,
+        bool zeroForOne,
+        int256 amountSpecified,
+        uint160 sqrtPriceLimitX96,
+        bytes calldata data
+    ) external returns (int256 amount0, int256 amount1);
+}
+
+/// @dev Swaps on a Slipstream pool, paying from its own balance.
+contract PoolSwapper {
+    function swap(ICLPool pool, bool zeroForOne, int256 amount, uint160 limit) external {
+        ICLPoolSwap(address(pool)).swap(address(this), zeroForOne, amount, limit, "");
+    }
+
+    function uniswapV3SwapCallback(int256 amount0, int256 amount1, bytes calldata) external {
+        if (amount0 > 0) IERC20(ICLPool(msg.sender).token0()).transfer(msg.sender, uint256(amount0));
+        if (amount1 > 0) IERC20(ICLPool(msg.sender).token1()).transfer(msg.sender, uint256(amount1));
+    }
 }
 
 /// @title AerodromeAdapterRobinhoodFork — the manager against live Aero Slipstream contracts
@@ -297,6 +319,63 @@ contract AerodromeAdapterRobinhoodFork is Test {
         assertEq(manager.getPosition(0, alice).debt, 0);
         assertEq(v.tokenId(), 0);
         assertEq(IERC20(SPY).balanceOf(address(v)), 0);
+    }
+
+    /// @dev Audit attack on the live position manager: the owner cuts the vault's liquidity to 1 and
+    ///      anyone adds dust to the unstaked NFT. Liquidations must still clear the whole debt.
+    function test_fork_aero_donatedLiquidity_liquidationsWork() public requiresFork {
+        require(SPY < EUSD, "SPY is token0");
+        vm.prank(alice);
+        manager.addLiquidity(
+            IEUSDLiquidityManager.AddLiquidityParams({
+                poolId: 0,
+                tickLower: _tickAt(600e18),
+                tickUpper: _tickAt(680e18),
+                assetDeposit: 10e18,
+                assetMax: 0,
+                eusdMax: 3000e18,
+                staked: false
+            })
+        );
+        AerodromeAdapter v = _vault();
+        uint256 id = v.tokenId();
+        uint256 debt = manager.getPosition(0, alice).debt;
+
+        // The eUSD-only range fills as SPY is sold through it.
+        PoolSwapper swapper = new PoolSwapper();
+        deal(SPY, address(swapper), 100e18);
+        swapper.swap(pool, true, 100e18, uint160(LiquidityMath.sqrtPriceFromOracle(590e18, 1e18, true)));
+
+        (,, uint128 held) = v.range();
+        vm.prank(alice);
+        manager.removeLiquidity(0, held - 1, 0, 0);
+        assertEq(manager.getPosition(0, alice).debt, debt, "all-asset range: debt unchanged");
+
+        address bob = makeAddr("bob");
+        deal(SPY, bob, 1e15);
+        vm.startPrank(bob);
+        IERC20(SPY).approve(POSITION_MANAGER, type(uint256).max);
+        INonfungiblePositionManager(POSITION_MANAGER).increaseLiquidity(
+            INonfungiblePositionManager.IncreaseLiquidityParams({
+                tokenId: id,
+                amount0Desired: 1e12,
+                amount1Desired: 0,
+                amount0Min: 0,
+                amount1Min: 0,
+                deadline: block.timestamp
+            })
+        );
+        vm.stopPrank();
+
+        oracle.setPrice(SPY_TICKER, 100e18);
+        assertTrue(manager.isLiquidatable(0, alice));
+        deal(EUSD, keeper, debt);
+        vm.startPrank(keeper);
+        manager.liquidate(0, alice, debt / 2);
+        assertEq(v.tokenId(), 0, "share rounds up to the whole range, NFT burned");
+        manager.liquidate(0, alice, type(uint256).max);
+        vm.stopPrank();
+        assertEq(manager.getPosition(0, alice).debt, 0);
     }
 
     function _vault0PoolPrice() internal returns (uint256) {

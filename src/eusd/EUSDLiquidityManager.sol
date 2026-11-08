@@ -311,8 +311,10 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
 
     /// @inheritdoc IEUSDLiquidityManager
     /// @dev No pool price band: the valuation is a lower bound wherever the pool trades, and a lagging
-    ///      pool must not hold up a liquidation. While the ratio is above 1 + bonus, clearing part of
-    ///      the debt with the same share of the range raises the ratio of what remains.
+    ///      pool must not hold up a liquidation. The bonus is on all of the cleared debt, so how the
+    ///      pool splits the removed share does not change the payout. A partial liquidation takes
+    ///      at most the cleared share of the position's value, so the ratio of what remains never
+    ///      falls.
     function liquidate(uint256 poolId, address owner, uint256 amount) external override nonReentrant {
         PoolConfig storage cfg = _requirePool(poolId);
         if (amount == 0) revert ZeroAmount();
@@ -322,8 +324,9 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
         address vault = p.vault;
 
         (uint256 price,) = _oracle().getPrice(cfg.ticker);
+        uint256 value = _value(cfg, vault, price);
         {
-            uint256 ratio = _ratioBps(_value(cfg, vault, price), debt);
+            uint256 ratio = _ratioBps(value, debt);
             uint16 threshold = _riskParams.liquidationThresholdBps;
             if (ratio >= threshold) revert PositionNotLiquidatable(ratio, threshold);
         }
@@ -337,7 +340,9 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
         // Rounded up, so the share of the range removed is at least the share of the debt cleared.
         uint128 share = remaining == 0 ? held : uint128(Math.mulDiv(held, cleared, debt, Math.Rounding.Ceil));
         if (share > 0) _remove(poolId, owner, vault, share, 0, 0);
-        _settleLiquidation(poolId, owner, cfg, p, vault, price, cleared);
+        // A partial liquidation may take at most this much value out of the position.
+        uint256 maxTake = remaining == 0 ? type(uint256).max : Math.mulDiv(value, cleared, debt);
+        _settleLiquidation(poolId, owner, cfg, p, vault, price, cleared, maxTake);
     }
 
     // ──────────────────────────────────────────────────────────
@@ -595,6 +600,8 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
     /// @param vault   The position's vault.
     /// @param price   Oracle price (18 decimals).
     /// @param cleared Debt cleared (18 decimals, at most the debt).
+    /// @param maxTake Most value (eUSD burned from the vault plus asset seized) the liquidation may
+    ///                take from the position (18 decimals).
     function _settleLiquidation(
         uint256 poolId,
         address owner,
@@ -602,10 +609,11 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
         Position storage p,
         address vault,
         uint256 price,
-        uint256 cleared
+        uint256 cleared,
+        uint256 maxTake
     ) private {
         LiquidationPayout memory out;
-        (out.repaid, out.seized) = _payLiquidator(cfg, p, vault, price, cleared);
+        (out.repaid, out.seized) = _payLiquidator(cfg, p, vault, price, cleared, maxTake);
         if (p.debt == 0) {
             out.assetRefund = IERC20(cfg.asset).balanceOf(vault);
             out.eusdRefund = _eusd.balanceOf(vault);
@@ -620,13 +628,14 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
     }
 
     /// @dev Clear `cleared` of the debt: burn the vault's eUSD against it, burn the rest from the
-    ///      liquidator, and pay the liquidator asset worth that plus the bonus (capped at the
-    ///      vault's asset).
+    ///      liquidator, and pay the liquidator asset worth that plus the bonus on all of `cleared`
+    ///      (capped at `maxTake` less the vault's eUSD burned, and at the vault's asset).
     /// @param cfg     The pool's configuration.
     /// @param p       The position (accrued).
     /// @param vault   The position's vault.
     /// @param price   Oracle price (18 decimals).
     /// @param cleared Debt cleared (18 decimals, at most the debt).
+    /// @param maxTake Most value the liquidation may take from the position (18 decimals).
     /// @return repaid Debt burned from the liquidator (18 decimals).
     /// @return seized Asset paid to the liquidator (asset units).
     function _payLiquidator(
@@ -634,15 +643,18 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
         Position storage p,
         address vault,
         uint256 price,
-        uint256 cleared
+        uint256 cleared,
+        uint256 maxTake
     ) private returns (uint256 repaid, uint256 seized) {
         uint256 fromVault = Math.min(_eusd.balanceOf(vault), cleared);
         repaid = cleared - fromVault;
-        // Rounded down: the liquidator gets at most repaid × (1 + bonus) at the oracle price.
-        seized = Math.min(
-            Math.mulDiv(repaid * (BPS + _riskParams.liquidationBonusBps), 10 ** cfg.assetDecimals, price * BPS),
-            IERC20(cfg.asset).balanceOf(vault)
-        );
+        uint256 scale = 10 ** cfg.assetDecimals;
+        // Rounded down: the liquidator gets at most repaid + cleared × bonus at the oracle price.
+        seized = Math.mulDiv(repaid * BPS + cleared * _riskParams.liquidationBonusBps, scale, price * BPS);
+        if (maxTake != type(uint256).max) {
+            seized = Math.min(seized, maxTake > fromVault ? Math.mulDiv(maxTake - fromVault, scale, price) : 0);
+        }
+        seized = Math.min(seized, IERC20(cfg.asset).balanceOf(vault));
         _reduceDebt(p, cleared);
         if (fromVault > 0) _eusd.burn(vault, fromVault);
         if (repaid > 0) _eusd.burn(msg.sender, repaid);
