@@ -157,6 +157,7 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
         if (
             params.stakedFeeBps > BPS || params.unstakedFeeBps > BPS || params.poolPriceBandBps == 0
                 || params.poolPriceBandBps > BPS || params.mintPriceMaxAge == 0 || params.redeemMinAssetShareBps > BPS
+                || params.redeemFeeBps >= BPS
         ) revert InvalidRiskParams();
         registry = IProtocolRegistry(registry_);
         _eusd = IEUSD(eusd_);
@@ -337,7 +338,8 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
     /// @inheritdoc IEUSDLiquidityManager
     /// @dev Eligibility uses the pool price: selling asset into the pool fills ranges with asset
     ///      without moving the oracle, and pushing the pool to make a position eligible sells asset
-    ///      into its range below the oracle price. The payout uses the oracle price, rounded down.
+    ///      into its range below the oracle price. The payout uses the oracle price less
+    ///      `redeemFeeBps`, rounded down; the fee stays in the owner's vault.
     function redeem(
         uint256 poolId,
         address[] calldata owners,
@@ -346,8 +348,8 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
     ) external override nonReentrant returns (uint256 assetOut, uint256 burned) {
         PoolConfig storage cfg = _requirePool(poolId);
         if (amount == 0) revert ZeroAmount();
-        if (_riskParams.redeemPriceMaxAge == 0) revert RedeemDisabled();
-        uint256 price = _freshPrice(cfg.ticker, _riskParams.redeemPriceMaxAge);
+        if (_riskParams.redeemMinAssetShareBps == 0) revert RedeemDisabled();
+        uint256 price = _freshPrice(cfg.ticker, _riskParams.mintPriceMaxAge);
         for (uint256 i; i < owners.length && burned < amount; ++i) {
             (uint256 repaid, uint256 seized) = _redeemFrom(poolId, cfg, owners[i], price, amount - burned);
             burned += repaid;
@@ -452,11 +454,11 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
     }
 
     /// @inheritdoc IEUSDLiquidityManager
-    function setRedeemParams(uint16 minAssetShareBps, uint256 priceMaxAge) external override onlyAdmin {
-        if (minAssetShareBps > BPS) revert InvalidRiskParams();
+    function setRedeemParams(uint16 minAssetShareBps, uint16 feeBps) external override onlyAdmin {
+        if (minAssetShareBps > BPS || feeBps >= BPS) revert InvalidRiskParams();
         _riskParams.redeemMinAssetShareBps = minAssetShareBps;
-        _riskParams.redeemPriceMaxAge = priceMaxAge;
-        emit RedeemParamsSet(minAssetShareBps, priceMaxAge);
+        _riskParams.redeemFeeBps = feeBps;
+        emit RedeemParamsSet(minAssetShareBps, feeBps);
     }
 
     /// @inheritdoc IEUSDLiquidityManager
@@ -813,15 +815,14 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
         Position storage p = _accrue(poolId, owner);
         address vault = p.vault;
         if (p.debt == 0) return (0, 0);
-        (bool eligible, uint256 rangeAsset) = _redeemCheck(cfg, vault, price, p.debt);
-        if (!eligible) return (0, 0);
-        uint256 scale = 10 ** cfg.assetDecimals;
-        repaid = _redeemable(p.debt, maxAmount);
-        seized = Math.mulDiv(repaid, scale, price);
+        (uint256 cover, uint256 rangeAsset) = _redeemCheck(cfg, vault, price, p.debt);
+        repaid = _redeemable(p.debt, Math.min(maxAmount, cover));
+        if (repaid == 0) return (0, 0);
+        seized = _redeemSeize(cfg, repaid, price);
         uint256 idle = _freeAsset(poolId, cfg, owner, vault, seized, rangeAsset);
         if (seized > idle) {
-            repaid = _redeemable(p.debt, _assetValue(cfg, idle, price));
-            seized = Math.mulDiv(repaid, scale, price);
+            repaid = _redeemable(p.debt, _redeemCover(cfg, idle, price));
+            seized = _redeemSeize(cfg, repaid, price);
         }
         if (repaid > 0) {
             _reduceDebt(p, repaid);
@@ -832,26 +833,26 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
         _burnIdle(poolId, owner, p, vault);
     }
 
-    /// @dev Whether a position with debt is redeemable: at least `redeemMinAssetShareBps` of its
-    ///      vault is asset at the pool price, and it is not liquidatable at `price`.
+    /// @dev How much a position with debt can redeem: zero unless at least `redeemMinAssetShareBps`
+    ///      of its vault is asset at the pool price and it is not liquidatable at `price`.
     /// @param cfg   The pool's configuration.
     /// @param vault The position's vault.
     /// @param price Oracle price (18 decimals).
     /// @param debt  The position's debt (18 decimals).
-    /// @return eligible   Whether it is redeemable.
+    /// @return cover      eUSD the vault's asset covers after the fee; zero when not redeemable.
     /// @return rangeAsset Asset in the range at the pool price (asset units).
     function _redeemCheck(
         PoolConfig storage cfg,
         address vault,
         uint256 price,
         uint256 debt
-    ) private view returns (bool eligible, uint256 rangeAsset) {
+    ) private view returns (uint256 cover, uint256 rangeAsset) {
         uint256 poolPx = ILiquidityVault(vault).poolPrice();
         (uint256 assetAmount, uint256 eusdAmount) = ILiquidityVault(vault).holdings(poolPx);
         uint256 assetValue = _assetValue(cfg, assetAmount, poolPx);
-        if (assetValue * BPS < (assetValue + eusdAmount) * _riskParams.redeemMinAssetShareBps) return (false, 0);
-        if (_ratioBps(_value(cfg, vault, price), debt) < _riskParams.liquidationThresholdBps) return (false, 0);
-        return (true, assetAmount - _assetBalance(cfg, vault));
+        if (assetValue * BPS < (assetValue + eusdAmount) * _riskParams.redeemMinAssetShareBps) return (0, 0);
+        if (_ratioBps(_value(cfg, vault, price), debt) < _riskParams.liquidationThresholdBps) return (0, 0);
+        return (_redeemCover(cfg, assetAmount, price), assetAmount - _assetBalance(cfg, vault));
     }
 
     /// @dev Make `needed` asset idle in the vault if the range allows, by removing the share of the
@@ -887,6 +888,24 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
         uint256 minDebt = _riskParams.minDebt;
         if (debt - amount >= minDebt) return amount;
         return debt > minDebt ? debt - minDebt : 0;
+    }
+
+    /// @dev Asset paid for `repaid` eUSD at `price`, less `redeemFeeBps` (rounded down).
+    /// @param cfg    The pool's configuration.
+    /// @param repaid eUSD burned (18 decimals).
+    /// @param price  Oracle price (18 decimals).
+    /// @return Asset amount (asset units).
+    function _redeemSeize(PoolConfig storage cfg, uint256 repaid, uint256 price) private view returns (uint256) {
+        return Math.mulDiv(repaid, (10 ** cfg.assetDecimals) * (BPS - _riskParams.redeemFeeBps), price * BPS);
+    }
+
+    /// @dev eUSD that `amount` asset covers at `price` after `redeemFeeBps` (rounded down).
+    /// @param cfg    The pool's configuration.
+    /// @param amount Asset amount (asset units).
+    /// @param price  Oracle price (18 decimals).
+    /// @return eUSD amount (18 decimals).
+    function _redeemCover(PoolConfig storage cfg, uint256 amount, uint256 price) private view returns (uint256) {
+        return Math.mulDiv(_assetValue(cfg, amount, price), BPS, BPS - _riskParams.redeemFeeBps);
     }
 
     /// @dev Send `amount` of `token` from `vault` to `to`.

@@ -26,7 +26,7 @@ import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 ///      FABLES_POOL_MANAGER, FABLES_EMISSION_STREAM, AERO_POSITION_MANAGER, AERO_CL_FACTORY,
 ///      EUSD_LIQ_MANAGER_IMPL (optional), FABLES_VAULT_BEACON (optional), AERO_VAULT_BEACON (optional), MCR_BPS, LIQ_THRESHOLD_BPS, LIQ_BONUS_BPS, STAKED_FEE_BPS,
 ///      UNSTAKED_FEE_BPS, POOL_PRICE_BAND_BPS, DEBT_CEILING (18 dec), MIN_DEBT (18 dec),
-///      MINT_PRICE_MAX_AGE (seconds), REDEEM_MIN_ASSET_SHARE_BPS, REDEEM_PRICE_MAX_AGE (seconds, 0 = off)
+///      MINT_PRICE_MAX_AGE (seconds), REDEEM_MIN_ASSET_SHARE_BPS (0 = off), REDEEM_FEE_BPS
 ///
 /// Usage:
 ///   forge script script/robinhood/DeployEusdLiquidityManagerRobinhood.s.sol --rpc-url robinhood --broadcast \
@@ -76,12 +76,12 @@ contract DeployEusdLiquidityManagerRobinhood is Script {
             unstakedFeeBps: SafeCast.toUint16(vm.envUint("UNSTAKED_FEE_BPS")),
             poolPriceBandBps: SafeCast.toUint16(vm.envUint("POOL_PRICE_BAND_BPS")),
             redeemMinAssetShareBps: SafeCast.toUint16(vm.envUint("REDEEM_MIN_ASSET_SHARE_BPS")),
+            redeemFeeBps: SafeCast.toUint16(vm.envUint("REDEEM_FEE_BPS")),
             debtCeiling: vm.envUint("DEBT_CEILING"),
             minDebt: vm.envUint("MIN_DEBT"),
-            mintPriceMaxAge: vm.envUint("MINT_PRICE_MAX_AGE"),
-            redeemPriceMaxAge: vm.envUint("REDEEM_PRICE_MAX_AGE")
+            mintPriceMaxAge: vm.envUint("MINT_PRICE_MAX_AGE")
         });
-        // Typo guards: ratios within 100%..500%, bonus and fees at most 20%, band at most 10%.
+        // Typo guards: ratios within 100%..500%, bonus and fees at most 20%, band at most 10%, redeem fee at most 5%.
         require(params.mcrBps <= 50_000 && params.liquidationThresholdBps >= 10_000, "ratio out of range");
         require(
             params.liquidationBonusBps <= 2000 && params.stakedFeeBps <= 2000 && params.unstakedFeeBps <= 2000,
@@ -93,6 +93,6 @@ contract DeployEusdLiquidityManagerRobinhood is Script {
         require(params.debtCeiling <= 1e27, "debtCeiling out of range");
         require(params.mintPriceMaxAge <= 1 hours, "mintPriceMaxAge out of range");
         require(params.redeemMinAssetShareBps <= 10_000, "redeem share out of range");
-        require(params.redeemPriceMaxAge <= 1 hours, "redeemPriceMaxAge out of range");
+        require(params.redeemFeeBps <= 500, "redeem fee out of range");
     }
 }

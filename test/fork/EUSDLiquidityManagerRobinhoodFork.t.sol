@@ -102,10 +102,10 @@ contract EUSDLiquidityManagerRobinhoodFork is Test {
                 unstakedFeeBps: 200,
                 poolPriceBandBps: 250,
                 redeemMinAssetShareBps: 7500,
+                redeemFeeBps: 50,
                 debtCeiling: 1_000_000e18,
                 minDebt: 10e18,
-                mintPriceMaxAge: 1 days,
-                redeemPriceMaxAge: 5 minutes
+                mintPriceMaxAge: 1 days
             })
         );
         bytes32 minterRole = keccak256("MINTER_ROLE");

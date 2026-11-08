@@ -33,6 +33,11 @@ contract EUSDLiquidityManagerRedeemTest is LiquidityManagerSetup {
         return manager.redeem(SPY_POOL, owners, amount, 0);
     }
 
+    /// @dev Asset paid for `burned` eUSD at `price`, less the redemption fee (18-decimal asset).
+    function _seize(uint256 burned, uint256 price) internal pure returns (uint256) {
+        return Math.mulDiv(burned, 1e18 * (10_000 - uint256(REDEEM_FEE)), price * 10_000);
+    }
+
     /// @dev Move only the SPY pool, as a dump into the pool does; the oracle stays.
     function _movePool(
         uint256 price
@@ -64,7 +69,7 @@ contract EUSDLiquidityManagerRedeemTest is LiquidityManagerSetup {
         assertEq(p.debt, debtBefore - 1000e18, "debt cleared");
         assertEq(eusdBefore - eusd.balanceOf(redeemer), burned, "burned from redeemer");
         assertEq(supplyBefore - eusd.totalSupply(), 1000e18, "supply falls by the cleared debt");
-        assertEq(assetOut, Math.mulDiv(burned, 1e18, SPY_PRICE), "asset at the oracle price, rounded down");
+        assertEq(assetOut, _seize(burned, SPY_PRICE), "asset at the oracle price less the fee, rounded down");
         assertEq(spy.balanceOf(redeemer), assetOut);
         assertGt(manager.collateralRatioBps(SPY_POOL, alice), ratioBefore, "ratio rises");
         assertEq(manager.totalDebt(), p.debt);
@@ -75,18 +80,18 @@ contract EUSDLiquidityManagerRedeemTest is LiquidityManagerSetup {
         moveSpy(600e18);
         (uint256 assetOut, uint256 burned) = _redeem(_owners(alice), 500e18);
         assertGt(burned, 0);
-        assertEq(assetOut, Math.mulDiv(burned, 1e18, 600e18));
+        assertEq(assetOut, _seize(burned, 600e18));
     }
 
     function test_redeem_cutoff_followsParam() public {
         openSpy(alice, 10e18, 3500e18);
         vm.prank(admin);
-        manager.setRedeemParams(0, REDEEM_PRICE_MAX_AGE);
+        manager.setRedeemParams(1, REDEEM_FEE);
         (, uint256 burned) = _redeem(_owners(alice), 1000e18);
-        assertGt(burned, 0, "a zero cutoff makes an in-range position redeemable");
+        assertGt(burned, 0, "a near-zero cutoff makes an in-range position redeemable");
 
         vm.prank(admin);
-        manager.setRedeemParams(10_000, REDEEM_PRICE_MAX_AGE);
+        manager.setRedeemParams(10_000, REDEEM_FEE);
         _movePool(600e18);
         vm.expectRevert(IEUSDLiquidityManager.NothingToRedeem.selector);
         _redeem(_owners(alice), 1000e18);
@@ -125,7 +130,7 @@ contract EUSDLiquidityManagerRedeemTest is LiquidityManagerSetup {
         IEUSDLiquidityManager.Position memory p = manager.getPosition(SPY_POOL, alice);
         assertEq(p.debt, 0);
         assertLe(burned, debt, "never more than the debt");
-        assertEq(assetOut, Math.mulDiv(burned, 1e18, SPY_PRICE));
+        assertEq(assetOut, _seize(burned, SPY_PRICE));
         assertEq(manager.totalDebt(), 0);
         (,, uint128 held) = FablesVault(p.vault).range();
         assertGt(held, 0, "only the range the payout needed was removed");
@@ -184,6 +189,57 @@ contract EUSDLiquidityManagerRedeemTest is LiquidityManagerSetup {
         manager.redeem(SPY_POOL, _owners(alice), 1000e18, 10e18);
     }
 
+    function test_redeem_feeStaysWithOwner() public {
+        openSpy(alice, 10e18, 3500e18);
+        _movePool(600e18);
+        uint256 valueBefore = manager.collateralValue(SPY_POOL, alice);
+        uint256 debtBefore = manager.currentDebt(SPY_POOL, alice);
+        (, uint256 burned) = _redeem(_owners(alice), 1000e18);
+        uint256 kept = burned * uint256(REDEEM_FEE) / 10_000;
+        uint256 valueAfter = manager.collateralValue(SPY_POOL, alice);
+        assertEq(debtBefore - manager.currentDebt(SPY_POOL, alice), burned);
+        assertApproxEqAbs(
+            valueBefore - valueAfter, burned - kept, 1e15, "owner gives up asset worth burned less the fee"
+        );
+    }
+
+    /// @dev A position at minDebt whose asset is worth less than its debt cannot be redeemed, so its
+    ///      range must stay in place while the call redeems from the next owner.
+    function test_redeem_belowDebt_atMinDebt_keepsRange() public {
+        openSpy(bob, 10e18, 3500e18);
+        (int24 lower, int24 upper) = spyRange(300e18, 1500e18);
+        vm.prank(alice);
+        manager.addLiquidity(
+            IEUSDLiquidityManager.AddLiquidityParams({
+                poolId: SPY_POOL,
+                tickLower: lower,
+                tickUpper: upper,
+                assetDeposit: 1e18,
+                assetMax: 1e18,
+                eusdMax: MIN_DEBT,
+                staked: true
+            })
+        );
+        address vault = manager.getPosition(SPY_POOL, alice).vault;
+        uint256 idle = spy.balanceOf(vault);
+        if (idle > 0) {
+            vm.prank(alice);
+            manager.withdraw(SPY_POOL, idle);
+        }
+        vm.prank(admin);
+        manager.setRedeemParams(5000, REDEEM_FEE);
+        moveSpy(620e18);
+        (,, uint128 heldBefore) = FablesVault(vault).range();
+        uint256 debtBefore = manager.currentDebt(SPY_POOL, alice);
+
+        (, uint256 burned) = _redeem(_owners(alice, bob), 101e18);
+
+        (,, uint128 heldAfter) = FablesVault(vault).range();
+        assertEq(heldAfter, heldBefore, "range untouched");
+        assertEq(manager.currentDebt(SPY_POOL, alice), debtBefore, "debt untouched");
+        assertEq(burned, 101e18, "redeemed from bob instead");
+    }
+
     // ──────────────────────────────────────────────────────────
     //  Price and switches
     // ──────────────────────────────────────────────────────────
@@ -191,7 +247,7 @@ contract EUSDLiquidityManagerRedeemTest is LiquidityManagerSetup {
     function test_redeem_stalePrice_reverts() public {
         openSpy(alice, 10e18, 3500e18);
         _movePool(600e18);
-        vm.warp(block.timestamp + REDEEM_PRICE_MAX_AGE + 1);
+        vm.warp(block.timestamp + PRICE_MAX_AGE + 1);
         vm.expectPartialRevert(IEUSDLiquidityManager.StaleMintPrice.selector);
         _redeem(_owners(alice), 1000e18);
         oracle.setPrice(SPY, SPY_PRICE);
@@ -202,7 +258,7 @@ contract EUSDLiquidityManagerRedeemTest is LiquidityManagerSetup {
         openSpy(alice, 10e18, 3500e18);
         _movePool(600e18);
         vm.prank(admin);
-        manager.setRedeemParams(REDEEM_SHARE, 0);
+        manager.setRedeemParams(0, REDEEM_FEE);
         vm.expectRevert(IEUSDLiquidityManager.RedeemDisabled.selector);
         _redeem(_owners(alice), 1000e18);
     }
@@ -218,18 +274,28 @@ contract EUSDLiquidityManagerRedeemTest is LiquidityManagerSetup {
         vm.prank(admin);
         vm.expectRevert(IEUSDLiquidityManager.InvalidRiskParams.selector);
         manager.setRedeemParams(10_001, 60);
+        vm.prank(admin);
+        vm.expectRevert(IEUSDLiquidityManager.InvalidRiskParams.selector);
+        manager.setRedeemParams(5000, 10_000);
         vm.expectEmit(address(manager));
         emit IEUSDLiquidityManager.RedeemParamsSet(5000, 60);
         vm.prank(admin);
         manager.setRedeemParams(5000, 60);
         IEUSDLiquidityManager.RiskParams memory params = manager.riskParams();
         assertEq(params.redeemMinAssetShareBps, 5000);
-        assertEq(params.redeemPriceMaxAge, 60);
+        assertEq(params.redeemFeeBps, 60);
     }
 
     function test_initialize_rejectsShareAbove100() public {
         IEUSDLiquidityManager.RiskParams memory params = defaultParams();
         params.redeemMinAssetShareBps = 10_001;
+        vm.expectRevert(IEUSDLiquidityManager.InvalidRiskParams.selector);
+        this.deployWith(params);
+    }
+
+    function test_initialize_rejectsFee100() public {
+        IEUSDLiquidityManager.RiskParams memory params = defaultParams();
+        params.redeemFeeBps = 10_000;
         vm.expectRevert(IEUSDLiquidityManager.InvalidRiskParams.selector);
         this.deployWith(params);
     }
@@ -260,7 +326,9 @@ contract EUSDLiquidityManagerRedeemTest is LiquidityManagerSetup {
         vm.prank(redeemer);
         (uint256 assetOut, uint256 burned) = manager.redeem(USD_POOL, _owners(alice), 300e18, 0);
         assertEq(manager.getPosition(USD_POOL, alice).debt, debt - 300e18);
-        assertEq(assetOut, burned / 1e12, "6-decimal asset at $1");
+        assertEq(
+            assetOut, Math.mulDiv(burned, 1e6 * (10_000 - uint256(REDEEM_FEE)), 1e18 * 10_000), "6-decimal asset at $1"
+        );
         assertEq(usdg.balanceOf(redeemer), assetOut);
     }
 

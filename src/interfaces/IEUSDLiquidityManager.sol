@@ -39,11 +39,11 @@ pragma solidity 0.8.28;
 ///         value. The remaining range stays in place (and staked); a full liquidation sends
 ///         everything left to the owner.
 ///
-///         Redemption gives eUSD a $1 floor: anyone burns eUSD for asset worth the same at a
-///         fresh oracle price, taken from positions they name. Only positions whose vault is mostly
-///         asset at the pool price (out of range or near it, on the asset side) can be redeemed;
-///         the owner's debt falls by the eUSD burned, so their value is unchanged and their ratio
-///         rises.
+///         Redemption gives eUSD a floor: anyone burns eUSD for asset worth the same at the oracle
+///         price, less `redeemFeeBps`, taken from positions they name. Only positions whose vault is
+///         mostly asset at the pool price (out of range or near it, on the asset side) can be
+///         redeemed; the owner's debt falls by the eUSD burned and the fee stays in their vault, so
+///         their value does not fall and their ratio rises.
 interface IEUSDLiquidityManager {
     // ──────────────────────────────────────────────────────────
     //  Types
@@ -60,9 +60,10 @@ interface IEUSDLiquidityManager {
     /// @param minDebt                 Minimum debt of a position with debt (18 decimals).
     /// @param mintPriceMaxAge         Max oracle price age for a debt increase or withdrawal (seconds).
     /// @param redeemMinAssetShareBps  Least share of a vault's value, at the pool price, that must be
-    ///                                asset for the position to be redeemable (BPS).
-    /// @param redeemPriceMaxAge       Max oracle price age for a redemption (seconds); 0 turns
+    ///                                asset for the position to be redeemable (BPS); 0 turns
     ///                                redemption off.
+    /// @param redeemFeeBps            Share of a redemption's asset kept in the owner's vault (BPS,
+    ///                                below 10,000). Covers the oracle's lag behind the market.
     struct RiskParams {
         uint16 mcrBps;
         uint16 liquidationThresholdBps;
@@ -71,10 +72,10 @@ interface IEUSDLiquidityManager {
         uint16 unstakedFeeBps;
         uint16 poolPriceBandBps;
         uint16 redeemMinAssetShareBps;
+        uint16 redeemFeeBps;
         uint256 debtCeiling;
         uint256 minDebt;
         uint256 mintPriceMaxAge;
-        uint256 redeemPriceMaxAge;
     }
 
     /// @notice Configuration of one pool.
@@ -195,8 +196,8 @@ interface IEUSDLiquidityManager {
 
     /// @notice Emitted when the redemption parameters change.
     /// @param minAssetShareBps New least asset share for a position to be redeemable (BPS).
-    /// @param priceMaxAge      New max oracle price age for a redemption (seconds); 0 = off.
-    event RedeemParamsSet(uint16 minAssetShareBps, uint256 priceMaxAge);
+    /// @param feeBps           New redemption fee kept by the owner (BPS).
+    event RedeemParamsSet(uint16 minAssetShareBps, uint16 feeBps);
 
     /// @notice Emitted when a position's vault is created.
     /// @param poolId Pool id.
@@ -370,8 +371,7 @@ interface IEUSDLiquidityManager {
     /// @notice Thrown when a debt increase or withdrawal is attempted while minting is paused.
     error MintingPaused();
 
-    /// @notice Thrown when the oracle price is older than `mintPriceMaxAge` (`redeemPriceMaxAge` for
-    ///         a redemption).
+    /// @notice Thrown when the oracle price is older than `mintPriceMaxAge`.
     /// @param timestamp Price timestamp.
     /// @param maxAge    Allowed age (seconds).
     error StaleMintPrice(uint256 timestamp, uint256 maxAge);
@@ -532,12 +532,12 @@ interface IEUSDLiquidityManager {
     function liquidate(uint256 poolId, address owner, uint256 amount) external;
 
     /// @notice Burn up to `amount` of the caller's eUSD against the named positions' debt, in order,
-    ///         for asset worth the same at an oracle price no older than `redeemPriceMaxAge`
-    ///         (rounded down). A position is skipped when it has no debt, when less than
+    ///         for asset worth the same at an oracle price no older than `mintPriceMaxAge`, less
+    ///         `redeemFeeBps` (rounded down). A position is skipped when it has no debt, when less than
     ///         `redeemMinAssetShareBps` of its vault is asset at the pool price, or when it is
     ///         liquidatable. Each pays from its vault's idle asset first, then from just enough of its
     ///         range; eUSD that range returns is burned against the owner's debt. Each position is
-    ///         left with zero debt or at least `minDebt`. No fee.
+    ///         left with zero debt or at least `minDebt`. The fee stays in the owner's vault.
     /// @param poolId      Pool id.
     /// @param owners      Positions to redeem from, in order.
     /// @param amount      Most eUSD to burn (18 decimals).
@@ -610,9 +610,9 @@ interface IEUSDLiquidityManager {
 
     /// @notice Set the redemption parameters. ADMIN only.
     /// @param minAssetShareBps Least asset share, at the pool price, for a position to be
-    ///                         redeemable (BPS, at most 10,000).
-    /// @param priceMaxAge      Max oracle price age for a redemption (seconds); 0 turns it off.
-    function setRedeemParams(uint16 minAssetShareBps, uint256 priceMaxAge) external;
+    ///                         redeemable (BPS, at most 10,000); 0 turns redemption off.
+    /// @param feeBps           Redemption fee kept in the owner's vault (BPS, below 10,000).
+    function setRedeemParams(uint16 minAssetShareBps, uint16 feeBps) external;
 
     /// @notice Pause or unpause debt increases and withdrawals against debt. OPERATOR only.
     /// @param paused New state.
