@@ -2,6 +2,8 @@
 pragma solidity 0.8.28;
 
 import {IEUSDLiquidityManager} from "../../src/interfaces/IEUSDLiquidityManager.sol";
+
+import {LiquidityMath} from "../../src/libraries/LiquidityMath.sol";
 import {LiquidityManagerSetup, deployEUSDLiquidityManager} from "../helpers/LiquidityManagerSetup.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
@@ -240,6 +242,42 @@ contract EUSDLiquidityManagerRedeemTest is LiquidityManagerSetup {
         assertEq(burned, 101e18, "redeemed from bob instead");
     }
 
+    /// @dev The pool sits just above the range's lower tick, so the range is mostly asset and the
+    ///      pool can return a wei less than estimated. A redeem at minDebt must still repay in full.
+    function testFuzz_redeem_atMinDebt_poolRoundingStillRepays(
+        uint256 tickSeed
+    ) public {
+        openSpy(bob, 10e18, 3500e18);
+        uint160 sqrtPx = LiquidityMath.getSqrtPriceAtTick(int24(int256(65_001 + bound(tickSeed, 0, 60))));
+        ledger.setSqrtPrice(spyKey, sqrtPx);
+        oracle.setPrice(SPY, LiquidityMath.priceFromSqrtPrice(sqrtPx, 1e18, true));
+        vm.prank(alice);
+        manager.addLiquidity(
+            IEUSDLiquidityManager.AddLiquidityParams({
+                poolId: SPY_POOL,
+                tickLower: 65_000,
+                tickUpper: 66_000,
+                assetDeposit: 5000e18,
+                assetMax: 5000e18,
+                eusdMax: MIN_DEBT,
+                staked: true
+            })
+        );
+        address vault = manager.getPosition(SPY_POOL, alice).vault;
+        uint256 idle = spy.balanceOf(vault);
+        vm.prank(alice);
+        manager.withdraw(SPY_POOL, idle);
+        assertEq(manager.currentDebt(SPY_POOL, alice), MIN_DEBT);
+        oracle.setPrice(SPY, 690e18);
+        uint256 spyBefore = spy.balanceOf(redeemer);
+
+        vm.prank(redeemer);
+        manager.redeem(SPY_POOL, _owners(alice, bob), 2 * MIN_DEBT, 0);
+
+        assertEq(manager.currentDebt(SPY_POOL, alice), 0, "alice fully redeemed");
+        assertApproxEqAbs(spy.balanceOf(redeemer) - spyBefore, 2 * _seize(MIN_DEBT, 690e18), 2, "short by dust only");
+    }
+
     // ──────────────────────────────────────────────────────────
     //  Price and switches
     // ──────────────────────────────────────────────────────────
@@ -362,6 +400,26 @@ contract EUSDLiquidityManagerRedeemTest is LiquidityManagerSetup {
         assertLt(afterAdd.debt - before.debt, 2000e18, "only the eUSD the range used is new debt");
         assertEq(eusd.balanceOf(afterAdd.vault), 0, "unused mint burned");
         assertEq(manager.totalDebt(), afterAdd.debt);
+    }
+
+    function test_add_unusedMint_emitsDebtRepaid() public {
+        openSpy(alice, 10e18, 3500e18);
+        address vault = manager.getPosition(SPY_POOL, alice).vault;
+        (int24 lower, int24 upper) = spyRange(595e18, 805e18);
+        vm.expectEmit(true, true, true, false, address(manager));
+        emit IEUSDLiquidityManager.DebtRepaid(SPY_POOL, alice, vault, 0, 0);
+        vm.prank(alice);
+        manager.addLiquidity(
+            IEUSDLiquidityManager.AddLiquidityParams({
+                poolId: SPY_POOL,
+                tickLower: lower,
+                tickUpper: upper,
+                assetDeposit: 1e18,
+                assetMax: 1e18,
+                eusdMax: 2000e18,
+                staked: true
+            })
+        );
     }
 
     function test_add_unusedMint_keepsMinDebt() public {

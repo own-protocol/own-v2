@@ -567,17 +567,18 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
         uint256 eusdUsed;
         (liquidity, assetUsed, eusdUsed) = ILiquidityVault(vault).addLiquidity(tickLower, tickUpper, assetMax, eusdMax);
         emit LiquidityAdded(poolId, msg.sender, tickLower, tickUpper, liquidity, assetUsed, eusdUsed);
-        _burnUnminted(p, vault, Math.min(minted, eusdMax - eusdUsed));
+        _burnUnminted(poolId, p, vault, Math.min(minted, eusdMax - eusdUsed));
         _burnIdle(poolId, msg.sender, p, vault);
     }
 
     /// @dev Burn eUSD minted by {_add} that the range did not use. It was never lent, so it comes
     ///      off principal and leaves accrued fees as they are. The debt stays zero or at least
     ///      `minDebt`; eUSD that cannot be burned stays idle.
-    /// @param p      The position.
+    /// @param poolId Pool id.
+    /// @param p      The caller's position.
     /// @param vault  The position's vault.
     /// @param unused Minted eUSD left idle (18 decimals).
-    function _burnUnminted(Position storage p, address vault, uint256 unused) private {
+    function _burnUnminted(uint256 poolId, Position storage p, address vault, uint256 unused) private {
         uint256 debt = p.debt;
         uint256 minDebt = _riskParams.minDebt;
         if (debt - unused != 0 && debt - unused < minDebt) unused = debt > minDebt ? debt - minDebt : 0;
@@ -585,6 +586,7 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
         p.debt = debt - unused;
         totalDebt -= unused;
         _burn(vault, unused);
+        emit DebtRepaid(poolId, msg.sender, vault, unused, debt - unused);
     }
 
     /// @dev Remove liquidity into the vault.
@@ -820,10 +822,8 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
         if (repaid == 0) return (0, 0);
         seized = _redeemSeize(cfg, repaid, price);
         uint256 idle = _freeAsset(poolId, cfg, owner, vault, seized, rangeAsset);
-        if (seized > idle) {
-            repaid = _redeemable(p.debt, _redeemCover(cfg, idle, price));
-            seized = _redeemSeize(cfg, repaid, price);
-        }
+        // Pool rounding can free a few wei less asset than estimated; the redeemer absorbs it.
+        if (seized > idle) seized = idle;
         if (repaid > 0) {
             _reduceDebt(p, repaid);
             _burn(msg.sender, repaid);

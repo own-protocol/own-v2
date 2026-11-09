@@ -537,7 +537,8 @@ interface IEUSDLiquidityManager {
     ///         `redeemMinAssetShareBps` of its vault is asset at the pool price, or when it is
     ///         liquidatable. Each pays from its vault's idle asset first, then from just enough of its
     ///         range; eUSD that range returns is burned against the owner's debt. Each position is
-    ///         left with zero debt or at least `minDebt`. The fee stays in the owner's vault.
+    ///         left with zero debt or at least `minDebt`. The fee stays in the owner's vault. When pool
+    ///         rounding frees a few wei less asset than owed, the caller receives what was freed.
     /// @param poolId      Pool id.
     /// @param owners      Positions to redeem from, in order.
     /// @param amount      Most eUSD to burn (18 decimals).
