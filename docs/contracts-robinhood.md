@@ -26,6 +26,29 @@ optimizer 200, cancun) with `DeployCoreRobinhood.s.sol`, `DeployEusdManagerRobin
 | MoneyFeeCollector implementation (new)   | `0x0b427Ed2ba730d721D1f06e122fe4367aF43014F` |
 | $MONEY (token)                           | `0x0a8B4763C71aC39101b3B8a97e62Da0B81549a4f` |
 
+## Liquidity managers
+
+Deployed 2026-11-09 from branch `eusd-liq-manager` commit `aba9e7e` (same toolchain) with
+`DeployEusdLiquidityManagerRobinhood.s.sol`.
+
+| Contract                                      | Address                                      |
+| --------------------------------------------- | -------------------------------------------- |
+| EUSDLiquidityManager USDG (ERC-1967 proxy)    | `0x64bf85F7F55C9c66e42ac70D970e01b9cd163554` |
+| EUSDLiquidityManager low vol (ERC-1967 proxy) | `0x62f482452340E5a4beB2bC910248DFfcF8f59C4b` |
+| EUSDLiquidityManager implementation (shared)  | `0x25494DD3a21230736bb9FB4dF34D8104f960b2d3` |
+| FablesAdapter vault beacon                    | `0xad95D20D6d1Fbb7FD26263F5CE77711102bc9ad6` |
+| FablesAdapter implementation                  | `0x635961b4D13b888B3872f798123138f97bD88AD0` |
+| AerodromeAdapter vault beacon                 | `0x01d38dDBC7cd783bf0B5FA8F26a401eA64DfE5A1` |
+| AerodromeAdapter implementation               | `0x4345AebAe03944e63804eAd6a186f25B79169B67` |
+
+Each user's position lives in its own vault, a beacon proxy created on first use. Both beacons are
+owned by the governance Safe, which upgrades every vault of that DEX at once.
+
+| Manager  | Pools (Fables)  |
+| -------- | --------------- |
+| USDG     | USDG/eUSD       |
+| Low vol  | SPY/eUSD        |
+
 ## Managers A–D
 
 Each EUSDManager holds one collateral risk group with its own risk params, and all four mint the
@@ -45,13 +68,13 @@ The deployer holds no role. The registry's default admin is the governance Safe
 `0x470f35a7e5d4Cd490D74799AC01E7bEea7F478e2` (3h transfer delay). Every other contract is gated
 through the registry's roles:
 
-- **ADMIN** (governance Safe): collateral listing, risk params, APR and cap, upgrades.
+- **ADMIN** (governance Safe): collateral and pool listing, risk params, APR and cap, upgrades.
 - **OPERATOR** (governance Safe and the keeper): pause minting, top up the staking vaults with
   `pullFromTreasury`.
 - **Treasury** (`registry.treasury()`): the treasury Safe
   `0x8f974d82EEaa9725ecC40600f12093B14080dA54`. It receives stability fees and funds staking
   rewards.
-- **eUSD `MINTER_ROLE`**: the four managers only.
+- **eUSD `MINTER_ROLE`**: the four managers and the two liquidity managers only.
 
 ## Oracle
 

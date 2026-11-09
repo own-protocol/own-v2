@@ -1,0 +1,334 @@
+{
+  "storage": [
+    {
+      "label": "registry",
+      "offset": 0,
+      "slot": "0",
+      "type": "t_contract(IProtocolRegistry)"
+    },
+    {
+      "label": "_eusd",
+      "offset": 0,
+      "slot": "1",
+      "type": "t_contract(IEUSD)"
+    },
+    {
+      "label": "_riskParams",
+      "offset": 0,
+      "slot": "2",
+      "type": "t_struct(RiskParams)_storage"
+    },
+    {
+      "label": "mintPaused",
+      "offset": 0,
+      "slot": "6",
+      "type": "t_bool"
+    },
+    {
+      "label": "totalDebt",
+      "offset": 0,
+      "slot": "7",
+      "type": "t_uint256"
+    },
+    {
+      "label": "poolCount",
+      "offset": 0,
+      "slot": "8",
+      "type": "t_uint256"
+    },
+    {
+      "label": "_pools",
+      "offset": 0,
+      "slot": "9",
+      "type": "t_mapping(t_uint256,t_struct(PoolConfig)_storage)"
+    },
+    {
+      "label": "_positions",
+      "offset": 0,
+      "slot": "10",
+      "type": "t_mapping(t_uint256,t_mapping(t_address,t_struct(Position)_storage))"
+    },
+    {
+      "label": "_owners",
+      "offset": 0,
+      "slot": "11",
+      "type": "t_mapping(t_uint256,t_array(t_address)dyn_storage)"
+    },
+    {
+      "label": "_feeIndexes",
+      "offset": 0,
+      "slot": "12",
+      "type": "t_struct(FeeIndexes)_storage"
+    }
+  ],
+  "types": {
+    "t_address": {
+      "encoding": "inplace",
+      "label": "address",
+      "numberOfBytes": "20"
+    },
+    "t_array(t_address)dyn_storage": {
+      "base": "t_address",
+      "encoding": "dynamic_array",
+      "label": "address[]",
+      "numberOfBytes": "32"
+    },
+    "t_bool": {
+      "encoding": "inplace",
+      "label": "bool",
+      "numberOfBytes": "1"
+    },
+    "t_bytes32": {
+      "encoding": "inplace",
+      "label": "bytes32",
+      "numberOfBytes": "32"
+    },
+    "t_bytes_storage": {
+      "encoding": "bytes",
+      "label": "bytes",
+      "numberOfBytes": "32"
+    },
+    "t_contract(IEUSD)": {
+      "encoding": "inplace",
+      "label": "contract IEUSD",
+      "numberOfBytes": "20"
+    },
+    "t_contract(IProtocolRegistry)": {
+      "encoding": "inplace",
+      "label": "contract IProtocolRegistry",
+      "numberOfBytes": "20"
+    },
+    "t_mapping(t_address,t_struct(Position)_storage)": {
+      "encoding": "mapping",
+      "key": "t_address",
+      "label": "mapping(address => struct IEUSDLiquidityManager.Position)",
+      "numberOfBytes": "32",
+      "value": "t_struct(Position)_storage"
+    },
+    "t_mapping(t_uint256,t_array(t_address)dyn_storage)": {
+      "encoding": "mapping",
+      "key": "t_uint256",
+      "label": "mapping(uint256 => address[])",
+      "numberOfBytes": "32",
+      "value": "t_array(t_address)dyn_storage"
+    },
+    "t_mapping(t_uint256,t_mapping(t_address,t_struct(Position)_storage))": {
+      "encoding": "mapping",
+      "key": "t_uint256",
+      "label": "mapping(uint256 => mapping(address => struct IEUSDLiquidityManager.Position))",
+      "numberOfBytes": "32",
+      "value": "t_mapping(t_address,t_struct(Position)_storage)"
+    },
+    "t_mapping(t_uint256,t_struct(PoolConfig)_storage)": {
+      "encoding": "mapping",
+      "key": "t_uint256",
+      "label": "mapping(uint256 => struct IEUSDLiquidityManager.PoolConfig)",
+      "numberOfBytes": "32",
+      "value": "t_struct(PoolConfig)_storage"
+    },
+    "t_struct(FeeIndexes)_storage": {
+      "encoding": "inplace",
+      "label": "struct EUSDLiquidityManager.FeeIndexes",
+      "members": [
+        {
+          "label": "staked",
+          "offset": 0,
+          "slot": "0",
+          "type": "t_uint64"
+        },
+        {
+          "label": "unstaked",
+          "offset": 8,
+          "slot": "0",
+          "type": "t_uint64"
+        },
+        {
+          "label": "updated",
+          "offset": 16,
+          "slot": "0",
+          "type": "t_uint64"
+        }
+      ],
+      "numberOfBytes": "32"
+    },
+    "t_struct(PoolConfig)_storage": {
+      "encoding": "inplace",
+      "label": "struct IEUSDLiquidityManager.PoolConfig",
+      "members": [
+        {
+          "label": "beacon",
+          "offset": 0,
+          "slot": "0",
+          "type": "t_address"
+        },
+        {
+          "label": "asset",
+          "offset": 0,
+          "slot": "1",
+          "type": "t_address"
+        },
+        {
+          "label": "ticker",
+          "offset": 0,
+          "slot": "2",
+          "type": "t_bytes32"
+        },
+        {
+          "label": "assetDecimals",
+          "offset": 0,
+          "slot": "3",
+          "type": "t_uint8"
+        },
+        {
+          "label": "enabled",
+          "offset": 1,
+          "slot": "3",
+          "type": "t_bool"
+        },
+        {
+          "label": "exists",
+          "offset": 2,
+          "slot": "3",
+          "type": "t_bool"
+        },
+        {
+          "label": "poolData",
+          "offset": 0,
+          "slot": "4",
+          "type": "t_bytes_storage"
+        }
+      ],
+      "numberOfBytes": "160"
+    },
+    "t_struct(Position)_storage": {
+      "encoding": "inplace",
+      "label": "struct IEUSDLiquidityManager.Position",
+      "members": [
+        {
+          "label": "vault",
+          "offset": 0,
+          "slot": "0",
+          "type": "t_address"
+        },
+        {
+          "label": "staked",
+          "offset": 20,
+          "slot": "0",
+          "type": "t_bool"
+        },
+        {
+          "label": "debt",
+          "offset": 0,
+          "slot": "1",
+          "type": "t_uint256"
+        },
+        {
+          "label": "feeIndexSnapshot",
+          "offset": 0,
+          "slot": "2",
+          "type": "t_uint256"
+        },
+        {
+          "label": "feesAccrued",
+          "offset": 0,
+          "slot": "3",
+          "type": "t_uint256"
+        }
+      ],
+      "numberOfBytes": "128"
+    },
+    "t_struct(RiskParams)_storage": {
+      "encoding": "inplace",
+      "label": "struct IEUSDLiquidityManager.RiskParams",
+      "members": [
+        {
+          "label": "mcrBps",
+          "offset": 0,
+          "slot": "0",
+          "type": "t_uint16"
+        },
+        {
+          "label": "liquidationThresholdBps",
+          "offset": 2,
+          "slot": "0",
+          "type": "t_uint16"
+        },
+        {
+          "label": "liquidationBonusBps",
+          "offset": 4,
+          "slot": "0",
+          "type": "t_uint16"
+        },
+        {
+          "label": "stakedFeeBps",
+          "offset": 6,
+          "slot": "0",
+          "type": "t_uint16"
+        },
+        {
+          "label": "unstakedFeeBps",
+          "offset": 8,
+          "slot": "0",
+          "type": "t_uint16"
+        },
+        {
+          "label": "poolPriceBandBps",
+          "offset": 10,
+          "slot": "0",
+          "type": "t_uint16"
+        },
+        {
+          "label": "redeemMinAssetShareBps",
+          "offset": 12,
+          "slot": "0",
+          "type": "t_uint16"
+        },
+        {
+          "label": "redeemFeeBps",
+          "offset": 14,
+          "slot": "0",
+          "type": "t_uint16"
+        },
+        {
+          "label": "debtCeiling",
+          "offset": 0,
+          "slot": "1",
+          "type": "t_uint256"
+        },
+        {
+          "label": "minDebt",
+          "offset": 0,
+          "slot": "2",
+          "type": "t_uint256"
+        },
+        {
+          "label": "mintPriceMaxAge",
+          "offset": 0,
+          "slot": "3",
+          "type": "t_uint256"
+        }
+      ],
+      "numberOfBytes": "128"
+    },
+    "t_uint16": {
+      "encoding": "inplace",
+      "label": "uint16",
+      "numberOfBytes": "2"
+    },
+    "t_uint256": {
+      "encoding": "inplace",
+      "label": "uint256",
+      "numberOfBytes": "32"
+    },
+    "t_uint64": {
+      "encoding": "inplace",
+      "label": "uint64",
+      "numberOfBytes": "8"
+    },
+    "t_uint8": {
+      "encoding": "inplace",
+      "label": "uint8",
+      "numberOfBytes": "1"
+    }
+  }
+}

@@ -11,6 +11,15 @@ risk group of collateral with its own parameters, and every manager mints the sa
 - A fixed annual **stability fee** accrues on debt and is minted to the treasury, keeping
   eUSD supply equal to total debt across managers.
 
+**EUSDLiquidityManager** mints eUSD against concentrated-liquidity positions in asset/eUSD DEX pools.
+Each user gets one vault per pool (a beacon proxy of a DEX adapter: `FablesAdapter` for Fables, a
+Uniswap v4 fork, or `AerodromeAdapter` for Aerodrome Slipstream). The vault holds the range, and the
+eUSD minted for it goes into the range, never to the user's wallet. The position is valued at the
+oracle price, a lower bound for the range at any pool price. Liquidity staked in the DEX gauge earns
+emissions and pays the staked fee; unstaked liquidity keeps its swap fees and pays the unstaked fee.
+Positions can be liquidated in part or in full, and eUSD can be redeemed against positions whose vault
+is mostly asset. One manager runs per risk group, with each group's pools inside it.
+
 **StakingVault** is the staking layer: a fixed-APR ERC-4626 vault deployed once per asset (eUSD →
 seUSD, $MONEY → sMONEY). Rewards drip in the staked asset from a pre-funded reserve at the target APR
 up to a cap on total staked; above the cap the APR falls as TVL grows.
@@ -22,7 +31,10 @@ with a share of the $MONEY trading fees and sends it to the protocol reserve.
 
 ```
 src/
-  eusd/        EUSD (token), EUSDManager (CDP engine, UUPS proxy per risk group)
+  eusd/        EUSD (token), EUSDManager (CDP engine, UUPS proxy per risk group),
+               EUSDLiquidityManager (eUSD against LP positions, UUPS proxy per risk group)
+  eusd/adapters/  FablesAdapter, AerodromeAdapter (per-user LP vaults behind beacons)
+  libraries/   LiquidityMath (concentrated-liquidity math)
   staking/     StakingVault (seUSD, sMONEY)
   oracle/      ChainlinkOracleVerifier (Chainlink primary, band-limited in-house fallback)
   registry/    ProtocolRegistry (oracle, treasury and roles)
