@@ -12,6 +12,10 @@ pragma solidity 0.8.28;
 ///         position earns on the DEX (swap fees, emissions), sweep tokens that are neither the
 ///         asset nor eUSD, and name a delegate that may manage the position through the manager.
 ///
+///         An adapter may hold a second range beside the main one (Fables: the tight range). {range}
+///         reports the main range, {holdings} counts every range, and removing liquidity removes
+///         the same share of every range, so the manager treats them as one position.
+///
 ///         The manager values a vault at the oracle price: {holdings} returns the amounts the
 ///         liquidity would hold if the pool traded at that price, plus idle balances. The pool's own
 ///         price is read only for {poolPrice}, which the manager compares with the oracle.

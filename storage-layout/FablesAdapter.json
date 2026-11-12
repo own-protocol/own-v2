@@ -83,6 +83,36 @@
       "offset": 21,
       "slot": "10",
       "type": "t_bool"
+    },
+    {
+      "label": "tightShareBps",
+      "offset": 22,
+      "slot": "10",
+      "type": "t_uint16"
+    },
+    {
+      "label": "tightHalfWidth",
+      "offset": 24,
+      "slot": "10",
+      "type": "t_int24"
+    },
+    {
+      "label": "_tightLower",
+      "offset": 27,
+      "slot": "10",
+      "type": "t_int24"
+    },
+    {
+      "label": "_tightUpper",
+      "offset": 0,
+      "slot": "11",
+      "type": "t_int24"
+    },
+    {
+      "label": "_tightLiquidity",
+      "offset": 3,
+      "slot": "11",
+      "type": "t_uint128"
     }
   ],
   "types": {
@@ -147,6 +177,11 @@
       "encoding": "inplace",
       "label": "uint128",
       "numberOfBytes": "16"
+    },
+    "t_uint16": {
+      "encoding": "inplace",
+      "label": "uint16",
+      "numberOfBytes": "2"
     },
     "t_uint24": {
       "encoding": "inplace",

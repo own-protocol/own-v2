@@ -77,6 +77,11 @@ misc/          MoneyFeeCollector: standalone, not part of the eUSD core (tests i
   delegate never withdraws, closes or sweeps. Fables swap routes take up to 3 hops through pools on
   the vault pool's hook or in the Fables pool registry (adapter immutable `poolRegistry`), e.g.
   eUSD -> USDG -> SPY.
+- Fables vaults can hold a tight range beside the main one. The owner or the delegate sets
+  `setTightRange(shareBps, halfWidth)` (share at most 50%, half-width a multiple of the spacing);
+  when the vault next opens its range (open or `rebalance`), that share goes into a range centred
+  on the pool tick. `range()` is the main range, `tightRange()` the tight one, `holdings` counts
+  both, and every removal takes the same share of both, so the manager is unaware of it.
 
 **Oracle**: `ChainlinkOracleVerifier` is Chainlink-primary with a band-limited, signed in-house
 fallback for when a feed is silent (weekends, off-hours). Managers read it as the registry's
