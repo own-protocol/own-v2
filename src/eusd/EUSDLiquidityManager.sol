@@ -307,10 +307,11 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
 
     /// @inheritdoc IEUSDLiquidityManager
     /// @dev No pool price band: the valuation is a lower bound wherever the pool trades, and a lagging
-    ///      pool must not hold up a liquidation. The bonus is on all of the cleared debt, so how the
-    ///      pool splits the removed share does not change the payout. A partial liquidation takes
-    ///      at most the cleared share of the position's value, so the ratio of what remains never
-    ///      falls. Idle eUSD (e.g. from a harvest) is burned against the debt before the ratio check.
+    ///      pool must not hold up a liquidation. The payout is capped at the vault's asset, so a pool
+    ///      pushed above the range before the call leaves the liquidator little or no bonus; liquidators
+    ///      should simulate first or send privately. A partial liquidation takes at most the cleared
+    ///      share of the position's value, so the ratio of what remains never falls. Idle eUSD (e.g.
+    ///      from a harvest) is burned against the debt before the ratio check.
     function liquidate(uint256 poolId, address owner, uint256 amount) external override nonReentrant {
         PoolConfig storage cfg = _requirePool(poolId);
         _nonZero(amount);
