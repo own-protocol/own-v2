@@ -899,6 +899,25 @@ contract EUSDLiquidityManagerTest is LiquidityManagerSetup {
         manager.rebalance(params);
     }
 
+    function test_rebalance_delegateStalePrice_reverts() public {
+        openSpy(alice, 10e18, 3500e18);
+        _delegate(keeper);
+        oracle.setPrice(SPY, SPY_PRICE, block.timestamp);
+        vm.warp(block.timestamp + PRICE_MAX_AGE + 1);
+        // No swap and no new debt: a delegate still needs a fresh price, the owner does not.
+        IEUSDLiquidityManager.RebalanceParams memory params = _repoParams(650e18, 750e18, 3e18, 2000e18);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IEUSDLiquidityManager.StaleMintPrice.selector, block.timestamp - PRICE_MAX_AGE - 1, PRICE_MAX_AGE
+            )
+        );
+        vm.prank(keeper);
+        manager.rebalance(params);
+
+        vm.prank(alice);
+        manager.rebalance(params);
+    }
+
     function test_rebalance_setsStakedForOwner() public {
         openSpy(alice, 10e18, 3500e18);
         _delegate(keeper);
@@ -1447,6 +1466,27 @@ contract EUSDLiquidityManagerTest is LiquidityManagerSetup {
     function test_liquidate_noDebt_reverts() public {
         vm.expectRevert(abi.encodeWithSelector(IEUSDLiquidityManager.NoDebt.selector, SPY_POOL, alice));
         manager.liquidate(SPY_POOL, alice, type(uint256).max);
+    }
+
+    function test_liquidate_burnsIdleEusdBeforeRatio() public {
+        openSpy(alice, 10e18, 3500e18);
+        _crash(250e18);
+        uint256 debt = manager.currentDebt(SPY_POOL, alice);
+        uint256 value = manager.collateralValue(SPY_POOL, alice);
+        // Idle eUSD (e.g. a harvest kept in the vault) that makes the position healthy once burned.
+        uint256 idle = debt - (value * BPS) / LIQ_THRESHOLD + 10e18;
+        assertLt(((value + idle) * BPS) / debt, LIQ_THRESHOLD, "gross ratio below the threshold");
+        giveEusd(address(_vault(SPY_POOL, alice)), idle);
+
+        uint256 ratio = manager.collateralRatioBps(SPY_POOL, alice);
+        assertGe(ratio, LIQ_THRESHOLD);
+        assertFalse(manager.isLiquidatable(SPY_POOL, alice));
+        giveEusd(keeper, debt);
+        vm.expectRevert(
+            abi.encodeWithSelector(IEUSDLiquidityManager.PositionNotLiquidatable.selector, ratio, LIQ_THRESHOLD)
+        );
+        vm.prank(keeper);
+        manager.liquidate(SPY_POOL, alice, 1000e18);
     }
 
     function _crash(

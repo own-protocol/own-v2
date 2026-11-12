@@ -38,7 +38,8 @@ pragma solidity 0.8.28;
 ///         for unstaked liquidity. The fee is simple interest on principal, minted to the treasury.
 ///
 ///         Exits need no fresh price: repay and close use no price, and liquidation uses the latest
-///         oracle price with no age bound. Liquidation can be partial: clearing part of the debt
+///         oracle price with no age bound. Liquidation first burns the vault's idle eUSD against
+///         the debt, then checks the ratio. Liquidation can be partial: clearing part of the debt
 ///         removes the same share of the range, its eUSD is burned against the debt, the liquidator
 ///         burns the rest of the cleared debt and receives asset worth that plus the bonus on all of
 ///         the cleared debt. A partial liquidation takes at most the cleared share of the position's
@@ -512,7 +513,7 @@ interface IEUSDLiquidityManager {
     ///         The swap needs a fresh price and returns at least its oracle value less
     ///         `poolPriceBandBps` and at least `swapMinOut`. The pool must be enabled and within the
     ///         price band both before and after the swap, and the health rule applies. A delegate
-    ///         call's equity loss at the oracle price, measured from the vault once the old range is
+    ///         call always needs a fresh price, and its equity loss at the oracle price, measured from the vault once the old range is
     ///         removed (eUSD paid to the owner counts as kept), is charged to the vault's delegate
     ///         loss budget.
     /// @param params See {RebalanceParams}.
@@ -727,7 +728,8 @@ interface IEUSDLiquidityManager {
     /// @return Value.
     function collateralValue(uint256 poolId, address owner) external view returns (uint256);
 
-    /// @notice Collateral ratio at the latest oracle price with debt accrued to now (BPS;
+    /// @notice Collateral ratio at the latest oracle price with debt accrued to now, after the
+    ///         vault's idle eUSD is burned against the debt as {liquidate} does (BPS;
     ///         type(uint256).max without debt).
     /// @param poolId Pool id.
     /// @param owner  Position owner.

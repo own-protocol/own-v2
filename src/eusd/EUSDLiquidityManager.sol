@@ -257,6 +257,8 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
         if (msg.sender != owner && msg.sender != ILiquidityVault(vault).delegate()) revert OnlyOwnerOrDelegate();
 
         HealthSnapshot memory before = _snapshot(cfg, p, vault);
+        // A delegate's loss is measured at this price, so it must be fresh even with no swap or mint.
+        if (msg.sender != owner) _requireFresh(before.timestamp);
         uint256 swapOut = _unwind(cfg, p, vault, before, params);
         liquidity = _readd(cfg, p, vault, before, params);
         emit Rebalanced(params.poolId, owner, msg.sender, params.assetToEusd, params.swapAmount, swapOut);
@@ -308,14 +310,15 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
     ///      pool must not hold up a liquidation. The bonus is on all of the cleared debt, so how the
     ///      pool splits the removed share does not change the payout. A partial liquidation takes
     ///      at most the cleared share of the position's value, so the ratio of what remains never
-    ///      falls.
+    ///      falls. Idle eUSD (e.g. from a harvest) is burned against the debt before the ratio check.
     function liquidate(uint256 poolId, address owner, uint256 amount) external override nonReentrant {
         PoolConfig storage cfg = _requirePool(poolId);
         _nonZero(amount);
         Position storage p = _accrue(poolId, owner);
+        address vault = p.vault;
+        _burnIdle(poolId, owner, p, vault);
         uint256 debt = p.debt;
         if (debt == 0) revert NoDebt(poolId, owner);
-        address vault = p.vault;
 
         (uint256 price,) = _oracle().getPrice(cfg.ticker);
         uint256 value = _value(cfg, vault, price);
@@ -1296,7 +1299,9 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
     function collateralRatioBps(uint256 poolId, address owner) public view override returns (uint256) {
         uint256 debt = currentDebt(poolId, owner);
         if (debt == 0) return type(uint256).max;
-        return _ratioBps(collateralValue(poolId, owner), debt);
+        // As {liquidate} sees it: idle eUSD burned against the debt first.
+        uint256 burnable = _retirable(debt, _eusdBalance(_positions[poolId][owner].vault));
+        return _ratioBps(collateralValue(poolId, owner) - burnable, debt - burnable);
     }
 
     /// @inheritdoc IEUSDLiquidityManager

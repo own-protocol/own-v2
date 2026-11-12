@@ -77,7 +77,8 @@ misc/          MoneyFeeCollector: standalone, not part of the eUSD core (tests i
   pool band and at least the caller's `swapMinOut`, with a fresh price, then add the new range,
   the pool price checked against the band before and after the swap) and, on Fables vaults,
   `harvest` FABLES into eUSD, the asset or FABLES, kept in the vault or sent to the owner as the
-  owner sets. A delegate never withdraws, closes or sweeps. The owner sets a delegate loss budget
+  owner sets. A delegate never withdraws, closes or sweeps, and its `rebalance` always needs a
+  fresh price. The owner sets a delegate loss budget
   with the delegate (`setDelegate(delegate, lossBudgetBps)`, app default 1%): each delegate
   `rebalance` charges its equity loss at the oracle price (value less debt, measured from the
   vault once the old range is removed, eUSD paid to the owner counted as kept) to a one-day
