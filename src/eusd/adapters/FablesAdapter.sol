@@ -17,7 +17,6 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 
 /// @title FablesAdapter — liquidity vault for Fables pools
@@ -28,9 +27,6 @@ import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 ///         owner. FABLES are claimed to the owner, or harvested by the owner or the delegate into
 ///         eUSD, the asset or FABLES, kept in the vault or sent to the owner as the owner sets.
 ///         Swaps run on the PoolManager through the vault's hook pools or pools in the Fables registry.
-///         The owner or the delegate may set a tight range: a share of each newly opened range goes
-///         into a narrow range centred on the pool price, held beside the main range and removed in
-///         the same proportion.
 /// @dev Each vault is a BeaconProxy; this is the implementation behind the Fables beacon. The
 ///      PoolManager and emission stream are DEX-wide, so they are immutables of the
 ///      implementation; the pool key is per vault. Native-currency pools are not supported.
@@ -68,20 +64,6 @@ contract FablesAdapter is ILiquidityVault, Initializable, ReentrancyGuard {
         address indexed caller, uint256 fablesIn, address indexed tokenOut, uint256 amountOut, bool toOwner
     );
 
-    /// @notice Emitted when the owner or the delegate sets the tight range.
-    /// @param caller    The owner or the delegate.
-    /// @param shareBps  Share of a newly opened range placed in the tight range (BPS; 0 = off).
-    /// @param halfWidth Half-width of the tight range in ticks.
-    event TightRangeSet(address indexed caller, uint16 shareBps, int24 halfWidth);
-
-    /// @notice Emitted when the tight range is opened beside a newly opened main range.
-    /// @param tickLower Lower tick.
-    /// @param tickUpper Upper tick.
-    /// @param liquidity Liquidity added.
-    /// @param assetUsed Asset paid into the pool (asset units).
-    /// @param eusdUsed  eUSD paid into the pool (18 decimals).
-    event TightRangeOpened(int24 tickLower, int24 tickUpper, uint128 liquidity, uint256 assetUsed, uint256 eusdUsed);
-
     // ──────────────────────────────────────────────────────────
     //  Errors
     // ──────────────────────────────────────────────────────────
@@ -95,12 +77,6 @@ contract FablesAdapter is ILiquidityVault, Initializable, ReentrancyGuard {
     /// @notice Thrown when a harvest finds no FABLES in the vault.
     error NothingToHarvest();
 
-    /// @notice Thrown when a tight range share is above {MAX_TIGHT_SHARE_BPS} or its half-width is
-    ///         not a positive multiple of the tick spacing.
-    /// @param shareBps  Share given (BPS).
-    /// @param halfWidth Half-width given (ticks).
-    error InvalidTightRange(uint16 shareBps, int24 halfWidth);
-
     // ──────────────────────────────────────────────────────────
     //  Constants & immutables
     // ──────────────────────────────────────────────────────────
@@ -113,12 +89,6 @@ contract FablesAdapter is ILiquidityVault, Initializable, ReentrancyGuard {
 
     /// @dev Most pools a swap route may cross.
     uint256 private constant MAX_HOPS = 3;
-
-    /// @dev Basis-point denominator.
-    uint256 private constant BPS = 10_000;
-
-    /// @notice Largest share of a newly opened range the tight range may take (BPS).
-    uint16 public constant MAX_TIGHT_SHARE_BPS = 5000;
 
     /// @dev v4 `MIN_SQRT_PRICE + 1`: no price limit when selling currency0.
     uint160 private constant MIN_SQRT_PRICE_LIMIT = 4_295_128_740;
@@ -181,21 +151,6 @@ contract FablesAdapter is ILiquidityVault, Initializable, ReentrancyGuard {
     /// @notice Whether harvests are sent to the owner. Defaults to kept in the vault.
     bool public harvestToOwner;
 
-    /// @notice Share of a newly opened range placed in the tight range (BPS; 0 = off).
-    uint16 public tightShareBps;
-
-    /// @notice Half-width of the tight range in ticks, a multiple of the tick spacing.
-    int24 public tightHalfWidth;
-
-    /// @dev Lower tick of the open tight range.
-    int24 private _tightLower;
-
-    /// @dev Upper tick of the open tight range.
-    int24 private _tightUpper;
-
-    /// @dev Liquidity held in the tight range; nonzero only while the main range is open.
-    uint128 private _tightLiquidity;
-
     // ──────────────────────────────────────────────────────────
     //  Modifiers
     // ──────────────────────────────────────────────────────────
@@ -256,9 +211,6 @@ contract FablesAdapter is ILiquidityVault, Initializable, ReentrancyGuard {
     // ──────────────────────────────────────────────────────────
 
     /// @inheritdoc ILiquidityVault
-    /// @dev When this opens the range and a tight range is set, {tightShareBps} of the amounts go
-    ///      first into the tight range at the pool price; the returned liquidity is the main range's,
-    ///      and the amounts used include both.
     function addLiquidity(
         int24 tickLower,
         int24 tickUpper,
@@ -275,7 +227,6 @@ contract FablesAdapter is ILiquidityVault, Initializable, ReentrancyGuard {
         uint256 eusdBefore = IERC20(_eusd).balanceOf(address(this));
         if (assetMax > assetBefore) assetMax = assetBefore;
         if (eusdMax > eusdBefore) eusdMax = eusdBefore;
-        if (_liquidity == 0 && tightShareBps > 0) (assetMax, eusdMax) = _openTight(assetMax, eusdMax);
         (uint256 max0, uint256 max1) = _assetIsZero ? (assetMax, eusdMax) : (eusdMax, assetMax);
         liquidity = _liquidityFor(tickLower, tickUpper, max0, max1);
         if (liquidity == 0) revert ZeroLiquidity();
@@ -291,9 +242,7 @@ contract FablesAdapter is ILiquidityVault, Initializable, ReentrancyGuard {
     }
 
     /// @inheritdoc ILiquidityVault
-    /// @dev Fables `withdraw` is never pausable and unstakes the shares it needs. Removes the same
-    ///      share of the tight range (rounded up; all of it with the last of the main range), and
-    ///      the minimums apply to both ranges together.
+    /// @dev Fables `withdraw` is never pausable and unstakes the shares it needs.
     function removeLiquidity(
         uint128 liquidity,
         uint256 assetMin,
@@ -308,12 +257,9 @@ contract FablesAdapter is ILiquidityVault, Initializable, ReentrancyGuard {
 
         uint256 assetBefore = IERC20(asset).balanceOf(address(this));
         uint256 eusdBefore = IERC20(_eusd).balanceOf(address(this));
-        _withdraw(tickLower, tickUpper, liquidity);
-        _removeTight(liquidity, held);
+        _withdraw(tickLower, tickUpper, liquidity, assetMin, eusdMin);
         assetOut = IERC20(asset).balanceOf(address(this)) - assetBefore;
         eusdOut = IERC20(_eusd).balanceOf(address(this)) - eusdBefore;
-        if (assetOut < assetMin) revert InsufficientOutput(assetOut, assetMin);
-        if (eusdOut < eusdMin) revert InsufficientOutput(eusdOut, eusdMin);
         emit LiquidityRemoved(liquidity, assetOut, eusdOut);
     }
 
@@ -324,8 +270,11 @@ contract FablesAdapter is ILiquidityVault, Initializable, ReentrancyGuard {
     ) external override onlyManager nonReentrant {
         if (staked_ == staked) return;
         staked = staked_;
-        _setRangeStaked(_tickLower, _tickUpper, _liquidity, staked_);
-        _setRangeStaked(_tightLower, _tightUpper, _tightLiquidity, staked_);
+        uint128 liquidity = _liquidity;
+        if (liquidity > 0) {
+            if (staked_) IFablesLedger(_key.hooks).stake(_key, _tickLower, _tickUpper, liquidity, 0);
+            else IFablesLedger(_key.hooks).unstake(_key, _tickLower, _tickUpper, liquidity);
+        }
         emit StakedSet(staked_);
     }
 
@@ -390,20 +339,6 @@ contract FablesAdapter is ILiquidityVault, Initializable, ReentrancyGuard {
         harvestOut = out;
         harvestToOwner = toOwner;
         emit HarvestConfigSet(out, toOwner);
-    }
-
-    /// @notice Set the tight range for ranges opened from now on (a rebalance reopens the range).
-    ///         Liquidity already in the pool does not move.
-    /// @param shareBps  Share of a newly opened range placed in the tight range (BPS, at most
-    ///                  {MAX_TIGHT_SHARE_BPS}; 0 turns it off).
-    /// @param halfWidth Half-width in ticks, a positive multiple of the tick spacing (ignored when off).
-    function setTightRange(uint16 shareBps, int24 halfWidth) external onlyOwnerOrDelegate {
-        if (shareBps > MAX_TIGHT_SHARE_BPS || (shareBps > 0 && (halfWidth <= 0 || halfWidth % _key.tickSpacing != 0))) {
-            revert InvalidTightRange(shareBps, halfWidth);
-        }
-        tightShareBps = shareBps;
-        tightHalfWidth = halfWidth;
-        emit TightRangeSet(msg.sender, shareBps, halfWidth);
     }
 
     /// @notice Claim the vault's FABLES (when a proof is given) and turn all FABLES in the vault
@@ -476,19 +411,19 @@ contract FablesAdapter is ILiquidityVault, Initializable, ReentrancyGuard {
     function holdings(
         uint256 price
     ) external view override returns (uint256 assetAmount, uint256 eusdAmount) {
-        uint256 sqrtPrice = LiquidityMath.sqrtPriceFromOracle(price, _assetScale, _assetIsZero);
-        (assetAmount, eusdAmount) = _rangeAmounts(sqrtPrice, _tickLower, _tickUpper, _liquidity);
-        (uint256 tightAsset, uint256 tightEusd) = _rangeAmounts(sqrtPrice, _tightLower, _tightUpper, _tightLiquidity);
-        assetAmount += tightAsset + IERC20(asset).balanceOf(address(this));
-        eusdAmount += tightEusd + IERC20(_eusd).balanceOf(address(this));
-    }
-
-    /// @notice The open tight range (zeros when none).
-    /// @return tickLower Lower tick.
-    /// @return tickUpper Upper tick.
-    /// @return liquidity Liquidity held.
-    function tightRange() external view returns (int24 tickLower, int24 tickUpper, uint128 liquidity) {
-        return (_tightLower, _tightUpper, _tightLiquidity);
+        uint128 liquidity = _liquidity;
+        if (liquidity > 0) {
+            bool assetIsZero = _assetIsZero;
+            (uint256 amount0, uint256 amount1) = LiquidityMath.getAmountsForLiquidity(
+                LiquidityMath.sqrtPriceFromOracle(price, _assetScale, assetIsZero),
+                LiquidityMath.getSqrtPriceAtTick(_tickLower),
+                LiquidityMath.getSqrtPriceAtTick(_tickUpper),
+                liquidity
+            );
+            (assetAmount, eusdAmount) = assetIsZero ? (amount0, amount1) : (amount1, amount0);
+        }
+        assetAmount += IERC20(asset).balanceOf(address(this));
+        eusdAmount += IERC20(_eusd).balanceOf(address(this));
     }
 
     /// @inheritdoc ILiquidityVault
@@ -613,103 +548,30 @@ contract FablesAdapter is ILiquidityVault, Initializable, ReentrancyGuard {
         if (staked) IFablesLedger(key.hooks).stake(key, tickLower, tickUpper, liquidity, 0);
     }
 
-    /// @dev Withdraw liquidity from the ledger to this vault; the caller checks the amounts.
+    /// @dev Withdraw liquidity from the ledger to this vault, with minimums per token.
     /// @param tickLower Lower tick.
     /// @param tickUpper Upper tick.
     /// @param liquidity Liquidity to withdraw.
-    function _withdraw(int24 tickLower, int24 tickUpper, uint128 liquidity) private {
-        IFablesLedger(_key.hooks).withdraw(_key, tickLower, tickUpper, liquidity, address(this), 0, 0, block.timestamp);
-    }
-
-    /// @dev Withdraw `part` / `whole` of the tight range (rounded up; all of it when equal).
-    /// @param part  Main-range liquidity removed.
-    /// @param whole Main-range liquidity held before.
-    function _removeTight(uint128 part, uint128 whole) private {
-        uint128 tight = _tightLiquidity;
-        if (tight == 0) return;
-        int24 tickLower = _tightLower;
-        int24 tickUpper = _tightUpper;
-        uint128 out = part == whole ? tight : uint128(Math.mulDiv(tight, part, whole, Math.Rounding.Ceil));
-        _tightLiquidity = tight - out;
-        if (out == tight) (_tightLower, _tightUpper) = (0, 0);
-        _withdraw(tickLower, tickUpper, out);
-    }
-
-    /// @dev Stake or unstake a range's liquidity, if any.
-    /// @param tickLower Lower tick.
-    /// @param tickUpper Upper tick.
-    /// @param liquidity Liquidity in the range.
-    /// @param staked_   Whether to stake.
-    function _setRangeStaked(int24 tickLower, int24 tickUpper, uint128 liquidity, bool staked_) private {
-        if (liquidity == 0) return;
-        if (staked_) IFablesLedger(_key.hooks).stake(_key, tickLower, tickUpper, liquidity, 0);
-        else IFablesLedger(_key.hooks).unstake(_key, tickLower, tickUpper, liquidity);
-    }
-
-    /// @dev Open the tight range with {tightShareBps} of the amounts. Skipped when that share funds
-    ///      no liquidity.
-    /// @param assetMax Asset available (asset units).
-    /// @param eusdMax  eUSD available (18 decimals).
-    /// @return Asset left for the main range.
-    /// @return eUSD left for the main range.
-    function _openTight(uint256 assetMax, uint256 eusdMax) private returns (uint256, uint256) {
-        (int24 tickLower, int24 tickUpper) = _tightTicks();
-        uint256 share = tightShareBps;
-        (uint256 max0, uint256 max1) = _assetIsZero
-            ? (assetMax * share / BPS, eusdMax * share / BPS)
-            : (eusdMax * share / BPS, assetMax * share / BPS);
-        uint128 liquidity = _liquidityFor(tickLower, tickUpper, max0, max1);
-        if (liquidity == 0) return (assetMax, eusdMax);
-
-        uint256 assetBefore = IERC20(asset).balanceOf(address(this));
-        uint256 eusdBefore = IERC20(_eusd).balanceOf(address(this));
-        _tightLower = tickLower;
-        _tightUpper = tickUpper;
-        _tightLiquidity = liquidity;
-        _deposit(tickLower, tickUpper, liquidity, max0, max1);
-        uint256 assetUsed = assetBefore - IERC20(asset).balanceOf(address(this));
-        uint256 eusdUsed = eusdBefore - IERC20(_eusd).balanceOf(address(this));
-        emit TightRangeOpened(tickLower, tickUpper, liquidity, assetUsed, eusdUsed);
-        return (assetMax - assetUsed, eusdMax - eusdUsed);
-    }
-
-    /// @dev The tight range's ticks: {tightHalfWidth} either side of the pool tick rounded to the
-    ///      nearest spacing.
-    /// @return tickLower Lower tick.
-    /// @return tickUpper Upper tick.
-    function _tightTicks() private view returns (int24 tickLower, int24 tickUpper) {
-        int24 spacing = _key.tickSpacing;
-        int24 tick = _poolTick();
-        int24 centre = tick / spacing * spacing;
-        int24 rem = tick - centre;
-        if (2 * rem >= spacing) centre += spacing;
-        else if (2 * rem < -spacing) centre -= spacing;
-        tickLower = centre - tightHalfWidth;
-        tickUpper = centre + tightHalfWidth;
-        _checkRange(tickLower, tickUpper);
-    }
-
-    /// @dev Token amounts a range holds at a sqrt price.
-    /// @param sqrtPrice Sqrt price (Q64.96).
-    /// @param tickLower Lower tick.
-    /// @param tickUpper Upper tick.
-    /// @param liquidity Liquidity.
-    /// @return assetAmount Asset (asset units).
-    /// @return eusdAmount  eUSD (18 decimals).
-    function _rangeAmounts(
-        uint256 sqrtPrice,
+    /// @param assetMin  Least asset to receive (asset units).
+    /// @param eusdMin   Least eUSD to receive (18 decimals).
+    function _withdraw(
         int24 tickLower,
         int24 tickUpper,
-        uint128 liquidity
-    ) private view returns (uint256 assetAmount, uint256 eusdAmount) {
-        if (liquidity == 0) return (0, 0);
-        (uint256 amount0, uint256 amount1) = LiquidityMath.getAmountsForLiquidity(
-            sqrtPrice,
-            LiquidityMath.getSqrtPriceAtTick(tickLower),
-            LiquidityMath.getSqrtPriceAtTick(tickUpper),
-            liquidity
+        uint128 liquidity,
+        uint256 assetMin,
+        uint256 eusdMin
+    ) private {
+        (uint256 min0, uint256 min1) = _assetIsZero ? (assetMin, eusdMin) : (eusdMin, assetMin);
+        IFablesLedger(_key.hooks).withdraw(
+            _key,
+            tickLower,
+            tickUpper,
+            liquidity,
+            address(this),
+            SafeCast.toUint128(min0),
+            SafeCast.toUint128(min1),
+            block.timestamp
         );
-        (assetAmount, eusdAmount) = _assetIsZero ? (amount0, amount1) : (amount1, amount0);
     }
 
     /// @dev Liquidity the amounts fund at the pool price. Each amount is reduced by 2 wei first:
@@ -754,22 +616,8 @@ contract FablesAdapter is ILiquidityVault, Initializable, ReentrancyGuard {
     function _sqrtPriceX96(
         PoolKey memory key
     ) private view returns (uint256) {
-        return uint256(_slot0(key)) & type(uint160).max;
-    }
-
-    /// @dev The vault pool's current tick (slot0 bits 160-183).
-    /// @return The tick.
-    function _poolTick() private view returns (int24) {
-        return int24(uint24(uint256(_slot0(_key)) >> 160));
-    }
-
-    /// @dev A pool's slot0 word from the PoolManager's `pools[id]`.
-    /// @param key Pool key.
-    /// @return The word.
-    function _slot0(
-        PoolKey memory key
-    ) private view returns (bytes32) {
-        return poolManager.extsload(keccak256(abi.encodePacked(keccak256(abi.encode(key)), POOLS_SLOT)));
+        bytes32 slot = keccak256(abi.encodePacked(keccak256(abi.encode(key)), POOLS_SLOT));
+        return uint256(poolManager.extsload(slot)) & type(uint160).max;
     }
 
     /// @dev Decode and validate the pool data: an initialized, non-native asset/eUSD pool behind a hook.

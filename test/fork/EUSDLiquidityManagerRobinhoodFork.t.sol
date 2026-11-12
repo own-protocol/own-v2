@@ -323,64 +323,6 @@ contract EUSDLiquidityManagerRobinhoodFork is Test {
         assertEq(IERC20(SPY).balanceOf(address(_vault(0))), 0);
     }
 
-    /// @dev Open alice's SPY position, then rebalance it with a 10% ±20-tick tight range.
-    function _openTight() internal returns (FablesAdapter v, uint256 id, uint128 tight) {
-        _openSpy();
-        v = _vault(0);
-        vm.prank(alice);
-        v.setTightRange(1000, 20);
-        IEUSDLiquidityManager.RebalanceParams memory params =
-            _rebalanceParams(0, false, 5e18, 5 * _poolPrice(spyKey, 1e18));
-        vm.prank(alice);
-        manager.rebalance(params);
-        int24 tl;
-        int24 tu;
-        (tl, tu, tight) = v.tightRange();
-        int24 tick = _tickAtOrBelow(_sqrtPrice(spyKey));
-        assertLe(tl, tick, "pool tick inside the tight range");
-        assertGt(tu, tick, "pool tick inside the tight range");
-        assertEq(tu - tl, 40);
-        id = IFablesLedgerView(FABLES_RAMP).rangeId(keccak256(abi.encode(spyKey)), tl, tu);
-    }
-
-    function test_fork_spy_tightRangeStakedAndValued() public requiresFork {
-        (FablesAdapter v, uint256 id, uint128 tight) = _openTight();
-        assertGt(tight, 0);
-        assertEq(IFablesLedgerView(FABLES_RAMP).balanceOf(address(v), id), tight, "tight shares");
-        assertEq(IFablesLedgerView(FABLES_RAMP).userPosition(id, address(v)).staked, tight, "tight staked");
-        assertGe(manager.collateralRatioBps(0, alice), manager.riskParams().mcrBps);
-
-        // Valuation counts both ranges: removing everything pays what holdings reported.
-        (,, uint128 held) = v.range();
-        (uint256 oraclePrice,) = oracle.getPrice(SPY_TICKER);
-        (uint256 assetHeld, uint256 eusdHeld) = v.holdings(oraclePrice);
-        assetHeld -= IERC20(SPY).balanceOf(address(v));
-        eusdHeld -= IERC20(EUSD).balanceOf(address(v));
-        vm.prank(address(manager));
-        (uint256 assetOut, uint256 eusdOut) = v.removeLiquidity(held, 0, 0);
-        assertApproxEqAbs(assetOut, assetHeld, 1e6, "asset");
-        assertApproxEqAbs(eusdOut, eusdHeld, 1e6, "eUSD");
-        assertEq(IFablesLedgerView(FABLES_RAMP).balanceOf(address(v), id), 0, "tight withdrawn");
-    }
-
-    function test_fork_spy_tightRangePartialRemoveAndClose() public requiresFork {
-        (FablesAdapter v, uint256 id, uint128 tight) = _openTight();
-        (,, uint128 held) = v.range();
-        vm.prank(alice);
-        manager.removeLiquidity(0, held / 2, 0, 0);
-        (,, uint128 t2) = v.tightRange();
-        assertApproxEqAbs(t2, tight / 2, 1);
-        assertEq(IFablesLedgerView(FABLES_RAMP).balanceOf(address(v), id), t2);
-
-        deal(EUSD, alice, 100e18);
-        uint256 spyBefore = IERC20(SPY).balanceOf(alice);
-        vm.prank(alice);
-        manager.close(0, 0, 0);
-        assertEq(IFablesLedgerView(FABLES_RAMP).balanceOf(address(v), id), 0);
-        assertEq(manager.getPosition(0, alice).debt, 0);
-        assertApproxEqRel(IERC20(SPY).balanceOf(alice) - spyBefore, 10e18, 0.01e18);
-    }
-
     function test_fork_spy_unstakeAndLiquidate() public requiresFork {
         (uint128 liquidity, int24 lower, int24 upper) = _openSpy();
         vm.prank(alice);

@@ -74,25 +74,9 @@ contract MockFablesLedger {
         return uint256(keccak256(abi.encode(poolId(key), tickLower, tickUpper)));
     }
 
-    /// @dev Stores slot0 as v4 packs it: sqrt price in the low 160 bits, the tick in the next 24.
     function setSqrtPrice(PoolKey memory key, uint160 sqrtPriceX96) public {
         bytes32 slot = keccak256(abi.encodePacked(poolId(key), bytes32(uint256(6))));
-        uint256 tickBits = sqrtPriceX96 == 0 ? 0 : uint256(uint24(tickAtSqrtPrice(sqrtPriceX96))) << 160;
-        slots[slot] = bytes32(tickBits | uint256(sqrtPriceX96));
-    }
-
-    /// @dev Greatest tick whose sqrt price is at or below `sqrtPriceX96` (the v4 slot0 tick).
-    function tickAtSqrtPrice(
-        uint160 sqrtPriceX96
-    ) public pure returns (int24) {
-        int24 lo = LiquidityMath.MIN_TICK;
-        int24 hi = LiquidityMath.MAX_TICK;
-        while (hi - lo > 1) {
-            int24 mid = int24((int256(lo) + int256(hi)) / 2);
-            if (LiquidityMath.getSqrtPriceAtTick(mid) <= sqrtPriceX96) lo = mid;
-            else hi = mid;
-        }
-        return lo;
+        slots[slot] = bytes32(uint256(sqrtPriceX96));
     }
 
     /// @notice Set the pool price from an asset price (18 decimals, eUSD per whole asset).
@@ -189,13 +173,7 @@ contract MockFablesLedger {
     function sqrtPriceOf(
         PoolKey memory key
     ) public view returns (uint256) {
-        return uint256(slots[keccak256(abi.encodePacked(poolId(key), bytes32(uint256(6))))]) & type(uint160).max;
-    }
-
-    function tickOf(
-        PoolKey memory key
-    ) public view returns (int24) {
-        return int24(uint24(uint256(slots[keccak256(abi.encodePacked(poolId(key), bytes32(uint256(6))))]) >> 160));
+        return uint256(slots[keccak256(abi.encodePacked(poolId(key), bytes32(uint256(6))))]);
     }
 
     function _amounts(
