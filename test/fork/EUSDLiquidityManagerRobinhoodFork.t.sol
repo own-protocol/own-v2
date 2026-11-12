@@ -47,6 +47,8 @@ contract EUSDLiquidityManagerRobinhoodFork is Test {
     address internal constant POOL_MANAGER = 0x8366a39CC670B4001A1121B8F6A443A643e40951;
     address internal constant EMISSION_STREAM = 0x4aA54fA62bC8f6052fB4D3494A3fA79741Bda14c;
     address internal constant FABLES_RAMP = 0x08E52564Bad99E05a694b4809F397edcA417A080;
+    /// @dev Hook of the Fables SPY/USDG pool, a different hook from the eUSD pools.
+    address internal constant FABLES_RWA = 0xA0E8fBFf13E24Af2b5e61A72800E08a161bDe080;
     address internal constant SPY = 0x117cc2133c37B721F49dE2A7a74833232B3B4C0C;
     address internal constant USDG = 0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168;
     address internal constant FABLES = 0xb63d07CEf74bE747231d601bb2FAa6B252c68106;
@@ -114,7 +116,7 @@ contract EUSDLiquidityManagerRobinhoodFork is Test {
         vm.prank(GOV_SAFE);
         IAccessControl(EUSD).grantRole(minterRole, address(manager));
 
-        FablesAdapter impl = new FablesAdapter(POOL_MANAGER, EMISSION_STREAM);
+        FablesAdapter impl = new FablesAdapter(POOL_MANAGER, EMISSION_STREAM, FABLES_RWA);
         beacon = new UpgradeableBeacon(address(impl), admin);
         vm.startPrank(admin);
         manager.addPool(address(beacon), SPY, SPY_TICKER, abi.encode(spyKey));
@@ -207,6 +209,18 @@ contract EUSDLiquidityManagerRobinhoodFork is Test {
         PoolKey[] memory hops = new PoolKey[](2);
         hops[0] = PoolKey({currency0: USDG, currency1: FABLES, fee: 0x800000, tickSpacing: 200, hooks: FABLES_RAMP});
         hops[1] = usdKey;
+        return abi.encode(hops);
+    }
+
+    /// @dev eUSD/USDG then USDG/SPY (the Fables SPY/USDG pool, on the route hook).
+    function _viaUsdgRoute(
+        bool assetToEusd
+    ) internal view returns (bytes memory) {
+        PoolKey memory spyUsdg =
+            PoolKey({currency0: SPY, currency1: USDG, fee: 0x800000, tickSpacing: 10, hooks: FABLES_RWA});
+        PoolKey[] memory hops = new PoolKey[](2);
+        PoolKey memory eusdUsdg = usdKey;
+        (hops[0], hops[1]) = assetToEusd ? (spyUsdg, eusdUsdg) : (eusdUsdg, spyUsdg);
         return abi.encode(hops);
     }
 
@@ -422,18 +436,37 @@ contract EUSDLiquidityManagerRobinhoodFork is Test {
         (uint256 price,) = oracle.getPrice(SPY_TICKER);
         uint256 spyBefore = IERC20(SPY).balanceOf(address(v));
         IEUSDLiquidityManager.RebalanceParams memory params = _rebalanceParams(100e18, false, 5e18, 4 * price);
-
-        // Fables charges a stress fee on eUSD sold, above this manager's 2.5% band.
-        vm.prank(alice);
-        vm.expectPartialRevert(ILiquidityVault.InsufficientOutput.selector);
-        manager.rebalance(params);
-
+        // The direct pool can charge a sell-side stress fee on eUSD, so widen the band for this one.
         vm.prank(admin);
         manager.setPoolPriceBand(600);
         vm.prank(alice);
         manager.rebalance(params);
         assertGt(IERC20(SPY).balanceOf(address(v)), spyBefore, "bought asset stays idle");
         assertGe(manager.collateralRatioBps(0, alice), manager.riskParams().mcrBps);
+    }
+
+    function test_fork_spy_rebalanceBuysAssetViaUsdg() public requiresFork {
+        _openSpy();
+        FablesAdapter v = _vault(0);
+        (uint256 price,) = oracle.getPrice(SPY_TICKER);
+        uint256 spyBefore = IERC20(SPY).balanceOf(address(v));
+        IEUSDLiquidityManager.RebalanceParams memory params = _rebalanceParams(100e18, false, 5e18, 4 * price);
+        params.route = _viaUsdgRoute(false);
+        vm.prank(alice);
+        manager.rebalance(params);
+        uint256 bought = IERC20(SPY).balanceOf(address(v)) - spyBefore;
+        assertGe(bought * price / 1e18, 100e18 * 9750 / 10_000, "within the 2.5% band");
+    }
+
+    function test_fork_spy_rebalanceSellsAssetViaUsdg() public requiresFork {
+        _openSpy();
+        uint256 debtBefore = manager.getPosition(0, alice).debt;
+        (uint256 price,) = oracle.getPrice(SPY_TICKER);
+        IEUSDLiquidityManager.RebalanceParams memory params = _rebalanceParams(0.2e18, true, 5e18, 4 * price);
+        params.route = _viaUsdgRoute(true);
+        vm.prank(alice);
+        manager.rebalance(params);
+        assertLt(manager.getPosition(0, alice).debt, debtBefore, "proceeds repay debt");
     }
 
     function test_fork_spy_rebalanceSwapBeyondBand_reverts() public requiresFork {

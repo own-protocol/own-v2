@@ -74,7 +74,8 @@ misc/          MoneyFeeCollector: standalone, not part of the eUSD core (tests i
   range, optionally swap asset and eUSD inside the vault at no worse than the oracle price less the
   pool band, with a fresh price, then add the new range) and, on Fables vaults, `harvest` FABLES
   into eUSD, the asset or FABLES, kept in the vault or sent to the owner as the owner sets. A
-  delegate never withdraws, closes or sweeps.
+  delegate never withdraws, closes or sweeps. Fables swap routes take up to 3 hops through pools on
+  the vault pool's hook or the adapter's immutable `routeHook` (e.g. eUSD -> USDG -> SPY).
 
 **Oracle**: `ChainlinkOracleVerifier` is Chainlink-primary with a band-limited, signed in-house
 fallback for when a feed is silent (weekends, off-hours). Managers read it as the registry's

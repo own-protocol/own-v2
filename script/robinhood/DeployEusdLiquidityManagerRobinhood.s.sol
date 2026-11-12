@@ -44,7 +44,11 @@ contract DeployEusdLiquidityManagerRobinhood is Script {
         beacon = vm.envOr("FABLES_VAULT_BEACON", address(0));
         if (beacon == address(0)) {
             address vaultImpl = address(
-                new FablesAdapter(vm.envAddress("FABLES_POOL_MANAGER"), vm.envAddress("FABLES_EMISSION_STREAM"))
+                new FablesAdapter(
+                    vm.envAddress("FABLES_POOL_MANAGER"),
+                    vm.envAddress("FABLES_EMISSION_STREAM"),
+                    vm.envOr("FABLES_ROUTE_HOOK", address(0))
+                )
             );
             beacon = address(new UpgradeableBeacon(vaultImpl, vm.envAddress("GOV_SAFE_ROBINHOOD")));
         }

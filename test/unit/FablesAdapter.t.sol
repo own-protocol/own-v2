@@ -11,7 +11,10 @@ import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.s
 
 /// @dev Upgrade target with one extra view, used to prove the beacon upgraded every vault.
 contract FablesAdapterV2 is FablesAdapter {
-    constructor(address poolManager_, address emissionStream_) FablesAdapter(poolManager_, emissionStream_) {}
+    constructor(
+        address poolManager_,
+        address emissionStream_
+    ) FablesAdapter(poolManager_, emissionStream_, address(0)) {}
 
     function version() external pure returns (uint256) {
         return 2;
@@ -33,9 +36,9 @@ contract FablesAdapterTest is LiquidityManagerSetup {
 
     function test_constructor_zeroAddress_reverts() public {
         vm.expectRevert(ILiquidityVault.InvalidPool.selector);
-        new FablesAdapter(address(0), address(stream));
+        new FablesAdapter(address(0), address(stream), address(0));
         vm.expectRevert(ILiquidityVault.InvalidPool.selector);
-        new FablesAdapter(address(ledger), address(0));
+        new FablesAdapter(address(ledger), address(0), address(0));
     }
 
     function test_initialize_setsState() public view {
@@ -412,6 +415,11 @@ contract FablesAdapterTest is LiquidityManagerSetup {
         vm.expectRevert(ILiquidityVault.InvalidRoute.selector);
         vault.harvest(100e18, proof, _route(foreignHook), 0);
 
+        // An unset route hook does not open hookless pools.
+        foreignHook.hooks = address(0);
+        vm.expectRevert(ILiquidityVault.InvalidRoute.selector);
+        vault.harvest(100e18, proof, _route(foreignHook), 0);
+
         // Leads from FABLES to SPY, not to eUSD.
         vm.expectRevert(ILiquidityVault.InvalidRoute.selector);
         vault.harvest(100e18, proof, toSpy, 0);
@@ -453,6 +461,28 @@ contract FablesAdapterTest is LiquidityManagerSetup {
         v.harvest(0, empty, "", 0);
         vm.stopPrank();
         assertEq(ff.balanceOf(address(v)), 10e18, "collateral stays");
+    }
+
+    function test_harvest_throughRouteHookPool() public {
+        address routeHook = makeAddr("routeHook");
+        FablesAdapter impl = new FablesAdapter(address(ledger), address(stream), routeHook);
+        vm.prank(admin);
+        beacon.upgradeTo(address(impl));
+        assertEq(vault.routeHook(), routeHook);
+
+        // FABLES -> eUSD on the vault hook, then eUSD -> USDG -> eUSD with the middle pool on the route hook.
+        PoolKey memory other = usdKey;
+        other.hooks = routeHook;
+        ledger.setPrice(other, address(usdg), 1e18);
+        PoolKey[] memory hops = new PoolKey[](3);
+        (hops[0], hops[1], hops[2]) = (_fablesKey(address(eusd)), other, usdKey);
+        giveEusd(address(ledger), 1_000_000e18);
+        usdg.mint(address(ledger), 1_000_000e6);
+        bytes32[] memory proof = _proof();
+        vm.prank(alice);
+        uint256 out = vault.harvest(100e18, proof, abi.encode(hops), 1);
+        assertApproxEqRel(out, 50e18, 1e15);
+        assertEq(eusd.balanceOf(address(vault)), out);
     }
 
     function test_harvest_partialFill_reverts() public {
