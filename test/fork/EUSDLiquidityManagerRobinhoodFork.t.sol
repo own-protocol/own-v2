@@ -196,6 +196,7 @@ contract EUSDLiquidityManagerRobinhoodFork is Test {
             eusdMin: 0,
             swapAmount: swapAmount,
             assetToEusd: assetToEusd,
+            swapMinOut: 0,
             route: "",
             tickLower: lower,
             tickUpper: upper,
@@ -293,6 +294,7 @@ contract EUSDLiquidityManagerRobinhoodFork is Test {
                 owner: alice,
                 swapAmount: 0,
                 assetToEusd: false,
+                swapMinOut: 0,
                 route: "",
                 staked: true,
                 poolId: 0,
@@ -414,7 +416,7 @@ contract EUSDLiquidityManagerRobinhoodFork is Test {
         _openSpy();
         FablesAdapter v = _vault(0);
         vm.prank(alice);
-        v.setDelegate(keeper);
+        v.setDelegate(keeper, 100);
         uint256 debtBefore = manager.getPosition(0, alice).debt;
         uint256 ratioBefore = manager.collateralRatioBps(0, alice);
         (uint256 price,) = oracle.getPrice(SPY_TICKER);
@@ -492,7 +494,7 @@ contract EUSDLiquidityManagerRobinhoodFork is Test {
         _openSpy();
         FablesAdapter v = _vault(0);
         vm.prank(alice);
-        v.setDelegate(keeper);
+        v.setDelegate(keeper, 100);
         deal(FABLES, address(v), 1000e18);
         bytes32[] memory proof;
 

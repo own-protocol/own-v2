@@ -4,6 +4,7 @@ pragma solidity 0.8.28;
 import {FablesAdapter} from "../../src/eusd/adapters/FablesAdapter.sol";
 import {ILiquidityVault} from "../../src/interfaces/ILiquidityVault.sol";
 import {PoolKey} from "../../src/interfaces/external/IFables.sol";
+import {BPS} from "../../src/interfaces/types/Types.sol";
 import {LiquidityManagerSetup} from "../helpers/LiquidityManagerSetup.sol";
 import {MockERC20} from "../helpers/MockERC20.sol";
 import {MockFablesLedger} from "../helpers/MockFables.sol";
@@ -126,6 +127,8 @@ contract FablesAdapterTest is LiquidityManagerSetup {
         vault.transferToken(address(spy), alice, 1);
         vm.expectRevert(ILiquidityVault.OnlyManager.selector);
         vault.swap(true, 1, 0, "");
+        vm.expectRevert(ILiquidityVault.OnlyManager.selector);
+        vault.chargeDelegateLoss(1, 0);
         vm.stopPrank();
     }
 
@@ -138,7 +141,7 @@ contract FablesAdapterTest is LiquidityManagerSetup {
         vm.expectRevert(ILiquidityVault.OnlyOwner.selector);
         vault.claimFees(0, 10, 0);
         vm.expectRevert(ILiquidityVault.OnlyOwner.selector);
-        vault.setDelegate(attacker);
+        vault.setDelegate(attacker, 100);
         vm.expectRevert(ILiquidityVault.OnlyOwner.selector);
         vault.setHarvestConfig(FablesAdapter.HarvestOut.Fables, true);
         vm.stopPrank();
@@ -146,14 +149,14 @@ contract FablesAdapterTest is LiquidityManagerSetup {
 
     function test_delegateCannotUseOwnerFunctions() public {
         vm.prank(alice);
-        vault.setDelegate(keeper);
+        vault.setDelegate(keeper, 100);
         bytes32[] memory proof;
         address ff = address(stream.ff());
         vm.startPrank(keeper);
         vm.expectRevert(ILiquidityVault.OnlyOwner.selector);
         vault.sweep(ff);
         vm.expectRevert(ILiquidityVault.OnlyOwner.selector);
-        vault.setDelegate(keeper);
+        vault.setDelegate(keeper, 100);
         vm.expectRevert(ILiquidityVault.OnlyOwner.selector);
         vault.setHarvestConfig(FablesAdapter.HarvestOut.Fables, true);
         vm.expectRevert(ILiquidityVault.OnlyManager.selector);
@@ -241,13 +244,59 @@ contract FablesAdapterTest is LiquidityManagerSetup {
 
     function test_setDelegate_setsAndClears() public {
         vm.expectEmit(address(vault));
-        emit ILiquidityVault.DelegateSet(keeper);
+        emit ILiquidityVault.DelegateSet(keeper, 100);
         vm.prank(alice);
-        vault.setDelegate(keeper);
+        vault.setDelegate(keeper, 100);
         assertEq(vault.delegate(), keeper);
         vm.prank(alice);
-        vault.setDelegate(address(0));
+        vault.setDelegate(address(0), 100);
         assertEq(vault.delegate(), address(0));
+    }
+
+    function test_setDelegate_lossBudget() public {
+        vm.prank(alice);
+        vault.setDelegate(keeper, 250);
+        (uint16 budget, uint64 start, uint32 used) = vault.delegateLossBudget();
+        assertEq(budget, 250);
+        assertEq(start, 0);
+        assertEq(used, 0);
+        vm.prank(alice);
+        vault.setDelegate(keeper, uint16(BPS));
+        vm.expectRevert(ILiquidityVault.InvalidLossBudget.selector);
+        vm.prank(alice);
+        vault.setDelegate(keeper, uint16(BPS + 1));
+    }
+
+    function test_chargeDelegateLoss_countsLossesPerWindow() public {
+        vm.prank(alice);
+        vault.setDelegate(keeper, 100);
+        vm.startPrank(address(manager));
+        vault.chargeDelegateLoss(1000e18, 1001e18);
+        (, uint64 start, uint32 used) = vault.delegateLossBudget();
+        assertEq(start, 0, "gains open no window");
+        vault.chargeDelegateLoss(1000e18, 996e18);
+        (, start, used) = vault.delegateLossBudget();
+        assertEq(start, block.timestamp);
+        assertEq(used, 40);
+        vault.chargeDelegateLoss(1000e18, 1000e18 - 1);
+        (,, used) = vault.delegateLossBudget();
+        assertEq(used, 41, "any loss costs at least 1 bps");
+        vm.expectRevert(abi.encodeWithSelector(ILiquidityVault.DelegateLossBudgetExceeded.selector, 101, 100));
+        vault.chargeDelegateLoss(1000e18, 994e18);
+        vault.chargeDelegateLoss(1000e18, 994.1e18);
+        (,, used) = vault.delegateLossBudget();
+        assertEq(used, 100);
+        vm.warp(block.timestamp + 1 days - 1);
+        vm.expectPartialRevert(ILiquidityVault.DelegateLossBudgetExceeded.selector);
+        vault.chargeDelegateLoss(1000e18, 1000e18 - 1);
+        vm.warp(block.timestamp + 1);
+        vault.chargeDelegateLoss(1000e18, 1000e18 - 1);
+        (, start, used) = vault.delegateLossBudget();
+        assertEq(start, block.timestamp);
+        assertEq(used, 1);
+        vm.expectPartialRevert(ILiquidityVault.DelegateLossBudgetExceeded.selector);
+        vault.chargeDelegateLoss(1e18, 0);
+        vm.stopPrank();
     }
 
     function test_harvestConfig_defaultsToEusdInVault() public view {
@@ -288,7 +337,7 @@ contract FablesAdapterTest is LiquidityManagerSetup {
     function test_harvest_byDelegate() public {
         bytes memory route = _eusdRoute();
         vm.prank(alice);
-        vault.setDelegate(keeper);
+        vault.setDelegate(keeper, 100);
         vm.prank(keeper);
         uint256 out = vault.harvest(100e18, _proof(), route, 0);
         assertEq(eusd.balanceOf(address(vault)), out);
@@ -307,8 +356,8 @@ contract FablesAdapterTest is LiquidityManagerSetup {
         bytes memory route = _eusdRoute();
         bytes32[] memory proof = _proof();
         vm.startPrank(alice);
-        vault.setDelegate(keeper);
-        vault.setDelegate(address(0));
+        vault.setDelegate(keeper, 100);
+        vault.setDelegate(address(0), 100);
         vm.stopPrank();
         vm.expectRevert(FablesAdapter.OnlyOwnerOrDelegate.selector);
         vm.prank(keeper);
@@ -460,6 +509,14 @@ contract FablesAdapterTest is LiquidityManagerSetup {
         v.harvest(0, empty, "", 0);
         vm.stopPrank();
         assertEq(ff.balanceOf(address(v)), 10e18, "collateral stays");
+    }
+
+    function test_harvest_fablesIsEusd_reverts() public {
+        vm.mockCall(address(stream), abi.encodeWithSignature("ff()"), abi.encode(address(eusd)));
+        bytes32[] memory empty;
+        vm.expectRevert(abi.encodeWithSelector(ILiquidityVault.ProtectedToken.selector, address(eusd)));
+        vm.prank(alice);
+        vault.harvest(0, empty, "", 0);
     }
 
     function test_harvest_throughRegisteredPool() public {

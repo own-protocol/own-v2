@@ -137,7 +137,7 @@ contract LiquidityManagerHandler is CommonBase, StdCheats, StdUtils {
         address caller = actor;
         if (viaDelegate) {
             vm.prank(actor);
-            ILiquidityVault(vault).setDelegate(keeper);
+            ILiquidityVault(vault).setDelegate(keeper, 100);
             caller = keeper;
         }
         vm.prank(caller);

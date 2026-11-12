@@ -34,11 +34,13 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
     /// @param price       Oracle price (18 decimals).
     /// @param timestamp   Oracle price timestamp.
     /// @param debt        Debt before the change (18 decimals).
+    /// @param value       Position value before the change at `price` (18 decimals).
     /// @param ratioBps    Ratio before the change at `price` (BPS).
     struct HealthSnapshot {
         uint256 price;
         uint256 timestamp;
         uint256 debt;
+        uint256 value;
         uint256 ratioBps;
     }
 
@@ -156,7 +158,7 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
         _validateRatios(params.mcrBps, params.liquidationThresholdBps, params.liquidationBonusBps);
         if (
             params.stakedFeeBps > BPS || params.unstakedFeeBps > BPS || params.poolPriceBandBps == 0
-                || params.poolPriceBandBps > BPS || params.mintPriceMaxAge == 0 || params.redeemMinAssetShareBps > BPS
+                || params.poolPriceBandBps >= BPS || params.mintPriceMaxAge == 0 || params.redeemMinAssetShareBps > BPS
                 || params.redeemFeeBps >= BPS
         ) revert InvalidRiskParams();
         registry = IProtocolRegistry(registry_);
@@ -222,7 +224,7 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
         }
 
         HealthSnapshot memory before = _snapshot(cfg, p, vault);
-        liquidity =
+        (liquidity,) =
             _add(poolId, msg.sender, p, vault, params.tickLower, params.tickUpper, params.assetMax, params.eusdMax);
         _checkHealth(cfg, p, vault, before);
     }
@@ -255,9 +257,7 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
 
         HealthSnapshot memory before = _snapshot(cfg, p, vault);
         uint256 swapOut = _unwind(cfg, p, vault, before, params);
-        liquidity =
-            _add(params.poolId, owner, p, vault, params.tickLower, params.tickUpper, params.assetMax, params.eusdMax);
-        _checkHealth(cfg, p, vault, before);
+        liquidity = _readd(cfg, p, vault, before, params);
         emit Rebalanced(params.poolId, owner, msg.sender, params.assetToEusd, params.swapAmount, swapOut);
     }
 
@@ -422,7 +422,7 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
     function setPoolPriceBand(
         uint16 poolPriceBandBps
     ) external override onlyAdmin {
-        if (poolPriceBandBps == 0 || poolPriceBandBps > BPS) revert InvalidRiskParams();
+        if (poolPriceBandBps == 0 || poolPriceBandBps >= BPS) revert InvalidRiskParams();
         _riskParams.poolPriceBandBps = poolPriceBandBps;
         emit PoolPriceBandSet(poolPriceBandBps);
     }
@@ -554,8 +554,36 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
         if (p.staked != params.staked) _setStaked(params.poolId, params.owner, p, vault, params.staked);
     }
 
+    /// @dev Second half of a rebalance: check the band again after the swap, add the new range,
+    ///      apply the health rule and charge a delegate's loss to the vault's budget.
+    /// @param cfg    The pool's configuration.
+    /// @param p      The position (accrued).
+    /// @param vault  The position's vault.
+    /// @param before Snapshot taken before the rebalance.
+    /// @param params The rebalance arguments.
+    /// @return liquidity Liquidity added.
+    function _readd(
+        PoolConfig storage cfg,
+        Position storage p,
+        address vault,
+        HealthSnapshot memory before,
+        RebalanceParams calldata params
+    ) private returns (uint128 liquidity) {
+        _checkBand(vault, before.price);
+        uint256 paid;
+        (liquidity, paid) = _add(
+            params.poolId, params.owner, p, vault, params.tickLower, params.tickUpper, params.assetMax, params.eusdMax
+        );
+        uint256 value = _checkHealth(cfg, p, vault, before);
+        if (msg.sender != params.owner) {
+            ILiquidityVault(vault).chargeDelegateLoss(
+                Math.saturatingSub(before.value, before.debt), Math.saturatingSub(value + paid, p.debt)
+            );
+        }
+    }
+
     /// @dev Swap in the vault for at least the oracle value at the snapshot price less the pool
-    ///      price band, which needs the snapshot price to be fresh.
+    ///      price band, which needs the snapshot price to be fresh, and at least `swapMinOut`.
     /// @param cfg    The pool's configuration.
     /// @param vault  The position's vault.
     /// @param before Snapshot taken before the rebalance.
@@ -574,7 +602,8 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
             : Math.mulDiv(amountIn, _scale(cfg), before.price);
         // Rounded up: the vault accepts no less than the limit allows.
         uint256 minOut = Math.mulDiv(fair, BPS - _riskParams.poolPriceBandBps, BPS, Math.Rounding.Ceil);
-        return ILiquidityVault(vault).swap(params.assetToEusd, amountIn, minOut, params.route);
+        return
+            ILiquidityVault(vault).swap(params.assetToEusd, amountIn, Math.max(minOut, params.swapMinOut), params.route);
     }
 
     /// @dev Put liquidity into a position's range: mint the eUSD the vault lacks for `eusdMax`, add,
@@ -588,6 +617,7 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
     /// @param assetMax  Most idle asset to use (asset units).
     /// @param eusdMax   Most eUSD to use (18 decimals).
     /// @return liquidity Liquidity added.
+    /// @return paid      eUSD sent to the owner once the debt is zero (18 decimals).
     function _add(
         uint256 poolId,
         address owner,
@@ -597,7 +627,7 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
         int24 tickUpper,
         uint256 assetMax,
         uint256 eusdMax
-    ) private returns (uint128 liquidity) {
+    ) private returns (uint128 liquidity, uint256 paid) {
         uint256 idleEusd = _eusdBalance(vault);
         uint256 minted;
         if (eusdMax > idleEusd) {
@@ -612,7 +642,7 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
         (liquidity, assetUsed, eusdUsed) = ILiquidityVault(vault).addLiquidity(tickLower, tickUpper, assetMax, eusdMax);
         emit LiquidityAdded(poolId, owner, tickLower, tickUpper, liquidity, assetUsed, eusdUsed);
         _burnUnminted(poolId, owner, p, vault, Math.min(minted, eusdMax - eusdUsed));
-        _burnIdle(poolId, owner, p, vault);
+        paid = _burnIdle(poolId, owner, p, vault);
     }
 
     /// @dev Burn eUSD minted by {_add} that the range did not use. It was never lent, so it comes
@@ -770,9 +800,15 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
     /// @param owner  Position owner.
     /// @param p      The position (accrued).
     /// @param vault  The position's vault.
-    function _burnIdle(uint256 poolId, address owner, Position storage p, address vault) private {
+    /// @return paid  eUSD sent to the owner (18 decimals).
+    function _burnIdle(
+        uint256 poolId,
+        address owner,
+        Position storage p,
+        address vault
+    ) private returns (uint256 paid) {
         uint256 balance = _eusdBalance(vault);
-        if (balance == 0) return;
+        if (balance == 0) return 0;
         uint256 debt = p.debt;
         uint256 burned = _retirable(debt, balance);
         if (burned > 0) {
@@ -781,7 +817,8 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
             emit DebtRepaid(poolId, owner, vault, burned, debt - burned);
         }
         if (p.debt == 0 && balance > burned) {
-            _send(vault, address(_eusd), owner, balance - burned);
+            paid = balance - burned;
+            _send(vault, address(_eusd), owner, paid);
         }
     }
 
@@ -1045,11 +1082,19 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
         address vault
     ) private view returns (HealthSnapshot memory snap) {
         (snap.price, snap.timestamp) = _oracle().getPrice(cfg.ticker);
-        uint256 pool = ILiquidityVault(vault).poolPrice();
-        uint256 gap = pool > snap.price ? pool - snap.price : snap.price - pool;
-        if (gap * BPS > snap.price * _riskParams.poolPriceBandBps) revert PoolPriceOutOfBand(pool, snap.price);
+        _checkBand(vault, snap.price);
         snap.debt = p.debt;
-        snap.ratioBps = _ratioBps(_value(cfg, vault, snap.price), snap.debt);
+        snap.value = _value(cfg, vault, snap.price);
+        snap.ratioBps = _ratioBps(snap.value, snap.debt);
+    }
+
+    /// @dev Revert unless the vault's pool price is within the band of `price`.
+    /// @param vault The position's vault.
+    /// @param price Oracle price (18 decimals).
+    function _checkBand(address vault, uint256 price) private view {
+        uint256 pool = ILiquidityVault(vault).poolPrice();
+        uint256 gap = pool > price ? pool - price : price - pool;
+        if (gap * BPS > price * _riskParams.poolPriceBandBps) revert PoolPriceOutOfBand(pool, price);
     }
 
     /// @dev Health rule after a liquidity change (see {IEUSDLiquidityManager}), at the snapshot price.
@@ -1057,15 +1102,17 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
     /// @param p      The position after the change.
     /// @param vault  The position's vault.
     /// @param before Snapshot taken before the change.
+    /// @return Position value after the change at the snapshot price (18 decimals).
     function _checkHealth(
         PoolConfig storage cfg,
         Position storage p,
         address vault,
         HealthSnapshot memory before
-    ) private view {
+    ) private view returns (uint256) {
         uint256 debt = p.debt;
         uint256 mcr = _riskParams.mcrBps;
-        uint256 ratio = _ratioBps(_value(cfg, vault, before.price), debt);
+        uint256 value = _value(cfg, vault, before.price);
+        uint256 ratio = _ratioBps(value, debt);
         if (debt > before.debt) {
             if (mintPaused) revert MintingPaused();
             _requireFresh(before.timestamp);
@@ -1075,6 +1122,7 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
         } else if (ratio < mcr && ratio < before.ratioBps) {
             revert CollateralRatioTooLow(ratio, Math.min(mcr, before.ratioBps));
         }
+        return value;
     }
 
     // ──────────────────────────────────────────────────────────

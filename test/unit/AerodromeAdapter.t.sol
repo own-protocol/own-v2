@@ -189,6 +189,8 @@ contract AerodromeAdapterTest is LiquidityManagerSetup {
         v.setStaked(true);
         vm.expectRevert(ILiquidityVault.OnlyManager.selector);
         v.transferToken(address(spy), alice, 1);
+        vm.expectRevert(ILiquidityVault.OnlyManager.selector);
+        v.chargeDelegateLoss(1, 0);
         vm.stopPrank();
         vm.startPrank(attacker);
         vm.expectRevert(ILiquidityVault.OnlyOwner.selector);
@@ -340,6 +342,7 @@ contract AerodromeAdapterTest is LiquidityManagerSetup {
                 owner: alice,
                 swapAmount: 0,
                 assetToEusd: false,
+                swapMinOut: 0,
                 route: "",
                 staked: true,
                 poolId: AERO_SPY,
@@ -596,12 +599,29 @@ contract AerodromeAdapterTest is LiquidityManagerSetup {
         AerodromeAdapter v = _vaultOf(alice);
         vm.expectRevert(ILiquidityVault.OnlyOwner.selector);
         vm.prank(attacker);
-        v.setDelegate(attacker);
+        v.setDelegate(attacker, 100);
         vm.expectEmit(address(v));
-        emit ILiquidityVault.DelegateSet(keeper);
+        emit ILiquidityVault.DelegateSet(keeper, 100);
         vm.prank(alice);
-        v.setDelegate(keeper);
+        v.setDelegate(keeper, 100);
         assertEq(v.delegate(), keeper);
+        (uint16 budget,,) = v.delegateLossBudget();
+        assertEq(budget, 100);
+        vm.expectRevert(ILiquidityVault.InvalidLossBudget.selector);
+        vm.prank(alice);
+        v.setDelegate(keeper, 10_001);
+    }
+
+    function test_chargeDelegateLoss_zeroBudget() public {
+        _open(alice, 10e18, 3500e18, true);
+        AerodromeAdapter v = _vaultOf(alice);
+        vm.prank(alice);
+        v.setDelegate(keeper, 0);
+        vm.prank(address(manager));
+        v.chargeDelegateLoss(1000e18, 1000e18);
+        vm.expectRevert(abi.encodeWithSelector(ILiquidityVault.DelegateLossBudgetExceeded.selector, 1, 0));
+        vm.prank(address(manager));
+        v.chargeDelegateLoss(1000e18, 1000e18 - 1);
     }
 
     function test_swap_unsupported() public {
@@ -624,6 +644,7 @@ contract AerodromeAdapterTest is LiquidityManagerSetup {
             eusdMin: 0,
             swapAmount: 1e18,
             assetToEusd: true,
+            swapMinOut: 0,
             route: "",
             tickLower: lower,
             tickUpper: upper,

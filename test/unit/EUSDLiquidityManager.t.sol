@@ -72,6 +72,7 @@ contract EUSDLiquidityManagerTest is LiquidityManagerSetup {
             eusdMin: 0,
             swapAmount: 0,
             assetToEusd: false,
+            swapMinOut: 0,
             route: "",
             tickLower: lower,
             tickUpper: upper,
@@ -147,7 +148,7 @@ contract EUSDLiquidityManagerTest is LiquidityManagerSetup {
         _expectInitRevert(address(registry), address(eusd), p, err);
 
         p = defaultParams();
-        p.poolPriceBandBps = uint16(BPS + 1);
+        p.poolPriceBandBps = uint16(BPS);
         _expectInitRevert(address(registry), address(eusd), p, err);
 
         p = defaultParams();
@@ -731,7 +732,7 @@ contract EUSDLiquidityManagerTest is LiquidityManagerSetup {
     ) internal {
         FablesAdapter v = _vault(SPY_POOL, alice);
         vm.prank(alice);
-        v.setDelegate(to);
+        v.setDelegate(to, 100);
     }
 
     function test_rebalance_byDelegate_actsForOwner() public {
@@ -920,6 +921,108 @@ contract EUSDLiquidityManagerTest is LiquidityManagerSetup {
         IEUSDLiquidityManager.RebalanceParams memory params = _repoParams(650e18, 750e18, 3e18, 2000e18);
         vm.expectRevert(abi.encodeWithSelector(IEUSDLiquidityManager.PoolDisabled.selector, SPY_POOL));
         vm.prank(alice);
+        manager.rebalance(params);
+    }
+
+    function test_rebalance_swapMovesPoolOutOfBand_reverts() public {
+        openSpy(alice, 10e18, 3500e18);
+        giveEusd(address(ledger), 1_000_000e18);
+        // The swap fills at the band-checked price but leaves the pool 3% below the oracle.
+        ledger.setPostSwapPrice(spyKey, address(spy), SPY_PRICE * 97 / 100);
+        IEUSDLiquidityManager.RebalanceParams memory params = _swapParams(595e18, 805e18, 1e18, true, 4e18, 2800e18);
+        vm.expectPartialRevert(IEUSDLiquidityManager.PoolPriceOutOfBand.selector);
+        vm.prank(alice);
+        manager.rebalance(params);
+
+        ledger.setPostSwapPrice(spyKey, address(spy), SPY_PRICE * 98 / 100);
+        vm.prank(alice);
+        manager.rebalance(params);
+    }
+
+    function test_rebalance_swapMinOut_reverts() public {
+        openSpy(alice, 10e18, 3500e18);
+        giveEusd(address(ledger), 1_000_000e18);
+        IEUSDLiquidityManager.RebalanceParams memory params = _swapParams(595e18, 805e18, 1e18, true, 4e18, 2800e18);
+        // The swap buys a wei under 700 eUSD, inside the oracle limit.
+        params.swapMinOut = 700e18;
+        vm.expectRevert(abi.encodeWithSelector(ILiquidityVault.InsufficientOutput.selector, 700e18 - 1, 700e18));
+        vm.prank(alice);
+        manager.rebalance(params);
+
+        params.swapMinOut = 700e18 - 1;
+        vm.prank(alice);
+        manager.rebalance(params);
+    }
+
+    function test_rebalance_delegateLossBudget_capsDailyLoss() public {
+        openSpy(alice, 10e18, 3500e18);
+        giveEusd(address(ledger), 1_000_000e18);
+        _delegate(keeper);
+        // Each swap loses ~2.5% of 3 SPY, ~0.75% of the 7,000 equity.
+        ledger.setSwapFeeBps(BAND - 1);
+        IEUSDLiquidityManager.RebalanceParams memory params = _swapParams(595e18, 805e18, 3e18, true, 4e18, 2800e18);
+        vm.prank(keeper);
+        manager.rebalance(params);
+        (uint16 budget, uint64 start, uint32 used) = _vault(SPY_POOL, alice).delegateLossBudget();
+        assertEq(budget, 100);
+        assertEq(start, block.timestamp);
+        assertGt(used, 60);
+        assertLe(used, 100);
+
+        vm.expectPartialRevert(ILiquidityVault.DelegateLossBudgetExceeded.selector);
+        vm.prank(keeper);
+        manager.rebalance(params);
+
+        // The owner's own calls are not limited.
+        vm.prank(alice);
+        manager.rebalance(params);
+        (,, uint32 usedAfterOwner) = _vault(SPY_POOL, alice).delegateLossBudget();
+        assertEq(usedAfterOwner, used);
+
+        // A new window opens a day after the last one began.
+        vm.warp(block.timestamp + 1 days);
+        oracle.setPrice(SPY, SPY_PRICE, block.timestamp);
+        vm.prank(keeper);
+        manager.rebalance(params);
+        (, uint64 newStart,) = _vault(SPY_POOL, alice).delegateLossBudget();
+        assertEq(newStart, block.timestamp);
+    }
+
+    function test_rebalance_delegateNoLoss_usesNoBudget() public {
+        openSpy(alice, 20e18, 3500e18);
+        _delegate(keeper);
+        for (uint256 i; i < 5; ++i) {
+            vm.prank(keeper);
+            manager.rebalance(_repoParams(i % 2 == 0 ? 650e18 : 595e18, i % 2 == 0 ? 750e18 : 805e18, 10e18, 5000e18));
+        }
+        (,, uint32 used) = _vault(SPY_POOL, alice).delegateLossBudget();
+        assertLe(used, 5, "range moves at the oracle price lose only rounding, at most 1 bps a call");
+    }
+
+    function test_rebalance_delegatePayoutToOwner_isNotALoss() public {
+        openSpy(alice, 10e18, 3500e18);
+        giveEusd(address(ledger), 1_000_000e18);
+        FablesAdapter v = _vault(SPY_POOL, alice);
+        vm.prank(alice);
+        v.setDelegate(keeper, 1);
+        uint256 aliceEusd = eusd.balanceOf(alice);
+        IEUSDLiquidityManager.RebalanceParams memory params = _swapParams(595e18, 805e18, 8e18, true, 7e18, 4900e18);
+        vm.prank(keeper);
+        manager.rebalance(params);
+        assertEq(_debt(SPY_POOL, alice), 0);
+        assertGt(eusd.balanceOf(alice), aliceEusd, "eUSD beyond the debt goes to the owner");
+    }
+
+    function test_rebalance_delegateZeroBudget_noLossAllowed() public {
+        openSpy(alice, 10e18, 3500e18);
+        giveEusd(address(ledger), 1_000_000e18);
+        FablesAdapter v = _vault(SPY_POOL, alice);
+        vm.prank(alice);
+        v.setDelegate(keeper, 0);
+        ledger.setSwapFeeBps(10);
+        IEUSDLiquidityManager.RebalanceParams memory params = _swapParams(595e18, 805e18, 1e18, true, 4e18, 2800e18);
+        vm.expectPartialRevert(ILiquidityVault.DelegateLossBudgetExceeded.selector);
+        vm.prank(keeper);
         manager.rebalance(params);
     }
 
@@ -1669,6 +1772,8 @@ contract EUSDLiquidityManagerTest is LiquidityManagerSetup {
         manager.setPoolPriceBand(0);
         vm.expectRevert(IEUSDLiquidityManager.InvalidRiskParams.selector);
         manager.setPoolPriceBand(uint16(BPS + 1));
+        vm.expectRevert(IEUSDLiquidityManager.InvalidRiskParams.selector);
+        manager.setPoolPriceBand(uint16(BPS));
         vm.stopPrank();
     }
 

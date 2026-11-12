@@ -31,7 +31,8 @@ pragma solidity 0.8.28;
 ///         Rebalancing: the owner, or the delegate the owner names on the vault, can move the range
 ///         and, on the way, swap the vault's asset for eUSD or back at no worse than the oracle
 ///         price less `poolPriceBandBps`. eUSD the swap brings in is burned against the debt like any
-///         other. A delegate can never move tokens out of the vault.
+///         other. A delegate can never move tokens out of the vault. Each delegate call may lose
+///         equity, valued at the oracle price, only within the daily budget the owner sets on the vault.
 ///
 ///         Two stability fees: one for staked liquidity (which earns DEX emissions) and a lower one
 ///         for unstaked liquidity. The fee is simple interest on principal, minted to the treasury.
@@ -142,6 +143,7 @@ interface IEUSDLiquidityManager {
     /// @param eusdMin     Least eUSD the old range must return (18 decimals).
     /// @param swapAmount  Amount the vault sells between removing and adding (0 = no swap).
     /// @param assetToEusd Whether the swap sells asset for eUSD (else eUSD for asset).
+    /// @param swapMinOut  Least the swap must buy, on top of the oracle limit (0 = oracle limit only).
     /// @param route       DEX-specific swap route; empty swaps in the position's own pool.
     /// @param tickLower   Lower tick of the new range.
     /// @param tickUpper   Upper tick of the new range.
@@ -155,6 +157,7 @@ interface IEUSDLiquidityManager {
         uint256 eusdMin;
         uint256 swapAmount;
         bool assetToEusd;
+        uint256 swapMinOut;
         bytes route;
         int24 tickLower;
         int24 tickUpper;
@@ -507,8 +510,10 @@ interface IEUSDLiquidityManager {
     ///         mode, then add up to `assetMax` asset and `eusdMax` eUSD to the new range, using the
     ///         vault's eUSD first and minting the rest. eUSD left over is burned against the debt.
     ///         The swap needs a fresh price and returns at least its oracle value less
-    ///         `poolPriceBandBps`. The pool must be enabled and within the price band, and the
-    ///         health rule applies.
+    ///         `poolPriceBandBps` and at least `swapMinOut`. The pool must be enabled and within the
+    ///         price band both before and after the swap, and the health rule applies. A delegate
+    ///         call's equity loss at the oracle price (eUSD paid to the owner counts as kept) is
+    ///         charged to the vault's delegate loss budget.
     /// @param params See {RebalanceParams}.
     /// @return liquidity Liquidity in the new range.
     function rebalance(
@@ -624,7 +629,7 @@ interface IEUSDLiquidityManager {
     function setStabilityFees(uint16 stakedFeeBps, uint16 unstakedFeeBps) external;
 
     /// @notice Set the pool price band. ADMIN only.
-    /// @param poolPriceBandBps Band (BPS, above 0 and at most 100%).
+    /// @param poolPriceBandBps Band (BPS, above 0 and below 100%).
     function setPoolPriceBand(
         uint16 poolPriceBandBps
     ) external;

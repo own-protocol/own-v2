@@ -289,6 +289,7 @@ contract AerodromeAdapterRobinhoodFork is Test {
                 owner: alice,
                 swapAmount: 0,
                 assetToEusd: false,
+                swapMinOut: 0,
                 route: "",
                 staked: true,
                 poolId: 0,

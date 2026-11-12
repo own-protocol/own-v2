@@ -2,7 +2,9 @@
 pragma solidity 0.8.28;
 
 import {ILiquidityVault} from "../../interfaces/ILiquidityVault.sol";
+
 import {ICLFactory, ICLGauge, ICLPool, INonfungiblePositionManager} from "../../interfaces/external/IAerodrome.sol";
+import {DelegateLoss} from "../../libraries/DelegateLoss.sol";
 import {LiquidityMath} from "../../libraries/LiquidityMath.sol";
 import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -25,6 +27,7 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 ///      charge transfer fees.
 contract AerodromeAdapter is ILiquidityVault, IERC721Receiver, Initializable, ReentrancyGuard {
     using SafeERC20 for IERC20;
+    using DelegateLoss for DelegateLoss.Budget;
 
     /// @notice Thrown when staking a pool that has no gauge.
     error NoGauge();
@@ -87,6 +90,9 @@ contract AerodromeAdapter is ILiquidityVault, IERC721Receiver, Initializable, Re
 
     /// @inheritdoc ILiquidityVault
     address public override delegate;
+
+    /// @dev The delegate loss budget and its current window.
+    DelegateLoss.Budget private _lossBudget;
 
     // ──────────────────────────────────────────────────────────
     //  Modifiers
@@ -243,16 +249,20 @@ contract AerodromeAdapter is ILiquidityVault, IERC721Receiver, Initializable, Re
         revert SwapUnsupported();
     }
 
+    /// @inheritdoc ILiquidityVault
+    function chargeDelegateLoss(uint256 equityBefore, uint256 equityAfter) external override onlyManager {
+        _lossBudget.charge(equityBefore, equityAfter);
+    }
+
     // ──────────────────────────────────────────────────────────
     //  Owner
     // ──────────────────────────────────────────────────────────
 
     /// @inheritdoc ILiquidityVault
-    function setDelegate(
-        address delegate_
-    ) external override onlyOwner {
+    function setDelegate(address delegate_, uint16 lossBudgetBps) external override onlyOwner {
+        _lossBudget.setBudget(lossBudgetBps);
         delegate = delegate_;
-        emit DelegateSet(delegate_);
+        emit DelegateSet(delegate_, lossBudgetBps);
     }
 
     /// @inheritdoc ILiquidityVault
@@ -292,6 +302,12 @@ contract AerodromeAdapter is ILiquidityVault, IERC721Receiver, Initializable, Re
     /// @inheritdoc ILiquidityVault
     function checkPool(address asset_, address eusd_, bytes calldata poolData) external view override {
         _decodePool(asset_, eusd_, poolData);
+    }
+
+    /// @inheritdoc ILiquidityVault
+    function delegateLossBudget() external view override returns (uint16, uint64, uint32) {
+        DelegateLoss.Budget memory b = _lossBudget;
+        return (b.budgetBps, b.windowStart, b.usedBps);
     }
 
     /// @inheritdoc ILiquidityVault

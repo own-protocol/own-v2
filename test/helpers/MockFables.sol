@@ -58,6 +58,9 @@ contract MockFablesLedger {
     /// @notice Share of a swap's input that fills (BPS).
     uint16 public fillBps = 10_000;
 
+    /// @notice Pool price a swap leaves behind, per pool id (zero: unchanged).
+    mapping(bytes32 => uint160) public postSwapSqrtPrice;
+
     bool internal _unlocked;
     mapping(address => int256) internal _deltas;
     address[] internal _touched;
@@ -103,6 +106,13 @@ contract MockFablesLedger {
         swapFeeBps = bps;
     }
 
+    /// @notice Make swaps in a pool leave its price at `price` (0 = unchanged).
+    function setPostSwapPrice(PoolKey memory key, address asset, uint256 price) external {
+        uint256 scale = 10 ** MockERC20(asset).decimals();
+        postSwapSqrtPrice[poolId(key)] =
+            price == 0 ? 0 : uint160(LiquidityMath.sqrtPriceFromOracle(price, scale, key.currency0 == asset));
+    }
+
     function setFillBps(
         uint16 bps
     ) external {
@@ -135,6 +145,8 @@ contract MockFablesLedger {
             : (int128(int256(out)), -int128(int256(amountIn)));
         _account(key.currency0, a0);
         _account(key.currency1, a1);
+        uint160 post = postSwapSqrtPrice[poolId(key)];
+        if (post != 0) setSqrtPrice(key, post);
         return int256(uint256(int256(a0)) << 128 | uint256(uint128(a1)));
     }
 

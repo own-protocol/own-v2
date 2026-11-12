@@ -83,6 +83,12 @@
       "offset": 21,
       "slot": "10",
       "type": "t_bool"
+    },
+    {
+      "label": "_lossBudget",
+      "offset": 0,
+      "slot": "11",
+      "type": "t_struct(Budget)_storage"
     }
   ],
   "types": {
@@ -105,6 +111,31 @@
       "encoding": "inplace",
       "label": "int24",
       "numberOfBytes": "3"
+    },
+    "t_struct(Budget)_storage": {
+      "encoding": "inplace",
+      "label": "struct DelegateLoss.Budget",
+      "members": [
+        {
+          "label": "budgetBps",
+          "offset": 0,
+          "slot": "0",
+          "type": "t_uint16"
+        },
+        {
+          "label": "windowStart",
+          "offset": 2,
+          "slot": "0",
+          "type": "t_uint64"
+        },
+        {
+          "label": "usedBps",
+          "offset": 10,
+          "slot": "0",
+          "type": "t_uint32"
+        }
+      ],
+      "numberOfBytes": "32"
     },
     "t_struct(PoolKey)_storage": {
       "encoding": "inplace",
@@ -148,6 +179,11 @@
       "label": "uint128",
       "numberOfBytes": "16"
     },
+    "t_uint16": {
+      "encoding": "inplace",
+      "label": "uint16",
+      "numberOfBytes": "2"
+    },
     "t_uint24": {
       "encoding": "inplace",
       "label": "uint24",
@@ -157,6 +193,16 @@
       "encoding": "inplace",
       "label": "uint256",
       "numberOfBytes": "32"
+    },
+    "t_uint32": {
+      "encoding": "inplace",
+      "label": "uint32",
+      "numberOfBytes": "4"
+    },
+    "t_uint64": {
+      "encoding": "inplace",
+      "label": "uint64",
+      "numberOfBytes": "8"
     }
   }
 }

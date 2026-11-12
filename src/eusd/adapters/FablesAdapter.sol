@@ -2,6 +2,7 @@
 pragma solidity 0.8.28;
 
 import {ILiquidityVault} from "../../interfaces/ILiquidityVault.sol";
+
 import {
     IExtsload,
     IFablesEmissionStream,
@@ -11,6 +12,7 @@ import {
     PoolKey,
     SwapParams
 } from "../../interfaces/external/IFables.sol";
+import {DelegateLoss} from "../../libraries/DelegateLoss.sol";
 import {LiquidityMath} from "../../libraries/LiquidityMath.sol";
 import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -33,6 +35,7 @@ import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 ///      Tokens must not charge transfer fees.
 contract FablesAdapter is ILiquidityVault, Initializable, ReentrancyGuard {
     using SafeERC20 for IERC20;
+    using DelegateLoss for DelegateLoss.Budget;
 
     // ──────────────────────────────────────────────────────────
     //  Types
@@ -150,6 +153,9 @@ contract FablesAdapter is ILiquidityVault, Initializable, ReentrancyGuard {
 
     /// @notice Whether harvests are sent to the owner. Defaults to kept in the vault.
     bool public harvestToOwner;
+
+    /// @dev The delegate loss budget and its current window.
+    DelegateLoss.Budget private _lossBudget;
 
     // ──────────────────────────────────────────────────────────
     //  Modifiers
@@ -320,16 +326,20 @@ contract FablesAdapter is ILiquidityVault, Initializable, ReentrancyGuard {
         return "";
     }
 
+    /// @inheritdoc ILiquidityVault
+    function chargeDelegateLoss(uint256 equityBefore, uint256 equityAfter) external override onlyManager {
+        _lossBudget.charge(equityBefore, equityAfter);
+    }
+
     // ──────────────────────────────────────────────────────────
     //  Owner
     // ──────────────────────────────────────────────────────────
 
     /// @inheritdoc ILiquidityVault
-    function setDelegate(
-        address delegate_
-    ) external override onlyOwner {
+    function setDelegate(address delegate_, uint16 lossBudgetBps) external override onlyOwner {
+        _lossBudget.setBudget(lossBudgetBps);
         delegate = delegate_;
-        emit DelegateSet(delegate_);
+        emit DelegateSet(delegate_, lossBudgetBps);
     }
 
     /// @notice Set what harvests produce and where they go.
@@ -345,7 +355,7 @@ contract FablesAdapter is ILiquidityVault, Initializable, ReentrancyGuard {
     ///         into the owner's chosen output, kept in the vault or sent to the owner in this call.
     /// @dev Only the swap's output leaves the vault, never eUSD or asset the vault already held.
     ///      FABLES has no oracle, so the caller's `minOut` is the only price check: the owner trusts
-    ///      the delegate with the price of each harvest. Refused when FABLES is the pool's asset.
+    ///      the delegate with the price of each harvest. Refused when FABLES is the asset or eUSD.
     /// @param cumulative Total FABLES the vault has ever earned, per the posted root.
     /// @param proof      Merkle proof of the vault's leaf; empty skips the claim.
     /// @param route      abi-encoded `PoolKey[]` from FABLES to the output (unused for FABLES).
@@ -359,7 +369,7 @@ contract FablesAdapter is ILiquidityVault, Initializable, ReentrancyGuard {
     ) external onlyOwnerOrDelegate nonReentrant returns (uint256 amountOut) {
         if (proof.length > 0) emissionStream.claim(KIND_LIQUID, uint256(uint160(address(this))), cumulative, proof);
         address fables = emissionStream.ff();
-        if (fables == asset) revert ProtectedToken(fables);
+        if (fables == asset || fables == _eusd) revert ProtectedToken(fables);
         uint256 fablesIn = IERC20(fables).balanceOf(address(this));
         if (fablesIn == 0) revert NothingToHarvest();
 
@@ -400,6 +410,12 @@ contract FablesAdapter is ILiquidityVault, Initializable, ReentrancyGuard {
     /// @inheritdoc ILiquidityVault
     function checkPool(address asset_, address eusd_, bytes calldata poolData) external view override {
         _decodePool(asset_, eusd_, poolData);
+    }
+
+    /// @inheritdoc ILiquidityVault
+    function delegateLossBudget() external view override returns (uint16, uint64, uint32) {
+        DelegateLoss.Budget memory b = _lossBudget;
+        return (b.budgetBps, b.windowStart, b.usedBps);
     }
 
     /// @inheritdoc ILiquidityVault

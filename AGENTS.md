@@ -69,14 +69,20 @@ misc/          MoneyFeeCollector: standalone, not part of the eUSD core (tests i
   part of the debt unwinds the same share of the range (the rest stays staked), burns the vault's
   eUSD, and the liquidator pays the rest for asset at a bonus. A full one returns what is left to
   the owner.
-  No redemptions against LP positions.
+- `redeem` burns eUSD against named positions' debt for their asset at the oracle price less
+  `redeemFeeBps`, idle asset first, then from the range. It skips positions with less than
+  `redeemMinAssetShareBps` of their vault in asset at the pool price, and liquidatable ones.
 - The owner can name a delegate on the vault. The owner or the delegate can `rebalance` (remove the
   range, optionally swap asset and eUSD inside the vault at no worse than the oracle price less the
-  pool band, with a fresh price, then add the new range) and, on Fables vaults, `harvest` FABLES
-  into eUSD, the asset or FABLES, kept in the vault or sent to the owner as the owner sets. A
-  delegate never withdraws, closes or sweeps. Fables swap routes take up to 3 hops through pools on
-  the vault pool's hook or in the Fables pool registry (adapter immutable `poolRegistry`), e.g.
-  eUSD -> USDG -> SPY.
+  pool band and at least the caller's `swapMinOut`, with a fresh price, then add the new range,
+  the pool price checked against the band before and after the swap) and, on Fables vaults,
+  `harvest` FABLES into eUSD, the asset or FABLES, kept in the vault or sent to the owner as the
+  owner sets. A delegate never withdraws, closes or sweeps. The owner sets a delegate loss budget
+  with the delegate (`setDelegate(delegate, lossBudgetBps)`, app default 1%): each delegate
+  `rebalance` charges its equity loss at the oracle price (value less debt, eUSD paid to the
+  owner counted as kept) to a one-day window on the vault and reverts past the budget. Fables
+  swap routes take up to 3 hops through pools on the vault pool's hook or in the Fables pool
+  registry (adapter immutable `poolRegistry`), e.g. eUSD -> USDG -> SPY.
 
 **Oracle**: `ChainlinkOracleVerifier` is Chainlink-primary with a band-limited, signed in-house
 fallback for when a feed is silent (weekends, off-hours). Managers read it as the registry's
