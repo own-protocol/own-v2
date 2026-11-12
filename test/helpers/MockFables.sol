@@ -1,15 +1,24 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {PoolKey} from "../../src/interfaces/external/IFables.sol";
+import {PoolKey, SwapParams} from "../../src/interfaces/external/IFables.sol";
 import {LiquidityMath} from "../../src/libraries/LiquidityMath.sol";
 import {MockERC20} from "./MockERC20.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
-/// @title MockFablesLedger — Fables ledger hook and v4 PoolManager slot0 in one contract
+interface IUnlockCallback {
+    function unlockCallback(
+        bytes calldata data
+    ) external returns (bytes memory);
+}
+
+/// @title MockFablesLedger — Fables ledger hook and v4 PoolManager in one contract
 /// @notice Holds deposited tokens itself and pays withdrawals at the price set for the pool, using
-///         the same concentrated-liquidity math as the vault. Deposits charge 1 wei over the
+///         the same concentrated-liquidity math as the vault. Swaps (inside `unlock`) fill at the
+///         pool's set price less `swapFeeBps`, filling `fillBps` of the input, with v4-style delta
+///         accounting that must net to zero by the end of the unlock. Deposits charge 1 wei over the
 ///         rounded-down quote per token (like v4's round-up), so callers must leave headroom.
 ///         Tests mint extra tokens to this contract to cover withdrawals after price moves.
 contract MockFablesLedger {
@@ -22,6 +31,8 @@ contract MockFablesLedger {
     error InsufficientUnstakedShares();
     error NothingToClaim();
     error ClaimFeeAboveMax();
+    error NotUnlocked();
+    error CurrencyNotSettled();
 
     /// @dev PoolManager-style storage of slot0 per state slot (extsload).
     mapping(bytes32 => bytes32) public slots;
@@ -40,6 +51,18 @@ contract MockFablesLedger {
 
     /// @notice Swap fees owed per owner (currency0, currency1).
     mapping(address => uint256[2]) public feesOwed;
+
+    /// @notice Fee taken from every swap's output (BPS).
+    uint16 public swapFeeBps;
+
+    /// @notice Share of a swap's input that fills (BPS).
+    uint16 public fillBps = 10_000;
+
+    bool internal _unlocked;
+    mapping(address => int256) internal _deltas;
+    address[] internal _touched;
+    address internal _synced;
+    uint256 internal _syncedBalance;
 
     function poolId(
         PoolKey memory key
@@ -72,6 +95,69 @@ contract MockFablesLedger {
         uint16 bps
     ) external {
         claimFeeBps = bps;
+    }
+
+    function setSwapFeeBps(
+        uint16 bps
+    ) external {
+        swapFeeBps = bps;
+    }
+
+    function setFillBps(
+        uint16 bps
+    ) external {
+        fillBps = bps;
+    }
+
+    function unlock(
+        bytes calldata data
+    ) external returns (bytes memory result) {
+        _unlocked = true;
+        result = IUnlockCallback(msg.sender).unlockCallback(data);
+        for (uint256 i; i < _touched.length; ++i) {
+            if (_deltas[_touched[i]] != 0) revert CurrencyNotSettled();
+        }
+        delete _touched;
+        _unlocked = false;
+    }
+
+    function swap(PoolKey memory key, SwapParams memory params, bytes calldata) external returns (int256) {
+        if (!_unlocked) revert NotUnlocked();
+        uint256 amountIn = Math.mulDiv(uint256(-params.amountSpecified), fillBps, 10_000);
+        uint256 sqrtP = sqrtPriceOf(key);
+        uint256 q96 = 1 << 96;
+        uint256 out = params.zeroForOne
+            ? Math.mulDiv(Math.mulDiv(amountIn, sqrtP, q96), sqrtP, q96)
+            : Math.mulDiv(Math.mulDiv(amountIn, q96, sqrtP), q96, sqrtP);
+        out = Math.mulDiv(out, 10_000 - swapFeeBps, 10_000);
+        (int128 a0, int128 a1) = params.zeroForOne
+            ? (-int128(int256(amountIn)), int128(int256(out)))
+            : (int128(int256(out)), -int128(int256(amountIn)));
+        _account(key.currency0, a0);
+        _account(key.currency1, a1);
+        return int256(uint256(int256(a0)) << 128 | uint256(uint128(a1)));
+    }
+
+    function sync(
+        address currency
+    ) external {
+        _synced = currency;
+        _syncedBalance = IERC20(currency).balanceOf(address(this));
+    }
+
+    function settle() external payable returns (uint256 paid) {
+        paid = IERC20(_synced).balanceOf(address(this)) - _syncedBalance;
+        _account(_synced, int256(paid));
+    }
+
+    function take(address currency, address to, uint256 amount) external {
+        _account(currency, -int256(amount));
+        IERC20(currency).safeTransfer(to, amount);
+    }
+
+    function _account(address currency, int256 delta) internal {
+        if (_deltas[currency] == 0) _touched.push(currency);
+        _deltas[currency] += delta;
     }
 
     function setFeesOwed(address owner, uint256 fee0, uint256 fee1) external {

@@ -65,6 +65,24 @@
       "offset": 22,
       "slot": "9",
       "type": "t_bool"
+    },
+    {
+      "label": "delegate",
+      "offset": 0,
+      "slot": "10",
+      "type": "t_address"
+    },
+    {
+      "label": "harvestOut",
+      "offset": 20,
+      "slot": "10",
+      "type": "t_enum(HarvestOut)"
+    },
+    {
+      "label": "harvestToOwner",
+      "offset": 21,
+      "slot": "10",
+      "type": "t_bool"
     }
   ],
   "types": {
@@ -76,6 +94,11 @@
     "t_bool": {
       "encoding": "inplace",
       "label": "bool",
+      "numberOfBytes": "1"
+    },
+    "t_enum(HarvestOut)": {
+      "encoding": "inplace",
+      "label": "enum FablesAdapter.HarvestOut",
       "numberOfBytes": "1"
     },
     "t_int24": {

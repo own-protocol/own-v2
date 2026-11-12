@@ -329,14 +329,19 @@ contract AerodromeAdapterTest is LiquidityManagerSetup {
         assertGe(assetOut, 1e18, "fees came with the principal");
     }
 
-    function test_reposition_staked_newNftStaked() public {
+    function test_rebalance_staked_newNftStaked() public {
         _open(alice, 10e18, 3500e18, true);
         AerodromeAdapter v = _vaultOf(alice);
         uint256 oldId = v.tokenId();
         (int24 lower, int24 upper) = spyRange(650e18, 750e18);
         vm.prank(alice);
-        uint128 liquidity = manager.reposition(
-            IEUSDLiquidityManager.RepositionParams({
+        uint128 liquidity = manager.rebalance(
+            IEUSDLiquidityManager.RebalanceParams({
+                owner: alice,
+                swapAmount: 0,
+                assetToEusd: false,
+                route: "",
+                staked: true,
                 poolId: AERO_SPY,
                 tickLower: lower,
                 tickUpper: upper,
@@ -584,5 +589,50 @@ contract AerodromeAdapterTest is LiquidityManagerSetup {
         vm.expectRevert(abi.encodeWithSelector(ILiquidityVault.InvalidRange.selector, int24(5), int24(20)));
         vm.prank(address(manager));
         v.addLiquidity(5, 20, 1e18, 0);
+    }
+
+    function test_setDelegate_ownerOnly() public {
+        _open(alice, 10e18, 3500e18, true);
+        AerodromeAdapter v = _vaultOf(alice);
+        vm.expectRevert(ILiquidityVault.OnlyOwner.selector);
+        vm.prank(attacker);
+        v.setDelegate(attacker);
+        vm.expectEmit(address(v));
+        emit ILiquidityVault.DelegateSet(keeper);
+        vm.prank(alice);
+        v.setDelegate(keeper);
+        assertEq(v.delegate(), keeper);
+    }
+
+    function test_swap_unsupported() public {
+        _open(alice, 10e18, 3500e18, true);
+        AerodromeAdapter v = _vaultOf(alice);
+        vm.expectRevert(ILiquidityVault.OnlyManager.selector);
+        v.swap(true, 1, 0, "");
+        vm.expectRevert(ILiquidityVault.SwapUnsupported.selector);
+        vm.prank(address(manager));
+        v.swap(true, 1, 0, "");
+    }
+
+    function test_rebalance_withSwap_unsupported() public {
+        _open(alice, 10e18, 3500e18, true);
+        (int24 lower, int24 upper) = spyRange(650e18, 750e18);
+        IEUSDLiquidityManager.RebalanceParams memory params = IEUSDLiquidityManager.RebalanceParams({
+            poolId: AERO_SPY,
+            owner: alice,
+            assetMin: 0,
+            eusdMin: 0,
+            swapAmount: 1e18,
+            assetToEusd: true,
+            route: "",
+            tickLower: lower,
+            tickUpper: upper,
+            assetMax: 3e18,
+            eusdMax: 2000e18,
+            staked: true
+        });
+        vm.expectRevert(ILiquidityVault.SwapUnsupported.selector);
+        vm.prank(alice);
+        manager.rebalance(params);
     }
 }

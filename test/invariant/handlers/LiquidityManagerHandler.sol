@@ -15,7 +15,7 @@ import {StdCheats} from "forge-std/StdCheats.sol";
 import {StdUtils} from "forge-std/StdUtils.sol";
 
 /// @title LiquidityManagerHandler — stateful fuzz handler for EUSDLiquidityManager invariants
-/// @notice Exercises add, remove, reposition, stake toggles, withdraw, repay, close (both kinds), partial and
+/// @notice Exercises add, remove, rebalance, stake toggles, withdraw, repay, close (both kinds), partial and
 ///         full liquidation, redemption, price moves (oracle and pool together) and time warps on the SPY pool.
 ///         The handler holds eUSD MINTER_ROLE to fund wallets and the mock pool's reserves, tracked
 ///         in `ghost_outsideMinted`, so supply == totalDebt + ghost_outsideMinted.
@@ -113,25 +113,36 @@ contract LiquidityManagerHandler is CommonBase, StdCheats, StdUtils {
         } catch {}
     }
 
-    function reposition(uint256 actorSeed, uint256 rangeSeed, uint256 assetMax, uint256 eusdMax) external {
+    function rebalance(
+        uint256 actorSeed,
+        uint256 rangeSeed,
+        uint256 assetMax,
+        uint256 eusdMax,
+        uint256 swapAmount,
+        bool assetToEusd,
+        bool viaDelegate
+    ) external {
         address actor = _actor(actorSeed);
-        if (manager.getPosition(poolId, actor).vault == address(0)) return;
-        (int24 lower, int24 upper) = _presetRange(rangeSeed);
-        assetMax = bound(assetMax, 0, 50e18);
-        eusdMax = bound(eusdMax, 0, 20_000e18);
-        vm.prank(actor);
-        try manager.reposition(
-            IEUSDLiquidityManager.RepositionParams({
-                poolId: poolId,
-                tickLower: lower,
-                tickUpper: upper,
-                assetMax: assetMax,
-                eusdMax: eusdMax,
-                assetMin: 0,
-                eusdMin: 0
-            })
-        ) {
-            ghost_calls["reposition"]++;
+        address vault = manager.getPosition(poolId, actor).vault;
+        if (vault == address(0)) return;
+        IEUSDLiquidityManager.RebalanceParams memory params;
+        params.poolId = poolId;
+        params.owner = actor;
+        (params.tickLower, params.tickUpper) = _presetRange(rangeSeed);
+        params.assetMax = bound(assetMax, 0, 50e18);
+        params.eusdMax = bound(eusdMax, 0, 20_000e18);
+        params.swapAmount = assetToEusd ? bound(swapAmount, 0, 5e18) : bound(swapAmount, 0, 3000e18);
+        params.assetToEusd = assetToEusd;
+        params.staked = manager.getPosition(poolId, actor).staked;
+        address caller = actor;
+        if (viaDelegate) {
+            vm.prank(actor);
+            ILiquidityVault(vault).setDelegate(keeper);
+            caller = keeper;
+        }
+        vm.prank(caller);
+        try manager.rebalance(params) {
+            ghost_calls[params.swapAmount > 0 ? bytes32("rebalanceSwap") : bytes32("rebalance")]++;
         } catch {}
     }
 

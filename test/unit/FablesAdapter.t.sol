@@ -5,6 +5,7 @@ import {FablesAdapter} from "../../src/eusd/adapters/FablesAdapter.sol";
 import {ILiquidityVault} from "../../src/interfaces/ILiquidityVault.sol";
 import {PoolKey} from "../../src/interfaces/external/IFables.sol";
 import {LiquidityManagerSetup} from "../helpers/LiquidityManagerSetup.sol";
+import {MockERC20} from "../helpers/MockERC20.sol";
 import {MockFablesLedger} from "../helpers/MockFables.sol";
 import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
 
@@ -109,6 +110,8 @@ contract FablesAdapterTest is LiquidityManagerSetup {
         vault.setStaked(false);
         vm.expectRevert(ILiquidityVault.OnlyManager.selector);
         vault.transferToken(address(spy), alice, 1);
+        vm.expectRevert(ILiquidityVault.OnlyManager.selector);
+        vault.swap(true, 1, 0, "");
         vm.stopPrank();
     }
 
@@ -122,6 +125,29 @@ contract FablesAdapterTest is LiquidityManagerSetup {
         vault.claimEmissions(1, proof);
         vm.expectRevert(ILiquidityVault.OnlyOwner.selector);
         vault.claimFees(0, 10, 0);
+        vm.expectRevert(ILiquidityVault.OnlyOwner.selector);
+        vault.setDelegate(attacker);
+        vm.expectRevert(ILiquidityVault.OnlyOwner.selector);
+        vault.setHarvestConfig(FablesAdapter.HarvestOut.Fables, true);
+        vm.stopPrank();
+    }
+
+    function test_delegateCannotUseOwnerFunctions() public {
+        vm.prank(alice);
+        vault.setDelegate(keeper);
+        bytes32[] memory proof;
+        address ff = address(stream.ff());
+        vm.startPrank(keeper);
+        vm.expectRevert(ILiquidityVault.OnlyOwner.selector);
+        vault.sweep(ff);
+        vm.expectRevert(ILiquidityVault.OnlyOwner.selector);
+        vault.claimEmissions(1, proof);
+        vm.expectRevert(ILiquidityVault.OnlyOwner.selector);
+        vault.setDelegate(keeper);
+        vm.expectRevert(ILiquidityVault.OnlyOwner.selector);
+        vault.setHarvestConfig(FablesAdapter.HarvestOut.Fables, true);
+        vm.expectRevert(ILiquidityVault.OnlyManager.selector);
+        vault.transferToken(address(spy), keeper, 1);
         vm.stopPrank();
     }
 
@@ -177,6 +203,326 @@ contract FablesAdapterTest is LiquidityManagerSetup {
         vm.expectRevert(MockFablesLedger.ClaimFeeAboveMax.selector);
         vm.prank(alice);
         vault.claimFees(lower, upper, 50);
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Delegate and harvest
+    // ──────────────────────────────────────────────────────────
+
+    uint256 internal constant FABLES_PRICE = 0.5e18;
+
+    function _fablesKey(
+        address other
+    ) internal returns (PoolKey memory key) {
+        address ff = address(stream.ff());
+        (address c0, address c1) = ff < other ? (ff, other) : (other, ff);
+        key = PoolKey({currency0: c0, currency1: c1, fee: 0x800000, tickSpacing: 60, hooks: address(ledger)});
+        ledger.setPrice(key, ff, other == address(spy) ? FABLES_PRICE / 700 : FABLES_PRICE);
+    }
+
+    function _route(
+        PoolKey memory a
+    ) internal pure returns (bytes memory) {
+        PoolKey[] memory hops = new PoolKey[](1);
+        hops[0] = a;
+        return abi.encode(hops);
+    }
+
+    function _proof() internal pure returns (bytes32[] memory proof) {
+        proof = new bytes32[](1);
+    }
+
+    function _eusdRoute() internal returns (bytes memory route) {
+        route = _route(_fablesKey(address(eusd)));
+        giveEusd(address(ledger), 1_000_000e18);
+    }
+
+    function test_setDelegate_setsAndClears() public {
+        vm.expectEmit(address(vault));
+        emit ILiquidityVault.DelegateSet(keeper);
+        vm.prank(alice);
+        vault.setDelegate(keeper);
+        assertEq(vault.delegate(), keeper);
+        vm.prank(alice);
+        vault.setDelegate(address(0));
+        assertEq(vault.delegate(), address(0));
+    }
+
+    function test_harvestConfig_defaultsToEusdInVault() public view {
+        assertEq(uint8(vault.harvestOut()), uint8(FablesAdapter.HarvestOut.Eusd));
+        assertFalse(vault.harvestToOwner());
+    }
+
+    function test_setHarvestConfig_setsAndEmits() public {
+        vm.expectEmit(address(vault));
+        emit FablesAdapter.HarvestConfigSet(FablesAdapter.HarvestOut.Asset, true);
+        vm.prank(alice);
+        vault.setHarvestConfig(FablesAdapter.HarvestOut.Asset, true);
+        assertEq(uint8(vault.harvestOut()), uint8(FablesAdapter.HarvestOut.Asset));
+        assertTrue(vault.harvestToOwner());
+    }
+
+    function test_harvest_default_claimsSwapsAndKeepsEusd() public {
+        bytes memory route = _eusdRoute();
+        bytes32[] memory proof = _proof();
+        uint256 snap = vm.snapshotState();
+        vm.prank(alice);
+        uint256 expected = vault.harvest(100e18, proof, route, 0);
+        vm.revertToState(snap);
+        assertApproxEqAbs(expected, 50e18, 1e9);
+
+        vm.expectEmit(address(vault));
+        emit ILiquidityVault.Swapped(address(stream.ff()), address(eusd), 100e18, expected);
+        vm.expectEmit(address(vault));
+        emit FablesAdapter.EmissionsHarvested(alice, 100e18, address(eusd), expected, false);
+        vm.prank(alice);
+        uint256 out = vault.harvest(100e18, proof, route, expected);
+        assertEq(out, expected);
+        assertEq(eusd.balanceOf(address(vault)), expected, "eUSD kept in the vault");
+        assertEq(stream.ff().balanceOf(address(vault)), 0);
+        assertEq(eusd.balanceOf(alice), 0);
+    }
+
+    function test_harvest_byDelegate() public {
+        bytes memory route = _eusdRoute();
+        vm.prank(alice);
+        vault.setDelegate(keeper);
+        vm.prank(keeper);
+        uint256 out = vault.harvest(100e18, _proof(), route, 0);
+        assertEq(eusd.balanceOf(address(vault)), out);
+        assertEq(eusd.balanceOf(keeper), 0, "delegate receives nothing");
+    }
+
+    function test_harvest_stranger_reverts() public {
+        bytes memory route = _eusdRoute();
+        bytes32[] memory proof = _proof();
+        vm.expectRevert(FablesAdapter.OnlyOwnerOrDelegate.selector);
+        vm.prank(attacker);
+        vault.harvest(100e18, proof, route, 0);
+    }
+
+    function test_harvest_clearedDelegate_reverts() public {
+        bytes memory route = _eusdRoute();
+        bytes32[] memory proof = _proof();
+        vm.startPrank(alice);
+        vault.setDelegate(keeper);
+        vault.setDelegate(address(0));
+        vm.stopPrank();
+        vm.expectRevert(FablesAdapter.OnlyOwnerOrDelegate.selector);
+        vm.prank(keeper);
+        vault.harvest(100e18, proof, route, 0);
+    }
+
+    function test_harvest_eusdToOwner_sendsOnlyTheSwapOutput() public {
+        bytes memory route = _eusdRoute();
+        // eUSD already in the vault (e.g. returned by the range) must not leave with a harvest.
+        giveEusd(address(vault), 40e18);
+        vm.prank(alice);
+        vault.setHarvestConfig(FablesAdapter.HarvestOut.Eusd, true);
+        vm.prank(alice);
+        uint256 out = vault.harvest(100e18, _proof(), route, 0);
+        assertEq(eusd.balanceOf(alice), out);
+        assertEq(eusd.balanceOf(address(vault)), 40e18, "vault eUSD untouched");
+    }
+
+    function test_harvest_assetKeptInVault() public {
+        bytes memory route = _route(_fablesKey(address(spy)));
+        uint256 spyBefore = spy.balanceOf(address(vault));
+        vm.prank(alice);
+        vault.setHarvestConfig(FablesAdapter.HarvestOut.Asset, false);
+        vm.expectEmit(true, true, false, false, address(vault));
+        emit FablesAdapter.EmissionsHarvested(alice, 700e18, address(spy), 0, false);
+        vm.prank(alice);
+        uint256 out = vault.harvest(700e18, _proof(), route, 0);
+        assertApproxEqAbs(out, 0.5e18, 1e9);
+        assertEq(spy.balanceOf(address(vault)), spyBefore + out);
+    }
+
+    function test_harvest_assetToOwner() public {
+        bytes memory route = _route(_fablesKey(address(spy)));
+        uint256 vaultSpy = spy.balanceOf(address(vault));
+        uint256 aliceSpy = spy.balanceOf(alice);
+        vm.prank(alice);
+        vault.setHarvestConfig(FablesAdapter.HarvestOut.Asset, true);
+        vm.prank(alice);
+        uint256 out = vault.harvest(700e18, _proof(), route, 0);
+        assertEq(spy.balanceOf(alice), aliceSpy + out);
+        assertEq(spy.balanceOf(address(vault)), vaultSpy, "vault asset untouched");
+    }
+
+    function test_harvest_fablesKept() public {
+        vm.prank(alice);
+        vault.setHarvestConfig(FablesAdapter.HarvestOut.Fables, false);
+        vm.prank(alice);
+        uint256 out = vault.harvest(100e18, _proof(), "", 0);
+        assertEq(out, 100e18);
+        assertEq(stream.ff().balanceOf(address(vault)), 100e18);
+    }
+
+    function test_harvest_fablesToOwner() public {
+        vm.prank(alice);
+        vault.setHarvestConfig(FablesAdapter.HarvestOut.Fables, true);
+        vm.prank(alice);
+        uint256 out = vault.harvest(100e18, _proof(), "", 0);
+        assertEq(out, 100e18);
+        assertEq(stream.ff().balanceOf(alice), 100e18);
+        assertEq(stream.ff().balanceOf(address(vault)), 0);
+    }
+
+    function test_harvest_emptyProof_usesFablesAlreadyInVault() public {
+        bytes memory route = _eusdRoute();
+        bytes32[] memory empty;
+        stream.claim(0, uint256(uint160(address(vault))), 30e18, empty);
+        vm.prank(alice);
+        uint256 out = vault.harvest(0, empty, route, 0);
+        assertApproxEqAbs(out, 15e18, 1e9);
+    }
+
+    function test_harvest_nothing_reverts() public {
+        bytes32[] memory empty;
+        vm.expectRevert(FablesAdapter.NothingToHarvest.selector);
+        vm.prank(alice);
+        vault.harvest(0, empty, "", 0);
+    }
+
+    function test_harvest_belowMinOut_reverts() public {
+        bytes memory route = _eusdRoute();
+        bytes32[] memory proof = _proof();
+        vm.expectPartialRevert(ILiquidityVault.InsufficientOutput.selector);
+        vm.prank(alice);
+        vault.harvest(100e18, proof, route, 50e18 + 1);
+    }
+
+    function test_harvest_swapWithoutRoute_reverts() public {
+        bytes32[] memory proof = _proof();
+        vm.expectRevert(ILiquidityVault.InvalidRoute.selector);
+        vm.prank(alice);
+        vault.harvest(100e18, proof, "", 0);
+    }
+
+    function test_harvest_badRoutes_revert() public {
+        PoolKey memory good = _fablesKey(address(eusd));
+        bytes memory toSpy = _route(_fablesKey(address(spy)));
+        giveEusd(address(ledger), 1_000_000e18);
+        bytes32[] memory proof = _proof();
+        vm.startPrank(alice);
+
+        PoolKey memory foreignHook = good;
+        foreignHook.hooks = address(0xBEEF);
+        vm.expectRevert(ILiquidityVault.InvalidRoute.selector);
+        vault.harvest(100e18, proof, _route(foreignHook), 0);
+
+        // Leads from FABLES to SPY, not to eUSD.
+        vm.expectRevert(ILiquidityVault.InvalidRoute.selector);
+        vault.harvest(100e18, proof, toSpy, 0);
+
+        // First hop does not hold FABLES.
+        vm.expectRevert(ILiquidityVault.InvalidRoute.selector);
+        vault.harvest(100e18, proof, _route(usdKey), 0);
+
+        PoolKey[] memory none = new PoolKey[](0);
+        vm.expectRevert(ILiquidityVault.InvalidRoute.selector);
+        vault.harvest(100e18, proof, abi.encode(none), 0);
+
+        // Four hops is over the limit, whatever the tokens.
+        PoolKey[] memory long = new PoolKey[](4);
+        (long[0], long[1], long[2], long[3]) = (good, usdKey, usdKey, usdKey);
+        vm.expectRevert(ILiquidityVault.InvalidRoute.selector);
+        vault.harvest(100e18, proof, abi.encode(long), 0);
+        vm.stopPrank();
+    }
+
+    function test_harvest_fablesIsAsset_reverts() public {
+        MockERC20 ff = MockERC20(address(stream.ff()));
+        (address c0, address c1) =
+            address(ff) < address(eusd) ? (address(ff), address(eusd)) : (address(eusd), address(ff));
+        PoolKey memory key =
+            PoolKey({currency0: c0, currency1: c1, fee: 0x800000, tickSpacing: 60, hooks: address(ledger)});
+        ledger.setPrice(key, address(ff), FABLES_PRICE);
+        oracle.setPrice(bytes32("FABLES"), FABLES_PRICE);
+        vm.prank(admin);
+        uint256 poolId = manager.addPool(address(beacon), address(ff), bytes32("FABLES"), abi.encode(key));
+        ff.mint(bob, 10e18);
+        vm.startPrank(bob);
+        ff.approve(address(manager), 10e18);
+        manager.deposit(poolId, 10e18);
+        FablesAdapter v = FablesAdapter(manager.getPosition(poolId, bob).vault);
+        v.setHarvestConfig(FablesAdapter.HarvestOut.Fables, true);
+        bytes32[] memory empty;
+        vm.expectRevert(abi.encodeWithSelector(ILiquidityVault.ProtectedToken.selector, address(ff)));
+        v.harvest(0, empty, "", 0);
+        vm.stopPrank();
+        assertEq(ff.balanceOf(address(v)), 10e18, "collateral stays");
+    }
+
+    function test_harvest_partialFill_reverts() public {
+        bytes memory route = _eusdRoute();
+        bytes32[] memory proof = _proof();
+        ledger.setFillBps(5000);
+        vm.expectRevert(ILiquidityVault.InvalidRoute.selector);
+        vm.prank(alice);
+        vault.harvest(100e18, proof, route, 0);
+    }
+
+    function test_harvest_twoHops() public {
+        // FABLES -> eUSD -> USDG -> eUSD: the longest route allowed.
+        PoolKey[] memory hops = new PoolKey[](3);
+        (hops[0], hops[1], hops[2]) = (_fablesKey(address(eusd)), usdKey, usdKey);
+        giveEusd(address(ledger), 1_000_000e18);
+        vm.prank(alice);
+        uint256 out = vault.harvest(100e18, _proof(), abi.encode(hops), 0);
+        assertApproxEqAbs(out, 50e18, 1e12);
+        assertEq(eusd.balanceOf(address(vault)), out);
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Swap
+    // ──────────────────────────────────────────────────────────
+
+    function test_swap_assetToEusd_ownPool() public {
+        giveEusd(address(ledger), 1_000_000e18);
+        uint256 spyBefore = spy.balanceOf(address(vault));
+        vm.prank(alice);
+        manager.deposit(SPY_POOL, 1e18);
+        vm.expectEmit(true, true, false, false, address(vault));
+        emit ILiquidityVault.Swapped(address(spy), address(eusd), 1e18, 0);
+        vm.prank(address(manager));
+        uint256 out = vault.swap(true, 1e18, 699e18, "");
+        assertApproxEqAbs(out, 700e18, 1e9);
+        assertEq(spy.balanceOf(address(vault)), spyBefore);
+        assertEq(eusd.balanceOf(address(vault)), out);
+    }
+
+    function test_swap_eusdToAsset_ownPool() public {
+        giveEusd(address(vault), 700e18);
+        uint256 spyBefore = spy.balanceOf(address(vault));
+        vm.prank(address(manager));
+        uint256 out = vault.swap(false, 700e18, 0, "");
+        assertApproxEqAbs(out, 1e18, 1e6);
+        assertEq(spy.balanceOf(address(vault)), spyBefore + out);
+        assertEq(eusd.balanceOf(address(vault)), 0);
+    }
+
+    function test_swap_belowMinOut_reverts() public {
+        giveEusd(address(ledger), 1_000_000e18);
+        vm.prank(alice);
+        manager.deposit(SPY_POOL, 1e18);
+        ledger.setSwapFeeBps(100);
+        vm.expectPartialRevert(ILiquidityVault.InsufficientOutput.selector);
+        vm.prank(address(manager));
+        vault.swap(true, 1e18, 694e18, "");
+    }
+
+    function test_swap_zeroAmount_reverts() public {
+        vm.expectRevert(ILiquidityVault.InvalidRoute.selector);
+        vm.prank(address(manager));
+        vault.swap(true, 0, 0, "");
+    }
+
+    function test_unlockCallback_notPoolManager_reverts() public {
+        vm.expectRevert(FablesAdapter.OnlyPoolManager.selector);
+        vm.prank(attacker);
+        vault.unlockCallback("");
     }
 
     // ──────────────────────────────────────────────────────────

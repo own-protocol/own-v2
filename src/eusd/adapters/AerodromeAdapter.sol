@@ -85,6 +85,9 @@ contract AerodromeAdapter is ILiquidityVault, IERC721Receiver, Initializable, Re
     /// @notice The gauge the NFT was last staked in; zero if never staked.
     ICLGauge public gauge;
 
+    /// @inheritdoc ILiquidityVault
+    address public override delegate;
+
     // ──────────────────────────────────────────────────────────
     //  Modifiers
     // ──────────────────────────────────────────────────────────
@@ -234,9 +237,23 @@ contract AerodromeAdapter is ILiquidityVault, IERC721Receiver, Initializable, Re
         emit TokenTransferred(token, to, amount);
     }
 
+    /// @inheritdoc ILiquidityVault
+    /// @dev Not supported on Aero yet.
+    function swap(bool, uint256, uint256, bytes calldata) external view override onlyManager returns (uint256) {
+        revert SwapUnsupported();
+    }
+
     // ──────────────────────────────────────────────────────────
     //  Owner
     // ──────────────────────────────────────────────────────────
+
+    /// @inheritdoc ILiquidityVault
+    function setDelegate(
+        address delegate_
+    ) external override onlyOwner {
+        delegate = delegate_;
+        emit DelegateSet(delegate_);
+    }
 
     /// @inheritdoc ILiquidityVault
     function sweep(

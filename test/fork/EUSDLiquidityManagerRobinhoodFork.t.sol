@@ -4,6 +4,7 @@ pragma solidity 0.8.28;
 import {EUSDLiquidityManager} from "../../src/eusd/EUSDLiquidityManager.sol";
 import {FablesAdapter} from "../../src/eusd/adapters/FablesAdapter.sol";
 import {IEUSDLiquidityManager} from "../../src/interfaces/IEUSDLiquidityManager.sol";
+import {ILiquidityVault} from "../../src/interfaces/ILiquidityVault.sol";
 import {IExtsload, PoolKey} from "../../src/interfaces/external/IFables.sol";
 import {LiquidityMath} from "../../src/libraries/LiquidityMath.sol";
 import {ProtocolRegistry} from "../../src/registry/ProtocolRegistry.sol";
@@ -48,6 +49,7 @@ contract EUSDLiquidityManagerRobinhoodFork is Test {
     address internal constant FABLES_RAMP = 0x08E52564Bad99E05a694b4809F397edcA417A080;
     address internal constant SPY = 0x117cc2133c37B721F49dE2A7a74833232B3B4C0C;
     address internal constant USDG = 0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168;
+    address internal constant FABLES = 0xb63d07CEf74bE747231d601bb2FAa6B252c68106;
 
     bytes32 internal constant SPY_TICKER = bytes32("R.SPY");
     bytes32 internal constant USDG_TICKER = bytes32("USDG");
@@ -177,6 +179,44 @@ contract EUSDLiquidityManagerRobinhoodFork is Test {
         return FablesAdapter(manager.getPosition(poolId, alice).vault);
     }
 
+    function _rebalanceParams(
+        uint256 swapAmount,
+        bool assetToEusd,
+        uint256 assetMax,
+        uint256 eusdMax
+    ) internal view returns (IEUSDLiquidityManager.RebalanceParams memory) {
+        (int24 lower, int24 upper) = _rangeAround(spyKey, 1000);
+        return IEUSDLiquidityManager.RebalanceParams({
+            poolId: 0,
+            owner: alice,
+            assetMin: 0,
+            eusdMin: 0,
+            swapAmount: swapAmount,
+            assetToEusd: assetToEusd,
+            route: "",
+            tickLower: lower,
+            tickUpper: upper,
+            assetMax: assetMax,
+            eusdMax: eusdMax,
+            staked: true
+        });
+    }
+
+    /// @dev FABLES -> USDG -> eUSD through the live Fables pools.
+    function _fablesToEusdRoute() internal view returns (bytes memory) {
+        PoolKey[] memory hops = new PoolKey[](2);
+        hops[0] = PoolKey({currency0: USDG, currency1: FABLES, fee: 0x800000, tickSpacing: 200, hooks: FABLES_RAMP});
+        hops[1] = usdKey;
+        return abi.encode(hops);
+    }
+
+    /// @dev FABLES -> SPY through the live SPY/FABLES pool.
+    function _fablesToSpyRoute() internal pure returns (bytes memory) {
+        PoolKey[] memory hops = new PoolKey[](1);
+        hops[0] = PoolKey({currency0: SPY, currency1: FABLES, fee: 0x800000, tickSpacing: 60, hooks: FABLES_RAMP});
+        return abi.encode(hops);
+    }
+
     function _openSpy() internal returns (uint128 liquidity, int24 lower, int24 upper) {
         (lower, upper) = _rangeAround(spyKey, 1000);
         (uint256 price,) = oracle.getPrice(SPY_TICKER);
@@ -228,13 +268,18 @@ contract EUSDLiquidityManagerRobinhoodFork is Test {
         assertApproxEqAbs(eusdOut, eusdHeld, 1e6, "eUSD");
     }
 
-    function test_fork_spy_repositionRemoveClose() public requiresFork {
+    function test_fork_spy_rebalanceRemoveClose() public requiresFork {
         _openSpy();
         (int24 lower, int24 upper) = _rangeAround(spyKey, 500);
         uint256 eusdMax = 3 * _poolPrice(spyKey, 1e18);
         vm.prank(alice);
-        manager.reposition(
-            IEUSDLiquidityManager.RepositionParams({
+        manager.rebalance(
+            IEUSDLiquidityManager.RebalanceParams({
+                owner: alice,
+                swapAmount: 0,
+                assetToEusd: false,
+                route: "",
+                staked: true,
                 poolId: 0,
                 tickLower: lower,
                 tickUpper: upper,
@@ -348,5 +393,98 @@ contract EUSDLiquidityManagerRobinhoodFork is Test {
         manager.close(1, 0, 0);
         assertEq(manager.totalDebt(), 0);
         assertApproxEqRel(IERC20(USDG).balanceOf(alice) - usdgBefore, 2000e6, 0.01e18);
+    }
+
+    function test_fork_spy_delegateRebalanceSellsAssetAndRepays() public requiresFork {
+        _openSpy();
+        FablesAdapter v = _vault(0);
+        vm.prank(alice);
+        v.setDelegate(keeper);
+        uint256 debtBefore = manager.getPosition(0, alice).debt;
+        uint256 ratioBefore = manager.collateralRatioBps(0, alice);
+        (uint256 price,) = oracle.getPrice(SPY_TICKER);
+
+        IEUSDLiquidityManager.RebalanceParams memory params = _rebalanceParams(0.2e18, true, 5e18, 4 * price);
+        vm.prank(keeper);
+        manager.rebalance(params);
+        uint256 debt = manager.getPosition(0, alice).debt;
+        assertLt(debt, debtBefore, "swap proceeds repay debt");
+        assertGt(manager.collateralRatioBps(0, alice), ratioBefore, "ratio rises");
+        assertEq(IERC20(EUSD).balanceOf(address(v)), 0);
+        assertEq(manager.totalDebt(), debt);
+        (,, uint128 held) = v.range();
+        assertGt(held, 0);
+    }
+
+    function test_fork_spy_rebalanceBuysAssetWithEusd() public requiresFork {
+        _openSpy();
+        FablesAdapter v = _vault(0);
+        (uint256 price,) = oracle.getPrice(SPY_TICKER);
+        uint256 spyBefore = IERC20(SPY).balanceOf(address(v));
+        IEUSDLiquidityManager.RebalanceParams memory params = _rebalanceParams(100e18, false, 5e18, 4 * price);
+
+        // Fables charges a stress fee on eUSD sold, above this manager's 2.5% band.
+        vm.prank(alice);
+        vm.expectPartialRevert(ILiquidityVault.InsufficientOutput.selector);
+        manager.rebalance(params);
+
+        vm.prank(admin);
+        manager.setPoolPriceBand(600);
+        vm.prank(alice);
+        manager.rebalance(params);
+        assertGt(IERC20(SPY).balanceOf(address(v)), spyBefore, "bought asset stays idle");
+        assertGe(manager.collateralRatioBps(0, alice), manager.riskParams().mcrBps);
+    }
+
+    function test_fork_spy_rebalanceSwapBeyondBand_reverts() public requiresFork {
+        _openSpy();
+        (uint256 price,) = oracle.getPrice(SPY_TICKER);
+        // Selling far more than the pool can take at the oracle price fails the band floor.
+        IEUSDLiquidityManager.RebalanceParams memory params = _rebalanceParams(10e18, true, 0, 4 * price);
+        vm.prank(alice);
+        vm.expectRevert();
+        manager.rebalance(params);
+    }
+
+    function test_fork_spy_rebalanceStranger_reverts() public requiresFork {
+        _openSpy();
+        IEUSDLiquidityManager.RebalanceParams memory params = _rebalanceParams(0, true, 5e18, 0);
+        vm.prank(keeper);
+        vm.expectRevert(IEUSDLiquidityManager.OnlyOwnerOrDelegate.selector);
+        manager.rebalance(params);
+    }
+
+    function test_fork_spy_harvestToEusdInVault() public requiresFork {
+        _openSpy();
+        FablesAdapter v = _vault(0);
+        vm.prank(alice);
+        v.setDelegate(keeper);
+        deal(FABLES, address(v), 1000e18);
+        bytes32[] memory proof;
+
+        vm.prank(keeper);
+        uint256 out = v.harvest(0, proof, _fablesToEusdRoute(), 1);
+        assertGt(out, 0);
+        assertEq(IERC20(EUSD).balanceOf(address(v)), out, "eUSD kept in the vault");
+        assertEq(IERC20(FABLES).balanceOf(address(v)), 0);
+        assertEq(IERC20(EUSD).balanceOf(alice), 0);
+    }
+
+    function test_fork_spy_harvestToAssetSentToOwner() public requiresFork {
+        _openSpy();
+        FablesAdapter v = _vault(0);
+        vm.prank(alice);
+        v.setHarvestConfig(FablesAdapter.HarvestOut.Asset, true);
+        // The SPY/FABLES pool is thin; a larger amount would run out of range and be refused.
+        deal(FABLES, address(v), 50e18);
+        uint256 vaultSpy = IERC20(SPY).balanceOf(address(v));
+        uint256 aliceSpy = IERC20(SPY).balanceOf(alice);
+        bytes32[] memory proof;
+
+        vm.prank(alice);
+        uint256 out = v.harvest(0, proof, _fablesToSpyRoute(), 1);
+        assertGt(out, 0);
+        assertEq(IERC20(SPY).balanceOf(alice) - aliceSpy, out, "asset sent to the owner");
+        assertEq(IERC20(SPY).balanceOf(address(v)), vaultSpy, "vault asset untouched");
     }
 }

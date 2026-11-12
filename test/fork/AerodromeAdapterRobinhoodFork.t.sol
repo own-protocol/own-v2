@@ -281,11 +281,16 @@ contract AerodromeAdapterRobinhoodFork is Test {
         assertEq(v.tokenId(), 0);
     }
 
-    function test_fork_aero_repositionStaked() public requiresFork {
+    function test_fork_aero_rebalanceStaked() public requiresFork {
         _open(true);
         vm.prank(alice);
-        manager.reposition(
-            IEUSDLiquidityManager.RepositionParams({
+        manager.rebalance(
+            IEUSDLiquidityManager.RebalanceParams({
+                owner: alice,
+                swapAmount: 0,
+                assetToEusd: false,
+                route: "",
+                staked: true,
                 poolId: 0,
                 tickLower: _tickAt(660e18),
                 tickUpper: _tickAt(740e18),

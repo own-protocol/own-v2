@@ -28,6 +28,11 @@ pragma solidity 0.8.28;
 ///         price within `poolPriceBandBps` of the oracle, which protects the user from adding into a
 ///         stale or sandwiched pool.
 ///
+///         Rebalancing: the owner, or the delegate the owner names on the vault, can move the range
+///         and, on the way, swap the vault's asset for eUSD or back at no worse than the oracle
+///         price less `poolPriceBandBps`. eUSD the swap brings in is burned against the debt like any
+///         other. A delegate can never move tokens out of the vault.
+///
 ///         Two stability fees: one for staked liquidity (which earns DEX emissions) and a lower one
 ///         for unstaked liquidity. The fee is simple interest on principal, minted to the treasury.
 ///
@@ -55,7 +60,8 @@ interface IEUSDLiquidityManager {
     /// @param liquidationBonusBps     Bonus paid to the liquidator on the debt it repays (BPS).
     /// @param stakedFeeBps            Annual stability fee while the liquidity is staked (BPS).
     /// @param unstakedFeeBps          Annual stability fee while the liquidity is unstaked (BPS).
-    /// @param poolPriceBandBps        Max gap between pool and oracle price to add or move liquidity (BPS).
+    /// @param poolPriceBandBps        Max gap between pool and oracle price to add or move liquidity,
+    ///                                and most a rebalance swap may return below its oracle value (BPS).
     /// @param debtCeiling             Cap on this manager's total debt (18 decimals).
     /// @param minDebt                 Minimum debt of a position with debt (18 decimals).
     /// @param mintPriceMaxAge         Max oracle price age for a debt increase or withdrawal (seconds).
@@ -129,22 +135,32 @@ interface IEUSDLiquidityManager {
         bool staked;
     }
 
-    /// @notice Arguments of {reposition}.
-    /// @param poolId    Pool id.
-    /// @param tickLower Lower tick of the new range.
-    /// @param tickUpper Upper tick of the new range.
-    /// @param assetMax  Most of the vault's idle asset to put into the new range (asset units).
-    /// @param eusdMax   Most eUSD to put into the new range, from the vault first, then minted (18 decimals).
-    /// @param assetMin  Least asset the old range must return (asset units).
-    /// @param eusdMin   Least eUSD the old range must return (18 decimals).
-    struct RepositionParams {
+    /// @notice Arguments of {rebalance}.
+    /// @param poolId      Pool id.
+    /// @param owner       Position owner.
+    /// @param assetMin    Least asset the old range must return (asset units).
+    /// @param eusdMin     Least eUSD the old range must return (18 decimals).
+    /// @param swapAmount  Amount the vault sells between removing and adding (0 = no swap).
+    /// @param assetToEusd Whether the swap sells asset for eUSD (else eUSD for asset).
+    /// @param route       DEX-specific swap route; empty swaps in the position's own pool.
+    /// @param tickLower   Lower tick of the new range.
+    /// @param tickUpper   Upper tick of the new range.
+    /// @param assetMax    Most of the vault's idle asset to put into the new range (asset units).
+    /// @param eusdMax     Most eUSD to put into the new range, from the vault first, then minted (18 decimals).
+    /// @param staked      Whether the position is staked from now on, its new range included.
+    struct RebalanceParams {
         uint256 poolId;
+        address owner;
+        uint256 assetMin;
+        uint256 eusdMin;
+        uint256 swapAmount;
+        bool assetToEusd;
+        bytes route;
         int24 tickLower;
         int24 tickUpper;
         uint256 assetMax;
         uint256 eusdMax;
-        uint256 assetMin;
-        uint256 eusdMin;
+        bool staked;
     }
 
     // ──────────────────────────────────────────────────────────
@@ -268,6 +284,22 @@ interface IEUSDLiquidityManager {
     /// @param staked New staked state.
     event StakedSet(uint256 indexed poolId, address indexed owner, bool staked);
 
+    /// @notice Emitted when a position is rebalanced.
+    /// @param poolId      Pool id.
+    /// @param owner       Position owner.
+    /// @param caller      The owner or the delegate.
+    /// @param assetToEusd Whether the swap sold asset for eUSD (else eUSD for asset).
+    /// @param swapIn      Amount sold (0 when no swap).
+    /// @param swapOut     Amount bought (0 when no swap).
+    event Rebalanced(
+        uint256 indexed poolId,
+        address indexed owner,
+        address indexed caller,
+        bool assetToEusd,
+        uint256 swapIn,
+        uint256 swapOut
+    );
+
     /// @notice Emitted when stability fees accrue on a position (minted to the treasury).
     /// @param poolId Pool id.
     /// @param owner  Position owner.
@@ -343,6 +375,9 @@ interface IEUSDLiquidityManager {
 
     /// @notice Thrown when the caller lacks the registry ADMIN role.
     error OnlyAdmin();
+
+    /// @notice Thrown when a position is managed by neither its owner nor its delegate.
+    error OnlyOwnerOrDelegate();
 
     /// @notice Thrown when the caller lacks the registry OPERATOR role.
     error OnlyOperator();
@@ -467,14 +502,17 @@ interface IEUSDLiquidityManager {
     /// @param eusdMin   Least eUSD to receive (18 decimals).
     function removeLiquidity(uint256 poolId, uint128 liquidity, uint256 assetMin, uint256 eusdMin) external;
 
-    /// @notice Move the caller's liquidity to a new range: remove it all, then add up to
-    ///         `assetMax` asset and `eusdMax` eUSD to the new range, using the vault's eUSD first and
-    ///         minting the rest. The debt moves by the difference. The pool must be enabled and
-    ///         within the price band, and the health rule applies.
-    /// @param params See {RepositionParams}.
+    /// @notice Rebalance a position, as its owner or its vault's delegate: remove all liquidity,
+    ///         optionally swap `swapAmount` of the vault's asset for eUSD or back, set the staked
+    ///         mode, then add up to `assetMax` asset and `eusdMax` eUSD to the new range, using the
+    ///         vault's eUSD first and minting the rest. eUSD left over is burned against the debt.
+    ///         The swap needs a fresh price and returns at least its oracle value less
+    ///         `poolPriceBandBps`. The pool must be enabled and within the price band, and the
+    ///         health rule applies.
+    /// @param params See {RebalanceParams}.
     /// @return liquidity Liquidity in the new range.
-    function reposition(
-        RepositionParams calldata params
+    function rebalance(
+        RebalanceParams calldata params
     ) external returns (uint128 liquidity);
 
     /// @notice Stake or unstake the caller's liquidity. Staked liquidity earns DEX emissions and

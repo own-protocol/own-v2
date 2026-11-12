@@ -70,6 +70,11 @@ misc/          MoneyFeeCollector: standalone, not part of the eUSD core (tests i
   eUSD, and the liquidator pays the rest for asset at a bonus. A full one returns what is left to
   the owner.
   No redemptions against LP positions.
+- The owner can name a delegate on the vault. The owner or the delegate can `rebalance` (remove the
+  range, optionally swap asset and eUSD inside the vault at no worse than the oracle price less the
+  pool band, with a fresh price, then add the new range) and, on Fables vaults, `harvest` FABLES
+  into eUSD, the asset or FABLES, kept in the vault or sent to the owner as the owner sets. A
+  delegate never withdraws, closes or sweeps.
 
 **Oracle**: `ChainlinkOracleVerifier` is Chainlink-primary with a band-limited, signed in-house
 fallback for when a feed is silent (weekends, off-hours). Managers read it as the registry's

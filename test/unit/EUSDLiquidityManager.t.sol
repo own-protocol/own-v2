@@ -63,16 +63,21 @@ contract EUSDLiquidityManagerTest is LiquidityManagerSetup {
         uint256 high,
         uint256 assetMax,
         uint256 eusdMax
-    ) internal pure returns (IEUSDLiquidityManager.RepositionParams memory) {
+    ) internal view returns (IEUSDLiquidityManager.RebalanceParams memory) {
         (int24 lower, int24 upper) = spyRange(low, high);
-        return IEUSDLiquidityManager.RepositionParams({
+        return IEUSDLiquidityManager.RebalanceParams({
             poolId: SPY_POOL,
+            owner: alice,
+            assetMin: 0,
+            eusdMin: 0,
+            swapAmount: 0,
+            assetToEusd: false,
+            route: "",
             tickLower: lower,
             tickUpper: upper,
             assetMax: assetMax,
             eusdMax: eusdMax,
-            assetMin: 0,
-            eusdMin: 0
+            staked: true
         });
     }
 
@@ -644,14 +649,14 @@ contract EUSDLiquidityManagerTest is LiquidityManagerSetup {
     }
 
     // ──────────────────────────────────────────────────────────
-    //  reposition
+    //  rebalance
     // ──────────────────────────────────────────────────────────
 
-    function test_reposition_movesRangeAndDebt() public {
+    function test_rebalance_movesRangeAndDebt() public {
         openSpy(alice, 10e18, 3500e18);
         uint256 debtBefore = _debt(SPY_POOL, alice);
         vm.prank(alice);
-        uint128 liquidity = manager.reposition(_repoParams(650e18, 750e18, 3e18, 2000e18));
+        uint128 liquidity = manager.rebalance(_repoParams(650e18, 750e18, 3e18, 2000e18));
         (int24 lower, int24 upper, uint128 held) = _vault(SPY_POOL, alice).range();
         (int24 eLower, int24 eUpper) = spyRange(650e18, 750e18);
         assertEq(lower, eLower);
@@ -663,47 +668,259 @@ contract EUSDLiquidityManagerTest is LiquidityManagerSetup {
         _assertSupplyMatchesDebt();
     }
 
-    function test_reposition_canIncreaseDebt() public {
+    function test_rebalance_canIncreaseDebt() public {
         openSpy(alice, 20e18, 3500e18);
         uint256 debtBefore = _debt(SPY_POOL, alice);
         vm.prank(alice);
-        manager.reposition(_repoParams(595e18, 805e18, 10e18, 5000e18));
+        manager.rebalance(_repoParams(595e18, 805e18, 10e18, 5000e18));
         assertGt(_debt(SPY_POOL, alice), debtBefore);
         assertGe(manager.collateralRatioBps(SPY_POOL, alice), MCR);
         _assertSupplyMatchesDebt();
     }
 
-    function test_reposition_increaseBelowMcr_reverts() public {
+    function test_rebalance_increaseBelowMcr_reverts() public {
         openSpy(alice, 10e18, 3500e18);
         vm.expectRevert();
         vm.prank(alice);
-        manager.reposition(_repoParams(595e18, 805e18, 10e18, 8000e18));
+        manager.rebalance(_repoParams(595e18, 805e18, 10e18, 8000e18));
     }
 
-    function test_reposition_belowMcrMayNotWorsen() public {
+    function test_rebalance_belowMcrMayNotWorsen() public {
         openSpy(alice, 10e18, 3500e18);
         moveSpy(420e18);
         uint256 ratio = manager.collateralRatioBps(SPY_POOL, alice);
         assertLt(ratio, MCR);
         // Below MCR a move is allowed when it takes no new debt and the ratio does not fall.
         vm.prank(alice);
-        manager.reposition(_repoParams(450e18, 600e18, 9e18, 0));
+        manager.rebalance(_repoParams(450e18, 600e18, 9e18, 0));
         assertGe(manager.collateralRatioBps(SPY_POOL, alice), ratio);
         assertEq(_debt(SPY_POOL, alice) <= 3500e18, true);
     }
 
-    function test_reposition_outOfBand_reverts() public {
+    function test_rebalance_outOfBand_reverts() public {
         openSpy(alice, 10e18, 3500e18);
         ledger.setPrice(spyKey, address(spy), 650e18);
         vm.expectRevert();
         vm.prank(alice);
-        manager.reposition(_repoParams(600e18, 700e18, 1e18, 0));
+        manager.rebalance(_repoParams(600e18, 700e18, 1e18, 0));
     }
 
-    function test_reposition_noVault_reverts() public {
+    function test_rebalance_noVault_reverts() public {
+        IEUSDLiquidityManager.RebalanceParams memory params = _repoParams(600e18, 700e18, 1e18, 0);
+        params.owner = bob;
         vm.expectRevert(abi.encodeWithSelector(IEUSDLiquidityManager.NoVault.selector, SPY_POOL, bob));
         vm.prank(bob);
-        manager.reposition(_repoParams(600e18, 700e18, 1e18, 0));
+        manager.rebalance(params);
+    }
+
+    function _swapParams(
+        uint256 low,
+        uint256 high,
+        uint256 swapAmount,
+        bool assetToEusd,
+        uint256 assetMax,
+        uint256 eusdMax
+    ) internal view returns (IEUSDLiquidityManager.RebalanceParams memory params) {
+        params = _repoParams(low, high, assetMax, eusdMax);
+        params.swapAmount = swapAmount;
+        params.assetToEusd = assetToEusd;
+    }
+
+    function _delegate(
+        address to
+    ) internal {
+        FablesAdapter v = _vault(SPY_POOL, alice);
+        vm.prank(alice);
+        v.setDelegate(to);
+    }
+
+    function test_rebalance_byDelegate_actsForOwner() public {
+        openSpy(alice, 20e18, 3500e18);
+        _delegate(keeper);
+        IEUSDLiquidityManager.RebalanceParams memory params = _repoParams(595e18, 805e18, 10e18, 5000e18);
+        uint256 debtBefore = _debt(SPY_POOL, alice);
+        vm.expectEmit(true, true, true, true, address(manager));
+        emit IEUSDLiquidityManager.Rebalanced(SPY_POOL, alice, keeper, false, 0, 0);
+        vm.prank(keeper);
+        manager.rebalance(params);
+        assertGt(_debt(SPY_POOL, alice), debtBefore, "delegate can take the owner's debt up to MCR");
+        assertGe(manager.collateralRatioBps(SPY_POOL, alice), MCR);
+        assertEq(manager.getPosition(SPY_POOL, keeper).vault, address(0), "nothing opened for the delegate");
+        assertEq(eusd.balanceOf(keeper), 0);
+        _assertSupplyMatchesDebt();
+    }
+
+    function test_rebalance_byDelegate_mintEventNamesOwner() public {
+        openSpy(alice, 20e18, 3500e18);
+        _delegate(keeper);
+        IEUSDLiquidityManager.RebalanceParams memory params = _repoParams(595e18, 805e18, 10e18, 5000e18);
+        vm.recordLogs();
+        vm.prank(keeper);
+        manager.rebalance(params);
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        bool seen;
+        for (uint256 i; i < logs.length; ++i) {
+            if (logs[i].topics[0] == IEUSDLiquidityManager.EUSDMinted.selector) {
+                assertEq(address(uint160(uint256(logs[i].topics[2]))), alice);
+                seen = true;
+            }
+        }
+        assertTrue(seen);
+    }
+
+    function test_rebalance_stranger_reverts() public {
+        openSpy(alice, 10e18, 3500e18);
+        IEUSDLiquidityManager.RebalanceParams memory params = _repoParams(650e18, 750e18, 3e18, 2000e18);
+        vm.expectRevert(IEUSDLiquidityManager.OnlyOwnerOrDelegate.selector);
+        vm.prank(attacker);
+        manager.rebalance(params);
+    }
+
+    function test_rebalance_clearedDelegate_reverts() public {
+        openSpy(alice, 10e18, 3500e18);
+        _delegate(keeper);
+        _delegate(address(0));
+        IEUSDLiquidityManager.RebalanceParams memory params = _repoParams(650e18, 750e18, 3e18, 2000e18);
+        vm.expectRevert(IEUSDLiquidityManager.OnlyOwnerOrDelegate.selector);
+        vm.prank(keeper);
+        manager.rebalance(params);
+    }
+
+    function test_rebalance_delegateCannotExit() public {
+        openSpy(alice, 10e18, 3500e18);
+        _delegate(keeper);
+        // Every other position call acts on the caller's own position.
+        vm.startPrank(keeper);
+        vm.expectRevert(abi.encodeWithSelector(IEUSDLiquidityManager.NoVault.selector, SPY_POOL, keeper));
+        manager.withdraw(SPY_POOL, 1);
+        vm.expectRevert(abi.encodeWithSelector(IEUSDLiquidityManager.NoVault.selector, SPY_POOL, keeper));
+        manager.close(SPY_POOL, 0, 0);
+        vm.expectRevert(abi.encodeWithSelector(IEUSDLiquidityManager.NoVault.selector, SPY_POOL, keeper));
+        manager.removeLiquidity(SPY_POOL, 1, 0, 0);
+        vm.stopPrank();
+    }
+
+    function test_rebalance_swapAssetToEusd_repaysDebt() public {
+        openSpy(alice, 10e18, 3500e18);
+        giveEusd(address(ledger), 1_000_000e18);
+        _delegate(keeper);
+        uint256 debtBefore = _debt(SPY_POOL, alice);
+        uint256 ratioBefore = manager.collateralRatioBps(SPY_POOL, alice);
+        IEUSDLiquidityManager.RebalanceParams memory params = _swapParams(595e18, 805e18, 1e18, true, 4e18, 2800e18);
+        vm.prank(keeper);
+        manager.rebalance(params);
+        assertLt(_debt(SPY_POOL, alice), debtBefore - 690e18, "swap proceeds burned against the debt");
+        assertGt(manager.collateralRatioBps(SPY_POOL, alice), ratioBefore);
+        assertEq(eusd.balanceOf(address(_vault(SPY_POOL, alice))), 0);
+    }
+
+    function test_rebalance_belowMcrOutOfRange_swapRestoresRatio() public {
+        openSpy(alice, 10e18, 3500e18);
+        giveEusd(address(ledger), 1_000_000e18);
+        _delegate(keeper);
+        moveSpy(420e18);
+        uint256 ratioBefore = manager.collateralRatioBps(SPY_POOL, alice);
+        assertLt(ratioBefore, MCR, "below MCR, range all asset");
+        // Minting paused too: a rebalance that only lowers debt still works.
+        vm.prank(operator);
+        manager.setMintPaused(true);
+
+        IEUSDLiquidityManager.RebalanceParams memory params = _swapParams(380e18, 460e18, 3e18, true, 9e18, 1200e18);
+        vm.prank(keeper);
+        manager.rebalance(params);
+        assertGt(manager.collateralRatioBps(SPY_POOL, alice), ratioBefore, "ratio rises");
+        assertLt(_debt(SPY_POOL, alice), 3500e18);
+        assertGt(_liquidity(SPY_POOL, alice), 0, "back in range");
+    }
+
+    function test_rebalance_bearMode_noDebtLiquidity() public {
+        openSpy(alice, 10e18, 3500e18);
+        giveEusd(address(ledger), 1_000_000e18);
+        uint256 aliceEusd = eusd.balanceOf(alice);
+        // Sell enough asset to clear the debt, then provide liquidity with no debt.
+        IEUSDLiquidityManager.RebalanceParams memory params = _swapParams(595e18, 805e18, 8e18, true, 7e18, 4900e18);
+        vm.prank(alice);
+        manager.rebalance(params);
+        assertEq(_debt(SPY_POOL, alice), 0);
+        assertGt(_liquidity(SPY_POOL, alice), 0);
+        assertGt(eusd.balanceOf(alice), aliceEusd, "eUSD beyond the debt goes to the owner");
+    }
+
+    function test_rebalance_swapEusdToAsset() public {
+        openSpy(alice, 10e18, 3500e18);
+        FablesAdapter v = _vault(SPY_POOL, alice);
+        uint256 spyBefore = spy.balanceOf(address(v));
+        IEUSDLiquidityManager.RebalanceParams memory params = _swapParams(595e18, 805e18, 700e18, false, 0, 0);
+        params.assetMax = spyBefore;
+        params.eusdMax = 2800e18;
+        vm.expectEmit(true, true, true, false, address(manager));
+        emit IEUSDLiquidityManager.Rebalanced(SPY_POOL, alice, alice, false, 700e18, 0);
+        vm.prank(alice);
+        manager.rebalance(params);
+        assertGt(spy.balanceOf(address(v)), 0, "bought asset beyond assetMax stays idle");
+        assertGe(manager.collateralRatioBps(SPY_POOL, alice), MCR);
+    }
+
+    function test_rebalance_swapBeyondBand_reverts() public {
+        openSpy(alice, 10e18, 3500e18);
+        giveEusd(address(ledger), 1_000_000e18);
+        ledger.setSwapFeeBps(BAND + 1);
+        IEUSDLiquidityManager.RebalanceParams memory params = _swapParams(595e18, 805e18, 1e18, true, 4e18, 2800e18);
+        vm.expectPartialRevert(ILiquidityVault.InsufficientOutput.selector);
+        vm.prank(alice);
+        manager.rebalance(params);
+    }
+
+    function test_rebalance_swapAtBand_succeeds() public {
+        openSpy(alice, 10e18, 3500e18);
+        giveEusd(address(ledger), 1_000_000e18);
+        ledger.setSwapFeeBps(BAND - 1);
+        IEUSDLiquidityManager.RebalanceParams memory params = _swapParams(595e18, 805e18, 1e18, true, 4e18, 2800e18);
+        vm.prank(alice);
+        manager.rebalance(params);
+    }
+
+    function test_rebalance_swapStalePrice_reverts() public {
+        openSpy(alice, 10e18, 3500e18);
+        giveEusd(address(ledger), 1_000_000e18);
+        oracle.setPrice(SPY, SPY_PRICE, block.timestamp);
+        vm.warp(block.timestamp + PRICE_MAX_AGE + 1);
+        IEUSDLiquidityManager.RebalanceParams memory params = _swapParams(595e18, 805e18, 1e18, true, 4e18, 2800e18);
+        vm.expectPartialRevert(IEUSDLiquidityManager.StaleMintPrice.selector);
+        vm.prank(alice);
+        manager.rebalance(params);
+
+        // Without a swap or new debt, a stale price is fine.
+        params.swapAmount = 0;
+        params.assetMax = 3e18;
+        params.eusdMax = 2000e18;
+        vm.prank(alice);
+        manager.rebalance(params);
+    }
+
+    function test_rebalance_setsStakedForOwner() public {
+        openSpy(alice, 10e18, 3500e18);
+        _delegate(keeper);
+        IEUSDLiquidityManager.RebalanceParams memory params = _repoParams(650e18, 750e18, 3e18, 2000e18);
+        params.staked = false;
+        vm.expectEmit(address(manager));
+        emit IEUSDLiquidityManager.StakedSet(SPY_POOL, alice, false);
+        vm.prank(keeper);
+        manager.rebalance(params);
+        assertFalse(manager.getPosition(SPY_POOL, alice).staked);
+        (int24 lower, int24 upper, uint128 held) = _vault(SPY_POOL, alice).range();
+        assertEq(ledger.stakedOf(address(_vault(SPY_POOL, alice)), ledger.rangeId(spyKey, lower, upper)), 0);
+        assertGt(held, 0);
+    }
+
+    function test_rebalance_disabledPool_reverts() public {
+        openSpy(alice, 10e18, 3500e18);
+        vm.prank(admin);
+        manager.setPoolEnabled(SPY_POOL, false);
+        IEUSDLiquidityManager.RebalanceParams memory params = _repoParams(650e18, 750e18, 3e18, 2000e18);
+        vm.expectRevert(abi.encodeWithSelector(IEUSDLiquidityManager.PoolDisabled.selector, SPY_POOL));
+        vm.prank(alice);
+        manager.rebalance(params);
     }
 
     // ──────────────────────────────────────────────────────────
