@@ -47,8 +47,9 @@ contract EUSDLiquidityManagerRobinhoodFork is Test {
     address internal constant POOL_MANAGER = 0x8366a39CC670B4001A1121B8F6A443A643e40951;
     address internal constant EMISSION_STREAM = 0x4aA54fA62bC8f6052fB4D3494A3fA79741Bda14c;
     address internal constant FABLES_RAMP = 0x08E52564Bad99E05a694b4809F397edcA417A080;
+    address internal constant FABLES_POOL_REGISTRY = 0x159A113E012593D9B3cC63ad45E30F0467e13Ef3;
     /// @dev Hook of the Fables SPY/USDG pool, a different hook from the eUSD pools.
-    address internal constant FABLES_RWA = 0xA0E8fBFf13E24Af2b5e61A72800E08a161bDe080;
+    address internal constant SPY_USDG_HOOK = 0xA0E8fBFf13E24Af2b5e61A72800E08a161bDe080;
     address internal constant SPY = 0x117cc2133c37B721F49dE2A7a74833232B3B4C0C;
     address internal constant USDG = 0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168;
     address internal constant FABLES = 0xb63d07CEf74bE747231d601bb2FAa6B252c68106;
@@ -116,7 +117,7 @@ contract EUSDLiquidityManagerRobinhoodFork is Test {
         vm.prank(GOV_SAFE);
         IAccessControl(EUSD).grantRole(minterRole, address(manager));
 
-        FablesAdapter impl = new FablesAdapter(POOL_MANAGER, EMISSION_STREAM, FABLES_RWA);
+        FablesAdapter impl = new FablesAdapter(POOL_MANAGER, EMISSION_STREAM, FABLES_POOL_REGISTRY);
         beacon = new UpgradeableBeacon(address(impl), admin);
         vm.startPrank(admin);
         manager.addPool(address(beacon), SPY, SPY_TICKER, abi.encode(spyKey));
@@ -212,12 +213,12 @@ contract EUSDLiquidityManagerRobinhoodFork is Test {
         return abi.encode(hops);
     }
 
-    /// @dev eUSD/USDG then USDG/SPY (the Fables SPY/USDG pool, on the route hook).
+    /// @dev eUSD/USDG then USDG/SPY (the Fables SPY/USDG pool, on another hook).
     function _viaUsdgRoute(
         bool assetToEusd
     ) internal view returns (bytes memory) {
         PoolKey memory spyUsdg =
-            PoolKey({currency0: SPY, currency1: USDG, fee: 0x800000, tickSpacing: 10, hooks: FABLES_RWA});
+            PoolKey({currency0: SPY, currency1: USDG, fee: 0x800000, tickSpacing: 10, hooks: SPY_USDG_HOOK});
         PoolKey[] memory hops = new PoolKey[](2);
         PoolKey memory eusdUsdg = usdKey;
         (hops[0], hops[1]) = assetToEusd ? (spyUsdg, eusdUsdg) : (eusdUsdg, spyUsdg);

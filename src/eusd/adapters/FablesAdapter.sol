@@ -6,6 +6,7 @@ import {
     IExtsload,
     IFablesEmissionStream,
     IFablesLedger,
+    IFablesPoolRegistry,
     IPoolManagerSwap,
     PoolKey,
     SwapParams
@@ -25,7 +26,7 @@ import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 ///         earn FABLES from the emission stream; unstaked shares earn swap fees, claimable by the
 ///         owner. FABLES are claimed to the owner, or harvested by the owner or the delegate into
 ///         eUSD, the asset or FABLES, kept in the vault or sent to the owner as the owner sets.
-///         Swaps run on the PoolManager through pools with the vault pool's hook or the route hook.
+///         Swaps run on the PoolManager through the vault's hook pools or pools in the Fables registry.
 /// @dev Each vault is a BeaconProxy; this is the implementation behind the Fables beacon. The
 ///      PoolManager and emission stream are DEX-wide, so they are immutables of the
 ///      implementation; the pool key is per vault. Native-currency pools are not supported.
@@ -101,8 +102,8 @@ contract FablesAdapter is ILiquidityVault, Initializable, ReentrancyGuard {
     /// @notice Fables emission stream that pays FABLES to staked liquidity.
     IFablesEmissionStream public immutable emissionStream;
 
-    /// @notice A second hook whose pools swap routes may use besides the vault pool's (zero: none).
-    address public immutable routeHook;
+    /// @notice Fables pool registry; swap routes may use any pool registered in it (zero: none).
+    IFablesPoolRegistry public immutable poolRegistry;
 
     // ──────────────────────────────────────────────────────────
     //  State
@@ -179,12 +180,12 @@ contract FablesAdapter is ILiquidityVault, Initializable, ReentrancyGuard {
     /// @notice Deploy the implementation. Locks its initializers; it is only used behind beacon proxies.
     /// @param poolManager_    Uniswap v4 PoolManager.
     /// @param emissionStream_ Fables emission stream.
-    /// @param routeHook_      Second hook allowed in swap routes, or zero.
-    constructor(address poolManager_, address emissionStream_, address routeHook_) {
+    /// @param poolRegistry_   Fables pool registry, or zero to route only through the vault's hook.
+    constructor(address poolManager_, address emissionStream_, address poolRegistry_) {
         if (poolManager_ == address(0) || emissionStream_ == address(0)) revert InvalidPool();
         poolManager = IExtsload(poolManager_);
         emissionStream = IFablesEmissionStream(emissionStream_);
-        routeHook = routeHook_;
+        poolRegistry = IFablesPoolRegistry(poolRegistry_);
         _disableInitializers();
     }
 
@@ -384,15 +385,6 @@ contract FablesAdapter is ILiquidityVault, Initializable, ReentrancyGuard {
         _sweep(token);
     }
 
-    /// @notice Claim the vault's FABLES from the emission stream and send them to the owner.
-    /// @dev The stream pays a LIQUID claim to the account `uint160(vault)`.
-    /// @param cumulative Total FABLES the vault has ever earned, per the posted root.
-    /// @param proof      Merkle proof of the vault's leaf.
-    function claimEmissions(uint256 cumulative, bytes32[] calldata proof) external onlyOwner nonReentrant {
-        emissionStream.claim(KIND_LIQUID, uint256(uint160(address(this))), cumulative, proof);
-        _sweep(emissionStream.ff());
-    }
-
     /// @notice Send the vault's accrued swap fees for a range (the open one or a past one) to the owner.
     /// @param tickLower Lower tick of the range.
     /// @param tickUpper Upper tick of the range.
@@ -462,7 +454,7 @@ contract FablesAdapter is ILiquidityVault, Initializable, ReentrancyGuard {
 
     /// @dev Swap `amountIn` of `tokenIn` for `tokenOut`, exact input, through `route` (abi-encoded
     ///      `PoolKey[]`, or empty for the vault's own pool). Every hop must be a pool behind the
-    ///      vault pool's hook or {routeHook}, and the hops must chain from `tokenIn` to `tokenOut`.
+    ///      vault pool's hook or registered in {poolRegistry}, and the hops must chain from `tokenIn` to `tokenOut`.
     /// @param tokenIn  Token sold.
     /// @param tokenOut Token bought.
     /// @param amountIn Amount sold.
@@ -486,7 +478,7 @@ contract FablesAdapter is ILiquidityVault, Initializable, ReentrancyGuard {
         address token = tokenIn;
         for (uint256 i; i < hops.length; ++i) {
             PoolKey memory hop = hops[i];
-            if (hop.hooks != hook && (hop.hooks != routeHook || hop.hooks == address(0))) revert InvalidRoute();
+            if (hop.hooks != hook && !_registered(hop)) revert InvalidRoute();
             if (token == hop.currency0) token = hop.currency1;
             else if (token == hop.currency1) token = hop.currency0;
             else revert InvalidRoute();
@@ -497,6 +489,13 @@ contract FablesAdapter is ILiquidityVault, Initializable, ReentrancyGuard {
         IPoolManagerSwap(address(poolManager)).unlock(abi.encode(tokenIn, amountIn, hops));
         amountOut = IERC20(tokenOut).balanceOf(address(this)) - before;
         emit Swapped(tokenIn, tokenOut, amountIn, amountOut);
+    }
+
+    /// @dev Whether `key` is a pool in the Fables registry.
+    function _registered(
+        PoolKey memory key
+    ) private view returns (bool) {
+        return address(poolRegistry) != address(0) && poolRegistry.isRegistered(keccak256(abi.encode(key)));
     }
 
     /// @dev Sell exactly `amount` of `token` in one pool during an unlock.

@@ -9,6 +9,17 @@ import {MockERC20} from "../helpers/MockERC20.sol";
 import {MockFablesLedger} from "../helpers/MockFables.sol";
 import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
 
+/// @dev Stand-in for the Fables pool registry.
+contract MockPoolRegistry {
+    mapping(bytes32 => bool) public isRegistered;
+
+    function register(
+        PoolKey memory key
+    ) external {
+        isRegistered[keccak256(abi.encode(key))] = true;
+    }
+}
+
 /// @dev Upgrade target with one extra view, used to prove the beacon upgraded every vault.
 contract FablesAdapterV2 is FablesAdapter {
     constructor(
@@ -125,8 +136,6 @@ contract FablesAdapterTest is LiquidityManagerSetup {
         vm.expectRevert(ILiquidityVault.OnlyOwner.selector);
         vault.sweep(ff);
         vm.expectRevert(ILiquidityVault.OnlyOwner.selector);
-        vault.claimEmissions(1, proof);
-        vm.expectRevert(ILiquidityVault.OnlyOwner.selector);
         vault.claimFees(0, 10, 0);
         vm.expectRevert(ILiquidityVault.OnlyOwner.selector);
         vault.setDelegate(attacker);
@@ -144,8 +153,6 @@ contract FablesAdapterTest is LiquidityManagerSetup {
         vm.expectRevert(ILiquidityVault.OnlyOwner.selector);
         vault.sweep(ff);
         vm.expectRevert(ILiquidityVault.OnlyOwner.selector);
-        vault.claimEmissions(1, proof);
-        vm.expectRevert(ILiquidityVault.OnlyOwner.selector);
         vault.setDelegate(keeper);
         vm.expectRevert(ILiquidityVault.OnlyOwner.selector);
         vault.setHarvestConfig(FablesAdapter.HarvestOut.Fables, true);
@@ -157,14 +164,6 @@ contract FablesAdapterTest is LiquidityManagerSetup {
     // ──────────────────────────────────────────────────────────
     //  Owner
     // ──────────────────────────────────────────────────────────
-
-    function test_claimEmissions_forwardsToOwner() public {
-        bytes32[] memory proof;
-        vm.prank(alice);
-        vault.claimEmissions(123e18, proof);
-        assertEq(stream.ff().balanceOf(alice), 123e18);
-        assertEq(stream.ff().balanceOf(address(vault)), 0);
-    }
 
     function test_permissionlessStreamClaim_thenSweep() public {
         bytes32[] memory proof;
@@ -463,24 +462,31 @@ contract FablesAdapterTest is LiquidityManagerSetup {
         assertEq(ff.balanceOf(address(v)), 10e18, "collateral stays");
     }
 
-    function test_harvest_throughRouteHookPool() public {
-        address routeHook = makeAddr("routeHook");
-        FablesAdapter impl = new FablesAdapter(address(ledger), address(stream), routeHook);
+    function test_harvest_throughRegisteredPool() public {
+        MockPoolRegistry registry = new MockPoolRegistry();
+        FablesAdapter impl = new FablesAdapter(address(ledger), address(stream), address(registry));
         vm.prank(admin);
         beacon.upgradeTo(address(impl));
-        assertEq(vault.routeHook(), routeHook);
+        assertEq(address(vault.poolRegistry()), address(registry));
 
-        // FABLES -> eUSD on the vault hook, then eUSD -> USDG -> eUSD with the middle pool on the route hook.
+        // FABLES -> eUSD on the vault hook, then eUSD -> USDG -> eUSD through a pool on another hook.
         PoolKey memory other = usdKey;
-        other.hooks = routeHook;
+        other.hooks = makeAddr("otherHook");
         ledger.setPrice(other, address(usdg), 1e18);
         PoolKey[] memory hops = new PoolKey[](3);
         (hops[0], hops[1], hops[2]) = (_fablesKey(address(eusd)), other, usdKey);
         giveEusd(address(ledger), 1_000_000e18);
         usdg.mint(address(ledger), 1_000_000e6);
         bytes32[] memory proof = _proof();
+        bytes memory route = abi.encode(hops);
+
+        vm.expectRevert(ILiquidityVault.InvalidRoute.selector);
         vm.prank(alice);
-        uint256 out = vault.harvest(100e18, proof, abi.encode(hops), 1);
+        vault.harvest(100e18, proof, route, 1);
+
+        registry.register(other);
+        vm.prank(alice);
+        uint256 out = vault.harvest(100e18, proof, route, 1);
         assertApproxEqRel(out, 50e18, 1e15);
         assertEq(eusd.balanceOf(address(vault)), out);
     }

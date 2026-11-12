@@ -112,6 +112,16 @@ interface IFablesEmissionStream {
     function ff() external view returns (address);
 }
 
+/// @title IFablesPoolRegistry — Fables' public index of its pools
+interface IFablesPoolRegistry {
+    /// @notice Whether a pool id was ever registered.
+    /// @param id The v4 pool id (keccak256 of the abi-encoded PoolKey).
+    /// @return Whether it is registered.
+    function isRegistered(
+        bytes32 id
+    ) external view returns (bool);
+}
+
 /// @title IExtsload — Uniswap v4 PoolManager raw storage reads
 interface IExtsload {
     /// @notice Read one storage slot of the PoolManager.

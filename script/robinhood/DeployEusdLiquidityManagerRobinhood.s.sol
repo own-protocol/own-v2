@@ -23,7 +23,7 @@ import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 ///         poolData is `abi.encode(poolKey)` for Fables and `abi.encode(pool)` for Aero.
 ///
 /// Env: DEPLOYER_PRIVATE_KEY_ROBINHOOD, PROTOCOL_REGISTRY_ROBINHOOD, EUSD_ROBINHOOD, GOV_SAFE_ROBINHOOD,
-///      FABLES_POOL_MANAGER, FABLES_EMISSION_STREAM, AERO_POSITION_MANAGER, AERO_CL_FACTORY,
+///      FABLES_POOL_MANAGER, FABLES_EMISSION_STREAM, FABLES_POOL_REGISTRY, AERO_POSITION_MANAGER, AERO_CL_FACTORY,
 ///      EUSD_LIQ_MANAGER_IMPL (optional), FABLES_VAULT_BEACON (optional), AERO_VAULT_BEACON (optional), MCR_BPS, LIQ_THRESHOLD_BPS, LIQ_BONUS_BPS, STAKED_FEE_BPS,
 ///      UNSTAKED_FEE_BPS, POOL_PRICE_BAND_BPS, DEBT_CEILING (18 dec), MIN_DEBT (18 dec),
 ///      MINT_PRICE_MAX_AGE (seconds), REDEEM_MIN_ASSET_SHARE_BPS (0 = off), REDEEM_FEE_BPS
@@ -47,7 +47,7 @@ contract DeployEusdLiquidityManagerRobinhood is Script {
                 new FablesAdapter(
                     vm.envAddress("FABLES_POOL_MANAGER"),
                     vm.envAddress("FABLES_EMISSION_STREAM"),
-                    vm.envOr("FABLES_ROUTE_HOOK", address(0))
+                    vm.envOr("FABLES_POOL_REGISTRY", address(0))
                 )
             );
             beacon = address(new UpgradeableBeacon(vaultImpl, vm.envAddress("GOV_SAFE_ROBINHOOD")));
