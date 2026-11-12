@@ -512,8 +512,9 @@ interface IEUSDLiquidityManager {
     ///         The swap needs a fresh price and returns at least its oracle value less
     ///         `poolPriceBandBps` and at least `swapMinOut`. The pool must be enabled and within the
     ///         price band both before and after the swap, and the health rule applies. A delegate
-    ///         call's equity loss at the oracle price (eUSD paid to the owner counts as kept) is
-    ///         charged to the vault's delegate loss budget.
+    ///         call's equity loss at the oracle price, measured from the vault once the old range is
+    ///         removed (eUSD paid to the owner counts as kept), is charged to the vault's delegate
+    ///         loss budget.
     /// @param params See {RebalanceParams}.
     /// @return liquidity Liquidity in the new range.
     function rebalance(

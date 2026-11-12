@@ -624,6 +624,40 @@ contract AerodromeAdapterTest is LiquidityManagerSetup {
         v.chargeDelegateLoss(1000e18, 1000e18 - 1);
     }
 
+    function test_rebalance_delegateLossCountsCollectedFees() public {
+        _open(alice, 10e18, 3500e18, false);
+        AerodromeAdapter v = _vaultOf(alice);
+        vm.prank(alice);
+        v.setDelegate(keeper, 0);
+        // Unclaimed swap fees sit on the NFT; removing the range collects them into the vault.
+        (bool assetIsZero) = address(spy) < address(eusd);
+        (uint256 f0, uint256 f1) = assetIsZero ? (uint256(0), uint256(50e18)) : (uint256(50e18), uint256(0));
+        npm.setFeesOwed(v.tokenId(), f0, f1);
+        giveEusd(address(npm), 50e18);
+        // Pool 2% above the oracle: eUSD put into a range between the two buys asset above the
+        // oracle price, a loss at the oracle price.
+        spyPool.setPrice(address(spy), SPY_PRICE * 102 / 100);
+        (int24 lower, int24 upper) = spyRange(702e18, 712e18);
+        IEUSDLiquidityManager.RebalanceParams memory params = IEUSDLiquidityManager.RebalanceParams({
+            poolId: AERO_SPY,
+            owner: alice,
+            assetMin: 0,
+            eusdMin: 0,
+            swapAmount: 0,
+            assetToEusd: false,
+            swapMinOut: 0,
+            route: "",
+            tickLower: lower,
+            tickUpper: upper,
+            assetMax: 0,
+            eusdMax: 1000e18,
+            staked: false
+        });
+        vm.expectPartialRevert(ILiquidityVault.DelegateLossBudgetExceeded.selector);
+        vm.prank(keeper);
+        manager.rebalance(params);
+    }
+
     function test_swap_unsupported() public {
         _open(alice, 10e18, 3500e18, true);
         AerodromeAdapter v = _vaultOf(alice);

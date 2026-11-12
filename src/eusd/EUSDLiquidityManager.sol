@@ -34,7 +34,8 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
     /// @param price       Oracle price (18 decimals).
     /// @param timestamp   Oracle price timestamp.
     /// @param debt        Debt before the change (18 decimals).
-    /// @param value       Position value before the change at `price` (18 decimals).
+    /// @param value       Position value before the change at `price` (18 decimals); for a delegate
+    ///                    rebalance, re-read once the old range is removed.
     /// @param ratioBps    Ratio before the change at `price` (BPS).
     struct HealthSnapshot {
         uint256 price;
@@ -550,6 +551,9 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
         RebalanceParams calldata params
     ) private returns (uint256 swapOut) {
         _removeAll(params.poolId, params.owner, vault, params.assetMin, params.eusdMin);
+        // Removal can bring in value the snapshot does not count (e.g. Aero swap fees), so a
+        // delegate's loss is measured from what the vault holds once the range is out.
+        if (msg.sender != params.owner) before.value = _value(cfg, vault, before.price);
         if (params.swapAmount > 0) swapOut = _swap(cfg, vault, before, params);
         if (p.staked != params.staked) _setStaked(params.poolId, params.owner, p, vault, params.staked);
     }

@@ -79,8 +79,9 @@ misc/          MoneyFeeCollector: standalone, not part of the eUSD core (tests i
   `harvest` FABLES into eUSD, the asset or FABLES, kept in the vault or sent to the owner as the
   owner sets. A delegate never withdraws, closes or sweeps. The owner sets a delegate loss budget
   with the delegate (`setDelegate(delegate, lossBudgetBps)`, app default 1%): each delegate
-  `rebalance` charges its equity loss at the oracle price (value less debt, eUSD paid to the
-  owner counted as kept) to a one-day window on the vault and reverts past the budget. Fables
+  `rebalance` charges its equity loss at the oracle price (value less debt, measured from the
+  vault once the old range is removed, eUSD paid to the owner counted as kept) to a one-day
+  window on the vault and reverts past the budget. Fables
   swap routes take up to 3 hops through pools on the vault pool's hook or in the Fables pool
   registry (adapter immutable `poolRegistry`), e.g. eUSD -> USDG -> SPY.
 

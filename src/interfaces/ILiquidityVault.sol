@@ -193,7 +193,8 @@ interface ILiquidityVault {
     ///         equity adds the loss as a share of `equityBefore` to the window's total, which may
     ///         not pass the budget. A window lasts one day from the first losing call after the
     ///         previous window ended. Gains are not counted.
-    /// @param equityBefore Position equity before the call: value at the oracle price less debt.
+    /// @param equityBefore Position equity once the old range is removed: value at the oracle price
+    ///                     less debt.
     /// @param equityAfter  Position equity after the call at the same price, plus eUSD paid to the owner.
     function chargeDelegateLoss(uint256 equityBefore, uint256 equityAfter) external;
 
