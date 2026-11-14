@@ -1,0 +1,133 @@
+{
+  "storage": [
+    {
+      "label": "registry",
+      "offset": 0,
+      "slot": "0",
+      "type": "t_contract(IProtocolRegistry)"
+    },
+    {
+      "label": "_eusd",
+      "offset": 0,
+      "slot": "1",
+      "type": "t_contract(IEUSD)"
+    },
+    {
+      "label": "totalDebt",
+      "offset": 0,
+      "slot": "2",
+      "type": "t_uint256"
+    },
+    {
+      "label": "_configs",
+      "offset": 0,
+      "slot": "3",
+      "type": "t_mapping(t_address,t_struct(AssetConfig)_storage)"
+    },
+    {
+      "label": "_assets",
+      "offset": 0,
+      "slot": "4",
+      "type": "t_array(t_address)dyn_storage"
+    }
+  ],
+  "types": {
+    "t_address": {
+      "encoding": "inplace",
+      "label": "address",
+      "numberOfBytes": "20"
+    },
+    "t_array(t_address)dyn_storage": {
+      "base": "t_address",
+      "encoding": "dynamic_array",
+      "label": "address[]",
+      "numberOfBytes": "32"
+    },
+    "t_bool": {
+      "encoding": "inplace",
+      "label": "bool",
+      "numberOfBytes": "1"
+    },
+    "t_contract(IEUSD)": {
+      "encoding": "inplace",
+      "label": "contract IEUSD",
+      "numberOfBytes": "20"
+    },
+    "t_contract(IProtocolRegistry)": {
+      "encoding": "inplace",
+      "label": "contract IProtocolRegistry",
+      "numberOfBytes": "20"
+    },
+    "t_mapping(t_address,t_struct(AssetConfig)_storage)": {
+      "encoding": "mapping",
+      "key": "t_address",
+      "label": "mapping(address => struct IEUSDPsm.AssetConfig)",
+      "numberOfBytes": "32",
+      "value": "t_struct(AssetConfig)_storage"
+    },
+    "t_struct(AssetConfig)_storage": {
+      "encoding": "inplace",
+      "label": "struct IEUSDPsm.AssetConfig",
+      "members": [
+        {
+          "label": "listed",
+          "offset": 0,
+          "slot": "0",
+          "type": "t_bool"
+        },
+        {
+          "label": "mintPaused",
+          "offset": 1,
+          "slot": "0",
+          "type": "t_bool"
+        },
+        {
+          "label": "decimals",
+          "offset": 2,
+          "slot": "0",
+          "type": "t_uint8"
+        },
+        {
+          "label": "mintFeeBps",
+          "offset": 3,
+          "slot": "0",
+          "type": "t_uint16"
+        },
+        {
+          "label": "redeemFeeBps",
+          "offset": 5,
+          "slot": "0",
+          "type": "t_uint16"
+        },
+        {
+          "label": "debtCeiling",
+          "offset": 0,
+          "slot": "1",
+          "type": "t_uint256"
+        },
+        {
+          "label": "debt",
+          "offset": 0,
+          "slot": "2",
+          "type": "t_uint256"
+        }
+      ],
+      "numberOfBytes": "96"
+    },
+    "t_uint16": {
+      "encoding": "inplace",
+      "label": "uint16",
+      "numberOfBytes": "2"
+    },
+    "t_uint256": {
+      "encoding": "inplace",
+      "label": "uint256",
+      "numberOfBytes": "32"
+    },
+    "t_uint8": {
+      "encoding": "inplace",
+      "label": "uint8",
+      "numberOfBytes": "1"
+    }
+  }
+}
