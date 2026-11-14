@@ -86,9 +86,11 @@ Admin actions go through the governance Safe.
   ceiling, fees, mint pause (OPERATOR) and debt; redeem is never paused and is limited to that
   asset's debt, so `balance × scale ≥ debt` per asset. Fees and rounding stay as surplus the admin
   sends to the treasury. `totalDebt` counts toward Σ debt = eUSD supply.
-- `PegArbitrage` (misc/): OPERATOR-only. One call swaps an eUSD/stablecoin v4 pool to a target price
-  and settles the other side against the PSM inside the same unlock, so the keeper needs no working
+- `PegArbitrage` (misc/): OPERATOR-only. One call swaps an eUSD/stablecoin pool to a target price
+  and settles the other side against the PSM in the same transaction, so the keeper needs no working
   capital; a small float covers corrections below the pool fee, bounded per call by `minProfit`.
+  `arbitrage` trades v4 pools (Fables, Uniswap v4) inside `unlock`; `arbitrageV3` trades v3-style
+  pools (Uniswap v3, Aero Slipstream) inside the swap callback, accepted only from the pool it trades.
 
 ## Development Methodology: Test-Driven, Interface-First
 

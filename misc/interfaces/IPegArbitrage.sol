@@ -4,12 +4,14 @@ pragma solidity 0.8.28;
 import {PoolKey} from "./IPoolManagerSwap.sol";
 
 /// @title IPegArbitrage — keeper tool that moves an eUSD pool to a target price through the PSM
-/// @notice One call swaps in an eUSD/stablecoin v4 pool up to a price limit and settles the other
+/// @notice One call swaps in an eUSD/stablecoin pool up to a price limit and settles the other
 ///         side against the PSM in the same transaction, so it needs no working capital when eUSD
 ///         is off $1 by more than the pool fee. eUSD above $1: sell eUSD into the pool, mint that
 ///         eUSD from the PSM with the stablecoin received. eUSD below $1: buy eUSD from the pool,
 ///         redeem it at the PSM, and pay the pool from the stablecoin received. A small stablecoin
-///         float covers corrections smaller than the pool fee.
+///         float covers corrections smaller than the pool fee. {arbitrage} trades Uniswap v4 pools
+///         (Fables, Uniswap v4) through `poolManager`; {arbitrageV3} trades Uniswap v3-style pools
+///         (Uniswap v3, Aero Slipstream) directly.
 /// @dev Only OPERATOR (the keeper) can trade, bounded per call by `minProfit`; only ADMIN can take
 ///      funds out, and only to the registry treasury. Not upgradeable.
 interface IPegArbitrage {
@@ -46,7 +48,7 @@ interface IPegArbitrage {
     /// @param minProfit The caller's floor (asset units).
     error ProfitTooLow(int256 profit, int256 minProfit);
 
-    /// @notice Swap in `key`'s pool up to `sqrtPriceLimitX96` and settle through the PSM (OPERATOR).
+    /// @notice Swap in `key`'s v4 pool up to `sqrtPriceLimitX96` and settle through the PSM (OPERATOR).
     /// @param key               eUSD/stablecoin pool key (the stablecoin must be listed in the PSM).
     /// @param sellEusd          True to sell eUSD (eUSD above $1), false to buy it.
     /// @param sqrtPriceLimitX96 Target pool price; the swap stops there.
@@ -56,6 +58,22 @@ interface IPegArbitrage {
     /// @return profit Change in the contract's stablecoin balance (asset units).
     function arbitrage(
         PoolKey calldata key,
+        bool sellEusd,
+        uint160 sqrtPriceLimitX96,
+        uint256 maxIn,
+        int256 minProfit
+    ) external returns (int256 profit);
+
+    /// @notice Swap in a Uniswap v3-style `pool` up to `sqrtPriceLimitX96` and settle through the
+    ///         PSM (OPERATOR). Same arguments and result as {arbitrage}.
+    /// @param pool              eUSD/stablecoin v3-style pool (the stablecoin must be listed in the PSM).
+    /// @param sellEusd          True to sell eUSD (eUSD above $1), false to buy it.
+    /// @param sqrtPriceLimitX96 Target pool price; the swap stops there.
+    /// @param maxIn             Most of the input token to swap.
+    /// @param minProfit         Least change in the contract's stablecoin balance (may be negative).
+    /// @return profit Change in the contract's stablecoin balance (asset units).
+    function arbitrageV3(
+        address pool,
         bool sellEusd,
         uint160 sqrtPriceLimitX96,
         uint256 maxIn,
@@ -73,4 +91,10 @@ interface IPegArbitrage {
     function unlockCallback(
         bytes calldata data
     ) external returns (bytes memory);
+
+    /// @notice Uniswap v3-style swap callback; only the pool being traded, during {arbitrageV3}.
+    /// @param amount0Delta Pool's token0 balance change (positive = owed by this contract).
+    /// @param amount1Delta Pool's token1 balance change (positive = owed by this contract).
+    /// @param data         Encoded trade.
+    function uniswapV3SwapCallback(int256 amount0Delta, int256 amount1Delta, bytes calldata data) external;
 }

@@ -10,6 +10,7 @@ import {Actors} from "../helpers/Actors.sol";
 import {BaseTest} from "../helpers/BaseTest.sol";
 import {MockERC20} from "../helpers/MockERC20.sol";
 import {MockPoolManagerSwap} from "./MockPoolManagerSwap.sol";
+import {MockV3Pool} from "./MockV3Pool.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
 contract PegArbitrageTest is BaseTest {
@@ -217,6 +218,84 @@ contract PegArbitrageTest is BaseTest {
     function test_unlockCallback_outsideTrade_reverts() public {
         vm.expectRevert(IPegArbitrage.UnauthorizedCallback.selector);
         pm.callback(address(arb), "");
+    }
+
+    // ── v3-style pools (Uniswap v3, Aero Slipstream) ─────────
+
+    function _v3Pool(
+        bool eusdIsZero
+    ) internal returns (MockV3Pool v3) {
+        v3 = eusdIsZero ? new MockV3Pool(address(eusd), address(usdg)) : new MockV3Pool(address(usdg), address(eusd));
+        usdg.mint(address(v3), 1_000_000e6);
+        vm.prank(admin);
+        eusd.mint(address(v3), 1_000_000e18);
+    }
+
+    function test_arbitrageV3_sellEusd_mintsFromPsmAndKeepsPremium() public {
+        MockV3Pool v3 = _v3Pool(false);
+        v3.setPrice(_eusdPerUsdgRaw(1.0049e18));
+        vm.expectEmit(true, false, false, false, address(arb));
+        emit IPegArbitrage.Arbitraged(address(usdg), true, 0, 0, 0);
+        vm.prank(admin);
+        int256 profit = arb.arbitrageV3(address(v3), true, 0, 10_000e18, 0);
+        assertEq(psm.totalDebt(), 10_000e18);
+        assertApproxEqAbs(uint256(profit), 49e6, 1);
+        assertEq(eusd.balanceOf(address(arb)), 0);
+    }
+
+    function test_arbitrageV3_sellEusd_eusdIsToken0() public {
+        MockV3Pool v3 = _v3Pool(true);
+        v3.setPrice(1.0049e6);
+        vm.prank(admin);
+        int256 profit = arb.arbitrageV3(address(v3), true, 0, 1000e18, 0);
+        assertApproxEqAbs(uint256(profit), 4.9e6, 1);
+        assertEq(psm.totalDebt(), 1000e18);
+    }
+
+    function test_arbitrageV3_buyEusd_redeemsAtPsm() public {
+        _seedPsm(50_000e6);
+        MockV3Pool v3 = _v3Pool(false);
+        v3.setPrice(_eusdPerUsdgRaw(0.995e18));
+        vm.prank(admin);
+        int256 profit = arb.arbitrageV3(address(v3), false, 0, 1000e6, 0);
+        assertApproxEqAbs(uint256(profit), 5.025e6, 0.001e6);
+        assertApproxEqAbs(psm.totalDebt(), 50_000e18 - 1005.025e18, 0.001e18);
+        assertEq(eusd.balanceOf(address(arb)), 0);
+    }
+
+    function test_arbitrageV3_lossBelowFloor_reverts() public {
+        usdg.mint(address(arb), 100e6);
+        MockV3Pool v3 = _v3Pool(false);
+        v3.setPrice(_eusdPerUsdgRaw(0.9999e18));
+        vm.prank(admin);
+        vm.expectPartialRevert(IPegArbitrage.ProfitTooLow.selector);
+        arb.arbitrageV3(address(v3), true, 0, 10_000e18, -0.5e6);
+    }
+
+    function test_arbitrageV3_guards() public {
+        MockV3Pool v3 = _v3Pool(false);
+        vm.prank(attacker);
+        vm.expectRevert(IPegArbitrage.OnlyOperator.selector);
+        arb.arbitrageV3(address(v3), true, 0, 1, 0);
+
+        vm.prank(admin);
+        vm.expectRevert(IPegArbitrage.ZeroAmount.selector);
+        arb.arbitrageV3(address(v3), true, 0, 0, 0);
+
+        MockV3Pool other = new MockV3Pool(address(usdg), address(0xbeef));
+        vm.prank(admin);
+        vm.expectRevert(IPegArbitrage.NotAnEusdPool.selector);
+        arb.arbitrageV3(address(other), true, 0, 1, 0);
+    }
+
+    function test_uniswapV3SwapCallback_outsideTrade_reverts() public {
+        MockV3Pool v3 = _v3Pool(false);
+        vm.prank(attacker);
+        vm.expectRevert(IPegArbitrage.UnauthorizedCallback.selector);
+        arb.uniswapV3SwapCallback(0, 1e18, abi.encode(false, address(usdg)));
+        // Even the pool cannot call back when no trade is running.
+        vm.expectRevert(IPegArbitrage.UnauthorizedCallback.selector);
+        v3.callback(address(arb), 0, 1e18, abi.encode(false, address(usdg)));
     }
 
     // ── withdraw ──────────────────────────────────────────────

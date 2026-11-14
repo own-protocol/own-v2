@@ -54,6 +54,45 @@ contract ForkSwapper {
     }
 }
 
+interface ICLFactory {
+    function createPool(
+        address tokenA,
+        address tokenB,
+        int24 tickSpacing,
+        uint160 sqrtPriceX96
+    ) external returns (address pool);
+}
+
+interface ICLPool {
+    function slot0() external view returns (uint160 sqrtPriceX96, int24 tick, uint16, uint16, uint16, bool);
+    function mint(
+        address recipient,
+        int24 tickLower,
+        int24 tickUpper,
+        uint128 amount,
+        bytes calldata data
+    ) external returns (uint256 amount0, uint256 amount1);
+}
+
+/// @dev Robinhood Chain is an Arbitrum chain; Slipstream reads ArbSys, which a local fork lacks.
+contract ForkArbSys {
+    function arbBlockNumber() external view returns (uint256) {
+        return block.number;
+    }
+}
+
+/// @dev Adds liquidity to an Aero Slipstream pool, paying in the mint callback.
+contract ForkClMinter {
+    function mint(address pool, int24 lower, int24 upper, uint128 amount) external {
+        ICLPool(pool).mint(address(this), lower, upper, amount, abi.encode(pool));
+    }
+
+    function uniswapV3MintCallback(uint256 amount0, uint256 amount1, bytes calldata) external {
+        if (amount0 > 0) IERC20(0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168).transfer(msg.sender, amount0);
+        if (amount1 > 0) IERC20(0x8B84D644CECaeE6d21373F37E1bA00f85eD7CdB7).transfer(msg.sender, amount1);
+    }
+}
+
 /// @title EUSDPsmRobinhoodFork — PSM + PegArbitrage against the live Fables eUSD/USDG pool
 /// @notice Skipped if `ROBINHOOD_RPC` is not set. Deploys the PSM and the arbitrage helper on a fork,
 ///         grants them their roles as the governance Safe, and checks that the keeper call moves
@@ -69,6 +108,7 @@ contract EUSDPsmRobinhoodForkTest is Test {
     address constant POOL_MANAGER = 0x8366a39CC670B4001A1121B8F6A443A643e40951;
     address constant HOOK = 0x08E52564Bad99E05a694b4809F397edcA417A080;
     bytes32 constant POOLS_SLOT = bytes32(uint256(6));
+    address constant CL_FACTORY = 0xc63d7338c178e805c544B8f897066bD3BBcBE136; // Aero Slipstream
 
     /// @dev 1 eUSD = 1 USDG in raw units (eUSD per USDG unit = 1e12) sits inside tick 276324.
     int24 constant PEG_TICK = 276_324;
@@ -157,6 +197,61 @@ contract EUSDPsmRobinhoodForkTest is Test {
         assertLt(psm.totalDebt(), debtBeforeSell);
         assertGt(psm.totalDebt(), debtAtPeg);
         assertGt(profit, -5e6);
+        assertGe(IERC20(USDG).balanceOf(address(psm)) * 1e12, psm.totalDebt());
+    }
+
+    /// @dev A new Aero Slipstream eUSD/USDG pool at `usdPerEusdE6`, with liquidity about ±1%
+    ///      around $1.
+    function _slipstreamPool(uint256 usdPerEusdE6, int24 spacing) internal returns (address pool) {
+        vm.etch(address(0x64), address(new ForkArbSys()).code);
+        uint160 start = uint160(uint256(target) * 1e6 / _sqrtE6(usdPerEusdE6));
+        pool = ICLFactory(CL_FACTORY).createPool(USDG, EUSD, spacing, start);
+        ForkClMinter minter = new ForkClMinter();
+        deal(USDG, address(minter), 200_000e6);
+        bytes32 role = IEUSD(EUSD).MINTER_ROLE();
+        vm.prank(SAFE);
+        IAccessControl(EUSD).grantRole(role, address(this));
+        IEUSD(EUSD).mint(address(minter), 200_000e18);
+        int24 lower = (PEG_TICK - 100) / spacing * spacing;
+        minter.mint(pool, lower, lower + 200 / spacing * spacing + spacing, 5e17);
+    }
+
+    /// @dev sqrt(x / 1e6) * 1e6, for x around 1e6.
+    function _sqrtE6(
+        uint256 x
+    ) internal pure returns (uint256 r) {
+        r = x;
+        for (uint256 i; i < 40; ++i) {
+            r = (r + x * 1e6 / r) / 2;
+        }
+    }
+
+    function test_fork_slipstream_keeperPegsPoolAtOne() public requiresFork {
+        address pool = _slipstreamPool(1_004_900, 1);
+        (uint160 before,,,,,) = ICLPool(pool).slot0();
+        assertLt(before, target);
+        uint256 supplyBefore = IERC20(EUSD).totalSupply();
+
+        vm.prank(KEEPER);
+        int256 profit = arb.arbitrageV3(pool, true, target, 400_000e18, 0);
+        (uint160 afterSell,,,,,) = ICLPool(pool).slot0();
+        assertEq(afterSell, target);
+        assertGt(profit, 0);
+        assertGt(psm.totalDebt(), 0);
+        assertEq(IERC20(EUSD).totalSupply(), supplyBefore + psm.totalDebt());
+
+        // A second pool with eUSD below $1: the keeper buys it and redeems what holders minted.
+        deal(USDG, address(this), 100_000e6);
+        IERC20(USDG).approve(address(psm), 100_000e6);
+        psm.mint(USDG, 100_000e6, 0);
+        address pool2 = _slipstreamPool(995_000, 10);
+        uint256 debt = psm.totalDebt();
+        vm.prank(KEEPER);
+        profit = arb.arbitrageV3(pool2, false, target, debt / 1e12 * 99 / 100, 0);
+        (uint160 afterBuy,,,,,) = ICLPool(pool2).slot0();
+        assertEq(afterBuy, target);
+        assertGt(profit, 0);
+        assertLt(psm.totalDebt(), debt);
         assertGe(IERC20(USDG).balanceOf(address(psm)) * 1e12, psm.totalDebt());
     }
 
