@@ -49,6 +49,20 @@ owned by the governance Safe, which upgrades every vault of that DEX at once.
 | USDG     | USDG/eUSD       |
 | Low vol  | SPY/eUSD        |
 
+## PSM
+
+Deployed 2026-11-14 from branch `usdg-psm` commit `af579b6` (same toolchain) with
+`DeployEusdPsmRobinhood.s.sol`.
+
+| Contract                                 | Address                                      |
+| ---------------------------------------- | -------------------------------------------- |
+| EUSDPsm (ERC-1967/UUPS proxy)            | `0xA24A434b7Dae50E24e92B19E0907F8878458CCad` |
+| EUSDPsm implementation                   | `0x28f8BE8c9Ad4010f092f4b3438819669E9aC370c` |
+| PegArbitrage (keeper helper)             | `0xd2208af9e73DC8Fa2e9Ec4FB2c46633041B846E7` |
+
+The PSM mints eUSD only after the governance Safe grants it eUSD's `MINTER_ROLE` and lists each
+stablecoin with `addAsset`. Read a stablecoin's ceiling, fees and pause with `assetConfig(asset)`.
+
 ## Managers A–D
 
 Each EUSDManager holds one collateral risk group with its own risk params, and all four mint the
