@@ -31,8 +31,9 @@ slither src/ --config-file slither.config.json
 
 ```
 src/
-  eusd/        EUSD (ERC-20 + permit, MINTER_ROLE held by each manager), EUSDManager (CDP engine),
-               EUSDLiquidityManager (CDP engine over DEX liquidity)
+  eusd/        EUSD (ERC-20 + permit, MINTER_ROLE held by each manager and the PSM), EUSDManager
+               (CDP engine), EUSDLiquidityManager (CDP engine over DEX liquidity), EUSDPsm (1:1
+               stablecoin peg stability module)
   eusd/adapters/ FablesAdapter, AerodromeAdapter (per-position liquidity vaults for Fables and
                Aero Slipstream pools, one beacon per DEX)
   libraries/   LiquidityMath (v4 tick math, vendored, and liquidity/amount formulas)
@@ -40,7 +41,8 @@ src/
   oracle/      ChainlinkOracleVerifier
   registry/    ProtocolRegistry
   interfaces/  Interfaces and shared constants (BPS, PRECISION)
-misc/          MoneyFeeCollector: standalone, not part of the eUSD core (tests in test/misc/)
+misc/          MoneyFeeCollector, PegArbitrage (keeper tool for the PSM): standalone, not part of the
+               eUSD core (tests in test/misc/)
 ```
 
 **EUSDManager**
@@ -77,6 +79,18 @@ fallback for when a feed is silent (weekends, off-hours). Managers read it as th
 
 **ProtocolRegistry**: the oracle and treasury addresses, and roles (PROTOCOL_ADMIN, ADMIN, OPERATOR).
 Admin actions go through the governance Safe.
+
+**EUSDPsm** (UUPS proxy, ADMIN-gated upgrades)
+- Anyone mints eUSD 1:1 for a listed stablecoin (decimals scaled to 18) or redeems eUSD 1:1 for it,
+  less per-asset mint and redeem fees (at most `MAX_FEE_BPS`). Each asset has its own debt
+  ceiling, fees, mint pause (OPERATOR) and debt; redeem is never paused and is limited to that
+  asset's debt, so `balance × scale ≥ debt` per asset. Fees and rounding stay as surplus the admin
+  sends to the treasury. `totalDebt` counts toward Σ debt = eUSD supply.
+- `PegArbitrage` (misc/): OPERATOR-only. One call swaps an eUSD/stablecoin pool to a target price
+  and settles the other side against the PSM in the same transaction, so the keeper needs no working
+  capital; a small float covers corrections below the pool fee, bounded per call by `minProfit`.
+  `arbitrage` trades v4 pools (Fables, Uniswap v4) inside `unlock`; `arbitrageV3` trades v3-style
+  pools (Uniswap v3, Aero Slipstream) inside the swap callback, accepted only from the pool it trades.
 
 ## Development Methodology: Test-Driven, Interface-First
 
@@ -285,7 +299,7 @@ Before any PR to `main`, mentally (or actually) run through this list for every 
 
 ### Legacy code
 
-`main` holds only the eUSD contracts. Everything retired (OwnMarket, VaultManager, PSM, eTokens,
+`main` holds only the eUSD contracts. Everything retired (OwnMarket, VaultManager, the eToken PSM, eTokens,
 AssetRegistry, lending, funds, OwnStakingV2, the old registry and verifier) lives on the
 `legacy-own-v2` branch, a full snapshot of `main` before the cleanup. Some of it is still live
 on-chain while it winds down; addresses are in `docs/legacy-contracts-rh.md`.
@@ -481,7 +495,7 @@ When asked to write invariant tests for a contract:
 
 ### Core Invariants
 
-- **Supply**: `eusd.totalSupply()` equals total debt across all managers
+- **Supply**: `eusd.totalSupply()` equals total debt across all managers and the PSM
 - **Custody**: each manager's collateral balance >= Σ position collateral for that token
 - **List**: per-collateral list sorted ascending by nominal ratio, size and pointers consistent
 - **Access**: only authorised roles can call privileged functions
