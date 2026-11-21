@@ -1,0 +1,583 @@
+'forge clean' running (wd: /home/ubuntu/own-protocol-audit)
+'forge config --json' running
+Warning: Found unknown `gas_report` config for profile `default` defined in foundry.toml.
+'forge build --build-info src' running (wd: /home/ubuntu/own-protocol-audit)
+INFO:Detectors:
+Detector: arbitrary-send-erc20
+OwnMarket.redeemHalted(bytes32,uint256) (src/core/OwnMarket.sol#237-256) uses arbitrary from in transferFrom: IERC20(pay).safeTransferFrom(haltAddr,msg.sender,payout) (src/core/OwnMarket.sol#251)
+OwnMarket._settleMint(address,address,bytes32,uint256,uint256,bool,address) (src/core/OwnMarket.sol#529-557) uses arbitrary from in transferFrom: IERC20(payToken).safeTransferFrom(user,maker,amountIn) (src/core/OwnMarket.sol#552)
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#arbitrary-from-in-transferfrom
+INFO:Detectors:
+Detector: arbitrary-send-eth
+BorrowManager._refundExcessEth() (src/core/BorrowManager.sol#1053-1058) sends eth to arbitrary user
+	Dangerous calls:
+	- (ok,None) = msg.sender.call{value: bal}() (src/core/BorrowManager.sol#1056)
+BorrowManager._verifyPrice(bytes32,bytes) (src/core/BorrowManager.sol#1176-1188) sends eth to arbitrary user
+	Dangerous calls:
+	- (price,timestamp) = IOracleVerifier(oracleAddr).verifyPrice{value: fee}(asset,priceData) (src/core/BorrowManager.sol#1182)
+OwnMarket._refundETH() (src/core/OwnMarket.sol#847-853) sends eth to arbitrary user
+	Dangerous calls:
+	- (ok,None) = address(msg.sender).call{value: remaining}() (src/core/OwnMarket.sol#850)
+ForceExecuteLib._verifyPaidPrice(address,bytes32,bytes) (src/libraries/ForceExecuteLib.sol#130-138) sends eth to arbitrary user
+	Dangerous calls:
+	- (price,timestamp) = oracle.verifyPrice{value: fee}(asset,priceData) (src/libraries/ForceExecuteLib.sol#137)
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#functions-that-send-ether-to-arbitrary-destinations
+INFO:Detectors:
+Detector: reentrancy-balance
+Reentrancy in WstETHRouter._depositStETHInternal(IERC4626,uint256,address,uint256) (src/periphery/WstETHRouter.sol#95-120):
+	External call allowing reentrancy:
+	- wstETHAmount = wstETH.wrap(received) (src/periphery/WstETHRouter.sol#108)
+	Balance read before the call:
+	- balBefore = stETH.balanceOf(address(this)) (src/periphery/WstETHRouter.sol#103)
+	Possible stale balance used after the call in a condition:
+	- shares < minSharesOut (src/periphery/WstETHRouter.sol#117)
+		- stale variable `shares`
+Reentrancy in WstETHRouter._depositStETHInternal(IERC4626,uint256,address,uint256) (src/periphery/WstETHRouter.sol#95-120):
+	External call allowing reentrancy:
+	- wstETHAmount = wstETH.wrap(received) (src/periphery/WstETHRouter.sol#108)
+	Balance read before the call:
+	- received = stETH.balanceOf(address(this)) - balBefore (src/periphery/WstETHRouter.sol#105)
+	Possible stale balance used after the call in a condition:
+	- shares < minSharesOut (src/periphery/WstETHRouter.sol#117)
+		- stale variable `shares`
+Reentrancy in WstETHRouter._depositStETHInternal(IERC4626,uint256,address,uint256) (src/periphery/WstETHRouter.sol#95-120):
+	External call allowing reentrancy:
+	- shares = vault.deposit(wstETHAmount,receiver) (src/periphery/WstETHRouter.sol#114)
+	Balance read before the call:
+	- balBefore = stETH.balanceOf(address(this)) (src/periphery/WstETHRouter.sol#103)
+	Possible stale balance used after the call in a condition:
+	- shares < minSharesOut (src/periphery/WstETHRouter.sol#117)
+		- stale variable `shares`
+Reentrancy in WstETHRouter._depositStETHInternal(IERC4626,uint256,address,uint256) (src/periphery/WstETHRouter.sol#95-120):
+	External call allowing reentrancy:
+	- shares = vault.deposit(wstETHAmount,receiver) (src/periphery/WstETHRouter.sol#114)
+	Balance read before the call:
+	- received = stETH.balanceOf(address(this)) - balBefore (src/periphery/WstETHRouter.sol#105)
+	Possible stale balance used after the call in a condition:
+	- shares < minSharesOut (src/periphery/WstETHRouter.sol#117)
+		- stale variable `shares`
+Reentrancy in LendingRouter.deposit(address,IERC4626,uint256,address,uint256) (src/periphery/LendingRouter.sol#100-128):
+	External call allowing reentrancy:
+	- IAaveV3Pool(pool).supply(underlying,underlyingAmount,address(this),0) (src/periphery/LendingRouter.sol#118)
+	Balance read before the call:
+	- aTokenBefore = IERC20(aToken).balanceOf(address(this)) (src/periphery/LendingRouter.sol#117)
+	Possible stale balance used after the call in a condition:
+	- shares < minSharesOut (src/periphery/LendingRouter.sol#125)
+		- stale variable `shares`
+Reentrancy in LendingRouter.deposit(address,IERC4626,uint256,address,uint256) (src/periphery/LendingRouter.sol#100-128):
+	External call allowing reentrancy:
+	- shares = vault.deposit(aTokenReceived,receiver) (src/periphery/LendingRouter.sol#123)
+	Balance read before the call:
+	- aTokenBefore = IERC20(aToken).balanceOf(address(this)) (src/periphery/LendingRouter.sol#117)
+	Possible stale balance used after the call in a condition:
+	- shares < minSharesOut (src/periphery/LendingRouter.sol#125)
+		- stale variable `shares`
+Reentrancy in LendingRouter.deposit(address,IERC4626,uint256,address,uint256) (src/periphery/LendingRouter.sol#100-128):
+	External call allowing reentrancy:
+	- shares = vault.deposit(aTokenReceived,receiver) (src/periphery/LendingRouter.sol#123)
+	Balance read before the call:
+	- aTokenReceived = IERC20(aToken).balanceOf(address(this)) - aTokenBefore (src/periphery/LendingRouter.sol#119)
+	Possible stale balance used after the call in a condition:
+	- shares < minSharesOut (src/periphery/LendingRouter.sol#125)
+		- stale variable `shares`
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#reentrancy-vulnerabilities
+INFO:Detectors:
+Detector: reentrancy-eth
+Reentrancy in BorrowManager.borrow(bytes32,uint256,uint256,bytes) (src/core/BorrowManager.sol#256-282):
+	External calls:
+	- (scaledDebt,oraclePrice,idx) = _executeBorrow(asset,eToken,eTokenAmount,stablecoinAmount,eTokenAmount,0,priceData) (src/core/BorrowManager.sol#266-267)
+		- IAaveV3Pool(aavePool).borrow(stablecoin,amount,AAVE_VARIABLE_RATE_MODE,0,vault) (src/core/BorrowManager.sol#1122)
+		- (price,timestamp) = IOracleVerifier(oracleAddr).verifyPrice{value: fee}(asset,priceData) (src/core/BorrowManager.sol#1182)
+	External calls sending eth:
+	- (scaledDebt,oraclePrice,idx) = _executeBorrow(asset,eToken,eTokenAmount,stablecoinAmount,eTokenAmount,0,priceData) (src/core/BorrowManager.sol#266-267)
+		- (price,timestamp) = IOracleVerifier(oracleAddr).verifyPrice{value: fee}(asset,priceData) (src/core/BorrowManager.sol#1182)
+	State variables written after the call(s):
+	- _positions[msg.sender][asset] = Position({eTokenCollateral:eTokenAmount,principal:scaledDebt,interestIndex:idx,collateralToken:eToken}) (src/core/BorrowManager.sol#271-276)
+	BorrowManager._positions (src/core/BorrowManager.sol#146) can be used in cross function reentrancies:
+	- BorrowManager.debtOf(address,bytes32) (src/core/BorrowManager.sol#801-806)
+	- BorrowManager.healthFactor(address,bytes32,uint256) (src/core/BorrowManager.sol#809-817)
+	- BorrowManager.positionOf(address,bytes32) (src/core/BorrowManager.sol#796-798)
+	- BorrowManager.setDebtClearingPermission(bytes32,address,uint256) (src/core/BorrowManager.sol#462-470)
+	- _totalScaledDebt += scaledDebt (src/core/BorrowManager.sol#277)
+	BorrowManager._totalScaledDebt (src/core/BorrowManager.sol#135) can be used in cross function reentrancies:
+	- BorrowManager._accrue() (src/core/BorrowManager.sol#991-1010)
+	- BorrowManager._flooredIndex(uint256) (src/core/BorrowManager.sol#1037-1045)
+	- BorrowManager._projectedIndex() (src/core/BorrowManager.sol#1017-1024)
+	- BorrowManager.earnedInterest() (src/core/BorrowManager.sol#958-962)
+	- BorrowManager.totalDebtUSD() (src/core/BorrowManager.sol#930-934)
+	- BorrowManager.utilizationBps() (src/core/BorrowManager.sol#942-948)
+Reentrancy in BorrowManager.borrowMore(bytes32,uint256,uint256,bytes) (src/core/BorrowManager.sol#285-311):
+	External calls:
+	- (scaledDebt,oraclePrice,idx) = _executeBorrow(asset,eToken,eTokenAmount,stablecoinAmount,p.eTokenCollateral + eTokenAmount,p.principal,priceData) (src/core/BorrowManager.sol#299-301)
+		- IAaveV3Pool(aavePool).borrow(stablecoin,amount,AAVE_VARIABLE_RATE_MODE,0,vault) (src/core/BorrowManager.sol#1122)
+		- (price,timestamp) = IOracleVerifier(oracleAddr).verifyPrice{value: fee}(asset,priceData) (src/core/BorrowManager.sol#1182)
+	External calls sending eth:
+	- (scaledDebt,oraclePrice,idx) = _executeBorrow(asset,eToken,eTokenAmount,stablecoinAmount,p.eTokenCollateral + eTokenAmount,p.principal,priceData) (src/core/BorrowManager.sol#299-301)
+		- (price,timestamp) = IOracleVerifier(oracleAddr).verifyPrice{value: fee}(asset,priceData) (src/core/BorrowManager.sol#1182)
+	State variables written after the call(s):
+	- p.eTokenCollateral += eTokenAmount (src/core/BorrowManager.sol#303)
+	BorrowManager._positions (src/core/BorrowManager.sol#146) can be used in cross function reentrancies:
+	- BorrowManager.debtOf(address,bytes32) (src/core/BorrowManager.sol#801-806)
+	- BorrowManager.healthFactor(address,bytes32,uint256) (src/core/BorrowManager.sol#809-817)
+	- BorrowManager.positionOf(address,bytes32) (src/core/BorrowManager.sol#796-798)
+	- BorrowManager.setDebtClearingPermission(bytes32,address,uint256) (src/core/BorrowManager.sol#462-470)
+	- p.principal += scaledDebt (src/core/BorrowManager.sol#304)
+	BorrowManager._positions (src/core/BorrowManager.sol#146) can be used in cross function reentrancies:
+	- BorrowManager.debtOf(address,bytes32) (src/core/BorrowManager.sol#801-806)
+	- BorrowManager.healthFactor(address,bytes32,uint256) (src/core/BorrowManager.sol#809-817)
+	- BorrowManager.positionOf(address,bytes32) (src/core/BorrowManager.sol#796-798)
+	- BorrowManager.setDebtClearingPermission(bytes32,address,uint256) (src/core/BorrowManager.sol#462-470)
+	- p.interestIndex = idx (src/core/BorrowManager.sol#305)
+	BorrowManager._positions (src/core/BorrowManager.sol#146) can be used in cross function reentrancies:
+	- BorrowManager.debtOf(address,bytes32) (src/core/BorrowManager.sol#801-806)
+	- BorrowManager.healthFactor(address,bytes32,uint256) (src/core/BorrowManager.sol#809-817)
+	- BorrowManager.positionOf(address,bytes32) (src/core/BorrowManager.sol#796-798)
+	- BorrowManager.setDebtClearingPermission(bytes32,address,uint256) (src/core/BorrowManager.sol#462-470)
+	- _totalScaledDebt += scaledDebt (src/core/BorrowManager.sol#306)
+	BorrowManager._totalScaledDebt (src/core/BorrowManager.sol#135) can be used in cross function reentrancies:
+	- BorrowManager._accrue() (src/core/BorrowManager.sol#991-1010)
+	- BorrowManager._flooredIndex(uint256) (src/core/BorrowManager.sol#1037-1045)
+	- BorrowManager._projectedIndex() (src/core/BorrowManager.sol#1017-1024)
+	- BorrowManager.earnedInterest() (src/core/BorrowManager.sol#958-962)
+	- BorrowManager.totalDebtUSD() (src/core/BorrowManager.sol#930-934)
+	- BorrowManager.utilizationBps() (src/core/BorrowManager.sol#942-948)
+Reentrancy in BorrowManager.liquidate(address,bytes32,uint256,bytes) (src/core/BorrowManager.sol#505-521):
+	External calls:
+	- oraclePrice = _verifyPrice(asset,priceData) (src/core/BorrowManager.sol#517)
+		- (price,timestamp) = IOracleVerifier(oracleAddr).verifyPrice{value: fee}(asset,priceData) (src/core/BorrowManager.sol#1182)
+	- _liquidate(borrower,asset,repayAmount,oraclePrice) (src/core/BorrowManager.sol#519)
+		- actualRepaid = IAaveV3Pool(aavePool).repay(stablecoin,amount,AAVE_VARIABLE_RATE_MODE,vault) (src/core/BorrowManager.sol#1234-1235)
+	External calls sending eth:
+	- oraclePrice = _verifyPrice(asset,priceData) (src/core/BorrowManager.sol#517)
+		- (price,timestamp) = IOracleVerifier(oracleAddr).verifyPrice{value: fee}(asset,priceData) (src/core/BorrowManager.sol#1182)
+	State variables written after the call(s):
+	- _liquidate(borrower,asset,repayAmount,oraclePrice) (src/core/BorrowManager.sol#519)
+		- delete _positions[borrower][asset] (src/core/BorrowManager.sol#569)
+		- p.principal -= scaledRepay (src/core/BorrowManager.sol#577)
+		- p.eTokenCollateral -= seize (src/core/BorrowManager.sol#578)
+		- p.interestIndex = _index (src/core/BorrowManager.sol#579)
+	BorrowManager._positions (src/core/BorrowManager.sol#146) can be used in cross function reentrancies:
+	- BorrowManager.debtOf(address,bytes32) (src/core/BorrowManager.sol#801-806)
+	- BorrowManager.healthFactor(address,bytes32,uint256) (src/core/BorrowManager.sol#809-817)
+	- BorrowManager.positionOf(address,bytes32) (src/core/BorrowManager.sol#796-798)
+	- BorrowManager.setDebtClearingPermission(bytes32,address,uint256) (src/core/BorrowManager.sol#462-470)
+	- _liquidate(borrower,asset,repayAmount,oraclePrice) (src/core/BorrowManager.sol#519)
+		- _totalScaledDebt -= p.principal (src/core/BorrowManager.sol#568)
+		- _totalScaledDebt -= scaledRepay (src/core/BorrowManager.sol#580)
+	BorrowManager._totalScaledDebt (src/core/BorrowManager.sol#135) can be used in cross function reentrancies:
+	- BorrowManager._accrue() (src/core/BorrowManager.sol#991-1010)
+	- BorrowManager._flooredIndex(uint256) (src/core/BorrowManager.sol#1037-1045)
+	- BorrowManager._projectedIndex() (src/core/BorrowManager.sol#1017-1024)
+	- BorrowManager.earnedInterest() (src/core/BorrowManager.sol#958-962)
+	- BorrowManager.totalDebtUSD() (src/core/BorrowManager.sol#930-934)
+	- BorrowManager.utilizationBps() (src/core/BorrowManager.sol#942-948)
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#reentrancy-vulnerabilities-1
+INFO:Detectors:
+Detector: incorrect-equality
+BorrowManager._accrue() (src/core/BorrowManager.sol#991-1010) uses a dangerous strict equality:
+	- _totalScaledDebt == 0 (src/core/BorrowManager.sol#994)
+BorrowManager._executeBorrow(bytes32,address,uint256,uint256,uint256,uint256,bytes) (src/core/BorrowManager.sol#322-374) uses a dangerous strict equality:
+	- scaledDebt == 0 (src/core/BorrowManager.sol#373)
+BorrowManager._flooredIndex(uint256) (src/core/BorrowManager.sol#1037-1045) uses a dangerous strict equality:
+	- realAaveDebt == 0 (src/core/BorrowManager.sol#1042)
+BorrowManager._projectedIndex() (src/core/BorrowManager.sol#1017-1024) uses a dangerous strict equality:
+	- _totalScaledDebt == 0 (src/core/BorrowManager.sol#1019)
+BorrowManager._projectedIndex() (src/core/BorrowManager.sol#1017-1024) uses a dangerous strict equality:
+	- _index == 0 (src/core/BorrowManager.sol#1018)
+BorrowManager._refundExcessEth() (src/core/BorrowManager.sol#1053-1058) uses a dangerous strict equality:
+	- bal == 0 (src/core/BorrowManager.sol#1055)
+BorrowManager._repayAaveAndSweep(uint256) (src/core/BorrowManager.sol#1227-1242) uses a dangerous strict equality:
+	- outstanding == 0 (src/core/BorrowManager.sol#1234-1235)
+BorrowManager._repayPosition(address,bytes32,uint256) (src/core/BorrowManager.sol#412-455) uses a dangerous strict equality:
+	- repayAmount == 0 (src/core/BorrowManager.sol#425)
+BorrowManager._repayPosition(address,bytes32,uint256) (src/core/BorrowManager.sol#412-455) uses a dangerous strict equality:
+	- repayAmount == currentDebt (src/core/BorrowManager.sol#435)
+BorrowManager._repayPosition(address,bytes32,uint256) (src/core/BorrowManager.sol#412-455) uses a dangerous strict equality:
+	- scaledRepay == 0 (src/core/BorrowManager.sol#447)
+BorrowManager._windowRateBps() (src/core/BorrowManager.sol#1076-1078) uses a dangerous strict equality:
+	- _lastPremiumBps == 0 (src/core/BorrowManager.sol#1077)
+BorrowManager.debtOf(address,bytes32) (src/core/BorrowManager.sol#801-806) uses a dangerous strict equality:
+	- p.principal == 0 (src/core/BorrowManager.sol#803)
+BorrowManager.healthFactor(address,bytes32,uint256) (src/core/BorrowManager.sol#809-817) uses a dangerous strict equality:
+	- p.principal == 0 (src/core/BorrowManager.sol#811)
+BorrowManager.setDebtClearingPermission(bytes32,address,uint256) (src/core/BorrowManager.sol#462-470) uses a dangerous strict equality:
+	- _positions[msg.sender][asset].principal == 0 (src/core/BorrowManager.sol#463)
+BorrowManager.totalDebtUSD() (src/core/BorrowManager.sol#930-934) uses a dangerous strict equality:
+	- _index == 0 (src/core/BorrowManager.sol#931)
+EUSDManager._ratioBps(uint256,uint256,uint256) (src/core/EUSDManager.sol#642-645) uses a dangerous strict equality:
+	- debt == 0 (src/core/EUSDManager.sol#643)
+EUSDManager.collateralRatioBps(address,address) (src/core/EUSDManager.sol#685-693) uses a dangerous strict equality:
+	- debt == 0 (src/core/EUSDManager.sol#687)
+OwnIncentives.fund(uint256) (src/core/OwnIncentives.sol#107-117) uses a dangerous strict equality:
+	- received == 0 (src/core/OwnIncentives.sol#114)
+OwnLendingPool.withdraw(address,uint256,address) (src/core/OwnLendingPool.sol#144-162) uses a dangerous strict equality:
+	- amount == 0 (src/core/OwnLendingPool.sol#151)
+OwnVault._requireSolvent() (src/core/OwnVault.sol#604-606) uses a dangerous strict equality:
+	- totalAssets() == 0 && totalSupply() > 0 (src/core/OwnVault.sol#605)
+OwnVault.fulfillWithdrawal(uint256) (src/core/OwnVault.sol#360-405) uses a dangerous strict equality:
+	- assets == 0 (src/core/OwnVault.sol#373)
+OwnVault.shareYield(uint256) (src/core/OwnVault.sol#497-510) uses a dangerous strict equality:
+	- totalSupply() == 0 (src/core/OwnVault.sol#503)
+OwnVault.sweepToken(address) (src/core/OwnVault.sol#648-659) uses a dangerous strict equality:
+	- amount == 0 (src/core/OwnVault.sol#656)
+ReserveVault.sweepToken(address) (src/core/ReserveVault.sol#132-140) uses a dangerous strict equality:
+	- amount == 0 (src/core/ReserveVault.sol#137)
+VaultYieldManager.distribute() (src/periphery/VaultYieldManager.sol#105-112) uses a dangerous strict equality:
+	- balance == 0 (src/periphery/VaultYieldManager.sol#107)
+VaultYieldManager.syncYield() (src/periphery/VaultYieldManager.sol#118-123) uses a dangerous strict equality:
+	- balance == 0 || IERC4626(vault).totalSupply() == 0 (src/periphery/VaultYieldManager.sol#121)
+StakedEUSD.transferInRewards(uint256) (src/tokens/StakedEUSD.sol#146-161) uses a dangerous strict equality:
+	- totalSupply() == 0 (src/tokens/StakedEUSD.sol#152)
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#dangerous-strict-equalities
+INFO:Detectors:
+Detector: reentrancy-no-eth
+Reentrancy in EUSDManager._accrue(address,address) (src/core/EUSDManager.sol#460-473):
+	External calls:
+	- _eusd.mint(registry.treasury(),fee) (src/core/EUSDManager.sol#468)
+	State variables written after the call(s):
+	- p.feeIndexSnapshot = _feeIndex (src/core/EUSDManager.sol#472)
+	EUSDManager._positions (src/core/EUSDManager.sol#83) can be used in cross function reentrancies:
+	- EUSDManager.collateralRatioBps(address,address) (src/core/EUSDManager.sol#685-693)
+	- EUSDManager.currentDebt(address,address) (src/core/EUSDManager.sol#678-682)
+	- EUSDManager.findInsertHint(address,uint256) (src/core/EUSDManager.sol#718-728)
+	- EUSDManager.getPosition(address,address) (src/core/EUSDManager.sol#673-675)
+	- EUSDManager.nominalRatio(address,address) (src/core/EUSDManager.sol#701-705)
+Reentrancy in BorrowManager._liquidate(address,bytes32,uint256,uint256) (src/core/BorrowManager.sol#538-586):
+	External calls:
+	- _repayAaveAndSweep(repayAmount) (src/core/BorrowManager.sol#561)
+		- actualRepaid = IAaveV3Pool(aavePool).repay(stablecoin,amount,AAVE_VARIABLE_RATE_MODE,vault) (src/core/BorrowManager.sol#1234-1235)
+	State variables written after the call(s):
+	- delete _positions[borrower][asset] (src/core/BorrowManager.sol#569)
+	BorrowManager._positions (src/core/BorrowManager.sol#146) can be used in cross function reentrancies:
+	- BorrowManager.debtOf(address,bytes32) (src/core/BorrowManager.sol#801-806)
+	- BorrowManager.healthFactor(address,bytes32,uint256) (src/core/BorrowManager.sol#809-817)
+	- BorrowManager.positionOf(address,bytes32) (src/core/BorrowManager.sol#796-798)
+	- BorrowManager.setDebtClearingPermission(bytes32,address,uint256) (src/core/BorrowManager.sol#462-470)
+	- p.principal -= scaledRepay (src/core/BorrowManager.sol#577)
+	BorrowManager._positions (src/core/BorrowManager.sol#146) can be used in cross function reentrancies:
+	- BorrowManager.debtOf(address,bytes32) (src/core/BorrowManager.sol#801-806)
+	- BorrowManager.healthFactor(address,bytes32,uint256) (src/core/BorrowManager.sol#809-817)
+	- BorrowManager.positionOf(address,bytes32) (src/core/BorrowManager.sol#796-798)
+	- BorrowManager.setDebtClearingPermission(bytes32,address,uint256) (src/core/BorrowManager.sol#462-470)
+	- p.eTokenCollateral -= seize (src/core/BorrowManager.sol#578)
+	BorrowManager._positions (src/core/BorrowManager.sol#146) can be used in cross function reentrancies:
+	- BorrowManager.debtOf(address,bytes32) (src/core/BorrowManager.sol#801-806)
+	- BorrowManager.healthFactor(address,bytes32,uint256) (src/core/BorrowManager.sol#809-817)
+	- BorrowManager.positionOf(address,bytes32) (src/core/BorrowManager.sol#796-798)
+	- BorrowManager.setDebtClearingPermission(bytes32,address,uint256) (src/core/BorrowManager.sol#462-470)
+	- p.interestIndex = _index (src/core/BorrowManager.sol#579)
+	BorrowManager._positions (src/core/BorrowManager.sol#146) can be used in cross function reentrancies:
+	- BorrowManager.debtOf(address,bytes32) (src/core/BorrowManager.sol#801-806)
+	- BorrowManager.healthFactor(address,bytes32,uint256) (src/core/BorrowManager.sol#809-817)
+	- BorrowManager.positionOf(address,bytes32) (src/core/BorrowManager.sol#796-798)
+	- BorrowManager.setDebtClearingPermission(bytes32,address,uint256) (src/core/BorrowManager.sol#462-470)
+Reentrancy in EUSDManager._redeemFrom(address,address,uint256,uint256,address) (src/core/EUSDManager.sol#479-504):
+	External calls:
+	- p = _accrue(collateral,owner) (src/core/EUSDManager.sol#486)
+		- _eusd.mint(registry.treasury(),fee) (src/core/EUSDManager.sol#468)
+	State variables written after the call(s):
+	- delete _positions[collateral][owner] (src/core/EUSDManager.sol#502)
+	EUSDManager._positions (src/core/EUSDManager.sol#83) can be used in cross function reentrancies:
+	- EUSDManager.collateralRatioBps(address,address) (src/core/EUSDManager.sol#685-693)
+	- EUSDManager.currentDebt(address,address) (src/core/EUSDManager.sol#678-682)
+	- EUSDManager.findInsertHint(address,uint256) (src/core/EUSDManager.sol#718-728)
+	- EUSDManager.getPosition(address,address) (src/core/EUSDManager.sol#673-675)
+	- EUSDManager.nominalRatio(address,address) (src/core/EUSDManager.sol#701-705)
+	- totalDebt -= repaid (src/core/EUSDManager.sol#496)
+	EUSDManager.totalDebt (src/core/EUSDManager.sol#77) can be used in cross function reentrancies:
+	- EUSDManager.totalDebt (src/core/EUSDManager.sol#77)
+Reentrancy in BorrowManager._repayPosition(address,bytes32,uint256) (src/core/BorrowManager.sol#412-455):
+	External calls:
+	- _repayAaveAndSweep(repayAmount) (src/core/BorrowManager.sol#433)
+		- actualRepaid = IAaveV3Pool(aavePool).repay(stablecoin,amount,AAVE_VARIABLE_RATE_MODE,vault) (src/core/BorrowManager.sol#1234-1235)
+	State variables written after the call(s):
+	- delete _positions[borrower][asset] (src/core/BorrowManager.sol#439)
+	BorrowManager._positions (src/core/BorrowManager.sol#146) can be used in cross function reentrancies:
+	- BorrowManager.debtOf(address,bytes32) (src/core/BorrowManager.sol#801-806)
+	- BorrowManager.healthFactor(address,bytes32,uint256) (src/core/BorrowManager.sol#809-817)
+	- BorrowManager.positionOf(address,bytes32) (src/core/BorrowManager.sol#796-798)
+	- BorrowManager.setDebtClearingPermission(bytes32,address,uint256) (src/core/BorrowManager.sol#462-470)
+	- p.principal -= scaledRepay (src/core/BorrowManager.sol#450)
+	BorrowManager._positions (src/core/BorrowManager.sol#146) can be used in cross function reentrancies:
+	- BorrowManager.debtOf(address,bytes32) (src/core/BorrowManager.sol#801-806)
+	- BorrowManager.healthFactor(address,bytes32,uint256) (src/core/BorrowManager.sol#809-817)
+	- BorrowManager.positionOf(address,bytes32) (src/core/BorrowManager.sol#796-798)
+	- BorrowManager.setDebtClearingPermission(bytes32,address,uint256) (src/core/BorrowManager.sol#462-470)
+	- p.eTokenCollateral -= collateralReleased (src/core/BorrowManager.sol#451)
+	BorrowManager._positions (src/core/BorrowManager.sol#146) can be used in cross function reentrancies:
+	- BorrowManager.debtOf(address,bytes32) (src/core/BorrowManager.sol#801-806)
+	- BorrowManager.healthFactor(address,bytes32,uint256) (src/core/BorrowManager.sol#809-817)
+	- BorrowManager.positionOf(address,bytes32) (src/core/BorrowManager.sol#796-798)
+	- BorrowManager.setDebtClearingPermission(bytes32,address,uint256) (src/core/BorrowManager.sol#462-470)
+	- p.interestIndex = idx (src/core/BorrowManager.sol#452)
+	BorrowManager._positions (src/core/BorrowManager.sol#146) can be used in cross function reentrancies:
+	- BorrowManager.debtOf(address,bytes32) (src/core/BorrowManager.sol#801-806)
+	- BorrowManager.healthFactor(address,bytes32,uint256) (src/core/BorrowManager.sol#809-817)
+	- BorrowManager.positionOf(address,bytes32) (src/core/BorrowManager.sol#796-798)
+	- BorrowManager.setDebtClearingPermission(bytes32,address,uint256) (src/core/BorrowManager.sol#462-470)
+	- _totalScaledDebt -= p.principal (src/core/BorrowManager.sol#438)
+	BorrowManager._totalScaledDebt (src/core/BorrowManager.sol#135) can be used in cross function reentrancies:
+	- BorrowManager._accrue() (src/core/BorrowManager.sol#991-1010)
+	- BorrowManager._flooredIndex(uint256) (src/core/BorrowManager.sol#1037-1045)
+	- BorrowManager._projectedIndex() (src/core/BorrowManager.sol#1017-1024)
+	- BorrowManager.earnedInterest() (src/core/BorrowManager.sol#958-962)
+	- BorrowManager.totalDebtUSD() (src/core/BorrowManager.sol#930-934)
+	- BorrowManager.utilizationBps() (src/core/BorrowManager.sol#942-948)
+	- _totalScaledDebt -= scaledRepay (src/core/BorrowManager.sol#453)
+	BorrowManager._totalScaledDebt (src/core/BorrowManager.sol#135) can be used in cross function reentrancies:
+	- BorrowManager._accrue() (src/core/BorrowManager.sol#991-1010)
+	- BorrowManager._flooredIndex(uint256) (src/core/BorrowManager.sol#1037-1045)
+	- BorrowManager._projectedIndex() (src/core/BorrowManager.sol#1017-1024)
+	- BorrowManager.earnedInterest() (src/core/BorrowManager.sol#958-962)
+	- BorrowManager.totalDebtUSD() (src/core/BorrowManager.sol#930-934)
+	- BorrowManager.utilizationBps() (src/core/BorrowManager.sol#942-948)
+Reentrancy in BorrowManager.absorbBadDebt(address,bytes32,uint256,bytes) (src/core/BorrowManager.sol#603-642):
+	External calls:
+	- _repayAaveAndSweep(residual) (src/core/BorrowManager.sol#620)
+		- actualRepaid = IAaveV3Pool(aavePool).repay(stablecoin,amount,AAVE_VARIABLE_RATE_MODE,vault) (src/core/BorrowManager.sol#1234-1235)
+	State variables written after the call(s):
+	- delete _positions[borrower][asset] (src/core/BorrowManager.sol#622)
+	BorrowManager._positions (src/core/BorrowManager.sol#146) can be used in cross function reentrancies:
+	- BorrowManager.debtOf(address,bytes32) (src/core/BorrowManager.sol#801-806)
+	- BorrowManager.healthFactor(address,bytes32,uint256) (src/core/BorrowManager.sol#809-817)
+	- BorrowManager.positionOf(address,bytes32) (src/core/BorrowManager.sol#796-798)
+	- BorrowManager.setDebtClearingPermission(bytes32,address,uint256) (src/core/BorrowManager.sol#462-470)
+	- _totalScaledDebt -= p.principal (src/core/BorrowManager.sol#621)
+	BorrowManager._totalScaledDebt (src/core/BorrowManager.sol#135) can be used in cross function reentrancies:
+	- BorrowManager._accrue() (src/core/BorrowManager.sol#991-1010)
+	- BorrowManager._flooredIndex(uint256) (src/core/BorrowManager.sol#1037-1045)
+	- BorrowManager._projectedIndex() (src/core/BorrowManager.sol#1017-1024)
+	- BorrowManager.earnedInterest() (src/core/BorrowManager.sol#958-962)
+	- BorrowManager.totalDebtUSD() (src/core/BorrowManager.sol#930-934)
+	- BorrowManager.utilizationBps() (src/core/BorrowManager.sol#942-948)
+Reentrancy in OwnVault.acceptDeposit(uint256) (src/core/OwnVault.sol#249-266):
+	External calls:
+	- _syncLending() (src/core/OwnVault.sol#256)
+		- IBorrowManager(_borrowManager).accrue() (src/core/OwnVault.sol#589)
+		- IVaultYieldManager(manager).syncYield() (src/core/OwnVault.sol#598)
+	State variables written after the call(s):
+	- req.status = DepositStatus.Accepted (src/core/OwnVault.sol#261)
+	OwnVault._depositRequests (src/core/OwnVault.sol#63) can be used in cross function reentrancies:
+	- OwnVault.getDepositRequest(uint256) (src/core/OwnVault.sol#302-307)
+Reentrancy in BorrowManager.clearDebt(address,bytes32,uint256) (src/core/BorrowManager.sol#473-498):
+	External calls:
+	- (repaid,collateralReleased,collateralToken) = _repayPosition(borrower,asset,repayAmount) (src/core/BorrowManager.sol#484-485)
+		- actualRepaid = IAaveV3Pool(aavePool).repay(stablecoin,amount,AAVE_VARIABLE_RATE_MODE,vault) (src/core/BorrowManager.sol#1234-1235)
+	State variables written after the call(s):
+	- delete debtClearingPermission[borrower][asset] (src/core/BorrowManager.sol#489)
+	BorrowManager.debtClearingPermission (src/core/BorrowManager.sol#151) can be used in cross function reentrancies:
+	- BorrowManager.debtClearingPermission (src/core/BorrowManager.sol#151)
+	- BorrowManager.setDebtClearingPermission(bytes32,address,uint256) (src/core/BorrowManager.sol#462-470)
+Reentrancy in EUSDManager.closePosition(address) (src/core/EUSDManager.sol#236-253):
+	External calls:
+	- p = _accrue(collateral,msg.sender) (src/core/EUSDManager.sol#240)
+		- _eusd.mint(registry.treasury(),fee) (src/core/EUSDManager.sol#468)
+	State variables written after the call(s):
+	- delete _positions[collateral][msg.sender] (src/core/EUSDManager.sol#248)
+	EUSDManager._positions (src/core/EUSDManager.sol#83) can be used in cross function reentrancies:
+	- EUSDManager.collateralRatioBps(address,address) (src/core/EUSDManager.sol#685-693)
+	- EUSDManager.currentDebt(address,address) (src/core/EUSDManager.sol#678-682)
+	- EUSDManager.findInsertHint(address,uint256) (src/core/EUSDManager.sol#718-728)
+	- EUSDManager.getPosition(address,address) (src/core/EUSDManager.sol#673-675)
+	- EUSDManager.nominalRatio(address,address) (src/core/EUSDManager.sol#701-705)
+	- totalDebt -= debt (src/core/EUSDManager.sol#246)
+	EUSDManager.totalDebt (src/core/EUSDManager.sol#77) can be used in cross function reentrancies:
+	- EUSDManager.totalDebt (src/core/EUSDManager.sol#77)
+Reentrancy in OwnVault.haltVault() (src/core/OwnVault.sol#450-458):
+	External calls:
+	- _accrueLending() (src/core/OwnVault.sol#453)
+		- IBorrowManager(_borrowManager).accrue() (src/core/OwnVault.sol#589)
+	State variables written after the call(s):
+	- _vaultStatus = VaultStatus.Halted (src/core/OwnVault.sol#454)
+	OwnVault._vaultStatus (src/core/OwnVault.sol#50) can be used in cross function reentrancies:
+	- OwnVault.constructor(address,string,string,address,address) (src/core/OwnVault.sol#147-160)
+	- OwnVault.haltVault() (src/core/OwnVault.sol#450-458)
+	- OwnVault.maxDeposit(address) (src/core/OwnVault.sol#690-698)
+	- OwnVault.maxMint(address) (src/core/OwnVault.sol#700-708)
+	- OwnVault.pause(bytes32) (src/core/OwnVault.sol#432-438)
+	- OwnVault.unhalt() (src/core/OwnVault.sol#461-469)
+	- OwnVault.unpause() (src/core/OwnVault.sol#441-445)
+	- OwnVault.vaultStatus() (src/core/OwnVault.sol#425-427)
+Reentrancy in EUSDManager.liquidate(address,address,uint256,address) (src/core/EUSDManager.sol#269-305):
+	External calls:
+	- p = _accrue(collateral,owner) (src/core/EUSDManager.sol#277)
+		- _eusd.mint(registry.treasury(),fee) (src/core/EUSDManager.sol#468)
+	State variables written after the call(s):
+	- delete _positions[collateral][owner] (src/core/EUSDManager.sol#299)
+	EUSDManager._positions (src/core/EUSDManager.sol#83) can be used in cross function reentrancies:
+	- EUSDManager.collateralRatioBps(address,address) (src/core/EUSDManager.sol#685-693)
+	- EUSDManager.currentDebt(address,address) (src/core/EUSDManager.sol#678-682)
+	- EUSDManager.findInsertHint(address,uint256) (src/core/EUSDManager.sol#718-728)
+	- EUSDManager.getPosition(address,address) (src/core/EUSDManager.sol#673-675)
+	- EUSDManager.nominalRatio(address,address) (src/core/EUSDManager.sol#701-705)
+	- totalDebt -= repaid (src/core/EUSDManager.sol#294)
+	EUSDManager.totalDebt (src/core/EUSDManager.sol#77) can be used in cross function reentrancies:
+	- EUSDManager.totalDebt (src/core/EUSDManager.sol#77)
+Reentrancy in EUSDManager.mint(address,uint256,address) (src/core/EUSDManager.sol#188-210):
+	External calls:
+	- p = _accrue(collateral,msg.sender) (src/core/EUSDManager.sol#194)
+		- _eusd.mint(registry.treasury(),fee) (src/core/EUSDManager.sol#468)
+	State variables written after the call(s):
+	- totalDebt = newTotal (src/core/EUSDManager.sol#205)
+	EUSDManager.totalDebt (src/core/EUSDManager.sol#77) can be used in cross function reentrancies:
+	- EUSDManager.totalDebt (src/core/EUSDManager.sol#77)
+Reentrancy in EUSDManager.repay(address,address,uint256,address) (src/core/EUSDManager.sol#213-233):
+	External calls:
+	- p = _accrue(collateral,owner) (src/core/EUSDManager.sol#218)
+		- _eusd.mint(registry.treasury(),fee) (src/core/EUSDManager.sol#468)
+	State variables written after the call(s):
+	- totalDebt -= repaid (src/core/EUSDManager.sol#228)
+	EUSDManager.totalDebt (src/core/EUSDManager.sol#77) can be used in cross function reentrancies:
+	- EUSDManager.totalDebt (src/core/EUSDManager.sol#77)
+Reentrancy in BorrowManager.settleHaltedPosition(address,bytes32) (src/core/BorrowManager.sol#657-716):
+	External calls:
+	- converted = IOwnMarket(registry.market()).convertLegacy(asset,p.collateralToken,p.eTokenCollateral) (src/core/BorrowManager.sol#674-675)
+	State variables written after the call(s):
+	- p.eTokenCollateral = converted (src/core/BorrowManager.sol#676)
+	BorrowManager._positions (src/core/BorrowManager.sol#146) can be used in cross function reentrancies:
+	- BorrowManager.debtOf(address,bytes32) (src/core/BorrowManager.sol#801-806)
+	- BorrowManager.healthFactor(address,bytes32,uint256) (src/core/BorrowManager.sol#809-817)
+	- BorrowManager.positionOf(address,bytes32) (src/core/BorrowManager.sol#796-798)
+	- BorrowManager.setDebtClearingPermission(bytes32,address,uint256) (src/core/BorrowManager.sol#462-470)
+	- p.collateralToken = eToken (src/core/BorrowManager.sol#677)
+	BorrowManager._positions (src/core/BorrowManager.sol#146) can be used in cross function reentrancies:
+	- BorrowManager.debtOf(address,bytes32) (src/core/BorrowManager.sol#801-806)
+	- BorrowManager.healthFactor(address,bytes32,uint256) (src/core/BorrowManager.sol#809-817)
+	- BorrowManager.positionOf(address,bytes32) (src/core/BorrowManager.sol#796-798)
+	- BorrowManager.setDebtClearingPermission(bytes32,address,uint256) (src/core/BorrowManager.sol#462-470)
+Reentrancy in BorrowManager.settleHaltedPosition(address,bytes32) (src/core/BorrowManager.sol#657-716):
+	External calls:
+	- converted = IOwnMarket(registry.market()).convertLegacy(asset,p.collateralToken,p.eTokenCollateral) (src/core/BorrowManager.sol#674-675)
+	- proceeds = IOwnMarket(registry.market()).redeemHalted(asset,eTokenToCover) (src/core/BorrowManager.sol#691)
+	- _repayAaveAndSweep(proceeds) (src/core/BorrowManager.sol#695)
+		- actualRepaid = IAaveV3Pool(aavePool).repay(stablecoin,amount,AAVE_VARIABLE_RATE_MODE,vault) (src/core/BorrowManager.sol#1234-1235)
+	State variables written after the call(s):
+	- delete _positions[borrower][asset] (src/core/BorrowManager.sol#706)
+	BorrowManager._positions (src/core/BorrowManager.sol#146) can be used in cross function reentrancies:
+	- BorrowManager.debtOf(address,bytes32) (src/core/BorrowManager.sol#801-806)
+	- BorrowManager.healthFactor(address,bytes32,uint256) (src/core/BorrowManager.sol#809-817)
+	- BorrowManager.positionOf(address,bytes32) (src/core/BorrowManager.sol#796-798)
+	- BorrowManager.setDebtClearingPermission(bytes32,address,uint256) (src/core/BorrowManager.sol#462-470)
+	- p.principal -= scaledRepay (src/core/BorrowManager.sol#710)
+	BorrowManager._positions (src/core/BorrowManager.sol#146) can be used in cross function reentrancies:
+	- BorrowManager.debtOf(address,bytes32) (src/core/BorrowManager.sol#801-806)
+	- BorrowManager.healthFactor(address,bytes32,uint256) (src/core/BorrowManager.sol#809-817)
+	- BorrowManager.positionOf(address,bytes32) (src/core/BorrowManager.sol#796-798)
+	- BorrowManager.setDebtClearingPermission(bytes32,address,uint256) (src/core/BorrowManager.sol#462-470)
+	- p.eTokenCollateral = returnedToBorrower (src/core/BorrowManager.sol#711)
+	BorrowManager._positions (src/core/BorrowManager.sol#146) can be used in cross function reentrancies:
+	- BorrowManager.debtOf(address,bytes32) (src/core/BorrowManager.sol#801-806)
+	- BorrowManager.healthFactor(address,bytes32,uint256) (src/core/BorrowManager.sol#809-817)
+	- BorrowManager.positionOf(address,bytes32) (src/core/BorrowManager.sol#796-798)
+	- BorrowManager.setDebtClearingPermission(bytes32,address,uint256) (src/core/BorrowManager.sol#462-470)
+	- p.interestIndex = idx (src/core/BorrowManager.sol#712)
+	BorrowManager._positions (src/core/BorrowManager.sol#146) can be used in cross function reentrancies:
+	- BorrowManager.debtOf(address,bytes32) (src/core/BorrowManager.sol#801-806)
+	- BorrowManager.healthFactor(address,bytes32,uint256) (src/core/BorrowManager.sol#809-817)
+	- BorrowManager.positionOf(address,bytes32) (src/core/BorrowManager.sol#796-798)
+	- BorrowManager.setDebtClearingPermission(bytes32,address,uint256) (src/core/BorrowManager.sol#462-470)
+	- _totalScaledDebt -= scaledRepay (src/core/BorrowManager.sol#700)
+	BorrowManager._totalScaledDebt (src/core/BorrowManager.sol#135) can be used in cross function reentrancies:
+	- BorrowManager._accrue() (src/core/BorrowManager.sol#991-1010)
+	- BorrowManager._flooredIndex(uint256) (src/core/BorrowManager.sol#1037-1045)
+	- BorrowManager._projectedIndex() (src/core/BorrowManager.sol#1017-1024)
+	- BorrowManager.earnedInterest() (src/core/BorrowManager.sol#958-962)
+	- BorrowManager.totalDebtUSD() (src/core/BorrowManager.sol#930-934)
+	- BorrowManager.utilizationBps() (src/core/BorrowManager.sol#942-948)
+Reentrancy in OwnVault.unhalt() (src/core/OwnVault.sol#461-469):
+	External calls:
+	- _accrueLending() (src/core/OwnVault.sol#464)
+		- IBorrowManager(_borrowManager).accrue() (src/core/OwnVault.sol#589)
+	State variables written after the call(s):
+	- _vaultStatus = VaultStatus.Active (src/core/OwnVault.sol#465)
+	OwnVault._vaultStatus (src/core/OwnVault.sol#50) can be used in cross function reentrancies:
+	- OwnVault.constructor(address,string,string,address,address) (src/core/OwnVault.sol#147-160)
+	- OwnVault.haltVault() (src/core/OwnVault.sol#450-458)
+	- OwnVault.maxDeposit(address) (src/core/OwnVault.sol#690-698)
+	- OwnVault.maxMint(address) (src/core/OwnVault.sol#700-708)
+	- OwnVault.pause(bytes32) (src/core/OwnVault.sol#432-438)
+	- OwnVault.unhalt() (src/core/OwnVault.sol#461-469)
+	- OwnVault.unpause() (src/core/OwnVault.sol#441-445)
+	- OwnVault.vaultStatus() (src/core/OwnVault.sol#425-427)
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#reentrancy-vulnerabilities-2
+INFO:Detectors:
+Detector: uninitialized-local
+EUSDManager.findInsertHint(address,uint256).prev (src/core/EUSDManager.sol#719) is a local variable never initialized
+BorrowManager._liquidate(address,bytes32,uint256,uint256).returnedToBorrower (src/core/BorrowManager.sol#564) is a local variable never initialized
+BorrowManager.absorbBadDebt(address,bytes32,uint256,bytes).collateralReleased (src/core/BorrowManager.sol#626) is a local variable never initialized
+EUSDManager._insertNode(address,address,address).prev (src/core/EUSDManager.sol#527) is a local variable never initialized
+BorrowManager.settleHaltedPosition(address,bytes32).proceeds (src/core/BorrowManager.sol#689) is a local variable never initialized
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#uninitialized-local-variables
+INFO:Detectors:
+Detector: unused-return
+BorrowManager.sweepDividends(address) (src/core/BorrowManager.sol#723-739) ignores return value by IEToken(eToken).claimRewards() (src/core/BorrowManager.sol#734)
+BorrowManager._vaultAaveHealthFactor() (src/core/BorrowManager.sol#1114-1116) ignores return value by (None,None,None,None,None,hf) = IAaveV3Pool(aavePool).getUserAccountData(vault) (src/core/BorrowManager.sol#1115)
+ChainlinkOracleVerifier.verifyPriceForSession(bytes32,bytes,uint8) (src/core/ChainlinkOracleVerifier.sol#288-294) ignores return value by this.verifyPrice(asset,priceData) (src/core/ChainlinkOracleVerifier.sol#293)
+ChainlinkOracleVerifier._chainlink(bytes32,ChainlinkOracleVerifier.AssetConfig) (src/core/ChainlinkOracleVerifier.sol#316-331) ignores return value by (None,answer,None,updated,None) = IAggregatorV3(cfg.aggregator).latestRoundData() (src/core/ChainlinkOracleVerifier.sol#320)
+EUSDManager.sweepCollateralRewards(address) (src/core/EUSDManager.sol#341-351) ignores return value by IEToken(collateral).claimRewards() (src/core/EUSDManager.sol#347)
+EUSDManager._anchorPrice(address,bytes32) (src/core/EUSDManager.sol#597-603) ignores return value by (price,None) = _oracle(ticker).getPrice(ticker) (src/core/EUSDManager.sol#600)
+OwnMarket.sweepDividends(address) (src/core/OwnMarket.sol#416-430) ignores return value by IEToken(eToken).claimRewards() (src/core/OwnMarket.sol#425)
+OwnVault.requestDeposit(uint256,address,uint256) (src/core/OwnVault.sol#222-246) ignores return value by _pendingDepositIds.add(requestId) (src/core/OwnVault.sol#243)
+OwnVault.acceptDeposit(uint256) (src/core/OwnVault.sol#249-266) ignores return value by _pendingDepositIds.remove(requestId) (src/core/OwnVault.sol#262)
+OwnVault.rejectDeposit(uint256) (src/core/OwnVault.sol#269-282) ignores return value by _pendingDepositIds.remove(requestId) (src/core/OwnVault.sol#278)
+OwnVault.cancelDeposit(uint256) (src/core/OwnVault.sol#285-299) ignores return value by _pendingDepositIds.remove(requestId) (src/core/OwnVault.sol#295)
+OwnVault.requestWithdrawal(uint256) (src/core/OwnVault.sol#319-340) ignores return value by _pendingRequestIds.add(requestId) (src/core/OwnVault.sol#337)
+OwnVault.cancelWithdrawal(uint256) (src/core/OwnVault.sol#343-357) ignores return value by _pendingRequestIds.remove(requestId) (src/core/OwnVault.sol#354)
+OwnVault.fulfillWithdrawal(uint256) (src/core/OwnVault.sol#360-405) ignores return value by _pendingRequestIds.remove(requestId) (src/core/OwnVault.sol#392)
+VaultManager._resolvePrice(bytes32) (src/core/VaultManager.sol#809-815) ignores return value by (price,None) = IOracleVerifier(oracle).getPrice(asset) (src/core/VaultManager.sol#814)
+WstETHRouter.unwrapWstETH(uint256,address) (src/periphery/WstETHRouter.sol#70-88) ignores return value by wstETH.unwrap(amount) (src/periphery/WstETHRouter.sol#81)
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#unused-return
+INFO:Detectors:
+Detector: shadowing-local
+IOwnMarket.isQuoteUsed(bytes32).quoteDigest (src/interfaces/IOwnMarket.sol#510) shadows:
+	- IOwnMarket.quoteDigest(Quote) (src/interfaces/IOwnMarket.sol#514-516) (function)
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#local-variable-shadowing
+INFO:Detectors:
+Detector: missing-zero-check
+EToken.constructor(string,string,bytes32,address,address).rewardToken_ (src/tokens/EToken.sol#84) lacks a zero-check on :
+		- rewardToken = rewardToken_ (src/tokens/EToken.sol#90)
+OwnAToken.constructor(string,string,uint8,address).pool_ (src/tokens/OwnAToken.sol#35) lacks a zero-check on :
+		- pool = pool_ (src/tokens/OwnAToken.sol#36)
+OwnDebtToken.constructor(string,string,uint8,address).pool_ (src/tokens/OwnDebtToken.sol#57) lacks a zero-check on :
+		- pool = pool_ (src/tokens/OwnDebtToken.sol#61)
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#missing-zero-address-validation
+INFO:Detectors:
+Detector: calls-loop
+EUSDManager._accrue(address,address) (src/core/EUSDManager.sol#460-473) has external calls inside a loop: _eusd.mint(registry.treasury(),fee) (src/core/EUSDManager.sol#468)
+	Calls stack containing the loop:
+		EUSDManager.redeem(address,uint256,uint256,uint256,address)
+		EUSDManager._redeemFrom(address,address,uint256,uint256,address)
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation/#calls-inside-a-loop
+INFO:Detectors:
+Detector: costly-loop
+EUSDManager._settleFeeIndex() (src/core/EUSDManager.sol#449-455) has costly operations inside a loop:
+	- _feeIndex += uint256(_riskParams.stabilityFeeBps) * elapsed (src/core/EUSDManager.sol#452)
+	Calls stack containing the loop:
+		EUSDManager.redeem(address,uint256,uint256,uint256,address)
+		EUSDManager._redeemFrom(address,address,uint256,uint256,address)
+		EUSDManager._accrue(address,address)
+EUSDManager._settleFeeIndex() (src/core/EUSDManager.sol#449-455) has costly operations inside a loop:
+	- _feeIndexUpdated = block.timestamp (src/core/EUSDManager.sol#453)
+	Calls stack containing the loop:
+		EUSDManager.redeem(address,uint256,uint256,uint256,address)
+		EUSDManager._redeemFrom(address,address,uint256,uint256,address)
+		EUSDManager._accrue(address,address)
+EUSDManager._accrue(address,address) (src/core/EUSDManager.sol#460-473) has costly operations inside a loop:
+	- totalDebt += fee (src/core/EUSDManager.sol#467)
+	Calls stack containing the loop:
+		EUSDManager.redeem(address,uint256,uint256,uint256,address)
+		EUSDManager._redeemFrom(address,address,uint256,uint256,address)
+EUSDManager._redeemFrom(address,address,uint256,uint256,address) (src/core/EUSDManager.sol#479-504) has costly operations inside a loop:
+	- totalDebt -= repaid (src/core/EUSDManager.sol#496)
+	Calls stack containing the loop:
+		EUSDManager.redeem(address,uint256,uint256,uint256,address)
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#costly-operations-inside-a-loop
+INFO:Detectors:
+Detector: dead-code
+BorrowManager._currentRateBps() (src/core/BorrowManager.sol#1063-1065) is never used and should be removed
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#dead-code
+INFO:Detectors:
+Detector: missing-inheritance
+OwnDebtToken (src/tokens/OwnDebtToken.sol#13-120) should inherit from IAaveDebtToken (src/interfaces/external/IAaveDebtToken.sol#10-21)
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#missing-inheritance
+INFO:Slither:src/ analyzed (107 contracts with 88 detectors), 90 result(s) found
