@@ -34,11 +34,14 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
     /// @param price       Oracle price (18 decimals).
     /// @param timestamp   Oracle price timestamp.
     /// @param debt        Debt before the change (18 decimals).
+    /// @param value       Position value before the change at `price` (18 decimals); for a delegate
+    ///                    rebalance, re-read once the old range is removed.
     /// @param ratioBps    Ratio before the change at `price` (BPS).
     struct HealthSnapshot {
         uint256 price;
         uint256 timestamp;
         uint256 debt;
+        uint256 value;
         uint256 ratioBps;
     }
 
@@ -156,7 +159,7 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
         _validateRatios(params.mcrBps, params.liquidationThresholdBps, params.liquidationBonusBps);
         if (
             params.stakedFeeBps > BPS || params.unstakedFeeBps > BPS || params.poolPriceBandBps == 0
-                || params.poolPriceBandBps > BPS || params.mintPriceMaxAge == 0 || params.redeemMinAssetShareBps > BPS
+                || params.poolPriceBandBps >= BPS || params.mintPriceMaxAge == 0 || params.redeemMinAssetShareBps > BPS
                 || params.redeemFeeBps >= BPS
         ) revert InvalidRiskParams();
         registry = IProtocolRegistry(registry_);
@@ -177,7 +180,7 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
     /// @inheritdoc IEUSDLiquidityManager
     function deposit(uint256 poolId, uint256 amount) external override nonReentrant {
         PoolConfig storage cfg = _requirePool(poolId);
-        if (amount == 0) revert ZeroAmount();
+        _nonZero(amount);
         Position storage p = _accrue(poolId, msg.sender);
         // A disabled pool takes no new exposure, but an existing debtor may still top up.
         if (!cfg.enabled && p.debt == 0) revert PoolDisabled(poolId);
@@ -189,7 +192,7 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
     /// @inheritdoc IEUSDLiquidityManager
     function withdraw(uint256 poolId, uint256 amount) external override nonReentrant {
         PoolConfig storage cfg = _requirePool(poolId);
-        if (amount == 0) revert ZeroAmount();
+        _nonZero(amount);
         Position storage p = _accrue(poolId, msg.sender);
         address vault = _requireVault(poolId, msg.sender, p);
         uint256 idle = _assetBalance(cfg, vault);
@@ -198,7 +201,7 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
         uint256 debt = p.debt;
         if (debt > 0) {
             if (mintPaused) revert MintingPaused();
-            uint256 price = _freshPrice(cfg.ticker, _riskParams.mintPriceMaxAge);
+            uint256 price = _freshPrice(cfg.ticker);
             uint256 ratio = _ratioBps(_value(cfg, vault, price) - _assetValue(cfg, amount, price), debt);
             if (ratio < _riskParams.mcrBps) revert CollateralRatioTooLow(ratio, _riskParams.mcrBps);
         }
@@ -215,14 +218,15 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
         PoolConfig storage cfg = _requireEnabledPool(poolId);
         Position storage p = _accrue(poolId, msg.sender);
         address vault = _vaultFor(poolId, cfg, p);
-        if (p.staked != params.staked) _setStaked(poolId, p, vault, params.staked);
+        if (p.staked != params.staked) _setStaked(poolId, msg.sender, p, vault, params.staked);
         if (params.assetDeposit > 0) {
             IERC20(cfg.asset).safeTransferFrom(msg.sender, vault, params.assetDeposit);
             emit AssetDeposited(poolId, msg.sender, params.assetDeposit);
         }
 
         HealthSnapshot memory before = _snapshot(cfg, p, vault);
-        liquidity = _add(poolId, p, vault, params.tickLower, params.tickUpper, params.assetMax, params.eusdMax);
+        (liquidity,) =
+            _add(poolId, msg.sender, p, vault, params.tickLower, params.tickUpper, params.assetMax, params.eusdMax);
         _checkHealth(cfg, p, vault, before);
     }
 
@@ -243,41 +247,41 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
     }
 
     /// @inheritdoc IEUSDLiquidityManager
-    function reposition(
-        RepositionParams calldata params
+    function rebalance(
+        RebalanceParams calldata params
     ) external override nonReentrant returns (uint128 liquidity) {
-        uint256 poolId = params.poolId;
-        PoolConfig storage cfg = _requireEnabledPool(poolId);
-        Position storage p = _accrue(poolId, msg.sender);
-        address vault = _requireVault(poolId, msg.sender, p);
+        address owner = params.owner;
+        PoolConfig storage cfg = _requireEnabledPool(params.poolId);
+        Position storage p = _accrue(params.poolId, owner);
+        address vault = _requireVault(params.poolId, owner, p);
+        if (msg.sender != owner && msg.sender != ILiquidityVault(vault).delegate()) revert OnlyOwnerOrDelegate();
 
         HealthSnapshot memory before = _snapshot(cfg, p, vault);
-        (,, uint128 held) = ILiquidityVault(vault).range();
-        if (held > 0) _remove(poolId, msg.sender, vault, held, params.assetMin, params.eusdMin);
-        liquidity = _add(poolId, p, vault, params.tickLower, params.tickUpper, params.assetMax, params.eusdMax);
-        _checkHealth(cfg, p, vault, before);
+        // A delegate's loss is measured at this price, so it must be fresh even with no swap or mint.
+        if (msg.sender != owner) _requireFresh(before.timestamp);
+        uint256 swapOut = _unwind(cfg, p, vault, before, params);
+        liquidity = _readd(cfg, p, vault, before, params);
+        emit Rebalanced(params.poolId, owner, msg.sender, params.assetToEusd, params.swapAmount, swapOut);
     }
 
     /// @inheritdoc IEUSDLiquidityManager
     function setStaked(uint256 poolId, bool staked) external override nonReentrant {
         _requirePool(poolId);
         Position storage p = _accrue(poolId, msg.sender);
-        _setStaked(poolId, p, _requireVault(poolId, msg.sender, p), staked);
+        _setStaked(poolId, msg.sender, p, _requireVault(poolId, msg.sender, p), staked);
     }
 
     /// @inheritdoc IEUSDLiquidityManager
     function repay(uint256 poolId, address owner, uint256 amount) external override nonReentrant {
         _requirePool(poolId);
         if (owner == address(0)) revert ZeroAddress();
-        if (amount == 0) revert ZeroAmount();
+        _nonZero(amount);
         Position storage p = _accrue(poolId, owner);
         if (p.debt == 0) revert NoDebt(poolId, owner);
 
         uint256 repaid = amount > p.debt ? p.debt : amount;
         uint256 remaining = p.debt - repaid;
-        if (remaining != 0 && remaining < _riskParams.minDebt) {
-            revert BelowMinimumDebt(remaining, _riskParams.minDebt);
-        }
+        _checkRemaining(remaining);
         _reduceDebt(p, repaid);
         _burn(msg.sender, repaid);
         emit DebtRepaid(poolId, owner, msg.sender, repaid, remaining);
@@ -303,17 +307,19 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
 
     /// @inheritdoc IEUSDLiquidityManager
     /// @dev No pool price band: the valuation is a lower bound wherever the pool trades, and a lagging
-    ///      pool must not hold up a liquidation. The bonus is on all of the cleared debt, so how the
-    ///      pool splits the removed share does not change the payout. A partial liquidation takes
-    ///      at most the cleared share of the position's value, so the ratio of what remains never
-    ///      falls.
+    ///      pool must not hold up a liquidation. The payout is capped at the vault's asset, so a pool
+    ///      pushed above the range before the call leaves the liquidator little or no bonus; liquidators
+    ///      should simulate first or send privately. A partial liquidation takes at most the cleared
+    ///      share of the position's value, so the ratio of what remains never falls. Idle eUSD (e.g.
+    ///      from a harvest) is burned against the debt before the ratio check.
     function liquidate(uint256 poolId, address owner, uint256 amount) external override nonReentrant {
         PoolConfig storage cfg = _requirePool(poolId);
-        if (amount == 0) revert ZeroAmount();
+        _nonZero(amount);
         Position storage p = _accrue(poolId, owner);
+        address vault = p.vault;
+        _burnIdle(poolId, owner, p, vault);
         uint256 debt = p.debt;
         if (debt == 0) revert NoDebt(poolId, owner);
-        address vault = p.vault;
 
         (uint256 price,) = _oracle().getPrice(cfg.ticker);
         uint256 value = _value(cfg, vault, price);
@@ -324,9 +330,7 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
         }
         uint256 cleared = amount > debt ? debt : amount;
         uint256 remaining = debt - cleared;
-        if (remaining != 0 && remaining < _riskParams.minDebt) {
-            revert BelowMinimumDebt(remaining, _riskParams.minDebt);
-        }
+        _checkRemaining(remaining);
 
         // Rounded up, so the share of the range removed is at least the share of the debt cleared.
         _removeShare(poolId, owner, vault, cleared, debt);
@@ -347,9 +351,9 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
         uint256 minAssetOut
     ) external override nonReentrant returns (uint256 assetOut, uint256 burned) {
         PoolConfig storage cfg = _requirePool(poolId);
-        if (amount == 0) revert ZeroAmount();
+        _nonZero(amount);
         if (_riskParams.redeemMinAssetShareBps == 0) revert RedeemDisabled();
-        uint256 price = _freshPrice(cfg.ticker, _riskParams.mintPriceMaxAge);
+        uint256 price = _freshPrice(cfg.ticker);
         for (uint256 i; i < owners.length && burned < amount; ++i) {
             (uint256 repaid, uint256 seized) = _redeemFrom(poolId, cfg, owners[i], price, amount - burned);
             burned += repaid;
@@ -423,7 +427,7 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
     function setPoolPriceBand(
         uint16 poolPriceBandBps
     ) external override onlyAdmin {
-        if (poolPriceBandBps == 0 || poolPriceBandBps > BPS) revert InvalidRiskParams();
+        if (poolPriceBandBps == 0 || poolPriceBandBps >= BPS) revert InvalidRiskParams();
         _riskParams.poolPriceBandBps = poolPriceBandBps;
         emit PoolPriceBandSet(poolPriceBandBps);
     }
@@ -522,71 +526,149 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
         emit VaultCreated(poolId, msg.sender, vault);
     }
 
-    /// @dev Switch the caller's position between the staked and unstaked fee. The position must
-    ///      be accrued, so the old rate applies up to now.
+    /// @dev Switch a position between the staked and unstaked fee. The position must be accrued,
+    ///      so the old rate applies up to now.
     /// @param poolId Pool id.
-    /// @param p      The caller's position (accrued).
-    /// @param vault  The caller's vault.
+    /// @param owner  Position owner.
+    /// @param p      The position (accrued).
+    /// @param vault  The position's vault.
     /// @param staked Whether the position should be staked.
-    function _setStaked(uint256 poolId, Position storage p, address vault, bool staked) private {
+    function _setStaked(uint256 poolId, address owner, Position storage p, address vault, bool staked) private {
         p.staked = staked;
         p.feeIndexSnapshot = staked ? _feeIndexes.staked : _feeIndexes.unstaked;
         ILiquidityVault(vault).setStaked(staked);
-        emit StakedSet(poolId, msg.sender, staked);
+        emit StakedSet(poolId, owner, staked);
     }
 
-    /// @dev Put liquidity into the caller's range: mint the eUSD the vault lacks for `eusdMax`, add,
+    /// @dev First half of a rebalance: remove the whole range, swap if asked, set the staked mode.
+    /// @param cfg    The pool's configuration.
+    /// @param p      The position (accrued).
+    /// @param vault  The position's vault.
+    /// @param before Snapshot taken before the rebalance.
+    /// @param params The rebalance arguments.
+    /// @return swapOut Amount the swap bought (0 when no swap).
+    function _unwind(
+        PoolConfig storage cfg,
+        Position storage p,
+        address vault,
+        HealthSnapshot memory before,
+        RebalanceParams calldata params
+    ) private returns (uint256 swapOut) {
+        _removeAll(params.poolId, params.owner, vault, params.assetMin, params.eusdMin);
+        // Removal can bring in value the snapshot does not count (e.g. Aero swap fees), so a
+        // delegate's loss is measured from what the vault holds once the range is out.
+        if (msg.sender != params.owner) before.value = _value(cfg, vault, before.price);
+        if (params.swapAmount > 0) swapOut = _swap(cfg, vault, before, params);
+        if (p.staked != params.staked) _setStaked(params.poolId, params.owner, p, vault, params.staked);
+    }
+
+    /// @dev Second half of a rebalance: check the band again after the swap, add the new range,
+    ///      apply the health rule and charge a delegate's loss to the vault's budget.
+    /// @param cfg    The pool's configuration.
+    /// @param p      The position (accrued).
+    /// @param vault  The position's vault.
+    /// @param before Snapshot taken before the rebalance.
+    /// @param params The rebalance arguments.
+    /// @return liquidity Liquidity added.
+    function _readd(
+        PoolConfig storage cfg,
+        Position storage p,
+        address vault,
+        HealthSnapshot memory before,
+        RebalanceParams calldata params
+    ) private returns (uint128 liquidity) {
+        _checkBand(vault, before.price);
+        uint256 paid;
+        (liquidity, paid) = _add(
+            params.poolId, params.owner, p, vault, params.tickLower, params.tickUpper, params.assetMax, params.eusdMax
+        );
+        uint256 value = _checkHealth(cfg, p, vault, before);
+        if (msg.sender != params.owner) {
+            ILiquidityVault(vault).chargeDelegateLoss(
+                Math.saturatingSub(before.value, before.debt), Math.saturatingSub(value + paid, p.debt)
+            );
+        }
+    }
+
+    /// @dev Swap in the vault for at least the oracle value at the snapshot price less the pool
+    ///      price band, which needs the snapshot price to be fresh, and at least `swapMinOut`.
+    /// @param cfg    The pool's configuration.
+    /// @param vault  The position's vault.
+    /// @param before Snapshot taken before the rebalance.
+    /// @param params The rebalance arguments.
+    /// @return Amount bought.
+    function _swap(
+        PoolConfig storage cfg,
+        address vault,
+        HealthSnapshot memory before,
+        RebalanceParams calldata params
+    ) private returns (uint256) {
+        _requireFresh(before.timestamp);
+        uint256 amountIn = params.swapAmount;
+        uint256 fair = params.assetToEusd
+            ? _assetValue(cfg, amountIn, before.price)
+            : Math.mulDiv(amountIn, _scale(cfg), before.price);
+        // Rounded up: the vault accepts no less than the limit allows.
+        uint256 minOut = Math.mulDiv(fair, BPS - _riskParams.poolPriceBandBps, BPS, Math.Rounding.Ceil);
+        return
+            ILiquidityVault(vault).swap(params.assetToEusd, amountIn, Math.max(minOut, params.swapMinOut), params.route);
+    }
+
+    /// @dev Put liquidity into a position's range: mint the eUSD the vault lacks for `eusdMax`, add,
     ///      then burn the vault's leftover eUSD against the debt.
     /// @param poolId    Pool id.
-    /// @param p         The caller's position (accrued).
-    /// @param vault     The caller's vault.
+    /// @param owner     Position owner.
+    /// @param p         The position (accrued).
+    /// @param vault     The position's vault.
     /// @param tickLower Lower tick.
     /// @param tickUpper Upper tick.
     /// @param assetMax  Most idle asset to use (asset units).
     /// @param eusdMax   Most eUSD to use (18 decimals).
     /// @return liquidity Liquidity added.
+    /// @return paid      eUSD sent to the owner once the debt is zero (18 decimals).
     function _add(
         uint256 poolId,
+        address owner,
         Position storage p,
         address vault,
         int24 tickLower,
         int24 tickUpper,
         uint256 assetMax,
         uint256 eusdMax
-    ) private returns (uint128 liquidity) {
-        uint256 idleEusd = _eusd.balanceOf(vault);
+    ) private returns (uint128 liquidity, uint256 paid) {
+        uint256 idleEusd = _eusdBalance(vault);
         uint256 minted;
         if (eusdMax > idleEusd) {
             minted = eusdMax - idleEusd;
             p.debt += minted;
             totalDebt += minted;
             _eusd.mint(vault, minted);
-            emit EUSDMinted(poolId, msg.sender, minted, p.debt);
+            emit EUSDMinted(poolId, owner, minted, p.debt);
         }
         uint256 assetUsed;
         uint256 eusdUsed;
         (liquidity, assetUsed, eusdUsed) = ILiquidityVault(vault).addLiquidity(tickLower, tickUpper, assetMax, eusdMax);
-        emit LiquidityAdded(poolId, msg.sender, tickLower, tickUpper, liquidity, assetUsed, eusdUsed);
-        _burnUnminted(poolId, p, vault, Math.min(minted, eusdMax - eusdUsed));
-        _burnIdle(poolId, msg.sender, p, vault);
+        emit LiquidityAdded(poolId, owner, tickLower, tickUpper, liquidity, assetUsed, eusdUsed);
+        _burnUnminted(poolId, owner, p, vault, Math.min(minted, eusdMax - eusdUsed));
+        paid = _burnIdle(poolId, owner, p, vault);
     }
 
     /// @dev Burn eUSD minted by {_add} that the range did not use. It was never lent, so it comes
     ///      off principal and leaves accrued fees as they are. The debt stays zero or at least
     ///      `minDebt`; eUSD that cannot be burned stays idle.
     /// @param poolId Pool id.
-    /// @param p      The caller's position.
+    /// @param owner  Position owner.
+    /// @param p      The position.
     /// @param vault  The position's vault.
     /// @param unused Minted eUSD left idle (18 decimals).
-    function _burnUnminted(uint256 poolId, Position storage p, address vault, uint256 unused) private {
+    function _burnUnminted(uint256 poolId, address owner, Position storage p, address vault, uint256 unused) private {
         uint256 debt = p.debt;
-        uint256 minDebt = _riskParams.minDebt;
-        if (debt - unused != 0 && debt - unused < minDebt) unused = debt > minDebt ? debt - minDebt : 0;
+        unused = _retirable(debt, unused);
         if (unused == 0) return;
         p.debt = debt - unused;
         totalDebt -= unused;
         _burn(vault, unused);
-        emit DebtRepaid(poolId, msg.sender, vault, unused, debt - unused);
+        emit DebtRepaid(poolId, owner, vault, unused, debt - unused);
     }
 
     /// @dev Remove liquidity into the vault.
@@ -606,6 +688,24 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
     ) private {
         (uint256 assetOut, uint256 eusdOut) = ILiquidityVault(vault).removeLiquidity(liquidity, assetMin, eusdMin);
         emit LiquidityRemoved(poolId, owner, liquidity, assetOut, eusdOut);
+    }
+
+    /// @dev Remove the vault's whole range, if it holds one.
+    /// @param poolId  Pool id.
+    /// @param owner   Position owner.
+    /// @param vault   The vault.
+    /// @param assetMin Least asset out.
+    /// @param eusdMin  Least eUSD out.
+    /// @return held   Liquidity removed.
+    function _removeAll(
+        uint256 poolId,
+        address owner,
+        address vault,
+        uint256 assetMin,
+        uint256 eusdMin
+    ) private returns (uint128 held) {
+        (,, held) = ILiquidityVault(vault).range();
+        if (held > 0) _remove(poolId, owner, vault, held, assetMin, eusdMin);
     }
 
     /// @dev Remove `part` / `whole` of the range, rounded up (all of it when `part` is `whole`).
@@ -633,10 +733,9 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
         PoolConfig storage cfg = _requirePool(poolId);
         Position storage p = _accrue(poolId, msg.sender);
         address vault = _requireVault(poolId, msg.sender, p);
-        (,, uint128 held) = ILiquidityVault(vault).range();
-        if (held > 0) _remove(poolId, msg.sender, vault, held, assetMin, eusdMin);
+        uint128 held = _removeAll(poolId, msg.sender, vault, assetMin, eusdMin);
 
-        uint256 vaultEusd = _eusd.balanceOf(vault);
+        uint256 vaultEusd = _eusdBalance(vault);
         uint256 assetOut = _assetBalance(cfg, vault);
         if (p.debt == 0 && held == 0 && vaultEusd == 0 && assetOut == 0) revert EmptyPosition(poolId, msg.sender);
         _settleClose(poolId, cfg, p, vault, vaultEusd, assetOut, feesFromAsset);
@@ -695,8 +794,8 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
         uint256 assetAvailable
     ) private view returns (uint256 settled, uint256 feeAsset) {
         if (fees == 0) return (0, 0);
-        uint256 price = _freshPrice(cfg.ticker, _riskParams.mintPriceMaxAge);
-        feeAsset = Math.mulDiv(fees, 10 ** cfg.assetDecimals, price, Math.Rounding.Ceil);
+        uint256 price = _freshPrice(cfg.ticker);
+        feeAsset = Math.mulDiv(fees, _scale(cfg), price, Math.Rounding.Ceil);
         if (feeAsset <= assetAvailable) return (fees, feeAsset);
         settled = _assetValue(cfg, assetAvailable, price);
         feeAsset = settled == 0 ? 0 : assetAvailable;
@@ -709,20 +808,25 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
     /// @param owner  Position owner.
     /// @param p      The position (accrued).
     /// @param vault  The position's vault.
-    function _burnIdle(uint256 poolId, address owner, Position storage p, address vault) private {
-        uint256 balance = _eusd.balanceOf(vault);
-        if (balance == 0) return;
+    /// @return paid  eUSD sent to the owner (18 decimals).
+    function _burnIdle(
+        uint256 poolId,
+        address owner,
+        Position storage p,
+        address vault
+    ) private returns (uint256 paid) {
+        uint256 balance = _eusdBalance(vault);
+        if (balance == 0) return 0;
         uint256 debt = p.debt;
-        uint256 burned = Math.min(balance, debt);
-        uint256 minDebt = _riskParams.minDebt;
-        if (debt - burned != 0 && debt - burned < minDebt) burned = debt > minDebt ? debt - minDebt : 0;
+        uint256 burned = _retirable(debt, balance);
         if (burned > 0) {
             _reduceDebt(p, burned);
             _burn(vault, burned);
             emit DebtRepaid(poolId, owner, vault, burned, debt - burned);
         }
         if (p.debt == 0 && balance > burned) {
-            _send(vault, address(_eusd), owner, balance - burned);
+            paid = balance - burned;
+            _send(vault, address(_eusd), owner, paid);
         }
     }
 
@@ -752,7 +856,7 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
         (out.repaid, out.seized) = _payLiquidator(cfg, p, vault, price, cleared, maxTake);
         if (p.debt == 0) {
             out.assetRefund = _assetBalance(cfg, vault);
-            out.eusdRefund = _eusd.balanceOf(vault);
+            out.eusdRefund = _eusdBalance(vault);
             if (out.assetRefund > 0) _send(vault, cfg.asset, owner, out.assetRefund);
             if (out.eusdRefund > 0) _send(vault, address(_eusd), owner, out.eusdRefund);
         } else {
@@ -782,9 +886,9 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
         uint256 cleared,
         uint256 maxTake
     ) private returns (uint256 repaid, uint256 seized) {
-        uint256 fromVault = Math.min(_eusd.balanceOf(vault), cleared);
+        uint256 fromVault = Math.min(_eusdBalance(vault), cleared);
         repaid = cleared - fromVault;
-        uint256 scale = 10 ** cfg.assetDecimals;
+        uint256 scale = _scale(cfg);
         // Rounded down: the liquidator gets at most repaid + cleared × bonus at the oracle price.
         seized = Math.mulDiv(repaid * BPS + cleared * _riskParams.liquidationBonusBps, scale, price * BPS);
         if (maxTake != type(uint256).max) {
@@ -818,7 +922,7 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
         address vault = p.vault;
         if (p.debt == 0) return (0, 0);
         (uint256 cover, uint256 rangeAsset) = _redeemCheck(cfg, vault, price, p.debt);
-        repaid = _redeemable(p.debt, Math.min(maxAmount, cover));
+        repaid = _retirable(p.debt, Math.min(maxAmount, cover));
         if (repaid == 0) return (0, 0);
         seized = _redeemSeize(cfg, repaid, price);
         uint256 idle = _freeAsset(poolId, cfg, owner, vault, seized, rangeAsset);
@@ -878,12 +982,46 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
         idle = _assetBalance(cfg, vault);
     }
 
-    /// @dev Debt a redemption may retire: at most `amount` and the debt, leaving zero or at least
+    /// @dev One whole unit of the pool's asset.
+    /// @param cfg The pool's configuration.
+    /// @return 10 ** asset decimals.
+    function _scale(
+        PoolConfig storage cfg
+    ) private view returns (uint256) {
+        return 10 ** cfg.assetDecimals;
+    }
+
+    /// @dev eUSD held by a vault.
+    /// @param vault The vault.
+    /// @return Balance (18 decimals).
+    function _eusdBalance(
+        address vault
+    ) private view returns (uint256) {
+        return _eusd.balanceOf(vault);
+    }
+
+    /// @dev Revert on a zero amount.
+    /// @param amount The amount.
+    function _nonZero(
+        uint256 amount
+    ) private pure {
+        if (amount == 0) revert ZeroAmount();
+    }
+
+    /// @dev Revert if `remaining` debt is neither zero nor at least `minDebt`.
+    /// @param remaining Debt left (18 decimals).
+    function _checkRemaining(
+        uint256 remaining
+    ) private view {
+        if (remaining != 0 && remaining < _riskParams.minDebt) revert BelowMinimumDebt(remaining, _riskParams.minDebt);
+    }
+
+    /// @dev Debt that may be retired: at most `amount` and the debt, leaving zero or at least
     ///      `minDebt`.
     /// @param debt   The position's debt (18 decimals).
     /// @param amount Requested amount (18 decimals).
     /// @return Debt to retire (18 decimals).
-    function _redeemable(uint256 debt, uint256 amount) private view returns (uint256) {
+    function _retirable(uint256 debt, uint256 amount) private view returns (uint256) {
         if (amount >= debt) return debt;
         uint256 minDebt = _riskParams.minDebt;
         if (debt - amount >= minDebt) return amount;
@@ -896,7 +1034,7 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
     /// @param price  Oracle price (18 decimals).
     /// @return Asset amount (asset units).
     function _redeemSeize(PoolConfig storage cfg, uint256 repaid, uint256 price) private view returns (uint256) {
-        return Math.mulDiv(repaid, (10 ** cfg.assetDecimals) * (BPS - _riskParams.redeemFeeBps), price * BPS);
+        return Math.mulDiv(repaid, (_scale(cfg)) * (BPS - _riskParams.redeemFeeBps), price * BPS);
     }
 
     /// @dev eUSD that `amount` asset covers at `price` after `redeemFeeBps` (rounded down).
@@ -952,11 +1090,19 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
         address vault
     ) private view returns (HealthSnapshot memory snap) {
         (snap.price, snap.timestamp) = _oracle().getPrice(cfg.ticker);
-        uint256 pool = ILiquidityVault(vault).poolPrice();
-        uint256 gap = pool > snap.price ? pool - snap.price : snap.price - pool;
-        if (gap * BPS > snap.price * _riskParams.poolPriceBandBps) revert PoolPriceOutOfBand(pool, snap.price);
+        _checkBand(vault, snap.price);
         snap.debt = p.debt;
-        snap.ratioBps = _ratioBps(_value(cfg, vault, snap.price), snap.debt);
+        snap.value = _value(cfg, vault, snap.price);
+        snap.ratioBps = _ratioBps(snap.value, snap.debt);
+    }
+
+    /// @dev Revert unless the vault's pool price is within the band of `price`.
+    /// @param vault The position's vault.
+    /// @param price Oracle price (18 decimals).
+    function _checkBand(address vault, uint256 price) private view {
+        uint256 pool = ILiquidityVault(vault).poolPrice();
+        uint256 gap = pool > price ? pool - price : price - pool;
+        if (gap * BPS > price * _riskParams.poolPriceBandBps) revert PoolPriceOutOfBand(pool, price);
     }
 
     /// @dev Health rule after a liquidity change (see {IEUSDLiquidityManager}), at the snapshot price.
@@ -964,25 +1110,27 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
     /// @param p      The position after the change.
     /// @param vault  The position's vault.
     /// @param before Snapshot taken before the change.
+    /// @return Position value after the change at the snapshot price (18 decimals).
     function _checkHealth(
         PoolConfig storage cfg,
         Position storage p,
         address vault,
         HealthSnapshot memory before
-    ) private view {
+    ) private view returns (uint256) {
         uint256 debt = p.debt;
         uint256 mcr = _riskParams.mcrBps;
-        uint256 ratio = _ratioBps(_value(cfg, vault, before.price), debt);
+        uint256 value = _value(cfg, vault, before.price);
+        uint256 ratio = _ratioBps(value, debt);
         if (debt > before.debt) {
             if (mintPaused) revert MintingPaused();
-            uint256 maxAge = _riskParams.mintPriceMaxAge;
-            if (block.timestamp > before.timestamp + maxAge) revert StaleMintPrice(before.timestamp, maxAge);
+            _requireFresh(before.timestamp);
             if (debt < _riskParams.minDebt) revert BelowMinimumDebt(debt, _riskParams.minDebt);
             if (totalDebt > _riskParams.debtCeiling) revert DebtCeilingExceeded(totalDebt, _riskParams.debtCeiling);
             if (ratio < mcr) revert CollateralRatioTooLow(ratio, mcr);
         } else if (ratio < mcr && ratio < before.ratioBps) {
             revert CollateralRatioTooLow(ratio, Math.min(mcr, before.ratioBps));
         }
+        return value;
     }
 
     // ──────────────────────────────────────────────────────────
@@ -1035,13 +1183,23 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
         return IOracleVerifier(registry.oracle());
     }
 
-    /// @dev Oracle price no older than `maxAge`. A future timestamp counts as current.
+    /// @dev Oracle price no older than `mintPriceMaxAge`.
     /// @param ticker Oracle ticker.
-    /// @param maxAge Max age (seconds).
     /// @return price Price (18 decimals).
-    function _freshPrice(bytes32 ticker, uint256 maxAge) private view returns (uint256 price) {
+    function _freshPrice(
+        bytes32 ticker
+    ) private view returns (uint256 price) {
         uint256 ts;
         (price, ts) = _oracle().getPrice(ticker);
+        _requireFresh(ts);
+    }
+
+    /// @dev Revert if a price stamped `ts` is older than `mintPriceMaxAge`. A future stamp counts as current.
+    /// @param ts Price timestamp.
+    function _requireFresh(
+        uint256 ts
+    ) private view {
+        uint256 maxAge = _riskParams.mintPriceMaxAge;
         if (block.timestamp > ts + maxAge) revert StaleMintPrice(ts, maxAge);
     }
 
@@ -1061,7 +1219,7 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
     /// @param price  Asset price (18 decimals).
     /// @return Value (18 decimals).
     function _assetValue(PoolConfig storage cfg, uint256 amount, uint256 price) private view returns (uint256) {
-        return Math.mulDiv(amount, price, 10 ** cfg.assetDecimals);
+        return Math.mulDiv(amount, price, _scale(cfg));
     }
 
     /// @dev Collateral ratio in BPS. Floor rounding: measured ratios err against the debtor.
@@ -1142,7 +1300,9 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
     function collateralRatioBps(uint256 poolId, address owner) public view override returns (uint256) {
         uint256 debt = currentDebt(poolId, owner);
         if (debt == 0) return type(uint256).max;
-        return _ratioBps(collateralValue(poolId, owner), debt);
+        // As {liquidate} sees it: idle eUSD burned against the debt first.
+        uint256 burnable = _retirable(debt, _eusdBalance(_positions[poolId][owner].vault));
+        return _ratioBps(collateralValue(poolId, owner) - burnable, debt - burnable);
     }
 
     /// @inheritdoc IEUSDLiquidityManager

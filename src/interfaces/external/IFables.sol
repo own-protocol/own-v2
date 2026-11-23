@@ -112,6 +112,16 @@ interface IFablesEmissionStream {
     function ff() external view returns (address);
 }
 
+/// @title IFablesPoolRegistry — Fables' public index of its pools
+interface IFablesPoolRegistry {
+    /// @notice Whether a pool id was ever registered.
+    /// @param id The v4 pool id (keccak256 of the abi-encoded PoolKey).
+    /// @return Whether it is registered.
+    function isRegistered(
+        bytes32 id
+    ) external view returns (bool);
+}
+
 /// @title IExtsload — Uniswap v4 PoolManager raw storage reads
 interface IExtsload {
     /// @notice Read one storage slot of the PoolManager.
@@ -120,4 +130,54 @@ interface IExtsload {
     function extsload(
         bytes32 slot
     ) external view returns (bytes32 value);
+}
+
+/// @notice Uniswap v4 swap arguments, ABI-identical to v4-core's `SwapParams`.
+/// @param zeroForOne        Whether currency0 is sold for currency1.
+/// @param amountSpecified   Negative for exact input, positive for exact output.
+/// @param sqrtPriceLimitX96 Price the swap may not cross (Q64.96).
+struct SwapParams {
+    bool zeroForOne;
+    int256 amountSpecified;
+    uint160 sqrtPriceLimitX96;
+}
+
+/// @title IPoolManagerSwap — the subset of the Uniswap v4 PoolManager used to swap
+/// @notice Swaps run inside `unlock`, which calls back `unlockCallback` on the caller. Deltas are
+///         paid with `sync` + transfer + `settle` and collected with `take`.
+interface IPoolManagerSwap {
+    /// @notice Unlock the PoolManager and call `unlockCallback(data)` on the caller.
+    /// @param data Passed to the callback.
+    /// @return The callback's result.
+    function unlock(
+        bytes calldata data
+    ) external returns (bytes memory);
+
+    /// @notice Swap in a pool.
+    /// @param key      Pool key.
+    /// @param params   Swap arguments.
+    /// @param hookData Data passed to the pool's hook.
+    /// @return delta Caller's balance delta: amount0 in the upper 128 bits, amount1 in the lower,
+    ///               negative for what the caller owes.
+    function swap(
+        PoolKey memory key,
+        SwapParams memory params,
+        bytes calldata hookData
+    ) external returns (int256 delta);
+
+    /// @notice Checkpoint a currency's balance before a payment.
+    /// @param currency The currency.
+    function sync(
+        address currency
+    ) external;
+
+    /// @notice Credit the payment made since the last `sync`.
+    /// @return paid Amount credited.
+    function settle() external payable returns (uint256 paid);
+
+    /// @notice Withdraw a currency owed to the caller.
+    /// @param currency The currency.
+    /// @param to       Recipient.
+    /// @param amount   Amount.
+    function take(address currency, address to, uint256 amount) external;
 }

@@ -34,7 +34,7 @@ contract EUSDLiquidityManagerInvariantTest is LiquidityManagerSetup {
         bytes4[] memory selectors = new bytes4[](13);
         selectors[0] = handler.addLiquidity.selector;
         selectors[1] = handler.removeLiquidity.selector;
-        selectors[2] = handler.reposition.selector;
+        selectors[2] = handler.rebalance.selector;
         selectors[3] = handler.setStaked.selector;
         selectors[4] = handler.withdraw.selector;
         selectors[5] = handler.repay.selector;

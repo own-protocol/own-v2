@@ -7,9 +7,11 @@ pragma solidity 0.8.28;
 ///         every position's tokens sit in their own contract. Each DEX has its own implementation
 ///         (an "adapter", e.g. FablesAdapter); all vaults of a DEX share one upgradeable beacon.
 ///
-///         Only the manager moves principal: adding and removing liquidity, staking, and token
-///         transfers out. The owner can collect what the position earns on the DEX (swap fees,
-///         emissions) and sweep tokens that are neither the asset nor eUSD.
+///         Only the manager moves principal: adding and removing liquidity, staking, swapping
+///         between the asset and eUSD, and token transfers out. The owner can collect what the
+///         position earns on the DEX (swap fees, emissions), sweep tokens that are neither the
+///         asset nor eUSD, and name a delegate that may manage the position through the manager,
+///         with a daily limit on the value the delegate's calls may lose.
 ///
 ///         The manager values a vault at the oracle price: {holdings} returns the amounts the
 ///         liquidity would hold if the pool traded at that price, plus idle balances. The pool's own
@@ -48,6 +50,18 @@ interface ILiquidityVault {
     /// @param amount Amount sent to the owner.
     event Swept(address indexed token, uint256 amount);
 
+    /// @notice Emitted when the owner sets or clears the delegate.
+    /// @param delegate      The new delegate (zero when cleared).
+    /// @param lossBudgetBps Most of the position's equity the delegate's calls may lose per window (BPS).
+    event DelegateSet(address indexed delegate, uint16 lossBudgetBps);
+
+    /// @notice Emitted when the vault swaps one token for another.
+    /// @param tokenIn   Token sold.
+    /// @param tokenOut  Token bought.
+    /// @param amountIn  Amount sold (tokenIn units).
+    /// @param amountOut Amount bought (tokenOut units).
+    event Swapped(address indexed tokenIn, address indexed tokenOut, uint256 amountIn, uint256 amountOut);
+
     // ──────────────────────────────────────────────────────────
     //  Errors
     // ──────────────────────────────────────────────────────────
@@ -85,6 +99,26 @@ interface ILiquidityVault {
 
     /// @notice Thrown when the pool has not been initialized on the DEX.
     error PoolNotInitialized();
+
+    /// @notice Thrown when a swap returns less than the minimum.
+    /// @param amountOut Amount received.
+    /// @param minOut    Least amount accepted.
+    error InsufficientOutput(uint256 amountOut, uint256 minOut);
+
+    /// @notice Thrown when a swap route is empty of hops it needs, too long, leaves the DEX's
+    ///         pools, or does not lead from the token sold to the token bought.
+    error InvalidRoute();
+
+    /// @notice Thrown when the DEX adapter does not support swaps.
+    error SwapUnsupported();
+
+    /// @notice Thrown when a delegate loss budget above 100% is set.
+    error InvalidLossBudget();
+
+    /// @notice Thrown when a delegate call would take the window's losses past the budget.
+    /// @param usedBps   Losses in the window including this call (BPS of equity).
+    /// @param budgetBps The budget (BPS of equity).
+    error DelegateLossBudgetExceeded(uint256 usedBps, uint256 budgetBps);
 
     // ──────────────────────────────────────────────────────────
     //  Manager
@@ -141,6 +175,29 @@ interface ILiquidityVault {
     /// @param amount Amount.
     function transferToken(address token, address to, uint256 amount) external;
 
+    /// @notice Swap the vault's asset for eUSD or eUSD for asset, exact input, on the DEX. The
+    ///         bought tokens stay in the vault.
+    /// @param assetToEusd Whether asset is sold for eUSD (else eUSD for asset).
+    /// @param amountIn    Amount sold (token units).
+    /// @param minOut      Least amount bought.
+    /// @param route       DEX-specific route; empty swaps in the vault's own pool.
+    /// @return amountOut Amount bought.
+    function swap(
+        bool assetToEusd,
+        uint256 amountIn,
+        uint256 minOut,
+        bytes calldata route
+    ) external returns (uint256 amountOut);
+
+    /// @notice Count a delegate call's loss against the delegate loss budget. Each call losing
+    ///         equity adds the loss as a share of `equityBefore` to the window's total, which may
+    ///         not pass the budget. A window lasts one day from the first losing call after the
+    ///         previous window ended. Gains are not counted.
+    /// @param equityBefore Position equity once the old range is removed: value at the oracle price
+    ///                     less debt.
+    /// @param equityAfter  Position equity after the call at the same price, plus eUSD paid to the owner.
+    function chargeDelegateLoss(uint256 equityBefore, uint256 equityAfter) external;
+
     // ──────────────────────────────────────────────────────────
     //  Owner
     // ──────────────────────────────────────────────────────────
@@ -150,6 +207,14 @@ interface ILiquidityVault {
     function sweep(
         address token
     ) external;
+
+    /// @notice Name the address that may manage this position through the manager besides the
+    ///         owner, or clear it with zero, and set how much of the position's equity, valued at
+    ///         the oracle price, the delegate's calls may lose per window. A delegate can never
+    ///         move tokens out of the vault; its trades may lose value only within the budget.
+    /// @param delegate      The delegate.
+    /// @param lossBudgetBps Most equity the delegate's calls may lose per window (BPS, at most 100%).
+    function setDelegate(address delegate, uint16 lossBudgetBps) external;
 
     // ──────────────────────────────────────────────────────────
     //  Views
@@ -174,6 +239,16 @@ interface ILiquidityVault {
     /// @notice The pool's non-eUSD token.
     /// @return The asset address.
     function asset() external view returns (address);
+
+    /// @notice The position's delegate (zero when none).
+    /// @return The delegate address.
+    function delegate() external view returns (address);
+
+    /// @notice The delegate loss budget and the current window.
+    /// @return budgetBps   Most equity the delegate's calls may lose per window (BPS).
+    /// @return windowStart When the latest window began (unix seconds; it ends one day later).
+    /// @return usedBps     Losses counted in that window (BPS of equity).
+    function delegateLossBudget() external view returns (uint16 budgetBps, uint64 windowStart, uint32 usedBps);
 
     /// @notice The vault's open range and its liquidity. All zero when the vault holds no liquidity.
     /// @return tickLower Lower tick.
