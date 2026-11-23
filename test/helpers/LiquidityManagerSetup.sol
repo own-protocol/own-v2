@@ -95,7 +95,7 @@ contract LiquidityManagerSetup is Test {
 
         ledger = new MockFablesLedger();
         stream = new MockEmissionStream();
-        adapterImpl = new FablesAdapter(address(ledger), address(stream));
+        adapterImpl = new FablesAdapter(address(ledger), address(stream), address(0));
         beacon = new UpgradeableBeacon(address(adapterImpl), admin);
 
         spyKey = PoolKey({
