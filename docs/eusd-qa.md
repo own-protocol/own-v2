@@ -6,7 +6,7 @@ stability fee 2%/yr, minDebt 100 eUSD, debt ceiling 250k eUSD, mint price max ag
 
 The eUSD CDP engine (`EUSDManager`) is built on **Liquity v1's** battle-tested design — the
 sorted-list riskiest-first redemption (`SortedTroves` pattern), hint-based O(1) insertion,
-keeper liquidation with direct burn, and value-neutral redemption as the peg anchor (mainnet
+keeper liquidation with direct burn, and oracle-price redemption as the peg anchor (mainnet
 since 2021). It is a fresh implementation of those mechanisms adapted to Own's oracle/registry
 stack and market-hours price-freshness rules, not a copy of the Liquity codebase.
 
@@ -32,10 +32,10 @@ Yes — `repay` burns eUSD, collateral untouched, ratio strictly improves. Remai
 **Q: How does redemption work for a depositor?**
 Two senses: (a) getting collateral back — `repay` then `withdrawCollateral`, or `closePosition`
 (burns full debt incl. fees, returns all collateral, works off-hours, no oracle);
-(b) being redeemed against — any eUSD holder burns X eUSD and takes exactly $X of eSPY at the
-oracle anchor, from the riskiest positions first (lowest collateral/debt ratio, tracked in a
-sorted list; head = riskiest). Value-neutral to the redeemed owner; they lose upside exposure on
-the seized portion only.
+(b) being redeemed against — any eUSD holder burns X eUSD and takes $X of eSPY at the oracle
+anchor less `redeemFeeBps`, from the riskiest positions first (lowest collateral/debt ratio,
+tracked in a sorted list; head = riskiest). The redeemed owner keeps the fee; they lose upside
+exposure on the seized portion only.
 
 **Q: eSPY at $150 → $200 in a year: mint more? full value back on close?**
 Yes and yes. Ratio uses the live price, so capacity grows (e.g. $100 debt → ~$133 cap; ~$31 more
@@ -150,7 +150,7 @@ collateral absorbs most redemption pressure. Same branch model as Liquity v2.
 ## How this differs from Liquity
 
 Same skeleton — overcollateralized CDPs, sorted-list riskiest-first redemption as the peg floor,
-hint-based insertion, value-neutral redemption math, keeper liquidations with surplus refund,
+hint-based insertion, oracle-price redemption math, keeper liquidations with surplus refund,
 min-debt dust guard. Five real divergences (vs Liquity v1 unless noted):
 
 1. **Market-hours price asymmetry** (our biggest structural addition). Liquity prices ETH 24/7;

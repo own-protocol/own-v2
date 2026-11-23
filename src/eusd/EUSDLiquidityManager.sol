@@ -910,6 +910,7 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
     ) private returns (uint256 repaid, uint256 seized) {
         Position storage p = _accrue(poolId, owner);
         address vault = p.vault;
+        _burnIdle(poolId, owner, p, vault);
         if (p.debt == 0) return (0, 0);
         (uint256 cover, uint256 rangeAsset) = _redeemCheck(cfg, vault, price, p.debt);
         repaid = _retirable(p.debt, Math.min(maxAmount, cover));

@@ -75,8 +75,9 @@ misc/          MoneyFeeCollector, PegArbitrage (keeper tool for the PSM): standa
   eUSD, and the liquidator pays the rest for asset at a bonus. A full one returns what is left to
   the owner.
 - `redeem` burns eUSD against named positions' debt for their asset at the oracle price less
-  `redeemFeeBps`, idle asset first, then from the range. It skips positions with less than
-  `redeemMinAssetShareBps` of their vault in asset at the pool price, and liquidatable ones.
+  `redeemFeeBps`, idle asset first, then from the range. It burns a position's idle eUSD against
+  its debt first, then skips positions with less than `redeemMinAssetShareBps` of their vault in
+  asset at the pool price, and liquidatable ones.
 - The owner can name a delegate on the vault. The owner or the delegate can `rebalance` (remove the
   range, optionally swap asset and eUSD inside the vault at no worse than the oracle price less the
   pool band and at least the caller's `swapMinOut`, with a fresh price, then add the new range,

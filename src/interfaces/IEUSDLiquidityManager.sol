@@ -19,8 +19,8 @@ pragma solidity 0.8.28;
 ///         position look safer than it is.
 ///
 ///         eUSD the vault receives (when liquidity is removed or moved) is burned against the debt
-///         straight away, leaving either no debt or at least `minDebt`; any surplus goes to the
-///         owner once the debt is zero.
+///         straight away, leaving either no debt or at least `minDebt`; what the debt cannot take
+///         stays in the vault as collateral.
 ///
 ///         Health rule after a liquidity change: when the debt grew, minting must be open, the price
 ///         fresh, the debt within the ceiling and at least `minDebt`, and the ratio at least MCR.
@@ -579,15 +579,16 @@ interface IEUSDLiquidityManager {
     /// @param amount Debt to clear, capped at the debt (18 decimals; `type(uint256).max` for all).
     function liquidate(uint256 poolId, address owner, uint256 amount) external;
 
-    /// @notice Burn up to `amount` of the caller's eUSD against the named positions' debt, in order,
-    ///         for asset worth the same at an oracle price no older than `mintPriceMaxAge`, less
-    ///         `redeemFeeBps` (rounded down). A position is skipped when it has no debt, when less than
+    /// @notice Burn up to `amount` of the caller's eUSD against the named positions' debt, in
+    ///         order, for asset worth the same at an oracle price no older than `mintPriceMaxAge`,
+    ///         less `redeemFeeBps` (rounded down). Each position first burns its idle eUSD against
+    ///         its debt, then is skipped when it has no debt, when less than
     ///         `redeemMinAssetShareBps` of its vault is asset at the pool price, or when it is
-    ///         liquidatable. Each pays from its vault's idle asset first, then from just enough of its
-    ///         range; eUSD that range returns is burned against the owner's debt, and what the debt
-    ///         cannot take stays in the vault. Each position is left with zero debt or at least
-    ///         `minDebt`. The fee stays in the owner's vault. When pool
-    ///         rounding frees a few wei less asset than owed, the caller receives what was freed.
+    ///         liquidatable. Each pays from its vault's idle asset first, then from just enough of
+    ///         its range; eUSD that range returns is burned against the owner's debt, and what the
+    ///         debt cannot take stays in the vault. Each position is left with zero debt or at
+    ///         least `minDebt`. The fee stays in the owner's vault. When pool rounding frees a few
+    ///         wei less asset than owed, the caller receives what was freed.
     /// @param poolId      Pool id.
     /// @param owners      Positions to redeem from, in order.
     /// @param amount      Most eUSD to burn (18 decimals).
