@@ -1344,6 +1344,68 @@ contract EUSDManagerTest is Test {
         assertEq(out, 1e18);
     }
 
+    function test_redeem_fee_staysInPosition() public {
+        vm.prank(admin);
+        manager.setRedeemFee(50);
+        _open(alice, 3e18, 1000e18);
+        vm.prank(alice);
+        eusd.transfer(keeper, 500e18);
+
+        vm.expectEmit(address(manager));
+        emit IEUSDManager.RedeemedFromPosition(address(eSPY), alice, 500e18, 0.995e18);
+        vm.expectEmit(address(manager));
+        emit IEUSDManager.Redeemed(address(eSPY), keeper, 500e18, 0.995e18);
+        vm.prank(keeper);
+        (uint256 out, uint256 repaid) = manager.redeem(address(eSPY), 500e18, 0.995e18, 0, address(0));
+
+        assertEq(repaid, 500e18);
+        assertEq(out, 0.995e18, "$500 less 0.5% at $500 per eSPY");
+        assertEq(eSPY.balanceOf(keeper), 1_000_000e18 + 0.995e18);
+        assertEq(manager.getPosition(address(eSPY), alice).debt, 500e18);
+        assertEq(manager.getPosition(address(eSPY), alice).collateral, 2.005e18, "fee stays in the position");
+        assertEq(manager.totalCollateral(address(eSPY)), 2.005e18);
+        assertEq(eSPY.balanceOf(address(manager)), 2.005e18);
+        assertEq(eusd.totalSupply(), manager.totalDebt());
+    }
+
+    function test_redeem_fee_roundsDownForRedeemer() public {
+        vm.prank(admin);
+        manager.setRedeemFee(37);
+        _open(alice, 3e18, 1000e18);
+        oracle.setPrice(SPY, 333e18);
+        vm.prank(alice);
+        eusd.transfer(keeper, 333e18 + 1);
+        vm.prank(keeper);
+        (uint256 out,) = manager.redeem(address(eSPY), 333e18 + 1, 0, 0, address(0));
+        assertEq(out, Math.mulDiv((333e18 + 1) * (10_000 - 37), 1e18, 333e18 * 10_000));
+    }
+
+    function test_redeem_fee_underwaterHead_grossesUpBurn() public {
+        vm.prank(admin);
+        manager.setRedeemFee(50);
+        oracle.setPrice(SPY, 750e18);
+        _open(alice, 2e18, 1000e18);
+        _open(bob, 40e18, 1000e18);
+        vm.prank(alice);
+        eusd.transfer(keeper, 1000e18);
+
+        oracle.setPrice(SPY, 400e18); // alice worth $800 < 1000 debt
+        vm.prank(keeper);
+        (uint256 out, uint256 repaid) = manager.redeem(address(eSPY), 1000e18, 0, 1, address(0));
+        uint256 expected = Math.mulDiv(2e18 * 400e18, 10_000, 1e18 * 9950);
+        assertEq(out, 2e18, "capped at alice's collateral");
+        assertEq(repaid, expected, "burn = collateral value grossed up by the fee");
+        assertGt(repaid, 800e18);
+        assertEq(manager.getPosition(address(eSPY), alice).debt, 1000e18 - expected);
+        assertEq(manager.listHead(address(eSPY)), bob);
+        assertEq(eusd.totalSupply(), manager.totalDebt());
+    }
+
+    function test_redeem_fee_zeroByDefault() public {
+        assertEq(manager.redeemFeeBps(), 0);
+        assertEq(manager.MAX_REDEEM_FEE_BPS(), 2000);
+    }
+
     function test_redeem_underwaterHead_capsSeizure() public {
         oracle.setPrice(SPY, 750e18);
         _open(alice, 2e18, 1000e18);
@@ -1615,6 +1677,32 @@ contract EUSDManagerTest is Test {
         vm.expectRevert(IEUSDManager.InvalidRiskParams.selector);
         vm.prank(admin);
         manager.setMintPriceMaxAge(0);
+    }
+
+    function test_setRedeemFee_setsAndEmits() public {
+        vm.expectEmit(address(manager));
+        emit IEUSDManager.RedeemFeeSet(50);
+        vm.prank(admin);
+        manager.setRedeemFee(50);
+        assertEq(manager.redeemFeeBps(), 50);
+    }
+
+    function test_setRedeemFee_atMax_succeeds() public {
+        vm.prank(admin);
+        manager.setRedeemFee(2000);
+        assertEq(manager.redeemFeeBps(), 2000);
+    }
+
+    function test_setRedeemFee_aboveMax_reverts() public {
+        vm.expectRevert(IEUSDManager.InvalidRiskParams.selector);
+        vm.prank(admin);
+        manager.setRedeemFee(2001);
+    }
+
+    function test_setRedeemFee_onlyAdmin() public {
+        vm.expectRevert(IEUSDManager.OnlyAdmin.selector);
+        vm.prank(operator);
+        manager.setRedeemFee(50);
     }
 
     function test_setMintPaused_operatorOnly() public {

@@ -53,8 +53,9 @@ misc/          MoneyFeeCollector, PegArbitrage (keeper tool for the PSM): standa
   (repay, close, liquidate, redeem) use the last oracle price with no age bound, so closed markets
   never block an exit.
 - Positions with debt sit in a per-collateral list sorted by nominal ratio; the head is the riskiest.
-  Redemptions take $1 of collateral per eUSD from the head. Liquidation is permissionless at a fixed
-  bonus.
+  Redemptions take $1 of collateral per eUSD from the head, less an admin-set `redeemFeeBps`
+  (at most `MAX_REDEEM_FEE_BPS`) that stays in the redeemed position. Liquidation is permissionless
+  at a fixed bonus.
 - The stability fee accrues lazily from a global index and is minted to the treasury, keeping
   eUSD supply equal to Σ position debt across all managers.
 
