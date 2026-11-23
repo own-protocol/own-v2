@@ -71,6 +71,7 @@ contract EUSDManagerInvariantTest is Test {
         eusd.grantRole(eusd.MINTER_ROLE(), address(manager));
         manager.addCollateral(address(eSPY), SPY);
         manager.addCollateral(address(eQQQ), QQQ);
+        manager.setRedeemFee(50);
         vm.stopPrank();
 
         address[] memory actorList = new address[](4);
