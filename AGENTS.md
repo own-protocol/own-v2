@@ -64,7 +64,9 @@ misc/          MoneyFeeCollector, PegArbitrage (keeper tool for the PSM): standa
   vault, a BeaconProxy created on first use, holding the range plus idle asset and eUSD. The manager
   stores only debt; the vault holds the tokens and only the manager moves principal.
 - Minted eUSD only goes into the range (no wallet mint). eUSD the vault gets back is burned against
-  the debt at once. The liquidity is valued at the oracle price (amounts the range would hold there),
+  the debt at once; what the debt cannot take (zero debt or the `minDebt` floor) stays idle in the
+  vault as collateral. Besides a full liquidation's refund, only the owner's own `removeLiquidity`
+  (at zero debt) or `close` pays eUSD out of the vault. The liquidity is valued at the oracle price (amounts the range would hold there),
   a lower bound of its value wherever the pool trades. Adding or moving liquidity needs the pool
   price within a band of the oracle.
 - Two stability fees, staked (earns DEX emissions) and unstaked. Liquidation can be partial: clearing
@@ -83,7 +85,7 @@ misc/          MoneyFeeCollector, PegArbitrage (keeper tool for the PSM): standa
   fresh price. The owner sets a delegate loss budget
   with the delegate (`setDelegate(delegate, lossBudgetBps)`, app default 1%): each delegate
   `rebalance` charges its equity loss at the oracle price (value less debt, measured from the
-  vault once the old range is removed, eUSD paid to the owner counted as kept) to a one-day
+  vault once the old range is removed) to a one-day
   window on the vault and reverts past the budget. Fables
   swap routes take up to 3 hops through pools on the vault pool's hook or in the Fables pool
   registry (adapter immutable `poolRegistry`), e.g. eUSD -> USDG -> SPY.

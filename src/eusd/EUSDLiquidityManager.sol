@@ -225,7 +225,7 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
         }
 
         HealthSnapshot memory before = _snapshot(cfg, p, vault);
-        (liquidity,) =
+        liquidity =
             _add(poolId, msg.sender, p, vault, params.tickLower, params.tickUpper, params.assetMax, params.eusdMax);
         _checkHealth(cfg, p, vault, before);
     }
@@ -242,8 +242,13 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
         Position storage p = _accrue(poolId, msg.sender);
         address vault = _requireVault(poolId, msg.sender, p);
         _remove(poolId, msg.sender, vault, liquidity, assetMin, eusdMin);
-        // Only eUSD leaves the vault, burned 1:1 against the debt, so no health check is needed.
+        // Only eUSD leaves the vault, burned 1:1 against the debt or paid out at zero debt, so no
+        // health check is needed.
         _burnIdle(poolId, msg.sender, p, vault);
+        if (p.debt == 0) {
+            uint256 left = _eusdBalance(vault);
+            if (left > 0) _send(vault, address(_eusd), msg.sender, left);
+        }
     }
 
     /// @inheritdoc IEUSDLiquidityManager
@@ -578,14 +583,13 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
         RebalanceParams calldata params
     ) private returns (uint128 liquidity) {
         _checkBand(vault, before.price);
-        uint256 paid;
-        (liquidity, paid) = _add(
+        liquidity = _add(
             params.poolId, params.owner, p, vault, params.tickLower, params.tickUpper, params.assetMax, params.eusdMax
         );
         uint256 value = _checkHealth(cfg, p, vault, before);
         if (msg.sender != params.owner) {
             ILiquidityVault(vault).chargeDelegateLoss(
-                Math.saturatingSub(before.value, before.debt), Math.saturatingSub(value + paid, p.debt)
+                Math.saturatingSub(before.value, before.debt), Math.saturatingSub(value, p.debt)
             );
         }
     }
@@ -615,7 +619,8 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
     }
 
     /// @dev Put liquidity into a position's range: mint the eUSD the vault lacks for `eusdMax`, add,
-    ///      then burn the vault's leftover eUSD against the debt.
+    ///      then burn the vault's leftover eUSD against the debt. eUSD the debt cannot take stays in
+    ///      the vault.
     /// @param poolId    Pool id.
     /// @param owner     Position owner.
     /// @param p         The position (accrued).
@@ -625,7 +630,6 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
     /// @param assetMax  Most idle asset to use (asset units).
     /// @param eusdMax   Most eUSD to use (18 decimals).
     /// @return liquidity Liquidity added.
-    /// @return paid      eUSD sent to the owner once the debt is zero (18 decimals).
     function _add(
         uint256 poolId,
         address owner,
@@ -635,7 +639,7 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
         int24 tickUpper,
         uint256 assetMax,
         uint256 eusdMax
-    ) private returns (uint128 liquidity, uint256 paid) {
+    ) private returns (uint128 liquidity) {
         uint256 idleEusd = _eusdBalance(vault);
         uint256 minted;
         if (eusdMax > idleEusd) {
@@ -650,7 +654,7 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
         (liquidity, assetUsed, eusdUsed) = ILiquidityVault(vault).addLiquidity(tickLower, tickUpper, assetMax, eusdMax);
         emit LiquidityAdded(poolId, owner, tickLower, tickUpper, liquidity, assetUsed, eusdUsed);
         _burnUnminted(poolId, owner, p, vault, Math.min(minted, eusdMax - eusdUsed));
-        paid = _burnIdle(poolId, owner, p, vault);
+        _burnIdle(poolId, owner, p, vault);
     }
 
     /// @dev Burn eUSD minted by {_add} that the range did not use. It was never lent, so it comes
@@ -801,33 +805,19 @@ contract EUSDLiquidityManager is IEUSDLiquidityManager, Initializable, UUPSUpgra
         feeAsset = settled == 0 ? 0 : assetAvailable;
     }
 
-    /// @dev Burn the vault's eUSD against the debt, leaving the debt at zero or at least `minDebt`
-    ///      (eUSD that cannot be burned stays in the vault, where it counts as collateral). Once
-    ///      the debt is zero, any eUSD left goes to the owner.
+    /// @dev Burn the vault's eUSD against the debt, leaving the debt at zero or at least `minDebt`.
+    ///      eUSD that cannot be burned stays in the vault, where it counts as collateral.
     /// @param poolId Pool id.
     /// @param owner  Position owner.
     /// @param p      The position (accrued).
     /// @param vault  The position's vault.
-    /// @return paid  eUSD sent to the owner (18 decimals).
-    function _burnIdle(
-        uint256 poolId,
-        address owner,
-        Position storage p,
-        address vault
-    ) private returns (uint256 paid) {
-        uint256 balance = _eusdBalance(vault);
-        if (balance == 0) return 0;
+    function _burnIdle(uint256 poolId, address owner, Position storage p, address vault) private {
         uint256 debt = p.debt;
-        uint256 burned = _retirable(debt, balance);
-        if (burned > 0) {
-            _reduceDebt(p, burned);
-            _burn(vault, burned);
-            emit DebtRepaid(poolId, owner, vault, burned, debt - burned);
-        }
-        if (p.debt == 0 && balance > burned) {
-            paid = balance - burned;
-            _send(vault, address(_eusd), owner, paid);
-        }
+        uint256 burned = _retirable(debt, _eusdBalance(vault));
+        if (burned == 0) return;
+        _reduceDebt(p, burned);
+        _burn(vault, burned);
+        emit DebtRepaid(poolId, owner, vault, burned, debt - burned);
     }
 
     /// @dev Pay out a liquidation once its share of the range is in the vault, then either return

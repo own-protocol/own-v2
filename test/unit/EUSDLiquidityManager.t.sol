@@ -844,7 +844,72 @@ contract EUSDLiquidityManagerTest is LiquidityManagerSetup {
         manager.rebalance(params);
         assertEq(_debt(SPY_POOL, alice), 0);
         assertGt(_liquidity(SPY_POOL, alice), 0);
-        assertGt(eusd.balanceOf(alice), aliceEusd, "eUSD beyond the debt goes to the owner");
+        assertEq(eusd.balanceOf(alice), aliceEusd, "nothing paid to the owner");
+        assertGt(eusd.balanceOf(address(_vault(SPY_POOL, alice))), 0, "eUSD beyond the debt stays in the vault");
+    }
+
+    function test_rebalance_zeroDebtLeftover_staysInVault_countsAsCollateral() public {
+        openSpy(alice, 10e18, 3500e18);
+        giveEusd(address(ledger), 1_000_000e18);
+        _delegate(keeper);
+        uint256 aliceEusd = eusd.balanceOf(alice);
+        IEUSDLiquidityManager.RebalanceParams memory params = _swapParams(595e18, 805e18, 8e18, true, 1e18, 100e18);
+        vm.prank(keeper);
+        manager.rebalance(params);
+        FablesAdapter v = _vault(SPY_POOL, alice);
+        uint256 idle = eusd.balanceOf(address(v));
+        assertEq(_debt(SPY_POOL, alice), 0);
+        assertEq(eusd.balanceOf(alice), aliceEusd, "nothing paid to the owner");
+        assertGt(idle, 2000e18, "leftover eUSD stays idle");
+        (, uint256 heldEusd) = v.holdings(SPY_PRICE);
+        assertGe(heldEusd, idle, "idle eUSD is part of the vault's holdings");
+        assertGe(manager.collateralValue(SPY_POOL, alice), idle, "and of its collateral value");
+    }
+
+    function test_rebalance_readdsIdleEusd_withoutMinting() public {
+        openSpy(alice, 10e18, 3500e18);
+        giveEusd(address(ledger), 1_000_000e18);
+        _delegate(keeper);
+        vm.prank(keeper);
+        manager.rebalance(_swapParams(595e18, 805e18, 8e18, true, 1e18, 100e18));
+        FablesAdapter v = _vault(SPY_POOL, alice);
+        (uint256 heldAsset, uint256 heldEusd) = v.holdings(v.poolPrice());
+        uint256 supply = eusd.totalSupply();
+
+        // The delegate puts all the eUSD back into a range below the price (eUSD only).
+        vm.prank(keeper);
+        manager.rebalance(_repoParams(595e18, 695e18, heldAsset, heldEusd));
+        assertEq(_debt(SPY_POOL, alice), 0, "no new debt");
+        assertEq(eusd.totalSupply(), supply, "no eUSD minted");
+        assertLt(eusd.balanceOf(address(v)), 1e15, "idle eUSD went back into the range");
+        assertGt(_liquidity(SPY_POOL, alice), 0);
+    }
+
+    function test_addLiquidity_zeroDebtLeftover_staysInVault() public {
+        openSpy(alice, 10e18, 3500e18);
+        giveEusd(address(ledger), 1_000_000e18);
+        // Sell most of the asset and keep a small eUSD-only range below the price.
+        vm.prank(alice);
+        manager.rebalance(_swapParams(595e18, 695e18, 8e18, true, 0, 100e18));
+        FablesAdapter v = _vault(SPY_POOL, alice);
+        uint256 aliceEusd = eusd.balanceOf(alice);
+        uint256 idle = eusd.balanceOf(address(v));
+        (int24 lower, int24 upper,) = v.range();
+        vm.prank(alice);
+        manager.addLiquidity(
+            IEUSDLiquidityManager.AddLiquidityParams({
+                poolId: SPY_POOL,
+                tickLower: lower,
+                tickUpper: upper,
+                assetDeposit: 0,
+                assetMax: 0,
+                eusdMax: 1e18,
+                staked: true
+            })
+        );
+        assertEq(_debt(SPY_POOL, alice), 0);
+        assertEq(eusd.balanceOf(alice), aliceEusd, "nothing paid to the owner");
+        assertGt(eusd.balanceOf(address(v)), idle - 1e18 - 1, "unused eUSD stays in the vault");
     }
 
     function test_rebalance_swapEusdToAsset() public {
@@ -1018,7 +1083,7 @@ contract EUSDLiquidityManagerTest is LiquidityManagerSetup {
         assertLe(used, 5, "range moves at the oracle price lose only rounding, at most 1 bps a call");
     }
 
-    function test_rebalance_delegatePayoutToOwner_isNotALoss() public {
+    function test_rebalance_delegateLeftoverInVault_isNotALoss() public {
         openSpy(alice, 10e18, 3500e18);
         giveEusd(address(ledger), 1_000_000e18);
         FablesAdapter v = _vault(SPY_POOL, alice);
@@ -1029,7 +1094,8 @@ contract EUSDLiquidityManagerTest is LiquidityManagerSetup {
         vm.prank(keeper);
         manager.rebalance(params);
         assertEq(_debt(SPY_POOL, alice), 0);
-        assertGt(eusd.balanceOf(alice), aliceEusd, "eUSD beyond the debt goes to the owner");
+        assertEq(eusd.balanceOf(alice), aliceEusd, "nothing paid to the owner");
+        assertGt(eusd.balanceOf(address(v)), 0, "eUSD beyond the debt stays in the vault");
     }
 
     function test_rebalance_delegateZeroBudget_noLossAllowed() public {
