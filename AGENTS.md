@@ -53,8 +53,9 @@ misc/          MoneyFeeCollector, PegArbitrage (keeper tool for the PSM): standa
   (repay, close, liquidate, redeem) use the last oracle price with no age bound, so closed markets
   never block an exit.
 - Positions with debt sit in a per-collateral list sorted by nominal ratio; the head is the riskiest.
-  Redemptions take $1 of collateral per eUSD from the head. Liquidation is permissionless at a fixed
-  bonus.
+  Redemptions take $1 of collateral per eUSD from the head, less an admin-set `redeemFeeBps`
+  (at most `MAX_REDEEM_FEE_BPS`) that stays in the redeemed position. Liquidation is permissionless
+  at a fixed bonus.
 - The stability fee accrues lazily from a global index and is minted to the treasury, keeping
   eUSD supply equal to Σ position debt across all managers.
 
@@ -64,7 +65,9 @@ misc/          MoneyFeeCollector, PegArbitrage (keeper tool for the PSM): standa
   vault, a BeaconProxy created on first use, holding the range plus idle asset and eUSD. The manager
   stores only debt; the vault holds the tokens and only the manager moves principal.
 - Minted eUSD only goes into the range (no wallet mint). eUSD the vault gets back is burned against
-  the debt at once. The liquidity is valued at the oracle price (amounts the range would hold there),
+  the debt at once; what the debt cannot take (zero debt or the `minDebt` floor) stays idle in the
+  vault as collateral. Besides a full liquidation's refund, only the owner's own `removeLiquidity`
+  (at zero debt) or `close` pays eUSD out of the vault. The liquidity is valued at the oracle price (amounts the range would hold there),
   a lower bound of its value wherever the pool trades. Adding or moving liquidity needs the pool
   price within a band of the oracle.
 - Two stability fees, staked (earns DEX emissions) and unstaked. Liquidation can be partial: clearing
@@ -72,8 +75,9 @@ misc/          MoneyFeeCollector, PegArbitrage (keeper tool for the PSM): standa
   eUSD, and the liquidator pays the rest for asset at a bonus. A full one returns what is left to
   the owner.
 - `redeem` burns eUSD against named positions' debt for their asset at the oracle price less
-  `redeemFeeBps`, idle asset first, then from the range. It skips positions with less than
-  `redeemMinAssetShareBps` of their vault in asset at the pool price, and liquidatable ones.
+  `redeemFeeBps`, idle asset first, then from the range. It burns a position's idle eUSD against
+  its debt first, then skips positions with less than `redeemMinAssetShareBps` of their vault in
+  asset at the pool price, and liquidatable ones.
 - The owner can name a delegate on the vault. The owner or the delegate can `rebalance` (remove the
   range, optionally swap asset and eUSD inside the vault at no worse than the oracle price less the
   pool band and at least the caller's `swapMinOut`, with a fresh price, then add the new range,
@@ -83,7 +87,7 @@ misc/          MoneyFeeCollector, PegArbitrage (keeper tool for the PSM): standa
   fresh price. The owner sets a delegate loss budget
   with the delegate (`setDelegate(delegate, lossBudgetBps)`, app default 1%): each delegate
   `rebalance` charges its equity loss at the oracle price (value less debt, measured from the
-  vault once the old range is removed, eUSD paid to the owner counted as kept) to a one-day
+  vault once the old range is removed) to a one-day
   window on the vault and reverts past the budget. Fables
   swap routes take up to 3 hops through pools on the vault pool's hook or in the Fables pool
   registry (adapter immutable `poolRegistry`), e.g. eUSD -> USDG -> SPY.

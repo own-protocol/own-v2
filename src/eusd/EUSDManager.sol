@@ -50,6 +50,9 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
     /// @dev ProtocolRegistry role for the mint pause.
     bytes32 private constant OPERATOR = keccak256("OPERATOR");
 
+    /// @inheritdoc IEUSDManager
+    uint16 public constant override MAX_REDEEM_FEE_BPS = 2000;
+
     // ──────────────────────────────────────────────────────────
     //  State
     // ──────────────────────────────────────────────────────────
@@ -96,6 +99,9 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
 
     /// @dev Timestamp `_feeIndex` was last settled.
     uint256 private _feeIndexUpdated;
+
+    /// @inheritdoc IEUSDManager
+    uint16 public override redeemFeeBps;
 
     // ──────────────────────────────────────────────────────────
     //  Modifiers
@@ -458,6 +464,15 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
         emit MintPausedSet(paused);
     }
 
+    /// @inheritdoc IEUSDManager
+    function setRedeemFee(
+        uint16 redeemFeeBps_
+    ) external override onlyAdmin {
+        if (redeemFeeBps_ > MAX_REDEEM_FEE_BPS) revert InvalidRiskParams();
+        redeemFeeBps = redeemFeeBps_;
+        emit RedeemFeeSet(redeemFeeBps_);
+    }
+
     // ──────────────────────────────────────────────────────────
     //  Internal
     // ──────────────────────────────────────────────────────────
@@ -503,9 +518,10 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
         p.feeIndexSnapshot = _feeIndex;
     }
 
-    /// @dev Redeem up to `maxAmount` of debt from `owner`'s position at `price`, rounding down so
-    ///      the redeemer gets at most $1 of collateral per eUSD. An underwater position only
-    ///      redeems its collateral value and its residual leaves the list. The remaining debt is
+    /// @dev Redeem up to `maxAmount` of debt from `owner`'s position at `price` less `redeemFeeBps`,
+    ///      rounding down so the redeemer gets at most $1 less the fee of collateral per eUSD; the
+    ///      fee stays in the position. An underwater position only redeems its collateral value
+    ///      grossed up by the fee, and its residual leaves the list. The remaining debt is
     ///      either 0 or ≥ minDebt; a position where that leaves nothing to redeem returns zeros.
     /// @param collateral Collateral token.
     /// @param owner      Position owner.
@@ -532,10 +548,11 @@ contract EUSDManager is IEUSDManager, Initializable, UUPSUpgradeable, Reentrancy
                 return (0, 0);
             }
         }
-        seized = Math.mulDiv(repaid, PRECISION, price);
+        uint256 net = BPS - redeemFeeBps;
+        seized = Math.mulDiv(repaid * net, PRECISION, price * BPS);
         if (seized > p.collateral) {
             seized = p.collateral;
-            repaid = Math.mulDiv(seized, price, PRECISION);
+            repaid = Math.mulDiv(seized * price, BPS, PRECISION * net);
         }
 
         p.debt -= repaid;

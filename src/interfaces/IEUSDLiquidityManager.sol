@@ -19,8 +19,8 @@ pragma solidity 0.8.28;
 ///         position look safer than it is.
 ///
 ///         eUSD the vault receives (when liquidity is removed or moved) is burned against the debt
-///         straight away, leaving either no debt or at least `minDebt`; any surplus goes to the
-///         owner once the debt is zero.
+///         straight away, leaving either no debt or at least `minDebt`; what the debt cannot take
+///         stays in the vault as collateral.
 ///
 ///         Health rule after a liquidity change: when the debt grew, minting must be open, the price
 ///         fresh, the debt within the ceiling and at least `minDebt`, and the ratio at least MCR.
@@ -31,7 +31,8 @@ pragma solidity 0.8.28;
 ///         Rebalancing: the owner, or the delegate the owner names on the vault, can move the range
 ///         and, on the way, swap the vault's asset for eUSD or back at no worse than the oracle
 ///         price less `poolPriceBandBps`. eUSD the swap brings in is burned against the debt like any
-///         other. A delegate can never move tokens out of the vault. Each delegate call may lose
+///         other; what the debt cannot take stays in the vault as collateral, never paid out. A
+///         delegate can never move tokens out of the vault. Each delegate call may lose
 ///         equity, valued at the oracle price, only within the daily budget the owner sets on the vault.
 ///
 ///         Two stability fees: one for staked liquidity (which earns DEX emissions) and a lower one
@@ -489,7 +490,8 @@ interface IEUSDLiquidityManager {
 
     /// @notice Add liquidity to the caller's range: optionally deposit asset, then put up to
     ///         `assetMax` idle asset and up to `eusdMax` eUSD into the range, minting the eUSD the
-    ///         vault lacks. Unused eUSD is burned against the debt; unused asset stays idle. Sets
+    ///         vault lacks. Unused eUSD is burned against the debt; eUSD the debt cannot take and
+    ///         unused asset stay idle in the vault. Sets
     ///         the position's staked mode first, as {setStaked}. The pool must be enabled and within
     ///         the price band, and the health rule applies.
     /// @param params See {AddLiquidityParams}.
@@ -499,7 +501,8 @@ interface IEUSDLiquidityManager {
     ) external returns (uint128 liquidity);
 
     /// @notice Remove liquidity from the caller's range into the vault. The eUSD received is
-    ///         burned against the debt; the asset stays idle in the vault.
+    ///         burned against the debt; the asset stays idle in the vault. Once the debt is zero,
+    ///         the vault's eUSD is sent to the caller.
     /// @param poolId    Pool id.
     /// @param liquidity Liquidity to remove.
     /// @param assetMin  Least asset to receive (asset units).
@@ -509,13 +512,13 @@ interface IEUSDLiquidityManager {
     /// @notice Rebalance a position, as its owner or its vault's delegate: remove all liquidity,
     ///         optionally swap `swapAmount` of the vault's asset for eUSD or back, set the staked
     ///         mode, then add up to `assetMax` asset and `eusdMax` eUSD to the new range, using the
-    ///         vault's eUSD first and minting the rest. eUSD left over is burned against the debt.
+    ///         vault's eUSD first and minting the rest. eUSD left over is burned against the debt;
+    ///         what the debt cannot take stays idle in the vault.
     ///         The swap needs a fresh price and returns at least its oracle value less
     ///         `poolPriceBandBps` and at least `swapMinOut`. The pool must be enabled and within the
     ///         price band both before and after the swap, and the health rule applies. A delegate
-    ///         call always needs a fresh price, and its equity loss at the oracle price, measured from the vault once the old range is
-    ///         removed (eUSD paid to the owner counts as kept), is charged to the vault's delegate
-    ///         loss budget.
+    ///         call always needs a fresh price, and its equity loss at the oracle price, measured from
+    ///         the vault once the old range is removed, is charged to the vault's delegate loss budget.
     /// @param params See {RebalanceParams}.
     /// @return liquidity Liquidity in the new range.
     function rebalance(
@@ -576,14 +579,16 @@ interface IEUSDLiquidityManager {
     /// @param amount Debt to clear, capped at the debt (18 decimals; `type(uint256).max` for all).
     function liquidate(uint256 poolId, address owner, uint256 amount) external;
 
-    /// @notice Burn up to `amount` of the caller's eUSD against the named positions' debt, in order,
-    ///         for asset worth the same at an oracle price no older than `mintPriceMaxAge`, less
-    ///         `redeemFeeBps` (rounded down). A position is skipped when it has no debt, when less than
+    /// @notice Burn up to `amount` of the caller's eUSD against the named positions' debt, in
+    ///         order, for asset worth the same at an oracle price no older than `mintPriceMaxAge`,
+    ///         less `redeemFeeBps` (rounded down). Each position first burns its idle eUSD against
+    ///         its debt, then is skipped when it has no debt, when less than
     ///         `redeemMinAssetShareBps` of its vault is asset at the pool price, or when it is
-    ///         liquidatable. Each pays from its vault's idle asset first, then from just enough of its
-    ///         range; eUSD that range returns is burned against the owner's debt. Each position is
-    ///         left with zero debt or at least `minDebt`. The fee stays in the owner's vault. When pool
-    ///         rounding frees a few wei less asset than owed, the caller receives what was freed.
+    ///         liquidatable. Each pays from its vault's idle asset first, then from just enough of
+    ///         its range; eUSD that range returns is burned against the owner's debt, and what the
+    ///         debt cannot take stays in the vault. Each position is left with zero debt or at
+    ///         least `minDebt`. The fee stays in the owner's vault. When pool rounding frees a few
+    ///         wei less asset than owed, the caller receives what was freed.
     /// @param poolId      Pool id.
     /// @param owners      Positions to redeem from, in order.
     /// @param amount      Most eUSD to burn (18 decimals).

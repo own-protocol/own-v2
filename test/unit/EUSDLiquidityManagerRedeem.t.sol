@@ -205,6 +205,22 @@ contract EUSDLiquidityManagerRedeemTest is LiquidityManagerSetup {
         );
     }
 
+    function test_redeem_burnsParkedEusdFirst() public {
+        openSpy(alice, 10e18, 3500e18);
+        _movePool(600e18);
+        address vault = manager.getPosition(SPY_POOL, alice).vault;
+        giveEusd(alice, 3200e18);
+        vm.prank(alice);
+        eusd.transfer(vault, 3200e18);
+        uint256 debtBefore = manager.currentDebt(SPY_POOL, alice);
+
+        (, uint256 burned) = _redeem(_owners(alice), 1000e18);
+
+        assertGt(burned, 0, "parked eUSD does not block redemption");
+        assertEq(manager.currentDebt(SPY_POOL, alice), debtBefore - 3200e18 - burned);
+        assertEq(eusd.balanceOf(vault), 0);
+    }
+
     /// @dev A position at minDebt whose asset is worth less than its debt cannot be redeemed, so its
     ///      range must stay in place while the call redeems from the next owner.
     function test_redeem_belowDebt_atMinDebt_keepsRange() public {

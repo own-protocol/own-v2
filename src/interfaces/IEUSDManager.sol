@@ -117,6 +117,10 @@ interface IEUSDManager {
     /// @param paused New paused state.
     event MintPausedSet(bool paused);
 
+    /// @notice Emitted when the redemption fee changes.
+    /// @param redeemFeeBps New fee (BPS).
+    event RedeemFeeSet(uint16 redeemFeeBps);
+
     /// @notice Emitted when collateral is deposited into a position.
     /// @param collateral Collateral token.
     /// @param owner      Position owner.
@@ -352,11 +356,12 @@ interface IEUSDManager {
     /// @param hint       Sorted-list insert hint for the remainder (see {deposit}).
     function liquidate(address collateral, address owner, uint256 amount, address hint) external;
 
-    /// @notice Redeem eUSD for collateral at the oracle price: burn X eUSD and receive X dollars of
-    ///         collateral (rounded down), taken from the riskiest positions first. Never pausable,
-    ///         but needs a fresh price. Each touched position loses debt and collateral of equal
-    ///         value, so its ratio improves. An underwater position only redeems its collateral
-    ///         value; the unbacked residual stays on the owner's books off the list. The last
+    /// @notice Redeem eUSD for collateral at the oracle price less `redeemFeeBps`: burn X eUSD and
+    ///         receive X dollars of collateral less the fee (rounded down), taken from the riskiest
+    ///         positions first. Never pausable, but needs a fresh price. Each touched position loses
+    ///         debt of X and collateral worth X less the fee, which stays in the position, so its
+    ///         ratio improves. An underwater position only redeems its collateral value (grossed up
+    ///         by the fee); the unbacked residual stays on the owner's books off the list. The last
     ///         position touched is left at zero or at least `minDebt`, so `debtRepaid` can be up to
     ///         `minDebt` short of `amount`.
     /// @param collateral       Collateral token to redeem into.
@@ -430,6 +435,12 @@ interface IEUSDManager {
         bool paused
     ) external;
 
+    /// @notice Set the redemption fee, kept by the redeemed positions. At most `MAX_REDEEM_FEE_BPS`.
+    /// @param redeemFeeBps New fee (BPS).
+    function setRedeemFee(
+        uint16 redeemFeeBps
+    ) external;
+
     // ──────────────────────────────────────────────────────────
     //  Views
     // ──────────────────────────────────────────────────────────
@@ -452,6 +463,14 @@ interface IEUSDManager {
     /// @notice Whether minting is currently paused.
     /// @return Whether minting is paused.
     function mintPaused() external view returns (bool);
+
+    /// @notice Share of the redeemed value the redeemer leaves in each redeemed position (BPS).
+    /// @return The redemption fee (BPS).
+    function redeemFeeBps() external view returns (uint16);
+
+    /// @notice Upper bound on `redeemFeeBps` (2000 = 20%).
+    /// @return The bound (BPS).
+    function MAX_REDEEM_FEE_BPS() external view returns (uint16);
 
     /// @notice Total outstanding eUSD debt across this manager's positions (18 decimals). eUSD supply
     ///         equals the sum of this value over every manager.
