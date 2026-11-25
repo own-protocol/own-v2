@@ -8,6 +8,9 @@ optimizer 200, cancun) with `DeployCoreRobinhood.s.sol`, `DeployEusdManagerRobin
 `DeployStakingVaultRobinhood.s.sol`. Older contracts are listed in
 [legacy-contracts-rh.md](legacy-contracts-rh.md); their code is on the `legacy-own-v2` branch.
 
+The governance Safe upgraded the vault beacons on 2026-11-13 and the EUSDManager and
+EUSDLiquidityManager proxies on 2026-11-25. The tables list the live implementations.
+
 ## Contracts
 
 | Contract                                 | Address                                      |
@@ -19,7 +22,7 @@ optimizer 200, cancun) with `DeployCoreRobinhood.s.sol`, `DeployEusdManagerRobin
 | EUSDManager B (ERC-1967 proxy)           | `0xbd0A8dea2964C61dBC225dB3C1b4cE341A0c32C2` |
 | EUSDManager C (ERC-1967 proxy)           | `0x6d491928BBEc0c508A939b103753A3472b63Cc8C` |
 | EUSDManager D (ERC-1967 proxy)           | `0x948df8d22c8025f587697D02b4888fE432758d0e` |
-| EUSDManager implementation (shared)      | `0x3B0bb2203aFe55AD088362279c6a34b609AB9150` |
+| EUSDManager implementation (shared)      | `0xe6fa9a49e66237E446dB1C1DeDFcdfB61a5aB207` |
 | StakingVault seUSD (stakes eUSD)         | `0xa13A08828A78577D39e253a30E64b354D813Ade5` |
 | StakingVault sMONEY (stakes $MONEY)      | `0xB6B87Ff4BA072851d1E7E69D39eEb7341b3A5F11` |
 | MoneyFeeCollector (ERC-1967/UUPS proxy)  | `0xB6BCAfB905CE0648A71F6d43155d5D53a2B08154` |
@@ -35,19 +38,19 @@ Deployed 2026-11-09 from branch `eusd-liq-manager` commit `aba9e7e` (same toolch
 | --------------------------------------------- | -------------------------------------------- |
 | EUSDLiquidityManager USDG (ERC-1967 proxy)    | `0x64bf85F7F55C9c66e42ac70D970e01b9cd163554` |
 | EUSDLiquidityManager low vol (ERC-1967 proxy) | `0x62f482452340E5a4beB2bC910248DFfcF8f59C4b` |
-| EUSDLiquidityManager implementation (shared)  | `0x25494DD3a21230736bb9FB4dF34D8104f960b2d3` |
+| EUSDLiquidityManager implementation (shared)  | `0x41ecAED014B019c54093891ABB54A77311D1E75d` |
 | FablesAdapter vault beacon                    | `0xad95D20D6d1Fbb7FD26263F5CE77711102bc9ad6` |
-| FablesAdapter implementation                  | `0x635961b4D13b888B3872f798123138f97bD88AD0` |
+| FablesAdapter implementation                  | `0x978bc5F19e201dF85487e10771E63A96e9B6305E` |
 | AerodromeAdapter vault beacon                 | `0x01d38dDBC7cd783bf0B5FA8F26a401eA64DfE5A1` |
-| AerodromeAdapter implementation               | `0x4345AebAe03944e63804eAd6a186f25B79169B67` |
+| AerodromeAdapter implementation               | `0xdf41Cafb2a1B4d36FF0f49Cc9c1E1c62bD098718` |
 
 Each user's position lives in its own vault, a beacon proxy created on first use. Both beacons are
 owned by the governance Safe, which upgrades every vault of that DEX at once.
 
-| Manager  | Pools (Fables)  |
-| -------- | --------------- |
-| USDG     | USDG/eUSD       |
-| Low vol  | SPY/eUSD        |
+| Manager  | Pools (Fables)                            |
+| -------- | ----------------------------------------- |
+| USDG     | USDG/eUSD (pool 0), frxUSD/eUSD (pool 1)  |
+| Low vol  | SPY/eUSD (pool 0)                         |
 
 ## PSM
 
